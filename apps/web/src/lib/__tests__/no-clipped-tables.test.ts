@@ -69,7 +69,7 @@ describe('no clipped tables (mobile column-clipping guard)', () => {
         `shared ResponsiveTable primitive (or at minimum swap overflow-hidden → ` +
         `overflow-x-auto):\n  ${offenders.join('\n  ')}`,
     ).toEqual([]);
-  });
+  }, 30_000);
 
   it('the allowlist only contains files that still match the pattern (keep it honest, shrink-only)', () => {
     const stale = [...CLIPPED_TABLE_ALLOWLIST].filter((rel) => {

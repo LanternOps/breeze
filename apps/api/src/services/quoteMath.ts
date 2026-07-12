@@ -7,6 +7,7 @@
 export {
   computeQuoteTotals,
   validateQuoteDeposit,
+  toQuoteDepositConfig,
   type QuoteLineForMath,
   type QuoteTotals,
   type QuoteDepositConfig,

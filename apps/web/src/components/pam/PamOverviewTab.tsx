@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
 import { ShieldCheck, Timer, Inbox } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import {
@@ -18,6 +20,7 @@ interface OverviewData {
 }
 
 export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
+  const { t } = useTranslation('security');
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +39,12 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
             void navigateTo('/login', { replace: true });
             return;
           }
-          throw new Error(`Failed to load overview (HTTP ${res.status})`);
+          throw new Error(
+            t('pamPamOverviewTab.errors.loadWithStatus', {
+              defaultValue: 'Failed to load overview (HTTP {{status}})',
+              status: res.status,
+            }),
+          );
         }
       }
       const activeBody = await activeRes.json();
@@ -51,11 +59,15 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
       });
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
-      setError(err instanceof Error ? err.message : 'Failed to load overview');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t('pamPamOverviewTab.errors.load', { defaultValue: 'Failed to load overview' }),
+      );
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -67,7 +79,7 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
     return (
       <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
         <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        Loading overview…
+        {t('pamPamOverviewTab.loading', { defaultValue: 'Loading overview…' })}
       </div>
     );
   }
@@ -88,17 +100,35 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
 
       {isFirstRun && (
         <div className="rounded-md border bg-muted/20 p-4" data-testid="pam-setup-steps">
-          <p className="text-sm font-medium">Getting started with Privileged Access</p>
+          <p className="text-sm font-medium">
+            {t('pamPamOverviewTab.setup.title', {
+              defaultValue: 'Getting started with Privileged Access',
+            })}
+          </p>
           <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
             <li>
-              UAC prompt capture is on by default. Scope it per device with a{' '}
+              {t('pamPamOverviewTab.setup.step1BeforeLink', {
+                defaultValue: 'UAC prompt capture is on by default. Scope it per device with a',
+              })}{' '}
               <a href="/configuration-policies" className="underline underline-offset-2 hover:text-foreground">
-                Configuration Policy → Privileged Access
+                {t('pamPamOverviewTab.setup.configurationPolicyLink', {
+                  defaultValue: 'Configuration Policy → Privileged Access',
+                })}
               </a>{' '}
-              feature link.
+              {t('pamPamOverviewTab.setup.step1AfterLink', { defaultValue: 'feature link.' })}
             </li>
-            <li>Elevation prompts, JIT admin requests, and AI tool actions queue in the Requests tab.</li>
-            <li>Approve or deny each request — or create a rule from it so the decision is automatic next time.</li>
+            <li>
+              {t('pamPamOverviewTab.setup.step2', {
+                defaultValue:
+                  'Elevation prompts, JIT admin requests, and AI tool actions queue in the Requests tab.',
+              })}
+            </li>
+            <li>
+              {t('pamPamOverviewTab.setup.step3', {
+                defaultValue:
+                  'Approve or deny each request — or create a rule from it so the decision is automatic next time.',
+              })}
+            </li>
           </ol>
         </div>
       )}
@@ -106,32 +136,39 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard
           icon={<ShieldCheck className="h-5 w-5 text-green-500" />}
-          label="Active elevations"
+          label={t('pamPamOverviewTab.stats.activeElevations', { defaultValue: 'Active elevations' })}
           value={data?.active.length ?? 0}
           testId="pam-stat-active"
         />
         <StatCard
           icon={<Inbox className="h-5 w-5 text-yellow-500" />}
-          label="Pending requests"
+          label={t('pamPamOverviewTab.stats.pendingRequests', { defaultValue: 'Pending requests' })}
           value={data?.pendingTotal ?? 0}
           testId="pam-stat-pending"
         />
         <StatCard
           icon={<Timer className="h-5 w-5 text-blue-500" />}
-          label="Recent decisions"
+          label={t('pamPamOverviewTab.stats.recentDecisions', { defaultValue: 'Recent decisions' })}
           value={data?.recent.length ?? 0}
           testId="pam-stat-recent"
         />
       </div>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Active elevations</h2>
+        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
+          {t('pamPamOverviewTab.active.title', { defaultValue: 'Active elevations' })}
+        </h2>
         {!data || data.active.length === 0 ? (
           <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
             <ShieldCheck className="mx-auto h-8 w-8 text-muted-foreground" />
-            <p className="mt-2 text-sm font-medium">No active elevations</p>
+            <p className="mt-2 text-sm font-medium">
+              {t('pamPamOverviewTab.active.emptyTitle', { defaultValue: 'No active elevations' })}
+            </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Approved elevation windows will appear here until they expire or are revoked.
+              {t('pamPamOverviewTab.active.emptyDescription', {
+                defaultValue:
+                  'Approved elevation windows will appear here until they expire or are revoked.',
+              })}
             </p>
           </div>
         ) : (
@@ -139,12 +176,12 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Device</th>
-                  <th className="px-3 py-2 font-medium">User</th>
-                  <th className="px-3 py-2 font-medium">Target</th>
-                  <th className="px-3 py-2 font-medium">Flow</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Expires</th>
+                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.device', { defaultValue: 'Device' })}</th>
+                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.user', { defaultValue: 'User' })}</th>
+                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.target', { defaultValue: 'Target' })}</th>
+                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.flow', { defaultValue: 'Flow' })}</th>
+                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.status', { defaultValue: 'Status' })}</th>
+                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.expires', { defaultValue: 'Expires' })}</th>
                 </tr>
               </thead>
               <tbody>
@@ -175,10 +212,12 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Recent decisions</h2>
+        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
+          {t('pamPamOverviewTab.recent.title', { defaultValue: 'Recent decisions' })}
+        </h2>
         {!data || data.recent.length === 0 ? (
           <div className="rounded-md border border-dashed bg-card px-4 py-6 text-center text-sm text-muted-foreground">
-            No decided requests yet.
+            {t('pamPamOverviewTab.recent.empty', { defaultValue: 'No decided requests yet.' })}
           </div>
         ) : (
           <ul className="divide-y rounded-md border bg-card">
@@ -238,9 +277,10 @@ function StatCard({
 }
 
 function ExpiresIn({ at }: { at: string }) {
+  const { t } = useTranslation('security');
   const ms = new Date(at).getTime() - Date.now();
   if (Number.isNaN(ms)) return <>—</>;
-  if (ms <= 0) return <>expired</>;
+  if (ms <= 0) return <>{t('pamPamOverviewTab.expires.expired', { defaultValue: 'expired' })}</>;
   const mins = Math.round(ms / 60000);
   if (mins < 60) return <>{mins}m</>;
   const hours = Math.floor(mins / 60);

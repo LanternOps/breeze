@@ -70,7 +70,11 @@ const TIER1_ACTIONS: Record<string, string[]> = {
 
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
 const TIER3_ACTIONS: Record<string, string[]> = {
-  file_operations: ['write', 'delete', 'mkdir', 'rename'],
+  // SR5-01: filesystem READ/LIST are privileged. The endpoint agent runs as
+  // root/LocalSystem and does not restrict reads to an approved root, so an
+  // unapproved read can exfiltrate any file (/etc/shadow, SAM hive, SSH keys).
+  // Require interactive approval (Tier 3) for read/list, same as the mutations.
+  file_operations: ['read', 'list', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
@@ -215,8 +219,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     execute: { resource: 'devices', action: 'execute' },
   },
   file_operations: {
-    list: { resource: 'devices', action: 'read' },
-    read: { resource: 'devices', action: 'read' },
+    // SR5-01: read/list require devices.execute (not devices.read). Reading an
+    // arbitrary file off a root/LocalSystem agent is a privileged operation.
+    list: { resource: 'devices', action: 'execute' },
+    read: { resource: 'devices', action: 'execute' },
     write: { resource: 'devices', action: 'execute' },
     delete: { resource: 'devices', action: 'execute' },
     mkdir: { resource: 'devices', action: 'execute' },

@@ -1,4 +1,5 @@
 import { Check, ChevronRight } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 export interface Step {
@@ -12,8 +13,10 @@ interface SetupStepperProps {
 }
 
 export default function SetupStepper({ steps, currentStep, onStepClick }: SetupStepperProps) {
+  const { t } = useTranslation('auth');
+
   return (
-    <nav aria-label="Setup progress" className="flex items-center justify-center gap-2">
+    <nav aria-label={t('setup.stepper.ariaLabel')} className="flex items-center justify-center gap-2">
       {steps.map((step, index) => {
         const isCompleted = index < currentStep;
         const isCurrent = index === currentStep;

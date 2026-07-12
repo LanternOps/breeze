@@ -1,0 +1,101 @@
+{
+  "peripheralPage": {
+    "title": "Peripheral Control",
+    "tabs": { "policies": "Policies", "activity": "Activity Log" }
+  },
+  "peripheralActivityLog": {
+    "errors": {
+      "fetch": "Failed to fetch activity",
+      "generic": "An error occurred"
+    },
+    "allEvents": "All Events",
+    "events": {
+      "connected": "Connected",
+      "disconnected": "Disconnected",
+      "blocked": "Blocked",
+      "mounted_read_only": "Read Only",
+      "policy_override": "Policy Override"
+    },
+    "peripheralType": "Peripheral type",
+    "vendor": "Vendor",
+    "empty": "No peripheral activity found.",
+    "columns": {
+      "occurredAt": "Occurred At",
+      "eventType": "Event Type",
+      "product": "Product",
+      "serialNumber": "Serial Number",
+      "device": "Device",
+      "policy": "Policy"
+    },
+    "pagination": "Showing {{from}}–{{to}} of {{total}}",
+    "prev": "Prev"
+  },
+  "peripheralPoliciesList": {
+    "errors": {
+      "fetch": "Failed to fetch policies",
+      "generic": "An error occurred"
+    },
+    "allClasses": "All Classes",
+    "classes": {
+      "storage": "Storage",
+      "all_usb": "All USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "allActions": "All Actions",
+    "actions": {
+      "allow": "Allow",
+      "block": "Block",
+      "read_only": "Read Only",
+      "alert": "Alert"
+    },
+    "allStatus": "All Status",
+    "createPolicy": "Create Policy",
+    "empty": "No peripheral policies found. Create one to get started.",
+    "columns": {
+      "deviceClass": "Device Class",
+      "action": "Action",
+      "exceptions": "Exceptions",
+      "created": "Created"
+    },
+    "partnerWideTitle": "Partner-wide policy — enforced on devices in every organization",
+    "allOrgs": "All orgs"
+  },
+  "peripheralPolicyForm": {
+    "errors": {
+      "save": "Failed to save policy",
+      "generic": "An error occurred"
+    },
+    "editTitle": "Edit Peripheral Policy",
+    "createTitle": "Create Peripheral Policy",
+    "scope": "Scope",
+    "allOrganizations": "All organizations",
+    "partnerWide": "(partner-wide policy)",
+    "thisOrganization": "This organization only",
+    "deviceClass": "Device Class",
+    "classes": {
+      "storage": "Storage",
+      "all_usb": "All USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "action": "Action",
+    "actions": {
+      "allow": "Allow",
+      "block": "Block",
+      "read_only": "Read Only",
+      "alert": "Alert"
+    },
+    "exceptions": "Exceptions",
+    "addException": "Add Exception",
+    "noExceptions": "No exceptions configured.",
+    "exceptionNumber": "Exception {{number}}",
+    "vendor": "Vendor",
+    "product": "Product",
+    "serialNumber": "Serial Number",
+    "allow": "Allow:",
+    "reason": "Reason",
+    "updatePolicy": "Update Policy",
+    "createPolicy": "Create Policy"
+  }
+}

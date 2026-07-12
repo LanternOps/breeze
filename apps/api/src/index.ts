@@ -45,6 +45,7 @@ import { timeEntriesRoutes } from './routes/timeEntries';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
+import { ticketFormRoutes } from './routes/tickets/forms';
 import { orgRoutes } from './routes/orgs';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -203,6 +204,7 @@ import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/aut
 import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
 import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/reliabilityWorker';
 import { initializeUserRiskJobs, shutdownUserRiskJobs } from './jobs/userRiskJobs';
+import { initializeAbuseSignalsWorker, shutdownAbuseSignalsWorker } from './jobs/abuseSignalsSweep';
 import { initializeUserRiskRetention, shutdownUserRiskRetention } from './jobs/userRiskRetention';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
 import { initializeReportScheduleWorker, shutdownReportScheduleWorker } from './jobs/reportScheduleWorker';
@@ -806,6 +808,7 @@ api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
 api.route('/', ticketResponseTemplateRoutes);
+api.route('/', ticketFormRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
@@ -1151,6 +1154,7 @@ async function initializeWorkers(): Promise<void> {
     ['securityPostureWorker', initializeSecurityPostureWorker],
     ['reliabilityWorker', initializeReliabilityWorker],
     ['userRiskWorker', initializeUserRiskJobs],
+    ['abuseSignalsWorker', initializeAbuseSignalsWorker],
     ['userRiskRetention', initializeUserRiskRetention],
     ['backupVerificationJobs', initializeBackupVerificationJobs],
     ['policyAlertBridge', initializePolicyAlertBridge],
@@ -1363,6 +1367,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownSecurityPostureWorker,
     shutdownReliabilityWorker,
     shutdownUserRiskJobs,
+    shutdownAbuseSignalsWorker,
     shutdownUserRiskRetention,
     shutdownAutomationWorker,
     shutdownSoftwareRemediationWorker,
@@ -1504,6 +1509,9 @@ async function bootstrap(): Promise<void> {
   // The validated config is stored as a singleton; retrieve later via getConfig().
   const config = validateConfig();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
+  if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
+    console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
+  }
 
   // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to
   // disable). Runs BEFORE runStartupChecks because ensureAppRole() — called

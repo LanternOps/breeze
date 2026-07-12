@@ -344,3 +344,4 @@ describe('DiscoveryPage', () => {
     ).not.toBeInTheDocument();
   });
 });
+import '@/lib/i18n';

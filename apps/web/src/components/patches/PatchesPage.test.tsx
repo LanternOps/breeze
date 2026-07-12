@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import '@/lib/i18n';
 
 // PatchList renders through ResponsiveTable — a desktop <table> and a mobile
 // card list are both in the DOM at once (the sm: breakpoint is CSS-only, invisible

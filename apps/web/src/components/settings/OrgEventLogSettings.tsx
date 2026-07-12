@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Database, Save, Key, Link, ScrollText, Info } from 'lucide-react';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
@@ -23,6 +25,7 @@ type OrgEventLogSettingsProps = {
 };
 
 export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSettingsProps) {
+  const { t } = useTranslation('settings');
   const isLocked = (field: string) => locked?.includes(`eventLogs.${field}`) ?? false;
   const allFieldsLocked = ['enabled', 'elasticsearchUrl', 'elasticsearchApiKey', 'elasticsearchUsername', 'elasticsearchPassword', 'indexPrefix'].every(f => isLocked(f));
   const { currentOrgId } = useOrgStore();
@@ -51,7 +54,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
             void navigateTo('/login', { replace: true });
             return;
           }
-          throw new Error('Failed to load log forwarding settings');
+          throw new Error(t('orgEventLogSettings.errors.loadForwarding'));
         }
         const data = await response.json();
         const lf = data.settings?.logForwarding as LogForwardingData | undefined;
@@ -69,14 +72,14 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
           }
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load settings');
+        setError(err instanceof Error ? err.message : t('orgEventLogSettings.errors.load'));
       } finally {
         setLoading(false);
       }
     };
 
     load();
-  }, [currentOrgId]);
+  }, [currentOrgId, t]);
 
   const markDirty = () => {
     onDirty?.();
@@ -109,12 +112,12 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, 'Failed to save log forwarding settings'));
+        throw new Error(extractApiError(data, t('orgEventLogSettings.errors.saveForwarding')));
       }
 
-      showToast({ message: 'Log forwarding settings saved', type: 'success' });
+      showToast({ message: t('orgEventLogSettings.toasts.saved'), type: 'success' });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings');
+      setError(err instanceof Error ? err.message : t('orgEventLogSettings.errors.save'));
     } finally {
       setSaving(false);
     }
@@ -136,11 +139,10 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
           <div>
             <div className="flex items-center gap-2">
               <Database className="h-5 w-5" />
-              <h2 className="text-lg font-semibold">Log Forwarding</h2>
+              <h2 className="text-lg font-semibold">{t('orgEventLogSettings.title')}</h2>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              Forward collected event logs to an external Elasticsearch- or OpenSearch-compatible store
-              (Elasticsearch, OpenSearch, Wazuh indexer, AWS OpenSearch Service) for long-term storage and analysis.
+              {t('orgEventLogSettings.description')}
             </p>
           </div>
           <button
@@ -150,7 +152,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             <Save className="h-4 w-4" />
-            {saving ? 'Saving...' : 'Save settings'}
+            {saving ? t('common:states.saving') : t('orgEventLogSettings.save')}
           </button>
         </div>
 
@@ -163,12 +165,12 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
         {/* Enable toggle */}
         <label className={`flex items-center justify-between gap-3 rounded-md border bg-muted/40 px-4 py-3 text-sm ${isLocked('enabled') ? 'opacity-60' : ''}`}>
           <div>
-            <p className="font-medium">Enable log forwarding</p>
+            <p className="font-medium">{t('orgEventLogSettings.enable.title')}</p>
             <p className="text-xs text-muted-foreground">
-              When enabled, event logs are forwarded to your log store on a recurring schedule.
+              {t('orgEventLogSettings.enable.description')}
             </p>
             {isLocked('enabled') && (
-              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgEventLogSettings.managedByPartner')}</span>
             )}
           </div>
           <input
@@ -189,10 +191,10 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
             <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Link className="h-4 w-4" />
-                Connection
+                {t('orgEventLogSettings.connection.title')}
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Log endpoint URL</label>
+                <label className="text-sm font-medium">{t('orgEventLogSettings.connection.endpointUrl')}</label>
                 <input
                   type="text"
                   value={elasticsearchUrl}
@@ -201,19 +203,19 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                     setElasticsearchUrl(event.target.value);
                     markDirty();
                   }}
-                  placeholder="https://logs.example.com:9200"
+                  placeholder={t('orgEventLogSettings.connection.endpointPlaceholder')}
                   className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchUrl') ? 'opacity-60' : ''}`}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Base URL of an Elasticsearch/OpenSearch-compatible <code>_bulk</code> endpoint. Must use HTTPS.
+                  {t('orgEventLogSettings.connection.endpointDescription')}
                 </p>
                 {isLocked('elasticsearchUrl') && (
-                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgEventLogSettings.managedByPartner')}</span>
                 )}
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium">Index prefix</label>
+                <label className="text-sm font-medium">{t('orgEventLogSettings.connection.indexPrefix')}</label>
                 <input
                   type="text"
                   value={indexPrefix}
@@ -222,14 +224,16 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                     setIndexPrefix(event.target.value);
                     markDirty();
                   }}
-                  placeholder="breeze-logs"
+                  placeholder={t('orgEventLogSettings.connection.indexPlaceholder')}
                   className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('indexPrefix') ? 'opacity-60' : ''}`}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Logs are written to indices named {indexPrefix ? `${indexPrefix}-YYYY.MM.DD` : 'breeze-logs-YYYY.MM.DD'}.
+                  {t('orgEventLogSettings.connection.indexDescription', {
+                    index: indexPrefix ? `${indexPrefix}-YYYY.MM.DD` : 'breeze-logs-YYYY.MM.DD',
+                  })}
                 </p>
                 {isLocked('indexPrefix') && (
-                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                  <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgEventLogSettings.managedByPartner')}</span>
                 )}
               </div>
             </div>
@@ -237,7 +241,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
             <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Key className="h-4 w-4" />
-                Authentication
+                {t('orgEventLogSettings.authentication.title')}
               </div>
 
               <div className="flex gap-4">
@@ -252,7 +256,7 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                     }}
                     className="h-4 w-4"
                   />
-                  API Key
+                  {t('orgEventLogSettings.authentication.apiKey')}
                 </label>
                 <label className="flex items-center gap-2 text-sm">
                   <input
@@ -265,13 +269,13 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                     }}
                     className="h-4 w-4"
                   />
-                  Username / Password
+                  {t('orgEventLogSettings.authentication.usernamePassword')}
                 </label>
               </div>
 
               {authMethod === 'apiKey' ? (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">API Key</label>
+                  <label className="text-sm font-medium">{t('orgEventLogSettings.authentication.apiKey')}</label>
                   <input
                     type="password"
                     value={elasticsearchApiKey}
@@ -280,17 +284,17 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                       setElasticsearchApiKey(event.target.value);
                       markDirty();
                     }}
-                    placeholder="Enter API key"
+                    placeholder={t('orgEventLogSettings.authentication.apiKeyPlaceholder')}
                     className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchApiKey') ? 'opacity-60' : ''}`}
                   />
                   {isLocked('elasticsearchApiKey') && (
-                    <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                    <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgEventLogSettings.managedByPartner')}</span>
                   )}
                 </div>
               ) : (
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Username</label>
+                    <label className="text-sm font-medium">{t('orgEventLogSettings.authentication.username')}</label>
                     <input
                       type="text"
                       value={elasticsearchUsername}
@@ -299,15 +303,15 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                         setElasticsearchUsername(event.target.value);
                         markDirty();
                       }}
-                      placeholder="elastic"
+                      placeholder={t('orgEventLogSettings.authentication.usernamePlaceholder')}
                       className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchUsername') ? 'opacity-60' : ''}`}
                     />
                     {isLocked('elasticsearchUsername') && (
-                      <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                      <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgEventLogSettings.managedByPartner')}</span>
                     )}
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Password</label>
+                    <label className="text-sm font-medium">{t('orgEventLogSettings.authentication.password')}</label>
                     <input
                       type="password"
                       value={elasticsearchPassword}
@@ -316,24 +320,24 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
                         setElasticsearchPassword(event.target.value);
                         markDirty();
                       }}
-                      placeholder="Enter password"
+                      placeholder={t('orgEventLogSettings.authentication.passwordPlaceholder')}
                       className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('elasticsearchPassword') ? 'opacity-60' : ''}`}
                     />
                     {isLocked('elasticsearchPassword') && (
-                      <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                      <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgEventLogSettings.managedByPartner')}</span>
                     )}
                   </div>
                 </div>
               )}
 
               <p className="text-xs text-muted-foreground">
-                Credentials are stored encrypted. Existing credentials are masked when loaded.
+                {t('orgEventLogSettings.authentication.credentialsDescription')}
               </p>
             </div>
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">
-            Enable log forwarding above to configure connection settings.
+            {t('orgEventLogSettings.disabledDescription')}
           </p>
         )}
       </section>
@@ -343,17 +347,16 @@ export default function OrgEventLogSettings({ onDirty, locked }: OrgEventLogSett
         <div className="flex items-start gap-3">
           <Info className="mt-0.5 h-5 w-5 text-muted-foreground" />
           <div className="space-y-2">
-            <h3 className="text-base font-semibold">Event Log Collection</h3>
+            <h3 className="text-base font-semibold">{t('orgEventLogSettings.collection.title')}</h3>
             <p className="text-sm text-muted-foreground">
-              Collection settings such as log categories, retention periods, and collection rates are
-              managed per-policy through Configuration Policies.
+              {t('orgEventLogSettings.collection.description')}
             </p>
             <a
               href="/configuration-policies"
               className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
             >
               <ScrollText className="h-4 w-4" />
-              Go to Configuration Policies
+              {t('orgEventLogSettings.collection.link')}
             </a>
           </div>
         </div>

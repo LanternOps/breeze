@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Activity, Download, TrendingUp, User, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -28,7 +29,8 @@ interface UserActivityReportProps {
 }
 
 export default function UserActivityReport({ timezone }: UserActivityReportProps) {
-  const [users, setUsers] = useState<UserOption[]>([{ id: 'all', name: 'All users' }]);
+  const { t } = useTranslation('admin');
+  const [users, setUsers] = useState<UserOption[]>([{ id: 'all', name: t('audit.userActivityReport.allUsers') }]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('all');
   const [isLoading, setIsLoading] = useState(true);
@@ -50,18 +52,18 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       }
 
       if (!usersRes.ok) {
-        throw new Error('Failed to fetch users');
+        throw new Error(t('audit.userActivityReport.errors.fetchUsers'));
       }
 
       if (!activityRes.ok) {
-        throw new Error('Failed to fetch activity');
+        throw new Error(t('audit.userActivityReport.errors.fetchActivity'));
       }
 
       const usersData = await usersRes.json();
       const activityData = await activityRes.json();
 
       const usersList = [
-        { id: 'all', name: 'All users' },
+        { id: 'all', name: t('audit.userActivityReport.allUsers') },
         ...(usersData.users || []).map((u: { id: string; name: string }) => ({
           id: u.id,
           name: u.name
@@ -72,7 +74,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       const activityList = (activityData.entries || activityData.logs || []).map((entry: ActivityEntry & { user?: { id: string; name: string } }) => ({
         id: entry.id,
         userId: entry.userId || entry.user?.id || '',
-        userName: entry.userName || entry.user?.name || 'Unknown',
+        userName: entry.userName || entry.user?.name || t('audit.userActivityReport.unknown'),
         timestamp: entry.timestamp,
         action: entry.action,
         resource: entry.resource,
@@ -80,18 +82,18 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       }));
       setActivity(activityList);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load data');
+      setError(err instanceof Error ? err.message : t('audit.userActivityReport.errors.loadData'));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
   const selectedUserLabel =
-    users.find(user => user.id === selectedUserId)?.name ?? 'All users';
+    users.find(user => user.id === selectedUserId)?.name ?? t('audit.userActivityReport.allUsers');
 
   const filteredActivity = useMemo(() => {
     if (selectedUserId === 'all') return activity;
@@ -149,8 +151,8 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       <div className="space-y-6 rounded-lg border bg-card p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">User Activity Report</h2>
-            <p className="text-sm text-muted-foreground">Review activity trends and export history.</p>
+            <h2 className="text-lg font-semibold">{t('audit.userActivityReport.title')}</h2>
+            <p className="text-sm text-muted-foreground">{t('audit.userActivityReport.description')}</p>
           </div>
         </div>
         <div className="flex h-48 items-center justify-center">
@@ -165,8 +167,8 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       <div className="space-y-6 rounded-lg border bg-card p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">User Activity Report</h2>
-            <p className="text-sm text-muted-foreground">Review activity trends and export history.</p>
+            <h2 className="text-lg font-semibold">{t('audit.userActivityReport.title')}</h2>
+            <p className="text-sm text-muted-foreground">{t('audit.userActivityReport.description')}</p>
           </div>
         </div>
         <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
@@ -176,7 +178,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
             onClick={fetchData}
             className="text-sm text-primary hover:underline"
           >
-            Try again
+            {t('audit.userActivityReport.retry')}
           </button>
         </div>
       </div>
@@ -187,8 +189,8 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
     <div className="space-y-6 rounded-lg border bg-card p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">User Activity Report</h2>
-          <p className="text-sm text-muted-foreground">Review activity trends and export history.</p>
+          <h2 className="text-lg font-semibold">{t('audit.userActivityReport.title')}</h2>
+          <p className="text-sm text-muted-foreground">{t('audit.userActivityReport.description')}</p>
         </div>
         <button
           type="button"
@@ -196,7 +198,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
           className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           <Download className="h-4 w-4" />
-          Export Activity
+          {t('audit.userActivityReport.exportActivity')}
         </button>
       </div>
 
@@ -216,7 +218,7 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
           </select>
         </div>
         <span className="text-sm text-muted-foreground">
-          {selectedUserLabel} activity
+          {t('audit.userActivityReport.selectedActivity', { user: selectedUserLabel })}
         </span>
       </div>
 
@@ -224,26 +226,26 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
         <div className="rounded-lg border bg-background p-4">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Activity className="h-4 w-4 text-muted-foreground" />
-            Total Actions
+            {t('audit.userActivityReport.totalActions')}
           </div>
           <p className="mt-3 text-2xl font-semibold">{totalActions}</p>
         </div>
         <div className="rounded-lg border bg-background p-4">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
-            Top Action
+            {t('audit.userActivityReport.topAction')}
           </div>
           <p className="mt-3 text-2xl font-semibold">
-            {topAction.action === 'n/a' ? 'n/a' : formatAuditAction(topAction.action)}
+            {topAction.action === 'n/a' ? t('audit.userActivityReport.notApplicable') : formatAuditAction(topAction.action)}
           </p>
           <p className="text-sm text-muted-foreground">
-            {topAction.count} occurrences
+            {t('audit.userActivityReport.occurrences', { count: topAction.count })}
           </p>
         </div>
         <div className="rounded-lg border bg-background p-4">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <User className="h-4 w-4 text-muted-foreground" />
-            Distinct Actions
+            {t('audit.userActivityReport.distinctActions')}
           </div>
           <p className="mt-3 text-2xl font-semibold">{Object.keys(stats).length}</p>
         </div>
@@ -251,10 +253,10 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
 
       <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="rounded-lg border bg-background p-4">
-          <h3 className="text-sm font-semibold">Activity Timeline</h3>
+          <h3 className="text-sm font-semibold">{t('audit.userActivityReport.activityTimeline')}</h3>
           <div className="mt-4 space-y-4">
             {sortedTimeline.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No activity found.</p>
+              <p className="text-sm text-muted-foreground">{t('audit.userActivityReport.noActivity')}</p>
             ) : (
               sortedTimeline.slice(0, 10).map((entry, index) => (
                 <div key={entry.id} className="flex items-start gap-4">
@@ -280,10 +282,10 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
         </div>
 
         <div className="rounded-lg border bg-background p-4">
-          <h3 className="text-sm font-semibold">Actions by Type</h3>
+          <h3 className="text-sm font-semibold">{t('audit.userActivityReport.actionsByType')}</h3>
           <div className="mt-4 space-y-3">
             {Object.keys(stats).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No actions recorded.</p>
+              <p className="text-sm text-muted-foreground">{t('audit.userActivityReport.noActionsRecorded')}</p>
             ) : (
               Object.entries(stats).map(([action, count]) => (
                 <div key={action} className="flex items-center justify-between text-sm">
@@ -297,22 +299,22 @@ export default function UserActivityReport({ timezone }: UserActivityReportProps
       </div>
 
       <div className="rounded-lg border bg-background p-4">
-        <h3 className="text-sm font-semibold">Recent Actions</h3>
+        <h3 className="text-sm font-semibold">{t('audit.userActivityReport.recentActions')}</h3>
         <div className="mt-4 overflow-x-auto rounded-md border">
           <table className="min-w-full divide-y text-sm">
             <thead className="bg-muted/40">
               <tr>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">Time</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">Resource</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">IP</th>
+                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('audit.userActivityReport.table.time')}</th>
+                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('audit.userActivityReport.table.action')}</th>
+                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('audit.userActivityReport.table.resource')}</th>
+                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('audit.userActivityReport.table.ip')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {sortedTimeline.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-3 py-4 text-center text-muted-foreground">
-                    No recent actions found.
+                    {t('audit.userActivityReport.noRecentActions')}
                   </td>
                 </tr>
               ) : (

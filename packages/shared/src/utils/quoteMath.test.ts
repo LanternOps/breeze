@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeQuoteTotals, computeLineTotal, toCents, fromCents, markupPct, priceFromMarkup, computeQuoteProfit, validateQuoteDeposit, type QuoteLineForMath } from './quoteMath';
+import { computeQuoteTotals, computeLineTotal, toCents, fromCents, markupPct, priceFromMarkup, computeQuoteProfit, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 
 const line = (over: Partial<QuoteLineForMath>): QuoteLineForMath => ({
   quantity: '1', unitPrice: '0', taxable: false, recurrence: 'one_time', customerVisible: true, ...over,
@@ -164,7 +164,11 @@ describe('quoteMath (shared)', () => {
       expect(r).toMatchObject({ ok: false, code: 'DEPOSIT_REQUIRES_ONE_TIME_LINES' });
     });
     it('rejects percent type without a usable percent', () => {
-      expect(validateQuoteDeposit([line({})], null, { type: 'percent', percent: null }))
+      // A missing/blank persisted percent normalizes to NaN — validation must
+      // still fail it (the union makes `percent: null` unrepresentable).
+      expect(validateQuoteDeposit([line({})], null, toQuoteDepositConfig('percent', null)))
+        .toMatchObject({ ok: false, code: 'DEPOSIT_PERCENT_INVALID' });
+      expect(validateQuoteDeposit([line({})], null, { type: 'percent', percent: Number.NaN }))
         .toMatchObject({ ok: false, code: 'DEPOSIT_PERCENT_INVALID' });
       expect(validateQuoteDeposit([line({})], null, { type: 'percent', percent: 100 }))
         .toMatchObject({ ok: false, code: 'DEPOSIT_PERCENT_INVALID' });
@@ -181,6 +185,43 @@ describe('quoteMath (shared)', () => {
     it('rejects deposit >= dueOnAcceptanceTotal (all lines flagged = "no deposit")', () => {
       const r = validateQuoteDeposit([line({ depositEligible: true })], null, { type: 'selected_lines' });
       expect(r).toMatchObject({ ok: false, code: 'DEPOSIT_NOT_BELOW_TOTAL' });
+    });
+  });
+
+  describe('toQuoteDepositConfig (flat DB/wire pair → union)', () => {
+    it('maps each type, coercing numeric-string percents', () => {
+      expect(toQuoteDepositConfig('none', null)).toEqual({ type: 'none' });
+      expect(toQuoteDepositConfig('selected_lines', null)).toEqual({ type: 'selected_lines' });
+      expect(toQuoteDepositConfig('percent', 30)).toEqual({ type: 'percent', percent: 30 });
+      // DB numeric columns arrive as strings.
+      expect(toQuoteDepositConfig('percent', '30.00')).toEqual({ type: 'percent', percent: 30 });
+      // Zero/negative pass through as-is — the isFinite && >0 gates downstream
+      // reject them, same as the pre-union Number() coercion did.
+      expect(toQuoteDepositConfig('percent', 0)).toEqual({ type: 'percent', percent: 0 });
+      expect(toQuoteDepositConfig('percent', '-5')).toEqual({ type: 'percent', percent: -5 });
+    });
+
+    it('treats a missing type as none', () => {
+      expect(toQuoteDepositConfig(null, '30.00')).toEqual({ type: 'none' });
+      expect(toQuoteDepositConfig(undefined, null)).toEqual({ type: 'none' });
+    });
+
+    it('drops a stray percent on non-percent types (illegal state normalized away)', () => {
+      expect(toQuoteDepositConfig('selected_lines', '30.00')).toEqual({ type: 'selected_lines' });
+      expect(toQuoteDepositConfig('none', 15)).toEqual({ type: 'none' });
+    });
+
+    it('normalizes a missing/blank percent on a percent deposit to NaN (still rejected, never silently "none")', () => {
+      for (const missing of [null, undefined, '', '  '] as const) {
+        const cfg = toQuoteDepositConfig('percent', missing);
+        expect(cfg.type).toBe('percent');
+        expect(cfg.type === 'percent' && Number.isNaN(cfg.percent)).toBe(true);
+        // Compute treats it as "no deposit"…
+        expect(computeQuoteTotals([line({ unitPrice: '100.00' })], null, cfg).depositDueTotal).toBeNull();
+        // …but validation still hard-fails it, matching the pre-union behavior.
+        expect(validateQuoteDeposit([line({ unitPrice: '100.00' })], null, cfg))
+          .toMatchObject({ ok: false, code: 'DEPOSIT_PERCENT_INVALID' });
+      }
     });
   });
 }

@@ -8,6 +8,7 @@ import {
   Tooltip,
   ReferenceLine
 } from 'recharts';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 type ForecastPoint = {
@@ -36,15 +37,17 @@ export default function CapacityForecast({
   data,
   thresholds
 }: CapacityForecastProps) {
+  const { t } = useTranslation('reports');
+
   return (
     <div className="flex h-full flex-col rounded-lg border bg-card p-4 shadow-xs">
       <div className="mb-4 flex items-start justify-between">
         <div>
           <h3 className="text-sm font-semibold">{title}</h3>
-          <p className="text-xs text-muted-foreground">Capacity projection based on recent usage</p>
+          <p className="text-xs text-muted-foreground">{t('analytics.capacityForecast.description')}</p>
         </div>
         <div className="text-right">
-          <p className="text-xs text-muted-foreground">Current</p>
+          <p className="text-xs text-muted-foreground">{t('analytics.capacityForecast.current')}</p>
           <p className="text-lg font-semibold">
             {Math.round(currentValue)}{unit}
           </p>
@@ -62,7 +65,7 @@ export default function CapacityForecast({
                 y={thresholds.warning}
                 stroke="hsl(var(--warning))"
                 strokeDasharray="4 4"
-                label={{ value: 'Warning', position: 'right', fontSize: 10 }}
+                label={{ value: t('analytics.capacityForecast.warning'), position: 'right', fontSize: 10 }}
               />
             )}
             {thresholds?.critical !== undefined && (
@@ -70,7 +73,7 @@ export default function CapacityForecast({
                 y={thresholds.critical}
                 stroke="hsl(var(--destructive))"
                 strokeDasharray="4 4"
-                label={{ value: 'Critical', position: 'right', fontSize: 10 }}
+                label={{ value: t('analytics.capacityForecast.critical'), position: 'right', fontSize: 10 }}
               />
             )}
             <Line
@@ -79,7 +82,7 @@ export default function CapacityForecast({
               stroke="hsl(var(--primary))"
               strokeWidth={2}
               dot={false}
-              name="Actual"
+              name={t('analytics.capacityForecast.actual')}
             />
             <Line
               type="monotone"
@@ -88,7 +91,7 @@ export default function CapacityForecast({
               strokeDasharray="6 4"
               strokeWidth={2}
               dot={false}
-              name="Trend"
+              name={t('analytics.capacityForecast.trend')}
             />
           </LineChart>
         </ResponsiveContainer>
@@ -98,13 +101,13 @@ export default function CapacityForecast({
           {thresholds.warning !== undefined && (
             <span className="inline-flex items-center gap-1">
               <span className="h-2 w-2 rounded-full bg-warning" />
-              Warn {thresholds.warning}{unit}
+              {t('analytics.capacityForecast.warnValue', { value: thresholds.warning, unit })}
             </span>
           )}
           {thresholds.critical !== undefined && (
             <span className={cn('inline-flex items-center gap-1', 'text-destructive')}>
               <span className="h-2 w-2 rounded-full bg-destructive" />
-              Critical {thresholds.critical}{unit}
+              {t('analytics.capacityForecast.criticalValue', { value: thresholds.critical, unit })}
             </span>
           )}
         </div>

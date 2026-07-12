@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { Dialog } from '../shared/Dialog';
 
 // Preset suppression windows offered by the one-click Suppress action. The API
@@ -29,6 +31,7 @@ type SuppressAlertDialogProps = {
 };
 
 export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, onConfirm }: SuppressAlertDialogProps) {
+  const { t } = useTranslation('alerts');
   const [choice, setChoice] = useState<Choice>('24h');
 
   const confirm = () => {
@@ -42,16 +45,16 @@ export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, o
   };
 
   return (
-    <Dialog open onClose={onCancel} title="Suppress alert" maxWidth="md" className="p-6">
-      <h2 className="text-lg font-semibold">Suppress alert</h2>
+    <Dialog open onClose={onCancel} title={t('suppressAlertDialog.suppressAlert')} maxWidth="md" className="p-6">
+      <h2 className="text-lg font-semibold">{t('suppressAlertDialog.suppressAlert')}</h2>
       <p className="mt-1 text-sm text-muted-foreground">
         {count > 1
           ? `How long should these ${count} alerts stay suppressed?`
-          : <>How long should &ldquo;{alertTitle}&rdquo; stay suppressed?</>}
+          : <>{t('suppressAlertDialog.howLongShould')}{alertTitle}{t('suppressAlertDialog.staySuppressed')}</>}
       </p>
 
       <fieldset className="mt-4 space-y-2" data-testid="suppress-duration-options">
-        <legend className="sr-only">Suppression duration</legend>
+        <legend className="sr-only">{t('suppressAlertDialog.suppressionDuration')}</legend>
         {PRESETS.map((p) => (
           <label
             key={p.id}
@@ -77,7 +80,7 @@ export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, o
             onChange={() => setChoice('forever')}
             data-testid="suppress-duration-forever"
           />
-          <span>Forever</span>
+          <span>{t('suppressAlertDialog.forever')}</span>
         </label>
       </fieldset>
 
@@ -88,7 +91,7 @@ export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, o
           className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
           data-testid="suppress-cancel"
         >
-          Cancel
+          {t('suppressAlertDialog.cancel')}
         </button>
         <button
           type="button"
@@ -96,7 +99,7 @@ export default function SuppressAlertDialog({ alertTitle, count = 1, onCancel, o
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
           data-testid="suppress-confirm"
         >
-          Suppress
+          {t('suppressAlertDialog.suppress')}
         </button>
       </div>
     </Dialog>

@@ -1,6 +1,8 @@
 import { useId, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { VULN_TICKET_PRIORITIES, type VulnTicketPriority } from '@breeze/shared';
+import '@/lib/i18n';
 
 import { Dialog } from '../shared/Dialog';
 import type { GroupFinding } from '../../lib/api/vulnerabilities';
@@ -24,6 +26,7 @@ export function CreateVulnTicketModal({
   onCancel: () => void;
   onSubmit: (payload: { title: string; priority: VulnTicketPriority; note: string }) => void;
 }) {
+  const { t } = useTranslation('vulnerabilities');
   const [title, setTitle] = useState(defaultTitle);
   const [note, setNote] = useState('');
   const [priority, setPriority] = useState<VulnTicketPriority>('normal');
@@ -37,21 +40,23 @@ export function CreateVulnTicketModal({
       onClose={() => {
         if (!busy) onCancel();
       }}
-      title="Create ticket"
+      title={t('createVulnTicketModal.title')}
       labelledBy={titleId}
       maxWidth="md"
       className="p-5"
     >
       <div data-testid="vuln-ticket-modal">
-        <h3 id={titleId} className="text-base font-semibold">Create ticket — {findings.length} finding{findings.length === 1 ? '' : 's'}</h3>
+        <h3 id={titleId} className="text-base font-semibold">
+          {t('createVulnTicketModal.heading', { count: findings.length })}
+        </h3>
         {orgCount > 1 && (
           <p data-testid="vuln-ticket-cross-org-note" className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-            Selection spans {orgCount} organizations — one ticket per organization will be created.
+            {t('createVulnTicketModal.crossOrgNote', { count: orgCount })}
           </p>
         )}
         <div className="mt-4 space-y-3">
           <label className="block text-sm">
-            <span className="text-muted-foreground">Title</span>
+            <span className="text-muted-foreground">{t('createVulnTicketModal.fields.title')}</span>
             <input
               data-testid="vuln-ticket-title"
               value={title}
@@ -61,13 +66,13 @@ export function CreateVulnTicketModal({
             />
           </label>
           <label className="block text-sm">
-            <span className="text-muted-foreground">Note (optional)</span>
+            <span className="text-muted-foreground">{t('createVulnTicketModal.fields.note')}</span>
             <textarea
               data-testid="vuln-ticket-note"
               value={note}
               onChange={(e) => setNote(e.target.value)}
               rows={4}
-              placeholder="Add any context for the technician (optional)"
+              placeholder={t('createVulnTicketModal.fields.notePlaceholder')}
               className={INPUT}
             />
           </label>
@@ -75,10 +80,10 @@ export function CreateVulnTicketModal({
               each organization, so a cross-org selection never leaks one org's
               device/CVE list into another org's ticket. */}
           <p data-testid="vuln-ticket-auto-detail-note" className="text-xs text-muted-foreground">
-            Device and CVE details are added automatically, per organization.
+            {t('createVulnTicketModal.autoDetailNote')}
           </p>
           <label className="block text-sm">
-            <span className="text-muted-foreground">Priority</span>
+            <span className="text-muted-foreground">{t('createVulnTicketModal.fields.priority')}</span>
             <select
               data-testid="vuln-ticket-priority"
               value={priority}
@@ -86,14 +91,14 @@ export function CreateVulnTicketModal({
               className={INPUT}
             >
               {VULN_TICKET_PRIORITIES.map((p) => (
-                <option key={p} value={p}>{p[0]!.toUpperCase() + p.slice(1)}</option>
+                <option key={p} value={p}>{t(/* i18n-dynamic */ `createVulnTicketModal.priorities.${p}`)}{/* i18n-dynamic */}</option>
               ))}
             </select>
           </label>
         </div>
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" data-testid="vuln-ticket-cancel" className={`${BTN} hover:bg-muted`} onClick={onCancel} disabled={busy}>
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="button"
@@ -102,7 +107,7 @@ export function CreateVulnTicketModal({
             disabled={busy || title.trim().length === 0}
             onClick={() => onSubmit({ title: title.trim(), priority, note: note.trim() })}
           >
-            Create ticket
+            {t('createVulnTicketModal.actions.create')}
           </button>
         </div>
       </div>

@@ -5,7 +5,7 @@ import { organizations, partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { getQuote, toCustomerLines } from './quoteService';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
-import { validateQuoteDeposit, type QuoteLineForMath } from './quoteMath';
+import { validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import { createQuoteAcceptToken } from './quoteAcceptToken';
 import { buildQuoteTemplate } from './quoteEmail';
@@ -96,7 +96,7 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
     const check = validateQuoteDeposit(
       lines as QuoteLineForMath[],
       quote.taxRate ? parseFloat(quote.taxRate) : null,
-      { type: quote.depositType, percent: quote.depositPercent },
+      toQuoteDepositConfig(quote.depositType, quote.depositPercent),
     );
     if (!check.ok) {
       throw new QuoteServiceError(`Cannot send: ${check.message}`, 409, 'DEPOSIT_INVALID');

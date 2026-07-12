@@ -1,4 +1,6 @@
+import '@/lib/i18n';
 import { useId, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { getApprovalAssertion } from '../../stores/authenticator';
@@ -30,6 +32,7 @@ export default function PamRespondModal({
   onActioned: () => void;
   onCreateRule?: () => void;
 }) {
+  const { t } = useTranslation('security');
   const [decision, setDecision] = useState<'approve' | 'deny'>('approve');
   const [reason, setReason] = useState('');
   const [duration, setDuration] = useState('15');
@@ -67,7 +70,13 @@ export default function PamRespondModal({
         // (records L1). Any other ceremony failure (user cancelled, timeout) is
         // a real error: surface it and abort rather than downgrade.
         if (!isNoApproverDeviceError(err)) {
-          setError(err instanceof Error ? err.message : 'Windows Hello verification failed');
+          setError(
+            err instanceof Error
+              ? err.message
+              : t('pamPamRespondModal.errors.windowsHello', {
+                  defaultValue: 'Windows Hello verification failed',
+                }),
+          );
           setSubmitting(false);
           return;
         }
@@ -81,8 +90,14 @@ export default function PamRespondModal({
             method: 'POST',
             body: JSON.stringify(body),
           }),
-        errorFallback: `Failed to ${decision} request`,
-        successMessage: decision === 'approve' ? 'Elevation approved' : 'Elevation denied',
+        errorFallback: t('pamPamRespondModal.errors.actionFailed', {
+          defaultValue: 'Failed to {{decision}} request',
+          decision,
+        }),
+        successMessage:
+          decision === 'approve'
+            ? t('pamPamRespondModal.toasts.approved', { defaultValue: 'Elevation approved' })
+            : t('pamPamRespondModal.toasts.denied', { defaultValue: 'Elevation denied' }),
         onUnauthorized: () => void navigateTo('/login', { replace: true }),
       });
       onActioned();
@@ -98,7 +113,11 @@ export default function PamRespondModal({
         }
         setError(err.message);
       } else {
-        setError(err instanceof Error ? err.message : 'Network error');
+        setError(
+          err instanceof Error
+            ? err.message
+            : t('pamPamRespondModal.errors.network', { defaultValue: 'Network error' }),
+        );
       }
     } finally {
       setSubmitting(false);
@@ -106,7 +125,12 @@ export default function PamRespondModal({
   };
 
   return (
-    <Dialog open onClose={onClose} title="Respond to elevation request" maxWidth="lg">
+    <Dialog
+      open
+      onClose={onClose}
+      title={t('pamPamRespondModal.title', { defaultValue: 'Respond to elevation request' })}
+      maxWidth="lg"
+    >
       <form onSubmit={handleSubmit} className="space-y-4 p-6 pt-2">
         <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
           <div className="font-medium">{requestTarget(request)}</div>
@@ -115,7 +139,12 @@ export default function PamRespondModal({
             {FLOW_LABELS[request.flowType]}
           </div>
           {request.reason && (
-            <div className="mt-1 text-xs text-muted-foreground">Reason: {request.reason}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {t('pamPamRespondModal.summary.reason', {
+                defaultValue: 'Reason: {{reason}}',
+                reason: request.reason,
+              })}
+            </div>
           )}
         </div>
 
@@ -130,7 +159,7 @@ export default function PamRespondModal({
                 : 'text-muted-foreground hover:bg-accent'
             }`}
           >
-            Approve
+            {t('pamPamRespondModal.decisions.approve', { defaultValue: 'Approve' })}
           </button>
           <button
             type="button"
@@ -142,14 +171,16 @@ export default function PamRespondModal({
                 : 'text-muted-foreground hover:bg-accent'
             }`}
           >
-            Deny
+            {t('pamPamRespondModal.decisions.deny', { defaultValue: 'Deny' })}
           </button>
         </div>
 
         {decision === 'approve' && (
           <div>
             <label htmlFor={durationId} className="mb-1 block text-sm font-medium">
-              Approval window (minutes)
+              {t('pamPamRespondModal.form.approvalWindow', {
+                defaultValue: 'Approval window (minutes)',
+              })}
             </label>
             <input
               id={durationId}
@@ -161,13 +192,21 @@ export default function PamRespondModal({
               data-testid="pam-respond-duration"
               className="w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
-            <p className="mt-1 text-xs text-muted-foreground">1 to 1440 minutes (24h max).</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('pamPamRespondModal.form.durationHelp', {
+                defaultValue: '1 to 1440 minutes (24h max).',
+              })}
+            </p>
           </div>
         )}
 
         <div>
           <label htmlFor={reasonId} className="mb-1 block text-sm font-medium">
-            Reason {decision === 'deny' ? '(recommended)' : '(optional)'}
+            {decision === 'deny'
+              ? t('pamPamRespondModal.form.reasonRecommended', {
+                  defaultValue: 'Reason (recommended)',
+                })
+              : t('pamPamRespondModal.form.reasonOptional', { defaultValue: 'Reason (optional)' })}
           </label>
           <textarea
             id={reasonId}
@@ -177,7 +216,9 @@ export default function PamRespondModal({
             rows={3}
             data-testid="pam-respond-reason"
             className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-            placeholder="Recorded in the audit trail"
+            placeholder={t('pamPamRespondModal.form.reasonPlaceholder', {
+              defaultValue: 'Recorded in the audit trail',
+            })}
           />
         </div>
 
@@ -199,7 +240,9 @@ export default function PamRespondModal({
               data-testid="pam-respond-create-rule"
               className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50"
             >
-              Create rule from this request…
+              {t('pamPamRespondModal.actions.createRule', {
+                defaultValue: 'Create rule from this request…',
+              })}
             </button>
           ) : (
             <span />
@@ -210,7 +253,7 @@ export default function PamRespondModal({
               onClick={onClose}
               className="rounded-md border px-3 py-2 text-sm hover:bg-accent"
             >
-              Cancel
+              {t('common:actions.cancel', { defaultValue: 'Cancel' })}
             </button>
             <button
               type="submit"
@@ -220,7 +263,13 @@ export default function PamRespondModal({
                 decision === 'approve' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'
               }`}
             >
-              {submitting ? 'Submitting…' : decision === 'approve' ? 'Approve elevation' : 'Deny request'}
+              {submitting
+                ? t('pamPamRespondModal.actions.submitting', { defaultValue: 'Submitting…' })
+                : decision === 'approve'
+                  ? t('pamPamRespondModal.actions.approveElevation', {
+                      defaultValue: 'Approve elevation',
+                    })
+                  : t('pamPamRespondModal.actions.denyRequest', { defaultValue: 'Deny request' })}
             </button>
           </div>
         </div>

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { ScrollText, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -28,6 +30,7 @@ const ACTION_BADGE: Record<Action, string> = {
 };
 
 export default function DnsSecurityEventsTab() {
+  const { t } = useTranslation('security');
   const [events, setEvents] = useState<DnsEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -51,14 +54,14 @@ export default function DnsSecurityEventsTab() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(`Failed to load events (HTTP ${res.status})`);
+        throw new Error(t('dnsSecurityDnsSecurityEventsTab.messages.loadHttpError', { status: res.status }));
       }
       const body = await res.json();
       setEvents((body.data ?? []) as DnsEvent[]);
       setTotal(Number(body.pagination?.total ?? 0));
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
-      setError(err instanceof Error ? err.message : 'Failed to load events');
+      setError(err instanceof Error ? err.message : t('dnsSecurityDnsSecurityEventsTab.messages.loadFailed'));
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
@@ -74,9 +77,17 @@ export default function DnsSecurityEventsTab() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-lg font-medium">DNS query events</h2>
+          <h2 className="text-lg font-medium">{t('dnsSecurityDnsSecurityEventsTab.title')}</h2>
           <p className="text-xs text-muted-foreground">
-            {loading ? 'Loading…' : `${events.length} of ${total} ${showAll ? 'event' : 'blocked event'}${total === 1 ? '' : 's'} (most recent 100)`}
+            {loading
+              ? t('dnsSecurityDnsSecurityEventsTab.loading')
+              : t(/* i18n-dynamic */ showAll
+                ? 'dnsSecurityDnsSecurityEventsTab.eventCount'
+                : 'dnsSecurityDnsSecurityEventsTab.blockedEventCount', {
+                  count: total,
+                  shown: events.length,
+                  total,
+                })}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -87,13 +98,13 @@ export default function DnsSecurityEventsTab() {
               onChange={(e) => setShowAll(e.target.checked)}
               className="h-4 w-4 rounded border"
             />
-            Show all (not just blocked)
+            {t('dnsSecurityDnsSecurityEventsTab.showAll')}
           </label>
           <button
             type="button"
             onClick={() => void fetchEvents()}
             disabled={loading}
-            title="Refresh"
+            title={t('dnsSecurityDnsSecurityEventsTab.actions.refresh')}
             className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -110,18 +121,20 @@ export default function DnsSecurityEventsTab() {
       {loading && events.length === 0 ? (
         <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
           <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          Loading events…
+          {t('dnsSecurityDnsSecurityEventsTab.loadingEvents')}
         </div>
       ) : events.length === 0 ? (
         <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
           <ScrollText className="mx-auto h-8 w-8 text-muted-foreground" />
           <p className="mt-2 text-sm font-medium">
-            {showAll ? 'No DNS events recorded' : 'No blocked DNS events'}
+            {showAll
+              ? t('dnsSecurityDnsSecurityEventsTab.empty.allTitle')
+              : t('dnsSecurityDnsSecurityEventsTab.empty.blockedTitle')}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             {showAll
-              ? 'Configure an integration and wait for the first 15-minute sync to complete.'
-              : 'No threats blocked in the recent window. Try toggling "Show all" to see allowed traffic.'}
+              ? t('dnsSecurityDnsSecurityEventsTab.empty.allDescription')
+              : t('dnsSecurityDnsSecurityEventsTab.empty.blockedDescription')}
           </p>
         </div>
       ) : (
@@ -129,11 +142,11 @@ export default function DnsSecurityEventsTab() {
           <table className="w-full text-sm">
             <thead className="border-b bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
-                <th className="px-3 py-2 text-left">When</th>
-                <th className="px-3 py-2 text-left">Device</th>
-                <th className="px-3 py-2 text-left">Domain</th>
-                <th className="px-3 py-2 text-left">Category</th>
-                <th className="px-3 py-2 text-left">Action</th>
+                <th className="px-3 py-2 text-left">{t('dnsSecurityDnsSecurityEventsTab.table.when')}</th>
+                <th className="px-3 py-2 text-left">{t('dnsSecurityDnsSecurityEventsTab.table.device')}</th>
+                <th className="px-3 py-2 text-left">{t('dnsSecurityDnsSecurityEventsTab.table.domain')}</th>
+                <th className="px-3 py-2 text-left">{t('dnsSecurityDnsSecurityEventsTab.table.category')}</th>
+                <th className="px-3 py-2 text-left">{t('dnsSecurityDnsSecurityEventsTab.table.action')}</th>
               </tr>
             </thead>
             <tbody>
@@ -143,7 +156,9 @@ export default function DnsSecurityEventsTab() {
                     {formatDateTime(e.timestamp)}
                   </td>
                   <td className="px-3 py-1.5">
-                    {e.deviceHostname ?? e.sourceHostname ?? e.sourceIp ?? <span className="text-muted-foreground italic">unknown</span>}
+                    {e.deviceHostname ?? e.sourceHostname ?? e.sourceIp ?? (
+                      <span className="text-muted-foreground italic">{t('dnsSecurityDnsSecurityEventsTab.unknown')}</span>
+                    )}
                   </td>
                   <td className="px-3 py-1.5 font-mono text-xs">{e.domain}</td>
                   <td className="px-3 py-1.5 text-xs">
@@ -158,7 +173,7 @@ export default function DnsSecurityEventsTab() {
                   </td>
                   <td className="px-3 py-1.5">
                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${ACTION_BADGE[e.action]}`}>
-                      {e.action}
+                      {t(/* i18n-dynamic */ `dnsSecurityDnsSecurityEventsTab.actions.${e.action}`)}
                     </span>
                   </td>
                 </tr>

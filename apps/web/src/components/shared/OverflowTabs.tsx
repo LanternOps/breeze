@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export type OverflowTab = {
   id: string;
@@ -17,6 +18,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
   activeTab: string;
   onTabChange: (id: string) => void;
 }) {
+  const { t } = useTranslation('common');
   const containerRef = useRef<HTMLDivElement>(null);
   const navRef = useRef<HTMLElement>(null);
   const tabWidths = useRef<number[]>([]);
@@ -139,7 +141,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange }: {
               {activeInOverflow && activeOverflowTab ? (
                 <>{activeOverflowTab.icon} {activeOverflowTab.label}</>
               ) : (
-                <>More</>
+                <>{t('shared.more')}</>
               )}
               <ChevronDown className={`h-3.5 w-3.5 transition ${moreOpen ? 'rotate-180' : ''}`} />
             </button>

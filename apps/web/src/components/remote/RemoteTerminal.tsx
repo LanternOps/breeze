@@ -12,6 +12,9 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import { formatNumber } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 // xterm.js will be loaded dynamically
 type XTermInstance = {
@@ -45,12 +48,12 @@ export type RemoteTerminalProps = {
   className?: string;
 };
 
-const statusConfig: Record<ConnectionStatus, { label: string; color: string; icon: typeof Wifi }> = {
-  disconnected: { label: 'Disconnected', color: 'text-gray-500', icon: WifiOff },
-  connecting: { label: 'Connecting...', color: 'text-yellow-500', icon: Loader2 },
-  connected: { label: 'Connected', color: 'text-green-500', icon: Wifi },
-  reconnecting: { label: 'Reconnecting...', color: 'text-yellow-500', icon: RefreshCw },
-  failed: { label: 'Connection Failed', color: 'text-red-500', icon: WifiOff }
+const statusConfig: Record<ConnectionStatus, { labelKey: string; color: string; icon: typeof Wifi }> = {
+  disconnected: { labelKey: 'remoteTerminal.status.disconnected', color: 'text-gray-500', icon: WifiOff },
+  connecting: { labelKey: 'remoteTerminal.status.connecting', color: 'text-yellow-500', icon: Loader2 },
+  connected: { labelKey: 'remoteTerminal.status.connected', color: 'text-green-500', icon: Wifi },
+  reconnecting: { labelKey: 'remoteTerminal.status.reconnecting', color: 'text-yellow-500', icon: RefreshCw },
+  failed: { labelKey: 'remoteTerminal.status.failed', color: 'text-red-500', icon: WifiOff }
 };
 
 export default function RemoteTerminal({
@@ -62,6 +65,7 @@ export default function RemoteTerminal({
   onError,
   className
 }: RemoteTerminalProps) {
+  const { t } = useTranslation('remote');
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTermInstance | null>(null);
   const fitAddonRef = useRef<FitAddonInstance | null>(null);
@@ -152,17 +156,17 @@ export default function RemoteTerminal({
       resizeObserverRef.current.observe(terminalContainerRef.current);
 
       // Display welcome message
-      terminal.writeln('\x1b[1;34mBreeze RMM Remote Terminal\x1b[0m');
-      terminal.writeln(`\x1b[90mConnecting to ${deviceHostname}...\x1b[0m`);
+      terminal.writeln(`\x1b[1;34m${t('remoteTerminal.welcome')}\x1b[0m`);
+      terminal.writeln(`\x1b[90m${t('remoteTerminal.connectingTo', { hostname: deviceHostname })}\x1b[0m`);
       terminal.writeln('');
 
       // Signal that terminal is ready for connection
       setTerminalReady(true);
     } catch (error) {
       console.error('Failed to initialize terminal:', error);
-      onError?.('Failed to initialize terminal');
+      onError?.(t('remoteTerminal.errors.initialize'));
     }
-  }, [deviceHostname, onError]);
+  }, [deviceHostname, onError, t]);
 
   // Connect to remote session
   const connect = useCallback(async () => {
@@ -185,7 +189,7 @@ export default function RemoteTerminal({
 
         if (!response.ok) {
           const error = await response.json();
-          throw new Error(error.error || 'Failed to create session');
+          throw new Error(error.error || t('remoteTerminal.errors.createSession'));
         }
 
         const session = await response.json();
@@ -198,12 +202,12 @@ export default function RemoteTerminal({
         method: 'POST'
       });
       if (!ticketResponse.ok) {
-        const error = await ticketResponse.json().catch(() => ({ error: 'Failed to create connection ticket' }));
-        throw new Error(error.error || 'Failed to create connection ticket');
+        const error = await ticketResponse.json().catch(() => ({ error: t('remoteTerminal.errors.createTicket') }));
+        throw new Error(error.error || t('remoteTerminal.errors.createTicket'));
       }
       const { ticket } = await ticketResponse.json() as { ticket?: string };
       if (!ticket) {
-        throw new Error('Invalid connection ticket response');
+        throw new Error(t('remoteTerminal.errors.invalidTicket'));
       }
 
       // Establish WebSocket connection for terminal data
@@ -222,7 +226,7 @@ export default function RemoteTerminal({
 
       ws.onopen = () => {
         setStatus('connecting');
-        terminalRef.current?.writeln('\x1b[1;32mConnected!\x1b[0m');
+        terminalRef.current?.writeln(`\x1b[1;32m${t('remoteTerminal.connectedBang')}\x1b[0m`);
         terminalRef.current?.writeln('');
         terminalRef.current?.focus();
       };
@@ -238,7 +242,7 @@ export default function RemoteTerminal({
                 received: prev.received + message.data.length
               }));
             } else if (message.type === 'error') {
-              terminalRef.current.writeln(`\x1b[1;31mError: ${message.message}\x1b[0m`);
+              terminalRef.current.writeln(`\x1b[1;31m${t('remoteTerminal.errorMessage', { message: message.message })}\x1b[0m`);
             } else if (message.type === 'ping') {
               // Respond to server ping to keep connection alive
               if (ws.readyState === WebSocket.OPEN) {
@@ -282,8 +286,8 @@ export default function RemoteTerminal({
       ws.onerror = () => {
         setStatus('failed');
         setSessionId(null);
-        terminalRef.current?.writeln('\x1b[1;31mConnection error\x1b[0m');
-        onError?.('WebSocket connection error');
+        terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.connection')}\x1b[0m`);
+        onError?.(t('remoteTerminal.errors.webSocket'));
         callOnDisconnect();
       };
 
@@ -291,12 +295,12 @@ export default function RemoteTerminal({
         if (event.code !== 1000) {
           setStatus('failed');
           setSessionId(null);
-          terminalRef.current?.writeln('\x1b[1;31mConnection closed unexpectedly\x1b[0m');
+          terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errors.closedUnexpectedly')}\x1b[0m`);
           callOnDisconnect();
         } else {
           setStatus('disconnected');
           setSessionId(null);
-          terminalRef.current?.writeln('\x1b[90mSession ended\x1b[0m');
+          terminalRef.current?.writeln(`\x1b[90m${t('remoteTerminal.sessionEnded')}\x1b[0m`);
           callOnDisconnect();
         }
       };
@@ -327,11 +331,11 @@ export default function RemoteTerminal({
       (ws as unknown as Record<string, unknown>)._disposables = [dataDisposable, resizeDisposable];
     } catch (error) {
       setStatus('failed');
-      const message = error instanceof Error ? error.message : 'Connection failed';
-      terminalRef.current?.writeln(`\x1b[1;31mError: ${message}\x1b[0m`);
+      const message = error instanceof Error ? error.message : t('remoteTerminal.errors.failed');
+      terminalRef.current?.writeln(`\x1b[1;31m${t('remoteTerminal.errorMessage', { message })}\x1b[0m`);
       onError?.(message);
     }
-  }, [deviceId, sessionId, onSessionCreated, onDisconnect, onError]);
+  }, [deviceId, sessionId, onSessionCreated, onDisconnect, onError, t]);
 
   // Disconnect from session
   const disconnect = useCallback(async () => {
@@ -444,8 +448,8 @@ export default function RemoteTerminal({
   // Format bytes
   const formatBytes = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} KB`;
+    return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
   };
 
   const StatusIcon = statusConfig[status].icon;
@@ -474,7 +478,7 @@ export default function RemoteTerminal({
                 )}
               />
               <span className={statusConfig[status].color}>
-                {statusConfig[status].label}
+                {t(/* i18n-dynamic */ statusConfig[status].labelKey)}
               </span>
               {status === 'connected' && connectionTime && (
                 <>
@@ -499,7 +503,7 @@ export default function RemoteTerminal({
             type="button"
             onClick={copyToClipboard}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-            title="Copy selection"
+            title={t('remoteTerminal.copySelection')}
           >
             <Copy className="h-4 w-4" />
           </button>
@@ -508,7 +512,7 @@ export default function RemoteTerminal({
             type="button"
             onClick={toggleFullscreen}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            title={isFullscreen ? t('remoteTerminal.exitFullscreen') : t('remoteTerminal.fullscreen')}
           >
             {isFullscreen ? (
               <Minimize2 className="h-4 w-4" />
@@ -524,7 +528,7 @@ export default function RemoteTerminal({
               className="flex h-8 items-center gap-1.5 rounded-md bg-red-500/10 px-3 text-sm font-medium text-red-600 hover:bg-red-500/20"
             >
               <X className="h-4 w-4" />
-              Disconnect
+              {t('remoteTerminal.disconnect')}
             </button>
           ) : status === 'failed' ? (
             <button
@@ -533,7 +537,7 @@ export default function RemoteTerminal({
               className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
             >
               <RefreshCw className="h-4 w-4" />
-              Retry
+              {t('common:actions.retry')}
             </button>
           ) : status === 'disconnected' && autoConnectAttempted ? (
             // Shown only after the initial auto-connect has run, i.e. the user
@@ -547,7 +551,7 @@ export default function RemoteTerminal({
               className="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
             >
               <RefreshCw className="h-4 w-4" />
-              Reconnect
+              {t('remoteTerminal.reconnect')}
             </button>
           ) : null}
         </div>

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { Plus, Save, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
@@ -371,6 +373,7 @@ const stripEscalationIds = (rules: EscalationRule[]) =>
   }));
 
 export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorProps) {
+  const { t } = useTranslation('alerts');
   const isNew = templateId === 'new';
   const [loading, setLoading] = useState(!isNew);
   const [hasLoaded, setHasLoaded] = useState(isNew);
@@ -780,7 +783,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading alert template...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('alertTemplateEditor.loadingAlertTemplate')}</p>
         </div>
       </div>
     );
@@ -795,7 +798,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           onClick={loadTemplate}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('alertTemplateEditor.tryAgain')}
         </button>
       </div>
     );
@@ -844,10 +847,10 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
       <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
         <div className="space-y-6">
           <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-sm font-semibold">Template metadata</h2>
+            <h2 className="text-sm font-semibold">{t('alertTemplateEditor.templateMetadata')}</h2>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div className="sm:col-span-2">
-                <label className="text-xs font-medium uppercase text-muted-foreground">Name</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.name')}</label>
                 <input
                   value={name}
                   onChange={event => setName(event.target.value)}
@@ -857,7 +860,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
               {showAvailabilityPicker && (
                 <fieldset className="sm:col-span-2 space-y-2 rounded-md border p-4" data-testid="template-availability">
-                  <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Available to</legend>
+                  <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.availableTo')}</legend>
                   <label className="flex items-center gap-2 text-sm">
                     <input
                       type="radio"
@@ -867,7 +870,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       onChange={() => setAvailability('partner')}
                       data-testid="availability-partner"
                     />
-                    All my organizations <span className="text-muted-foreground">(partner-wide)</span>
+                    {t('alertTemplateEditor.allMyOrganizations')} <span className="text-muted-foreground">{t('alertTemplateEditor.partnerWide')}</span>
                   </label>
                   <label className="flex items-center gap-2 text-sm">
                     <input
@@ -878,12 +881,12 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       onChange={() => setAvailability('org')}
                       data-testid="availability-org"
                     />
-                    A specific organization
+                    {t('alertTemplateEditor.aSpecificOrganization')}
                   </label>
                   {availability === 'org' && (
                     <div className="mt-2 space-y-1 pl-6">
                       <label className="text-xs font-medium text-muted-foreground" htmlFor="template-availability-org">
-                        Organization
+                        {t('alertTemplateEditor.organization')}
                       </label>
                       <select
                         id="template-availability-org"
@@ -892,7 +895,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                         data-testid="availability-org-select"
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
-                        <option value="">Select an organization</option>
+                        <option value="">{t('alertTemplateEditor.selectAnOrganization')}</option>
                         {scopeOrganizations.map(org => (
                           <option key={org.id} value={org.id}>{org.name}</option>
                         ))}
@@ -902,7 +905,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 </fieldset>
               )}
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Severity</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.severity')}</label>
                 <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {severityOptions.map(option => (
                     <button
@@ -922,7 +925,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 </div>
               </div>
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Category</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.category')}</label>
                 <select
                   value={category}
                   onChange={event => setCategory(event.target.value)}
@@ -936,7 +939,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 </select>
               </div>
               <div className="sm:col-span-2">
-                <label className="text-xs font-medium uppercase text-muted-foreground">Description</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.description')}</label>
                 <textarea
                   value={description}
                   onChange={event => setDescription(event.target.value)}
@@ -950,9 +953,9 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-semibold">Condition builder</h2>
+                <h2 className="text-sm font-semibold">{t('alertTemplateEditor.conditionBuilder')}</h2>
                 <p className="text-xs text-muted-foreground">
-                  Combine metric thresholds with event patterns to trigger alerts.
+                  {t('alertTemplateEditor.combineMetricThresholdsWithEventPatternsTo')}
                 </p>
               </div>
               <div className="flex gap-2">
@@ -962,7 +965,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                   className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  Add metric
+                  {t('alertTemplateEditor.addMetric')}
                 </button>
                 <button
                   type="button"
@@ -970,7 +973,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                   className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  Add event
+                  {t('alertTemplateEditor.addEvent')}
                 </button>
               </div>
             </div>
@@ -980,7 +983,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 <div key={condition.id} className="rounded-md border bg-muted/30 p-4">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold uppercase text-muted-foreground">
-                      Trigger {index + 1}
+                      {t('alertTemplateEditor.trigger')} {index + 1}
                     </span>
                     <button
                       type="button"
@@ -988,13 +991,13 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
-                      Remove
+                      {t('alertTemplateEditor.remove')}
                     </button>
                   </div>
 
                   <div className="mt-4 grid gap-4 sm:grid-cols-2">
                     <div>
-                      <label className="text-xs font-medium uppercase text-muted-foreground">Type</label>
+                      <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.type')}</label>
                       <select
                         value={condition.type}
                         onChange={event =>
@@ -1002,15 +1005,15 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                         }
                         className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       >
-                        <option value="metric">Metric threshold</option>
-                        <option value="event">Event pattern</option>
+                        <option value="metric">{t('alertTemplateEditor.metricThreshold')}</option>
+                        <option value="event">{t('alertTemplateEditor.eventPattern')}</option>
                       </select>
                     </div>
 
                     {condition.type === 'metric' ? (
                       <>
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Metric</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.metric')}</label>
                           <select
                             value={condition.metric}
                             onChange={event =>
@@ -1028,7 +1031,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                           </select>
                         </div>
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Operator</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.operator')}</label>
                           <select
                             value={condition.operator}
                             onChange={event =>
@@ -1046,7 +1049,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                           </select>
                         </div>
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Threshold value</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.thresholdValue')}</label>
                           <input
                             type="number"
                             value={condition.threshold}
@@ -1059,7 +1062,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                           />
                         </div>
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Duration (min)</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.durationMin')}</label>
                           <input
                             type="number"
                             value={condition.durationMinutes}
@@ -1072,7 +1075,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                           />
                         </div>
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Frequency count</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.frequencyCount')}</label>
                           <input
                             type="number"
                             value={condition.occurrences}
@@ -1088,7 +1091,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                     ) : (
                       <>
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Event source</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.eventSource')}</label>
                           <select
                             value={condition.eventSource}
                             onChange={event =>
@@ -1106,7 +1109,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                           </select>
                         </div>
                         <div className="sm:col-span-2">
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Pattern</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.pattern')}</label>
                           <input
                             value={condition.pattern}
                             onChange={event =>
@@ -1126,13 +1129,13 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           </div>
 
           <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-sm font-semibold">Threshold configuration</h2>
+            <h2 className="text-sm font-semibold">{t('alertTemplateEditor.thresholdConfiguration')}</h2>
             <p className="mt-2 text-xs text-muted-foreground">
-              Defaults used when adding new metric triggers. Adjust per trigger as needed.
+              {t('alertTemplateEditor.defaultsUsedWhenAddingNewMetricTriggers')}
             </p>
             <div className="mt-4 grid gap-4 sm:grid-cols-3">
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Default value</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.defaultValue')}</label>
                 <input
                   type="number"
                   value={thresholdDefaults.value}
@@ -1146,7 +1149,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 />
               </div>
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Default duration (min)</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.defaultDurationMin')}</label>
                 <input
                   type="number"
                   value={thresholdDefaults.durationMinutes}
@@ -1160,7 +1163,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 />
               </div>
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Default frequency count</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.defaultFrequencyCount')}</label>
                 <input
                   type="number"
                   value={thresholdDefaults.occurrences}
@@ -1179,8 +1182,8 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-semibold">Escalation rules</h2>
-                <p className="text-xs text-muted-foreground">Route alerts based on time and severity.</p>
+                <h2 className="text-sm font-semibold">{t('alertTemplateEditor.escalationRules')}</h2>
+                <p className="text-xs text-muted-foreground">{t('alertTemplateEditor.routeAlertsBasedOnTimeAndSeverity')}</p>
               </div>
               <button
                 type="button"
@@ -1188,7 +1191,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted"
               >
                 <Plus className="h-3.5 w-3.5" />
-                Add escalation
+                {t('alertTemplateEditor.addEscalation')}
               </button>
             </div>
 
@@ -1197,7 +1200,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 <div key={rule.id} className="rounded-md border bg-muted/30 p-4">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold uppercase text-muted-foreground">
-                      Step {index + 1}
+                      {t('alertTemplateEditor.step')} {index + 1}
                     </span>
                     <button
                       type="button"
@@ -1205,12 +1208,12 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
-                      Remove
+                      {t('alertTemplateEditor.remove')}
                     </button>
                   </div>
                   <div className="mt-3 grid gap-4 sm:grid-cols-3">
                     <div>
-                      <label className="text-xs font-medium uppercase text-muted-foreground">After (min)</label>
+                      <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.afterMin')}</label>
                       <input
                         type="number"
                         value={rule.afterMinutes}
@@ -1223,7 +1226,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-medium uppercase text-muted-foreground">Severity</label>
+                      <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.severity')}</label>
                       <select
                         value={rule.severity}
                         onChange={event =>
@@ -1241,7 +1244,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                       </select>
                     </div>
                     <div>
-                      <label className="text-xs font-medium uppercase text-muted-foreground">Route</label>
+                      <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.route')}</label>
                       <select
                         value={rule.route}
                         onChange={event =>
@@ -1267,8 +1270,8 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm font-semibold">Suppression rules</h2>
-                <p className="text-xs text-muted-foreground">Avoid noise during maintenance and duplicates.</p>
+                <h2 className="text-sm font-semibold">{t('alertTemplateEditor.suppressionRules')}</h2>
+                <p className="text-xs text-muted-foreground">{t('alertTemplateEditor.avoidNoiseDuringMaintenanceAndDuplicates')}</p>
               </div>
               <button
                 type="button"
@@ -1276,13 +1279,13 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium hover:bg-muted"
               >
                 <Plus className="h-3.5 w-3.5" />
-                Add window
+                {t('alertTemplateEditor.addWindow')}
               </button>
             </div>
 
             <div className="mt-4 space-y-4">
               <label className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 text-sm">
-                <span>Suppress duplicate alerts</span>
+                <span>{t('alertTemplateEditor.suppressDuplicateAlerts')}</span>
                 <input
                   type="checkbox"
                   checked={suppressionRules.suppressDuplicates}
@@ -1298,7 +1301,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
               {suppressionRules.suppressDuplicates && (
                 <div>
-                  <label className="text-xs font-medium uppercase text-muted-foreground">Cooldown minutes</label>
+                  <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.cooldownMinutes')}</label>
                   <input
                     type="number"
                     value={suppressionRules.duplicateSuppressionMinutes}
@@ -1316,7 +1319,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
               <div className="space-y-3">
                 {suppressionRules.maintenanceWindows.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
-                    No maintenance windows configured. Add one to silence alerts during planned work.
+                    {t('alertTemplateEditor.noMaintenanceWindowsConfiguredAddOneTo')}
                   </p>
                 ) : (
                   suppressionRules.maintenanceWindows.map(window => (
@@ -1331,12 +1334,12 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                           className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                          Remove
+                          {t('alertTemplateEditor.remove')}
                         </button>
                       </div>
                       <div className="mt-3 grid gap-3 sm:grid-cols-2">
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Name</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.name')}</label>
                           <input
                             value={window.name}
                             onChange={event =>
@@ -1346,7 +1349,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                           />
                         </div>
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Timezone</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.timezone')}</label>
                           <select
                             value={window.timezone}
                             onChange={event =>
@@ -1362,7 +1365,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                           </select>
                         </div>
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Starts</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.starts')}</label>
                           <input
                             type="datetime-local"
                             value={window.startsAt}
@@ -1373,7 +1376,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                           />
                         </div>
                         <div>
-                          <label className="text-xs font-medium uppercase text-muted-foreground">Ends</label>
+                          <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.ends')}</label>
                           <input
                             type="datetime-local"
                             value={window.endsAt}
@@ -1394,7 +1397,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
 
         <div className="space-y-6">
           <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-sm font-semibold">Notification routing</h2>
+            <h2 className="text-sm font-semibold">{t('alertTemplateEditor.notificationRouting')}</h2>
             <div className="mt-4 space-y-3">
               {notificationOptions.map(option => (
                 <label
@@ -1417,12 +1420,12 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           </div>
 
           <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-sm font-semibold">Auto-remediation</h2>
+            <h2 className="text-sm font-semibold">{t('alertTemplateEditor.autoRemediation')}</h2>
             <p className="mt-2 text-xs text-muted-foreground">
-              Link an automation playbook to run when this alert fires.
+              {t('alertTemplateEditor.linkAnAutomationPlaybookToRunWhen')}
             </p>
             <label className="mt-4 flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 text-sm">
-              <span>Enable auto-remediation</span>
+              <span>{t('alertTemplateEditor.enableAutoRemediation')}</span>
               <input
                 type="checkbox"
                 checked={autoRemediation.enabled}
@@ -1437,7 +1440,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
             </label>
             {autoRemediation.enabled && (
               <div className="mt-4">
-                <label className="text-xs font-medium uppercase text-muted-foreground">Automation</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.automation')}</label>
                 <select
                   value={autoRemediation.automationId}
                   onChange={event =>
@@ -1448,7 +1451,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                   }
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
-                  <option value="">Select automation</option>
+                  <option value="">{t('alertTemplateEditor.selectAutomation')}</option>
                   {automations.map(automation => (
                     <option key={automation.id} value={automation.id}>
                       {automation.name}
@@ -1457,7 +1460,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
                 </select>
                 {automations.length === 0 && (
                   <p className="mt-2 text-xs text-muted-foreground">
-                    No automations available. Create one in Automations to enable remediation.
+                    {t('alertTemplateEditor.noAutomationsAvailableCreateOneInAutomations')}
                   </p>
                 )}
               </div>
@@ -1465,26 +1468,26 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           </div>
 
           <div className="rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-sm font-semibold">Target scope</h2>
+            <h2 className="text-sm font-semibold">{t('alertTemplateEditor.targetScope')}</h2>
             <p className="mt-2 text-xs text-muted-foreground">
-              Apply this template to organizations, sites, or groups.
+              {t('alertTemplateEditor.applyThisTemplateToOrganizationsSitesOr')}
             </p>
             <div className="mt-4">
-              <label className="text-xs font-medium uppercase text-muted-foreground">Scope type</label>
+              <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertTemplateEditor.scopeType')}</label>
               <select
                 value={targetScope.type}
                 onChange={event => handleTargetTypeChange(event.target.value as TargetScopeType)}
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               >
-                <option value="organization">Organizations</option>
-                <option value="site">Sites</option>
-                <option value="group">Groups</option>
+                <option value="organization">{t('alertTemplateEditor.organizations')}</option>
+                <option value="site">{t('alertTemplateEditor.sites')}</option>
+                <option value="group">{t('alertTemplateEditor.groups')}</option>
               </select>
             </div>
             <div className="mt-4 grid gap-2 sm:grid-cols-2">
               {targetOptions.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No {targetScope.type} options available. This template will apply broadly.
+                  {t('alertTemplateEditor.no')} {targetScope.type} {t('alertTemplateEditor.optionsAvailableThisTemplateWillApplyBroadly')}
                 </p>
               ) : (
                 targetOptions.map(option => (

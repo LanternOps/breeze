@@ -13,9 +13,10 @@
  * (it's a Tier 1 read tool), so a pre-payment tenant can still see an empty
  * funnel snapshot. Task 6.2 of the MCP bootstrap plan.
  */
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { deploymentInvites } from '../db/schema/deploymentInvites';
+import { enrollmentKeys } from '../db/schema/orgs';
 import { devices } from '../db/schema/devices';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
@@ -45,7 +46,17 @@ export async function computeInviteFunnel(
   partnerId: string,
   auth?: AuthContext,
 ): Promise<InviteFunnel> {
-  const invites = await db
+  // SR5-18: the invite funnel is partner-keyed, but an org/site-scoped caller
+  // (org token still carries a partnerId) must NOT see partner-wide invite
+  // totals/clicks. Narrow by the actor's org axis, and — for a site-restricted
+  // caller — by the enrollment key's site (invites carry no site of their own;
+  // their enrollment key does). Invites on an org-wide key (site_id NULL) are
+  // fail-closed out for a site-restricted caller.
+  const inviteConditions: SQL[] = [eq(deploymentInvites.partnerId, partnerId)];
+  const inviteOrgCondition = auth?.orgCondition(deploymentInvites.orgId);
+  if (inviteOrgCondition) inviteConditions.push(inviteOrgCondition);
+
+  const rawInvites = await db
     .select({
       id: deploymentInvites.id,
       email: deploymentInvites.invitedEmail,
@@ -53,9 +64,19 @@ export async function computeInviteFunnel(
       clickedAt: deploymentInvites.clickedAt,
       enrolledAt: deploymentInvites.enrolledAt,
       deviceId: deploymentInvites.deviceId,
+      keySiteId: enrollmentKeys.siteId,
     })
     .from(deploymentInvites)
-    .where(eq(deploymentInvites.partnerId, partnerId));
+    .leftJoin(enrollmentKeys, eq(deploymentInvites.enrollmentKeyId, enrollmentKeys.id))
+    .where(and(...inviteConditions));
+
+  // Site sub-axis (app-layer only; RLS does NOT enforce it). Drop invites whose
+  // enrollment key is outside the caller's site allowlist so the top-of-funnel
+  // totals/clicks reflect only site-visible invites. No-op for unrestricted
+  // callers (canAccessSite absent).
+  const invites = auth?.canAccessSite
+    ? rawInvites.filter((i) => auth.canAccessSite!(i.keySiteId))
+    : rawInvites;
 
   const total_invited = invites.length;
   // `clicked` count uses status OR a non-null clickedAt so a row that has

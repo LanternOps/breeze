@@ -32,6 +32,10 @@ export const partners = pgTable('partners', {
   mcpOrigin: boolean('mcp_origin').notNull().default(false),
   mcpOriginIp: text('mcp_origin_ip'),
   mcpOriginUserAgent: text('mcp_origin_user_agent'),
+  // Signup attribution for web registrations (abuse detection). MCP-originated
+  // signups already record mcp_origin_ip/mcp_origin_user_agent above.
+  signupIp: varchar('signup_ip', { length: 45 }),
+  signupUserAgent: text('signup_user_agent'),
   emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
   paymentMethodAttachedAt: timestamp('payment_method_attached_at', { withTimezone: true }),
   stripeCustomerId: text('stripe_customer_id'),

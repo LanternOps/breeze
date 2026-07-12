@@ -72,7 +72,22 @@ export type DrExecutionResults = {
   groupResults: GroupResult[];
   activeGroupId?: string | null;
   haltReason?: string | null;
+  /**
+   * Site-scope authorization snapshot captured at enqueue time. `null` means the
+   * initiating caller was NOT site-restricted (dispatch to any device in the
+   * plan's groups). A `string[]` is the exact set of device IDs the caller was
+   * authorized to reach — the worker (system DB context, no auth) MUST refuse to
+   * dispatch to any device outside this set even if the plan's groups are later
+   * edited to add out-of-scope devices. See `dispatchGroup`.
+   */
+  authorizedDeviceIds?: string[] | null;
 };
+
+/** Normalize a persisted `authorizedDeviceIds` value → string[] | null (legacy/undefined → null = unrestricted). */
+function normalizeAuthorizedDeviceIds(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((entry): entry is string => typeof entry === 'string');
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -256,9 +271,17 @@ export async function createDrExecutionAndEnqueue(input: {
   orgId: string;
   executionType: 'rehearsal' | 'failover' | 'failback';
   initiatedBy?: string | null;
+  /**
+   * Site-scope authorization snapshot from the initiating caller. `null` (or
+   * omitted) = unrestricted caller; a `string[]` pins the exact devices the
+   * worker is allowed to dispatch to (see `DrExecutionResults.authorizedDeviceIds`).
+   */
+  authorizedDeviceIds?: string[] | null;
 }): Promise<DrExecutionRecord | null> {
   const groups = await loadDrPlanGroups(input.planId, input.orgId);
   const now = new Date();
+  const initialResults = buildInitialResults(groups, now);
+  initialResults.authorizedDeviceIds = input.authorizedDeviceIds ?? null;
   const [execution] = await db
     .insert(drExecutions)
     .values({
@@ -268,7 +291,7 @@ export async function createDrExecutionAndEnqueue(input: {
       status: 'pending',
       startedAt: now,
       initiatedBy: input.initiatedBy ?? null,
-      results: buildInitialResults(groups, now),
+      results: initialResults,
       createdAt: now,
     })
     .returning();
@@ -344,8 +367,25 @@ async function dispatchGroup(
       .map((entry) => entry.deviceId),
   );
 
+  // Site-scope authorization snapshot the initiating caller was granted at
+  // enqueue time. `null` = unrestricted. The worker runs in a system DB context
+  // (no auth), so this is the ONLY defense against dispatching to an out-of-site
+  // device that was added to the plan's groups after authorization.
+  const authorizedDeviceIds = currentResults.authorizedDeviceIds ?? null;
+
   for (const deviceId of deviceIds) {
     if (alreadyQueued.has(deviceId)) {
+      continue;
+    }
+
+    if (authorizedDeviceIds && !authorizedDeviceIds.includes(deviceId)) {
+      nextResults.failedDispatches.push({
+        groupId: group.id,
+        groupName: group.name,
+        deviceId,
+        commandType,
+        error: 'Device is outside the initiating caller\'s site authorization',
+      });
       continue;
     }
 
@@ -434,6 +474,9 @@ export async function reconcileDrExecution(executionId: string): Promise<DrExecu
     plannedGroups: normalizePlannedGroups(groups),
     queuedCommands: normalizeQueuedCommands(currentResultsRecord.queuedCommands),
     failedDispatches: normalizeFailedDispatches(currentResultsRecord.failedDispatches),
+    // Carry the caller's site-scope authorization forward across reconciles so
+    // the worker keeps honoring it on every dispatch.
+    authorizedDeviceIds: normalizeAuthorizedDeviceIds(currentResultsRecord.authorizedDeviceIds),
   };
 
   const commandIds = results.queuedCommands.map((entry) => entry.commandId);

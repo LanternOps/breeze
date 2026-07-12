@@ -1,8 +1,11 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
 import { Bot, DollarSign, Flag, MessageSquare, Zap, Save, Loader2, Lock } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 
 interface UsageData {
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
@@ -44,6 +47,7 @@ interface BudgetForm {
 }
 
 export default function AiUsagePage() {
+  const { t } = useTranslation('settings');
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [locked, setLocked] = useState<string[]>([]);
@@ -108,7 +112,7 @@ export default function AiUsagePage() {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load data');
+      setError(err instanceof Error ? err.message : t('aiUsagePage.failedToLoadData'));
     } finally {
       setLoading(false);
     }
@@ -146,12 +150,12 @@ export default function AiUsagePage() {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || body.message || 'Failed to save budget');
+        throw new Error(body.error || body.message || t('aiUsagePage.failedToSaveBudget'));
       }
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save');
+      setError(err instanceof Error ? err.message : t('aiUsagePage.failedToSave'));
     } finally {
       setSaving(false);
     }
@@ -165,14 +169,14 @@ export default function AiUsagePage() {
     );
   }
 
-  const formatCost = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-  const formatTokens = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K` : String(n);
+  const formatCost = (cents: number) => formatCurrency(cents / 100);
+  const formatTokens = (n: number) => n >= 1_000_000 ? `${formatNumber(n / 1_000_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}M` : n >= 1_000 ? `${formatNumber(n / 1_000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}K` : formatNumber(n);
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">AI Usage & Budget</h1>
-        <p className="text-muted-foreground">Monitor AI assistant usage and configure budget limits</p>
+        <h1 className="text-xl font-semibold tracking-tight">{t('aiUsagePage.aIUsageBudget')}</h1>
+        <p className="text-muted-foreground">{t('aiUsagePage.monitorAIAssistantUsageAndConfigureBudgetLimits')}</p>
       </div>
 
       {error && (
@@ -187,13 +191,13 @@ export default function AiUsagePage() {
           icon={DollarSign}
           label="Today's Cost"
           value={formatCost(usage?.daily.totalCostCents ?? 0)}
-          sub={usage?.budget?.dailyBudgetCents ? `of ${formatCost(usage.budget.dailyBudgetCents)} limit` : undefined}
+          sub={usage?.budget?.dailyBudgetCents ? t('aiUsagePage.ofLimit', { limit: formatCost(usage.budget.dailyBudgetCents) }) : undefined}
         />
         <StatCard
           icon={DollarSign}
           label="Monthly Cost"
           value={formatCost(usage?.monthly.totalCostCents ?? 0)}
-          sub={usage?.budget?.monthlyBudgetCents ? `of ${formatCost(usage.budget.monthlyBudgetCents)} limit` : undefined}
+          sub={usage?.budget?.monthlyBudgetCents ? t('aiUsagePage.ofLimit', { limit: formatCost(usage.budget.monthlyBudgetCents) }) : undefined}
         />
         <StatCard
           icon={MessageSquare}
@@ -204,92 +208,91 @@ export default function AiUsagePage() {
           icon={Zap}
           label="Tokens This Month"
           value={formatTokens((usage?.monthly.inputTokens ?? 0) + (usage?.monthly.outputTokens ?? 0))}
-          sub={`${formatTokens(usage?.monthly.inputTokens ?? 0)} in / ${formatTokens(usage?.monthly.outputTokens ?? 0)} out`}
+          sub={t('aiUsagePage.tokensInOut', {
+            input: formatTokens(usage?.monthly.inputTokens ?? 0),
+            output: formatTokens(usage?.monthly.outputTokens ?? 0)
+          })}
         />
       </div>
 
       {/* Budget configuration */}
       <div className="rounded-lg border bg-card p-6">
-        <h2 className="text-lg font-semibold mb-4">Budget Configuration</h2>
+        <h2 className="text-lg font-semibold mb-4">{t('aiUsagePage.budgetConfiguration')}</h2>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <label className="block">
-            <span className="text-sm text-muted-foreground">AI Enabled</span>
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.aIEnabled')}</span>
             <select
               value={budget.enabled ? 'true' : 'false'}
               onChange={(e) => setBudget({ ...budget, enabled: e.target.value === 'true' })}
               disabled={isLocked('enabled')}
               className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('enabled') ? 'opacity-60 cursor-not-allowed' : ''}`}
             >
-              <option value="true">Enabled</option>
-              <option value="false">Disabled</option>
+              <option value="true">{t('aiUsagePage.enabled')}</option>
+              <option value="false">{t('aiUsagePage.disabled')}</option>
             </select>
             {isLocked('enabled') && (
               <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> Managed by partner
-              </span>
+                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
             )}
           </label>
           <label className="block">
-            <span className="text-sm text-muted-foreground">Approval Mode</span>
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.approvalMode')}</span>
             <select
               value={budget.approvalMode}
               onChange={(e) => setBudget({ ...budget, approvalMode: e.target.value as ApprovalMode })}
               disabled={isLocked('approvalMode')}
               className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('approvalMode') ? 'opacity-60 cursor-not-allowed' : ''}`}
             >
-              <option value="per_step">Per Step (default)</option>
-              <option value="action_plan">Action Plan</option>
-              <option value="auto_approve">Auto Approve</option>
-              <option value="hybrid_plan">Hybrid Plan + Abort</option>
+              <option value="per_step">{t('aiUsagePage.perStepDefault')}</option>
+              <option value="action_plan">{t('aiUsagePage.actionPlan')}</option>
+              <option value="auto_approve">{t('aiUsagePage.autoApprove')}</option>
+              <option value="hybrid_plan">{t('aiUsagePage.hybridPlanAbort')}</option>
             </select>
             <p className="mt-1 text-xs text-muted-foreground">
-              {budget.approvalMode === 'per_step' && 'Each tool requiring approval blocks until the user approves or rejects.'}
-              {budget.approvalMode === 'action_plan' && 'AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.'}
-              {budget.approvalMode === 'auto_approve' && 'Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.'}
-              {budget.approvalMode === 'hybrid_plan' && 'Like Action Plan, plus live screenshots between steps and a persistent Stop button.'}
+              {budget.approvalMode === 'per_step' && t('aiUsagePage.eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej')}
+              {budget.approvalMode === 'action_plan' && t('aiUsagePage.aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh')}
+              {budget.approvalMode === 'auto_approve' && t('aiUsagePage.tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ')}
+              {budget.approvalMode === 'hybrid_plan' && t('aiUsagePage.likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist')}
             </p>
             {isLocked('approvalMode') && (
               <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> Managed by partner
-              </span>
+                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
             )}
           </label>
           <label className="block">
-            <span className="text-sm text-muted-foreground">Monthly Budget ($)</span>
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.monthlyBudget')}</span>
             <input
               type="number"
               step="0.01"
               value={budget.monthlyBudgetDollars}
               onChange={(e) => setBudget({ ...budget, monthlyBudgetDollars: e.target.value })}
-              placeholder="No limit"
+              placeholder={t('aiUsagePage.noLimit')}
               disabled={isLocked('monthlyBudgetCents')}
               className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('monthlyBudgetCents') ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
             {isLocked('monthlyBudgetCents') && (
               <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> Managed by partner
-              </span>
+                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
             )}
           </label>
           <label className="block">
-            <span className="text-sm text-muted-foreground">Daily Budget ($)</span>
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.dailyBudget')}</span>
             <input
               type="number"
               step="0.01"
               value={budget.dailyBudgetDollars}
               onChange={(e) => setBudget({ ...budget, dailyBudgetDollars: e.target.value })}
-              placeholder="No limit"
+              placeholder={t('aiUsagePage.noLimit')}
               disabled={isLocked('dailyBudgetCents')}
               className={`mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm ${isLocked('dailyBudgetCents') ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
             {isLocked('dailyBudgetCents') && (
               <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> Managed by partner
-              </span>
+                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
             )}
           </label>
           <label className="block">
-            <span className="text-sm text-muted-foreground">Max Turns Per Session</span>
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.maxTurnsPerSession')}</span>
             <input
               type="number"
               value={budget.maxTurnsPerSession}
@@ -299,12 +302,11 @@ export default function AiUsagePage() {
             />
             {isLocked('maxTurnsPerSession') && (
               <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> Managed by partner
-              </span>
+                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
             )}
           </label>
           <label className="block">
-            <span className="text-sm text-muted-foreground">Msgs/Min Per User</span>
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.msgsMinPerUser')}</span>
             <input
               type="number"
               value={budget.messagesPerMinutePerUser}
@@ -314,12 +316,11 @@ export default function AiUsagePage() {
             />
             {isLocked('messagesPerMinutePerUser') && (
               <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> Managed by partner
-              </span>
+                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
             )}
           </label>
           <label className="block">
-            <span className="text-sm text-muted-foreground">Msgs/Hr Per Org</span>
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.msgsHrPerOrg')}</span>
             <input
               type="number"
               value={budget.messagesPerHourPerOrg}
@@ -329,8 +330,7 @@ export default function AiUsagePage() {
             />
             {isLocked('messagesPerHourPerOrg') && (
               <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
-                <Lock className="h-3 w-3" /> Managed by partner
-              </span>
+                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
             )}
           </label>
         </div>
@@ -341,13 +341,11 @@ export default function AiUsagePage() {
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            Save Budget
-          </button>
-          {saveSuccess && <span className="text-sm text-green-500">Saved successfully</span>}
+            {t('aiUsagePage.saveBudget')}</button>
+          {saveSuccess && <span className="text-sm text-green-500">{t('aiUsagePage.savedSuccessfully')}</span>}
           {allFieldsLocked && (
             <span className="text-sm text-amber-600 dark:text-amber-400 italic">
-              All budget settings are managed by your partner
-            </span>
+              {t('aiUsagePage.allBudgetSettingsAreManagedByYourPartner')}</span>
           )}
         </div>
       </div>
@@ -355,7 +353,7 @@ export default function AiUsagePage() {
       {/* Session history */}
       <div className="rounded-lg border bg-card">
         <div className="border-b px-6 py-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Recent Sessions</h2>
+          <h2 className="text-lg font-semibold">{t('aiUsagePage.recentSessions')}</h2>
           <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
             <input
               type="checkbox"
@@ -363,26 +361,25 @@ export default function AiUsagePage() {
               onChange={(e) => setShowFlaggedOnly(e.target.checked)}
               className="rounded border-border"
             />
-            Show flagged only
-          </label>
+            {t('aiUsagePage.showFlaggedOnly')}</label>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-2">Title</th>
-                <th className="px-4 py-2">Model</th>
-                <th className="px-4 py-2 text-right">Turns</th>
-                <th className="px-4 py-2 text-right">Cost</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Flagged</th>
-                <th className="px-4 py-2">Created</th>
+                <th className="px-4 py-2">{t('aiUsagePage.title')}</th>
+                <th className="px-4 py-2">{t('aiUsagePage.model')}</th>
+                <th className="px-4 py-2 text-right">{t('aiUsagePage.turns')}</th>
+                <th className="px-4 py-2 text-right">{t('aiUsagePage.cost')}</th>
+                <th className="px-4 py-2">{t('aiUsagePage.status')}</th>
+                <th className="px-4 py-2">{t('aiUsagePage.flagged')}</th>
+                <th className="px-4 py-2">{t('aiUsagePage.created')}</th>
               </tr>
             </thead>
             <tbody>
               {sessions.map((s) => (
                 <tr key={s.id} className={`border-b last:border-0 hover:bg-muted/20 ${s.flaggedAt ? 'border-l-2 border-l-amber-500' : ''}`}>
-                  <td className="px-4 py-2.5 truncate max-w-[200px]">{s.title || 'Untitled'}</td>
+                  <td className="px-4 py-2.5 truncate max-w-[200px]">{s.title || t('aiUsagePage.untitled')}</td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">{s.model.split('-').slice(0, 2).join(' ')}</td>
                   <td className="px-4 py-2.5 text-right">{s.turnCount}</td>
                   <td className="px-4 py-2.5 text-right">{formatCost(s.totalCostCents)}</td>
@@ -402,8 +399,7 @@ export default function AiUsagePage() {
                         title={s.flagReason || 'Flagged'}
                       >
                         <Flag className="h-3 w-3" />
-                        Flagged
-                      </span>
+                        {t('aiUsagePage.flagged')}</span>
                     ) : null}
                   </td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">
@@ -414,8 +410,7 @@ export default function AiUsagePage() {
               {sessions.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
-                    No AI sessions yet
-                  </td>
+                    {t('aiUsagePage.noAISessionsYet')}</td>
                 </tr>
               )}
             </tbody>

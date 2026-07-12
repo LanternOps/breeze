@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import {
   X,
   ExternalLink,
@@ -80,6 +82,7 @@ export default function AlertDetails({
   onDismiss,
   submitting = false
 }: AlertDetailsProps) {
+  const { t } = useTranslation('alerts');
   const [resolutionNote, setResolutionNote] = useState('');
   const [showResolveForm, setShowResolveForm] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -112,7 +115,7 @@ export default function AlertDetails({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={`Alert details: ${alert.title}`}>
+    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={t('alertDetails.alertDetailsLabel', { title: alert.title })}>
       {/* Backdrop */}
       <div className="absolute inset-0 bg-background/60" onClick={onClose} />
 
@@ -146,7 +149,7 @@ export default function AlertDetails({
                     severityConfig[alert.severity].color
                   )}
                 >
-                  {severityConfig[alert.severity].label}
+                  {t(/* i18n-dynamic */ `alertDetails.severity.${alert.severity}`)}
                 </span>
                 <span
                   className={cn(
@@ -154,7 +157,7 @@ export default function AlertDetails({
                     statusConfig[alert.status].color
                   )}
                 >
-                  {statusConfig[alert.status].label}
+                  {t(/* i18n-dynamic */ `alertDetails.status.${alert.status}`)}
                 </span>
               </div>
             </div>
@@ -163,7 +166,7 @@ export default function AlertDetails({
             type="button"
             onClick={onClose}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md hover:bg-muted"
-            aria-label="Close panel"
+            aria-label={t('alertDetails.closePanel')}
           >
             <X className="h-5 w-5" />
           </button>
@@ -180,31 +183,31 @@ export default function AlertDetails({
 
           {alert.anomalyContext && (
             <div className="rounded-md border border-sky-500/30 bg-sky-500/10 p-4">
-              <h3 className="text-sm font-semibold mb-3">ML Anomaly Evidence</h3>
+              <h3 className="text-sm font-semibold mb-3">{t('alertDetails.mlAnomalyEvidence')}</h3>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <p className="text-xs text-muted-foreground">Metric</p>
-                  <p className="text-sm font-medium">{alert.anomalyContext.metricName ?? 'Unknown metric'}</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetails.metric')}</p>
+                  <p className="text-sm font-medium">{alert.anomalyContext.metricName ?? t('alertDetails.unknownMetric')}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Type</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetails.type')}</p>
                   <p className="text-sm font-medium capitalize">{formatAnomalyType(alert.anomalyContext.anomalyType)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Observed</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetails.observed')}</p>
                   <p className="text-sm font-medium tabular-nums">{formatAnomalyValue(alert.anomalyContext.observedValue)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Baseline</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetails.baseline')}</p>
                   <p className="text-sm font-medium tabular-nums">{formatAnomalyValue(alert.anomalyContext.baselineValue)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Confidence</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetails.confidence')}</p>
                   <p className="text-sm font-medium tabular-nums">{formatAnomalyConfidence(alert.anomalyContext.confidence)}</p>
                 </div>
                 {alert.anomalyContext.modelVersion && (
                   <div>
-                    <p className="text-xs text-muted-foreground">Model</p>
+                    <p className="text-xs text-muted-foreground">{t('alertDetails.model')}</p>
                     <p className="text-sm font-medium">{alert.anomalyContext.modelVersion}</p>
                   </div>
                 )}
@@ -213,7 +216,7 @@ export default function AlertDetails({
                 href={`/devices/${alert.deviceId}#anomalies${alert.anomalyContext.anomalyId ? `/${alert.anomalyContext.anomalyId}` : ''}`}
                 className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-sky-700 hover:underline"
               >
-                Open device anomalies
+                {t('alertDetails.openDeviceAnomalies')}
                 <ExternalLink className="h-3 w-3" />
               </a>
             </div>
@@ -221,10 +224,10 @@ export default function AlertDetails({
 
           {/* Device Info */}
           <div className="rounded-md border p-4">
-            <h3 className="text-sm font-semibold mb-3">Device Information</h3>
+            <h3 className="text-sm font-semibold mb-3">{t('alertDetails.deviceInformation')}</h3>
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
-                <p className="text-xs text-muted-foreground">Device</p>
+                <p className="text-xs text-muted-foreground">{t('alertDetails.device')}</p>
                 <a
                   href={`/devices/${alert.deviceId}`}
                   className="flex items-center gap-1 text-sm font-medium hover:underline"
@@ -235,36 +238,36 @@ export default function AlertDetails({
               </div>
               {alert.ruleName && (
                 <div>
-                  <p className="text-xs text-muted-foreground">Alert Rule</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetails.alertRule')}</p>
                   <p className="text-sm font-medium">{alert.ruleName}</p>
                   <a href="/configuration-policies" className="mt-1 flex items-center gap-1 text-xs hover:underline">
-                    Managed in Configuration Policies
+                    {t('alertDetails.managedInConfigurationPolicies')}
                     <ExternalLink className="h-3 w-3" />
                   </a>
                 </div>
               )}
               <div>
-                <p className="text-xs text-muted-foreground">Triggered</p>
+                <p className="text-xs text-muted-foreground">{t('alertDetails.triggered')}</p>
                 <p className="text-sm">{formatDateTime(alert.triggeredAt)}</p>
               </div>
               {alert.acknowledgedAt && (
                 <div>
-                  <p className="text-xs text-muted-foreground">Acknowledged</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetails.acknowledged')}</p>
                   <p className="text-sm">
                     {formatDateTime(alert.acknowledgedAt)}
                     {alert.acknowledgedBy && (
-                      <span className="text-muted-foreground"> by {alert.acknowledgedBy}</span>
+                      <span className="text-muted-foreground"> {t('alertDetails.by')} {alert.acknowledgedBy}</span>
                     )}
                   </p>
                 </div>
               )}
               {alert.resolvedAt && (
                 <div>
-                  <p className="text-xs text-muted-foreground">Resolved</p>
+                  <p className="text-xs text-muted-foreground">{t('alertDetails.resolved')}</p>
                   <p className="text-sm">
                     {formatDateTime(alert.resolvedAt)}
                     {alert.resolvedBy && (
-                      <span className="text-muted-foreground"> by {alert.resolvedBy}</span>
+                      <span className="text-muted-foreground"> {t('alertDetails.by')} {alert.resolvedBy}</span>
                     )}
                   </p>
                 </div>
@@ -275,7 +278,7 @@ export default function AlertDetails({
           {/* Status Timeline */}
           {statusHistory.length > 0 && (
             <div className="rounded-md border p-4">
-              <h3 className="text-sm font-semibold mb-3">Status History</h3>
+              <h3 className="text-sm font-semibold mb-3">{t('alertDetails.statusHistory')}</h3>
               <div className="relative space-y-4">
                 {statusHistory.map((change, index) => (
                   <div key={change.id} className="flex gap-3">
@@ -299,8 +302,11 @@ export default function AlertDetails({
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">
                           {change.fromStatus
-                            ? `${statusConfig[change.fromStatus].label} \u2192 ${statusConfig[change.toStatus].label}`
-                            : statusConfig[change.toStatus].label}
+                            ? t('alertDetails.statusChange', {
+                                from: t(/* i18n-dynamic */ `alertDetails.status.${change.fromStatus}`),
+                                to: t(/* i18n-dynamic */ `alertDetails.status.${change.toStatus}`),
+                              })
+                            : t(/* i18n-dynamic */ `alertDetails.status.${change.toStatus}`)}
                         </span>
                         <span className="text-xs text-muted-foreground">
                           {formatRelativeTime(change.changedAt)}
@@ -325,7 +331,7 @@ export default function AlertDetails({
           {/* Context Data */}
           {alert.contextData && Object.keys(alert.contextData).length > 0 && (
             <div className="rounded-md border p-4">
-              <h3 className="text-sm font-semibold mb-3">Context Data</h3>
+              <h3 className="text-sm font-semibold mb-3">{t('alertDetails.contextData')}</h3>
               <pre className="overflow-x-auto rounded-md bg-muted/40 p-3 text-xs">
                 {JSON.stringify(alert.contextData, null, 2)}
               </pre>
@@ -335,7 +341,7 @@ export default function AlertDetails({
           {/* Notification History */}
           {notificationHistory.length > 0 && (
             <div className="rounded-md border p-4">
-              <h3 className="text-sm font-semibold mb-3">Notifications Sent</h3>
+              <h3 className="text-sm font-semibold mb-3">{t('alertDetails.notificationsSent')}</h3>
               <div className="space-y-2">
                 {notificationHistory.map(notification => {
                   const ChannelIcon = channelIcons[notification.channelType] || Bell;
@@ -364,7 +370,7 @@ export default function AlertDetails({
                                 : 'bg-warning/15 text-warning border-warning/30'
                           )}
                         >
-                          {notification.status}
+                          {t(/* i18n-dynamic */ `alertDetails.notificationStatus.${notification.status}`)}
                         </span>
                         <span className="text-xs text-muted-foreground flex items-center gap-1">
                           <Clock className="h-3 w-3" />
@@ -381,11 +387,11 @@ export default function AlertDetails({
           {/* Resolution Note Form */}
           {showResolveForm && (
             <div className="rounded-md border border-success/40 bg-success/5 p-4">
-              <h3 className="text-sm font-semibold mb-3">Resolution Note</h3>
+              <h3 className="text-sm font-semibold mb-3">{t('alertDetails.resolutionNote')}</h3>
               <textarea
                 value={resolutionNote}
                 onChange={e => setResolutionNote(e.target.value)}
-                placeholder="Describe how the issue was resolved..."
+                placeholder={t('alertDetails.describeHowTheIssueWasResolved')}
                 rows={3}
                 className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
               />
@@ -395,7 +401,7 @@ export default function AlertDetails({
                   onClick={() => setShowResolveForm(false)}
                   className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
                 >
-                  Cancel
+                  {t('alertDetails.cancel')}
                 </button>
                 <button
                   type="button"
@@ -403,7 +409,7 @@ export default function AlertDetails({
                   disabled={submitting}
                   className="h-9 rounded-md bg-success px-4 text-sm font-medium text-success-foreground hover:bg-success/90 disabled:opacity-50"
                 >
-                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Resolve Alert'}
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : t('alertDetails.resolveAlert')}
                 </button>
               </div>
             </div>
@@ -417,36 +423,36 @@ export default function AlertDetails({
             onClick={onClose}
             className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
           >
-            Close
+            {t('alertDetails.close')}
           </button>
           <button
             type="button"
             onClick={() => {
               void runAction<{ data: { id: string; internalNumber: string | null } }>({
                 request: () => fetchWithAuth(`/alerts/${alert.id}/create-ticket`, { method: 'POST', body: JSON.stringify({}) }),
-                errorFallback: 'Ticket creation failed. Retry.',
-                successMessage: (r) => `Ticket ${r.data.internalNumber ?? ''} created`,
+                errorFallback: t('alertDetails.ticketCreationFailedRetry'),
+                successMessage: (r) => t('alertDetails.ticketCreated', { ticket: r.data.internalNumber ?? '' }),
                 onUnauthorized: () => void navigateTo('/login', { replace: true })
               })
                 .then((r) => void navigateTo(`/tickets#${r.data.internalNumber ?? r.data.id}`))
                 .catch((err) => { if (!(err instanceof ActionError)) throw err; }); // runAction already surfaced ActionError via toast
             }}
-            title="Create a linked ticket pre-filled from this alert"
+            title={t('alertDetails.createALinkedTicketPreFilledFrom')}
             className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
             data-testid="alert-create-ticket-button"
           >
             <Ticket className="mr-1.5 inline-block h-4 w-4" />
-            Create ticket
+            {t('alertDetails.createTicket')}
           </button>
           {alert.status !== 'suppressed' && alert.status !== 'resolved' && alert.status !== 'dismissed' && (
             <button
               type="button"
               onClick={() => onSuppress?.(alert)}
               disabled={submitting}
-              title="Silence this alert — stops notifications without resolving"
+              title={t('alertDetails.silenceThisAlertStopsNotificationsWithoutResolving')}
               className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
-              Suppress
+              {t('alertDetails.suppress')}
             </button>
           )}
           {alert.status !== 'dismissed' && (
@@ -454,10 +460,10 @@ export default function AlertDetails({
               type="button"
               onClick={() => onDismiss?.(alert)}
               disabled={submitting}
-              title="Dismiss permanently — hides this alert for good (warranty expiry won't re-alert for the same end date; other conditions can still open a new alert if they recur)"
+              title={t('alertDetails.dismissPermanentlyHidesThisAlertForGood')}
               className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
-              Dismiss
+              {t('alertDetails.dismiss')}
             </button>
           )}
           {alert.status === 'active' && (
@@ -465,7 +471,7 @@ export default function AlertDetails({
               type="button"
               onClick={() => onAcknowledge?.(alert)}
               disabled={submitting}
-              title="Mark as seen — stops escalation but keeps alert active"
+              title={t('alertDetails.markAsSeenStopsEscalationButKeeps')}
               className={cn(
                 'h-9 rounded-md border px-4 text-sm font-medium disabled:opacity-50',
                 'border-warning/40 bg-warning/10 text-warning hover:bg-warning/20'
@@ -476,7 +482,7 @@ export default function AlertDetails({
               ) : (
                 <>
                   <CheckCircle className="mr-1.5 inline-block h-4 w-4" />
-                  Acknowledge
+                  {t('alertDetails.acknowledge')}
                 </>
               )}
             </button>
@@ -486,11 +492,11 @@ export default function AlertDetails({
               type="button"
               onClick={() => setShowResolveForm(true)}
               disabled={submitting}
-              title="Close this alert — marks the issue as fixed"
+              title={t('alertDetails.closeThisAlertMarksTheIssueAs')}
               className="h-9 rounded-md bg-success px-4 text-sm font-medium text-success-foreground hover:bg-success/90 disabled:opacity-50"
             >
               <CheckCircle className="mr-1.5 inline-block h-4 w-4" />
-              Resolve
+              {t('alertDetails.resolve')}
             </button>
           )}
         </div>

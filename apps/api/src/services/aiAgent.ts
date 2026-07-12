@@ -159,10 +159,33 @@ export async function createSession(
   return { id: session.id, orgId, delegantM365ConnectionId };
 }
 
-export async function getSession(sessionId: string, auth: AuthContext) {
+/**
+ * Load a single session for the caller.
+ *
+ * OWNER-BOUND by default (SR5-09): the row must belong to `auth.user.id`, not
+ * merely to an org the caller can reach. The session transcript (systemPrompt,
+ * contextSnapshot, sdkSessionId, raw message content) is private to the user who
+ * created it; an org peer with organizations:read must NOT be able to load
+ * another user's session via `GET /sessions/:id`, its messages, or any
+ * owner-driven mutation route (title/close/interrupt/pause/approve/plan/ticket).
+ * The org condition is still applied underneath as defense-in-depth.
+ *
+ * `allowAnyOwnerInOrg: true` relaxes the owner check to an org-only lookup. It is
+ * ONLY for genuine admin/moderation routes (unflag) and internal callers that
+ * re-assert authorization themselves (`handleApproval`, which independently
+ * asserts owner for SR5-10). Never pass it from an ordinary user-facing route.
+ */
+export async function getSession(
+  sessionId: string,
+  auth: AuthContext,
+  options: { allowAnyOwnerInOrg?: boolean } = {},
+) {
   const conditions = [eq(aiSessions.id, sessionId)];
   const orgCondition = auth.orgCondition(aiSessions.orgId);
   if (orgCondition) conditions.push(orgCondition);
+  if (!options.allowAnyOwnerInOrg) {
+    conditions.push(eq(aiSessions.userId, auth.user.id));
+  }
 
   const [session] = await db
     .select()
@@ -367,9 +390,29 @@ export async function handleApproval(
     return false;
   }
 
-  // Verify the session belongs to the user's org
-  const session = await getSession(execution.sessionId, auth);
+  // Internal org-scoped lookup (owner is asserted explicitly below, so this must
+  // NOT owner-bind — otherwise a valid owner-check couldn't read session.userId).
+  const session = await getSession(execution.sessionId, auth, { allowAnyOwnerInOrg: true });
   if (!session) return false;
+
+  // SR5-10 (SECURITY-CRITICAL): the approver MUST be the session owner. Approving
+  // resumes the paused tool under the ORIGINAL (queuing user's) session
+  // authorization; letting an org peer approve would execute a privileged action
+  // the victim queued, laundering it through the victim's grants/MFA/site scope.
+  // Owner-only is the minimal correct rule (a designated-approver model would
+  // have to independently re-satisfy the pending action's constraints).
+  if (session.userId !== auth.user.id) {
+    console.warn(
+      '[AI] Cross-user approval denied:',
+      JSON.stringify({
+        executionId,
+        sessionId: execution.sessionId,
+        sessionOwnerId: session.userId,
+        actorId: auth.user.id,
+      }),
+    );
+    return false;
+  }
 
   await db
     .update(aiToolExecutions)

@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, ScrollText } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -100,6 +102,7 @@ export function buildAuditCsv(rows: ElevationRequest[]): string {
 }
 
 export default function PamAuditTab({ liveTick }: { liveTick: number }) {
+  const { t } = useTranslation('security');
   const [rows, setRows] = useState<ElevationRequest[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 50, total: 0 });
   const [status, setStatus] = useState<ElevationStatus | ''>('');
@@ -138,19 +141,28 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
             void navigateTo('/login', { replace: true });
             return;
           }
-          throw new Error(`Failed to load audit history (HTTP ${res.status})`);
+          throw new Error(
+            t('pamPamAuditTab.errors.loadWithStatus', {
+              defaultValue: 'Failed to load audit history (HTTP {{status}})',
+              status: res.status,
+            }),
+          );
         }
         const body = await res.json();
         setRows((body.requests ?? []) as ElevationRequest[]);
         setPagination((body.pagination ?? { page: 1, limit: 50, total: 0 }) as Pagination);
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
-        setError(err instanceof Error ? err.message : 'Failed to load audit history');
+        setError(
+          err instanceof Error
+            ? err.message
+            : t('pamPamAuditTab.errors.load', { defaultValue: 'Failed to load audit history' }),
+        );
       } finally {
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [buildParams, page],
+    [buildParams, page, t],
   );
 
   // liveTick-driven refreshes are silent (rows stay rendered, same contract as
@@ -176,7 +188,14 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
         const res = await fetchWithAuth(
           `/pam/elevation-requests?${buildParams(exportPage, 100).toString()}`,
         );
-        if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`);
+        if (!res.ok) {
+          throw new Error(
+            t('pamPamAuditTab.errors.exportWithStatus', {
+              defaultValue: 'Export failed (HTTP {{status}})',
+              status: res.status,
+            }),
+          );
+        }
         const body = await res.json();
         const batch = (body.requests ?? []) as ElevationRequest[];
         all.push(...batch);
@@ -193,7 +212,11 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
       link.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Export failed');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t('pamPamAuditTab.errors.export', { defaultValue: 'Export failed' }),
+      );
     } finally {
       setExporting(false);
     }
@@ -206,7 +229,7 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{t('pamPamAuditTab.filters.status', { defaultValue: 'Status' })}</span>
           <select
             value={status}
             onChange={(e) => {
@@ -218,13 +241,13 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
           >
             {STATUS_OPTIONS.map((s) => (
               <option key={s || 'all'} value={s}>
-                {s ? STATUS_LABELS[s] : 'All statuses'}
+                {s ? STATUS_LABELS[s] : t('pamPamAuditTab.filters.allStatuses', { defaultValue: 'All statuses' })}
               </option>
             ))}
           </select>
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Flow</span>
+          <span className="text-muted-foreground">{t('pamPamAuditTab.filters.flow', { defaultValue: 'Flow' })}</span>
           <select
             value={flowType}
             onChange={(e) => {
@@ -236,13 +259,13 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
           >
             {FLOW_OPTIONS.map((f) => (
               <option key={f || 'all'} value={f}>
-                {f ? FLOW_LABELS[f] : 'All flows'}
+                {f ? FLOW_LABELS[f] : t('pamPamAuditTab.filters.allFlows', { defaultValue: 'All flows' })}
               </option>
             ))}
           </select>
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">From</span>
+          <span className="text-muted-foreground">{t('pamPamAuditTab.filters.from', { defaultValue: 'From' })}</span>
           <input
             type="date"
             value={from}
@@ -255,7 +278,7 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
           />
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">To</span>
+          <span className="text-muted-foreground">{t('pamPamAuditTab.filters.to', { defaultValue: 'To' })}</span>
           <input
             type="date"
             value={to}
@@ -275,7 +298,9 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
           className="ml-auto inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
         >
           <Download className="h-4 w-4" />
-          {exporting ? 'Exporting…' : 'Export CSV'}
+          {exporting
+            ? t('pamPamAuditTab.actions.exporting', { defaultValue: 'Exporting…' })
+            : t('pamPamAuditTab.actions.exportCsv', { defaultValue: 'Export CSV' })}
         </button>
       </div>
 
@@ -291,14 +316,18 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
       {loading ? (
         <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
           <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          Loading audit history…
+          {t('pamPamAuditTab.loading', { defaultValue: 'Loading audit history…' })}
         </div>
       ) : rows.length === 0 ? (
         <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
           <ScrollText className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-2 text-sm font-medium">No matching history</p>
+          <p className="mt-2 text-sm font-medium">
+            {t('pamPamAuditTab.empty.title', { defaultValue: 'No matching history' })}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Adjust the filters to see elevation request history.
+            {t('pamPamAuditTab.empty.description', {
+              defaultValue: 'Adjust the filters to see elevation request history.',
+            })}
           </p>
         </div>
       ) : (
@@ -306,12 +335,12 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-xs text-muted-foreground">
-                <th className="px-3 py-2 font-medium">Requested</th>
-                <th className="px-3 py-2 font-medium">Device</th>
-                <th className="px-3 py-2 font-medium">User</th>
-                <th className="px-3 py-2 font-medium">Target</th>
-                <th className="px-3 py-2 font-medium">Flow</th>
-                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamAuditTab.table.requested', { defaultValue: 'Requested' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamAuditTab.table.device', { defaultValue: 'Device' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamAuditTab.table.user', { defaultValue: 'User' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamAuditTab.table.target', { defaultValue: 'Target' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamAuditTab.table.flow', { defaultValue: 'Flow' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamAuditTab.table.status', { defaultValue: 'Status' })}</th>
               </tr>
             </thead>
             <tbody>
@@ -332,7 +361,10 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
                       {r.flowType === 'ai_tool_action' && r.riskTier != null && (
                         <span
                           data-testid={`pam-audit-risk-tier-${r.id}`}
-                          title={`Risk tier ${r.riskTier}`}
+                          title={t('pamPamAuditTab.table.riskTierTitle', {
+                            defaultValue: 'Risk tier {{tier}}',
+                            tier: r.riskTier,
+                          })}
                           className={`inline-flex shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold ${
                             r.riskTier >= 3
                               ? 'bg-red-500/15 text-red-600 dark:text-red-400'
@@ -387,10 +419,14 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
             onClick={() => setPage((p) => p - 1)}
             className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50"
           >
-            Previous
+            {t('pamPamAuditTab.pagination.previous', { defaultValue: 'Previous' })}
           </button>
           <span className="text-xs text-muted-foreground">
-            Page {pagination.page} of {totalPages}
+            {t('pamPamAuditTab.pagination.pageOf', {
+              defaultValue: 'Page {{page}} of {{totalPages}}',
+              page: pagination.page,
+              totalPages,
+            })}
           </span>
           <button
             type="button"
@@ -398,7 +434,7 @@ export default function PamAuditTab({ liveTick }: { liveTick: number }) {
             onClick={() => setPage((p) => p + 1)}
             className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50"
           >
-            Next
+            {t('common:actions.next', { defaultValue: 'Next' })}
           </button>
         </div>
       )}

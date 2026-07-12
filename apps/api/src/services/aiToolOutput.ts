@@ -60,6 +60,27 @@ export function redactAiToolOutputText(value: string): string {
   );
 }
 
+/**
+ * Deep-redact known-sensitive keys from a tool-call INPUT before it is persisted
+ * to `ai_messages.tool_input` (SR5-16).
+ *
+ * Tool schemas invite plaintext secrets — e.g. `manage_backup_configs`
+ * `providerConfig.accessKey` / `secretKey` — and the streaming manager persists
+ * `block.input` UNCONDITIONALLY, even for a call the user later denies. That put
+ * cleartext credentials in the transcript, readable by anyone who could load the
+ * session. This is the single chokepoint that keeps them out: it runs
+ * `redactLogFields` (the shared deep key-based redactor — masks values for keys
+ * matching password/token/secret/*key/clientSecret/connectionString/… and also
+ * scrubs inline `key=value` secrets in string leaves) over EVERY tool's input as
+ * defense-in-depth, rather than relying on per-tool allow/deny lists.
+ */
+export function redactSensitiveToolInput(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const redacted = redactLogFields(input);
+  return isRecord(redacted) ? redacted : {};
+}
+
 function clampInteger(value: unknown, defaultValue: number, min: number, max: number): number {
   const num = Number(value);
   if (!Number.isFinite(num)) return defaultValue;

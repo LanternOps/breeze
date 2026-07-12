@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { zValidator } from '../lib/validation';
 import { z } from "zod";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { and, eq, desc } from "drizzle-orm";

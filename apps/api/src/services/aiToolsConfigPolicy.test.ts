@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   assignPolicyMock,
   validateAssignmentTargetMock,
+  authorizeAssignmentTargetMock,
   policyAccessConditionMock,
   canManagePartnerWidePoliciesMock,
   createConfigPolicyMock,
@@ -10,6 +11,9 @@ const {
 } = vi.hoisted(() => ({
   assignPolicyMock: vi.fn(),
   validateAssignmentTargetMock: vi.fn(),
+  // SR5-07 site sub-axis: default allow so existing (unrestricted) cases are
+  // unaffected; site-scope tests override to assert denial.
+  authorizeAssignmentTargetMock: vi.fn(async (): Promise<{ valid: boolean; error?: string }> => ({ valid: true })),
   policyAccessConditionMock: vi.fn(),
   canManagePartnerWidePoliciesMock: vi.fn(() => true),
   createConfigPolicyMock: vi.fn(),
@@ -65,6 +69,7 @@ vi.mock('./configurationPolicy', () => ({
   listFeatureLinks: vi.fn(),
   listAssignments: vi.fn(),
   validateAssignmentTarget: validateAssignmentTargetMock,
+  authorizeAssignmentTarget: authorizeAssignmentTargetMock,
   canManagePartnerWidePolicies: canManagePartnerWidePoliciesMock,
   policyAccessCondition: policyAccessConditionMock,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE: 'partner-wide write denied',
@@ -128,6 +133,7 @@ describe('configuration policy AI tools', () => {
     vi.clearAllMocks();
     canManagePartnerWidePoliciesMock.mockReturnValue(true);
     policyAccessConditionMock.mockReturnValue(undefined);
+    authorizeAssignmentTargetMock.mockResolvedValue({ valid: true });
   });
 
   it('validates assignment target org before applying a policy', async () => {
@@ -190,6 +196,30 @@ describe('configuration policy AI tools', () => {
       message: `Policy "Policy 1" assigned to device ${DEVICE_ID}`,
       assignmentId: 'assignment-1',
     });
+  });
+
+  it('apply_configuration_policy denies a target outside the caller site access (SR5-07)', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' }]),
+        }),
+      }),
+    } as any);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    authorizeAssignmentTargetMock.mockResolvedValue({ valid: false, error: 'Target device is outside your site access' });
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID,
+      level: 'device',
+      targetId: DEVICE_ID,
+    }, makeAuth());
+
+    expect(JSON.parse(output)).toEqual({ error: 'Target device is outside your site access' });
+    expect(assignPolicyMock).not.toHaveBeenCalled();
   });
 
   // assignPolicy's insert (configurationPolicy.ts) uses onConflictDoNothing and
@@ -463,6 +493,31 @@ describe('configuration policy AI tools', () => {
     }, makePartnerAuth());
 
     expect(JSON.parse(output)).toEqual({ error: 'partner-wide write denied' });
+    expect(unassignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('remove_configuration_policy_assignment denies removal of a target outside the caller site access (SR5-07)', async () => {
+    // Org-owned policy (policyOrgId non-null) so the partner-wide gate passes;
+    // the site sub-axis then blocks removal of a cross-site device assignment.
+    mockSelectRows([{
+      id: 'assignment-1',
+      configPolicyId: POLICY_ID,
+      policyName: 'Org Policy',
+      policyOrgId: ORG_ID,
+      level: 'device',
+      targetId: DEVICE_ID,
+    }]);
+    canManagePartnerWidePoliciesMock.mockReturnValue(true);
+    authorizeAssignmentTargetMock.mockResolvedValue({ valid: false, error: 'Target device is outside your site access' });
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const output = await tools.get('remove_configuration_policy_assignment')!.handler({
+      assignmentId: 'assignment-1',
+    }, makeAuth());
+
+    expect(JSON.parse(output)).toEqual({ error: 'Target device is outside your site access' });
     expect(unassignPolicyMock).not.toHaveBeenCalled();
   });
 

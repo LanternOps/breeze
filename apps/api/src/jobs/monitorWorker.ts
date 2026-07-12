@@ -181,7 +181,7 @@ function parseNumericThreshold(threshold: string | null | undefined): number | n
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-async function selectExecutionAgentForMonitor(
+export async function selectExecutionAgentForMonitor(
   monitor: {
     orgId: string;
     assetId: string | null;
@@ -199,6 +199,10 @@ async function selectExecutionAgentForMonitor(
   }
 
   if (assetSiteId) {
+    // Site-bound monitor: the executing agent MUST live in the monitor's site.
+    // If no online agent is available there, return null rather than crossing
+    // the site boundary to an arbitrary org agent (SR5-08) — that would direct
+    // a root-level agent in another site to probe this target.
     const [siteAgent] = await db
       .select({ agentId: devices.agentId })
       .from(devices)
@@ -209,11 +213,13 @@ async function selectExecutionAgentForMonitor(
       ))
       .limit(1);
 
-    if (siteAgent?.agentId) {
-      return siteAgent.agentId;
-    }
+    return siteAgent?.agentId ?? null;
   }
 
+  // Unbound monitor (no site scope): org-wide selection is legitimate. Monitors
+  // created by site-restricted callers are now required to be site-bound
+  // (aiToolsMonitoring create gate), so this path is reached only for monitors
+  // an unrestricted caller intentionally left assetless.
   const [onlineAgent] = await db
     .select({ agentId: devices.agentId })
     .from(devices)

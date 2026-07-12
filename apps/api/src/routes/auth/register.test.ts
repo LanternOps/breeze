@@ -117,10 +117,10 @@ const validBody = {
   acceptTerms: true,
 };
 
-async function postRegisterPartner(body: unknown) {
+function postRegisterPartner(body: unknown, headers: Record<string, string> = {}) {
   return registerRoutes.request('/register-partner', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
 }
@@ -187,6 +187,19 @@ describe('/register-partner partner status by deployment mode', () => {
     expect(res.status).toBeLessThan(400);
     expect(createPartner).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'active' }),
+    );
+  });
+
+  it('threads signup IP and user agent into createPartner', async () => {
+    process.env.IS_HOSTED = 'true';
+    setupDbSelectsForSuccess(true);
+
+    const res = await postRegisterPartner(validBody, { 'user-agent': 'vitest-agent/1.0' });
+    expect(res.status).toBeLessThan(400);
+    expect(createPartner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: { mcp: false, ip: '127.0.0.1', userAgent: 'vitest-agent/1.0' },
+      }),
     );
   });
 });

@@ -1,4 +1,5 @@
 import { Loader2, Play, Pencil, Trash2, List } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 export type DiscoveryProfileStatus = 'active' | 'paused' | 'draft' | 'error';
@@ -26,11 +27,11 @@ type DiscoveryProfileListProps = {
   onViewJobs?: (profileId: string) => void;
 };
 
-const statusConfig: Record<DiscoveryProfileStatus, { label: string; color: string }> = {
-  active: { label: 'Active', color: 'bg-success/15 text-success border-success/30' },
-  paused: { label: 'Paused', color: 'bg-warning/15 text-warning border-warning/30' },
-  draft: { label: 'Draft', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
-  error: { label: 'Error', color: 'bg-destructive/15 text-destructive border-destructive/30' }
+const statusConfig: Record<DiscoveryProfileStatus, { color: string }> = {
+  active: { color: 'bg-success/15 text-success border-success/30' },
+  paused: { color: 'bg-warning/15 text-warning border-warning/30' },
+  draft: { color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
+  error: { color: 'bg-destructive/15 text-destructive border-destructive/30' }
 };
 
 export default function DiscoveryProfileList({
@@ -44,12 +45,14 @@ export default function DiscoveryProfileList({
   runningProfileId,
   onViewJobs
 }: DiscoveryProfileListProps) {
+  const { t } = useTranslation('discovery');
+
   if (loading) {
     return (
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading discovery profiles...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('discoveryProfileList.loading')}</p>
         </div>
       </div>
     );
@@ -65,7 +68,7 @@ export default function DiscoveryProfileList({
             onClick={onRetry}
             className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Try again
+            {t('discoveryProfileList.tryAgain')}
           </button>
         )}
       </div>
@@ -103,7 +106,7 @@ export default function DiscoveryProfileList({
     <>
       <div className="text-sm">{profile.schedule}</div>
       {profile.nextRun && (
-        <div className="text-xs text-muted-foreground">Next: {profile.nextRun}</div>
+        <div className="text-xs text-muted-foreground">{t('discoveryProfileList.nextRun', { time: profile.nextRun })}</div>
       )}
     </>
   );
@@ -114,19 +117,21 @@ export default function DiscoveryProfileList({
         statusConfig[profile.status].color
       }`}
     >
-      {statusConfig[profile.status].label}
+      {t(/* i18n-dynamic */ `discoveryProfileList.status.${profile.status}`)}
     </span>
   );
 
   const renderActions = (profile: DiscoveryProfile) => {
-    const runLabel = runningProfileId === profile.id ? `Running ${profile.name}` : `Run ${profile.name}`;
+    const runLabel = runningProfileId === profile.id
+      ? t('discoveryProfileList.actions.runningProfile', { name: profile.name })
+      : t('discoveryProfileList.actions.runProfile', { name: profile.name });
     return (
     <div className="flex items-center justify-end gap-2">
       <button
         type="button"
         onClick={() => onViewJobs?.(profile.id)}
         className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-        title="View jobs"
+        title={t('discoveryProfileList.actions.viewJobs')}
       >
         <List className="h-4 w-4" />
       </button>
@@ -137,7 +142,7 @@ export default function DiscoveryProfileList({
         aria-label={runLabel}
         aria-busy={runningProfileId === profile.id}
         className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-        title={runningProfileId === profile.id ? 'Running...' : 'Run now'}
+        title={runningProfileId === profile.id ? t('discoveryProfileList.actions.running') : t('discoveryProfileList.actions.runNow')}
       >
         {runningProfileId === profile.id ? (
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -149,7 +154,7 @@ export default function DiscoveryProfileList({
         type="button"
         onClick={() => onEdit?.(profile)}
         className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-        title="Edit profile"
+        title={t('discoveryProfileList.actions.editProfile')}
       >
         <Pencil className="h-4 w-4" />
       </button>
@@ -157,7 +162,7 @@ export default function DiscoveryProfileList({
         type="button"
         onClick={() => onDelete?.(profile)}
         className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10"
-        title="Delete profile"
+        title={t('discoveryProfileList.actions.deleteProfile')}
       >
         <Trash2 className="h-4 w-4" />
       </button>
@@ -169,13 +174,13 @@ export default function DiscoveryProfileList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Discovery Profiles</h2>
+          <h2 className="text-lg font-semibold">{t('discoveryProfileList.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            {profiles.length} profiles configured
+            {t('discoveryProfileList.configuredCount', { count: profiles.length })}
           </p>
         </div>
         <div className="text-xs text-muted-foreground">
-          Schedules run automatically or on demand
+          {t('discoveryProfileList.scheduleHint')}
         </div>
       </div>
 
@@ -191,19 +196,19 @@ export default function DiscoveryProfileList({
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Profile</th>
-                <th className="px-4 py-3">Subnets</th>
-                <th className="px-4 py-3">Methods</th>
-                <th className="px-4 py-3">Schedule</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">{t('discoveryProfileList.columns.profile')}</th>
+                <th className="px-4 py-3">{t('discoveryProfileList.columns.subnets')}</th>
+                <th className="px-4 py-3">{t('discoveryProfileList.columns.methods')}</th>
+                <th className="px-4 py-3">{t('discoveryProfileList.columns.schedule')}</th>
+                <th className="px-4 py-3">{t('common:labels.status')}</th>
+                <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {profiles.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    No discovery profiles yet. Create your first profile to start scanning.
+                    {t('discoveryProfileList.empty')}
                   </td>
                 </tr>
               ) : (
@@ -212,7 +217,7 @@ export default function DiscoveryProfileList({
                     <td className="px-4 py-3">
                       <div className="text-sm font-medium">{profile.name}</div>
                       <div className="text-xs text-muted-foreground">
-                        {profile.lastRun ? `Last run ${profile.lastRun}` : 'Not run yet'}
+                        {profile.lastRun ? t('discoveryProfileList.lastRun', { time: profile.lastRun }) : t('discoveryProfileList.notRunYet')}
                       </div>
                     </td>
                     <td className="px-4 py-3">{renderSubnets(profile)}</td>
@@ -230,7 +235,7 @@ export default function DiscoveryProfileList({
           profiles.length === 0 ? (
             <DataCard>
               <p className="py-2 text-center text-sm text-muted-foreground">
-                No discovery profiles yet. Create your first profile to start scanning.
+                {t('discoveryProfileList.empty')}
               </p>
             </DataCard>
           ) : (
@@ -240,15 +245,15 @@ export default function DiscoveryProfileList({
                   <div className="min-w-0">
                     <div className="text-sm font-medium">{profile.name}</div>
                     <div className="text-xs text-muted-foreground">
-                      {profile.lastRun ? `Last run ${profile.lastRun}` : 'Not run yet'}
+                      {profile.lastRun ? t('discoveryProfileList.lastRun', { time: profile.lastRun }) : t('discoveryProfileList.notRunYet')}
                     </div>
                   </div>
                   {renderStatus(profile)}
                 </div>
                 <div className="mt-3 space-y-2 border-t pt-3">
-                  <CardField label="Subnets">{renderSubnets(profile)}</CardField>
-                  <CardField label="Methods">{renderMethods(profile)}</CardField>
-                  <CardField label="Schedule">
+                  <CardField label={t('discoveryProfileList.columns.subnets')}>{renderSubnets(profile)}</CardField>
+                  <CardField label={t('discoveryProfileList.columns.methods')}>{renderMethods(profile)}</CardField>
+                  <CardField label={t('discoveryProfileList.columns.schedule')}>
                     <div>{renderSchedule(profile)}</div>
                   </CardField>
                 </div>

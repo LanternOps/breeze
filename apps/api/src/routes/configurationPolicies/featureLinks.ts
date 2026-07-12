@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { backupInlineSettingsSchema, onedriveHelperInlineSettingsSchema, patchInlineSettingsSchema } from '@breeze/shared/validators';

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Info, Link2, RefreshCw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import NetworkChangeDetailModal from './NetworkChangeDetailModal';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
@@ -88,6 +89,7 @@ export default function NetworkChangesPanel({
   siteOptions,
   timezone
 }: NetworkChangesPanelProps) {
+  const { t } = useTranslation('discovery');
   const [changes, setChanges] = useState<NetworkChangeEvent[]>([]);
   const [profiles, setProfiles] = useState<ProfileOption[]>([]);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
@@ -118,7 +120,7 @@ export default function NetworkChangesPanel({
     try {
       const response = await fetchWithAuth(`/discovery/profiles${query ? `?${query}` : ''}`);
       if (!response.ok) {
-        throw new Error(await extractError(response, 'Failed to load profile filters'));
+        throw new Error(await extractError(response, t('networkChangesPanel.errors.loadProfileFilters')));
       }
 
       const payload = await response.json();
@@ -159,7 +161,7 @@ export default function NetworkChangesPanel({
       setProfilesError(true);
       throw profilesFetchError;
     }
-  }, [currentOrgId]);
+  }, [currentOrgId, t]);
 
   const fetchDevices = useCallback(async () => {
     const params = new URLSearchParams();
@@ -169,7 +171,7 @@ export default function NetworkChangesPanel({
 
     const response = await fetchWithAuth(`/devices?${params.toString()}`);
     if (!response.ok) {
-      throw new Error(await extractError(response, 'Failed to load devices'));
+      throw new Error(await extractError(response, t('networkChangesPanel.errors.loadDevices')));
     }
 
     const payload = await response.json();
@@ -182,7 +184,7 @@ export default function NetworkChangesPanel({
           : [];
 
     setDevices(normalizeDevices(rows));
-  }, [currentOrgId]);
+  }, [currentOrgId, t]);
 
   const fetchChanges = useCallback(async () => {
     setLoading(true);
@@ -205,7 +207,7 @@ export default function NetworkChangesPanel({
 
       const response = await fetchWithAuth(`/network/changes?${params.toString()}`);
       if (!response.ok) {
-        throw new Error(await extractError(response, 'Failed to load network changes'));
+        throw new Error(await extractError(response, t('networkChangesPanel.errors.loadChanges')));
       }
 
       const payload = await response.json();
@@ -225,15 +227,15 @@ export default function NetworkChangesPanel({
         return new Set([...previous].filter((id) => valid.has(id)));
       });
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : 'Failed to load network changes');
+      setError(fetchError instanceof Error ? fetchError.message : t('networkChangesPanel.errors.loadChanges'));
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId, filters]);
+  }, [currentOrgId, filters, t]);
 
   useEffect(() => {
     Promise.all([fetchProfiles(), fetchDevices()]).catch((fetchError) => {
-      setError(fetchError instanceof Error ? fetchError.message : 'Failed to load network metadata');
+      setError(fetchError instanceof Error ? fetchError.message : t('networkChangesPanel.errors.loadMetadata'));
     });
   }, [fetchProfiles, fetchDevices]);
 
@@ -337,12 +339,12 @@ export default function NetworkChangesPanel({
       if (response.status === 403) {
         setCanAcknowledge(false);
       }
-      throw new Error(await extractError(response, 'Failed to acknowledge event'));
+      throw new Error(await extractError(response, t('networkChangesPanel.errors.acknowledgeEvent')));
     }
 
-    setInfo('Event acknowledged.');
+    setInfo(t('networkChangesPanel.messages.eventAcknowledged'));
     await fetchChanges();
-  }, [fetchChanges]);
+  }, [fetchChanges, t]);
 
   const linkDevice = useCallback(async (eventId: string, deviceId: string) => {
     setError(null);
@@ -357,12 +359,12 @@ export default function NetworkChangesPanel({
       if (response.status === 403) {
         setCanLinkDevice(false);
       }
-      throw new Error(await extractError(response, 'Failed to link device'));
+      throw new Error(await extractError(response, t('networkChangesPanel.errors.linkDevice')));
     }
 
-    setInfo('Device linked.');
+    setInfo(t('networkChangesPanel.messages.deviceLinked'));
     await fetchChanges();
-  }, [fetchChanges]);
+  }, [fetchChanges, t]);
 
   const handleBulkAcknowledge = async () => {
     if (selectedUnacknowledgedIds.length === 0) return;
@@ -385,7 +387,7 @@ export default function NetworkChangesPanel({
         if (response.status === 403) {
           setCanAcknowledge(false);
         }
-        throw new Error(await extractError(response, 'Failed to acknowledge selected events'));
+        throw new Error(await extractError(response, t('networkChangesPanel.errors.acknowledgeSelected')));
       }
 
       const payload = await response.json().catch(() => null);
@@ -393,12 +395,12 @@ export default function NetworkChangesPanel({
         ? (payload as { acknowledgedCount: number }).acknowledgedCount
         : selectedUnacknowledgedIds.length;
 
-      setInfo(`Acknowledged ${acknowledgedCount} event(s).`);
+      setInfo(t('networkChangesPanel.messages.acknowledgedCount', { count: acknowledgedCount }));
       setSelectedEventIds(new Set());
       setBulkNotes('');
       await fetchChanges();
     } catch (bulkError) {
-      setError(bulkError instanceof Error ? bulkError.message : 'Failed to acknowledge selected events');
+      setError(bulkError instanceof Error ? bulkError.message : t('networkChangesPanel.errors.acknowledgeSelected'));
     } finally {
       setBulkWorking(false);
     }
@@ -421,12 +423,12 @@ export default function NetworkChangesPanel({
       <>
         <div className="flex items-center gap-2">
           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${type.color}`}>
-            {type.label}
+            {t(/* i18n-dynamic */ `networkEvents.type.${change.eventType}`)}
           </span>
           <span className="font-mono text-sm">{change.ipAddress}</span>
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {change.hostname ?? 'Unknown host'} • {change.macAddress ?? 'No MAC'}
+          {change.hostname ?? t('networkChangesPanel.unknownHost')} • {change.macAddress ?? t('networkChangesPanel.noMac')}
         </div>
       </>
     );
@@ -440,7 +442,7 @@ export default function NetworkChangesPanel({
           : 'bg-warning/15 text-warning border-warning/30'
       }`}
     >
-      {change.acknowledged ? 'Acknowledged' : 'Unacknowledged'}
+      {change.acknowledged ? t('networkChangesPanel.status.acknowledged') : t('networkChangesPanel.status.unacknowledged')}
     </span>
   );
 
@@ -452,20 +454,20 @@ export default function NetworkChangesPanel({
         className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
       >
         <Info className="h-3.5 w-3.5" />
-        Details
+        {t('networkChangesPanel.actions.details')}
       </button>
       {!change.acknowledged && canAcknowledge && (
         <button
           type="button"
           onClick={() => {
             acknowledgeEvent(change.id).catch((ackError) => {
-              setError(ackError instanceof Error ? ackError.message : 'Failed to acknowledge event');
+                setError(ackError instanceof Error ? ackError.message : t('networkChangesPanel.errors.acknowledgeEvent'));
             });
           }}
           className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
         >
           <CheckCircle2 className="h-3.5 w-3.5" />
-          Ack
+          {t('networkChangesPanel.actions.ack')}
         </button>
       )}
       {canLinkDevice && (
@@ -475,14 +477,14 @@ export default function NetworkChangesPanel({
           className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
         >
           <Link2 className="h-3.5 w-3.5" />
-          Link
+          {t('networkChangesPanel.actions.link')}
         </button>
       )}
     </div>
   );
 
   const genericEmptyState = (
-    <span className="text-sm text-muted-foreground">No change events match the selected filters.</span>
+    <span className="text-sm text-muted-foreground">{t('networkChangesPanel.empty.filtered')}</span>
   );
 
   // Don't render the *terminal* empty state until BOTH fetches have settled.
@@ -502,10 +504,9 @@ export default function NetworkChangesPanel({
     !profilesLoaded ? genericEmptyState : profiles.length === 0 ? (
       <div className="mx-auto max-w-xl space-y-3 text-sm text-muted-foreground" data-testid="changes-no-profiles-hint">
         <div className="space-y-1">
-          <p className="font-medium text-foreground">Set up a network discovery profile to start tracking changes.</p>
+          <p className="font-medium text-foreground">{t('networkChangesPanel.empty.noProfilesTitle')}</p>
           <p>
-            Network change events are created by discovery profiles. Create a profile and enable Alerting
-            to record new, changed, or disappeared devices.
+            {t('networkChangesPanel.empty.noProfilesDescription')}
           </p>
         </div>
         <button
@@ -516,18 +517,18 @@ export default function NetworkChangesPanel({
           className="inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
           data-testid="changes-create-profile"
         >
-          Go to Profiles
+          {t('networkChangesPanel.actions.goToProfiles')}
         </button>
       </div>
     ) : alertingPrerequisite ? (
       <div className="mx-auto max-w-xl space-y-1 text-sm text-muted-foreground" data-testid="changes-alerting-hint">
-        <p className="font-medium text-foreground">No change events recorded yet.</p>
+        <p className="font-medium text-foreground">{t('networkChangesPanel.empty.noEventsTitle')}</p>
         <p>
           {alertingPrerequisite.state === 'profile-disabled'
-            ? `Discovery scans on “${alertingPrerequisite.profileName}” won’t record changes until Alerting is enabled on that profile.`
-            : 'Discovery scans won’t record changes until Alerting is enabled on a discovery profile.'}
-          {' '}Enable <span className="font-medium text-foreground">Alerting</span> in the profile’s
-          settings (Profiles tab) to start tracking network changes.
+            ? t('networkChangesPanel.empty.profileAlertingDisabled', { profile: alertingPrerequisite.profileName })
+            : t('networkChangesPanel.empty.alertingDisabled')}
+          {' '}<span className="font-medium text-foreground">{t('networkChangesPanel.empty.enableAlerting')}</span>{' '}
+          {t('networkChangesPanel.empty.enableAlertingSuffix')}
         </p>
       </div>
     ) : genericEmptyState;
@@ -537,9 +538,9 @@ export default function NetworkChangesPanel({
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-wrap items-center gap-3">
           <div>
-            <h2 className="text-lg font-semibold">Network Changes</h2>
+            <h2 className="text-lg font-semibold">{t('networkChangesPanel.title')}</h2>
             <p className="text-sm text-muted-foreground">
-              Review and triage network change events across discovery profiles.
+              {t('networkChangesPanel.description')}
             </p>
           </div>
           <button
@@ -548,20 +549,20 @@ export default function NetworkChangesPanel({
             className="ml-auto inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
           >
             <RefreshCw className="h-4 w-4" />
-            Refresh
+            {t('common:actions.refresh')}
           </button>
         </div>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Site</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('common:labels.site')}</label>
             <select
-              aria-label="Site"
+              aria-label={t('common:labels.site')}
               value={filters.siteId}
               onChange={(event) => setFilters((previous) => ({ ...previous, siteId: event.target.value }))}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="all">All sites</option>
+              <option value="all">{t('networkChangesPanel.options.allSites')}</option>
               {siteOptions.map((site) => (
                 <option key={site.id} value={site.id}>
                   {site.name}
@@ -571,14 +572,14 @@ export default function NetworkChangesPanel({
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Profile</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('networkChangesPanel.fields.profile')}</label>
             <select
-              aria-label="Profile"
+              aria-label={t('networkChangesPanel.fields.profile')}
               value={filters.profileId}
               onChange={(event) => setFilters((previous) => ({ ...previous, profileId: event.target.value }))}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="all">All profiles</option>
+              <option value="all">{t('networkChangesPanel.options.allProfiles')}</option>
               {profiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.name}
@@ -588,35 +589,35 @@ export default function NetworkChangesPanel({
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Event Type</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('networkChangesPanel.fields.eventType')}</label>
             <select
               value={filters.eventType}
               onChange={(event) => setFilters((previous) => ({ ...previous, eventType: event.target.value as FilterState['eventType'] }))}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="all">All types</option>
-              <option value="new_device">New device</option>
-              <option value="device_disappeared">Disappeared</option>
-              <option value="device_changed">Changed</option>
-              <option value="rogue_device">Rogue</option>
+              <option value="all">{t('networkChangesPanel.options.allTypes')}</option>
+              <option value="new_device">{t('networkEvents.type.new_device')}</option>
+              <option value="device_disappeared">{t('networkEvents.type.device_disappeared')}</option>
+              <option value="device_changed">{t('networkEvents.type.device_changed')}</option>
+              <option value="rogue_device">{t('networkEvents.type.rogue_device')}</option>
             </select>
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Acknowledged</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('networkChangesPanel.fields.acknowledged')}</label>
             <select
               value={filters.acknowledged}
               onChange={(event) => setFilters((previous) => ({ ...previous, acknowledged: event.target.value as FilterState['acknowledged'] }))}
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
-              <option value="all">All</option>
-              <option value="false">Unacknowledged</option>
-              <option value="true">Acknowledged</option>
+              <option value="all">{t('common:labels.all')}</option>
+              <option value="false">{t('networkChangesPanel.status.unacknowledged')}</option>
+              <option value="true">{t('networkChangesPanel.status.acknowledged')}</option>
             </select>
           </div>
 
           <div>
-            <label className="mb-1 block text-xs font-medium text-muted-foreground">Since</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">{t('networkChangesPanel.fields.since')}</label>
             <input
               type="datetime-local"
               value={filters.since}
@@ -632,19 +633,19 @@ export default function NetworkChangesPanel({
             onClick={() => setFilters(createDefaultFilters(currentSiteId))}
             className="rounded-md border px-2 py-1 hover:bg-muted"
           >
-            Reset filters
+            {t('networkChangesPanel.actions.resetFilters')}
           </button>
-          <span>{changes.length} events loaded</span>
+          <span>{t('networkChangesPanel.eventsLoaded', { count: changes.length })}</span>
         </div>
 
         {!canAcknowledge && (
           <div className="mt-4 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-800">
-            Acknowledge actions disabled after permission check failure. Requires `alerts:acknowledge`.
+            {t('networkChangesPanel.permissionAcknowledge')}
           </div>
         )}
         {!canLinkDevice && (
           <div className="mt-4 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-800">
-            Device linking disabled after permission check failure. Requires `devices:write`.
+            {t('networkChangesPanel.permissionLink')}
           </div>
         )}
 
@@ -661,13 +662,13 @@ export default function NetworkChangesPanel({
 
         <div className="mt-4 flex flex-col gap-2 rounded-md border bg-muted/20 p-3 lg:flex-row lg:items-center">
           <div className="text-sm">
-            <span className="font-medium">{selectedUnacknowledgedIds.length}</span> unacknowledged event(s) selected
+            {t('networkChangesPanel.selectedUnacknowledged', { count: selectedUnacknowledgedIds.length })}
           </div>
           <input
             type="text"
             value={bulkNotes}
             onChange={(event) => setBulkNotes(event.target.value)}
-            placeholder="Optional bulk acknowledgement notes"
+            placeholder={t('networkChangesPanel.placeholders.bulkNotes')}
             className="h-9 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
           <button
@@ -677,7 +678,7 @@ export default function NetworkChangesPanel({
             className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <CheckCircle2 className="h-4 w-4" />
-            {bulkWorking ? 'Acknowledging...' : 'Acknowledge Selected'}
+            {bulkWorking ? t('networkChangesPanel.actions.acknowledging') : t('networkChangesPanel.actions.acknowledgeSelected')}
           </button>
         </div>
 
@@ -695,19 +696,19 @@ export default function NetworkChangesPanel({
                       className="h-4 w-4 rounded border"
                     />
                   </th>
-                  <th className="px-4 py-3">Event</th>
-                  <th className="px-4 py-3">Profile</th>
-                  <th className="px-4 py-3">Detected</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Linked Device</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
+                  <th className="px-4 py-3">{t('networkChangesPanel.columns.event')}</th>
+                  <th className="px-4 py-3">{t('networkChangesPanel.fields.profile')}</th>
+                  <th className="px-4 py-3">{t('networkChangesPanel.columns.detected')}</th>
+                  <th className="px-4 py-3">{t('common:labels.status')}</th>
+                  <th className="px-4 py-3">{t('networkChangesPanel.columns.linkedDevice')}</th>
+                  <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {emptyStateResolving ? (
                   <tr>
                     <td colSpan={7} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      Loading network changes...
+                      {t('networkChangesPanel.loading')}
                     </td>
                   </tr>
                 ) : changes.length === 0 ? (
@@ -718,10 +719,10 @@ export default function NetworkChangesPanel({
                   </tr>
                 ) : (
                   changes.map((change) => {
-                    const profileName = change.profileId ? (profileById.get(change.profileId)?.name ?? 'Unknown') : 'Unknown';
+                    const profileName = change.profileId ? (profileById.get(change.profileId)?.name ?? t('common:states.unknown')) : t('common:states.unknown');
                     const linkedDeviceLabel = change.linkedDeviceId
                       ? (deviceById.get(change.linkedDeviceId)?.label ?? change.linkedDeviceId)
-                      : 'Not linked';
+                      : t('networkChangesPanel.notLinked');
 
                     return (
                       <tr key={change.id} className="transition hover:bg-muted/40">
@@ -742,7 +743,7 @@ export default function NetworkChangesPanel({
           cards={
             emptyStateResolving ? (
               <DataCard>
-                <p className="py-2 text-center text-sm text-muted-foreground">Loading network changes...</p>
+                <p className="py-2 text-center text-sm text-muted-foreground">{t('networkChangesPanel.loading')}</p>
               </DataCard>
             ) : changes.length === 0 ? (
               <DataCard>
@@ -750,10 +751,10 @@ export default function NetworkChangesPanel({
               </DataCard>
             ) : (
               changes.map((change) => {
-                const profileName = change.profileId ? (profileById.get(change.profileId)?.name ?? 'Unknown') : 'Unknown';
+                const profileName = change.profileId ? (profileById.get(change.profileId)?.name ?? t('common:states.unknown')) : t('common:states.unknown');
                 const linkedDeviceLabel = change.linkedDeviceId
                   ? (deviceById.get(change.linkedDeviceId)?.label ?? change.linkedDeviceId)
-                  : 'Not linked';
+                  : t('networkChangesPanel.notLinked');
 
                 return (
                   <DataCard key={change.id}>
@@ -762,10 +763,10 @@ export default function NetworkChangesPanel({
                       <div className="min-w-0 flex-1">{renderEventInfo(change)}</div>
                     </div>
                     <div className="mt-3 space-y-2 border-t pt-3">
-                      <CardField label="Profile">{profileName}</CardField>
-                      <CardField label="Detected">{formatDateTime(change.detectedAt, timezone)}</CardField>
-                      <CardField label="Status">{renderStatusBadge(change)}</CardField>
-                      <CardField label="Linked Device">{linkedDeviceLabel}</CardField>
+                      <CardField label={t('networkChangesPanel.fields.profile')}>{profileName}</CardField>
+                      <CardField label={t('networkChangesPanel.columns.detected')}>{formatDateTime(change.detectedAt, timezone)}</CardField>
+                      <CardField label={t('common:labels.status')}>{renderStatusBadge(change)}</CardField>
+                      <CardField label={t('networkChangesPanel.columns.linkedDevice')}>{linkedDeviceLabel}</CardField>
                     </div>
                     <CardActions>{renderActions(change)}</CardActions>
                   </DataCard>

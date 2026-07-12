@@ -1,8 +1,12 @@
+import { i18n } from '@/lib/i18n';
+import type { TFunction } from 'i18next';
+import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
 import AccessReviewList, { type AccessReview } from './AccessReviewList';
 import AccessReviewForm from './AccessReviewForm';
+import { formatDate as formatLocaleDate } from '@/lib/dateTimeFormat';
 
 type AccessReviewDecision = 'pending' | 'approved' | 'revoked';
 
@@ -52,10 +56,10 @@ const decisionStyles: Record<AccessReviewDecision, string> = {
   revoked: 'bg-destructive/10 text-destructive'
 };
 
-const decisionLabels: Record<AccessReviewDecision, string> = {
-  pending: 'Pending',
-  approved: 'Approved',
-  revoked: 'Revoked'
+const decisionLabelKeys: Record<AccessReviewDecision, string> = {
+  pending: 'accessReviewPage.pending',
+  approved: 'accessReviewPage.approved',
+  revoked: 'accessReviewPage.revoked'
 };
 
 const dayMs = 1000 * 60 * 60 * 24;
@@ -64,48 +68,44 @@ function formatDate(dateString?: string | null): string {
   if (!dateString) return '-';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return '-';
-  return date.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric'
-  });
+  return formatLocaleDate(date, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function formatRelativeDate(dateString?: string | null): string {
-  if (!dateString) return 'Never';
+  if (!dateString) return i18n.t('settings:accessReviewPage.never');
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return '-';
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
-  if (diffMs < dayMs) return 'Today';
+  if (diffMs < dayMs) return i18n.t('settings:accessReviewPage.today');
   const days = Math.floor(diffMs / dayMs);
-  if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+  if (days < 7) return i18n.t('settings:accessReviewPage.daysAgo', { count: days });
   return formatDate(dateString);
 }
 
 function getDeadlineStatus(dueDate?: string | null): DeadlineStatus {
   if (!dueDate) {
-    return { label: 'No deadline', isOverdue: false };
+    return { label: i18n.t('settings:accessReviewPage.noDeadline'), isOverdue: false };
   }
   const due = new Date(dueDate);
   if (Number.isNaN(due.getTime())) {
-    return { label: 'No deadline', isOverdue: false };
+    return { label: i18n.t('settings:accessReviewPage.noDeadline'), isOverdue: false };
   }
   const now = new Date();
   const diffMs = due.getTime() - now.getTime();
   if (diffMs < 0) {
     const overdueDays = Math.ceil(Math.abs(diffMs) / dayMs);
     return {
-      label: `${overdueDays} day${overdueDays === 1 ? '' : 's'} overdue`,
+      label: i18n.t('settings:accessReviewPage.daysOverdue', { count: overdueDays }),
       isOverdue: true
     };
   }
   const remainingDays = Math.ceil(diffMs / dayMs);
   if (remainingDays === 0) {
-    return { label: 'Due today', isOverdue: false };
+    return { label: i18n.t('settings:accessReviewPage.dueToday'), isOverdue: false };
   }
   return {
-    label: `${remainingDays} day${remainingDays === 1 ? '' : 's'} remaining`,
+    label: i18n.t('settings:accessReviewPage.daysRemaining', { count: remainingDays }),
     isOverdue: false
   };
 }
@@ -115,7 +115,7 @@ function escapeCsvValue(value: string): string {
   return `"${safe.replace(/"/g, '""')}"`;
 }
 
-function buildReviewCsv(review: AccessReviewDetail): string {
+function buildReviewCsv(review: AccessReviewDetail, t: TFunction): string {
   const rows: string[][] = [
     ['Review Name', review.name],
     ['Status', review.status],
@@ -131,8 +131,8 @@ function buildReviewCsv(review: AccessReviewDetail): string {
       item.userEmail,
       item.roleName,
       (item.permissions ?? []).join(' | '),
-      item.lastActiveAt ? formatDate(item.lastActiveAt) : 'Never',
-      decisionLabels[item.decision],
+      item.lastActiveAt ? formatDate(item.lastActiveAt) : i18n.t('settings:accessReviewPage.never'),
+      t(/* i18n-dynamic */ decisionLabelKeys[item.decision]),
       item.notes ?? '',
       item.reviewedAt ? formatDate(item.reviewedAt) : ''
     ]);
@@ -142,6 +142,7 @@ function buildReviewCsv(review: AccessReviewDetail): string {
 }
 
 export default function AccessReviewPage() {
+  const { t } = useTranslation('settings');
   const [reviews, setReviews] = useState<AccessReview[]>([]);
   const [selectedReview, setSelectedReview] = useState<AccessReviewDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -163,12 +164,12 @@ export default function AccessReviewPage() {
       setError(undefined);
       const response = await fetchWithAuth('/access-reviews');
       if (!response.ok) {
-        throw new Error('Failed to fetch access reviews');
+        throw new Error(t('accessReviewPage.failedToFetchAccessReviews'));
       }
       const result = await response.json();
       setReviews(result.data ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('accessReviewPage.anErrorOccurred'));
     } finally {
       setLoading(false);
     }
@@ -179,7 +180,7 @@ export default function AccessReviewPage() {
       setReviewersError(undefined);
       const response = await fetchWithAuth('/users');
       if (!response.ok) {
-        throw new Error('Failed to fetch reviewers');
+        throw new Error(t('accessReviewPage.failedToFetchReviewers'));
       }
       const data = await response.json();
       const users = data.data ?? data.users ?? data ?? [];
@@ -191,7 +192,7 @@ export default function AccessReviewPage() {
         }))
       );
     } catch (err) {
-      setReviewersError(err instanceof Error ? err.message : 'An error occurred');
+      setReviewersError(err instanceof Error ? err.message : t('accessReviewPage.anErrorOccurred'));
     }
   }, []);
 
@@ -200,7 +201,7 @@ export default function AccessReviewPage() {
       setError(undefined);
       const response = await fetchWithAuth(`/access-reviews/${reviewId}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch review details');
+        throw new Error(t('accessReviewPage.failedToFetchReviewDetails'));
       }
       const result = await response.json();
       setSelectedReview(result);
@@ -214,7 +215,7 @@ export default function AccessReviewPage() {
       setBulkReason('');
       setDecisionFilter('all');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('accessReviewPage.anErrorOccurred'));
     }
   }, []);
 
@@ -260,22 +261,24 @@ export default function AccessReviewPage() {
           .filter((email): email is string => Boolean(email));
 
         if (reviewerEmails.length === 0) {
-          throw new Error('No reviewer emails available for notifications');
+          throw new Error(t('accessReviewPage.noReviewerEmailsAvailableForNotifications'));
         }
 
         if (typeof window !== 'undefined') {
-          const subject = encodeURIComponent(`Access review: ${context.name}`);
-          const dueLabel = context.dueDate ? `Deadline: ${formatDate(context.dueDate)}` : 'No deadline set';
+          const subject = encodeURIComponent(t('accessReviewPage.emailSubject', { name: context.name }));
+          const dueLabel = context.dueDate
+            ? t('accessReviewPage.emailDeadline', { date: formatDate(context.dueDate) })
+            : t('accessReviewPage.noDeadlineSet');
           const body = encodeURIComponent(
-            `Please complete the access review for ${context.name}. ${dueLabel}.`
+            t('accessReviewPage.emailBody', { name: context.name, dueLabel })
           );
           window.location.href = `mailto:${reviewerEmails.join(',')}?subject=${subject}&body=${body}`;
           return true;
         }
 
-        throw new Error('Unable to launch email notification');
+        throw new Error(t('accessReviewPage.unableToLaunchEmailNotification'));
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('accessReviewPage.anErrorOccurred'));
         return false;
       } finally {
         setNotifying(false);
@@ -300,7 +303,7 @@ export default function AccessReviewPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create access review');
+        throw new Error(t('accessReviewPage.failedToCreateAccessReview'));
       }
 
       const result = await response.json();
@@ -317,7 +320,7 @@ export default function AccessReviewPage() {
       await fetchReviews();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('accessReviewPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
@@ -341,13 +344,13 @@ export default function AccessReviewPage() {
       );
 
       if (!response.ok) {
-        throw new Error('Failed to update decision');
+        throw new Error(t('accessReviewPage.failedToUpdateDecision'));
       }
 
       await fetchReviewDetail(selectedReview.id);
       await fetchReviews();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('accessReviewPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
@@ -370,7 +373,7 @@ export default function AccessReviewPage() {
           );
 
           if (!response.ok) {
-            throw new Error('Failed to update decision');
+            throw new Error(t('accessReviewPage.failedToUpdateDecision'));
           }
         })
       );
@@ -380,7 +383,7 @@ export default function AccessReviewPage() {
       await fetchReviewDetail(selectedReview.id);
       await fetchReviews();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('accessReviewPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
@@ -397,15 +400,15 @@ export default function AccessReviewPage() {
         if (!detail?.items) {
           const response = await fetchWithAuth(`/access-reviews/${reviewId}`);
           if (!response.ok) {
-            throw new Error('Failed to fetch review for report');
+            throw new Error(t('accessReviewPage.failedToFetchReviewForReport'));
           }
           detail = await response.json();
         }
 
         if (!detail) {
-          throw new Error('Failed to fetch review details for report');
+          throw new Error(t('accessReviewPage.failedToFetchReviewDetailsForReport'));
         }
-        const csv = buildReviewCsv(detail);
+        const csv = buildReviewCsv(detail, t);
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -416,12 +419,12 @@ export default function AccessReviewPage() {
         link.remove();
         URL.revokeObjectURL(url);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('accessReviewPage.anErrorOccurred'));
       } finally {
         setReporting(false);
       }
     },
-    [selectedReview]
+    [selectedReview, t]
   );
 
   const handleCompleteReview = async () => {
@@ -429,14 +432,14 @@ export default function AccessReviewPage() {
 
     const pendingItems = selectedReview.items.filter((item) => item.decision === 'pending');
     if (pendingItems.length > 0) {
-      setError('Please review all items before completing');
+      setError(t('accessReviewPage.pleaseReviewAllItemsBeforeCompleting'));
       return;
     }
 
     const revokedCount = selectedReview.items.filter((item) => item.decision === 'revoked').length;
     const confirmMessage = revokedCount > 0
-      ? `This will complete the review and revoke access for ${revokedCount} user(s). Continue?`
-      : 'This will complete the review. Continue?';
+      ? t('accessReviewPage.completeWithRevocations', { count: revokedCount })
+      : t('accessReviewPage.completeConfirm');
 
     if (!confirm(confirmMessage)) return;
 
@@ -447,13 +450,13 @@ export default function AccessReviewPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to complete review');
+        throw new Error(t('accessReviewPage.failedToCompleteReview'));
       }
 
       await fetchReviews();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('accessReviewPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
@@ -505,7 +508,7 @@ export default function AccessReviewPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading access reviews...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('accessReviewPage.loadingAccessReviews')}</p>
         </div>
       </div>
     );
@@ -520,8 +523,7 @@ export default function AccessReviewPage() {
           onClick={fetchReviews}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('accessReviewPage.tryAgain')}</button>
       </div>
     );
   }
@@ -529,10 +531,9 @@ export default function AccessReviewPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Access Reviews</h1>
+        <h1 className="text-xl font-semibold tracking-tight">{t('accessReviewPage.accessReviews')}</h1>
         <p className="text-muted-foreground">
-          Conduct periodic reviews of user access and permissions to ensure compliance.
-        </p>
+          {t('accessReviewPage.conductPeriodicReviewsOfUserAccessAndPermissionsToEnsure')}</p>
       </div>
 
       {error && (
@@ -555,21 +556,20 @@ export default function AccessReviewPage() {
 
       <div className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
         <div>
-          <h2 className="text-lg font-semibold">Review History</h2>
+          <h2 className="text-lg font-semibold">{t('accessReviewPage.reviewHistory')}</h2>
           <p className="text-sm text-muted-foreground">
-            Completed campaigns and certification evidence for audits.
-          </p>
+            {t('accessReviewPage.completedCampaignsAndCertificationEvidenceForAudits')}</p>
         </div>
 
         <div className="overflow-hidden rounded-lg border">
           <table className="w-full border-collapse text-left text-sm">
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-3">Campaign</th>
-                <th className="px-4 py-3">Completed</th>
-                <th className="px-4 py-3">Reviewer</th>
-                <th className="px-4 py-3">Due Date</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">{t('accessReviewPage.campaign')}</th>
+                <th className="px-4 py-3">{t('accessReviewPage.completed')}</th>
+                <th className="px-4 py-3">{t('accessReviewPage.reviewer')}</th>
+                <th className="px-4 py-3">{t('accessReviewPage.dueDate')}</th>
+                <th className="px-4 py-3 text-right">{t('accessReviewPage.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -589,7 +589,7 @@ export default function AccessReviewPage() {
                     {review.completedAt ? formatDate(review.completedAt) : '-'}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {review.reviewerName || 'Unassigned'}
+                    {review.reviewerName || t('accessReviewPage.unassigned')}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {review.dueDate ? formatDate(review.dueDate) : '-'}
@@ -601,15 +601,14 @@ export default function AccessReviewPage() {
                         onClick={() => handleViewReview(review)}
                         className="text-sm font-medium text-primary hover:underline"
                       >
-                        View
-                      </button>
+                        {t('accessReviewPage.view')}</button>
                       <button
                         type="button"
                         onClick={() => handleGenerateReport(review)}
                         disabled={reporting}
                         className="text-sm font-medium text-muted-foreground hover:text-foreground"
                       >
-                        {reporting ? 'Generating...' : 'Report'}
+                        {reporting ? t('accessReviewPage.generating') : t('accessReviewPage.report')}
                       </button>
                     </div>
                   </td>
@@ -618,8 +617,7 @@ export default function AccessReviewPage() {
               {historyReviews.length === 0 && (
                 <tr className="border-t">
                   <td className="px-4 py-8 text-center text-sm text-muted-foreground" colSpan={5}>
-                    No completed access review campaigns yet.
-                  </td>
+                    {t('accessReviewPage.noCompletedAccessReviewCampaignsYet')}</td>
                 </tr>
               )}
             </tbody>
@@ -656,17 +654,17 @@ export default function AccessReviewPage() {
                     )}
                   >
                     {selectedReview.status === 'in_progress'
-                      ? 'In Progress'
+                      ? t('accessReviewPage.inProgress')
                       : selectedReview.status.charAt(0).toUpperCase() + selectedReview.status.slice(1)}
                   </span>
-                  <span>{selectedReview.items.length} users to review</span>
+                  <span>{selectedReview.items.length} {t('accessReviewPage.usersToReview')}</span>
                   {selectedReview.dueDate && (
                     <span
                       className={cn(
                         deadlineStatus?.isOverdue ? 'text-destructive font-medium' : ''
                       )}
                     >
-                      Due {formatDate(selectedReview.dueDate)}
+                      {t('accessReviewPage.due')}{formatDate(selectedReview.dueDate)}
                     </span>
                   )}
                 </div>
@@ -675,7 +673,7 @@ export default function AccessReviewPage() {
                 type="button"
                 onClick={handleCloseModal}
                 className="text-muted-foreground hover:text-foreground"
-                aria-label="Close"
+                aria-label={t('accessReviewPage.close')}
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -697,10 +695,9 @@ export default function AccessReviewPage() {
             <div className="mt-6 rounded-lg border bg-muted/30 p-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="space-y-2">
-                  <p className="text-xs uppercase text-muted-foreground">Progress</p>
+                  <p className="text-xs uppercase text-muted-foreground">{t('accessReviewPage.progress')}</p>
                   <p className="text-sm font-medium">
-                    {decisionCounts.reviewed} of {decisionCounts.total} reviewed
-                  </p>
+                    {decisionCounts.reviewed} {t('accessReviewPage.of')}{decisionCounts.total} {t('accessReviewPage.reviewed')}</p>
                   <div className="h-2 w-48 rounded-full bg-muted">
                     <div
                       className={cn('h-2 rounded-full bg-emerald-500', widthPercentClass(progressPercent))}
@@ -708,14 +705,14 @@ export default function AccessReviewPage() {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-xs uppercase text-muted-foreground">Deadline</p>
+                  <p className="text-xs uppercase text-muted-foreground">{t('accessReviewPage.deadline')}</p>
                   <p
                     className={cn(
                       'text-sm font-medium',
                       deadlineStatus?.isOverdue ? 'text-destructive' : 'text-foreground'
                     )}
                   >
-                    {selectedReview.dueDate ? formatDate(selectedReview.dueDate) : 'No deadline'}
+                    {selectedReview.dueDate ? formatDate(selectedReview.dueDate) : t('accessReviewPage.noDeadline')}
                   </p>
                   <p
                     className={cn(
@@ -723,13 +720,13 @@ export default function AccessReviewPage() {
                       deadlineStatus?.isOverdue ? 'text-destructive' : 'text-muted-foreground'
                     )}
                   >
-                    {deadlineStatus?.label ?? 'No deadline'}
+                    {deadlineStatus?.label ?? t('accessReviewPage.noDeadline')}
                   </p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-xs uppercase text-muted-foreground">Reviewer</p>
+                  <p className="text-xs uppercase text-muted-foreground">{t('accessReviewPage.reviewer')}</p>
                   <p className="text-sm font-medium">
-                    {assignedReviewer?.name || selectedReview.reviewerName || 'Unassigned'}
+                    {assignedReviewer?.name || selectedReview.reviewerName || t('accessReviewPage.unassigned')}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {assignedReviewer?.email || ''}
@@ -741,23 +738,21 @@ export default function AccessReviewPage() {
             <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
               <div className="flex flex-wrap items-center gap-2">
                 <label htmlFor="decision-filter" className="text-sm font-medium">
-                  Filter
-                </label>
+                  {t('accessReviewPage.filter')}</label>
                 <select
                   id="decision-filter"
                   value={decisionFilter}
                   onChange={(event) => setDecisionFilter(event.target.value as AccessReviewDecision | 'all')}
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
-                  <option value="all">All decisions</option>
-                  <option value="pending">Pending</option>
-                  <option value="approved">Approved</option>
-                  <option value="revoked">Revoked</option>
+                  <option value="all">{t('accessReviewPage.allDecisions')}</option>
+                  <option value="pending">{t('accessReviewPage.pending')}</option>
+                  <option value="approved">{t('accessReviewPage.approved')}</option>
+                  <option value="revoked">{t('accessReviewPage.revoked')}</option>
                 </select>
               </div>
               <div className="text-sm text-muted-foreground">
-                Showing {filteredItems.length} of {selectedReview.items.length} users
-              </div>
+                {t('accessReviewPage.showing')}{filteredItems.length} {t('accessReviewPage.of')}{selectedReview.items.length} {t('accessReviewPage.users')}</div>
             </div>
 
             {selectedReview.status !== 'completed' && (
@@ -767,7 +762,7 @@ export default function AccessReviewPage() {
                     type="text"
                     value={bulkReason}
                     onChange={(event) => setBulkReason(event.target.value)}
-                    placeholder="Reason for bulk action (optional)"
+                    placeholder={t('accessReviewPage.reasonForBulkActionOptional')}
                     className="h-10 flex-1 min-w-[220px] rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                   <button
@@ -776,28 +771,24 @@ export default function AccessReviewPage() {
                     disabled={submitting || selectedItemIds.length === 0}
                     className="inline-flex h-10 items-center justify-center rounded-md bg-emerald-600 px-4 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Approve selected
-                  </button>
+                    {t('accessReviewPage.approveSelected')}</button>
                   <button
                     type="button"
                     onClick={() => handleBulkDecision('revoked')}
                     disabled={submitting || selectedItemIds.length === 0}
                     className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Revoke selected
-                  </button>
+                    {t('accessReviewPage.revokeSelected')}</button>
                   <button
                     type="button"
                     onClick={() => setSelectedItemIds([])}
                     disabled={selectedItemIds.length === 0}
                     className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Clear
-                  </button>
+                    {t('accessReviewPage.clear')}</button>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  {selectedItemIds.length} selected
-                </p>
+                  {selectedItemIds.length} {t('accessReviewPage.selected')}</p>
               </div>
             )}
 
@@ -820,16 +811,16 @@ export default function AccessReviewPage() {
                           selectedReview.status === 'completed' || filteredItems.length === 0
                         }
                         className="h-4 w-4 rounded border-muted-foreground"
-                        aria-label="Select all"
+                        aria-label={t('accessReviewPage.selectAll')}
                       />
                     </th>
-                    <th className="px-4 py-3">User</th>
-                    <th className="px-4 py-3">Role</th>
-                    <th className="px-4 py-3">Permissions</th>
-                    <th className="px-4 py-3">Last Active</th>
-                    <th className="px-4 py-3">Decision</th>
-                    <th className="px-4 py-3">Reason</th>
-                    <th className="px-4 py-3 text-right">Actions</th>
+                    <th className="px-4 py-3">{t('accessReviewPage.user')}</th>
+                    <th className="px-4 py-3">{t('accessReviewPage.role')}</th>
+                    <th className="px-4 py-3">{t('accessReviewPage.permissions')}</th>
+                    <th className="px-4 py-3">{t('accessReviewPage.lastActive')}</th>
+                    <th className="px-4 py-3">{t('accessReviewPage.decision')}</th>
+                    <th className="px-4 py-3">{t('accessReviewPage.reason')}</th>
+                    <th className="px-4 py-3 text-right">{t('accessReviewPage.actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -850,7 +841,7 @@ export default function AccessReviewPage() {
                             }}
                             disabled={selectedReview.status === 'completed'}
                             className="h-4 w-4 rounded border-muted-foreground"
-                            aria-label={`Select ${item.userName}`}
+                            aria-label={t('accessReviewPage.selectUser', { name: item.userName })}
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -873,8 +864,7 @@ export default function AccessReviewPage() {
                               ))}
                               {permissions.length > 3 && (
                                 <span className="text-xs text-muted-foreground">
-                                  +{permissions.length - 3} more
-                                </span>
+                                  +{permissions.length - 3} {t('accessReviewPage.more')}</span>
                               )}
                             </div>
                           ) : (
@@ -891,7 +881,7 @@ export default function AccessReviewPage() {
                               decisionStyles[item.decision]
                             )}
                           >
-                            {decisionLabels[item.decision]}
+                            {t(/* i18n-dynamic */ decisionLabelKeys[item.decision])}
                           </span>
                         </td>
                         <td className="px-4 py-3">
@@ -904,7 +894,7 @@ export default function AccessReviewPage() {
                               onChange={(event) =>
                                 setItemNotes((prev) => ({ ...prev, [item.id]: event.target.value }))
                               }
-                              placeholder="Reason (optional)"
+                              placeholder={t('accessReviewPage.reasonOptional')}
                               className="h-9 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
                             />
                           )}
@@ -923,8 +913,7 @@ export default function AccessReviewPage() {
                                     : 'text-emerald-600 hover:text-emerald-700 hover:underline'
                                 )}
                               >
-                                Approve
-                              </button>
+                                {t('accessReviewPage.approve')}</button>
                               <span className="text-muted-foreground">|</span>
                               <button
                                 type="button"
@@ -937,8 +926,7 @@ export default function AccessReviewPage() {
                                     : 'text-destructive/80 hover:text-destructive hover:underline'
                                 )}
                               >
-                                Revoke
-                              </button>
+                                {t('accessReviewPage.revoke')}</button>
                             </div>
                           )}
                           {selectedReview.status === 'completed' && (
@@ -951,8 +939,7 @@ export default function AccessReviewPage() {
                   {filteredItems.length === 0 && (
                     <tr className="border-t">
                       <td className="px-4 py-8 text-center text-sm text-muted-foreground" colSpan={8}>
-                        No users match this filter.
-                      </td>
+                        {t('accessReviewPage.noUsersMatchThisFilter')}</td>
                     </tr>
                   )}
                 </tbody>
@@ -962,16 +949,13 @@ export default function AccessReviewPage() {
             <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-t pt-6">
               <div className="text-sm text-muted-foreground">
                 <span className="font-medium text-emerald-700">
-                  {decisionCounts.approved} approved
-                </span>
+                  {decisionCounts.approved} {t('accessReviewPage.approved2')}</span>
                 {' | '}
                 <span className="font-medium text-destructive">
-                  {decisionCounts.revoked} revoked
-                </span>
+                  {decisionCounts.revoked} {t('accessReviewPage.revoked2')}</span>
                 {' | '}
                 <span className="font-medium text-amber-700">
-                  {decisionCounts.pending} pending
-                </span>
+                  {decisionCounts.pending} {t('accessReviewPage.pending2')}</span>
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
@@ -986,7 +970,7 @@ export default function AccessReviewPage() {
                   disabled={reporting}
                   className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {reporting ? 'Generating...' : 'Generate Report'}
+                  {reporting ? t('accessReviewPage.generating') : t('accessReviewPage.generateReport')}
                 </button>
                 {selectedReview.status !== 'completed' && (
                   <button
@@ -1002,7 +986,7 @@ export default function AccessReviewPage() {
                     disabled={notifying || !selectedReview.reviewerId}
                     className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {notifying ? 'Sending...' : 'Notify Reviewers'}
+                    {notifying ? t('accessReviewPage.sending') : t('accessReviewPage.notifyReviewers')}
                   </button>
                 )}
                 <button
@@ -1010,8 +994,7 @@ export default function AccessReviewPage() {
                   onClick={handleCloseModal}
                   className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
                 >
-                  Close
-                </button>
+                  {t('accessReviewPage.close')}</button>
                 {selectedReview.status !== 'completed' && (
                   <button
                     type="button"
@@ -1019,7 +1002,7 @@ export default function AccessReviewPage() {
                     disabled={submitting || selectedReview.items.some((i) => i.decision === 'pending')}
                     className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {submitting ? 'Completing...' : 'Complete Review'}
+                    {submitting ? t('accessReviewPage.completing') : t('accessReviewPage.completeReview')}
                   </button>
                 )}
               </div>

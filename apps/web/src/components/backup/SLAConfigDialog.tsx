@@ -3,6 +3,8 @@ import { Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -31,6 +33,7 @@ type ScopeMode = 'devices' | 'groups';
 // ── Component ─────────────────────────────────────────────────────
 
 export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProps) {
+  const { t } = useTranslation('backup');
   const isEdit = !!config;
 
   const [name, setName] = useState(config?.name ?? '');
@@ -157,12 +160,12 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
         <div className="mt-4 space-y-4">
           {/* Name */}
           <div>
-            <label htmlFor="sla-name" className="text-xs font-medium text-muted-foreground">Name</label>
+            <label htmlFor="sla-name" className="text-xs font-medium text-muted-foreground">{t('sLAConfigDialog.name')}</label>
             <input
               id="sla-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Critical Servers SLA"
+              placeholder={t('sLAConfigDialog.eGCriticalServersSla')}
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
           </div>
@@ -170,7 +173,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
           {/* RPO / RTO */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="sla-rpo" className="text-xs font-medium text-muted-foreground">RPO Target (minutes)</label>
+              <label htmlFor="sla-rpo" className="text-xs font-medium text-muted-foreground">{t('sLAConfigDialog.rpoTargetMinutes')}</label>
               <input
                 id="sla-rpo"
                 type="number"
@@ -181,7 +184,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
               />
             </div>
             <div>
-              <label htmlFor="sla-rto" className="text-xs font-medium text-muted-foreground">RTO Target (minutes)</label>
+              <label htmlFor="sla-rto" className="text-xs font-medium text-muted-foreground">{t('sLAConfigDialog.rtoTargetMinutes')}</label>
               <input
                 id="sla-rto"
                 type="number"
@@ -195,7 +198,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
 
           {/* Target Scope */}
           <div>
-            <label className="text-xs font-medium text-muted-foreground">Target Scope</label>
+            <label className="text-xs font-medium text-muted-foreground">{t('sLAConfigDialog.targetScope')}</label>
             <div className="mt-2 flex gap-2">
               <button
                 type="button"
@@ -205,8 +208,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
                   scopeMode === 'devices' ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                Devices
-              </button>
+                {t('sLAConfigDialog.devices')} </button>
               <button
                 type="button"
                 onClick={() => setScopeMode('groups')}
@@ -215,14 +217,13 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
                   scopeMode === 'groups' ? 'border-primary bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'
                 )}
               >
-                Device Groups
-              </button>
+                {t('sLAConfigDialog.deviceGroups')} </button>
             </div>
 
             {scopeMode === 'devices' && (
               <div className="mt-2 max-h-32 overflow-y-auto rounded-md border bg-muted/10 p-2">
                 {devices.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No devices available.</p>
+                  <p className="text-xs text-muted-foreground">{t('sLAConfigDialog.noDevicesAvailable')}</p>
                 ) : (
                   devices.map((d) => (
                     <label key={d.id} className="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-muted/20">
@@ -242,7 +243,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
             {scopeMode === 'groups' && (
               <div className="mt-2 max-h-32 overflow-y-auto rounded-md border bg-muted/10 p-2">
                 {groups.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No device groups available.</p>
+                  <p className="text-xs text-muted-foreground">{t('sLAConfigDialog.noDeviceGroupsAvailable')}</p>
                 ) : (
                   groups.map((g) => (
                     <label key={g.id} className="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-muted/20">
@@ -263,8 +264,8 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
           {/* Toggles */}
           <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
             <div>
-              <p className="text-sm font-medium">Alert on breach</p>
-              <p className="text-xs text-muted-foreground">Send alert when SLA is breached</p>
+              <p className="text-sm font-medium">{t('sLAConfigDialog.alertOnBreach')}</p>
+              <p className="text-xs text-muted-foreground">{t('sLAConfigDialog.sendAlertWhenSlaIsBreached')}</p>
             </div>
             <button
               type="button"
@@ -280,8 +281,8 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
 
           <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
             <div>
-              <p className="text-sm font-medium">Active</p>
-              <p className="text-xs text-muted-foreground">Enable SLA monitoring</p>
+              <p className="text-sm font-medium">{t('sLAConfigDialog.active')}</p>
+              <p className="text-xs text-muted-foreground">{t('sLAConfigDialog.enableSlaMonitoring')}</p>
             </div>
             <button
               type="button"
@@ -303,8 +304,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
             onClick={() => onClose()}
             className="rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted"
           >
-            Cancel
-          </button>
+            {t('sLAConfigDialog.cancel')} </button>
           <button
             type="button"
             onClick={handleSave}

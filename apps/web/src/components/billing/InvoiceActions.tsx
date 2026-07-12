@@ -1,4 +1,6 @@
 import { useCallback, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -34,6 +36,7 @@ interface Props {
  * issued-lifecycle rail, not the header.
  */
 export default function InvoiceActions({ detail, onChanged, variant }: Props) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
@@ -41,7 +44,7 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
   const { download: downloadPdf, downloading } = usePdfDownload({
     path: `/invoices/${invoice.id}/pdf`,
     filename: `${invoice.invoiceNumber ?? `invoice-${invoice.id}`}.pdf`,
-    errorMessage: 'Could not download the invoice PDF.',
+    errorMessage: t('invoiceActions.downloadPdfError'),
   });
 
   // Distinct in-flight flag so the Issue buttons can show an unambiguous
@@ -66,8 +69,8 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
       // Issue first; on success optionally send.
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/issue`, { method: 'POST' }),
-        errorFallback: 'Could not issue invoice.',
-        successMessage: alsoSend ? undefined : 'Invoice issued',
+        errorFallback: t('invoiceActions.issueError'),
+        successMessage: alsoSend ? undefined : t('invoiceActions.issueSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
       if (alsoSend) {
@@ -77,17 +80,17 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
         // runAction's own success toast and post-process the result ourselves.
         const result = await runAction<{ data: { emailed: boolean } }>({
           request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, { method: 'POST' }),
-          errorFallback: 'Invoice issued, but sending failed.',
+          errorFallback: t('invoiceActions.issueSendError'),
           onUnauthorized: UNAUTHORIZED,
         });
         if (result?.data?.emailed) {
-          showToast({ type: 'success', message: 'Invoice issued and sent' });
+          showToast({ type: 'success', message: t('invoiceActions.issueSentSuccess') });
         } else {
-          showToast({ type: 'warning', message: 'Invoice issued — but no email was sent (no billing contact / email not configured)' });
+          showToast({ type: 'warning', message: t('invoiceActions.issueNoEmailWarning') });
         }
       }
     } catch (err) {
-      handleActionError(err, 'Could not issue invoice.');
+      handleActionError(err, t('invoiceActions.issueError'));
     } finally {
       // Always refresh: if issue succeeded but send threw, we still need to leave
       // the draft editor so a second click doesn't re-issue and hit 409 NOT_A_DRAFT.
@@ -95,7 +98,7 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
       setIssuing(false);
       setIssueSendOpen(false);
     }
-  }, [issuing, invoice.id, refresh]);
+  }, [issuing, invoice.id, refresh, t]);
 
   const remove = useCallback(async () => {
     if (deleting) return;
@@ -103,18 +106,18 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
     try {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}`, { method: 'DELETE' }),
-        errorFallback: 'Could not delete the draft.',
-        successMessage: 'Draft deleted',
+        errorFallback: t('invoiceActions.deleteError'),
+        successMessage: t('invoiceActions.deleteSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
       setDelOpen(false);
       void navigateTo('/billing/invoices');
     } catch (err) {
-      handleActionError(err, 'Could not delete the draft.');
+      handleActionError(err, t('invoiceActions.deleteError'));
     } finally {
       setDeleting(false);
     }
-  }, [deleting, invoice.id]);
+  }, [deleting, invoice.id, t]);
 
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
@@ -146,22 +149,22 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
               onClick={() => void issue(false)}
               disabled={issueDisabled}
               aria-describedby={!hasVisibleLines ? `invoice-no-visible-hint-${variant}` : undefined}
-              title={!hasVisibleLines ? 'Add at least one customer-visible line to issue.' : undefined}
+              title={!hasVisibleLines ? t('invoiceActions.noVisibleLineHint') : undefined}
               data-testid="invoice-issue"
               className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
             >
-              {issuing ? 'Issuing…' : 'Issue'}
+              {issuing ? t('invoiceActions.issuing') : t('invoiceActions.issue')}
             </button>
             <button
               type="button"
               onClick={() => setIssueSendOpen(true)}
               disabled={issueDisabled}
               aria-describedby={!hasVisibleLines ? `invoice-no-visible-hint-${variant}` : undefined}
-              title={!hasVisibleLines ? 'Add at least one customer-visible line to issue.' : undefined}
+              title={!hasVisibleLines ? t('invoiceActions.noVisibleLineHint') : undefined}
               data-testid="invoice-issue-send"
               className={`${btnBase} bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
             >
-              {issuing ? 'Issuing…' : 'Issue & Send'}
+              {issuing ? t('invoiceActions.issuing') : t('invoiceActions.issueAndSend')}
             </button>
           </>
         )}
@@ -174,7 +177,7 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
             data-testid="invoice-download-pdf"
             className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
           >
-            {downloading ? 'Preparing…' : 'Download PDF'}
+            {downloading ? t('invoiceActions.preparing') : t('invoiceActions.downloadPdf')}
           </button>
         )}
         {canDelete && (
@@ -184,7 +187,7 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
             data-testid="invoice-delete-open"
             className={`${btnBase} border border-destructive/40 text-destructive hover:bg-destructive/10`}
           >
-            Delete draft
+            {t('invoiceActions.deleteDraft')}
           </button>
         )}
         {canIssue && !hasVisibleLines && (
@@ -197,7 +200,7 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
             data-testid="invoice-no-visible-hint"
             className={header ? 'basis-full text-xs text-muted-foreground text-right' : 'text-center text-xs text-muted-foreground'}
           >
-            Add at least one customer-visible line to issue.
+            {t('invoiceActions.noVisibleLineHint')}
           </p>
         )}
       </div>
@@ -208,9 +211,12 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
         onConfirm={() => void issue(true)}
         isLoading={issuing}
         variant="warning"
-        title="Issue and send this invoice?"
-        message={`This issues the invoice and emails it to ${invoice.billToName ?? 'the customer'} for ${formatMoney(invoice.total, currency)}. This can't be undone.`}
-        confirmLabel="Issue & Send"
+        title={t('invoiceActions.issueSendConfirm.title')}
+        message={t('invoiceActions.issueSendConfirm.message', {
+          customer: invoice.billToName ?? t('invoiceActions.issueSendConfirm.customerFallback'),
+          amount: formatMoney(invoice.total, currency),
+        })}
+        confirmLabel={t('invoiceActions.issueAndSend')}
         confirmTestId="invoice-issue-send-confirm"
       />
       <ConfirmDialog
@@ -218,9 +224,9 @@ export default function InvoiceActions({ detail, onChanged, variant }: Props) {
         onClose={() => setDelOpen(false)}
         onConfirm={() => void remove()}
         isLoading={deleting}
-        title="Delete draft invoice"
-        message="This permanently deletes the draft invoice. This cannot be undone."
-        confirmLabel="Delete draft"
+        title={t('invoiceActions.deleteConfirm.title')}
+        message={t('invoiceActions.deleteConfirm.message')}
+        confirmLabel={t('invoiceActions.deleteDraft')}
         confirmTestId="invoice-delete-confirm"
       />
     </>

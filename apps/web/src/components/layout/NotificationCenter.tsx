@@ -9,6 +9,7 @@ import {
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../stores/auth';
+import { useTranslation } from 'react-i18next';
 
 const POLL_INTERVAL_MS = 30000;
 
@@ -151,6 +152,7 @@ const normalizeNotification = (raw: RawNotification, index: number): Notificatio
 };
 
 export default function NotificationCenter() {
+  const { t } = useTranslation('common');
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -338,7 +340,7 @@ export default function NotificationCenter() {
         ref={triggerRef}
         onClick={() => setIsOpen(!isOpen)}
         className="relative rounded-md p-2 hover:bg-muted"
-        aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+        aria-label={unreadCount > 0 ? t('layout.notifications.ariaUnread', { count: unreadCount }) : t('layout.notifications.title')}
         aria-haspopup="dialog"
         aria-expanded={isOpen}
       >
@@ -354,9 +356,9 @@ export default function NotificationCenter() {
         <div className="absolute right-0 top-full z-50 mt-2 w-[380px] max-w-[calc(100vw-1.5rem)] rounded-md border bg-popover shadow-lg">
           <div className="flex items-start justify-between gap-4 border-b px-4 py-3">
             <div>
-              <p className="text-sm font-semibold text-foreground">Notifications</p>
+              <p className="text-sm font-semibold text-foreground">{t('layout.notifications.title')}</p>
               <p className="text-xs text-muted-foreground">
-                {unreadCount} unread
+                {t('layout.notifications.unread', { count: unreadCount })}
               </p>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
@@ -372,7 +374,7 @@ export default function NotificationCenter() {
                     'cursor-not-allowed opacity-50'
                 )}
               >
-                Mark all read
+                {t('layout.notifications.markAllRead')}
               </button>
               <button
                 type="button"
@@ -386,7 +388,7 @@ export default function NotificationCenter() {
                     'cursor-not-allowed opacity-50'
                 )}
               >
-                Mark all unread
+                {t('layout.notifications.markAllUnread')}
               </button>
               {confirmClear ? (
                 <>
@@ -398,14 +400,14 @@ export default function NotificationCenter() {
                     }}
                     className="rounded-md border border-destructive bg-destructive/10 px-2 py-1 font-medium text-destructive transition hover:bg-destructive/20"
                   >
-                    Confirm clear
+                    {t('layout.notifications.confirmClear')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmClear(false)}
                     className="rounded-md border px-2 py-1 transition hover:bg-muted"
                   >
-                    Cancel
+                    {t('actions.cancel')}
                   </button>
                 </>
               ) : (
@@ -418,7 +420,7 @@ export default function NotificationCenter() {
                     notifications.length === 0 && 'cursor-not-allowed opacity-50'
                   )}
                 >
-                  Clear all
+                  {t('layout.notifications.clearAll')}
                 </button>
               )}
             </div>
@@ -427,7 +429,7 @@ export default function NotificationCenter() {
           <div className="max-h-96 overflow-y-auto">
             {isLoading ? (
               <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-                Loading notifications...
+                {t('layout.notifications.loading')}
               </div>
             ) : error ? (
               <div className="px-4 py-6 text-center text-sm text-destructive">
@@ -435,14 +437,14 @@ export default function NotificationCenter() {
               </div>
             ) : notifications.length === 0 ? (
               <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-                No notifications yet.
+                {t('layout.notifications.empty')}
               </div>
             ) : (
               notifications.map((notification) => {
                 const config = typeConfig[notification.type];
                 const Icon = config.icon;
                 const timeLabel = notification.timeUnknown
-                  ? 'Recently'
+                  ? t('layout.notifications.recently')
                   : formatRelativeTime(new Date(notification.createdAt));
 
                 return (
@@ -498,7 +500,7 @@ export default function NotificationCenter() {
                       }}
                       className="mt-0.5 shrink-0 rounded-md border px-2 py-1 text-xs transition hover:bg-muted"
                     >
-                      {notification.read ? 'Mark unread' : 'Mark read'}
+                      {notification.read ? t('layout.notifications.markUnread') : t('layout.notifications.markRead')}
                     </button>
                   </div>
                 );
@@ -511,7 +513,7 @@ export default function NotificationCenter() {
               href="/settings/organization"
               className="text-xs font-medium text-primary hover:underline"
             >
-              Notification preferences
+              {t('layout.notifications.preferences')}
             </a>
           </div>
         </div>

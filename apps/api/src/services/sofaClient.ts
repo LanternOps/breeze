@@ -2,6 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../db';
 import { osVulnerabilities, vulnerabilities, vulnerabilitySources } from '../db/schema';
+import { assertSomeValidCveIds, isValidCveId, warnMalformedCveIds } from './cveId';
 
 const SOFA_MACOS_FEED_URL = 'https://sofafeed.macadmins.io/v2/macos_data_feed.json';
 
@@ -33,6 +34,9 @@ function asString(value: unknown): string | null {
 export function parseSofa(doc: unknown): SofaRecord[] {
   const root = asObject(doc);
   const records: SofaRecord[] = [];
+  const malformedCveIds = new Set<string>();
+  let cveKeyCount = 0;
+  let validCveIdCount = 0;
 
   for (const osVersion of asArray(root?.OSVersions)) {
     const osNode = asObject(osVersion);
@@ -50,7 +54,15 @@ export function parseSofa(doc: unknown): SofaRecord[] {
       );
 
       for (const cveId of Object.keys(cves)) {
+        cveKeyCount += 1;
         if (!cveId) continue;
+        // Upstream garbage guard (#2261): drop records whose CVE id doesn't
+        // match the canonical shape (would overflow varchar(32) and abort the sync).
+        if (!isValidCveId(cveId)) {
+          malformedCveIds.add(cveId);
+          continue;
+        }
+        validCveIdCount += 1;
         records.push({
           osLine,
           fixedVersion,
@@ -61,6 +73,13 @@ export function parseSofa(doc: unknown): SofaRecord[] {
     }
   }
 
+  assertSomeValidCveIds({
+    tag: 'SofaClient',
+    entryCount: cveKeyCount,
+    validCount: validCveIdCount,
+    malformedIds: malformedCveIds,
+  });
+  warnMalformedCveIds('SofaClient', malformedCveIds);
   return records;
 }
 
@@ -220,7 +239,15 @@ export async function syncSofa(
     return await withSystemDbAccessContext(async () => {
       const now = new Date();
       const vulnerabilityIds = new Map<string, string>();
+      const skippedCveIds = new Set<string>();
       for (const vuln of distinctCves(recs)) {
+        // Defense-in-depth re-check of the parse-boundary validation (#2261).
+        // Everything here runs in one transaction, so letting a malformed id
+        // reach the INSERT would poison the whole run — skip it instead.
+        if (!isValidCveId(vuln.cveId)) {
+          skippedCveIds.add(vuln.cveId);
+          continue;
+        }
         vulnerabilityIds.set(vuln.cveId, await upsertSofaVulnerability({
           cveId: vuln.cveId,
           activelyExploited: vuln.activelyExploited,
@@ -249,6 +276,7 @@ export async function syncSofa(
         }
       }
 
+      warnMalformedCveIds('SofaClient/sync', skippedCveIds);
       await upsertSofaSourceSuccess(now);
       return { vulns: vulnerabilityIds.size, osFacts };
     });

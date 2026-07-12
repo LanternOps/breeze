@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tokens, User } from './auth';
+import { applyResolvedLocalePreferences } from '@/lib/appearance';
 import {
   apiAcceptInvite,
   apiLogin,
@@ -8,12 +9,23 @@ import {
   apiResetPassword,
   apiVerifyMFA,
   AuthSessionExpiredError,
+  fetchAndApplyPreferences,
   fetchWithAuth,
   resolveApiOrigin,
   restoreAccessTokenFromCookie,
   useAuthStore,
   waitForPendingRefresh
 } from './auth';
+
+// fetchAndApplyPreferences (auth.ts) is the only call site for these two exports
+// (verified via grep on auth.ts) — mocking the whole appearance module is safe
+// for the rest of this file. This isolates the auth.ts -> appearance.ts seam so
+// a rename on either side (e.g. data.partnerDefaultLocale) fails a test instead
+// of silently passing.
+vi.mock('@/lib/appearance', () => ({
+  applyAppearancePreferences: vi.fn(),
+  applyResolvedLocalePreferences: vi.fn()
+}));
 
 const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -698,5 +710,100 @@ describe('resolveApiOrigin', () => {
     // Must be an absolute origin (scheme + host) with no path, so callers can
     // safely append /api/v1/... without producing a scheme-less or doubled URL.
     expect(origin).toMatch(/^https?:\/\/[^/]+$/);
+  });
+});
+
+describe('fetchAndApplyPreferences locale wiring', () => {
+  const applyResolvedLocalePreferencesMock = vi.mocked(applyResolvedLocalePreferences);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem('breeze-auth');
+    document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
+    useAuthStore.setState({
+      user: null,
+      tokens: null,
+      isAuthenticated: false,
+      isLoading: false,
+      mfaPending: false,
+      mfaTempToken: null
+    });
+    useAuthStore.getState().login(baseUser, baseTokens);
+  });
+
+  // Payload shape mirrors GET /users/me in apps/api/src/routes/users.ts:
+  // preferences.locale is the user's own choice, partnerDefaultLocale is a
+  // top-level sibling field (not nested under preferences).
+  it('calls applyResolvedLocalePreferences with the user locale and partner default when both are set', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: { theme: 'dark', locale: 'pt-BR' },
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: 'pt-BR',
+        permissions: [],
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchAndApplyPreferences();
+
+    expect(applyResolvedLocalePreferencesMock).toHaveBeenCalledTimes(1);
+    expect(applyResolvedLocalePreferencesMock).toHaveBeenCalledWith('pt-BR', 'pt-BR');
+  });
+
+  it('calls applyResolvedLocalePreferences with an absent user locale and the partner default', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        // No locale field: the user hasn't chosen one yet.
+        preferences: { theme: 'dark' },
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: 'pt-BR',
+        permissions: [],
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchAndApplyPreferences();
+
+    expect(applyResolvedLocalePreferencesMock).toHaveBeenCalledTimes(1);
+    expect(applyResolvedLocalePreferencesMock).toHaveBeenCalledWith(undefined, 'pt-BR');
+  });
+
+  it('does not call applyResolvedLocalePreferences and logs a warning when the response is not ok', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ error: 'server error' }, false, 500));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchAndApplyPreferences();
+
+    expect(applyResolvedLocalePreferencesMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [message] = warnSpy.mock.calls[0] as [string];
+    expect(message).toContain('locale resolution skipped');
+  });
+
+  it('does not throw and logs a warning when the fetch itself throws', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchAndApplyPreferences()).resolves.toBeUndefined();
+
+    expect(applyResolvedLocalePreferencesMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const [message] = warnSpy.mock.calls[0] as [string];
+    expect(message).toContain('locale resolution skipped');
   });
 });

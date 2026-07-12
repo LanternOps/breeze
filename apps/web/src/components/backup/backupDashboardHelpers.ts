@@ -7,6 +7,7 @@ import {
   ShieldAlert,
   XCircle
 } from 'lucide-react';
+import { formatNumber } from '@/lib/i18n/format';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -217,7 +218,7 @@ export function formatBytes(bytes: number): string {
   }
 
   const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+  return `${formatNumber(value, { minimumFractionDigits: precision, maximumFractionDigits: precision })} ${units[unitIndex]}`;
 }
 
 export function formatTime(iso?: string | null): string {

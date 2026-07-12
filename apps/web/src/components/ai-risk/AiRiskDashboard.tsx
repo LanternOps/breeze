@@ -1,28 +1,40 @@
-import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Loader2, BrainCircuit, Shield, BarChart3, CheckCircle2, Gauge, AlertTriangle } from 'lucide-react';
-import { fetchWithAuth } from '../../stores/auth';
-import { TierOverviewMatrix } from './TierOverviewMatrix';
-import { ToolExecutionAnalytics } from './ToolExecutionAnalytics';
-import { ApprovalHistoryFeed } from './ApprovalHistoryFeed';
-import { RateLimitStatus } from './RateLimitStatus';
-import { RejectionDenialLog } from './RejectionDenialLog';
-import { formatTime } from '@/lib/dateTimeFormat';
-
-type TimeRange = '24h' | '7d' | '30d';
-
+import { useTranslation } from "react-i18next";
+import "@/lib/i18n";
+import { useState, useEffect, useCallback } from "react";
+import {
+  RefreshCw,
+  Loader2,
+  BrainCircuit,
+  Shield,
+  BarChart3,
+  CheckCircle2,
+  Gauge,
+  AlertTriangle,
+} from "lucide-react";
+import { fetchWithAuth } from "../../stores/auth";
+import { TierOverviewMatrix } from "./TierOverviewMatrix";
+import { ToolExecutionAnalytics } from "./ToolExecutionAnalytics";
+import { ApprovalHistoryFeed } from "./ApprovalHistoryFeed";
+import { RateLimitStatus } from "./RateLimitStatus";
+import { RejectionDenialLog } from "./RejectionDenialLog";
+import { formatTime } from "@/lib/dateTimeFormat";
+type TimeRange = "24h" | "7d" | "30d";
 interface ToolExecSummary {
   total: number;
   byStatus: Record<string, number>;
-  byTool: Array<{ toolName: string; count: number; avgDurationMs: number | null; successRate: number }>;
+  byTool: Array<{
+    toolName: string;
+    count: number;
+    avgDurationMs: number | null;
+    successRate: number;
+  }>;
 }
-
 interface TimeSeriesPoint {
   date: string;
   completed: number;
   failed: number;
   rejected: number;
 }
-
 export interface ToolExecution {
   id: string;
   sessionId: string;
@@ -36,7 +48,6 @@ export interface ToolExecution {
   createdAt: string;
   completedAt: string | null;
 }
-
 export interface SecurityEvent {
   id: string;
   timestamp: string;
@@ -49,82 +60,102 @@ export interface SecurityEvent {
   errorMessage: string | null;
   details: unknown;
 }
-
 export interface ToolExecData {
   summary: ToolExecSummary;
   timeSeries: TimeSeriesPoint[];
   executions: ToolExecution[];
 }
-
-type Tab = 'guardrails' | 'analytics' | 'approvals' | 'rate-limits' | 'denials';
-
-const TABS: Array<{ id: Tab; label: string; icon: typeof Shield }> = [
-  { id: 'guardrails', label: 'Guardrails', icon: Shield },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-  { id: 'approvals', label: 'Approvals', icon: CheckCircle2 },
-  { id: 'rate-limits', label: 'Rate Limits', icon: Gauge },
-  { id: 'denials', label: 'Denials', icon: AlertTriangle },
+type Tab = "guardrails" | "analytics" | "approvals" | "rate-limits" | "denials";
+const TABS: Array<{
+  id: Tab;
+  labelKey: string;
+  icon: typeof Shield;
+}> = [
+  {
+    id: "guardrails",
+    labelKey: "aiRiskAiRiskDashboard.guardrails",
+    icon: Shield,
+  },
+  {
+    id: "analytics",
+    labelKey: "aiRiskAiRiskDashboard.analytics",
+    icon: BarChart3,
+  },
+  {
+    id: "approvals",
+    labelKey: "aiRiskAiRiskDashboard.approvals",
+    icon: CheckCircle2,
+  },
+  {
+    id: "rate-limits",
+    labelKey: "aiRiskAiRiskDashboard.rateLimits",
+    icon: Gauge,
+  },
+  {
+    id: "denials",
+    labelKey: "aiRiskAiRiskDashboard.denials",
+    icon: AlertTriangle,
+  },
 ];
-
-const TIME_RANGES: { label: string; value: TimeRange }[] = [
-  { label: '24h', value: '24h' },
-  { label: '7d', value: '7d' },
-  { label: '30d', value: '30d' },
+const TIME_RANGES: {
+  labelKey: string;
+  value: TimeRange;
+}[] = [
+  { labelKey: "aiRiskAiRiskDashboard.value24h", value: "24h" },
+  { labelKey: "aiRiskAiRiskDashboard.value7d", value: "7d" },
+  { labelKey: "aiRiskAiRiskDashboard.value30d", value: "30d" },
 ];
-
 function getSinceDate(range: TimeRange): string {
-  const ms = { '24h': 86400000, '7d': 604800000, '30d': 2592000000 }[range];
+  const ms = { "24h": 86400000, "7d": 604800000, "30d": 2592000000 }[range];
   return new Date(Date.now() - ms).toISOString();
 }
-
 export default function AiRiskDashboard() {
-  const [activeTab, setActiveTab] = useState<Tab>('guardrails');
-  const [timeRange, setTimeRange] = useState<TimeRange>('7d');
+  const { t } = useTranslation("security");
+  const [activeTab, setActiveTab] = useState<Tab>("guardrails");
+  const [timeRange, setTimeRange] = useState<TimeRange>("7d");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [execData, setExecData] = useState<ToolExecData | null>(null);
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
-
-  const needsData = activeTab !== 'guardrails' && activeTab !== 'rate-limits';
-
+  const needsData = activeTab !== "guardrails" && activeTab !== "rate-limits";
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       const since = getSinceDate(timeRange);
-
       const [execResult, secResult] = await Promise.allSettled([
         fetchWithAuth(`/ai/admin/tool-executions?since=${since}&limit=200`),
         fetchWithAuth(`/ai/admin/security-events?since=${since}&limit=100`),
       ]);
-
-      if (execResult.status === 'fulfilled' && execResult.value.ok) {
+      if (execResult.status === "fulfilled" && execResult.value.ok) {
         setExecData(await execResult.value.json());
       } else {
-        throw new Error('Failed to load tool executions');
+        throw new Error(t("aiRiskAiRiskDashboard.failedToLoadToolExecutions"));
       }
-
-      if (secResult.status === 'fulfilled' && secResult.value.ok) {
+      if (secResult.status === "fulfilled" && secResult.value.ok) {
         const secJson = await secResult.value.json();
         setSecurityEvents(secJson.data ?? []);
       } else {
         setSecurityEvents([]);
-        setError('Security events could not be loaded. Denial data may be incomplete.');
+        setError(
+          t("aiRiskAiRiskDashboard.securityEventsCouldNotBeLoadedDenialData"),
+        );
       }
-
       setLastUpdated(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load data');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t("aiRiskAiRiskDashboard.failedToLoadData"),
+      );
     } finally {
       setLoading(false);
     }
   }, [timeRange]);
-
   useEffect(() => {
     fetchData();
   }, [fetchData]);
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -134,9 +165,13 @@ export default function AiRiskDashboard() {
             <BrainCircuit className="h-6 w-6 text-primary" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">AI Risk Engine</h1>
+            <h1 className="text-xl font-semibold tracking-tight">
+              {t("aiRiskAiRiskDashboard.aiRiskEngine")}
+            </h1>
             <p className="text-sm text-muted-foreground">
-              Tool execution guardrails, approval history, and analytics
+              {t(
+                "aiRiskAiRiskDashboard.toolExecutionGuardrailsApprovalHistoryAndAnalytics",
+              )}
             </p>
           </div>
         </div>
@@ -151,11 +186,11 @@ export default function AiRiskDashboard() {
                   onClick={() => setTimeRange(r.value)}
                   className={`px-3 py-1.5 text-sm font-medium transition-colors ${
                     timeRange === r.value
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-muted-foreground hover:text-foreground'
-                  } ${r.value === '24h' ? 'rounded-l-lg' : ''} ${r.value === '30d' ? 'rounded-r-lg' : ''}`}
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  } ${r.value === "24h" ? "rounded-l-lg" : ""} ${r.value === "30d" ? "rounded-r-lg" : ""}`}
                 >
-                  {r.label}
+                  {t(/* i18n-dynamic */ r.labelKey)}
                 </button>
               ))}
             </div>
@@ -172,13 +207,14 @@ export default function AiRiskDashboard() {
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              Refresh
+              {t("aiRiskAiRiskDashboard.refresh")}
             </button>
           )}
 
           {needsData && lastUpdated && (
             <span className="text-xs text-muted-foreground">
-              Updated {formatTime(lastUpdated)}
+              {t("aiRiskAiRiskDashboard.updated")}
+              {formatTime(lastUpdated)}
             </span>
           )}
         </div>
@@ -186,7 +222,10 @@ export default function AiRiskDashboard() {
 
       {/* Tabs */}
       <div className="border-b">
-        <nav className="-mb-px flex gap-1 overflow-x-auto" aria-label="Tabs">
+        <nav
+          className="-mb-px flex gap-1 overflow-x-auto"
+          aria-label={t("aiRiskAiRiskDashboard.tabs")}
+        >
           {TABS.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -196,12 +235,12 @@ export default function AiRiskDashboard() {
                 onClick={() => setActiveTab(tab.id)}
                 className={`inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
                   isActive
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-muted-foreground hover:border-muted-foreground/30 hover:text-foreground'
+                    ? "border-primary text-primary"
+                    : "border-transparent text-muted-foreground hover:border-muted-foreground/30 hover:text-foreground"
                 }`}
               >
                 <Icon className="h-4 w-4" />
-                {tab.label}
+                {t(/* i18n-dynamic */ tab.labelKey)}
               </button>
             );
           })}
@@ -216,22 +255,22 @@ export default function AiRiskDashboard() {
       )}
 
       {/* Tab content */}
-      {activeTab === 'guardrails' && <TierOverviewMatrix />}
+      {activeTab === "guardrails" && <TierOverviewMatrix />}
 
-      {activeTab === 'analytics' && (
+      {activeTab === "analytics" && (
         <ToolExecutionAnalytics data={execData} loading={loading} />
       )}
 
-      {activeTab === 'approvals' && (
+      {activeTab === "approvals" && (
         <ApprovalHistoryFeed
           executions={execData?.executions ?? []}
           loading={loading}
         />
       )}
 
-      {activeTab === 'rate-limits' && <RateLimitStatus />}
+      {activeTab === "rate-limits" && <RateLimitStatus />}
 
-      {activeTab === 'denials' && (
+      {activeTab === "denials" && (
         <RejectionDenialLog
           executions={execData?.executions ?? []}
           securityEvents={securityEvents}

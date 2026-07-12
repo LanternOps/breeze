@@ -1,4 +1,5 @@
 import type { FilterOperator, FilterFieldType } from '@breeze/shared';
+import { useTranslation } from 'react-i18next';
 
 interface OperatorSelectorProps {
   value: FilterOperator;
@@ -59,6 +60,7 @@ export function OperatorSelector({
   fieldType,
   className = ''
 }: OperatorSelectorProps) {
+  const { t } = useTranslation('common');
   // Filter operators based on field type for better UX
   const availableOperators = operators.filter(op => {
     // Hide operators that don't make sense for certain types
@@ -80,7 +82,7 @@ export function OperatorSelector({
     >
       {availableOperators.map((operator) => (
         <option key={operator} value={operator}>
-          {OPERATOR_LABELS[operator] || operator}
+          {t(/* i18n-dynamic */ `filters.operators.${operator}`, { defaultValue: OPERATOR_LABELS[operator] || operator })}
         </option>
       ))}
     </select>

@@ -30,6 +30,27 @@ export function requireOrgAccess(actor: InvoiceActor, orgId: string): void {
   }
 }
 
+/**
+ * Site-axis guard mirroring `siteAccessCheck` (middleware/auth.ts). An actor
+ * with no `allowedSiteIds` (undefined) is unrestricted — this is a no-op, so
+ * partner/system callers and all-sites org users are unaffected. A site-restricted
+ * actor may only touch a siteId in its allowlist; a null/undefined siteId (an
+ * org-level invoice with no site) is DENIED, exactly as the auth closure denies a
+ * restricted caller for a null site.
+ */
+export function requireSiteAccess(actor: InvoiceActor, siteId: string | null | undefined): void {
+  if (!actor.allowedSiteIds) return; // unrestricted (partner/system, or all-sites org user)
+  if (!siteId || !actor.allowedSiteIds.includes(siteId)) {
+    throw new InvoiceServiceError('Site access denied', 403, 'SITE_DENIED');
+  }
+}
+
+/** Org + site guard for a loaded invoice row (the common case). */
+export function requireInvoiceAccess(actor: InvoiceActor, inv: { orgId: string; siteId: string | null }): void {
+  requireOrgAccess(actor, inv.orgId);
+  requireSiteAccess(actor, inv.siteId);
+}
+
 async function getOwnedInvoiceOr404(id: string) {
   const rows = await db.select().from(invoices).where(eq(invoices.id, id)).limit(1);
   if (!rows[0]) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
@@ -43,6 +64,7 @@ function assertDraft(inv: { status: string }): void {
 export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string; termsAndConditions?: string }, actor: InvoiceActor) {
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
+  requireSiteAccess(actor, input.siteId ?? null);
   const rows = await db.insert(invoices).values({
     partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft',
     notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null, createdBy: actor.userId
@@ -91,7 +113,7 @@ async function insertLineAndRecompute(
 }
 
 export async function addManualLine(invoiceId: string, input: ManualLineInput, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
+  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
   const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice));
   return insertLineAndRecompute(invoiceId, inv.orgId, {
     sourceType: 'manual', sourceId: null, catalogItemId: null, parentLineId: null, ticketId: null,
@@ -102,7 +124,7 @@ export async function addManualLine(invoiceId: string, input: ManualLineInput, a
 }
 
 export async function addCatalogLine(invoiceId: string, catalogItemId: string, quantity: number, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
+  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
   const resolved = await resolvePrice(catalogItemId, inv.orgId, { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds });
   const [item] = await db.select({ name: catalogItems.name, description: catalogItems.description, isBundle: catalogItems.isBundle }).from(catalogItems).where(eq(catalogItems.id, catalogItemId)).limit(1);
   if (item?.isBundle) throw new InvoiceServiceError('Use addBundleLine for bundles', 400, 'INVALID_STATE');
@@ -116,7 +138,7 @@ export async function addCatalogLine(invoiceId: string, catalogItemId: string, q
 }
 
 export async function addBundleLine(invoiceId: string, bundleId: string, quantity: number, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
+  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
   const catalogActor = { userId: actor.userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
   const econ = await computeBundleEconomics(bundleId, inv.orgId, catalogActor); // throws NOT_A_BUNDLE etc.
   const [bundle] = await db.select({ name: catalogItems.name, description: catalogItems.description }).from(catalogItems).where(eq(catalogItems.id, bundleId)).limit(1);
@@ -173,7 +195,7 @@ export async function addContractLine(
   },
   actor: InvoiceActor
 ) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
+  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
 
   // Quantity is always engine-supplied (e.g. device count) — normalize but do not override.
   const quantity = String(input.quantity);
@@ -211,7 +233,7 @@ export async function addContractLine(
 }
 
 export async function updateLine(invoiceId: string, lineId: string, patch: { name?: string | null; description?: string | null; quantity?: number; unitPrice?: number; taxable?: boolean; customerVisible?: boolean }, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
+  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
   const [existing] = await db.select().from(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId))).limit(1);
   if (!existing) throw new InvoiceServiceError('Line not found', 404, 'LINE_NOT_FOUND');
   const quantity = patch.quantity != null ? String(patch.quantity) : existing.quantity;
@@ -227,7 +249,7 @@ export async function updateLine(invoiceId: string, lineId: string, patch: { nam
 }
 
 export async function removeLine(invoiceId: string, lineId: string, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
+  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
   // cascade FK removes bundle children when a parent is deleted
   await db.delete(invoiceLines).where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId)));
   await recomputeInvoiceTotals(invoiceId);
@@ -235,7 +257,7 @@ export async function removeLine(invoiceId: string, lineId: string, actor: Invoi
 }
 
 export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireOrgAccess(actor, inv.orgId);
+  const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
   await db.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
 }
 
@@ -249,7 +271,10 @@ export async function updateInvoice(
 ) {
   const inv = await getOwnedInvoiceOr404(invoiceId);
   assertDraft(inv);
-  requireOrgAccess(actor, inv.orgId);
+  requireInvoiceAccess(actor, inv);
+  // A site-restricted caller may not move the invoice to a site it can't access
+  // (nor clear it to null, which a restricted caller can never see).
+  if (patch.siteId !== undefined) requireSiteAccess(actor, patch.siteId);
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (patch.notes !== undefined) set.notes = patch.notes;
   if (patch.siteId !== undefined) set.siteId = patch.siteId;     // null clears it
@@ -267,7 +292,7 @@ export async function updateInvoice(
  */
 export async function updateIssuedDueDate(invoiceId: string, dueDate: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId);
-  requireOrgAccess(actor, inv.orgId);
+  requireInvoiceAccess(actor, inv);
   if (!['sent', 'partially_paid', 'overdue'].includes(inv.status)) {
     throw new InvoiceServiceError('Due date can only be changed on an open issued invoice', 409, 'INVALID_STATE');
   }
@@ -279,7 +304,7 @@ export async function updateIssuedDueDate(invoiceId: string, dueDate: string, ac
 }
 
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
-  const inv = await getOwnedInvoiceOr404(invoiceId); requireOrgAccess(actor, inv.orgId);
+  const inv = await getOwnedInvoiceOr404(invoiceId); requireInvoiceAccess(actor, inv);
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
   // Whether this invoice's partner can collect online (gates the "Send payment
   // link" UI). Partner-axis read under a partner/system request scope, so the
@@ -301,6 +326,10 @@ export async function listInvoices(query: { orgId?: string; status?: string; lim
   const conds = [] as Array<ReturnType<typeof eq>>;
   if (query.orgId) { requireOrgAccess(actor, query.orgId); conds.push(eq(invoices.orgId, query.orgId)); }
   if (query.status) conds.push(eq(invoices.status, query.status as never));
+  // Site-restricted callers only see invoices assigned to a site in their allowlist.
+  // `siteId IN (...)` is false for NULL, so null-site (org-level) invoices are
+  // excluded — consistent with requireSiteAccess denying a restricted caller a null site.
+  if (actor.allowedSiteIds) conds.push(inArray(invoices.siteId, actor.allowedSiteIds) as ReturnType<typeof eq>);
   // Deterministic keyset: order by (createdAt, id) desc. The cursor is the last
   // row's id; resolve its createdAt and filter (createdAt, id) < (cursorCreatedAt, cursorId).
   if (query.cursor) {
@@ -430,6 +459,7 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
 export async function assembleDraftFromOrg(input: { orgId: string; siteId?: string; from: string; to: string }, actor: InvoiceActor) {
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
+  requireSiteAccess(actor, input.siteId ?? null);
   const from = new Date(input.from + 'T00:00:00Z');
   const to = new Date(input.to + 'T23:59:59Z');
   const specs = [...(await gatherOrgTimeEntries(input.orgId, from, to)), ...(await gatherOrgParts(input.orgId, from, to))];
@@ -445,6 +475,9 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   const [tk] = await db.select({ orgId: tickets.orgId }).from(tickets).where(eq(tickets.id, ticketId)).limit(1);
   if (!tk) throw new InvoiceServiceError('Ticket not found', 404, 'INVOICE_NOT_FOUND');
   requireOrgAccess(actor, tk.orgId);
+  // This path produces an org-level (null-site) invoice; a site-restricted caller
+  // can never see such a row, so deny it up front rather than orphan an invoice.
+  requireSiteAccess(actor, null);
   const specs = await gatherTicketBillables(ticketId);
   if (specs.length === 0) throw new InvoiceServiceError('Nothing billable on this ticket', 409, 'NOTHING_TO_INVOICE');
   const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', createdBy: actor.userId }).returning();
@@ -460,7 +493,7 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
 export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId);
   assertDraft(inv);
-  requireOrgAccess(actor, inv.orgId);
+  requireInvoiceAccess(actor, inv);
 
   // Gather source rows referenced by lines, for the double-bill guard + flip.
   const lines = await db.select({ id: invoiceLines.id, sourceType: invoiceLines.sourceType, sourceId: invoiceLines.sourceId, customerVisible: invoiceLines.customerVisible }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
@@ -570,7 +603,7 @@ export async function recomputeInvoiceStatus(invoiceId: string): Promise<void> {
 
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId);
-  requireOrgAccess(actor, inv.orgId);
+  requireInvoiceAccess(actor, inv);
   if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
   if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
   // Exact integer-cents comparison — robust against float representation error.
@@ -606,7 +639,11 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
 export async function voidPayment(paymentId: string, actor: InvoiceActor) {
   const [pay] = await db.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
   if (!pay) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
-  requireOrgAccess(actor, pay.orgId);
+  // The payment row carries orgId but not siteId; load the parent invoice so the
+  // site-axis guard runs against the invoice's site (a site-restricted caller must
+  // not void a payment on an out-of-site invoice).
+  const parentInv = await getOwnedInvoiceOr404(pay.invoiceId);
+  requireInvoiceAccess(actor, parentInv);
   // Capture the destroyed row's financial details BEFORE the delete so the voided
   // payment survives in the durable audit chain even after the row is gone.
   const audit = {
@@ -627,7 +664,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
 
 export async function listPayments(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId);
-  requireOrgAccess(actor, inv.orgId);
+  requireInvoiceAccess(actor, inv);
   const rows = await db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId)).orderBy(invoicePayments.receivedAt);
   // Tag each payment's origin so the UI can badge online (Stripe) payments and
   // hide manual-void on them (Stripe payments are refunded through Stripe, not
@@ -646,7 +683,7 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
 
 export async function voidInvoice(invoiceId: string, reason: string, opts: { reissue?: boolean }, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId);
-  requireOrgAccess(actor, inv.orgId);
+  requireInvoiceAccess(actor, inv);
   if (inv.status === 'draft') throw new InvoiceServiceError('Delete drafts instead of voiding', 409, 'INVALID_STATE');
   if (inv.status === 'void') throw new InvoiceServiceError('Already void', 409, 'INVALID_STATE');
 

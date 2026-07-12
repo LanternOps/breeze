@@ -34,7 +34,12 @@ import {
 import { and, eq, desc, or, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { z } from 'zod';
-import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema, onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
+import {
+  eventLogInlineSettingsSchema,
+  monitoringInlineSettingsSchema,
+  onedriveHelperInlineSettingsSchema,
+  remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
+} from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
@@ -44,16 +49,44 @@ import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 // Inline settings schemas
 // ============================================
 
-// Remote access session consent/notification settings.
-// Exported so routes can import the same schema (single source of truth).
-// All fields are optional with spec-defined defaults so {} is always valid.
-export const remoteAccessInlineSettingsSchema = z.object({
-  sessionPromptMode: z.enum(['off', 'notify', 'consent']).default('notify'),
-  consentUnavailableBehavior: z.enum(['proceed', 'block']).default('proceed'),
+// Remote access session consent/notification enums — shared between the
+// consent-subset schema (decompose path, defaults applied) and the write-path
+// schema (route validation, plain optionals) below.
+const sessionPromptModeSchema = z.enum(['off', 'notify', 'consent']);
+const consentUnavailableBehaviorSchema = z.enum(['proceed', 'block']);
+const technicianIdentityLevelSchema = z.enum(['name_email', 'name', 'generic']);
+
+// Remote access session consent/notification settings (#1694) — the SUBSET of
+// the `remote_access` inlineSettings blob that decomposes into the normalized
+// config_policy_remote_access_settings row. All fields default so {} is valid.
+// Deliberately NOT strict: the same blob also carries the agent-facing
+// capability fields (webrtcDesktop, vncRelay, clipboard*, proxy, limits — see
+// remoteAccessInlineSettingsSchema in @breeze/shared/validators), which this
+// pick must ignore rather than reject (#2320).
+export const remoteAccessConsentSettingsSchema = z.object({
+  sessionPromptMode: sessionPromptModeSchema.default('notify'),
+  consentUnavailableBehavior: consentUnavailableBehaviorSchema.default('proceed'),
   notifyOnSessionEnd: z.boolean().default(true),
   showActiveIndicator: z.boolean().default(true),
-  technicianIdentityLevel: z.enum(['name_email', 'name', 'generic']).default('name_email'),
-}).strict();
+  technicianIdentityLevel: technicianIdentityLevelSchema.default('name_email'),
+});
+
+// Write-path validation for the WHOLE remote_access inlineSettings blob: the
+// capability fields the RemoteAccessTab edits (shared validator — the same
+// shape resolveRemoteAccessForDevice parses on the agent path) plus the
+// consent fields above, all optional. #1694 replaced this with the
+// consent-only .strict() schema, which rejected every capability-shape payload
+// ("Unrecognized keys: webrtcDesktop, ...") and made the Remote Access tab
+// unsavable (#2320). Non-strict on purpose: pre-existing rows can carry stale
+// keys that the tab round-trips back on save — strip them, don't reject.
+// Exported so routes can import the same schema (single source of truth).
+export const remoteAccessInlineSettingsSchema = remoteAccessCapabilitySettingsSchema.extend({
+  sessionPromptMode: sessionPromptModeSchema.optional(),
+  consentUnavailableBehavior: consentUnavailableBehaviorSchema.optional(),
+  notifyOnSessionEnd: z.boolean().optional(),
+  showActiveIndicator: z.boolean().optional(),
+  technicianIdentityLevel: technicianIdentityLevelSchema.optional(),
+});
 
 // Exported so the route can import the same schema (single source of truth).
 // uacInterceptionEnabled defaults to false on the read side (parsePamSettings)
@@ -604,7 +637,12 @@ async function decomposeInlineSettings(
     }
 
     case 'remote_access': {
-      const parsed = remoteAccessInlineSettingsSchema.parse(s);
+      // Pick out only the consent fields (#1694). The blob also carries the
+      // capability fields (webrtcDesktop, ...) that have no normalized columns
+      // — they live in the feature link's JSONB mirror, which the agent path
+      // (resolveRemoteAccessForDevice) reads directly. They must not make this
+      // parse throw (#2320).
+      const parsed = remoteAccessConsentSettingsSchema.parse(s);
       await tx.insert(configPolicyRemoteAccessSettings).values({
         featureLinkId: linkId,
         sessionPromptMode: parsed.sessionPromptMode,
@@ -1038,6 +1076,17 @@ export async function addFeatureLink(
     vulnerabilityInlineSettingsSchema.parse(inlineSettings);
   }
 
+  // Service-level backstop for callers that bypass the HTTP route's validation
+  // (the AI manage_policy_feature_link tool calls this directly). Validates the
+  // combined capability + consent shape and stores the PARSED result so unknown
+  // keys are stripped from the JSONB mirror on every path (an AI-guessed key
+  // like `remoteDesktop` must not be persisted-and-echoed as if it took effect
+  // — the runtime readers would silently ignore it). Decompose below re-picks
+  // the consent subset for the normalized row (#2320).
+  if (featureType === 'remote_access' && inlineSettings !== undefined && inlineSettings !== null) {
+    inlineSettings = remoteAccessInlineSettingsSchema.parse(inlineSettings);
+  }
+
   return db.transaction(async (tx) => {
     const effectiveInlineSettings =
       featureType === 'patch'
@@ -1099,6 +1148,27 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'vulnerability' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       vulnerabilityInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    // Same service-level backstop as addFeatureLink (AI tool path) — see #2320.
+    // remote_access updates use MERGE semantics: the incoming payload is
+    // validated + stripped, then merged over the (validated) currently stored
+    // blob. The blob is written by two surfaces — the RemoteAccessTab edits the
+    // capability fields, the consent fields (#1694) have no UI and arrive via
+    // the AI tool — and decompose below re-creates the normalized consent row
+    // from scratch with schema defaults. A replace-semantics partial update
+    // (e.g. AI sending only {webrtcDesktop: false}) would silently reset
+    // sessionPromptMode 'consent' → 'notify' and, inversely, a consent-only
+    // update would drop every capability key from the mirror, fail-open
+    // re-enabling deliberately disabled capabilities via the permissive
+    // baseline. Merging closes both holes; fields can only be changed, never
+    // implicitly reset (every field has a spec default anyway).
+    if (existing.featureType === 'remote_access' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      const incoming = remoteAccessInlineSettingsSchema.parse(updates.inlineSettings);
+      // Tolerate malformed/legacy stored blobs on the read side: safeParse and
+      // fall back to {} rather than making the whole update impossible.
+      const stored = remoteAccessInlineSettingsSchema.safeParse(existing.inlineSettings ?? {});
+      updates.inlineSettings = { ...(stored.success ? stored.data : {}), ...incoming };
     }
 
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
@@ -1175,6 +1245,19 @@ export async function listFeatureLinks(configPolicyId: string) {
               apps: storedInline.apps,
             })
           : storedInline;
+      } else if (featureType === 'remote_access' && assembled) {
+        // The normalized row (config_policy_remote_access_settings) holds ONLY
+        // the session-consent fields (#1694); the capability toggles the
+        // RemoteAccessTab edits (webrtcDesktop, vncRelay, clipboard*, proxy,
+        // limits) live ONLY in the feature link's JSONB mirror. Merge the two
+        // (normalized consent row wins) so reads don't hide the capability
+        // settings — otherwise the tab renders defaults and the next save
+        // writes those defaults back over the real values (#2320).
+        const mirror =
+          link.inlineSettings && typeof link.inlineSettings === 'object' && !Array.isArray(link.inlineSettings)
+            ? (link.inlineSettings as Record<string, unknown>)
+            : {};
+        effectiveInlineSettings = { ...mirror, ...(assembled as Record<string, unknown>) };
       } else {
         effectiveInlineSettings = assembled ?? link.inlineSettings;
       }
@@ -1368,6 +1451,100 @@ export async function validateAssignmentTarget(
     default:
       return { valid: false, error: 'Unsupported assignment target level' };
   }
+}
+
+/**
+ * Site-axis (SR5-07) authorization for a policy assignment target. This is a
+ * SEPARATE concern from `validateAssignmentTarget`, which only proves the target
+ * belongs to the policy's owning org/partner. `authorizeAssignmentTarget` proves
+ * the CALLER is permitted to touch the target under their site allowlist —
+ * Postgres RLS does NOT enforce the site sub-axis, so it must be checked here.
+ *
+ * No-op (allow) for an unrestricted caller (`allowedSiteIds` undefined). For a
+ * site-restricted caller it fails closed:
+ *  - organization/partner targets are denied outright — a site-scoped tech
+ *    cannot push a policy across a whole org or partner.
+ *  - site targets must be in the caller's site allowlist.
+ *  - device_group / device targets are resolved to their site and checked with
+ *    `canAccessSite` (a group/device with no site, or an unknown id, is denied).
+ *
+ * Callable at assignment time (create) AND re-checked at removal time using the
+ * stored assignment's level/targetId so a later site-restriction change can't be
+ * bypassed by deleting an assignment created earlier.
+ */
+export async function authorizeAssignmentTarget(
+  auth: AuthContext,
+  level: ConfigAssignmentLevel,
+  targetId: string
+): Promise<AssignmentTargetValidation> {
+  // Unrestricted caller (partner/system scope, or org user with no site
+  // restriction) — org/partner ownership is already enforced elsewhere.
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return { valid: true };
+  const canAccessSite = auth.canAccessSite;
+
+  switch (level) {
+    case 'partner':
+    case 'organization':
+      return {
+        valid: false,
+        error: 'Your access is restricted to specific sites — you cannot assign a policy at the organization or partner level.',
+      };
+
+    case 'site':
+      return canAccessSite(targetId)
+        ? { valid: true }
+        : { valid: false, error: 'Target site is outside your site access' };
+
+    case 'device_group': {
+      const [group] = await db
+        .select({ siteId: deviceGroups.siteId })
+        .from(deviceGroups)
+        .where(eq(deviceGroups.id, targetId))
+        .limit(1);
+      // Unknown group, or a group with no single site (org-wide), is denied for a
+      // site-restricted caller (fail closed).
+      return group && canAccessSite(group.siteId)
+        ? { valid: true }
+        : { valid: false, error: 'Target device group is outside your site access' };
+    }
+
+    case 'device': {
+      const [device] = await db
+        .select({ siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.id, targetId))
+        .limit(1);
+      return device && canAccessSite(device.siteId)
+        ? { valid: true }
+        : { valid: false, error: 'Target device is outside your site access' };
+    }
+
+    default:
+      return { valid: false, error: 'Unsupported assignment target level' };
+  }
+}
+
+/**
+ * Fetch a single assignment's identity (level + targetId) scoped to its policy.
+ * Used by the REST delete route to re-run the site-axis check against the
+ * stored target before removing the row.
+ */
+export async function getAssignment(assignmentId: string, configPolicyId: string) {
+  const [row] = await db
+    .select({
+      id: configPolicyAssignments.id,
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+    })
+    .from(configPolicyAssignments)
+    .where(
+      and(
+        eq(configPolicyAssignments.id, assignmentId),
+        eq(configPolicyAssignments.configPolicyId, configPolicyId)
+      )
+    )
+    .limit(1);
+  return row ?? null;
 }
 
 export async function unassignPolicy(assignmentId: string, configPolicyId: string) {

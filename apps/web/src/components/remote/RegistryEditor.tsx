@@ -22,6 +22,8 @@ import {
   Save
 } from 'lucide-react';
 import { cn, paddingLeftPxClass } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 // ============================================================================
 // Types
@@ -243,6 +245,7 @@ type ValueEditorModalProps = {
 };
 
 function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditorModalProps) {
+  const { t } = useTranslation('remote');
   const [name, setName] = useState(value?.name || '');
   const [type, setType] = useState<RegistryValueType>(value?.type || 'REG_SZ');
   const [stringValue, setStringValue] = useState('');
@@ -280,7 +283,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
 
   const handleSave = () => {
     if (!name.trim() && isNew) {
-      setError('Value name is required');
+      setError(t('registryEditor.errors.valueNameRequired'));
       return;
     }
 
@@ -295,7 +298,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
         case 'REG_QWORD':
           data = isHex ? parseInt(numberValue, 16) : parseInt(numberValue, 10);
           if (isNaN(data as number)) {
-            setError('Invalid number value');
+            setError(t('registryEditor.errors.invalidNumber'));
             return;
           }
           break;
@@ -308,7 +311,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
       }
       onSave(name, type, data);
     } catch (e) {
-      setError('Invalid value format');
+      setError(t('registryEditor.errors.invalidFormat'));
     }
   };
 
@@ -319,7 +322,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
       <div className="bg-background border rounded-lg shadow-lg w-full max-w-lg mx-4">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-sm font-semibold">
-            {isNew ? 'New Value' : 'Edit Value'}
+            {isNew ? t('registryEditor.newValue') : t('registryEditor.editValue')}
           </h3>
           <button
             type="button"
@@ -339,19 +342,19 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
           )}
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Value Name</label>
+            <label className="text-sm font-medium">{t('registryEditor.valueName')}</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={!isNew && value?.name === '(Default)'}
               className="w-full px-3 py-2 border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
-              placeholder="Enter value name"
+              placeholder={t('registryEditor.enterValueName')}
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Type</label>
+            <label className="text-sm font-medium">{t('common:labels.type')}</label>
             <select
               value={type}
               onChange={(e) => setType(e.target.value as RegistryValueType)}
@@ -365,7 +368,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Value Data</label>
+            <label className="text-sm font-medium">{t('registryEditor.valueData')}</label>
 
             {(type === 'REG_SZ' || type === 'REG_EXPAND_SZ') && (
               <input
@@ -373,7 +376,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
                 value={stringValue}
                 onChange={(e) => setStringValue(e.target.value)}
                 className="w-full px-3 py-2 border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50"
-                placeholder="Enter string value"
+                placeholder={t('registryEditor.enterStringValue')}
               />
             )}
 
@@ -390,7 +393,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
                         setNumberValue(num.toString(16));
                       }}
                     />
-                    Hexadecimal
+                    {t('registryEditor.hexadecimal')}
                   </label>
                   <label className="flex items-center gap-2 text-sm">
                     <input
@@ -402,7 +405,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
                         setNumberValue(num.toString(10));
                       }}
                     />
-                    Decimal
+                    {t('registryEditor.decimal')}
                   </label>
                 </div>
                 <input
@@ -410,7 +413,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
                   value={numberValue}
                   onChange={(e) => setNumberValue(e.target.value)}
                   className="w-full px-3 py-2 border rounded-md bg-background font-mono focus:outline-hidden focus:ring-2 focus:ring-primary/50"
-                  placeholder={isHex ? 'Enter hex value (e.g., 1A2B)' : 'Enter decimal value'}
+                  placeholder={isHex ? t('registryEditor.enterHexValue') : t('registryEditor.enterDecimalValue')}
                 />
               </div>
             )}
@@ -420,7 +423,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
                 value={binaryValue}
                 onChange={(e) => setBinaryValue(e.target.value)}
                 className="w-full px-3 py-2 border rounded-md bg-background font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/50 h-32"
-                placeholder="Enter hex bytes separated by spaces (e.g., 00 01 02 03)"
+                placeholder={t('registryEditor.enterHexBytes')}
               />
             )}
 
@@ -429,7 +432,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
                 value={multiValue}
                 onChange={(e) => setMultiValue(e.target.value)}
                 className="w-full px-3 py-2 border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50 h-32"
-                placeholder="Enter each string on a new line"
+                placeholder={t('registryEditor.enterStrings')}
               />
             )}
           </div>
@@ -441,7 +444,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium rounded-md hover:bg-muted"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="button"
@@ -449,7 +452,7 @@ function ValueEditorModal({ isOpen, isNew, value, onClose, onSave }: ValueEditor
             className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
           >
             <Save className="h-4 w-4" />
-            Save
+            {t('common:actions.save')}
           </button>
         </div>
       </div>
@@ -469,6 +472,7 @@ type CreateKeyModalProps = {
 };
 
 function CreateKeyModal({ isOpen, parentPath, onClose, onCreate }: CreateKeyModalProps) {
+  const { t } = useTranslation('remote');
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -479,11 +483,11 @@ function CreateKeyModal({ isOpen, parentPath, onClose, onCreate }: CreateKeyModa
 
   const handleCreate = () => {
     if (!name.trim()) {
-      setError('Key name is required');
+      setError(t('registryEditor.errors.keyNameRequired'));
       return;
     }
     if (name.includes('\\')) {
-      setError('Key name cannot contain backslash');
+      setError(t('registryEditor.errors.keyNameBackslash'));
       return;
     }
     onCreate(name);
@@ -495,7 +499,7 @@ function CreateKeyModal({ isOpen, parentPath, onClose, onCreate }: CreateKeyModa
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-background border rounded-lg shadow-lg w-full max-w-md mx-4">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="text-sm font-semibold">New Key</h3>
+          <h3 className="text-sm font-semibold">{t('registryEditor.newKey')}</h3>
           <button
             type="button"
             onClick={onClose}
@@ -514,20 +518,20 @@ function CreateKeyModal({ isOpen, parentPath, onClose, onCreate }: CreateKeyModa
           )}
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Parent Path</label>
+            <label className="text-sm font-medium">{t('registryEditor.parentPath')}</label>
             <div className="px-3 py-2 bg-muted rounded-md text-sm font-mono truncate">
-              {parentPath || 'Root'}
+              {parentPath || t('registryEditor.root')}
             </div>
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Key Name</label>
+            <label className="text-sm font-medium">{t('registryEditor.keyName')}</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="w-full px-3 py-2 border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50"
-              placeholder="Enter key name"
+              placeholder={t('registryEditor.enterKeyName')}
               autoFocus
               onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
             />
@@ -540,7 +544,7 @@ function CreateKeyModal({ isOpen, parentPath, onClose, onCreate }: CreateKeyModa
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium rounded-md hover:bg-muted"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="button"
@@ -548,7 +552,7 @@ function CreateKeyModal({ isOpen, parentPath, onClose, onCreate }: CreateKeyModa
             className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
           >
             <Plus className="h-4 w-4" />
-            Create
+            {t('common:actions.create')}
           </button>
         </div>
       </div>
@@ -569,6 +573,7 @@ type ConfirmDeleteModalProps = {
 };
 
 function ConfirmDeleteModal({ isOpen, title, message, onClose, onConfirm }: ConfirmDeleteModalProps) {
+  const { t } = useTranslation('remote');
   if (!isOpen) return null;
 
   return (
@@ -595,7 +600,7 @@ function ConfirmDeleteModal({ isOpen, title, message, onClose, onConfirm }: Conf
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium rounded-md hover:bg-muted"
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="button"
@@ -603,7 +608,7 @@ function ConfirmDeleteModal({ isOpen, title, message, onClose, onConfirm }: Conf
             className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-red-600 text-white rounded-md hover:bg-red-700"
           >
             <Trash2 className="h-4 w-4" />
-            Delete
+            {t('common:actions.delete')}
           </button>
         </div>
       </div>
@@ -628,6 +633,7 @@ export default function RegistryEditor({
   onDeleteKey,
   className,
 }: RegistryEditorProps) {
+  const { t } = useTranslation('remote');
   // State
   const [currentHive, setCurrentHive] = useState<string>('HKEY_LOCAL_MACHINE');
   const [currentPath, setCurrentPath] = useState<string>('');
@@ -696,41 +702,41 @@ export default function RegistryEditor({
     setLoadingPath(cacheKey);
     try {
       if (!onGetKeys) {
-        throw new Error('Registry key provider is not configured');
+        throw new Error(t('registryEditor.errors.keyProvider'));
       }
       const keys = await onGetKeys(hive, path);
       setKeyCache(prev => ({ ...prev, [cacheKey]: keys }));
       setLoadError(null);
       return keys;
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load registry keys';
-      setLoadError(`Failed to load registry keys: ${message}`);
+      const message = error instanceof Error ? error.message : t('registryEditor.errors.loadKeys');
+      setLoadError(t('registryEditor.errors.loadKeysDetail', { message }));
       console.error('Failed to load registry keys:', error);
       return [];
     } finally {
       setLoadingPath(null);
     }
-  }, [keyCache, onGetKeys]);
+  }, [keyCache, onGetKeys, t]);
 
   // Load values for current path
   const loadValues = useCallback(async () => {
     setLoading(true);
     try {
       if (!onGetValues) {
-        throw new Error('Registry value provider is not configured');
+        throw new Error(t('registryEditor.errors.valueProvider'));
       }
       const vals = await onGetValues(currentHive, currentPath);
       setValues(vals);
       setLoadError(null);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load registry values';
-      setLoadError(`Failed to load registry values: ${message}`);
+      const message = error instanceof Error ? error.message : t('registryEditor.errors.loadValues');
+      setLoadError(t('registryEditor.errors.loadValuesDetail', { message }));
       console.error('Failed to load values:', error);
       setValues([]);
     } finally {
       setLoading(false);
     }
-  }, [currentHive, currentPath, onGetValues]);
+  }, [currentHive, currentPath, onGetValues, t]);
 
   // Load values when path changes
   useEffect(() => {
@@ -818,8 +824,8 @@ export default function RegistryEditor({
       setShowValueEditor(false);
       loadValues();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to save registry value';
-      setLoadError(`Failed to save registry value: ${message}`);
+      const message = error instanceof Error ? error.message : t('registryEditor.errors.saveValue');
+      setLoadError(t('registryEditor.errors.saveValueDetail', { message }));
       console.error('Failed to save value:', error);
     }
   };
@@ -834,8 +840,8 @@ export default function RegistryEditor({
       setDeleteTarget(null);
       loadValues();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to delete registry value';
-      setLoadError(`Failed to delete registry value: ${message}`);
+      const message = error instanceof Error ? error.message : t('registryEditor.errors.deleteValue');
+      setLoadError(t('registryEditor.errors.deleteValueDetail', { message }));
       console.error('Failed to delete value:', error);
     }
   };
@@ -859,8 +865,8 @@ export default function RegistryEditor({
       // Expand parent
       setExpandedKeys(prev => new Set([...prev, fullPath]));
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to create registry key';
-      setLoadError(`Failed to create registry key: ${message}`);
+      const message = error instanceof Error ? error.message : t('registryEditor.errors.createKey');
+      setLoadError(t('registryEditor.errors.createKeyDetail', { message }));
       console.error('Failed to create key:', error);
     }
   };
@@ -883,8 +889,8 @@ export default function RegistryEditor({
       });
       setCurrentPath(parentPath);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to delete registry key';
-      setLoadError(`Failed to delete registry key: ${message}`);
+      const message = error instanceof Error ? error.message : t('registryEditor.errors.deleteKey');
+      setLoadError(t('registryEditor.errors.deleteKeyDetail', { message }));
       console.error('Failed to delete key:', error);
     }
   };
@@ -901,7 +907,7 @@ export default function RegistryEditor({
         <div className="flex items-center gap-3">
           <Database className="h-5 w-5 text-primary" />
           <div>
-            <h2 className="font-semibold">Registry Editor</h2>
+            <h2 className="font-semibold">{t('registryEditor.title')}</h2>
             {deviceName && (
               <p className="text-xs text-muted-foreground">{deviceName}</p>
             )}
@@ -912,7 +918,7 @@ export default function RegistryEditor({
             type="button"
             onClick={() => loadValues()}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-            title="Refresh"
+            title={t('common:actions.refresh')}
           >
             <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
           </button>
@@ -942,7 +948,7 @@ export default function RegistryEditor({
           type="button"
           onClick={copyPath}
           className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted shrink-0"
-          title="Copy path"
+          title={t('registryEditor.copyPath')}
         >
           <Copy className="h-3.5 w-3.5" />
         </button>
@@ -981,7 +987,7 @@ export default function RegistryEditor({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-9 pr-3 py-1.5 text-sm border rounded-md bg-background focus:outline-hidden focus:ring-2 focus:ring-primary/50"
-                placeholder="Search values..."
+                placeholder={t('registryEditor.searchPlaceholder')}
               />
             </div>
             <div className="flex items-center gap-1 ml-auto">
@@ -989,26 +995,26 @@ export default function RegistryEditor({
                 type="button"
                 onClick={handleNewValue}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md hover:bg-muted"
-                title="New Value"
+                title={t('registryEditor.newValue')}
               >
                 <Plus className="h-4 w-4" />
-                Value
+                {t('registryEditor.value')}
               </button>
               <button
                 type="button"
                 onClick={() => setShowCreateKey(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md hover:bg-muted"
-                title="New Key"
+                title={t('registryEditor.newKey')}
               >
                 <Plus className="h-4 w-4" />
-                Key
+                {t('registryEditor.key')}
               </button>
               {currentPath && (
                 <button
                   type="button"
                   onClick={() => setDeleteTarget({ type: 'key', name: currentPath.split('\\').pop() || '' })}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20"
-                  title="Delete Key"
+                  title={t('registryEditor.deleteKey')}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -1027,7 +1033,7 @@ export default function RegistryEditor({
                   }}
                   className="shrink-0 rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
                 >
-                  Retry
+                  {t('common:actions.retry')}
                 </button>
               </div>
             </div>
@@ -1043,7 +1049,7 @@ export default function RegistryEditor({
                     className="px-4 py-3 cursor-pointer hover:text-foreground"
                     onClick={() => toggleSort('name')}
                   >
-                    Name
+                    {t('common:labels.name')}
                     {sortBy === 'name' && (
                       <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
                     )}
@@ -1052,7 +1058,7 @@ export default function RegistryEditor({
                     className="px-4 py-3 cursor-pointer hover:text-foreground w-32"
                     onClick={() => toggleSort('type')}
                   >
-                    Type
+                    {t('common:labels.type')}
                     {sortBy === 'type' && (
                       <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
                     )}
@@ -1061,7 +1067,7 @@ export default function RegistryEditor({
                     className="px-4 py-3 cursor-pointer hover:text-foreground"
                     onClick={() => toggleSort('data')}
                   >
-                    Data
+                    {t('registryEditor.data')}
                     {sortBy === 'data' && (
                       <span className="ml-1">{sortOrder === 'asc' ? '\u2191' : '\u2193'}</span>
                     )}
@@ -1079,7 +1085,7 @@ export default function RegistryEditor({
                 ) : filteredValues.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                      {searchQuery ? 'No matching values found' : 'No values in this key'}
+                      {searchQuery ? t('registryEditor.noMatchingValues') : t('registryEditor.noValues')}
                     </td>
                   </tr>
                 ) : (
@@ -1112,7 +1118,7 @@ export default function RegistryEditor({
                           </span>
                         </td>
                         <td className="px-4 py-2 text-sm text-muted-foreground font-mono truncate max-w-md">
-                          {formatValueData(value) || '(value not set)'}
+                          {formatValueData(value) || t('registryEditor.valueNotSet')}
                         </td>
                         <td className="px-4 py-2">
                           <div className="flex items-center gap-1">
@@ -1120,7 +1126,7 @@ export default function RegistryEditor({
                               type="button"
                               onClick={() => handleEditValue(value)}
                               className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"
-                              title="Edit"
+                              title={t('common:actions.edit')}
                             >
                               <Edit3 className="h-3.5 w-3.5" />
                             </button>
@@ -1129,7 +1135,7 @@ export default function RegistryEditor({
                                 type="button"
                                 onClick={() => setDeleteTarget({ type: 'value', name: value.name })}
                                 className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted text-red-500"
-                                title="Delete"
+                                title={t('common:actions.delete')}
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
@@ -1146,8 +1152,8 @@ export default function RegistryEditor({
 
           {/* Status Bar */}
           <div className="flex items-center justify-between px-4 py-2 border-t bg-muted/10 text-xs text-muted-foreground">
-            <span>{filteredValues.length} value(s)</span>
-            <span>Device: {deviceId}</span>
+            <span>{t('registryEditor.valueCount', { count: filteredValues.length })}</span>
+            <span>{t('registryEditor.device', { id: deviceId })}</span>
           </div>
         </div>
       </div>
@@ -1170,11 +1176,11 @@ export default function RegistryEditor({
 
       <ConfirmDeleteModal
         isOpen={deleteTarget !== null}
-        title={deleteTarget?.type === 'key' ? 'Delete Key' : 'Delete Value'}
+        title={deleteTarget?.type === 'key' ? t('registryEditor.deleteKey') : t('registryEditor.deleteValue')}
         message={
           deleteTarget?.type === 'key'
-            ? 'Are you sure you want to delete the key "' + deleteTarget.name + '" and all its subkeys and values? This action cannot be undone.'
-            : 'Are you sure you want to delete the value "' + (deleteTarget?.name || '') + '"? This action cannot be undone.'
+            ? t('registryEditor.deleteKeyConfirm', { name: deleteTarget.name })
+            : t('registryEditor.deleteValueConfirm', { name: deleteTarget?.name || '' })
         }
         onClose={() => setDeleteTarget(null)}
         onConfirm={deleteTarget?.type === 'key' ? handleDeleteKey : handleDeleteValue}

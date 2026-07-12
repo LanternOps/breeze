@@ -1,3 +1,5 @@
+import { formatCurrency } from './i18n/format';
+
 export function formatMinutes(minutes: number | null | undefined): string {
   const m = Math.max(0, minutes ?? 0);
   const h = Math.floor(m / 60);
@@ -18,7 +20,6 @@ export function formatElapsedSeconds(totalSeconds: number): string {
 
 /** API money fields arrive as numeric strings (numeric(12,2) → '123.40'). */
 export function formatMoney(value: string | number | null | undefined): string {
-  const n = typeof value === 'number' ? value : Number(value);
-  const safe = Number.isFinite(n) ? n : 0;
-  return safe.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(value ?? '');
+  return formatCurrency(Number.isFinite(parsed) ? parsed : 0);
 }

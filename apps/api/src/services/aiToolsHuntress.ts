@@ -104,6 +104,35 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
         agentScopedConditions.push(eq(huntressAgents.orgId, requestedOrgId));
         incidentScopedConditions.push(eq(huntressIncidents.orgId, requestedOrgId));
       }
+
+      // Site axis (SR5-19; app-layer only, RLS does NOT enforce it). Neither
+      // huntress_agents nor huntress_incidents carries a site_id, so — like the
+      // get_huntress_incidents sibling below — narrow every aggregate (summary +
+      // per-integration agent/incident/severity counts) to the caller's in-scope
+      // device set. A restricted caller with zero in-scope devices short-circuits
+      // to an empty summary (fail closed). Agents/incidents not mapped to a device
+      // (device_id NULL) are excluded for a restricted caller. No-op otherwise.
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const queryOrgId = requestedOrgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        const allowed = queryOrgId ? await resolveSiteAllowedDeviceIds(queryOrgId, auth) : [];
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({
+            integrations: [],
+            summary: {
+              totalIntegrations: 0,
+              totalAgents: 0,
+              mappedAgents: 0,
+              unmappedAgents: 0,
+              offlineAgents: 0,
+              openIncidents: 0,
+            },
+            pagination: { limit: RESULT_LIMIT, returned: 0, total: 0, truncated: false },
+            scopeNote: SITE_SCOPE_EMPTY_NOTE,
+          });
+        }
+        agentScopedConditions.push(inArray(huntressAgents.deviceId, allowed));
+        incidentScopedConditions.push(inArray(huntressIncidents.deviceId, allowed));
+      }
       const [[integrationCount], [summaryAgentCounts], [summaryIncidentCounts], agentCounts, incidentCounts, severityCounts] = await Promise.all([
         db
           .select({

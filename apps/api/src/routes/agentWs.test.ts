@@ -735,6 +735,33 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
+  // #2307: fielded agents confirm desk-stop with result {"stopped": true}.
+  // The strict result schema must accept the key instead of dropping the
+  // message as a malformed desk-command_result.
+  it('accepts a desk-stop result carrying {"stopped": true} without a malformed-drop warn (#2307)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-stop-session-123',
+        status: 'completed',
+        result: { stopped: true }
+      })
+    } as any, ws as any);
+
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('Dropping malformed desk-command_result')
+    );
+    // Message passes the fast-path schema and is acked like any other result.
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    warnSpy.mockRestore();
+  });
+
   it('rejects desktop disconnect results with mismatched session IDs', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
 

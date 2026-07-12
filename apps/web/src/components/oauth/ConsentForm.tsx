@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 
 interface PartnerOption {
@@ -23,18 +24,6 @@ type ViewState =
   | { kind: 'no-tenants' }
   | { kind: 'ready'; details: InteractionDetails }
   | { kind: 'submitting'; details: InteractionDetails };
-
-const SCOPE_LABELS: Record<string, string> = {
-  'mcp:read': 'Read your fleet data (devices, alerts, scripts, automations)',
-  'mcp:write': 'Make non-destructive changes in your fleet (tags, alerts, configuration)',
-  'mcp:execute': 'Run high-risk actions on devices (commands, scripts, remote operations)',
-  openid: 'Confirm your identity',
-  offline_access: 'Stay connected without re-signing in (refresh tokens)',
-};
-
-function describeScope(scope: string): string {
-  return SCOPE_LABELS[scope] ?? scope;
-}
 
 function isHighRiskScope(scope: string): boolean {
   return scope === 'mcp:execute';
@@ -88,6 +77,7 @@ export interface ConsentFormProps {
 }
 
 export default function ConsentForm({ uid }: ConsentFormProps) {
+  const { t } = useTranslation('common');
   const [state, setState] = useState<ViewState>({ kind: 'loading' });
   const [partnerId, setPartnerId] = useState<string>('');
 
@@ -117,7 +107,10 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           if (cancelled) return;
-          setState({ kind: 'error', message: body?.message ?? `Request failed (${res.status})` });
+          setState({
+            kind: 'error',
+            message: body?.message ?? t('longTail.oauth.ConsentForm.errors.requestFailed', { status: res.status }),
+          });
           return;
         }
         const details = (await res.json()) as InteractionDetails;
@@ -130,7 +123,7 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         setState({ kind: 'ready', details });
       } catch (err) {
         if (cancelled) return;
-        setState({ kind: 'error', message: err instanceof Error ? err.message : 'Network error' });
+        setState({ kind: 'error', message: err instanceof Error ? err.message : t('longTail.oauth.ConsentForm.errors.network') });
       }
     })();
     return () => { cancelled = true; };
@@ -146,29 +139,32 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setState({ kind: 'error', message: body?.message ?? `Submission failed (${res.status})` });
+        setState({
+          kind: 'error',
+          message: body?.message ?? t('longTail.oauth.ConsentForm.errors.submissionFailed', { status: res.status }),
+        });
         return;
       }
       const { redirectTo } = (await res.json()) as { redirectTo: string };
       window.location.href = redirectTo;
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      setState({ kind: 'error', message: err instanceof Error ? err.message : t('longTail.oauth.ConsentForm.errors.network') });
     }
   };
 
-  if (state.kind === 'loading') return <ConsentShell><p className="text-sm text-muted-foreground">Loading authorization request…</p></ConsentShell>;
+  if (state.kind === 'loading') return <ConsentShell><p className="text-sm text-muted-foreground">{t('longTail.oauth.ConsentForm.loading')}</p></ConsentShell>;
 
   if (state.kind === 'unauthenticated') {
     return (
-      <ConsentShell title="Sign in to continue">
+      <ConsentShell title={t('longTail.oauth.ConsentForm.signInTitle')}>
         <p className="text-sm text-muted-foreground">
-          You need to sign in to your Breeze account before authorizing this connection.
+          {t('longTail.oauth.ConsentForm.signInDescription')}
         </p>
         <a
           href={loginRedirectTarget(uid)}
           className="inline-flex h-10 items-center justify-center rounded-md bg-emerald-600 px-4 text-sm font-medium text-white transition hover:bg-emerald-700"
         >
-          Sign in
+          {t('longTail.oauth.ConsentForm.signInAction')}
         </a>
       </ConsentShell>
     );
@@ -179,17 +175,15 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
     // Almost always a cookie/storage block — surface a hard stop instead of
     // pinballing the user.
     return (
-      <ConsentShell title="We can't sign you in">
+      <ConsentShell title={t('longTail.oauth.ConsentForm.redirectLoopTitle')}>
         <p className="text-sm text-muted-foreground">
-          Your browser sent you back here without a sign-in cookie. Third-party
-          cookies or site storage may be blocked. Allow cookies for this site
-          and try again, or return to your MCP client and start over.
+          {t('longTail.oauth.ConsentForm.redirectLoopDescription')}
         </p>
         <a
           href={loginRedirectTarget(uid)}
           className="inline-flex h-10 items-center justify-center rounded-md border px-4 text-sm font-medium transition hover:bg-muted"
         >
-          Try again
+          {t('common:actions.retry')}
         </a>
       </ConsentShell>
     );
@@ -197,9 +191,9 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
 
   if (state.kind === 'expired') {
     return (
-      <ConsentShell title="Authorization request expired">
+      <ConsentShell title={t('longTail.oauth.ConsentForm.expiredTitle')}>
         <p className="text-sm text-muted-foreground">
-          This authorization link is no longer valid. Return to your MCP client and start the connection again.
+          {t('longTail.oauth.ConsentForm.expiredDescription')}
         </p>
       </ConsentShell>
     );
@@ -207,10 +201,9 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
 
   if (state.kind === 'no-tenants') {
     return (
-      <ConsentShell title="No tenant available">
+      <ConsentShell title={t('longTail.oauth.ConsentForm.noTenantsTitle')}>
         <p className="text-sm text-muted-foreground">
-          Your account isn't a member of any partner tenant, so it can't authorize an MCP connection.
-          Ask an administrator to add you to a partner before continuing.
+          {t('longTail.oauth.ConsentForm.noTenantsDescription')}
         </p>
       </ConsentShell>
     );
@@ -218,7 +211,7 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
 
   if (state.kind === 'error') {
     return (
-      <ConsentShell title="Something went wrong">
+      <ConsentShell title={t('common:states.error')}>
         <p className="text-sm text-red-600">{state.message}</p>
       </ConsentShell>
     );
@@ -232,8 +225,8 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
 
   return (
     <ConsentShell
-      title={`${displayName} wants to access your Breeze tenant`}
-      subtitle={showClientIdSubtitle ? `Client ID: ${details.client.client_id}` : undefined}
+      title={t('longTail.oauth.ConsentForm.consentTitle', { displayName })}
+      subtitle={showClientIdSubtitle ? t('longTail.oauth.ConsentForm.clientId', { clientId: details.client.client_id }) : undefined}
     >
       <ScopeList scopes={details.scopes} />
 
@@ -253,7 +246,7 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
           disabled={submitting || !partnerId}
           className="inline-flex h-10 flex-1 items-center justify-center rounded-md bg-emerald-600 px-4 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {submitting ? 'Approving…' : 'Approve'}
+          {submitting ? t('longTail.oauth.ConsentForm.approving') : t('longTail.oauth.ConsentForm.approve')}
         </button>
         <button
           type="button"
@@ -261,12 +254,12 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
           disabled={submitting}
           className="inline-flex h-10 items-center justify-center rounded-md border border-input bg-transparent px-4 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Deny
+          {t('longTail.oauth.ConsentForm.deny')}
         </button>
       </div>
 
       <p className="pt-2 text-xs text-muted-foreground">
-        You can revoke this access anytime from Settings → Connected apps.
+        {t('longTail.oauth.ConsentForm.revokeHint')}
       </p>
     </ConsentShell>
   );
@@ -293,10 +286,18 @@ function ConsentShell({
 }
 
 function ScopeList({ scopes }: { scopes: string[] }) {
+  const { t } = useTranslation('common');
   const items = useMemo(() => (scopes.length ? scopes : ['mcp:read', 'mcp:write']), [scopes]);
+  const scopeLabels: Record<string, string> = {
+    'mcp:read': t('longTail.oauth.ConsentForm.scopes.mcpRead'),
+    'mcp:write': t('longTail.oauth.ConsentForm.scopes.mcpWrite'),
+    'mcp:execute': t('longTail.oauth.ConsentForm.scopes.mcpExecute'),
+    openid: t('longTail.oauth.ConsentForm.scopes.openid'),
+    offline_access: t('longTail.oauth.ConsentForm.scopes.offlineAccess'),
+  };
   return (
     <div>
-      <p className="text-sm font-medium">This will allow the app to:</p>
+      <p className="text-sm font-medium">{t('longTail.oauth.ConsentForm.scopeIntro')}</p>
       <ul className="mt-2 space-y-1.5 text-sm text-muted-foreground">
         {items.map((scope) => (
           <li key={scope} className="flex items-start gap-2">
@@ -307,7 +308,7 @@ function ScopeList({ scopes }: { scopes: string[] }) {
               }`}
             />
             <span className={isHighRiskScope(scope) ? 'font-medium text-red-700' : undefined}>
-              {describeScope(scope)}
+              {scopeLabels[scope] ?? scope}
             </span>
           </li>
         ))}
@@ -327,10 +328,11 @@ function TenantPicker({
   onChange: (id: string) => void;
   disabled: boolean;
 }) {
+  const { t } = useTranslation('common');
   return (
     <div className="space-y-2">
       <label htmlFor="oauth-tenant" className="text-sm font-medium">
-        Connect to which tenant?
+        {t('longTail.oauth.ConsentForm.tenantPickerLabel')}
       </label>
       <select
         id="oauth-tenant"

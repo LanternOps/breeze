@@ -1,4 +1,6 @@
 import { useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../../lib/i18n';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { quoteImageUrl } from '../../../lib/api/quotes';
@@ -11,11 +13,9 @@ import {
   type QuoteBlock,
   type QuoteLine,
   STATUS_ROLES,
-  statusLabel,
   stripHtml,
   formatDate,
   formatMoney,
-  formatRecurrence,
   lineTaxAmount,
   lineTitle,
   lineBlurb,
@@ -36,6 +36,7 @@ interface Props {
 }
 
 export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Props) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   // Margin/profit is internal-but-not-restricted: any user who can read the quote
   // sees it. Gating on read (not write) keeps cost visibility consistent with the
@@ -107,7 +108,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
         <div className="min-w-0 space-y-4">
           {sortedBlocks.length === 0 && looseLines.length === 0 ? (
             <div className="rounded-lg border border-dashed bg-card p-8 text-center" data-testid="quote-detail-empty">
-              <p className="text-sm text-muted-foreground">This quote has no content yet.</p>
+              <p className="text-sm text-muted-foreground">{t('quotes.detail.empty')}</p>
               {quote.status === 'draft' && can('quotes', 'write') && (
                 <button
                   type="button"
@@ -115,7 +116,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                   data-testid="quote-detail-empty-edit"
                   className="mt-3 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
                 >
-                  Add content in the Editor
+                  {t('quotes.detail.addContentInEditor')}
                 </button>
               )}
             </div>
@@ -133,7 +134,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
           )}
 
           {looseLines.length > 0 && (
-            <LineTable lines={looseLines} currency={currency} label="Additional items" testId="quote-detail-loose-lines" taxRate={quote.taxRate} showTax={showTax} />
+            <LineTable lines={looseLines} currency={currency} label={t('quotes.document.additionalItems')} testId="quote-detail-loose-lines" taxRate={quote.taxRate} showTax={showTax} />
           )}
         </div>
 
@@ -146,19 +147,19 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
             <div className="mb-3 flex items-center justify-between">
               <StatusPill
                 role={STATUS_ROLES[quote.status].role}
-                label={statusLabel(quote)}
+              label={t(/* i18n-dynamic */ `quotes.status.${quote.status}`)}
                 className={STATUS_ROLES[quote.status].className}
                 testId="quote-detail-status"
               />
               {quote.expiryDate && (
-                <span className="text-xs text-muted-foreground">Expires {formatDate(quote.expiryDate)}</span>
+                <span className="text-xs text-muted-foreground">{t('quotes.detail.expires', { date: formatDate(quote.expiryDate) })}</span>
               )}
             </div>
             <dl className="space-y-1 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">Customer</dt><dd className="text-right" data-testid="quote-detail-customer">{orgName}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Issued</dt><dd>{formatDate(quote.issueDate)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.customer')}</dt><dd className="text-right" data-testid="quote-detail-customer">{orgName}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.issued')}</dt><dd>{formatDate(quote.issueDate)}</dd></div>
               {(!quote.issueDate || formatDate(quote.issueDate) !== formatDate(quote.createdAt)) && (
-                <div className="flex justify-between"><dt className="text-muted-foreground">Created</dt><dd>{formatDate(quote.createdAt)}</dd></div>
+                <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.created')}</dt><dd>{formatDate(quote.createdAt)}</dd></div>
               )}
             </dl>
             {/* Lifecycle strip — the customer-journey milestones (Sent → Viewed →
@@ -167,10 +168,10 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                 Declined is the one destructive outcome and gets the danger token. */}
             {(quote.sentAt || quote.viewedAt || quote.acceptedAt || quote.declinedAt) && (
               <dl className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t pt-3 text-xs" data-testid="quote-detail-lifecycle">
-                {quote.sentAt && <LifecycleStage label="Sent" date={quote.sentAt} first />}
-                {quote.viewedAt && <LifecycleStage label="Viewed" date={quote.viewedAt} first={!quote.sentAt} />}
-                {quote.acceptedAt && <LifecycleStage label="Accepted" date={quote.acceptedAt} first={!quote.sentAt && !quote.viewedAt} />}
-                {quote.declinedAt && <LifecycleStage label="Declined" date={quote.declinedAt} first={!quote.sentAt && !quote.viewedAt && !quote.acceptedAt} danger testId="quote-detail-lifecycle-declined" />}
+                {quote.sentAt && <LifecycleStage label={t('quotes.detail.lifecycle.sent')} date={quote.sentAt} first />}
+                {quote.viewedAt && <LifecycleStage label={t('quotes.detail.lifecycle.viewed')} date={quote.viewedAt} first={!quote.sentAt} />}
+                {quote.acceptedAt && <LifecycleStage label={t('quotes.detail.lifecycle.accepted')} date={quote.acceptedAt} first={!quote.sentAt && !quote.viewedAt} />}
+                {quote.declinedAt && <LifecycleStage label={t('quotes.detail.lifecycle.declined')} date={quote.declinedAt} first={!quote.sentAt && !quote.viewedAt && !quote.acceptedAt} danger testId="quote-detail-lifecycle-declined" />}
               </dl>
             )}
             {/* Once accepted → converted, the resulting invoice is the next stop; a
@@ -181,30 +182,30 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                 data-testid="quote-view-invoice"
                 className="mt-3 inline-flex items-center gap-1 rounded-xs text-sm font-medium text-primary hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
-                View invoice <span aria-hidden>→</span>
+                {t('quotes.detail.viewInvoice')} <span aria-hidden>→</span>
               </a>
             )}
           </div>
 
           {/* Recurring + totals summary — the rail's anchor (shadow + large figure). */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-totals">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Totals</h3>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.detail.totals.title')}</h3>
             <dl className="space-y-1 text-sm tabular-nums">
-              <div className="flex justify-between"><dt className="text-muted-foreground">One-time</dt><dd>{formatMoney(quote.oneTimeTotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Monthly recurring</dt><dd>{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/mo</span></dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Annual recurring</dt><dd>{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/yr</span></dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.oneTime')}</dt><dd>{formatMoney(quote.oneTimeTotal, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.monthlyRecurring')}</dt><dd>{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">{t('billingUi.units.perMonth')}</span></dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.annualRecurring')}</dt><dd>{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">{t('billingUi.units.perYear')}</span></dd></div>
               {showTax && (
-                <div className="flex justify-between"><dt className="text-muted-foreground">Tax{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}</dt><dd>{formatMoney(quote.taxTotal, currency)}</dd></div>
+                <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.totals.tax')}{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}</dt><dd>{formatMoney(quote.taxTotal, currency)}</dd></div>
               )}
             </dl>
             <div className="mt-3 flex items-end justify-between gap-2 border-t pt-3">
-              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Due on acceptance</span>
+              <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.detail.totals.dueOnAcceptance')}</span>
               <span className="min-w-0 break-words text-right text-2xl font-semibold tabular-nums" data-testid="quote-detail-due-on-acceptance">{formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency)}</span>
             </div>
             {hasRecurring && (
               <>
                 <div className="mt-2 flex justify-between text-sm tabular-nums">
-                  <span className="text-muted-foreground">First-period total (incl. recurring)</span>
+                  <span className="text-muted-foreground">{t('quotes.detail.totals.firstPeriod')}</span>
                   <span className="font-medium" data-testid="quote-detail-first-period">{formatMoney(quote.total, currency)}</span>
                 </div>
                 <RecurringBillingNote className="mt-2" />
@@ -219,7 +220,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
           {/* Seller From block */}
           {quote.sellerSnapshot && (
             <div className="rounded-lg border bg-card p-4" data-testid="quote-detail-from">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">From</h3>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.detail.from')}</h3>
               <div className="space-y-0.5 text-sm">
                 {quote.sellerSnapshot.name && (
                   <p className="font-medium" data-testid="quote-detail-from-name">{quote.sellerSnapshot.name}</p>
@@ -243,7 +244,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
           {/* Terms & Conditions */}
           {quote.termsAndConditions && (
             <div className="rounded-lg border bg-card p-4" data-testid="quote-detail-terms">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.detail.terms')}</h3>
               <p className="whitespace-pre-wrap text-sm text-muted-foreground">{quote.termsAndConditions}</p>
             </div>
           )}
@@ -274,19 +275,21 @@ function LifecycleStage({ label, date, first, danger, testId }: { label: string;
 // Authed image for the internal detail view — same loader and treatment as the
 // customer document, so the Detail tab shows the real image (not a placeholder).
 function DetailImage({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
+  const { t } = useTranslation('billing');
   const { url, failed } = useAuthedImage(quoteImageUrl(quoteId, imageId));
   if (failed) {
     return (
       <div className="rounded-lg border border-dashed bg-muted/40 px-4 py-8 text-center text-xs text-muted-foreground">
-        Image unavailable
+        {t('quotes.detail.imageUnavailable')}
       </div>
     );
   }
   if (!url) return <div className="h-40 animate-pulse rounded-lg bg-muted/60" aria-hidden />;
-  return <img src={url} alt={caption || 'Proposal image'} className="w-full rounded-lg border bg-card object-contain" />;
+  return <img src={url} alt={caption || t('quotes.detail.proposalImageAlt')} className="w-full rounded-lg border bg-card object-contain" />;
 }
 
 function BlockView({ block, lines, currency, taxRate, showTax }: { block: QuoteBlock; lines: QuoteLine[]; currency: string; taxRate: string | null; showTax: boolean }) {
+  const { t } = useTranslation('billing');
   const heading = (block.content?.text as string | undefined) ?? '';
   const html = (block.content?.html as string | undefined) ?? '';
   const tableLabel = (block.content?.label as string | undefined) ?? '';
@@ -317,34 +320,35 @@ function BlockView({ block, lines, currency, taxRate, showTax }: { block: QuoteB
   // line_items
   return (
     <div data-testid={`quote-detail-block-${block.id}`}>
-      <LineTable lines={lines} currency={currency} label={tableLabel || 'Pricing'} testId={`quote-detail-lines-${block.id}`} taxRate={taxRate} showTax={showTax} />
+      <LineTable lines={lines} currency={currency} label={tableLabel || t('quotes.detail.pricing')} testId={`quote-detail-lines-${block.id}`} taxRate={taxRate} showTax={showTax} />
     </div>
   );
 }
 
 function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines: QuoteLine[]; currency: string; label: string; testId: string; taxRate: string | null; showTax: boolean }) {
+  const { t } = useTranslation('billing');
   const colSpan = showTax ? 6 : 5;
   return (
     <div className="rounded-lg border bg-card shadow-xs">
       {label && (
         <h3 className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</h3>
       )}
-      <div className="overflow-x-auto" role="region" aria-label={`${label || 'Pricing'} — scroll sideways for more columns`} tabIndex={0}>
+      <div className="overflow-x-auto" role="region" aria-label={t('quotes.detail.tableScrollAria', { label: label || t('quotes.detail.pricing') })} tabIndex={0}>
       <table className="w-full min-w-[30rem] text-sm" data-testid={testId}>
         <thead>
           <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-            <th className="px-3 py-2 font-medium">Item</th>
-            <th className="px-3 py-2 text-right font-medium">Qty</th>
-            <th className="px-3 py-2 text-right font-medium">Unit price</th>
-            <th className="px-3 py-2 font-medium">Recurrence</th>
-            {showTax && <th className="px-3 py-2 text-right font-medium">Tax</th>}
-            <th className="px-3 py-2 text-right font-medium">Total</th>
+            <th className="px-3 py-2 font-medium">{t('quotes.detail.table.item')}</th>
+            <th className="px-3 py-2 text-right font-medium">{t('quotes.detail.table.qty')}</th>
+            <th className="px-3 py-2 text-right font-medium">{t('quotes.detail.table.unitPrice')}</th>
+            <th className="px-3 py-2 font-medium">{t('quotes.detail.table.recurrence')}</th>
+            {showTax && <th className="px-3 py-2 text-right font-medium">{t('quotes.detail.table.tax')}</th>}
+            <th className="px-3 py-2 text-right font-medium">{t('quotes.detail.table.total')}</th>
           </tr>
         </thead>
         <tbody>
           {lines.length === 0 ? (
             <tr>
-              <td colSpan={colSpan} className="px-3 py-6 text-center text-sm text-muted-foreground">No lines.</td>
+              <td colSpan={colSpan} className="px-3 py-6 text-center text-sm text-muted-foreground">{t('quotes.detail.table.noLines')}</td>
             </tr>
           ) : (
             lines.map((l) => {
@@ -359,7 +363,7 @@ function LineTable({ lines, currency, label, testId, taxRate, showTax }: { lines
                   <td className="px-3 py-2 text-right tabular-nums">{formatMoney(l.unitPrice, currency)}</td>
                   <td className="px-3 py-2">
                     <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(220_12%_40%)] dark:text-muted-foreground">
-                      {formatRecurrence(l.recurrence)}
+                      {t(/* i18n-dynamic */ `quotes.recurrence.${l.recurrence}`)}
                     </span>
                   </td>
                   {showTax && (

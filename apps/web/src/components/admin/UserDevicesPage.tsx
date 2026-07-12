@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Smartphone, Loader2, AlertTriangle, X, ArrowLeft } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
@@ -39,19 +40,20 @@ interface UserDevicesPageProps {
   userId: string;
 }
 
-function platformLabel(p: string | null): string {
-  if (!p) return 'Unknown device';
+function platformLabel(p: string | null, unknownLabel: string): string {
+  if (!p) return unknownLabel;
   if (p.toLowerCase() === 'ios') return 'iOS';
   if (p.toLowerCase() === 'android') return 'Android';
   return p;
 }
 
-function deviceTitle(d: MobileDevice): string {
+function deviceTitle(d: MobileDevice, unknownLabel: string): string {
   if (d.model && d.model.trim().length > 0) return d.model;
-  return platformLabel(d.platform);
+  return platformLabel(d.platform, unknownLabel);
 }
 
 export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
+  const { t } = useTranslation('admin');
   const currentUser = useAuthStore((s) => s.user);
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
@@ -59,7 +61,7 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
 
   const load = useCallback(async () => {
     if (!userId) {
-      setState({ kind: 'error', message: 'Missing user id' });
+      setState({ kind: 'error', message: t('admin.userDevicesPage.errors.missingUserId') });
       return;
     }
     setState({ kind: 'loading' });
@@ -76,7 +78,7 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
 
       if (!devicesRes.ok) {
         const body = (await devicesRes.json().catch(() => ({}))) as { error?: string };
-        setState({ kind: 'error', message: body.error ?? `Request failed (${devicesRes.status})` });
+        setState({ kind: 'error', message: body.error ?? t('admin.userDevicesPage.errors.requestFailed', { status: devicesRes.status }) });
         return;
       }
 
@@ -94,9 +96,9 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
 
       setState({ kind: 'ready', user, devices: devicesBody.devices ?? [] });
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      setState({ kind: 'error', message: err instanceof Error ? err.message : t('admin.userDevicesPage.errors.network') });
     }
-  }, [userId]);
+  }, [userId, t]);
 
   useEffect(() => {
     void load();
@@ -110,7 +112,7 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
   const handleConfirm = async () => {
     if (!confirm) return;
     if (confirm.reason.trim().length === 0) {
-      showToast({ type: 'error', message: 'Reason is required.' });
+      showToast({ type: 'error', message: t('admin.userDevicesPage.toast.reasonRequired') });
       return;
     }
     setSubmitting(true);
@@ -124,19 +126,19 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
       );
       if (res.status !== 204 && !res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
-        showToast({ type: 'error', message: body.error ?? `Block failed (${res.status})` });
+        showToast({ type: 'error', message: body.error ?? t('admin.userDevicesPage.toast.blockFailed', { status: res.status }) });
         return;
       }
       const targetName =
-        state.kind === 'ready' ? state.user.name || state.user.email || 'this user' : 'this user';
+        state.kind === 'ready' ? state.user.name || state.user.email || t('admin.userDevicesPage.thisUser') : t('admin.userDevicesPage.thisUser');
       showToast({
         type: 'success',
-        message: `Device blocked. ${targetName} can no longer approve from this device until they re-pair.`,
+        message: t('admin.userDevicesPage.toast.blocked', { name: targetName }),
       });
       setConfirm(null);
       await load();
     } catch (err) {
-      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Network error' });
+      showToast({ type: 'error', message: err instanceof Error ? err.message : t('admin.userDevicesPage.errors.network') });
     } finally {
       setSubmitting(false);
     }
@@ -153,16 +155,15 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
   if (state.kind === 'unauthorized') {
     return (
       <div className="mx-auto max-w-2xl space-y-3 py-8">
-        <h1 className="text-xl font-semibold">Not allowed</h1>
+        <h1 className="text-xl font-semibold">{t('admin.userDevicesPage.unauthorized.title')}</h1>
         <p className="text-sm text-muted-foreground">
-          You don't have permission to manage this user. Make sure you're signed in as an org or
-          partner admin and that this user is in your tenant.
+          {t('admin.userDevicesPage.unauthorized.description')}
         </p>
         <a
           href="/settings/users"
           className="inline-flex h-10 items-center rounded-md border px-4 text-sm font-medium hover:bg-muted"
         >
-          <ArrowLeft className="mr-2 h-4 w-4" /> Back to users
+          <ArrowLeft className="mr-2 h-4 w-4" /> {t('admin.userDevicesPage.backToUsers')}
         </a>
       </div>
     );
@@ -180,7 +181,7 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
           onClick={() => void load()}
           className="mt-3 rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium hover:bg-destructive/5"
         >
-          Try again
+          {t('admin.userDevicesPage.retry')}
         </button>
       </div>
     );
@@ -196,15 +197,14 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
           href="/settings/users"
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
-          <ArrowLeft className="h-4 w-4" /> Back to users
+          <ArrowLeft className="h-4 w-4" /> {t('admin.userDevicesPage.backToUsers')}
         </a>
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Trusted devices</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('admin.userDevicesPage.title')}</h1>
           <p className="text-sm text-muted-foreground">
-            Mobile devices paired by{' '}
+            {t('admin.userDevicesPage.description.prefix')}{' '}
             <span className="font-medium text-foreground">{user.name || user.email || user.id}</span>
-            {user.email && user.name ? <> ({user.email})</> : null}. Blocking a device clears its
-            push tokens and forces a re-pair.
+            {user.email && user.name ? <> ({user.email})</> : null}. {t('admin.userDevicesPage.description.suffix')}
           </p>
         </div>
       </header>
@@ -213,11 +213,12 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
         <div className="flex gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
           <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" aria-hidden />
           <p>
-            This is <strong>your own</strong> account. Use{' '}
+            {t('admin.userDevicesPage.selfWarning.prefix')} <strong>{t('admin.userDevicesPage.selfWarning.own')}</strong>{' '}
+            {t('admin.userDevicesPage.selfWarning.middle')}{' '}
             <a className="underline" href="/account/devices">
               /account/devices
             </a>{' '}
-            to manage your own devices — admin block can't target self.
+            {t('admin.userDevicesPage.selfWarning.suffix')}
           </p>
         </div>
       )}
@@ -225,7 +226,7 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
       {devices.length === 0 ? (
         <div className="rounded-lg border border-dashed bg-muted/30 p-8 text-center">
           <Smartphone className="mx-auto h-10 w-10 text-muted-foreground/40" aria-hidden />
-          <p className="mt-4 text-sm text-muted-foreground">This user has no paired devices.</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('admin.userDevicesPage.empty')}</p>
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border bg-card">
@@ -238,42 +239,42 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
                         <Smartphone className="h-4 w-4 text-muted-foreground" aria-hidden />
-                        <span className="font-medium">{deviceTitle(device)}</span>
+                        <span className="font-medium">{deviceTitle(device, t('admin.userDevicesPage.unknownDevice'))}</span>
                         {isActive ? (
                           <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                            Active
+                            {t('admin.userDevicesPage.status.active')}
                           </span>
                         ) : (
                           <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                            Blocked
+                            {t('admin.userDevicesPage.status.blocked')}
                           </span>
                         )}
                       </div>
                       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-                        <dt>Platform</dt>
+                        <dt>{t('admin.userDevicesPage.fields.platform')}</dt>
                         <dd>
-                          {platformLabel(device.platform)}
+                          {platformLabel(device.platform, t('admin.userDevicesPage.unknownDevice'))}
                           {device.osVersion ? ` ${device.osVersion}` : ''}
-                          {device.appVersion ? ` · app ${device.appVersion}` : ''}
+                          {device.appVersion ? ` · ${t('admin.userDevicesPage.fields.appVersion', { version: device.appVersion })}` : ''}
                         </dd>
-                        <dt>Last active</dt>
+                        <dt>{t('admin.userDevicesPage.fields.lastActive')}</dt>
                         <dd title={formatAbsolute(device.lastActiveAt)}>
                           {formatRelative(device.lastActiveAt)}
                         </dd>
-                        <dt>Paired</dt>
+                        <dt>{t('admin.userDevicesPage.fields.paired')}</dt>
                         <dd title={formatAbsolute(device.createdAt)}>
                           {formatRelative(device.createdAt)}
                         </dd>
                         {!isActive && (
                           <>
-                            <dt>Blocked</dt>
+                            <dt>{t('admin.userDevicesPage.fields.blocked')}</dt>
                             <dd title={formatAbsolute(device.blockedAt)}>
                               {formatRelative(device.blockedAt)}
                               {device.blockedReason ? ` · ${device.blockedReason}` : ''}
                             </dd>
                           </>
                         )}
-                        <dt>Install ID</dt>
+                        <dt>{t('admin.userDevicesPage.fields.installId')}</dt>
                         <dd className="font-mono">{device.deviceId}</dd>
                       </dl>
                     </div>
@@ -283,7 +284,7 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
                         onClick={() => handleBlockClick(device)}
                         className="inline-flex h-9 items-center justify-center rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10"
                       >
-                        Block this device
+                        {t('admin.userDevicesPage.blockThisDevice')}
                       </button>
                     )}
                   </div>
@@ -296,9 +297,9 @@ export default function UserDevicesPage({ userId }: UserDevicesPageProps) {
 
       <p className="text-xs text-muted-foreground">
         <a className="underline" href="/audit">
-          See related audit events
+          {t('admin.userDevicesPage.auditLink')}
         </a>{' '}
-        for a full history of approvals, sign-ins, and blocks.
+        {t('admin.userDevicesPage.auditSuffix')}
       </p>
 
       {confirm && (
@@ -330,6 +331,7 @@ function BlockDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation('admin');
   const reasonValid = state.reason.trim().length > 0;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
@@ -339,14 +341,14 @@ function BlockDialog({
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">
               <AlertTriangle className="h-5 w-5 text-destructive" aria-hidden />
             </div>
-            <h2 className="text-lg font-semibold">Block device</h2>
+            <h2 className="text-lg font-semibold">{t('admin.userDevicesPage.blockDialog.title')}</h2>
           </div>
           <button
             type="button"
             onClick={onCancel}
             disabled={submitting}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:cursor-not-allowed"
-            aria-label="Close"
+            aria-label={t('admin.userDevicesPage.blockDialog.close')}
           >
             <X className="h-4 w-4" aria-hidden />
           </button>
@@ -354,12 +356,14 @@ function BlockDialog({
 
         <div className="mt-4 space-y-3 text-sm">
           <p className="text-muted-foreground">
-            This will block <span className="font-medium text-foreground">{deviceTitle(state.device)}</span> for{' '}
-            <span className="font-medium text-foreground">{targetLabel}</span>. Push tokens are wiped
-            immediately and the user will need to re-pair before approving anything from their phone.
+            {t('admin.userDevicesPage.blockDialog.descriptionPrefix')}{' '}
+            <span className="font-medium text-foreground">{deviceTitle(state.device, t('admin.userDevicesPage.unknownDevice'))}</span>{' '}
+            {t('admin.userDevicesPage.blockDialog.descriptionMiddle')}{' '}
+            <span className="font-medium text-foreground">{targetLabel}</span>.{' '}
+            {t('admin.userDevicesPage.blockDialog.descriptionSuffix')}
           </p>
           <label htmlFor="admin-block-reason" className="block text-sm font-medium">
-            Reason <span className="text-destructive">*</span>
+            {t('admin.userDevicesPage.blockDialog.reason')} <span className="text-destructive">*</span>
           </label>
           <textarea
             id="admin-block-reason"
@@ -367,12 +371,12 @@ function BlockDialog({
             value={state.reason}
             onChange={(e) => onChange(e.target.value)}
             maxLength={500}
-            placeholder="Lost phone, employee offboarded, suspected compromise…"
+            placeholder={t('admin.userDevicesPage.blockDialog.reasonPlaceholder')}
             className="w-full rounded-md border bg-background p-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             required
           />
           {!reasonValid && (
-            <p className="text-xs text-muted-foreground">A reason is required for the audit log.</p>
+            <p className="text-xs text-muted-foreground">{t('admin.userDevicesPage.blockDialog.reasonRequired')}</p>
           )}
         </div>
 
@@ -383,7 +387,7 @@ function BlockDialog({
             disabled={submitting}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Cancel
+            {t('admin.userDevicesPage.blockDialog.cancel')}
           </button>
           <button
             type="button"
@@ -394,10 +398,10 @@ function BlockDialog({
             {submitting ? (
               <>
                 <span className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                Blocking…
+                {t('admin.userDevicesPage.blockDialog.blocking')}
               </>
             ) : (
-              'Block device'
+              t('admin.userDevicesPage.blockDialog.blockDevice')
             )}
           </button>
         </div>

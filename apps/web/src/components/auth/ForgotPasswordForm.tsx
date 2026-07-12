@@ -1,13 +1,12 @@
 import { useId, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
-const forgotPasswordSchema = z.object({
-  email: z.string().email('Enter a valid email address')
-});
-
-type ForgotPasswordFormValues = z.infer<typeof forgotPasswordSchema>;
+type ForgotPasswordFormValues = {
+  email: string;
+};
 
 type ForgotPasswordFormProps = {
   onSubmit?: (values: ForgotPasswordFormValues) => void | Promise<void>;
@@ -19,9 +18,17 @@ type ForgotPasswordFormProps = {
 export default function ForgotPasswordForm({
   onSubmit,
   errorMessage,
-  submitLabel = 'Send reset link',
+  submitLabel,
   loading
 }: ForgotPasswordFormProps) {
+  const { t } = useTranslation('auth');
+  const forgotPasswordSchema = useMemo(
+    () =>
+      z.object({
+        email: z.string().email(t('validation.email', { defaultValue: 'Enter a valid email address' })),
+      }),
+    [t],
+  );
   const {
     register,
     handleSubmit,
@@ -46,22 +53,24 @@ export default function ForgotPasswordForm({
       aria-describedby={errorMessage ? formErrId : undefined}
     >
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold">Reset your password</h2>
+        <h2 className="text-lg font-semibold">{t('forgotPassword.form.title', { defaultValue: 'Reset your password' })}</h2>
         <p className="text-sm text-muted-foreground">
-          Enter your email address and we'll send you a link to reset your password.
+          {t('forgotPassword.form.description', {
+            defaultValue: "Enter your email address and we'll send you a link to reset your password.",
+          })}
         </p>
       </div>
 
       <div className="space-y-2">
         <label htmlFor="email" className="text-sm font-medium">
-          Email
+          {t('fields.email', { defaultValue: 'Email' })}
         </label>
         <input
           id="email"
           type="email"
           autoComplete="email"
           autoFocus
-          placeholder="you@company.com"
+          placeholder={t('placeholders.email', { defaultValue: 'you@company.com' })}
           aria-invalid={errors.email ? true : undefined}
           aria-describedby={errors.email ? emailErrId : undefined}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -88,13 +97,15 @@ export default function ForgotPasswordForm({
         aria-busy={isLoading || undefined}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Sending link…' : submitLabel}
+        {isLoading
+          ? t('forgotPassword.form.sending', { defaultValue: 'Sending link…' })
+          : submitLabel ?? t('forgotPassword.form.submit', { defaultValue: 'Send reset link' })}
       </button>
 
       <p className="text-center text-sm text-muted-foreground">
-        Remembered your password?{' '}
+        {t('forgotPassword.form.rememberedPassword', { defaultValue: 'Remembered your password?' })}{' '}
         <a href="/login" className="font-medium text-primary hover:underline">
-          Sign in
+          {t('common.signIn', { defaultValue: 'Sign in' })}
         </a>
       </p>
     </form>

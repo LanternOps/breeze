@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, eq, gte, like, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { createHash, randomBytes } from 'crypto';
@@ -550,6 +550,7 @@ coreRoutes.get(
         architecture: devices.architecture,
         agentVersion: devices.agentVersion,
         watchdogVersion: devices.watchdogVersion,
+        agentServerUrl: devices.agentServerUrl,
         status: devices.status,
         watchdogStatus: devices.watchdogStatus,
         mainAgentSilentSince: devices.mainAgentSilentSince,
@@ -671,6 +672,7 @@ coreRoutes.get(
         architecture: d.architecture,
         agentVersion: d.agentVersion,
         watchdogVersion: d.watchdogVersion,
+        agentServerUrl: d.agentServerUrl ?? null,
         status: d.status,
         watchdogStatus: d.watchdogStatus,
         mainAgentSilentSince: d.mainAgentSilentSince,

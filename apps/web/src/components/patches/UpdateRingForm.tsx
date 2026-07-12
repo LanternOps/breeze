@@ -3,45 +3,50 @@ import { useForm, useFieldArray, type UseFormRegisterReturn } from 'react-hook-f
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2 } from 'lucide-react';
+import type { TFunction } from 'i18next';
+import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
-const categoryRuleSchema = z.object({
-  category: z.string().min(1, 'Select a category'),
-  autoApprove: z.boolean(),
-  autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
-  deferralDaysOverride: z.coerce.number().int().min(0).max(365).nullable().optional(),
-});
+function makeRingSchema(t: TFunction<'patches'>) {
+  const categoryRuleSchema = z.object({
+    category: z.string().min(1, t('updateRingForm.validation.selectCategory')),
+    autoApprove: z.boolean(),
+    autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
+    deferralDaysOverride: z.coerce.number().int().min(0).max(365).nullable().optional(),
+  });
 
-const ringAutoApproveFormSchema = z.object({
-  enabled: z.boolean(),
-  severities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])),
-  deferralDays: z.coerce.number().int().min(0).max(365),
-}).superRefine((data, ctx) => {
-  if (data.enabled && data.severities.length === 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['severities'],
-      message: 'Select at least one severity for auto-approval.',
-    });
-  }
-});
+  const ringAutoApproveFormSchema = z.object({
+    enabled: z.boolean(),
+    severities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])),
+    deferralDays: z.coerce.number().int().min(0).max(365),
+  }).superRefine((data, ctx) => {
+    if (data.enabled && data.severities.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['severities'],
+        message: t('updateRingForm.validation.selectSeverity'),
+      });
+    }
+  });
 
-const ringSchema = z.object({
-  name: z.string().min(1, 'Ring name is required'),
-  description: z.string().optional(),
-  ringOrder: z.coerce.number().int().min(0).max(100),
-  // Fallback hold for category overrides that don't set their own. Kept in sync
-  // with the default rule's hold on submit (see onSubmit transform below) so it
-  // never surfaces as an orphaned "deferral" field in the UI.
-  deferralDays: z.coerce.number().int().min(0).max(365),
-  deadlineDays: z.coerce.number().int().min(0).max(365).nullable().optional(),
-  gracePeriodHours: z.coerce.number().int().min(0).max(168),
-  // Ring-owned approval gate (#1317): the default rule of the approval policy.
-  autoApprove: ringAutoApproveFormSchema,
-  categoryRules: z.array(categoryRuleSchema).optional(),
-});
+  return z.object({
+    name: z.string().min(1, t('updateRingForm.validation.nameRequired')),
+    description: z.string().optional(),
+    ringOrder: z.coerce.number().int().min(0).max(100),
+    // Fallback hold for category overrides that don't set their own. Kept in sync
+    // with the default rule's hold on submit (see onSubmit transform below) so it
+    // never surfaces as an orphaned "deferral" field in the UI.
+    deferralDays: z.coerce.number().int().min(0).max(365),
+    deadlineDays: z.coerce.number().int().min(0).max(365).nullable().optional(),
+    gracePeriodHours: z.coerce.number().int().min(0).max(168),
+    // Ring-owned approval gate (#1317): the default rule of the approval policy.
+    autoApprove: ringAutoApproveFormSchema,
+    categoryRules: z.array(categoryRuleSchema).optional(),
+  });
+}
 
-export type UpdateRingFormValues = z.infer<typeof ringSchema>;
+type RingSchema = ReturnType<typeof makeRingSchema>;
+export type UpdateRingFormValues = z.infer<RingSchema>;
 
 type UpdateRingFormProps = {
   onSubmit?: (values: UpdateRingFormValues) => void | Promise<void>;
@@ -60,12 +65,12 @@ type Severity = 'critical' | 'important' | 'moderate' | 'low';
 // actually match. Note 'definitions' is plural to match the agent; the
 // evaluator also canonicalizes legacy singular 'definition' rules.
 const categoryOptions = [
-  { value: 'security', label: 'Security Updates' },
-  { value: 'feature', label: 'Feature Updates' },
-  { value: 'firmware', label: 'Firmware' },
-  { value: 'driver', label: 'Drivers' },
-  { value: 'third_party_app', label: 'Third-Party Apps' },
-  { value: 'definitions', label: 'Definition Updates' },
+  { value: 'security', labelKey: 'updateRingForm.categories.security' },
+  { value: 'feature', labelKey: 'updateRingForm.categories.feature' },
+  { value: 'firmware', labelKey: 'updateRingForm.categories.firmware' },
+  { value: 'driver', labelKey: 'updateRingForm.categories.driver' },
+  { value: 'third_party_app', labelKey: 'updateRingForm.categories.thirdPartyApp' },
+  { value: 'definitions', labelKey: 'updateRingForm.categories.definitions' },
 ];
 
 // Severity is a domain-ordered scale (Critical > Important > Moderate > Low),
@@ -73,11 +78,11 @@ const categoryOptions = [
 // tinted fill with a -700/-800 foreground that clears 4.5:1 in light mode, plus
 // a -300 dark-mode foreground — the previous `text-yellow-700 on yellow/10`
 // chip failed contrast and had no dark variant.
-const severityOptions: { value: Severity; label: string; active: string }[] = [
-  { value: 'critical', label: 'Critical', active: 'border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-300' },
-  { value: 'important', label: 'Important', active: 'border-orange-500/40 bg-orange-500/15 text-orange-700 dark:text-orange-300' },
-  { value: 'moderate', label: 'Moderate', active: 'border-yellow-500/50 bg-yellow-500/15 text-yellow-800 dark:text-yellow-300' },
-  { value: 'low', label: 'Low', active: 'border-sky-500/40 bg-sky-500/15 text-sky-700 dark:text-sky-300' },
+const severityOptions: { value: Severity; labelKey: string; active: string }[] = [
+  { value: 'critical', labelKey: 'updateRingForm.severities.critical', active: 'border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-300' },
+  { value: 'important', labelKey: 'updateRingForm.severities.important', active: 'border-orange-500/40 bg-orange-500/15 text-orange-700 dark:text-orange-300' },
+  { value: 'moderate', labelKey: 'updateRingForm.severities.moderate', active: 'border-yellow-500/50 bg-yellow-500/15 text-yellow-800 dark:text-yellow-300' },
+  { value: 'low', labelKey: 'updateRingForm.severities.low', active: 'border-sky-500/40 bg-sky-500/15 text-sky-700 dark:text-sky-300' },
 ];
 
 const inputClass =
@@ -90,10 +95,12 @@ function ApproveToggle({
   checked,
   field,
   testId,
+  t,
 }: {
   checked: boolean;
   field: UseFormRegisterReturn;
   testId?: string;
+  t: TFunction<'patches'>;
 }) {
   return (
     <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
@@ -102,14 +109,14 @@ function ApproveToggle({
           type="checkbox"
           {...field}
           data-testid={testId}
-          aria-label="Auto-approve patches"
+          aria-label={t('updateRingForm.approveToggle.ariaLabel')}
           className="peer sr-only"
         />
         <span className="absolute inset-0 rounded-full bg-muted transition-colors peer-checked:bg-primary peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-1" />
         <span className="pointer-events-none absolute left-0.5 h-4 w-4 rounded-full bg-white shadow-xs transition-transform peer-checked:translate-x-4" />
       </span>
       <span className={cn('font-medium', checked ? 'text-foreground' : 'text-muted-foreground')}>
-        {checked ? 'Auto-approve' : 'Manual'}
+        {checked ? t('updateRingForm.approveToggle.autoApprove') : t('updateRingForm.approveToggle.manual')}
       </span>
     </label>
   );
@@ -119,10 +126,12 @@ function SeverityChips({
   selected,
   onToggle,
   testIdPrefix,
+  t,
 }: {
   selected: Severity[];
   onToggle: (s: Severity) => void;
   testIdPrefix?: string;
+  t: TFunction<'patches'>;
 }) {
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -142,7 +151,7 @@ function SeverityChips({
                 : 'border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground'
             )}
           >
-            {sev.label}
+            {t(/* i18n-dynamic */ sev.labelKey)}
           </button>
         );
       })}
@@ -150,10 +159,10 @@ function SeverityChips({
   );
 }
 
-function HoldField({ field, testId }: { field: UseFormRegisterReturn; testId?: string }) {
+function HoldField({ field, testId, t }: { field: UseFormRegisterReturn; testId?: string; t: TFunction<'patches'> }) {
   return (
     <div className="shrink-0">
-      <label className={labelClass}>Hold after release</label>
+      <label className={labelClass}>{t('updateRingForm.holdAfterRelease')}</label>
       <div className="mt-1.5 flex items-center gap-2">
         <input
           type="number"
@@ -163,7 +172,7 @@ function HoldField({ field, testId }: { field: UseFormRegisterReturn; testId?: s
           data-testid={testId}
           className="h-10 w-20 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         />
-        <span className="text-xs text-muted-foreground">days</span>
+        <span className="text-xs text-muted-foreground">{t('updateRingForm.days')}</span>
       </div>
     </div>
   );
@@ -173,16 +182,18 @@ export default function UpdateRingForm({
   onSubmit,
   onCancel,
   defaultValues,
-  submitLabel = 'Save Ring',
+  submitLabel,
   loading,
   usage,
 }: UpdateRingFormProps) {
+  const { t } = useTranslation('patches');
+  const ringSchema = useMemo(() => makeRingSchema(t), [t]);
   // Normalize incoming defaults: legacy category rules can carry a null
   // `deferralDaysOverride` (meaning "inherit the ring hold"). We resolve that to
   // the current inherited number up front so every override row shows a real
   // value instead of a blank field. Note: this pins a previously-inheriting
   // override to a concrete hold, so re-saving converts inherit -> explicit.
-  const initialValues = useMemo<Partial<z.input<typeof ringSchema>>>(() => {
+  const initialValues = useMemo<Partial<z.input<RingSchema>>>(() => {
     const merged = {
       name: '',
       description: '',
@@ -214,7 +225,7 @@ export default function UpdateRingForm({
     setValue,
     control,
     formState: { errors, isSubmitting },
-  } = useForm<z.input<typeof ringSchema>, unknown, z.output<typeof ringSchema>>({
+  } = useForm<z.input<RingSchema>, unknown, z.output<RingSchema>>({
     resolver: zodResolver(ringSchema),
     defaultValues: initialValues,
   });
@@ -274,36 +285,35 @@ export default function UpdateRingForm({
       {/* Zone A — Identity */}
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="sm:col-span-2">
-          <label className={labelClass}>Name</label>
-          <input {...register('name')} className={cn(inputClass, 'mt-1.5')} placeholder="e.g. Pilot, Broad" />
+          <label className={labelClass}>{t('updateRingForm.fields.name')}</label>
+          <input {...register('name')} className={cn(inputClass, 'mt-1.5')} placeholder={t('updateRingForm.placeholders.name')} />
           {errors.name && <p className="mt-1 text-xs text-destructive">{errors.name.message}</p>}
         </div>
         <div>
-          <label className={labelClass}>Rollout order</label>
+          <label className={labelClass}>{t('updateRingForm.fields.rolloutOrder')}</label>
           <input type="number" min={0} max={100} {...register('ringOrder')} className={cn(inputClass, 'mt-1.5')} />
-          <p className="mt-1 text-xs text-muted-foreground">Lower numbers roll out first.</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t('updateRingForm.help.rolloutOrder')}</p>
         </div>
       </div>
 
       <div>
-        <label className={labelClass}>Description</label>
+        <label className={labelClass}>{t('updateRingForm.fields.description')}</label>
         <input
           {...register('description')}
           className={cn(inputClass, 'mt-1.5')}
-          placeholder="Optional — what this ring is for"
+          placeholder={t('updateRingForm.placeholders.description')}
         />
       </div>
 
       {/* Zone A — Install enforcement */}
       <div>
-        <h3 className="text-sm font-semibold">Install enforcement</h3>
+        <h3 className="text-sm font-semibold">{t('updateRingForm.installEnforcement.title')}</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          How long devices have to install approved patches, and how long a user can defer the reboot.
-          Reboot behavior itself is set per policy on the Patch tab.
+          {t('updateRingForm.installEnforcement.description')}
         </p>
         <div className="mt-3 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className={labelClass}>Deadline (days)</label>
+            <label className={labelClass}>{t('updateRingForm.fields.deadlineDays')}</label>
             <input
               type="number"
               min={0}
@@ -312,11 +322,11 @@ export default function UpdateRingForm({
                 setValueAs: (v) => (v === '' || v == null ? null : Number(v)),
               })}
               className={cn(inputClass, 'mt-1.5')}
-              placeholder="No deadline"
+              placeholder={t('updateRingForm.placeholders.noDeadline')}
             />
           </div>
           <div>
-            <label className={labelClass}>Reboot grace (hours)</label>
+            <label className={labelClass}>{t('updateRingForm.fields.rebootGraceHours')}</label>
             <input type="number" min={0} max={168} {...register('gracePeriodHours')} className={cn(inputClass, 'mt-1.5')} />
           </div>
         </div>
@@ -325,7 +335,7 @@ export default function UpdateRingForm({
       {/* Zone B — Approval policy */}
       <div>
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Approval policy</h3>
+          <h3 className="text-sm font-semibold">{t('updateRingForm.approvalPolicy.title')}</h3>
           <button
             type="button"
             onClick={addOverride}
@@ -333,12 +343,11 @@ export default function UpdateRingForm({
             className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted disabled:opacity-50"
           >
             <Plus className="h-3.5 w-3.5" />
-            Add override
+            {t('updateRingForm.actions.addOverride')}
           </button>
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          What auto-approves in this ring, and how long to hold a patch after its vendor release. The
-          default applies to every category; add an override to treat one differently.
+          {t('updateRingForm.approvalPolicy.description')}
         </p>
 
         <div className="mt-3 space-y-2">
@@ -346,27 +355,29 @@ export default function UpdateRingForm({
           <div className="rounded-md border bg-muted/30 p-4" data-testid="ring-auto-approve-section">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">All categories</span>
+                <span className="text-sm font-medium">{t('updateRingForm.approvalPolicy.allCategories')}</span>
                 <span className="rounded-full border bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Default
+                  {t('updateRingForm.approvalPolicy.default')}
                 </span>
               </div>
               <ApproveToggle
                 checked={!!autoApprove?.enabled}
                 field={register('autoApprove.enabled')}
                 testId="ring-auto-approve-enabled"
+                t={t}
               />
             </div>
 
             {autoApprove?.enabled ? (
               <div className="mt-4 flex flex-wrap items-end justify-between gap-4 border-t pt-4">
                 <div>
-                  <label className={labelClass}>Auto-approve severities</label>
+                  <label className={labelClass}>{t('updateRingForm.fields.autoApproveSeverities')}</label>
                   <div className="mt-1.5">
                     <SeverityChips
                       selected={(autoApprove.severities ?? []) as Severity[]}
                       onToggle={toggleDefaultSeverity}
                       testIdPrefix="ring-auto-approve-severity"
+                      t={t}
                     />
                   </div>
                   {errors.autoApprove?.severities && (
@@ -376,17 +387,14 @@ export default function UpdateRingForm({
                     className="mt-1.5 max-w-md text-xs text-muted-foreground"
                     data-testid="ring-third-party-severity-note"
                   >
-                    Severities apply to OS updates. Third-party app updates (winget, Homebrew)
-                    have no vendor severity — when a policy enables other-software sources, they
-                    auto-approve on this ring&apos;s cadence regardless of the severities selected
-                    here.
+                    {t('updateRingForm.approvalPolicy.severityNote')}
                   </p>
                 </div>
-                <HoldField field={register('autoApprove.deferralDays')} testId="ring-auto-approve-deferral" />
+                <HoldField field={register('autoApprove.deferralDays')} testId="ring-auto-approve-deferral" t={t} />
               </div>
             ) : (
               <p className="mt-2 text-xs text-muted-foreground">
-                Every patch in this ring needs manual approval.
+                {t('updateRingForm.approvalPolicy.manualDefault')}
               </p>
             )}
           </div>
@@ -399,14 +407,14 @@ export default function UpdateRingForm({
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <select
                     {...register(`categoryRules.${index}.category`)}
-                    aria-label="Category"
+                    aria-label={t('updateRingForm.fields.category')}
                     className="h-10 w-48 shrink-0 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
                     {categoryOptions
                       .filter((c) => c.value === rule?.category || !usedCategories.includes(c.value))
                       .map((c) => (
                         <option key={c.value} value={c.value}>
-                          {c.label}
+                          {t(/* i18n-dynamic */ c.labelKey)}
                         </option>
                       ))}
                   </select>
@@ -414,10 +422,11 @@ export default function UpdateRingForm({
                     <ApproveToggle
                       checked={!!rule?.autoApprove}
                       field={register(`categoryRules.${index}.autoApprove`)}
+                      t={t}
                     />
                     <button
                       type="button"
-                      aria-label="Remove override"
+                      aria-label={t('updateRingForm.actions.removeOverride')}
                       onClick={() => remove(index)}
                       className="rounded-md p-1.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
                     >
@@ -429,19 +438,20 @@ export default function UpdateRingForm({
                 {rule?.autoApprove ? (
                   <div className="mt-4 flex flex-wrap items-end justify-between gap-4 border-t pt-4">
                     <div>
-                      <label className={labelClass}>Auto-approve severities</label>
+                      <label className={labelClass}>{t('updateRingForm.fields.autoApproveSeverities')}</label>
                       <div className="mt-1.5">
                         <SeverityChips
                           selected={(rule.autoApproveSeverities ?? []) as Severity[]}
                           onToggle={(s) => toggleOverrideSeverity(index, s)}
+                          t={t}
                         />
                       </div>
                     </div>
-                    <HoldField field={register(`categoryRules.${index}.deferralDaysOverride`)} />
+                    <HoldField field={register(`categoryRules.${index}.deferralDaysOverride`)} t={t} />
                   </div>
                 ) : (
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Patches in this category need manual approval.
+                    {t('updateRingForm.approvalPolicy.manualCategory')}
                   </p>
                 )}
               </div>
@@ -450,7 +460,7 @@ export default function UpdateRingForm({
 
           {fields.length === 0 && (
             <p className="px-1 text-xs text-muted-foreground">
-              All categories follow the default. Add an override to treat one differently.
+              {t('updateRingForm.approvalPolicy.noOverrides')}
             </p>
           )}
         </div>
@@ -459,8 +469,12 @@ export default function UpdateRingForm({
       {/* Blast-radius note (edit only) */}
       {usage?.deviceCount != null && usage.deviceCount > 0 && (
         <p className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          This ring applies to <span className="font-medium text-foreground">{usage.deviceCount}</span>{' '}
-          {usage.deviceCount === 1 ? 'device' : 'devices'}. Changes take effect on their next check-in.
+          {t(
+            /* i18n-dynamic */ usage.deviceCount === 1
+              ? 'updateRingForm.usage.messageOne'
+              : 'updateRingForm.usage.messageMany',
+            { count: usage.deviceCount }
+          )}
         </p>
       )}
 
@@ -473,7 +487,7 @@ export default function UpdateRingForm({
             disabled={isLoading}
             className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:opacity-50"
           >
-            Cancel
+            {t('updateRingForm.actions.cancel')}
           </button>
         )}
         <button
@@ -481,7 +495,7 @@ export default function UpdateRingForm({
           disabled={isLoading}
           className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
-          {isLoading ? 'Saving...' : submitLabel}
+          {isLoading ? t('updateRingForm.actions.saving') : (submitLabel ?? t('updateRingForm.actions.saveRing'))}
         </button>
       </div>
     </form>

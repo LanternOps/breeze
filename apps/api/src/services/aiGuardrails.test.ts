@@ -22,6 +22,8 @@ vi.mock('./aiTools', () => ({
       // Non-fleet tools for baseline tests
       query_devices: 1,
       query_change_log: 1,
+      // file_operations base tier 1; guardrails escalate every action to Tier 3 (SR5-01)
+      file_operations: 1,
       execute_command: 3,
       run_backup_verification: 2,
       // Ticketing tools
@@ -465,5 +467,79 @@ describe('checkToolPermission — action-multiplexed tools require action arg', 
     const result = await checkToolPermission('query_devices', {}, auth);
 
     expect(result).toBeNull();
+  });
+});
+
+// ─── SR5-01: filesystem read/list are privileged (execute + Tier 3) ─────
+
+describe('checkGuardrails — file_operations read/list escalate to Tier 3 (SR5-01)', () => {
+  it('read and list require interactive approval, not auto-execute', () => {
+    for (const action of ['read', 'list']) {
+      const result = checkGuardrails('file_operations', { action, path: '/etc/shadow' });
+      expect(result.tier).toBe(3);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(true);
+    }
+  });
+
+  it('write/delete/mkdir/rename remain Tier 3', () => {
+    for (const action of ['write', 'delete', 'mkdir', 'rename']) {
+      const result = checkGuardrails('file_operations', { action, path: '/tmp/x' });
+      expect(result.tier).toBe(3);
+      expect(result.requiresApproval).toBe(true);
+    }
+  });
+});
+
+describe('checkToolPermission — file_operations requires devices.execute (SR5-01)', () => {
+  const auth = {
+    user: { id: 'user-1' },
+    token: { roleId: 'viewer', scope: 'organization' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  beforeEach(() => {
+    vi.mocked(hasPermission).mockClear();
+    vi.mocked(getUserPermissions).mockClear();
+  });
+
+  it('read is denied for a devices.read-only role (no longer maps to devices.read)', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'viewer' } as any);
+    // Role has devices.read but NOT devices.execute.
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) =>
+      resource === 'devices' && action === 'read'
+    );
+
+    const result = await checkToolPermission('file_operations', { action: 'read', path: '/etc/shadow' }, auth);
+
+    expect(result).toBe('Insufficient permissions: requires devices.execute');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'execute');
+    // Must NOT have been satisfied by devices.read.
+    expect(hasPermission).not.toHaveBeenCalledWith(expect.anything(), 'devices', 'read');
+  });
+
+  it('list is likewise gated on devices.execute', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'viewer' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) =>
+      resource === 'devices' && action === 'read'
+    );
+
+    const result = await checkToolPermission('file_operations', { action: 'list', path: '/root' }, auth);
+
+    expect(result).toBe('Insufficient permissions: requires devices.execute');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'execute');
+  });
+
+  it('read is allowed when the role holds devices.execute', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource, action) =>
+      resource === 'devices' && action === 'execute'
+    );
+
+    const result = await checkToolPermission('file_operations', { action: 'read', path: '/etc/hosts' }, auth);
+
+    expect(result).toBeNull();
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'execute');
   });
 });

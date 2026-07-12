@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react';
 import { ChevronDown, Search } from 'lucide-react';
 import type { FilterFieldDefinition, FilterFieldCategory } from '@breeze/shared';
 import { useClickOutside } from '../../hooks/useClickOutside';
+import { useTranslation } from 'react-i18next';
 
 interface FieldSelectorProps {
   value: string;
@@ -40,6 +41,7 @@ export function FieldSelector({
   fields,
   className = ''
 }: FieldSelectorProps) {
+  const { t } = useTranslation('common');
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -94,7 +96,7 @@ export function FieldSelector({
         onClick={() => setIsOpen(!isOpen)}
         className="flex w-48 items-center justify-between rounded-md border bg-background px-3 py-2 text-sm hover:bg-muted"
       >
-        <span className="truncate">{selectedField?.label || 'Select field'}</span>
+        <span className="truncate">{selectedField?.label || t('filters.selectField')}</span>
         <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
       </button>
 
@@ -108,7 +110,7 @@ export function FieldSelector({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search fields..."
+                placeholder={t('filters.searchFields')}
                 className="h-8 w-full rounded-md border bg-background pl-8 pr-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
@@ -117,7 +119,7 @@ export function FieldSelector({
           <div className="max-h-72 overflow-y-auto p-1">
             {groupedFields.size === 0 ? (
               <div className="px-3 py-2 text-sm text-muted-foreground">
-                No fields match your search
+                {t('filters.noFields')}
               </div>
             ) : (
               CATEGORY_ORDER.map((category) => {
@@ -148,7 +150,7 @@ export function FieldSelector({
                         </div>
                         {field.computed && (
                           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                            Computed
+                            {t('filters.computed')}
                           </span>
                         )}
                       </button>

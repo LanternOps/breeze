@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import '@/lib/i18n';
 import { render, screen, fireEvent } from '@testing-library/react';
 
 import {

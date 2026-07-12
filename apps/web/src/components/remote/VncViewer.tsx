@@ -11,6 +11,8 @@ import {
   Lock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error' | 'password_required';
 
@@ -21,15 +23,16 @@ interface VncViewerProps {
   className?: string;
 }
 
-const statusConfig: Record<ConnectionStatus, { label: string; color: string }> = {
-  connecting: { label: 'Connecting...', color: 'text-amber-500' },
-  connected: { label: 'Connected', color: 'text-green-500' },
-  disconnected: { label: 'Disconnected', color: 'text-gray-500' },
-  error: { label: 'Connection Error', color: 'text-red-500' },
-  password_required: { label: 'Password required', color: 'text-amber-500' },
+const statusConfig: Record<ConnectionStatus, { labelKey: string; color: string }> = {
+  connecting: { labelKey: 'vncViewer.status.connecting', color: 'text-amber-500' },
+  connected: { labelKey: 'vncViewer.status.connected', color: 'text-green-500' },
+  disconnected: { labelKey: 'vncViewer.status.disconnected', color: 'text-gray-500' },
+  error: { labelKey: 'vncViewer.status.error', color: 'text-red-500' },
+  password_required: { labelKey: 'vncViewer.status.passwordRequired', color: 'text-amber-500' },
 };
 
 export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: VncViewerProps) {
+  const { t } = useTranslation('remote');
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<any>(null);
 
@@ -77,7 +80,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
           setStatus('disconnected');
         } else {
           setStatus('error');
-          setErrorMessage('Connection lost unexpectedly');
+          setErrorMessage(t('vncViewer.errors.connectionLost'));
         }
         onDisconnect?.();
       });
@@ -105,12 +108,12 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       rfb.addEventListener('securityfailure', (e: CustomEvent) => {
         console.warn('[VNC] securityfailure:', e.detail);
         if (disposed) return;
-        const reason = e.detail?.reason || 'Authentication failed';
+        const reason = e.detail?.reason || t('vncViewer.errors.authenticationFailed');
         setStatus('error');
         setErrorMessage(
-          e.detail?.status === 1 ? `Authentication failed: ${reason}. Check your VNC password.`
-          : e.detail?.status === 2 ? `Security type not supported: ${reason}`
-          : `Security failure: ${reason}`
+          e.detail?.status === 1 ? t('vncViewer.errors.authenticationDetail', { reason })
+          : e.detail?.status === 2 ? t('vncViewer.errors.securityType', { reason })
+          : t('vncViewer.errors.securityFailure', { reason })
         );
       });
       rfb.addEventListener('clipboard', (e: CustomEvent) => {
@@ -190,7 +193,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
     connect().catch((err) => {
       if (!disposed) {
         setStatus('error');
-        setErrorMessage(err instanceof Error ? err.message : 'Failed to load VNC viewer');
+        setErrorMessage(err instanceof Error ? err.message : t('vncViewer.errors.loadViewer'));
       }
     });
 
@@ -202,7 +205,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       }
       rfbRef.current = null;
     };
-  }, [wsUrl, onDisconnect]);
+  }, [wsUrl, onDisconnect, t]);
 
   // Sync scale setting to RFB instance
   useEffect(() => {
@@ -292,12 +295,12 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
               )}
             />
             <span className={statusConfig[status].color}>
-              {statusConfig[status].label}
+              {t(/* i18n-dynamic */ statusConfig[status].labelKey)}
             </span>
           </div>
           {status === 'connected' && (
             <span className="text-xs text-muted-foreground">
-              Tunnel {tunnelId.slice(0, 8)}
+              {t('vncViewer.tunnel', { id: tunnelId.slice(0, 8) })}
             </span>
           )}
         </div>
@@ -308,7 +311,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
             onClick={syncClipboard}
             disabled={status !== 'connected'}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
-            title="Sync clipboard to remote"
+            title={t('vncViewer.syncClipboard')}
           >
             <Clipboard className="h-4 w-4" />
           </button>
@@ -321,7 +324,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
               'flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed',
               scaleViewport && 'bg-muted',
             )}
-            title={scaleViewport ? 'Scaling: fit to window' : 'Scaling: native resolution'}
+            title={scaleViewport ? t('vncViewer.scalingFit') : t('vncViewer.scalingNative')}
           >
             <Scaling className="h-4 w-4" />
           </button>
@@ -330,7 +333,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
             type="button"
             onClick={toggleFullscreen}
             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            title={isFullscreen ? t('vncViewer.exitFullscreen') : t('vncViewer.fullscreen')}
           >
             {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
           </button>
@@ -342,7 +345,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
             className="flex h-8 items-center gap-1.5 rounded-md bg-red-500/10 px-3 text-sm font-medium text-red-600 hover:bg-red-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <MonitorOff className="h-4 w-4" />
-            Disconnect
+            {t('vncViewer.disconnect')}
           </button>
         </div>
       </div>
@@ -364,13 +367,13 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
               <div className="mb-4 flex items-center gap-2 text-gray-100">
                 <Lock className="h-5 w-5 text-amber-400" />
                 <h3 className="text-base font-semibold">
-                  {needsUsername ? 'macOS login required' : 'VNC password required'}
+                  {needsUsername ? t('vncViewer.credentials.macLoginRequired') : t('vncViewer.credentials.passwordRequired')}
                 </h3>
               </div>
               <p className="mb-4 text-sm text-gray-400">
                 {needsUsername
-                  ? 'The Mac is using Apple Remote Desktop authentication. Enter a macOS user account with Screen Sharing access (the user\'s login name and password).'
-                  : 'Enter the password set in System Settings > General > Sharing > Screen Sharing > Computer Settings.'}
+                  ? t('vncViewer.credentials.macDescription')
+                  : t('vncViewer.credentials.vncDescription')}
               </p>
               {needsUsername && (
                 <input
@@ -379,7 +382,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
                   autoComplete="username"
                   value={usernameInput}
                   onChange={(e) => setUsernameInput(e.target.value)}
-                  placeholder="macOS username"
+                  placeholder={t('vncViewer.credentials.macUsername')}
                   className="mb-3 w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-amber-500 focus:outline-hidden focus:ring-1 focus:ring-amber-500"
                 />
               )}
@@ -389,7 +392,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
                 autoComplete="current-password"
                 value={passwordInput}
                 onChange={(e) => setPasswordInput(e.target.value)}
-                placeholder={needsUsername ? 'macOS password' : 'Password'}
+                placeholder={needsUsername ? t('vncViewer.credentials.macPassword') : t('vncViewer.credentials.password')}
                 className="mb-4 w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-amber-500 focus:outline-hidden focus:ring-1 focus:ring-amber-500"
               />
               <div className="flex justify-end gap-2">
@@ -398,14 +401,14 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
                   onClick={handleDisconnect}
                   className="rounded-md px-3 py-1.5 text-sm text-gray-400 hover:bg-gray-800 hover:text-white"
                 >
-                  Cancel
+                  {t('common:actions.cancel')}
                 </button>
                 <button
                   type="submit"
                   disabled={!passwordInput || (needsUsername && !usernameInput)}
                   className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-medium text-gray-900 hover:bg-amber-400 disabled:opacity-50"
                 >
-                  Connect
+                  {t('vncViewer.connect')}
                 </button>
               </div>
             </form>

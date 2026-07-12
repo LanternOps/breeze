@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { buildPortalApiUrl } from './api';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { buildPortalApiUrl, portalApi } from './api';
 
 // Regression guard for the same-origin client API base (the deploy relies on it):
 // with PUBLIC_API_URL unset, the browser must issue RELATIVE /api/v1 requests so
@@ -32,5 +32,29 @@ describe('buildPortalApiUrl (client, PUBLIC_API_URL unset)', () => {
 
   it('passes absolute URLs through untouched', () => {
     expect(buildPortalApiUrl('https://files.example/x.pdf')).toBe('https://files.example/x.pdf');
+  });
+});
+
+// Pin the literal request path of the intake-forms read. A typo here would be
+// invisible forever: NewTicketForm silently degrades to the legacy form on any
+// fetch failure, so a 404'ing path would never surface in the UI.
+describe('portalApi.getTicketForms request path', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('GETs /portal/tickets/forms (under the /tickets auth prefix, NOT /ticket-forms)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.getTicketForms();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/portal/tickets/forms');
+    expect(url).not.toContain('/portal/ticket-forms');
+    expect(result.data).toEqual([]);
   });
 });

@@ -44,6 +44,9 @@ export const devices = pgTable('devices', {
   // dedup) and update this column fire-and-forget so the next request can
   // compare.
   lastSeenIp: varchar('last_seen_ip', { length: 45 }),
+  // Public IP the agent enrolled from (point-in-time; lastSeenIp above tracks
+  // the ongoing value). Feeds the abuse-signals sweep's IP-spread heuristics.
+  enrollmentIp: varchar('enrollment_ip', { length: 45 }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   osType: osTypeEnum('os_type').notNull(),
@@ -103,6 +106,9 @@ export const devices = pgTable('devices', {
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
   watchdogVersion: varchar('watchdog_version', { length: 50 }),
+  // #2288 — the control-plane URL the agent last heartbeated to. Reported by
+  // the agent; shows fleet position during a server URL migration.
+  agentServerUrl: varchar('agent_server_url', { length: 512 }),
   // Asymmetry detector (#800): set when the watchdog is still reporting
   // in but the main agent has gone silent past the offline threshold.
   // Cleared when the main agent next heartbeats. Distinct from

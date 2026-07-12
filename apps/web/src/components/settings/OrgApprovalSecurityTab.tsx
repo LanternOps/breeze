@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, ShieldCheck } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { DEFAULT_ASSURANCE_FLOOR, type RiskTier, type AssuranceLevel } from '@breeze/shared';
 import {
   getAuthenticatorPolicy,
@@ -10,19 +12,25 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 
 const TIERS: RiskTier[] = ['low', 'medium', 'high', 'critical'];
-const LEVEL_LABELS: Record<AssuranceLevel, string> = {
-  1: 'L1 — session tap',
-  2: 'L2 — biometric',
-  3: 'L3 — biometric + PIN',
-  4: 'L4 — hardware key + PIN',
+const TIER_LABEL_KEYS: Record<RiskTier, string> = {
+  low: 'orgApprovalSecurityTab.riskTiers.low',
+  medium: 'orgApprovalSecurityTab.riskTiers.medium',
+  high: 'orgApprovalSecurityTab.riskTiers.high',
+  critical: 'orgApprovalSecurityTab.riskTiers.critical',
 };
-
+const LEVEL_LABEL_KEYS: Record<AssuranceLevel, string> = {
+  1: 'orgApprovalSecurityTab.assuranceLevels.1',
+  2: 'orgApprovalSecurityTab.assuranceLevels.2',
+  3: 'orgApprovalSecurityTab.assuranceLevels.3',
+  4: 'orgApprovalSecurityTab.assuranceLevels.4',
+};
 /**
  * Breeze Authenticator (Phase 4) — partner "Approval Security" admin tab. Sets
  * the per-tier required assurance floor (raise-only above the Breeze default),
  * whether enrollment is required to approve above L1, and the grace cutoff.
  */
 export function OrgApprovalSecurityTab() {
+  const { t } = useTranslation('settings');
   const [policy, setPolicy] = useState<AuthenticatorPolicy | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | undefined>();
@@ -35,7 +43,7 @@ export function OrgApprovalSecurityTab() {
         const p = await getAuthenticatorPolicy();
         if (active) setPolicy(p);
       } catch {
-        if (active) setLoadError('Failed to load approval-security policy.');
+        if (active) setLoadError(t('orgApprovalSecurityTab.errors.load'));
       } finally {
         if (active) setIsLoading(false);
       }
@@ -43,7 +51,7 @@ export function OrgApprovalSecurityTab() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [t]);
 
   function setTierLevel(tier: RiskTier, level: AssuranceLevel) {
     setPolicy((prev) =>
@@ -57,12 +65,12 @@ export function OrgApprovalSecurityTab() {
     try {
       await runAction({
         request: () => putAuthenticatorPolicy(policy),
-        successMessage: 'Approval-security policy saved.',
-        errorFallback: 'Could not save the approval-security policy.',
+        successMessage: t('orgApprovalSecurityTab.toasts.saved'),
+        errorFallback: t('orgApprovalSecurityTab.errors.save'),
       });
     } catch (err) {
       if (!(err instanceof ActionError)) {
-        showToast({ type: 'error', message: 'Could not save the approval-security policy.' });
+        showToast({ type: 'error', message: t('orgApprovalSecurityTab.errors.save') });
       }
     } finally {
       setIsSaving(false);
@@ -72,14 +80,14 @@ export function OrgApprovalSecurityTab() {
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 p-6 text-muted-foreground" data-testid="approval-security-loading">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+        <Loader2 className="h-4 w-4 animate-spin" /> {t('common:states.loading')}
       </div>
     );
   }
   if (loadError || !policy) {
     return (
       <div className="p-6 text-destructive" data-testid="approval-security-error">
-        {loadError ?? 'No policy available.'}
+        {loadError ?? t('orgApprovalSecurityTab.errors.unavailable')}
       </div>
     );
   }
@@ -89,10 +97,9 @@ export function OrgApprovalSecurityTab() {
       <div className="flex items-start gap-3">
         <ShieldCheck className="mt-0.5 h-5 w-5 text-primary" />
         <div>
-          <h3 className="text-lg font-semibold">Approval Security</h3>
+          <h3 className="text-lg font-semibold">{t('orgApprovalSecurityTab.title')}</h3>
           <p className="text-sm text-muted-foreground">
-            Require technicians to verify with a registered device when approving. You can only
-            <strong> raise</strong> the assurance level above the Breeze default — never lower it.
+            {t('orgApprovalSecurityTab.description')}
           </p>
         </div>
       </div>
@@ -103,7 +110,9 @@ export function OrgApprovalSecurityTab() {
           const current = policy.floorOverrides[tier] ?? floor;
           return (
             <div key={tier} className="flex items-center justify-between gap-4 rounded-md border p-3">
-              <span className="text-sm font-medium capitalize">{tier} risk</span>
+              <span className="text-sm font-medium capitalize">
+                {t(/* i18n-dynamic */ TIER_LABEL_KEYS[tier])}
+              </span>
               <select
                 data-testid={`level-${tier}`}
                 className="rounded-md border bg-background px-2 py-1 text-sm"
@@ -115,7 +124,7 @@ export function OrgApprovalSecurityTab() {
                   .filter((lvl) => lvl >= floor)
                   .map((lvl) => (
                     <option key={lvl} value={lvl}>
-                      {LEVEL_LABELS[lvl]}
+                      {t(/* i18n-dynamic */ LEVEL_LABEL_KEYS[lvl])}
                     </option>
                   ))}
               </select>
@@ -130,11 +139,13 @@ export function OrgApprovalSecurityTab() {
           checked={policy.requireEnrollment}
           onChange={(e) => setPolicy({ ...policy, requireEnrollment: e.target.checked })}
         />
-        Require an enrolled approver device (enforce — block under-assured approvals)
+        {t('orgApprovalSecurityTab.requireEnrollment')}
       </label>
 
       <label className="block text-sm">
-        <span className="mb-1 block text-muted-foreground">Enforce from (grace window cutoff)</span>
+        <span className="mb-1 block text-muted-foreground">
+          {t('orgApprovalSecurityTab.enforceFrom')}
+        </span>
         <input
           type="date"
           data-testid="enforce-from"
@@ -157,7 +168,7 @@ export function OrgApprovalSecurityTab() {
         className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground disabled:opacity-60"
       >
         {isSaving && <Loader2 className="h-4 w-4 animate-spin" />}
-        Save
+        {t('common:actions.save')}
       </button>
     </div>
   );

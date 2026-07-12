@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Plus, Shield } from 'lucide-react';
 import PolicyList, { type Policy } from './PolicyList';
 import { fetchWithAuth } from '../../stores/auth';
@@ -7,6 +8,7 @@ import { navigateTo } from '@/lib/navigation';
 type ModalMode = 'closed' | 'delete';
 
 export default function PoliciesPage() {
+  const { t } = useTranslation('scripts');
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -20,7 +22,7 @@ export default function PoliciesPage() {
       setError(undefined);
       const response = await fetchWithAuth('/policies');
       if (!response.ok) {
-        throw new Error('Failed to fetch policies');
+        throw new Error(t('policiesPage.errors.fetch'));
       }
       const data = await response.json();
       const items = Array.isArray(data.data)
@@ -36,11 +38,11 @@ export default function PoliciesPage() {
       }));
       setPolicies(normalized);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('policiesPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchPolicies();
@@ -67,14 +69,14 @@ export default function PoliciesPage() {
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to ${enabled ? 'enable' : 'disable'} policy`);
+        throw new Error(enabled ? t('policiesPage.errors.enable') : t('policiesPage.errors.disable'));
       }
 
       setPolicies(prev =>
         prev.map(p => (p.id === policy.id ? { ...p, enabled } : p))
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('policiesPage.errors.generic'));
     }
   };
 
@@ -93,13 +95,13 @@ export default function PoliciesPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to delete policy');
+        throw new Error(t('policiesPage.errors.delete'));
       }
 
       await fetchPolicies();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('policiesPage.errors.generic'));
     } finally {
       setSubmitting(false);
     }
@@ -115,7 +117,7 @@ export default function PoliciesPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading policies...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('policiesPage.loading')}</p>
         </div>
       </div>
     );
@@ -130,7 +132,7 @@ export default function PoliciesPage() {
           onClick={fetchPolicies}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -140,8 +142,8 @@ export default function PoliciesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Policies</h1>
-          <p className="text-muted-foreground">Define and enforce compliance policies across your devices.</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t('policiesPage.title')}</h1>
+          <p className="text-muted-foreground">{t('policiesPage.description')}</p>
         </div>
         <div className="flex items-center gap-3">
           <a
@@ -149,14 +151,14 @@ export default function PoliciesPage() {
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
           >
             <Shield className="h-4 w-4" />
-            Compliance Dashboard
+            {t('policiesPage.actions.complianceDashboard')}
           </a>
           <a
             href="/policies/new"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
-            New Policy
+            {t('policiesPage.actions.new')}
           </a>
         </div>
       </div>
@@ -171,15 +173,15 @@ export default function PoliciesPage() {
       {policies.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="rounded-lg border bg-card p-4">
-            <p className="text-sm text-muted-foreground">Active Policies</p>
+            <p className="text-sm text-muted-foreground">{t('policiesPage.stats.activePolicies')}</p>
             <p className="text-2xl font-bold">{policies.filter(p => p.enabled).length}</p>
           </div>
           <div className="rounded-lg border bg-card p-4">
-            <p className="text-sm text-muted-foreground">Overall Compliance</p>
+            <p className="text-sm text-muted-foreground">{t('policiesPage.stats.overallCompliance')}</p>
             <p className="text-2xl font-bold">{overallPercent}%</p>
           </div>
           <div className="rounded-lg border bg-card p-4">
-            <p className="text-sm text-muted-foreground">Devices Monitored</p>
+            <p className="text-sm text-muted-foreground">{t('policiesPage.stats.devicesMonitored')}</p>
             <p className="text-2xl font-bold">{totalDevices}</p>
           </div>
         </div>
@@ -197,10 +199,11 @@ export default function PoliciesPage() {
       {modalMode === 'delete' && selectedPolicy && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Delete Policy</h2>
+            <h2 className="text-lg font-semibold">{t('policiesPage.deleteDialog.title')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to delete <span className="font-medium">{selectedPolicy.name}</span>?
-              This action cannot be undone.
+              {t('policiesPage.deleteDialog.confirmPrefix')}{' '}
+              <span className="font-medium">{selectedPolicy.name}</span>?{' '}
+              {t('policiesPage.deleteDialog.confirmSuffix')}
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -208,7 +211,7 @@ export default function PoliciesPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -216,7 +219,7 @@ export default function PoliciesPage() {
                 disabled={submitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? 'Deleting...' : 'Delete'}
+                {submitting ? t('policiesPage.actions.deleting') : t('common:actions.delete')}
               </button>
             </div>
           </div>

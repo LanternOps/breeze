@@ -192,6 +192,10 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'vulnerabilities', action: 'accept_risk',
     description: 'Waive (accept risk) and reopen vulnerability findings' },
 
+  // AI session audit (SR5-09)
+  { resource: 'ai_sessions', action: 'read_all',
+    description: "View all users' AI session history (admin audit dashboard)" },
+
   // Admin
   { resource: '*', action: '*', description: 'Full administrative access' }
 ];
@@ -273,7 +277,8 @@ export const SYSTEM_ROLES = [
       'topology:read', 'topology:write',
       'remote:access',
       'audit:read',
-      'vulnerabilities:accept_risk'
+      'vulnerabilities:accept_risk',
+      'ai_sessions:read_all'
     ]
   },
   {

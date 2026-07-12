@@ -41,6 +41,9 @@ ALLOW_RE="$ALLOW_RE"'|(^|\.)gserviceaccount\.com$'
 # Exact known-safe domains: public/example, infra, generic placeholders, and
 # owner-blessed real domains (olivetech.co — see PR #1968 discussion).
 ALLOW_RE="$ALLOW_RE"'|^(anthropic\.com|nist\.gov|google\.com|gmail\.com|mailinator\.com|contoso\.com|lanternops\.io|lantern\.it|olivetech\.co|a\.com|b\.co|b\.com|x\.com|mail\.x\.com|x\.io|y\.com|foo\.com|bar\.com|test\.com|corp\.com|company\.com|org\.com|msp\.com|yourmsp\.com|customer\.com|cust\.com|partner\.com|evil\.com|notours\.com|nowhere\.com|yourcompany\.com|yourdomain\.com|theirdomain\.com)$'
+# pt-BR placeholder domains (console i18n catalogs) — Portuguese counterparts
+# of company.com / yourmsp.com / example.com; ".exemplo" is not a real TLD.
+ALLOW_RE="$ALLOW_RE"'|^(empresa\.com|exemplo\.com|seumsp\.com)$|\.exemplo$'
 
 EMAIL_RE='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
 

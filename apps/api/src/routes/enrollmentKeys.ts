@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { zValidator } from '../lib/validation';
 import { z } from "zod";
 import { and, eq, sql, desc, inArray, lt, isNull, or, asc } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
@@ -31,6 +31,11 @@ import {
   serveWindowsBootstrapMsi,
 } from "../services/installerBuilder";
 import { renameAppInZip } from "../services/installerAppZip";
+import {
+  InstallerFilenameHostError,
+  macosBundleApiHost,
+  windowsFilenameApiHost,
+} from "../services/installerFilenameHost";
 import {
   issueBootstrapTokenForKey,
   BootstrapTokenIssuanceError,
@@ -1046,11 +1051,39 @@ enrollmentKeyRoutes.get(
     //   (a) caller passed ?legacy=1, OR
     //   (b) the installer-app asset is not yet published on GitHub.
     // ----------------------------------------------------------------
+    // Why a macOS download fell through to the legacy zip — recorded in the
+    // legacy path's audit details so operators can tell "working as designed"
+    // (explicit-legacy, nonstandard-host) from an asset-pipeline regression
+    // (asset-unavailable, rename-failed).
+    let macosLegacyFallbackReason:
+      | "explicit-legacy"
+      | "nonstandard-host"
+      | "asset-unavailable"
+      | "rename-failed"
+      | null = null;
+
     if (platform === "macos") {
       const wantLegacy = c.req.query("legacy") === "1";
-      const appZip = wantLegacy ? null : await fetchMacosInstallerAppZip();
+      // The app-bundle installer carries the API host in its bundle filename /
+      // bootstrap.json, and the installer app only accepts a bare https host —
+      // no port, no scheme (FilenameTokenParser.swift). A self-hosted server
+      // on a nonstandard port could download the bundle but never enroll
+      // through it (#2341), so fall through to the legacy zip below, which
+      // embeds the full server URL.
+      const bundleApiHost = macosBundleApiHost(serverUrl);
+      if (wantLegacy) {
+        macosLegacyFallbackReason = "explicit-legacy";
+      } else if (!bundleApiHost) {
+        macosLegacyFallbackReason = "nonstandard-host";
+      }
+      const appZip = macosLegacyFallbackReason
+        ? null
+        : await fetchMacosInstallerAppZip();
+      if (!appZip && !macosLegacyFallbackReason) {
+        macosLegacyFallbackReason = "asset-unavailable";
+      }
 
-      if (appZip) {
+      if (appZip && bundleApiHost) {
         // New path — bootstrap token + renamed app zip. No child enrollment key
         // is created here; the bootstrap endpoint creates it lazily on consume.
         let issued;
@@ -1069,10 +1102,9 @@ enrollmentKeyRoutes.get(
           throw err;
         }
 
-        const apiHost = new URL(serverUrl).host;
         const useLegacyFilenameToken = allowLegacyMacosInstallerFilenameToken();
         const newAppName = useLegacyFilenameToken
-          ? `Breeze Installer [${issued.token}@${apiHost}].app`
+          ? `Breeze Installer [${issued.token}@${bundleApiHost}].app`
           : "Breeze Installer.app";
         const bootstrapPayloadName = "Breeze Installer.bootstrap.json";
 
@@ -1087,7 +1119,10 @@ enrollmentKeyRoutes.get(
                   extraFiles: [
                     {
                       path: bootstrapPayloadName,
-                      data: JSON.stringify({ token: issued.token, apiHost }),
+                      data: JSON.stringify({
+                        token: issued.token,
+                        apiHost: bundleApiHost,
+                      }),
                       mode: 0o600,
                     },
                   ],
@@ -1102,6 +1137,11 @@ enrollmentKeyRoutes.get(
               error: err instanceof Error ? err.message : String(err),
             },
           );
+          // The fallback still hands the user a working installer, so without
+          // a Sentry event a systemic rename regression (e.g. a corrupted
+          // release asset) would be invisible until someone reads raw logs.
+          captureException(err, c);
+          macosLegacyFallbackReason = "rename-failed";
           // Fall through to legacy path — do NOT return.
         }
 
@@ -1142,6 +1182,20 @@ enrollmentKeyRoutes.get(
     // mints the child key lazily on consume (mirrors the macOS path above).
     // ----------------------------------------------------------------
     if (platform === "windows") {
+      // Encode the filename host BEFORE issuing a bootstrap token, so a URL
+      // that can never enroll (non-https, host not expressible in a Windows
+      // filename) fails loudly with the reason instead of serving an MSI
+      // that silently installs unenrolled — and doesn't burn a token (#2341).
+      let apiHost: string;
+      try {
+        apiHost = windowsFilenameApiHost(serverUrl);
+      } catch (err) {
+        if (err instanceof InstallerFilenameHostError) {
+          return c.json({ error: err.message }, 400);
+        }
+        throw err;
+      }
+
       let issued;
       try {
         issued = await issueBootstrapTokenForKey({
@@ -1164,10 +1218,18 @@ enrollmentKeyRoutes.get(
         msi = await fetchRegularMsi();
       } catch (err) {
         console.error("[installer] failed to fetch signed MSI:", err);
+        captureException(err, c);
         return c.json({ error: "MSI not available" }, 503);
       }
 
-      const apiHost = new URL(serverUrl).host;
+      // Build the response BEFORE the audit write — serveWindowsBootstrapMsi
+      // throws on a non-encoded host (defense in depth, #2341), and the audit
+      // trail must not record a download that never happened.
+      const response = serveWindowsBootstrapMsi(c, {
+        msi,
+        token: issued.token,
+        apiHost,
+      });
 
       writeEnrollmentKeyAudit(c, auth, {
         orgId: parentKey.orgId,
@@ -1182,7 +1244,7 @@ enrollmentKeyRoutes.get(
         },
       });
 
-      return serveWindowsBootstrapMsi(c, { msi, token: issued.token, apiHost });
+      return response;
     }
 
     // Signing-spend cap — enforce BEFORE child key creation or any signing
@@ -1290,6 +1352,9 @@ enrollmentKeyRoutes.get(
           childKeyId: childKey.id,
           shortCode,
           count: childMaxUsage,
+          ...(macosLegacyFallbackReason
+            ? { fallbackReason: macosLegacyFallbackReason }
+            : {}),
         },
       });
 
@@ -1760,6 +1825,20 @@ async function serveInstaller(
   // No per-customer signing and no child key created here.
   // ----------------------------------------------------------------
   if (platform === "windows") {
+    // Encode the filename host BEFORE issuing a bootstrap token, so a URL
+    // that can never enroll (non-https, host not expressible in a Windows
+    // filename) fails loudly with the reason instead of serving an MSI
+    // that silently installs unenrolled — and doesn't burn a token (#2341).
+    let apiHost: string;
+    try {
+      apiHost = windowsFilenameApiHost(serverUrl);
+    } catch (err) {
+      if (err instanceof InstallerFilenameHostError) {
+        return c.json({ error: err.message }, 400);
+      }
+      throw err;
+    }
+
     let issued;
     try {
       issued = await issueBootstrapTokenForKey({
@@ -1785,10 +1864,18 @@ async function serveInstaller(
       msi = await fetchRegularMsi();
     } catch (err) {
       console.error("[public-download] Failed to fetch MSI:", err);
+      captureException(err, c);
       return c.json({ error: "MSI not available" }, 503);
     }
 
-    const apiHost = new URL(serverUrl).host;
+    // Build the response BEFORE the audit write — serveWindowsBootstrapMsi
+    // throws on a non-encoded host (defense in depth, #2341), and the audit
+    // trail must not record a download that never happened.
+    const response = serveWindowsBootstrapMsi(c, {
+      msi,
+      token: issued.token,
+      apiHost,
+    });
 
     createAuditLogAsync({
       orgId: keyRow.orgId,
@@ -1803,7 +1890,7 @@ async function serveInstaller(
       result: "success",
     });
 
-    return serveWindowsBootstrapMsi(c, { msi, token: issued.token, apiHost });
+    return response;
   }
 
   // ----------------------------------------------------------------

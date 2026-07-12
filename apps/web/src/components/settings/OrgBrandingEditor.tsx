@@ -1,4 +1,6 @@
 import { type ChangeEvent, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Eye, Globe, Image, Palette, Save, Wand2, X } from 'lucide-react';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
@@ -30,10 +32,10 @@ const defaultBranding: BrandingData = {
 };
 
 const themeOptions = [
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' },
-  { value: 'system', label: 'System' }
-];
+  { value: 'light', labelKey: 'orgBrandingEditor.theme.options.light' },
+  { value: 'dark', labelKey: 'orgBrandingEditor.theme.options.dark' },
+  { value: 'system', labelKey: 'orgBrandingEditor.theme.options.system' },
+] as const;
 
 const portalDomain = (() => {
   try {
@@ -45,6 +47,7 @@ const portalDomain = (() => {
 })();
 
 export default function OrgBrandingEditor({ organizationName, branding, onDirty, onSave, locked }: OrgBrandingEditorProps) {
+  const { t } = useTranslation('settings');
   const isLocked = (field: string) => locked?.includes(`branding.${field}`) ?? false;
   const initialData = { ...defaultBranding, ...branding };
   const [logoPreview, setLogoPreview] = useState(initialData.logoUrl || '');
@@ -99,7 +102,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
       customCss,
       portalSubdomain
     };
-    setStatusMessage('Branding settings saved.');
+    setStatusMessage(t('orgBrandingEditor.saved'));
     onSave?.(data);
   };
 
@@ -111,9 +114,9 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">Branding</h2>
+          <h2 className="text-lg font-semibold">{t('orgBrandingEditor.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            Customize the portal experience for {organizationName}.
+            {t('orgBrandingEditor.description', { organization: organizationName })}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -123,7 +126,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition hover:bg-muted"
           >
             <Eye className="h-4 w-4" />
-            Preview
+            {t('orgBrandingEditor.preview.action')}
           </button>
           <button
             type="button"
@@ -131,7 +134,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             <Save className="h-4 w-4" />
-            Save branding
+            {t('orgBrandingEditor.save')}
           </button>
         </div>
       </div>
@@ -147,14 +150,14 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Image className="h-4 w-4" />
-              Logo
+              {t('orgBrandingEditor.logo.title')}
             </div>
             <div className="flex flex-wrap items-center gap-4 rounded-lg border bg-muted/40 p-4">
               <div className="flex h-16 w-16 items-center justify-center rounded-full border bg-background text-xs text-muted-foreground">
                 {safeLogoPreview ? (
                   <img
                     src={safeLogoPreview}
-                    alt="Organization logo preview"
+                    alt={t('orgBrandingEditor.logo.previewAlt')}
                     className="h-16 w-16 rounded-full object-cover"
                   />
                 ) : (
@@ -162,20 +165,20 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                 )}
               </div>
               <div className="space-y-1">
-                <p className="text-sm font-medium">Upload a new logo</p>
+                <p className="text-sm font-medium">{t('orgBrandingEditor.logo.uploadNew')}</p>
                 <p className="text-xs text-muted-foreground">
-                  SVG or PNG, recommended 512x512
+                  {t('orgBrandingEditor.logo.recommendation')}
                 </p>
                 {logoName ? (
-                  <p className="text-xs text-muted-foreground">Selected: {logoName}</p>
+                  <p className="text-xs text-muted-foreground">{t('orgBrandingEditor.logo.selected', { name: logoName })}</p>
                 ) : null}
               </div>
               <label className={`ml-auto inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted ${isLocked('logoUrl') ? 'opacity-60 pointer-events-none' : ''}`}>
                 <input type="file" accept="image/*" className="hidden" disabled={isLocked('logoUrl')} onChange={handleLogoChange} />
-                Upload
+                {t('common:actions.upload')}
               </label>
               {isLocked('logoUrl') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgBrandingEditor.managedByPartner')}</span>
               )}
             </div>
           </div>
@@ -184,7 +187,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Palette className="h-4 w-4" />
-                Primary color
+                {t('orgBrandingEditor.colors.primary')}
               </div>
               <div className={`flex items-center gap-3 ${isLocked('primaryColor') ? 'opacity-60' : ''}`}>
                 <input
@@ -209,14 +212,14 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                 />
               </div>
               {isLocked('primaryColor') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgBrandingEditor.managedByPartner')}</span>
               )}
             </div>
 
             <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Palette className="h-4 w-4" />
-                Secondary color
+                {t('orgBrandingEditor.colors.secondary')}
               </div>
               <div className={`flex items-center gap-3 ${isLocked('secondaryColor') ? 'opacity-60' : ''}`}>
                 <input
@@ -241,7 +244,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                 />
               </div>
               {isLocked('secondaryColor') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgBrandingEditor.managedByPartner')}</span>
               )}
             </div>
           </div>
@@ -251,7 +254,7 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
           <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Wand2 className="h-4 w-4" />
-              Theme
+              {t('orgBrandingEditor.theme.title')}
             </div>
             <select
               value={theme}
@@ -264,22 +267,22 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
             >
               {themeOptions.map(option => (
                 <option key={option.value} value={option.value}>
-                  {option.label}
+                  {t(/* i18n-dynamic */ option.labelKey)}
                 </option>
               ))}
             </select>
             <p className="text-xs text-muted-foreground">
-              System respects user OS preference when available.
+              {t('orgBrandingEditor.theme.description')}
             </p>
             {isLocked('theme') && (
-              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgBrandingEditor.managedByPartner')}</span>
             )}
           </div>
 
           <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Globe className="h-4 w-4" />
-              Portal subdomain
+              {t('orgBrandingEditor.subdomain.title')}
             </div>
             <div className="flex items-center">
               <input
@@ -296,12 +299,14 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Available preview URL: https://{portalSubdomain || 'your-org'}.{portalDomain}
+              {t('orgBrandingEditor.subdomain.previewUrl', {
+                url: `https://${portalSubdomain || 'your-org'}.${portalDomain}`,
+              })}
             </p>
           </div>
 
           <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
-            <div className="text-sm font-medium">Custom CSS (advanced)</div>
+            <div className="text-sm font-medium">{t('orgBrandingEditor.customCss.title')}</div>
             <textarea
               value={customCss}
               disabled={isLocked('customCss')}
@@ -313,10 +318,10 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
               className={`w-full rounded-md border bg-background px-3 py-2 text-xs ${isLocked('customCss') ? 'opacity-60' : ''}`}
             />
             <p className="text-xs text-muted-foreground">
-              Use custom styles to fine tune spacing, typography, or layout.
+              {t('orgBrandingEditor.customCss.description')}
             </p>
             {isLocked('customCss') && (
-              <span className="text-xs text-amber-600 dark:text-amber-400 italic">Managed by partner</span>
+              <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgBrandingEditor.managedByPartner')}</span>
             )}
           </div>
         </div>
@@ -327,14 +332,14 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
           <div className="w-full max-w-3xl overflow-hidden rounded-xl border bg-card shadow-xl">
             <div className="flex items-center justify-between border-b px-6 py-4">
               <div>
-                <h3 className="text-base font-semibold">Portal preview</h3>
-                <p className="text-xs text-muted-foreground">Live draft based on current branding inputs</p>
+                <h3 className="text-base font-semibold">{t('orgBrandingEditor.preview.title')}</h3>
+                <p className="text-xs text-muted-foreground">{t('orgBrandingEditor.preview.description')}</p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsPreviewOpen(false)}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition hover:text-foreground"
-                aria-label="Close preview"
+                aria-label={t('orgBrandingEditor.preview.close')}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -348,48 +353,50 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
                   <div className="flex items-center gap-3">
                     <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-xs font-semibold">
                       {safeLogoPreview ? (
-                        <img src={safeLogoPreview} alt="Preview logo" className="h-9 w-9 rounded-full object-cover" />
+                        <img src={safeLogoPreview} alt={t('orgBrandingEditor.preview.logoAlt')} className="h-9 w-9 rounded-full object-cover" />
                       ) : (
                         organizationName.slice(0, 2).toUpperCase()
                       )}
                     </div>
                     <div>
-                      <p className="text-sm font-semibold">{organizationName} Portal</p>
+                      <p className="text-sm font-semibold">{t('orgBrandingEditor.preview.portalName', { organization: organizationName })}</p>
                       <p className="text-xs opacity-90">{previewUrl}</p>
                     </div>
                   </div>
-                  <span className="rounded-full bg-white/20 px-2 py-1 text-xs uppercase tracking-wide">{theme}</span>
+                  <span className="rounded-full bg-white/20 px-2 py-1 text-xs uppercase tracking-wide">
+                    {t(/* i18n-dynamic */ themeOptions.find(option => option.value === theme)?.labelKey ?? 'orgBrandingEditor.theme.options.system')}
+                  </span>
                 </div>
 
                 <div className={isDarkTheme ? 'space-y-4 bg-slate-950 p-5 text-slate-100' : 'space-y-4 bg-white p-5 text-slate-900'}>
-                  <h4 className="text-sm font-semibold">Welcome back</h4>
+                  <h4 className="text-sm font-semibold">{t('orgBrandingEditor.preview.welcome')}</h4>
                   <p className={isDarkTheme ? 'text-sm text-slate-300' : 'text-sm text-slate-600'}>
-                    This preview reflects your current portal branding draft, including colors and logo choices.
+                    {t('orgBrandingEditor.preview.body')}
                   </p>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       className={`rounded-md px-3 py-2 text-xs font-semibold ${secondaryToken.bgClass} ${secondaryToken.textOnClass}`}
                     >
-                      Open support ticket
+                      {t('orgBrandingEditor.preview.openTicket')}
                     </button>
                     <button
                       type="button"
                       className={isDarkTheme ? 'rounded-md border border-slate-700 px-3 py-2 text-xs' : 'rounded-md border px-3 py-2 text-xs'}
                     >
-                      View device list
+                      {t('orgBrandingEditor.preview.viewDevices')}
                     </button>
                   </div>
                 </div>
               </div>
 
               <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                Preview URL: <span className="font-medium text-foreground">{previewUrl}</span>
+                {t('orgBrandingEditor.preview.urlLabel')}: <span className="font-medium text-foreground">{previewUrl}</span>
               </div>
 
               <div className="rounded-md border bg-muted/30 p-3">
-                <p className="text-xs font-medium">Custom CSS payload</p>
-                <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap chart-legend-xs text-muted-foreground">{customCss || '/* No custom CSS */'}</pre>
+                <p className="text-xs font-medium">{t('orgBrandingEditor.preview.cssPayload')}</p>
+                <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap chart-legend-xs text-muted-foreground">{customCss || t('orgBrandingEditor.preview.noCustomCss')}</pre>
               </div>
             </div>
           </div>

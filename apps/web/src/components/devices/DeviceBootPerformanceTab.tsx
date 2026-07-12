@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from "react";
 import {
   Timer,
   Zap,
@@ -7,8 +7,8 @@ import {
   RefreshCw,
   Loader2,
   ChevronDown,
-  ChevronUp
-} from 'lucide-react';
+  ChevronUp,
+} from "lucide-react";
 import {
   AreaChart,
   Area,
@@ -19,11 +19,14 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
-  ResponsiveContainer
-} from 'recharts';
-import { formatDateTime } from '@/lib/dateTimeFormat';
-import { fetchWithAuth } from '../../stores/auth';
-import { formatBytes, friendlyFetchError } from '../../lib/utils';
+  ResponsiveContainer,
+} from "recharts";
+import { formatDateTime } from "@/lib/dateTimeFormat";
+import { fetchWithAuth } from "../../stores/auth";
+import { formatNumber } from "@/lib/i18n/format";
+import { formatBytes, friendlyFetchError } from "../../lib/utils";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
 type StartupItem = {
   itemId: string;
@@ -54,8 +57,8 @@ type BootSummary = {
   slowestBootSeconds: number | null;
 };
 
-type SortField = 'name' | 'impactScore' | 'cpuTimeMs' | 'diskIoBytes';
-type SortDir = 'asc' | 'desc';
+type SortField = "name" | "impactScore" | "cpuTimeMs" | "diskIoBytes";
+type SortDir = "asc" | "desc";
 
 type DeviceBootPerformanceTabProps = {
   deviceId: string;
@@ -63,8 +66,9 @@ type DeviceBootPerformanceTabProps = {
 };
 
 function formatBootTime(seconds: number | null): string {
-  if (seconds === null || seconds === undefined) return '—';
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  if (seconds === null || seconds === undefined) return "—";
+  if (seconds < 60)
+    return `${formatNumber(seconds, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}s`;
   const mins = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);
   return `${mins}m ${secs}s`;
@@ -73,7 +77,7 @@ function formatBootTime(seconds: number | null): string {
 function formatTimestampShort(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function formatTimestampFull(value: string, timezone?: string): string {
@@ -83,42 +87,53 @@ function formatTimestampFull(value: string, timezone?: string): string {
 }
 
 function getImpactBadgeClass(score: number | null): string {
-  if (score === null) return 'bg-muted text-muted-foreground';
-  if (score > 60) return 'bg-red-500/20 text-red-700 border-red-500/30';
-  if (score >= 20) return 'bg-yellow-500/20 text-yellow-800 border-yellow-500/40';
-  return 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40';
+  if (score === null) return "bg-muted text-muted-foreground";
+  if (score > 60) return "bg-red-500/20 text-red-700 border-red-500/30";
+  if (score >= 20)
+    return "bg-yellow-500/20 text-yellow-800 border-yellow-500/40";
+  return "bg-emerald-500/20 text-emerald-700 border-emerald-500/40";
 }
 
 function formatStartupType(type: string): string {
   const map: Record<string, string> = {
-    registry: 'Registry',
-    folder: 'Startup Folder',
-    service: 'Service',
-    scheduled_task: 'Scheduled Task',
-    launchd: 'LaunchD',
-    systemd: 'Systemd',
-    login_item: 'Login Item',
+    registry: "Registry",
+    folder: "Startup Folder",
+    service: "Service",
+    scheduled_task: "Scheduled Task",
+    launchd: "LaunchD",
+    systemd: "Systemd",
+    login_item: "Login Item",
   };
   return map[type] ?? type;
 }
 
-export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceBootPerformanceTabProps) {
+export default function DeviceBootPerformanceTab({
+  deviceId,
+  timezone,
+}: DeviceBootPerformanceTabProps) {
+  const { t } = useTranslation("devices");
   const [boots, setBoots] = useState<BootRecord[]>([]);
   const [summary, setSummary] = useState<BootSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [collecting, setCollecting] = useState(false);
-  const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [sortField, setSortField] = useState<SortField>('impactScore');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [notice, setNotice] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [sortField, setSortField] = useState<SortField>("impactScore");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedBootId, setExpandedBootId] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetchWithAuth(`/devices/${deviceId}/boot-metrics?limit=30`);
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      const response = await fetchWithAuth(
+        `/devices/${deviceId}/boot-metrics?limit=30`,
+      );
+      if (!response.ok)
+        throw new Error(`${response.status} ${response.statusText}`);
       const json = await response.json();
       setBoots(json.boots ?? []);
       setSummary(json.summary ?? null);
@@ -137,17 +152,33 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
     setCollecting(true);
     setNotice(null);
     try {
-      const response = await fetchWithAuth(`/devices/${deviceId}/collect-boot-metrics`, {
-        method: 'POST',
-      });
+      const response = await fetchWithAuth(
+        `/devices/${deviceId}/collect-boot-metrics`,
+        {
+          method: "POST",
+        },
+      );
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        throw new Error(body.error ?? `${response.status} ${response.statusText}`);
+        throw new Error(
+          body.error ?? `${response.status} ${response.statusText}`,
+        );
       }
-      setNotice({ type: 'success', message: 'Boot metrics collection triggered. Data will appear after next boot or collection cycle.' });
+      setNotice({
+        type: "success",
+        message: t(
+          "deviceBootPerformanceTab.bootMetricsCollectionTriggeredDataWill",
+        ),
+      });
       await fetchData();
     } catch (err) {
-      setNotice({ type: 'error', message: err instanceof Error ? err.message : 'Failed to trigger collection' });
+      setNotice({
+        type: "error",
+        message:
+          err instanceof Error
+            ? err.message
+            : t("deviceBootPerformanceTab.failedToTriggerCollection"),
+      });
     } finally {
       setCollecting(false);
     }
@@ -155,18 +186,18 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
-      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortField(field);
-      setSortDir('desc');
+      setSortDir("desc");
     }
   };
 
   const sortedStartupItems = (() => {
     const items = boots[0]?.startupItems ?? [];
     return [...items].sort((a, b) => {
-      const dir = sortDir === 'asc' ? 1 : -1;
-      if (sortField === 'name') return dir * a.name.localeCompare(b.name);
+      const dir = sortDir === "asc" ? 1 : -1;
+      if (sortField === "name") return dir * a.name.localeCompare(b.name);
       const aVal = a[sortField] ?? -1;
       const bVal = b[sortField] ?? -1;
       return dir * (aVal - bVal);
@@ -174,7 +205,10 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
   })();
 
   const hasPhaseData = boots.some(
-    b => b.biosSeconds !== null || b.osLoaderSeconds !== null || b.desktopReadySeconds !== null
+    (b) =>
+      b.biosSeconds !== null ||
+      b.osLoaderSeconds !== null ||
+      b.desktopReadySeconds !== null,
   );
 
   // Chart data: reverse so oldest is on the left
@@ -186,7 +220,9 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
       <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">Loading boot performance data...</p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            {t("deviceBootPerformanceTab.loadingBootPerformanceData")}
+          </p>
         </div>
       </div>
     );
@@ -202,7 +238,7 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
           onClick={fetchData}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Retry
+          {t("deviceBootPerformanceTab.retry")}{" "}
         </button>
       </div>
     );
@@ -215,9 +251,11 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
         <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
           <div className="text-center">
             <Timer className="mx-auto h-10 w-10 text-muted-foreground" />
-            <h3 className="mt-3 text-lg font-semibold">No Boot Performance Data</h3>
+            <h3 className="mt-3 text-lg font-semibold">
+              {t("deviceBootPerformanceTab.noBootPerformanceData")}
+            </h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Boot metrics will appear after the agent collects them during a reboot cycle.
+              {t("deviceBootPerformanceTab.bootMetricsWillAppearAfterThe")}{" "}
             </p>
             <button
               type="button"
@@ -225,13 +263,19 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
               disabled={collecting}
               className="mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
             >
-              {collecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-              Collect Now
+              {collecting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Zap className="h-4 w-4" />
+              )}
+              {t("deviceBootPerformanceTab.collectNow")}{" "}
             </button>
           </div>
         </div>
         {notice && (
-          <div className={`rounded-md border p-3 text-sm ${notice.type === 'success' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700' : 'border-destructive/40 bg-destructive/10 text-destructive'}`}>
+          <div
+            className={`rounded-md border p-3 text-sm ${notice.type === "success" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700" : "border-destructive/40 bg-destructive/10 text-destructive"}`}
+          >
             {notice.message}
           </div>
         )}
@@ -245,8 +289,12 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-lg font-semibold">Boot Performance</h3>
-            <p className="text-sm text-muted-foreground">Boot time trends, phase breakdown, and startup item analysis.</p>
+            <h3 className="text-lg font-semibold">
+              {t("deviceBootPerformanceTab.bootPerformance")}
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              {t("deviceBootPerformanceTab.bootTimeTrendsPhaseBreakdownAnd")}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -255,8 +303,12 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
               disabled={loading}
               className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
             >
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Refresh
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              {t("deviceBootPerformanceTab.refresh")}{" "}
             </button>
             <button
               type="button"
@@ -264,8 +316,12 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
               disabled={collecting}
               className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
             >
-              {collecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-              Collect Now
+              {collecting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Zap className="h-4 w-4" />
+              )}
+              {t("deviceBootPerformanceTab.collectNow")}{" "}
             </button>
           </div>
         </div>
@@ -273,7 +329,9 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
 
       {/* Notice banner */}
       {notice && (
-        <div className={`rounded-md border p-3 text-sm ${notice.type === 'success' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700' : 'border-destructive/40 bg-destructive/10 text-destructive'}`}>
+        <div
+          className={`rounded-md border p-3 text-sm ${notice.type === "success" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700" : "border-destructive/40 bg-destructive/10 text-destructive"}`}
+        >
           {notice.message}
         </div>
       )}
@@ -284,28 +342,34 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Timer className="h-4 w-4" />
-              Avg Boot Time
+              {t("deviceBootPerformanceTab.avgBootTime")}{" "}
             </div>
-            <p className="mt-2 text-2xl font-bold">{formatBootTime(summary.avgBootTimeSeconds)}</p>
+            <p className="mt-2 text-2xl font-bold">
+              {formatBootTime(summary.avgBootTimeSeconds)}
+            </p>
           </div>
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Zap className="h-4 w-4" />
-              Fastest Boot
+              {t("deviceBootPerformanceTab.fastestBoot")}{" "}
             </div>
-            <p className="mt-2 text-2xl font-bold">{formatBootTime(summary.fastestBootSeconds)}</p>
+            <p className="mt-2 text-2xl font-bold">
+              {formatBootTime(summary.fastestBootSeconds)}
+            </p>
           </div>
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <AlertTriangle className="h-4 w-4" />
-              Slowest Boot
+              {t("deviceBootPerformanceTab.slowestBoot")}{" "}
             </div>
-            <p className="mt-2 text-2xl font-bold">{formatBootTime(summary.slowestBootSeconds)}</p>
+            <p className="mt-2 text-2xl font-bold">
+              {formatBootTime(summary.slowestBootSeconds)}
+            </p>
           </div>
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Activity className="h-4 w-4" />
-              Boots Tracked
+              {t("deviceBootPerformanceTab.bootsTracked")}{" "}
             </div>
             <p className="mt-2 text-2xl font-bold">{summary.totalBoots}</p>
           </div>
@@ -314,7 +378,9 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
 
       {/* Boot time trend chart */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Boot Time Trend</h3>
+        <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          {t("deviceBootPerformanceTab.bootTimeTrend")}
+        </h3>
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
             {hasPhaseData ? (
@@ -349,8 +415,13 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
                 />
                 <Tooltip
                   wrapperClassName="chart-tooltip"
-                  labelFormatter={(value) => formatTimestampFull(String(value), timezone)}
-                  formatter={(value: number, name: string) => [formatBootTime(value), name]}
+                  labelFormatter={(value) =>
+                    formatTimestampFull(String(value), timezone)
+                  }
+                  formatter={(value: number, name: string) => [
+                    formatBootTime(value),
+                    name,
+                  ]}
                 />
                 <Legend />
                 <Area
@@ -405,8 +476,13 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
                 />
                 <Tooltip
                   wrapperClassName="chart-tooltip"
-                  labelFormatter={(value) => formatTimestampFull(String(value), timezone)}
-                  formatter={(value: number) => [formatBootTime(value), 'Total Boot Time']}
+                  labelFormatter={(value) =>
+                    formatTimestampFull(String(value), timezone)
+                  }
+                  formatter={(value: number) => [
+                    formatBootTime(value),
+                    "Total Boot Time",
+                  ]}
                 />
                 <Legend />
                 <Line
@@ -427,32 +503,76 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
       {boots[0]?.startupItems?.length > 0 && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Startup Items (Latest Boot)
+            {t("deviceBootPerformanceTab.startupItemsLatestBoot")}{" "}
           </h3>
           <div className="max-h-96 overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-card">
                 <tr className="border-b text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   <th className="pb-2 pr-4">
-                    <button type="button" onClick={() => handleSort('name')} className="inline-flex items-center gap-1 hover:text-foreground">
-                      Name {sortField === 'name' && (sortDir === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                    <button
+                      type="button"
+                      onClick={() => handleSort("name")}
+                      className="inline-flex items-center gap-1 hover:text-foreground"
+                    >
+                      {t("deviceBootPerformanceTab.name")}{" "}
+                      {sortField === "name" &&
+                        (sortDir === "asc" ? (
+                          <ChevronUp className="h-3 w-3" />
+                        ) : (
+                          <ChevronDown className="h-3 w-3" />
+                        ))}
                     </button>
                   </th>
-                  <th className="pb-2 pr-4">Type</th>
-                  <th className="pb-2 pr-4">Status</th>
                   <th className="pb-2 pr-4">
-                    <button type="button" onClick={() => handleSort('cpuTimeMs')} className="inline-flex items-center gap-1 hover:text-foreground">
-                      CPU Time {sortField === 'cpuTimeMs' && (sortDir === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                    {t("deviceBootPerformanceTab.type")}
+                  </th>
+                  <th className="pb-2 pr-4">
+                    {t("deviceBootPerformanceTab.status")}
+                  </th>
+                  <th className="pb-2 pr-4">
+                    <button
+                      type="button"
+                      onClick={() => handleSort("cpuTimeMs")}
+                      className="inline-flex items-center gap-1 hover:text-foreground"
+                    >
+                      {t("deviceBootPerformanceTab.cpuTime")}{" "}
+                      {sortField === "cpuTimeMs" &&
+                        (sortDir === "asc" ? (
+                          <ChevronUp className="h-3 w-3" />
+                        ) : (
+                          <ChevronDown className="h-3 w-3" />
+                        ))}
                     </button>
                   </th>
                   <th className="pb-2 pr-4">
-                    <button type="button" onClick={() => handleSort('diskIoBytes')} className="inline-flex items-center gap-1 hover:text-foreground">
-                      Disk I/O {sortField === 'diskIoBytes' && (sortDir === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                    <button
+                      type="button"
+                      onClick={() => handleSort("diskIoBytes")}
+                      className="inline-flex items-center gap-1 hover:text-foreground"
+                    >
+                      {t("deviceBootPerformanceTab.diskIO")}{" "}
+                      {sortField === "diskIoBytes" &&
+                        (sortDir === "asc" ? (
+                          <ChevronUp className="h-3 w-3" />
+                        ) : (
+                          <ChevronDown className="h-3 w-3" />
+                        ))}
                     </button>
                   </th>
                   <th className="pb-2">
-                    <button type="button" onClick={() => handleSort('impactScore')} className="inline-flex items-center gap-1 hover:text-foreground">
-                      Impact {sortField === 'impactScore' && (sortDir === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
+                    <button
+                      type="button"
+                      onClick={() => handleSort("impactScore")}
+                      className="inline-flex items-center gap-1 hover:text-foreground"
+                    >
+                      {t("deviceBootPerformanceTab.impact")}{" "}
+                      {sortField === "impactScore" &&
+                        (sortDir === "asc" ? (
+                          <ChevronUp className="h-3 w-3" />
+                        ) : (
+                          <ChevronDown className="h-3 w-3" />
+                        ))}
                     </button>
                   </th>
                 </tr>
@@ -463,30 +583,47 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
                     <td className="py-2.5 pr-4">
                       <p className="font-medium">{item.name}</p>
                       {item.path && (
-                        <p className="mt-0.5 text-xs text-muted-foreground truncate max-w-xs" title={item.path}>
+                        <p
+                          className="mt-0.5 text-xs text-muted-foreground truncate max-w-xs"
+                          title={item.path}
+                        >
                           {item.path}
                         </p>
                       )}
                     </td>
-                    <td className="py-2.5 pr-4 text-muted-foreground">{formatStartupType(item.type)}</td>
+                    <td className="py-2.5 pr-4 text-muted-foreground">
+                      {formatStartupType(item.type)}
+                    </td>
                     <td className="py-2.5 pr-4">
-                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${
-                        item.enabled
-                          ? 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40'
-                          : 'bg-muted text-muted-foreground border-muted'
-                      }`}>
-                        {item.enabled ? 'Enabled' : 'Disabled'}
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${
+                          item.enabled
+                            ? "bg-emerald-500/20 text-emerald-700 border-emerald-500/40"
+                            : "bg-muted text-muted-foreground border-muted"
+                        }`}
+                      >
+                        {item.enabled
+                          ? t("deviceBootPerformanceTab.enabled")
+                          : t("deviceBootPerformanceTab.disabled")}
                       </span>
                     </td>
                     <td className="py-2.5 pr-4 text-muted-foreground">
-                      {item.cpuTimeMs !== null ? `${item.cpuTimeMs}ms` : '—'}
+                      {item.cpuTimeMs !== null
+                        ? `${item.cpuTimeMs}ms`
+                        : t("deviceBootPerformanceTab.text")}
                     </td>
                     <td className="py-2.5 pr-4 text-muted-foreground">
-                      {item.diskIoBytes !== null ? formatBytes(item.diskIoBytes) : '—'}
+                      {item.diskIoBytes !== null
+                        ? formatBytes(item.diskIoBytes)
+                        : t("deviceBootPerformanceTab.text")}
                     </td>
                     <td className="py-2.5">
-                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${getImpactBadgeClass(item.impactScore)}`}>
-                        {item.impactScore !== null ? item.impactScore : '—'}
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${getImpactBadgeClass(item.impactScore)}`}
+                      >
+                        {item.impactScore !== null
+                          ? item.impactScore
+                          : t("deviceBootPerformanceTab.text")}
                       </span>
                     </td>
                   </tr>
@@ -499,17 +636,29 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
 
       {/* Boot history table */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Boot History</h3>
+        <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          {t("deviceBootPerformanceTab.bootHistory")}
+        </h3>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                <th className="pb-2 pr-4">Timestamp</th>
-                <th className="pb-2 pr-4">Total Time</th>
+                <th className="pb-2 pr-4">
+                  {t("deviceBootPerformanceTab.timestamp")}
+                </th>
+                <th className="pb-2 pr-4">
+                  {t("deviceBootPerformanceTab.totalTime")}
+                </th>
                 <th className="pb-2 pr-4">BIOS</th>
-                <th className="pb-2 pr-4">OS Loader</th>
-                <th className="pb-2 pr-4">Desktop Ready</th>
-                <th className="pb-2">Startup Items</th>
+                <th className="pb-2 pr-4">
+                  {t("deviceBootPerformanceTab.osLoader")}
+                </th>
+                <th className="pb-2 pr-4">
+                  {t("deviceBootPerformanceTab.desktopReady")}
+                </th>
+                <th className="pb-2">
+                  {t("deviceBootPerformanceTab.startupItems")}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -519,7 +668,11 @@ export default function DeviceBootPerformanceTab({ deviceId, timezone }: DeviceB
                   boot={boot}
                   timezone={timezone}
                   expanded={expandedBootId === boot.id}
-                  onToggle={() => setExpandedBootId(expandedBootId === boot.id ? null : boot.id)}
+                  onToggle={() =>
+                    setExpandedBootId(
+                      expandedBootId === boot.id ? null : boot.id,
+                    )
+                  }
                 />
               ))}
             </tbody>
@@ -541,6 +694,7 @@ function BootHistoryRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation("devices");
   const topItems = [...(boot.startupItems ?? [])]
     .sort((a, b) => (b.impactScore ?? 0) - (a.impactScore ?? 0))
     .slice(0, 10);
@@ -553,36 +707,64 @@ function BootHistoryRow({
       >
         <td className="py-2.5 pr-4">
           <div className="flex items-center gap-2">
-            {boot.startupItems?.length > 0 && (
-              expanded ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-            )}
+            {boot.startupItems?.length > 0 &&
+              (expanded ? (
+                <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
+              ) : (
+                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+              ))}
             {formatTimestampFull(boot.bootTimestamp, timezone)}
           </div>
         </td>
-        <td className="py-2.5 pr-4 font-medium">{formatBootTime(boot.totalBootSeconds)}</td>
-        <td className="py-2.5 pr-4 text-muted-foreground">{formatBootTime(boot.biosSeconds)}</td>
-        <td className="py-2.5 pr-4 text-muted-foreground">{formatBootTime(boot.osLoaderSeconds)}</td>
-        <td className="py-2.5 pr-4 text-muted-foreground">{formatBootTime(boot.desktopReadySeconds)}</td>
-        <td className="py-2.5 text-muted-foreground">{boot.startupItemCount}</td>
+        <td className="py-2.5 pr-4 font-medium">
+          {formatBootTime(boot.totalBootSeconds)}
+        </td>
+        <td className="py-2.5 pr-4 text-muted-foreground">
+          {formatBootTime(boot.biosSeconds)}
+        </td>
+        <td className="py-2.5 pr-4 text-muted-foreground">
+          {formatBootTime(boot.osLoaderSeconds)}
+        </td>
+        <td className="py-2.5 pr-4 text-muted-foreground">
+          {formatBootTime(boot.desktopReadySeconds)}
+        </td>
+        <td className="py-2.5 text-muted-foreground">
+          {boot.startupItemCount}
+        </td>
       </tr>
       {expanded && topItems.length > 0 && (
         <tr>
           <td colSpan={6} className="bg-muted/30 px-4 py-3">
             <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Top {topItems.length} Startup Items by Impact
+              {t("deviceBootPerformanceTab.top")} {topItems.length}{" "}
+              {t("deviceBootPerformanceTab.startupItemsByImpact")}{" "}
             </p>
             <div className="grid gap-1">
               {topItems.map((item) => (
-                <div key={item.itemId} className="flex items-center justify-between rounded-md bg-background px-3 py-1.5 text-xs">
+                <div
+                  key={item.itemId}
+                  className="flex items-center justify-between rounded-md bg-background px-3 py-1.5 text-xs"
+                >
                   <div className="flex items-center gap-3">
                     <span className="font-medium">{item.name}</span>
-                    <span className="text-muted-foreground">{formatStartupType(item.type)}</span>
+                    <span className="text-muted-foreground">
+                      {formatStartupType(item.type)}
+                    </span>
                   </div>
                   <div className="flex items-center gap-4 text-muted-foreground">
-                    {item.cpuTimeMs !== null && <span>{item.cpuTimeMs}ms CPU</span>}
-                    {item.diskIoBytes !== null && <span>{formatBytes(item.diskIoBytes)}</span>}
-                    <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-xs font-semibold ${getImpactBadgeClass(item.impactScore)}`}>
-                      {item.impactScore ?? '—'}
+                    {item.cpuTimeMs !== null && (
+                      <span>
+                        {item.cpuTimeMs}
+                        {t("deviceBootPerformanceTab.msCpu")}
+                      </span>
+                    )}
+                    {item.diskIoBytes !== null && (
+                      <span>{formatBytes(item.diskIoBytes)}</span>
+                    )}
+                    <span
+                      className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-xs font-semibold ${getImpactBadgeClass(item.impactScore)}`}
+                    >
+                      {item.impactScore ?? "—"}
                     </span>
                   </div>
                 </div>

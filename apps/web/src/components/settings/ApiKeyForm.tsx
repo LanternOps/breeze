@@ -1,27 +1,29 @@
+import { i18n } from '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 
 export type ApiKeyScope = {
   id: string;
-  label: string;
-  description: string;
+  labelKey: string;
+  descriptionKey: string;
   adminOnly?: boolean;
 };
 
 export const API_KEY_SCOPES: ApiKeyScope[] = [
-  { id: 'devices:read', label: 'Devices: Read', description: 'View device information and status' },
-  { id: 'devices:write', label: 'Devices: Write', description: 'Create, update, and delete devices' },
-  { id: 'scripts:read', label: 'Scripts: Read', description: 'View scripts and execution history' },
-  { id: 'scripts:write', label: 'Scripts: Write', description: 'Create and modify scripts' },
-  { id: 'scripts:execute', label: 'Scripts: Execute', description: 'Run scripts on devices' },
-  { id: 'alerts:read', label: 'Alerts: Read', description: 'View alerts and notifications' },
-  { id: 'alerts:write', label: 'Alerts: Write', description: 'Create and manage alert rules' },
-  { id: 'reports:read', label: 'Reports: Read', description: 'View and download reports' },
-  { id: 'reports:write', label: 'Reports: Write', description: 'Create and schedule reports' },
-  { id: 'ai:read', label: 'AI: Read', description: 'Query devices, alerts, and metrics via AI/MCP' },
-  { id: 'ai:write', label: 'AI: Write', description: 'Create automations and manage alerts via AI/MCP' },
-  { id: 'ai:execute', label: 'AI: Execute', description: 'Execute commands and scripts via AI/MCP', adminOnly: true },
-  { id: 'users:read', label: 'Users: Read', description: 'View user information', adminOnly: true }
+  { id: 'devices:read', labelKey: 'apiKeyForm.devicesRead', descriptionKey: 'apiKeyForm.viewDeviceInformationAndStatus' },
+  { id: 'devices:write', labelKey: 'apiKeyForm.devicesWrite', descriptionKey: 'apiKeyForm.createUpdateAndDeleteDevices' },
+  { id: 'scripts:read', labelKey: 'apiKeyForm.scriptsRead', descriptionKey: 'apiKeyForm.viewScriptsAndExecutionHistory' },
+  { id: 'scripts:write', labelKey: 'apiKeyForm.scriptsWrite', descriptionKey: 'apiKeyForm.createAndModifyScripts' },
+  { id: 'scripts:execute', labelKey: 'apiKeyForm.scriptsExecute', descriptionKey: 'apiKeyForm.runScriptsOnDevices' },
+  { id: 'alerts:read', labelKey: 'apiKeyForm.alertsRead', descriptionKey: 'apiKeyForm.viewAlertsAndNotifications' },
+  { id: 'alerts:write', labelKey: 'apiKeyForm.alertsWrite', descriptionKey: 'apiKeyForm.createAndManageAlertRules' },
+  { id: 'reports:read', labelKey: 'apiKeyForm.reportsRead', descriptionKey: 'apiKeyForm.viewAndDownloadReports' },
+  { id: 'reports:write', labelKey: 'apiKeyForm.reportsWrite', descriptionKey: 'apiKeyForm.createAndScheduleReports' },
+  { id: 'ai:read', labelKey: 'apiKeyForm.aIRead', descriptionKey: 'apiKeyForm.queryDevicesAlertsAndMetricsViaAIMCP' },
+  { id: 'ai:write', labelKey: 'apiKeyForm.aIWrite', descriptionKey: 'apiKeyForm.createAutomationsAndManageAlertsViaAIMCP' },
+  { id: 'ai:execute', labelKey: 'apiKeyForm.aIExecute', descriptionKey: 'apiKeyForm.executeCommandsAndScriptsViaAIMCP', adminOnly: true },
+  { id: 'users:read', labelKey: 'apiKeyForm.usersRead', descriptionKey: 'apiKeyForm.viewUserInformation', adminOnly: true }
 ];
 
 export type ApiKeyFormValues = {
@@ -78,10 +80,9 @@ export function CreatedKeyModal({ isOpen, apiKey, onClose }: CreatedKeyModalProp
             </svg>
           </div>
           <div className="flex-1">
-            <h2 className="text-lg font-semibold">API Key Created</h2>
+            <h2 className="text-lg font-semibold">{i18n.t('settings:apiKeyForm.aPIKeyCreated')}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Your new API key has been created successfully.
-            </p>
+              {i18n.t('settings:apiKeyForm.yourNewAPIKeyHasBeenCreatedSuccessfully')}</p>
           </div>
         </div>
 
@@ -101,15 +102,13 @@ export function CreatedKeyModal({ isOpen, apiKey, onClose }: CreatedKeyModalProp
               />
             </svg>
             <p className="text-sm font-medium text-amber-800">
-              This key will only be shown once. Please copy and store it securely.
-            </p>
+              {i18n.t('settings:apiKeyForm.thisKeyWillOnlyBeShownOncePleaseCopyAndStoreItSecurely')}</p>
           </div>
         </div>
 
         <div className="mt-4">
           <label htmlFor="api-key-value" className="text-sm font-medium">
-            Your API Key
-          </label>
+            {i18n.t('settings:apiKeyForm.yourAPIKey')}</label>
           <div className="mt-2 flex gap-2">
             <input
               id="api-key-value"
@@ -133,8 +132,7 @@ export function CreatedKeyModal({ isOpen, apiKey, onClose }: CreatedKeyModalProp
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  Copied
-                </>
+                  {i18n.t('settings:apiKeyForm.copied')}</>
               ) : (
                 <>
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -145,8 +143,7 @@ export function CreatedKeyModal({ isOpen, apiKey, onClose }: CreatedKeyModalProp
                       d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
                     />
                   </svg>
-                  Copy
-                </>
+                  {i18n.t('settings:apiKeyForm.copy')}</>
               )}
             </button>
           </div>
@@ -158,8 +155,7 @@ export function CreatedKeyModal({ isOpen, apiKey, onClose }: CreatedKeyModalProp
             onClick={onClose}
             className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
-            Done
-          </button>
+            {i18n.t('settings:apiKeyForm.done')}</button>
         </div>
       </div>
     </div>
@@ -176,6 +172,7 @@ export default function ApiKeyForm({
   initialValues,
   isAdmin = false
 }: ApiKeyFormProps) {
+  const { t } = useTranslation('settings');
   const [name, setName] = useState(initialValues?.name ?? '');
   const [expiresAt, setExpiresAt] = useState(initialValues?.expiresAt ?? '');
   const [neverExpires, setNeverExpires] = useState(!initialValues?.expiresAt);
@@ -252,14 +249,14 @@ export default function ApiKeyForm({
           {/* Name */}
           <div className="space-y-2">
             <label htmlFor="api-key-name" className="text-sm font-medium">
-              Name <span className="text-destructive">*</span>
+              {t('apiKeyForm.name')}<span className="text-destructive">*</span>
             </label>
             <input
               id="api-key-name"
               type="text"
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="My API Key"
+              placeholder={t('apiKeyForm.myAPIKey')}
               className={cn(
                 'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
                 errors.name && 'border-destructive focus:ring-destructive'
@@ -270,7 +267,7 @@ export default function ApiKeyForm({
 
           {/* Expiration */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">Expiration</label>
+            <label className="text-sm font-medium">{t('apiKeyForm.expiration')}</label>
             <div className="flex items-center gap-4">
               <label className="flex items-center gap-2 text-sm">
                 <input
@@ -279,8 +276,7 @@ export default function ApiKeyForm({
                   onChange={e => setNeverExpires(e.target.checked)}
                   className="h-4 w-4 rounded border-border"
                 />
-                Never expires
-              </label>
+                {t('apiKeyForm.neverExpires')}</label>
             </div>
             {!neverExpires && (
               <input
@@ -300,14 +296,13 @@ export default function ApiKeyForm({
           {/* Rate Limit */}
           <div className="space-y-2">
             <label htmlFor="api-key-rate-limit" className="text-sm font-medium">
-              Rate Limit (requests per hour)
-            </label>
+              {t('apiKeyForm.rateLimitRequestsPerHour')}</label>
             <input
               id="api-key-rate-limit"
               type="number"
               value={rateLimit}
               onChange={e => setRateLimit(e.target.value)}
-              placeholder="Leave empty for default"
+              placeholder={t('apiKeyForm.leaveEmptyForDefault')}
               min={1}
               className={cn(
                 'h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
@@ -316,15 +311,14 @@ export default function ApiKeyForm({
             />
             {errors.rateLimit && <p className="text-xs text-destructive">{errors.rateLimit}</p>}
             <p className="text-xs text-muted-foreground">
-              Optional. Leave empty to use the default rate limit.
-            </p>
+              {t('apiKeyForm.optionalLeaveEmptyToUseTheDefaultRateLimit')}</p>
           </div>
 
           {/* Scopes */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium">
-                Scopes <span className="text-destructive">*</span>
+                {t('apiKeyForm.scopes')}<span className="text-destructive">*</span>
               </label>
               <div className="flex gap-2">
                 <button
@@ -332,16 +326,14 @@ export default function ApiKeyForm({
                   onClick={handleSelectAll}
                   className="text-xs font-medium text-primary hover:underline"
                 >
-                  Select all
-                </button>
+                  {t('apiKeyForm.selectAll')}</button>
                 <span className="text-muted-foreground">|</span>
                 <button
                   type="button"
                   onClick={handleClearAll}
                   className="text-xs font-medium text-primary hover:underline"
                 >
-                  Clear all
-                </button>
+                  {t('apiKeyForm.clearAll')}</button>
               </div>
             </div>
             <div className="max-h-64 space-y-2 overflow-y-auto rounded-md border p-3">
@@ -364,14 +356,13 @@ export default function ApiKeyForm({
                     />
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">{scope.label}</span>
+                        <span className="text-sm font-medium">{t(/* i18n-dynamic */ scope.labelKey)}</span>
                         {scope.adminOnly && (
                           <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700">
-                            Admin only
-                          </span>
+                            {t('apiKeyForm.adminOnly')}</span>
                         )}
                       </div>
-                      <p className="text-xs text-muted-foreground">{scope.description}</p>
+                      <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ scope.descriptionKey)}</p>
                     </div>
                   </label>
                 );
@@ -387,14 +378,13 @@ export default function ApiKeyForm({
               onClick={onCancel}
               className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
-              Cancel
-            </button>
+              {t('apiKeyForm.cancel')}</button>
             <button
               type="submit"
               disabled={loading}
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {loading ? 'Creating...' : 'Create Key'}
+              {loading ? t('apiKeyForm.creating') : t('apiKeyForm.createKey')}
             </button>
           </div>
         </form>

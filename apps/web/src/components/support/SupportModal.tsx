@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export default function SupportModal({ open, onClose }: Props) {
+  const { t } = useTranslation('common');
   const { user } = useAuthStore();
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
@@ -26,7 +28,7 @@ export default function SupportModal({ open, onClose }: Props) {
         body: JSON.stringify({ subject: subject.trim(), message: message.trim() }),
       });
       if (res.ok) {
-        showToast({ type: 'success', message: 'Support request sent' });
+        showToast({ type: 'success', message: t('longTail.support.SupportModal.toasts.sent') });
         setSubject('');
         setMessage('');
         onClose();
@@ -35,18 +37,18 @@ export default function SupportModal({ open, onClose }: Props) {
         console.error('[support] send failed', { status: res.status, body });
         const code = typeof body.error === 'string' ? body.error : '';
         const messages: Record<string, string> = {
-          not_configured: 'Support is not available on this deployment.',
-          upstream_unavailable: 'Support service is temporarily unavailable. Please try again in a moment.',
-          upstream_invalid_response: 'Support service returned an unexpected response. Please try again.',
-          rate_limited: 'Too many requests. Please wait a few minutes and try again.',
-          invalid_body: 'Please fill in subject and message.',
+          not_configured: t('longTail.support.SupportModal.errors.notConfigured'),
+          upstream_unavailable: t('longTail.support.SupportModal.errors.upstreamUnavailable'),
+          upstream_invalid_response: t('longTail.support.SupportModal.errors.upstreamInvalidResponse'),
+          rate_limited: t('longTail.support.SupportModal.errors.rateLimited'),
+          invalid_body: t('longTail.support.SupportModal.errors.invalidBody'),
         };
-        const message = messages[code] ?? 'Failed to send support request. Please try again.';
+        const message = messages[code] ?? t('longTail.support.SupportModal.errors.sendFailed');
         showToast({ type: 'error', message });
       }
     } catch (err) {
       console.error('[support] request threw', err);
-      showToast({ type: 'error', message: 'Support request failed' });
+      showToast({ type: 'error', message: t('longTail.support.SupportModal.errors.requestFailed') });
     } finally {
       setSubmitting(false);
     }
@@ -59,18 +61,24 @@ export default function SupportModal({ open, onClose }: Props) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Contact support</h2>
-          <button type="button" onClick={onClose} className="rounded p-1 hover:bg-muted">
+          <h2 className="text-lg font-semibold">{t('longTail.support.SupportModal.title')}</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 hover:bg-muted"
+            aria-label={t('common:actions.close')}
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
         <p className="mb-4 text-sm text-muted-foreground">
-          Sending as <span className="font-medium">{user?.name}</span> &lt;{user?.email}&gt;
+          {t('longTail.support.SupportModal.sendingAs')}{' '}
+          <span className="font-medium">{user?.name}</span> &lt;{user?.email}&gt;
         </p>
         <div className="space-y-3">
           <div>
             <label htmlFor="support-subject" className="mb-1 block text-sm font-medium">
-              Subject
+              {t('longTail.support.SupportModal.subject')}
             </label>
             <input
               id="support-subject"
@@ -79,12 +87,12 @@ export default function SupportModal({ open, onClose }: Props) {
               onChange={(e) => setSubject(e.target.value)}
               maxLength={300}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-              placeholder="Brief description"
+              placeholder={t('longTail.support.SupportModal.subjectPlaceholder')}
             />
           </div>
           <div>
             <label htmlFor="support-message" className="mb-1 block text-sm font-medium">
-              Message
+              {t('longTail.support.SupportModal.message')}
             </label>
             <textarea
               id="support-message"
@@ -93,7 +101,7 @@ export default function SupportModal({ open, onClose }: Props) {
               maxLength={10_000}
               rows={8}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm"
-              placeholder="What can we help with?"
+              placeholder={t('longTail.support.SupportModal.messagePlaceholder')}
             />
           </div>
         </div>
@@ -104,7 +112,7 @@ export default function SupportModal({ open, onClose }: Props) {
             className="rounded-md border px-4 py-2 text-sm hover:bg-muted"
             disabled={submitting}
           >
-            Cancel
+            {t('common:actions.cancel')}
           </button>
           <button
             type="button"
@@ -112,7 +120,7 @@ export default function SupportModal({ open, onClose }: Props) {
             disabled={submitting || !subject.trim() || !message.trim()}
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
-            {submitting ? 'Sending…' : 'Send'}
+            {submitting ? t('longTail.support.SupportModal.sending') : t('longTail.support.SupportModal.send')}
           </button>
         </div>
       </div>

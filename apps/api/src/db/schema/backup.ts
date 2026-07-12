@@ -128,7 +128,14 @@ export const backupJobs = pgTable(
       .notNull()
       .references(() => backupConfigs.id),
     policyId: uuid('policy_id').references(() => backupPolicies.id),
-    featureLinkId: uuid('feature_link_id').references(() => configPolicyFeatureLinks.id),
+    // SET NULL (not cascade): feature_link_id is nullable and backup_jobs are
+    // execution/audit history with a lifecycle independent of the policy link —
+    // removing the Backup feature must not destroy backup history (or the only
+    // rows tracking objects already in storage). Unlinking just detaches. The
+    // job's own children (snapshots/verifications) DO cascade from the job below.
+    featureLinkId: uuid('feature_link_id').references(() => configPolicyFeatureLinks.id, {
+      onDelete: 'set null',
+    }),
     deviceId: uuid('device_id')
       .notNull()
       .references(() => devices.id),
@@ -167,7 +174,7 @@ export const backupSnapshots = pgTable(
       .references(() => organizations.id),
     jobId: uuid('job_id')
       .notNull()
-      .references(() => backupJobs.id),
+      .references(() => backupJobs.id, { onDelete: 'cascade' }),
     deviceId: uuid('device_id')
       .notNull()
       .references(() => devices.id),

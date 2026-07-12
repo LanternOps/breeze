@@ -1,4 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import type { TicketTemplateVars } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import CannedResponsePicker from './CannedResponsePicker';
@@ -16,6 +18,7 @@ interface Props {
 }
 
 export default function TicketComposer({ requesterName, onSend, disabled, templates, templateVars }: Props) {
+  const { t } = useTranslation('tickets');
   const [mode, setMode] = useState<'reply' | 'internal'>('reply'); // public reply default (UI brief)
   const [content, setContent] = useState('');
   const [sending, setSending] = useState(false);
@@ -72,7 +75,7 @@ export default function TicketComposer({ requesterName, onSend, disabled, templa
           data-testid="ticket-composer-tab-reply"
           className={cn('rounded-md px-2.5 py-1 text-xs font-medium', isPublic ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground')}
         >
-          Reply
+          {t('ticketComposer.reply')}
         </button>
         <button
           type="button"
@@ -81,11 +84,11 @@ export default function TicketComposer({ requesterName, onSend, disabled, templa
           data-testid="ticket-composer-tab-internal"
           className={cn('rounded-md px-2.5 py-1 text-xs font-medium', !isPublic ? 'bg-warning/20 text-warning' : 'text-muted-foreground hover:text-foreground')}
         >
-          Internal note
+          {t('ticketComposer.internalNote')}
         </button>
         {!isPublic && (
           <span className="ml-2 text-xs font-medium text-warning" data-testid="ticket-composer-internal-banner">
-            Internal: not visible to requester
+            {t('ticketComposer.internalBanner')}
           </span>
         )}
         <div className="ml-auto">
@@ -108,7 +111,11 @@ export default function TicketComposer({ requesterName, onSend, disabled, templa
               void send();
             }
           }}
-          placeholder={isPublic ? `Reply to ${requesterName ?? 'requester'}…` : 'Add an internal note…'}
+          placeholder={
+            isPublic
+              ? t('ticketComposer.replyPlaceholder', { requester: requesterName ?? t('ticketComposer.requesterFallback') })
+              : t('ticketComposer.internalPlaceholder')
+          }
           rows={3}
           disabled={disabled || sending}
           data-testid="ticket-composer-input"
@@ -125,7 +132,7 @@ export default function TicketComposer({ requesterName, onSend, disabled, templa
               isPublic ? 'bg-primary hover:bg-primary/90' : 'bg-warning hover:bg-warning/90 text-warning-foreground'
             )}
           >
-            {sending ? 'Sending' : isPublic ? 'Send reply' : 'Add internal note'}
+            {sending ? t('ticketComposer.sending') : isPublic ? t('ticketComposer.sendReply') : t('ticketComposer.addInternalNote')}
           </button>
         </div>
       </div>

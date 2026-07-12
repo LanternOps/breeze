@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { formatMoney } from '../../lib/timeFormat';
@@ -17,6 +19,7 @@ interface PartRow {
 }
 
 export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
+  const { t } = useTranslation('tickets');
   const [parts, setParts] = useState<PartRow[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -129,8 +132,8 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
               method: 'PATCH',
               body: JSON.stringify(body),
             }),
-          errorFallback: 'Failed to update part',
-          successMessage: 'Part updated',
+          errorFallback: t('ticketPartsCard.toast.updateFailed'),
+          successMessage: t('ticketPartsCard.toast.updated'),
         });
       } else {
         await runAction({
@@ -139,15 +142,15 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
               method: 'POST',
               body: JSON.stringify(body),
             }),
-          errorFallback: 'Failed to add part',
-          successMessage: 'Part added',
+          errorFallback: t('ticketPartsCard.toast.addFailed'),
+          successMessage: t('ticketPartsCard.toast.added'),
         });
       }
       resetForm();
       await refresh();
       broadcastBillingChanged();
     } catch (err) {
-      handleActionError(err, editingId ? 'Failed to update part.' : 'Failed to add part.');
+      handleActionError(err, editingId ? t('ticketPartsCard.toast.updateFailedSentence') : t('ticketPartsCard.toast.addFailedSentence'));
     } finally {
       setBusy(false);
     }
@@ -158,23 +161,23 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
       await runAction({
         request: () =>
           fetchWithAuth(`/tickets/parts/${id}`, { method: 'DELETE' }),
-        errorFallback: 'Failed to delete part',
-        successMessage: 'Part deleted',
+        errorFallback: t('ticketPartsCard.toast.deleteFailed'),
+        successMessage: t('ticketPartsCard.toast.deleted'),
       });
       setConfirmingDeleteId(null);
       await refresh();
       broadcastBillingChanged();
     } catch (err) {
-      handleActionError(err, 'Failed to delete part.');
+      handleActionError(err, t('ticketPartsCard.toast.deleteFailedSentence'));
     }
   };
 
   return (
     <div className="mt-3 border-t pt-3" data-testid="ticket-parts-card">
-      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Parts</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('ticketPartsCard.title')}</p>
 
       {parts.length === 0 && !formOpen && (
-        <p className="mt-1 text-xs text-muted-foreground" data-testid="ticket-parts-empty">No parts.</p>
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="ticket-parts-empty">{t('ticketPartsCard.empty')}</p>
       )}
 
       {parts.length > 0 && (
@@ -202,12 +205,12 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                 <div className="flex items-center justify-between gap-1 text-muted-foreground">
                   <span>
                     {qty} × {formatMoney(price)}
-                    {!part.isBillable && ' · non-billable'}
+                    {!part.isBillable && t('ticketPartsCard.nonBillableSuffix')}
                   </span>
                   {margin != null && (
                     <span
                       className="shrink-0"
-                      title="Margin"
+                      title={t('ticketPartsCard.marginTitle')}
                     >
                       {formatMoney(margin)}
                     </span>
@@ -218,7 +221,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                     className="mt-0.5 flex items-center gap-1"
                     data-testid={`ticket-part-delete-confirm-${part.id}`}
                   >
-                    <span className="text-destructive">Delete?</span>
+                    <span className="text-destructive">{t('ticketPartsCard.deletePrompt')}</span>
                     <span className="text-muted-foreground">·</span>
                     <button
                       type="button"
@@ -226,7 +229,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                       className="rounded px-1 py-0.5 text-xs font-medium text-destructive hover:bg-muted"
                       data-testid={`ticket-part-delete-confirm-yes-${part.id}`}
                     >
-                      Confirm
+                      {t('common:actions.confirm')}
                     </button>
                     <button
                       type="button"
@@ -234,7 +237,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                       className="rounded px-1 py-0.5 text-xs hover:bg-muted"
                       data-testid={`ticket-part-delete-confirm-cancel-${part.id}`}
                     >
-                      Cancel
+                      {t('common:actions.cancel')}
                     </button>
                   </div>
                 ) : (
@@ -245,7 +248,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                       className="rounded px-1 py-0.5 text-xs hover:bg-muted"
                       data-testid={`ticket-part-edit-${part.id}`}
                     >
-                      Edit
+                      {t('common:actions.edit')}
                     </button>
                     <button
                       type="button"
@@ -253,7 +256,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                       className="rounded px-1 py-0.5 text-xs text-destructive hover:bg-muted"
                       data-testid={`ticket-part-delete-${part.id}`}
                     >
-                      Delete
+                      {t('common:actions.delete')}
                     </button>
                   </div>
                 )}
@@ -270,7 +273,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
           className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
           data-testid="ticket-parts-add-toggle"
         >
-          Add part
+          {t('ticketPartsCard.addPart')}
         </button>
       </div>
 
@@ -281,7 +284,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
             linkedItem ? (
               <div className="flex items-center justify-between gap-2 rounded-md border bg-background px-2 py-1 text-xs" data-testid="ticket-parts-form-linked">
                 <span className="min-w-0 truncate">
-                  <span className="text-muted-foreground">From catalog: </span>
+                  <span className="text-muted-foreground">{t('ticketPartsCard.fromCatalogPrefix')} </span>
                   <span className="font-medium">{linkedItem.name}</span>
                 </span>
                 <button
@@ -290,7 +293,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                   className="shrink-0 rounded px-1 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
                   data-testid="ticket-parts-form-unlink"
                 >
-                  Unlink
+                  {t('ticketPartsCard.unlink')}
                 </button>
               </div>
             ) : (
@@ -298,7 +301,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
                 items={catalog}
                 onSelect={pickCatalogItem}
                 includeBundles={false}
-                placeholder="Add from catalog (optional)"
+                placeholder={t('ticketPartsCard.catalogPlaceholder')}
                 testId="ticket-parts-catalog-picker"
               />
             )
@@ -307,8 +310,8 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
             type="text"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Description"
-            aria-label="Description"
+            placeholder={t('common:labels.description')}
+            aria-label={t('common:labels.description')}
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
             data-testid="ticket-parts-form-description"
           />
@@ -318,8 +321,8 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
             step={0.01}
             value={quantity}
             onChange={(e) => setQuantity(e.target.value)}
-            placeholder="Quantity"
-            aria-label="Quantity"
+            placeholder={t('ticketPartsCard.quantity')}
+            aria-label={t('ticketPartsCard.quantity')}
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
             data-testid="ticket-parts-form-quantity"
           />
@@ -329,8 +332,8 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
             step={0.01}
             value={unitPrice}
             onChange={(e) => setUnitPrice(e.target.value)}
-            placeholder="Unit price"
-            aria-label="Unit price"
+            placeholder={t('ticketPartsCard.unitPrice')}
+            aria-label={t('ticketPartsCard.unitPrice')}
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
             data-testid="ticket-parts-form-unit-price"
           />
@@ -340,8 +343,8 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
             step={0.01}
             value={costBasis}
             onChange={(e) => setCostBasis(e.target.value)}
-            placeholder="Cost (optional)"
-            aria-label="Cost"
+            placeholder={t('ticketPartsCard.costPlaceholder')}
+            aria-label={t('ticketPartsCard.cost')}
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
             data-testid="ticket-parts-form-cost-basis"
           />
@@ -352,7 +355,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
               onChange={(e) => setBillable(e.target.checked)}
               data-testid="ticket-parts-form-billable"
             />
-            Billable
+            {t('ticketPartsCard.billable')}
           </label>
           <div className="flex gap-2">
             <button
@@ -362,7 +365,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
               className="flex-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
               data-testid="ticket-parts-form-submit"
             >
-              {busy ? 'Saving…' : editingId ? 'Update' : 'Add part'}
+              {busy ? t('common:states.saving') : editingId ? t('ticketPartsCard.update') : t('ticketPartsCard.addPart')}
             </button>
             <button
               type="button"
@@ -370,7 +373,7 @@ export default function TicketPartsCard({ ticketId }: { ticketId: string }) {
               className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
               data-testid="ticket-parts-form-cancel"
             >
-              Cancel
+              {t('common:actions.cancel')}
             </button>
           </div>
         </div>

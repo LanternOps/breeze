@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
 import McpUrlCard from '../shared/McpUrlCard';
@@ -15,11 +16,13 @@ import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
 import { getLoginContext } from '../../lib/loginContext';
 
-function getRegistrationDisabledNotice(): string | undefined {
+function getRegistrationDisabledNotice(t: ReturnType<typeof useTranslation<'auth'>>['t']): string | undefined {
   if (typeof window === 'undefined') return undefined;
   const params = new URLSearchParams(window.location.search);
   if (params.get('reason') === 'registration-disabled') {
-    return 'New registrations are currently disabled. Please contact your administrator.';
+    return t('login.notices.registrationDisabled', {
+      defaultValue: 'New registrations are currently disabled. Please contact your administrator.',
+    });
   }
 }
 
@@ -27,26 +30,31 @@ function getRegistrationDisabledNotice(): string | undefined {
 // `sso_link_required` (#2183): a password-holding user tried to sign in via SSO
 // and was refused auto-linking — they must connect SSO from an authenticated
 // session instead (Profile → Security → Connect SSO).
-const SSO_LOGIN_ERROR_COPY: Record<string, string> = {
-  sso_link_required:
-    'This account already has a password. Sign in with your password, then connect SSO under Profile → Security.',
-  // Partner axis (#2183): identity-first, no JIT — an unrecognized identity
-  // needs an out-of-band invite before SSO can sign it in.
-  invite_required:
-    'Your sign-in succeeded, but no account here is linked to that identity yet. Ask your administrator for an invite, then try again.',
-  no_partner_access:
-    'That account does not have access to this workspace. Contact your administrator.',
-  // The verified IdP identity is already linked to a DIFFERENT account
-  // (#2195 unique-index race guard in the callback).
-  identity_in_use:
-    'That sign-in identity is already linked to a different account. Contact your administrator.'
-};
-
-function getSsoLoginNotice(): string | undefined {
+function getSsoLoginNotice(t: ReturnType<typeof useTranslation<'auth'>>['t']): string | undefined {
   if (typeof window === 'undefined') return undefined;
   const params = new URLSearchParams(window.location.search);
   const error = params.get('error');
-  return error ? SSO_LOGIN_ERROR_COPY[error] : undefined;
+  const ssoLoginErrorCopy: Record<string, string> = {
+    sso_link_required: t('login.ssoErrors.ssoLinkRequired', {
+      defaultValue:
+        'This account already has a password. Sign in with your password, then connect SSO under Profile → Security.',
+    }),
+  // Partner axis (#2183): identity-first, no JIT — an unrecognized identity
+  // needs an out-of-band invite before SSO can sign it in.
+    invite_required: t('login.ssoErrors.inviteRequired', {
+      defaultValue:
+        'Your sign-in succeeded, but no account here is linked to that identity yet. Ask your administrator for an invite, then try again.',
+    }),
+    no_partner_access: t('login.ssoErrors.noPartnerAccess', {
+      defaultValue: 'That account does not have access to this workspace. Contact your administrator.',
+    }),
+  // The verified IdP identity is already linked to a DIFFERENT account
+  // (#2195 unique-index race guard in the callback).
+    identity_in_use: t('login.ssoErrors.identityInUse', {
+      defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
+    }),
+  };
+  return error ? ssoLoginErrorCopy[error] : undefined;
 }
 
 function shouldSkipCfAccessRedirect(): boolean {
@@ -89,10 +97,11 @@ interface LoginPageProps {
 }
 
 export default function LoginPage({ next }: LoginPageProps = {}) {
+  const { t } = useTranslation('auth');
   const safeNext = getSafeNext(next);
   const [error, setError] = useState<string>();
-  const registrationNotice = getRegistrationDisabledNotice();
-  const ssoLoginNotice = getSsoLoginNotice();
+  const registrationNotice = getRegistrationDisabledNotice(t);
+  const ssoLoginNotice = getSsoLoginNotice(t);
   const [loading, setLoading] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
   const [tempToken, setTempToken] = useState<string>();
@@ -274,8 +283,8 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     return (
       <div>
         <div className="mb-8">
-          <p className="text-sm font-medium text-muted-foreground">Almost there</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight">Verify your identity</h1>
+          <p className="text-sm font-medium text-muted-foreground">{t('login.mfa.eyebrow', { defaultValue: 'Almost there' })}</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">{t('login.mfa.title', { defaultValue: 'Verify your identity' })}</h1>
         </div>
         <MFAVerifyForm
           onSubmit={handleMfaVerify}
@@ -296,8 +305,8 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   return (
     <div data-testid="login-page">
       <div className="mb-8">
-        <p className="text-sm font-medium text-muted-foreground">Welcome back</p>
-        <h1 data-testid="login-heading" className="mt-1 text-2xl font-bold tracking-tight">Sign in to Breeze</h1>
+        <p className="text-sm font-medium text-muted-foreground">{t('login.eyebrow', { defaultValue: 'Welcome back' })}</p>
+        <h1 data-testid="login-heading" className="mt-1 text-2xl font-bold tracking-tight">{t('login.title', { defaultValue: 'Sign in to Breeze' })}</h1>
       </div>
 
       {registrationNotice && (
@@ -319,7 +328,10 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           data-testid="partner-sso-button"
           className="mb-4 flex w-full items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
         >
-          Sign in with {partnerSso.providerName}
+          {t('login.signInWithProvider', {
+            defaultValue: `Sign in with ${partnerSso.providerName}`,
+            providerName: partnerSso.providerName,
+          })}
         </a>
       )}
       {/*
@@ -337,7 +349,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           onClick={() => setShowPasswordForm(true)}
           className="w-full text-center text-sm text-muted-foreground hover:text-foreground hover:underline"
         >
-          Sign in with password instead
+          {t('login.signInWithPasswordInstead', { defaultValue: 'Sign in with password instead' })}
         </button>
       ) : (
         <LoginForm

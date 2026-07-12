@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from "react";
 import {
   Building2,
   CheckCircle2,
@@ -11,15 +11,17 @@ import {
   Shield,
   ShieldCheck,
   Wifi,
-} from 'lucide-react';
+} from "lucide-react";
 
-import { friendlyFetchError } from '../../lib/utils';
-import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
-import { fetchWithAuth } from '../../stores/auth';
+import { friendlyFetchError } from "../../lib/utils";
+import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
+import { fetchWithAuth } from "../../stores/auth";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
 // ── Types ────────────────────────────────────────────────────────────
 
-type DetectionStatus = 'active' | 'installed' | 'unknown';
+type DetectionStatus = "active" | "installed" | "unknown";
 
 type Detection = {
   name: string;
@@ -29,7 +31,12 @@ type Detection = {
   details?: Record<string, unknown>;
 };
 
-type JoinType = 'hybrid_azure_ad' | 'azure_ad' | 'on_prem_ad' | 'workplace' | 'none';
+type JoinType =
+  | "hybrid_azure_ad"
+  | "azure_ad"
+  | "on_prem_ad"
+  | "workplace"
+  | "none";
 
 type IdentityStatus = {
   joinType: JoinType;
@@ -43,17 +50,17 @@ type IdentityStatus = {
 };
 
 type CategoryKey =
-  | 'mdm'
-  | 'rmm'
-  | 'remoteAccess'
-  | 'endpointSecurity'
-  | 'policyEngine'
-  | 'backup'
-  | 'identityMfa'
-  | 'siem'
-  | 'dnsFiltering'
-  | 'zeroTrustVpn'
-  | 'patchManagement';
+  | "mdm"
+  | "rmm"
+  | "remoteAccess"
+  | "endpointSecurity"
+  | "policyEngine"
+  | "backup"
+  | "identityMfa"
+  | "siem"
+  | "dnsFiltering"
+  | "zeroTrustVpn"
+  | "patchManagement";
 
 type ManagementPosture = {
   collectedAt: string;
@@ -73,45 +80,45 @@ type PostureResponse = {
 // ── Constants ────────────────────────────────────────────────────────
 
 const CATEGORY_LABELS: Record<CategoryKey, string> = {
-  mdm: 'MDM',
-  rmm: 'RMM',
-  remoteAccess: 'Remote Access',
-  endpointSecurity: 'Endpoint Security',
-  policyEngine: 'Policy Engine',
-  backup: 'Backup',
-  identityMfa: 'Identity / MFA',
-  siem: 'SIEM',
-  dnsFiltering: 'DNS Filtering',
-  zeroTrustVpn: 'Zero Trust / VPN',
-  patchManagement: 'Patch Management',
+  mdm: "MDM",
+  rmm: "RMM",
+  remoteAccess: "Remote Access",
+  endpointSecurity: "Endpoint Security",
+  policyEngine: "Policy Engine",
+  backup: "Backup",
+  identityMfa: "Identity / MFA",
+  siem: "SIEM",
+  dnsFiltering: "DNS Filtering",
+  zeroTrustVpn: "Zero Trust / VPN",
+  patchManagement: "Patch Management",
 };
 
 const CATEGORY_ORDER: CategoryKey[] = [
-  'mdm',
-  'endpointSecurity',
-  'rmm',
-  'policyEngine',
-  'identityMfa',
-  'zeroTrustVpn',
-  'remoteAccess',
-  'backup',
-  'siem',
-  'dnsFiltering',
-  'patchManagement',
+  "mdm",
+  "endpointSecurity",
+  "rmm",
+  "policyEngine",
+  "identityMfa",
+  "zeroTrustVpn",
+  "remoteAccess",
+  "backup",
+  "siem",
+  "dnsFiltering",
+  "patchManagement",
 ];
 
 const JOIN_TYPE_LABELS: Record<JoinType, string> = {
-  hybrid_azure_ad: 'Hybrid Azure AD (Entra ID + On-Prem AD)',
-  azure_ad: 'Azure AD (Entra ID)',
-  on_prem_ad: 'On-Premises Active Directory',
-  workplace: 'Workplace Join',
-  none: 'Not Joined',
+  hybrid_azure_ad: "Hybrid Azure AD (Entra ID + On-Prem AD)",
+  azure_ad: "Azure AD (Entra ID)",
+  on_prem_ad: "On-Premises Active Directory",
+  workplace: "Workplace Join",
+  none: "Not Joined",
 };
 
 const STATUS_BADGE: Record<DetectionStatus, string> = {
-  active: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40',
-  installed: 'bg-blue-500/20 text-blue-700 border-blue-500/40',
-  unknown: 'bg-gray-500/20 text-gray-600 border-gray-500/30',
+  active: "bg-emerald-500/20 text-emerald-700 border-emerald-500/40",
+  installed: "bg-blue-500/20 text-blue-700 border-blue-500/40",
+  unknown: "bg-gray-500/20 text-gray-600 border-gray-500/30",
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -120,15 +127,16 @@ function formatDateTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return formatUserDateTime(date, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
 function BoolFlag({ label, value }: { label: string; value: boolean }) {
+  const { t } = useTranslation("devices");
   return (
     <div className="flex items-center gap-2 text-sm">
       {value ? (
@@ -136,7 +144,9 @@ function BoolFlag({ label, value }: { label: string; value: boolean }) {
       ) : (
         <span className="h-4 w-4 rounded-full border-2 border-muted-foreground/30" />
       )}
-      <span className={value ? 'text-foreground' : 'text-muted-foreground'}>{label}</span>
+      <span className={value ? "text-foreground" : "text-muted-foreground"}>
+        {label}
+      </span>
     </div>
   );
 }
@@ -147,7 +157,10 @@ type DeviceManagementTabProps = {
   deviceId: string;
 };
 
-export default function DeviceManagementTab({ deviceId }: DeviceManagementTabProps) {
+export default function DeviceManagementTab({
+  deviceId,
+}: DeviceManagementTabProps) {
+  const { t } = useTranslation("devices");
   const [data, setData] = useState<PostureResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -156,7 +169,9 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetchWithAuth(`/devices/${deviceId}/management-posture`);
+      const response = await fetchWithAuth(
+        `/devices/${deviceId}/management-posture`,
+      );
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
       }
@@ -179,7 +194,9 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
       <div className="flex items-center justify-center rounded-lg border bg-card py-12 shadow-xs">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-3 text-sm text-muted-foreground">Loading management posture...</p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            {t("deviceManagementTab.loadingManagementPosture")}
+          </p>
         </div>
       </div>
     );
@@ -196,7 +213,7 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
           onClick={fetchPosture}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Retry
+          {t("deviceManagementTab.retry")}{" "}
         </button>
       </div>
     );
@@ -208,10 +225,11 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
     return (
       <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
         <Monitor className="mx-auto h-10 w-10 text-muted-foreground/50" />
-        <h3 className="mt-4 font-semibold">No Management Data</h3>
+        <h3 className="mt-4 font-semibold">
+          {t("deviceManagementTab.noManagementData")}
+        </h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          The agent hasn't reported management posture for this device yet.
-          Data is collected automatically during heartbeat cycles.
+          {t("deviceManagementTab.theAgentHasnTReportedManagement")}{" "}
         </p>
       </div>
     );
@@ -222,12 +240,12 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
 
   // Build ordered list of categories that have detections
   const populatedCategories = CATEGORY_ORDER.filter(
-    (key) => categories[key] && categories[key]!.length > 0
+    (key) => categories[key] && categories[key]!.length > 0,
   );
 
   const totalDetections = populatedCategories.reduce(
     (sum, key) => sum + (categories[key]?.length ?? 0),
-    0
+    0,
   );
 
   return (
@@ -237,7 +255,9 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 mb-4">
             <Building2 className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Identity &amp; Directory Status</h3>
+            <h3 className="text-sm font-semibold">
+              {t("deviceManagementTab.identityDirectoryStatus")}
+            </h3>
           </div>
           <button
             type="button"
@@ -245,46 +265,67 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
             className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
+            {t("deviceManagementTab.refresh")}{" "}
           </button>
         </div>
 
         <div className="rounded-md border bg-background p-4">
           <div className="flex items-center gap-2 mb-3">
             <Globe className="h-4 w-4 text-primary" />
-            <span className="text-sm font-medium">{JOIN_TYPE_LABELS[identity.joinType]}</span>
+            <span className="text-sm font-medium">
+              {JOIN_TYPE_LABELS[identity.joinType]}
+            </span>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-2">
-              <BoolFlag label="Azure AD / Entra ID Joined" value={identity.azureAdJoined} />
-              <BoolFlag label="Domain Joined" value={identity.domainJoined} />
-              <BoolFlag label="Workplace Joined" value={identity.workplaceJoined} />
+              <BoolFlag
+                label={t("deviceManagementTab.azureAdEntraIdJoined")}
+                value={identity.azureAdJoined}
+              />
+              <BoolFlag
+                label={t("deviceManagementTab.domainJoined")}
+                value={identity.domainJoined}
+              />
+              <BoolFlag
+                label={t("deviceManagementTab.workplaceJoined")}
+                value={identity.workplaceJoined}
+              />
             </div>
 
             <div className="space-y-1.5 text-sm">
               {identity.domainName && (
                 <div>
-                  <span className="text-muted-foreground">Domain: </span>
+                  <span className="text-muted-foreground">
+                    {t("deviceManagementTab.domain")}{" "}
+                  </span>
                   <span className="font-medium">{identity.domainName}</span>
                 </div>
               )}
               {identity.tenantId && (
                 <div>
-                  <span className="text-muted-foreground">Tenant ID: </span>
+                  <span className="text-muted-foreground">
+                    {t("deviceManagementTab.tenantId")}{" "}
+                  </span>
                   <span className="font-mono text-xs">{identity.tenantId}</span>
                 </div>
               )}
               {identity.mdmUrl && (
                 <div>
-                  <span className="text-muted-foreground">MDM Enrollment: </span>
-                  <span className="font-mono text-xs break-all">{identity.mdmUrl}</span>
+                  <span className="text-muted-foreground">
+                    {t("deviceManagementTab.mdmEnrollment")}{" "}
+                  </span>
+                  <span className="font-mono text-xs break-all">
+                    {identity.mdmUrl}
+                  </span>
                 </div>
               )}
             </div>
 
             <div className="text-sm">
-              <span className="text-muted-foreground">Detection source: </span>
+              <span className="text-muted-foreground">
+                {t("deviceManagementTab.detectionSource")}{" "}
+              </span>
               <span className="font-medium">{identity.source}</span>
             </div>
           </div>
@@ -295,31 +336,53 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-center gap-2 mb-1">
           <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-semibold">Detected Management Tools</h3>
+          <h3 className="text-sm font-semibold">
+            {t("deviceManagementTab.detectedManagementTools")}
+          </h3>
         </div>
         <p className="mb-4 text-sm text-muted-foreground">
-          {totalDetections} tool{totalDetections !== 1 ? 's' : ''} detected across{' '}
-          {populatedCategories.length} categor{populatedCategories.length !== 1 ? 'ies' : 'y'}
+          {totalDetections} {t("deviceManagementTab.tool")}
+          {totalDetections !== 1 ? t("deviceManagementTab.s") : ""}{" "}
+          {t("deviceManagementTab.detectedAcross")} {populatedCategories.length}{" "}
+          {t("deviceManagementTab.categor")}
+          {populatedCategories.length !== 1
+            ? t("deviceManagementTab.ies")
+            : t("deviceManagementTab.y")}
         </p>
 
         {populatedCategories.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No management tools detected on this device.</p>
+          <p className="text-sm text-muted-foreground">
+            {t("deviceManagementTab.noManagementToolsDetectedOnThis")}
+          </p>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {populatedCategories.map((catKey) => {
               const detections = categories[catKey]!;
               return (
-                <div key={catKey} className="rounded-md border bg-background p-4">
-                  <h4 className="text-sm font-semibold mb-3">{CATEGORY_LABELS[catKey]}</h4>
+                <div
+                  key={catKey}
+                  className="rounded-md border bg-background p-4"
+                >
+                  <h4 className="text-sm font-semibold mb-3">
+                    {CATEGORY_LABELS[catKey]}
+                  </h4>
                   <div className="space-y-2">
                     {detections.map((det) => (
-                      <div key={det.name} className="flex items-center justify-between gap-2">
+                      <div
+                        key={det.name}
+                        className="flex items-center justify-between gap-2"
+                      >
                         <div className="min-w-0">
-                          <p className="text-sm font-medium truncate" title={det.name}>
+                          <p
+                            className="text-sm font-medium truncate"
+                            title={det.name}
+                          >
                             {det.name}
                           </p>
                           {det.version && (
-                            <p className="text-xs text-muted-foreground">v{det.version}</p>
+                            <p className="text-xs text-muted-foreground">
+                              v{det.version}
+                            </p>
                           )}
                         </div>
                         <span
@@ -340,7 +403,9 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
       {/* ── Scan Errors ───────────────────────────────────────────── */}
       {posture.errors && posture.errors.length > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4">
-          <h4 className="text-sm font-semibold text-amber-800 mb-2">Scan Warnings</h4>
+          <h4 className="text-sm font-semibold text-amber-800 mb-2">
+            {t("deviceManagementTab.scanWarnings")}
+          </h4>
           <ul className="list-disc list-inside space-y-1">
             {posture.errors.map((err) => (
               <li key={err} className="text-xs text-amber-700">
@@ -355,9 +420,12 @@ export default function DeviceManagementTab({ deviceId }: DeviceManagementTabPro
       <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
           <Clock className="h-3.5 w-3.5" />
-          Last scanned: {formatDateTime(posture.collectedAt)}
+          {t("deviceManagementTab.lastScanned")}{" "}
+          {formatDateTime(posture.collectedAt)}
         </span>
-        <span>Scan duration: {posture.scanDurationMs}ms</span>
+        <span>
+          {t("deviceManagementTab.scanDuration")} {posture.scanDurationMs}ms
+        </span>
       </div>
     </div>
   );

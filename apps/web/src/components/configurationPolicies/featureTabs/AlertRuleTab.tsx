@@ -1,17 +1,17 @@
-import { useState, useEffect, useRef } from 'react';
-import { Bell, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
-import type { FeatureTabProps } from './types';
-import { FEATURE_META } from './types';
-import { useFeatureLink } from './useFeatureLink';
-import FeatureTabShell from './FeatureTabShell';
-
+import { useState, useEffect, useRef } from "react";
+import { Bell, Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import type { FeatureTabProps } from "./types";
+import { FEATURE_META } from "./types";
+import { useFeatureLink } from "./useFeatureLink";
+import FeatureTabShell from "./FeatureTabShell";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/lib/i18n";
 // `offline` is the type understood by the API condition evaluator. The legacy
 // editor emitted `status` with a `duration` field; we normalize those on load
 // (see normalizeConditions) and always emit the `offline`/`durationMinutes`
 // shape on save so rules actually evaluate (issue #1857).
-type ConditionType = 'metric' | 'offline' | 'custom';
-type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
-
+type ConditionType = "metric" | "offline" | "custom";
+type AlertSeverity = "critical" | "high" | "medium" | "low" | "info";
 type Condition = {
   type: ConditionType;
   metric?: string;
@@ -21,7 +21,6 @@ type Condition = {
   field?: string;
   customCondition?: string;
 };
-
 type AlertItem = {
   name: string;
   severity: AlertSeverity;
@@ -29,112 +28,216 @@ type AlertItem = {
   cooldownMinutes: number;
   autoResolve: boolean;
 };
-
 const defaultItem: AlertItem = {
-  name: '',
-  severity: 'medium',
-  conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 80 }],
+  name: "",
+  severity: "medium",
+  conditions: [{ type: "metric", metric: "cpu", operator: "gt", value: 80 }],
   cooldownMinutes: 15,
   autoResolve: false,
 };
-
-const severityOptions: { value: AlertSeverity; label: string; color: string }[] = [
-  { value: 'critical', label: 'Critical', color: 'bg-red-500' },
-  { value: 'high', label: 'High', color: 'bg-orange-500' },
-  { value: 'medium', label: 'Medium', color: 'bg-yellow-500' },
-  { value: 'low', label: 'Low', color: 'bg-blue-500' },
-  { value: 'info', label: 'Info', color: 'bg-gray-500' },
+const createSeverityOptions = (): {
+  value: AlertSeverity;
+  label: string;
+  color: string;
+}[] => [
+  {
+    value: "critical",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.critical",
+    ),
+    color: "bg-red-500",
+  },
+  {
+    value: "high",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.high",
+    ),
+    color: "bg-orange-500",
+  },
+  {
+    value: "medium",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.medium",
+    ),
+    color: "bg-yellow-500",
+  },
+  {
+    value: "low",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.low",
+    ),
+    color: "bg-blue-500",
+  },
+  {
+    value: "info",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.info",
+    ),
+    color: "bg-gray-500",
+  },
 ];
-
 // Only metrics with a percentage column in device_metrics that the API
 // threshold evaluator (METRIC_NAME_MAP) understands. "Network Usage" was
 // removed: there is no network-usage percentage column to compare against,
 // so the option never fired (issue #1857). Bandwidth alerting has its own
 // dedicated condition type and is not exposed via this simple % dropdown.
-const metricOptions = [
-  { value: 'cpu', label: 'CPU Usage' },
-  { value: 'ram', label: 'Memory Usage' },
-  { value: 'disk', label: 'Disk Usage' },
+const createMetricOptions = () => [
+  {
+    value: "cpu",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.cPUUsage",
+    ),
+  },
+  {
+    value: "ram",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.memoryUsage",
+    ),
+  },
+  {
+    value: "disk",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.diskUsage",
+    ),
+  },
 ];
-
-const operatorOptions = [
-  { value: 'gt', label: '> (greater than)' },
-  { value: 'lt', label: '< (less than)' },
-  { value: 'gte', label: '>= (greater or equal)' },
-  { value: 'lte', label: '<= (less or equal)' },
-  { value: 'eq', label: '= (equal)' },
-  { value: 'neq', label: '!= (not equal)' },
+const createOperatorOptions = () => [
+  {
+    value: "gt",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.greaterThan",
+    ),
+  },
+  {
+    value: "lt",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.lessThan",
+    ),
+  },
+  {
+    value: "gte",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.greaterOrEqual",
+    ),
+  },
+  {
+    value: "lte",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.lessOrEqual",
+    ),
+  },
+  {
+    value: "eq",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.equal",
+    ),
+  },
+  {
+    value: "neq",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.notEqual",
+    ),
+  },
 ];
-
-const conditionTypeOptions = [
-  { value: 'metric', label: 'Metric' },
-  { value: 'offline', label: 'Device Offline' },
-  { value: 'custom', label: 'Custom' },
+const createConditionTypeOptions = () => [
+  {
+    value: "metric",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.metric",
+    ),
+  },
+  {
+    value: "offline",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.deviceOffline",
+    ),
+  },
+  {
+    value: "custom",
+    label: i18n.t(
+      "policies:configurationPolicies.featureTabs.alertRuleTab.custom",
+    ),
+  },
 ];
-
 // Offline rules are re-evaluated by a background sweep bounded to a 24h horizon,
 // so a rule with a longer duration would never fire — the device ages out of the
 // sweep first. The API rejects durations above this cap (issue #1982); mirror it
 // here so the field can't be set out of range. Matches the default
 // OFFLINE_DETECTOR_REEVAL_HORIZON_MINUTES on the API.
 const OFFLINE_DURATION_MAX_MINUTES = 1440;
-
 // Migrate a single condition from the legacy `{type:'status', duration}` shape
 // to the canonical `{type:'offline', durationMinutes}` shape the evaluator reads.
 // Legacy persisted shape, before the `status`→`offline` / `duration`→`durationMinutes` rename.
-type RawCondition = Omit<Condition, 'type'> & { type: ConditionType | 'status'; duration?: number };
-
+type RawCondition = Omit<Condition, "type"> & {
+  type: ConditionType | "status";
+  duration?: number;
+};
 function normalizeCondition(condition: Condition): Condition {
-  const { type, durationMinutes, duration, ...rest } = condition as RawCondition;
-  if (type === 'status' || type === 'offline') {
-    return { ...rest, type: 'offline', durationMinutes: durationMinutes ?? duration ?? 5 };
+  const { type, durationMinutes, duration, ...rest } =
+    condition as RawCondition;
+  if (type === "status" || type === "offline") {
+    return {
+      ...rest,
+      type: "offline",
+      durationMinutes: durationMinutes ?? duration ?? 5,
+    };
   }
   return { ...rest, type } as Condition;
 }
-
 function normalizeConditions(item: AlertItem): AlertItem {
   if (!Array.isArray(item.conditions)) {
     return { ...item, conditions: [...defaultItem.conditions] };
   }
   return { ...item, conditions: item.conditions.map(normalizeCondition) };
 }
-
-function loadItems(existingLink: FeatureTabProps['existingLink']): AlertItem[] {
-  const raw = existingLink?.inlineSettings as Record<string, unknown> | null | undefined;
+function loadItems(existingLink: FeatureTabProps["existingLink"]): AlertItem[] {
+  const raw = existingLink?.inlineSettings as
+    | Record<string, unknown>
+    | null
+    | undefined;
   if (!raw) return [];
   if (Array.isArray((raw as any).items)) {
     return ((raw as any).items as AlertItem[]).map(normalizeConditions);
   }
   // Legacy single-item format — wrap it
   if ((raw as any).severity) {
-    const legacy = raw as unknown as Omit<AlertItem, 'name'>;
-    return [normalizeConditions({ ...legacy, name: 'Alert Rule 1' })];
+    const legacy = raw as unknown as Omit<AlertItem, "name">;
+    return [normalizeConditions({ ...legacy, name: "Alert Rule 1" })];
   }
   return [];
 }
-
 function severityPill(severity: AlertSeverity) {
-  const opt = severityOptions.find((o) => o.value === severity);
+  const opt = createSeverityOptions().find((o) => o.value === severity);
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium">
-      <span className={`h-2 w-2 rounded-full ${opt?.color ?? 'bg-gray-400'}`} />
+      <span className={`h-2 w-2 rounded-full ${opt?.color ?? "bg-gray-400"}`} />
       {opt?.label ?? severity}
     </span>
   );
 }
-
-export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, linkedPolicyId, parentLink }: FeatureTabProps) {
+export default function AlertRuleTab({
+  policyId,
+  existingLink,
+  onLinkChanged,
+  linkedPolicyId,
+  parentLink,
+}: FeatureTabProps) {
+  useTranslation("policies");
+  const severityOptions = createSeverityOptions();
+  const metricOptions = createMetricOptions();
+  const operatorOptions = createOperatorOptions();
+  const conditionTypeOptions = createConditionTypeOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
-  const [items, setItems] = useState<AlertItem[]>(() => loadItems(effectiveLink));
+  const [items, setItems] = useState<AlertItem[]>(() =>
+    loadItems(effectiveLink),
+  );
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
-
   useEffect(() => {
     setItems(loadItems(existingLink ?? parentLink));
   }, [existingLink, parentLink]);
-
   // Focus name input when a new item is expanded
   useEffect(() => {
     if (expandedIndex !== null) {
@@ -143,85 +246,100 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
       return () => clearTimeout(t);
     }
   }, [expandedIndex]);
-
   const updateItem = (index: number, patch: Partial<AlertItem>) => {
-    setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)));
+    setItems((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, ...patch } : item)),
+    );
   };
-
-  const updateCondition = (itemIndex: number, condIndex: number, patch: Partial<Condition>) => {
+  const updateCondition = (
+    itemIndex: number,
+    condIndex: number,
+    patch: Partial<Condition>,
+  ) => {
     setItems((prev) =>
       prev.map((item, i) => {
         if (i !== itemIndex) return item;
-        const conditions = item.conditions.map((c, ci) => (ci === condIndex ? { ...c, ...patch } : c));
+        const conditions = item.conditions.map((c, ci) =>
+          ci === condIndex ? { ...c, ...patch } : c,
+        );
         return { ...item, conditions };
-      })
+      }),
     );
   };
-
   const addCondition = (itemIndex: number) => {
     setItems((prev) =>
       prev.map((item, i) => {
         if (i !== itemIndex) return item;
-        return { ...item, conditions: [...item.conditions, { type: 'metric' as ConditionType, metric: 'cpu', operator: 'gt', value: 80 }] };
-      })
+        return {
+          ...item,
+          conditions: [
+            ...item.conditions,
+            {
+              type: "metric" as ConditionType,
+              metric: "cpu",
+              operator: "gt",
+              value: 80,
+            },
+          ],
+        };
+      }),
     );
   };
-
   const removeCondition = (itemIndex: number, condIndex: number) => {
     setItems((prev) =>
       prev.map((item, i) => {
         if (i !== itemIndex) return item;
-        return { ...item, conditions: item.conditions.filter((_, ci) => ci !== condIndex) };
-      })
+        return {
+          ...item,
+          conditions: item.conditions.filter((_, ci) => ci !== condIndex),
+        };
+      }),
     );
   };
-
   const addItem = () => {
-    const newItem: AlertItem = { ...defaultItem, name: `Alert Rule ${items.length + 1}`, conditions: [{ ...defaultItem.conditions[0] }] };
+    const newItem: AlertItem = {
+      ...defaultItem,
+      name: `Alert Rule ${items.length + 1}`,
+      conditions: [{ ...defaultItem.conditions[0] }],
+    };
     setItems((prev) => [...prev, newItem]);
     setExpandedIndex(items.length);
   };
-
   const deleteItem = (index: number) => {
     setItems((prev) => prev.filter((_, i) => i !== index));
     if (expandedIndex === index) setExpandedIndex(null);
-    else if (expandedIndex !== null && expandedIndex > index) setExpandedIndex(expandedIndex - 1);
+    else if (expandedIndex !== null && expandedIndex > index)
+      setExpandedIndex(expandedIndex - 1);
   };
-
   const handleSave = async () => {
     clearError();
     const result = await save(existingLink?.id ?? null, {
-      featureType: 'alert_rule',
+      featureType: "alert_rule",
       featurePolicyId: linkedPolicyId,
       inlineSettings: { items },
     });
-    if (result) onLinkChanged(result, 'alert_rule');
+    if (result) onLinkChanged(result, "alert_rule");
   };
-
   const handleRemove = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
-    if (ok) onLinkChanged(null, 'alert_rule');
+    if (ok) onLinkChanged(null, "alert_rule");
   };
-
   const handleOverride = async () => {
     clearError();
     const result = await save(null, {
-      featureType: 'alert_rule',
+      featureType: "alert_rule",
       featurePolicyId: linkedPolicyId,
       inlineSettings: { items },
     });
-    if (result) onLinkChanged(result, 'alert_rule');
+    if (result) onLinkChanged(result, "alert_rule");
   };
-
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
-    if (ok) onLinkChanged(null, 'alert_rule');
+    if (ok) onLinkChanged(null, "alert_rule");
   };
-
   const meta = FEATURE_META.alert_rule;
-
   return (
     <FeatureTabShell
       title={meta.label}
@@ -234,12 +352,20 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
       onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}
       isInherited={isInherited}
       onOverride={isInherited ? handleOverride : undefined}
-      onRevert={!isInherited && !!linkedPolicyId && !!existingLink ? handleRevert : undefined}
+      onRevert={
+        !isInherited && !!linkedPolicyId && !!existingLink
+          ? handleRevert
+          : undefined
+      }
     >
       {/* Header with count + Add button */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold">Alert Rules</h3>
+          <h3 className="text-sm font-semibold">
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.alertRuleTab.alertRules",
+            )}
+          </h3>
           {items.length > 0 && (
             <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-primary/10 px-1.5 text-xs font-medium text-primary">
               {items.length}
@@ -251,7 +377,10 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
           onClick={addItem}
           className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
         >
-          <Plus className="h-4 w-4" /> Add Alert Rule
+          <Plus className="h-4 w-4" />
+          {i18n.t(
+            "policies:configurationPolicies.featureTabs.alertRuleTab.addAlertRule",
+          )}
         </button>
       </div>
 
@@ -259,13 +388,20 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
       {items.length === 0 && (
         <div className="mt-4 rounded-md border border-dashed p-8 text-center">
           <Bell className="mx-auto h-8 w-8 text-muted-foreground/50" />
-          <p className="mt-2 text-sm text-muted-foreground">No alert rules configured yet.</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.alertRuleTab.noAlertRulesConfiguredYet",
+            )}
+          </p>
           <button
             type="button"
             onClick={addItem}
             className="mt-3 inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            <Plus className="h-4 w-4" /> Add Alert Rule
+            <Plus className="h-4 w-4" />
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.alertRuleTab.addAlertRule2",
+            )}
           </button>
         </div>
       )}
@@ -283,16 +419,36 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
                 className="flex w-full items-center justify-between px-4 py-3 text-left"
               >
                 <div className="flex items-center gap-3">
-                  {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                  <span className="text-sm font-medium">{item.name || 'Untitled Rule'}</span>
+                  {isExpanded ? (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                  )}
+                  <span className="text-sm font-medium">
+                    {item.name ||
+                      i18n.t(
+                        "policies:configurationPolicies.featureTabs.alertRuleTab.untitledRule",
+                      )}
+                  </span>
                   {severityPill(item.severity)}
                   <span className="text-xs text-muted-foreground">
-                    {item.conditions.length} condition{item.conditions.length !== 1 ? 's' : ''}
+                    {item.conditions.length}
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.alertRuleTab.condition",
+                    )}
+                    {item.conditions.length !== 1
+                      ? i18n.t(
+                          "policies:configurationPolicies.featureTabs.alertRuleTab.s",
+                        )
+                      : ""}
                   </span>
                 </div>
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); deleteItem(index); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteItem(index);
+                  }}
                   className="flex h-7 w-7 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -304,32 +460,48 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
                 <div className="border-t px-4 pb-4 pt-3 space-y-4">
                   {/* Name */}
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Rule Name</label>
+                    <label className="text-xs font-medium text-muted-foreground">
+                      {i18n.t(
+                        "policies:configurationPolicies.featureTabs.alertRuleTab.ruleName",
+                      )}
+                    </label>
                     <input
                       ref={nameInputRef}
                       value={item.name}
-                      onChange={(e) => updateItem(index, { name: e.target.value })}
-                      placeholder="e.g. High CPU Alert"
+                      onChange={(e) =>
+                        updateItem(index, { name: e.target.value })
+                      }
+                      placeholder={i18n.t(
+                        "policies:configurationPolicies.featureTabs.alertRuleTab.eGHighCPUAlert",
+                      )}
                       className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     />
                   </div>
 
                   {/* Severity */}
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Severity</label>
+                    <label className="text-xs font-medium text-muted-foreground">
+                      {i18n.t(
+                        "policies:configurationPolicies.featureTabs.alertRuleTab.severity",
+                      )}
+                    </label>
                     <div className="mt-1.5 flex flex-wrap gap-2">
                       {severityOptions.map((opt) => (
                         <button
                           key={opt.value}
                           type="button"
-                          onClick={() => updateItem(index, { severity: opt.value })}
+                          onClick={() =>
+                            updateItem(index, { severity: opt.value })
+                          }
                           className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium transition ${
                             item.severity === opt.value
-                              ? 'border-primary bg-primary/10 text-foreground'
-                              : 'border-muted bg-background text-muted-foreground hover:bg-muted'
+                              ? "border-primary bg-primary/10 text-foreground"
+                              : "border-muted bg-background text-muted-foreground hover:bg-muted"
                           }`}
                         >
-                          <span className={`h-2.5 w-2.5 rounded-full ${opt.color}`} />
+                          <span
+                            className={`h-2.5 w-2.5 rounded-full ${opt.color}`}
+                          />
                           {opt.label}
                         </button>
                       ))}
@@ -339,106 +511,197 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
                   {/* Conditions */}
                   <div>
                     <div className="flex items-center justify-between">
-                      <label className="text-xs font-medium text-muted-foreground">Conditions</label>
+                      <label className="text-xs font-medium text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.alertRuleTab.conditions",
+                        )}
+                      </label>
                       <button
                         type="button"
                         onClick={() => addCondition(index)}
                         className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
                       >
-                        <Plus className="h-3 w-3" /> Add
+                        <Plus className="h-3 w-3" />
+                        {i18n.t("common:actions.add")}
                       </button>
                     </div>
                     <div className="mt-2 space-y-2">
                       {item.conditions.map((condition, ci) => (
-                        <div key={ci} className="rounded-md border bg-muted/20 p-3">
+                        <div
+                          key={ci}
+                          className="rounded-md border bg-muted/20 p-3"
+                        >
                           <div className="flex items-start gap-2">
                             <div className="flex-1 grid gap-2 sm:grid-cols-2 md:grid-cols-4">
                               <div>
-                                <label className="text-xs font-medium text-muted-foreground">Type</label>
+                                <label className="text-xs font-medium text-muted-foreground">
+                                  {i18n.t("common:labels.type")}
+                                </label>
                                 <select
                                   value={condition.type}
-                                  onChange={(e) => updateCondition(index, ci, { type: e.target.value as ConditionType })}
+                                  onChange={(e) =>
+                                    updateCondition(index, ci, {
+                                      type: e.target.value as ConditionType,
+                                    })
+                                  }
                                   className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                 >
-                                  {conditionTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                  {conditionTypeOptions.map((o) => (
+                                    <option key={o.value} value={o.value}>
+                                      {o.label}
+                                    </option>
+                                  ))}
                                 </select>
                               </div>
 
-                              {condition.type === 'metric' && (
+                              {condition.type ===
+                                i18n.t(
+                                  "policies:configurationPolicies.featureTabs.alertRuleTab.metric3",
+                                ) && (
                                 <>
                                   <div>
-                                    <label className="text-xs font-medium text-muted-foreground">Metric</label>
+                                    <label className="text-xs font-medium text-muted-foreground">
+                                      {i18n.t(
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.metric2",
+                                      )}
+                                    </label>
                                     <select
-                                      value={condition.metric ?? 'cpu'}
-                                      onChange={(e) => updateCondition(index, ci, { metric: e.target.value })}
+                                      value={condition.metric ?? "cpu"}
+                                      onChange={(e) =>
+                                        updateCondition(index, ci, {
+                                          metric: e.target.value,
+                                        })
+                                      }
                                       className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                     >
-                                      {metricOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                      {metricOptions.map((o) => (
+                                        <option key={o.value} value={o.value}>
+                                          {o.label}
+                                        </option>
+                                      ))}
                                     </select>
                                   </div>
                                   <div>
-                                    <label className="text-xs font-medium text-muted-foreground">Operator</label>
+                                    <label className="text-xs font-medium text-muted-foreground">
+                                      {i18n.t(
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.operator",
+                                      )}
+                                    </label>
                                     <select
-                                      value={condition.operator ?? 'gt'}
-                                      onChange={(e) => updateCondition(index, ci, { operator: e.target.value })}
+                                      value={condition.operator ?? "gt"}
+                                      onChange={(e) =>
+                                        updateCondition(index, ci, {
+                                          operator: e.target.value,
+                                        })
+                                      }
                                       className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                     >
-                                      {operatorOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                      {operatorOptions.map((o) => (
+                                        <option key={o.value} value={o.value}>
+                                          {o.label}
+                                        </option>
+                                      ))}
                                     </select>
                                   </div>
                                   <div>
-                                    <label className="text-xs font-medium text-muted-foreground">Value (%)</label>
+                                    <label className="text-xs font-medium text-muted-foreground">
+                                      {i18n.t(
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.value",
+                                      )}
+                                    </label>
                                     <input
                                       type="number"
                                       min={0}
                                       max={100}
                                       value={condition.value ?? 80}
-                                      onChange={(e) => updateCondition(index, ci, { value: Number(e.target.value) })}
+                                      onChange={(e) =>
+                                        updateCondition(index, ci, {
+                                          value: Number(e.target.value),
+                                        })
+                                      }
                                       className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                     />
                                   </div>
                                 </>
                               )}
 
-                              {condition.type === 'offline' && (
+                              {condition.type ===
+                                i18n.t(
+                                  "policies:configurationPolicies.featureTabs.alertRuleTab.offline",
+                                ) && (
                                 <div className="sm:col-span-3">
-                                  <label className="text-xs font-medium text-muted-foreground">Offline Duration (min)</label>
+                                  <label className="text-xs font-medium text-muted-foreground">
+                                    {i18n.t(
+                                      "policies:configurationPolicies.featureTabs.alertRuleTab.offlineDurationMin",
+                                    )}
+                                  </label>
                                   <input
                                     type="number"
                                     min={1}
                                     max={OFFLINE_DURATION_MAX_MINUTES}
                                     value={condition.durationMinutes ?? 5}
-                                    onChange={(e) => updateCondition(index, ci, {
-                                      durationMinutes: Math.min(
-                                        OFFLINE_DURATION_MAX_MINUTES,
-                                        Math.max(1, Number(e.target.value)),
-                                      ),
-                                    })}
+                                    onChange={(e) =>
+                                      updateCondition(index, ci, {
+                                        durationMinutes: Math.min(
+                                          OFFLINE_DURATION_MAX_MINUTES,
+                                          Math.max(1, Number(e.target.value)),
+                                        ),
+                                      })
+                                    }
                                     className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                   />
                                   <p className="mt-1 text-[11px] text-muted-foreground">
-                                    Max {OFFLINE_DURATION_MAX_MINUTES} min (24h re-evaluation horizon)
+                                    {i18n.t(
+                                      "policies:configurationPolicies.featureTabs.alertRuleTab.max",
+                                    )}
+                                    {OFFLINE_DURATION_MAX_MINUTES}
+                                    {i18n.t(
+                                      "policies:configurationPolicies.featureTabs.alertRuleTab.min24hReEvaluationHorizon",
+                                    )}
                                   </p>
                                 </div>
                               )}
 
-                              {condition.type === 'custom' && (
+                              {condition.type ===
+                                i18n.t(
+                                  "policies:configurationPolicies.featureTabs.alertRuleTab.custom2",
+                                ) && (
                                 <>
                                   <div>
-                                    <label className="text-xs font-medium text-muted-foreground">Field Name</label>
+                                    <label className="text-xs font-medium text-muted-foreground">
+                                      {i18n.t(
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.fieldName",
+                                      )}
+                                    </label>
                                     <input
-                                      value={condition.field ?? ''}
-                                      onChange={(e) => updateCondition(index, ci, { field: e.target.value })}
-                                      placeholder="custom_field"
+                                      value={condition.field ?? ""}
+                                      onChange={(e) =>
+                                        updateCondition(index, ci, {
+                                          field: e.target.value,
+                                        })
+                                      }
+                                      placeholder={i18n.t(
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.customField",
+                                      )}
                                       className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                     />
                                   </div>
                                   <div className="sm:col-span-2">
-                                    <label className="text-xs font-medium text-muted-foreground">Condition</label>
+                                    <label className="text-xs font-medium text-muted-foreground">
+                                      {i18n.t(
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.condition2",
+                                      )}
+                                    </label>
                                     <input
-                                      value={condition.customCondition ?? ''}
-                                      onChange={(e) => updateCondition(index, ci, { customCondition: e.target.value })}
-                                      placeholder="value > 100"
+                                      value={condition.customCondition ?? ""}
+                                      onChange={(e) =>
+                                        updateCondition(index, ci, {
+                                          customCondition: e.target.value,
+                                        })
+                                      }
+                                      placeholder={i18n.t(
+                                        "policies:configurationPolicies.featureTabs.alertRuleTab.value100",
+                                      )}
                                       className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                     />
                                   </div>
@@ -462,27 +725,49 @@ export default function AlertRuleTab({ policyId, existingLink, onLinkChanged, li
                   {/* Advanced settings */}
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div>
-                      <label className="text-xs font-medium text-muted-foreground">Cooldown (minutes)</label>
+                      <label className="text-xs font-medium text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.alertRuleTab.cooldownMinutes",
+                        )}
+                      </label>
                       <input
                         type="number"
                         min={1}
                         max={1440}
                         value={item.cooldownMinutes}
-                        onChange={(e) => updateItem(index, { cooldownMinutes: Number(e.target.value) || 15 })}
+                        onChange={(e) =>
+                          updateItem(index, {
+                            cooldownMinutes: Number(e.target.value) || 15,
+                          })
+                        }
                         className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
-                      <p className="mt-1 text-xs text-muted-foreground">Min time between alerts</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.alertRuleTab.minTimeBetweenAlerts",
+                        )}
+                      </p>
                     </div>
                     <div>
-                      <label className="text-xs font-medium text-muted-foreground">Auto-Resolve</label>
+                      <label className="text-xs font-medium text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.alertRuleTab.autoResolve",
+                        )}
+                      </label>
                       <label className="mt-2 flex items-center gap-2 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={item.autoResolve}
-                          onChange={(e) => updateItem(index, { autoResolve: e.target.checked })}
+                          onChange={(e) =>
+                            updateItem(index, { autoResolve: e.target.checked })
+                          }
                           className="h-4 w-4 rounded border-muted"
                         />
-                        <span className="text-sm">Resolve when condition clears</span>
+                        <span className="text-sm">
+                          {i18n.t(
+                            "policies:configurationPolicies.featureTabs.alertRuleTab.resolveWhenConditionClears",
+                          )}
+                        </span>
                       </label>
                     </div>
                   </div>

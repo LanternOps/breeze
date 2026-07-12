@@ -16,6 +16,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
 import VaultConfigDialog from './VaultConfigDialog';
 import AlphaBadge from '../shared/AlphaBadge';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -53,6 +55,7 @@ const typeConfig: Record<VaultType, { icon: typeof HardDrive; label: string; cla
 // ── Component ─────────────────────────────────────────────────────
 
 export default function VaultDashboard() {
+  const { t } = useTranslation('backup');
   const [vaults, setVaults] = useState<Vault[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -168,7 +171,7 @@ export default function VaultDashboard() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading vaults...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('vaultDashboard.loadingVaults')}</p>
         </div>
       </div>
     );
@@ -183,8 +186,7 @@ export default function VaultDashboard() {
           onClick={fetchVaults}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
-        </button>
+          {t('vaultDashboard.tryAgain')} </button>
       </div>
     );
   }
@@ -201,15 +203,15 @@ export default function VaultDashboard() {
       {/* Summary Cards */}
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="rounded-lg border bg-card p-4 shadow-xs">
-          <p className="text-xs font-medium text-muted-foreground">Total Vaults</p>
+          <p className="text-xs font-medium text-muted-foreground">{t('vaultDashboard.totalVaults')}</p>
           <p className="mt-1 text-2xl font-bold text-foreground">{totalVaults}</p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
-          <p className="text-xs font-medium text-muted-foreground">Total Synced Size</p>
+          <p className="text-xs font-medium text-muted-foreground">{t('vaultDashboard.totalSyncedSize')}</p>
           <p className="mt-1 text-2xl font-bold text-foreground">{formatBytes(totalSyncedSize)}</p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
-          <p className="text-xs font-medium text-muted-foreground">Vaults with Errors</p>
+          <p className="text-xs font-medium text-muted-foreground">{t('vaultDashboard.vaultsWithErrors')}</p>
           <p className={cn('mt-1 text-2xl font-bold', vaultsWithErrors > 0 ? 'text-destructive' : 'text-foreground')}>
             {vaultsWithErrors}
           </p>
@@ -218,25 +220,23 @@ export default function VaultDashboard() {
 
       {/* Action Bar */}
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-foreground">Local Vaults</h3>
+        <h3 className="text-sm font-semibold text-foreground">{t('vaultDashboard.localVaults')}</h3>
         <button
           type="button"
           onClick={handleAdd}
           className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-3.5 w-3.5" />
-          Add Vault
-        </button>
+          {t('vaultDashboard.addVault')} </button>
       </div>
 
       {/* Vault Table */}
       {vaults.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-16 text-center">
           <HardDrive className="h-12 w-12 text-muted-foreground/40" />
-          <h3 className="mt-4 text-base font-semibold text-foreground">No vaults configured</h3>
+          <h3 className="mt-4 text-base font-semibold text-foreground">{t('vaultDashboard.noVaultsConfigured')}</h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            Add a local vault to enable on-site backup storage.
-          </p>
+            {t('vaultDashboard.addALocalVaultToEnableOnSite')} </p>
         </div>
       ) : (
         <div className="rounded-lg border bg-card shadow-xs">
@@ -244,14 +244,14 @@ export default function VaultDashboard() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="px-4 py-3 font-medium">Device</th>
-                  <th className="px-4 py-3 font-medium">Vault Path</th>
-                  <th className="px-4 py-3 font-medium">Type</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Last Sync</th>
-                  <th className="px-4 py-3 font-medium">Snapshots</th>
-                  <th className="px-4 py-3 font-medium">Size</th>
-                  <th className="px-4 py-3 font-medium">Actions</th>
+                  <th className="px-4 py-3 font-medium">{t('vaultDashboard.device')}</th>
+                  <th className="px-4 py-3 font-medium">{t('vaultDashboard.vaultPath')}</th>
+                  <th className="px-4 py-3 font-medium">{t('vaultDashboard.type')}</th>
+                  <th className="px-4 py-3 font-medium">{t('vaultDashboard.status')}</th>
+                  <th className="px-4 py-3 font-medium">{t('vaultDashboard.lastSync')}</th>
+                  <th className="px-4 py-3 font-medium">{t('vaultDashboard.snapshots')}</th>
+                  <th className="px-4 py-3 font-medium">{t('vaultDashboard.size')}</th>
+                  <th className="px-4 py-3 font-medium">{t('vaultDashboard.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -310,22 +310,19 @@ export default function VaultDashboard() {
                             ) : (
                               <RefreshCw className="h-3 w-3" />
                             )}
-                            Sync
-                          </button>
+                            {t('vaultDashboard.sync')} </button>
                           <button
                             type="button"
                             onClick={() => handleEdit(vault)}
                             className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
                           >
-                            Edit
-                          </button>
+                            {t('vaultDashboard.edit')} </button>
                           <button
                             type="button"
                             onClick={() => handleDeactivate(vault.id)}
                             className="rounded-md border px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
                           >
-                            Deactivate
-                          </button>
+                            {t('vaultDashboard.deactivate')} </button>
                         </div>
                       </td>
                     </tr>

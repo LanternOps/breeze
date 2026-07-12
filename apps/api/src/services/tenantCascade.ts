@@ -293,6 +293,19 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sso_verified_domains',
   'storage_encryption_keys',
   'ticket_alert_links',
+  // ticket_form_org_links (spec 2026-07-11): org allowlist for partner-wide
+  // ticket_forms. Own org_id column is a direct FK to organizations (ON
+  // DELETE CASCADE already clears rows on org delete; listed here anyway per
+  // the cascade contract test's requirement that every org_id-columned table
+  // be enumerated for auditability). localeCompare sorts this BEFORE
+  // 'ticket_forms' (underscore < 's'), not after — verified against the
+  // alphabetization contract test in tenantCascade.integration.test.ts.
+  'ticket_form_org_links',
+  // ticket_forms (spec 2026-07-10): dual-axis (org_id XOR partner_id) —
+  // partner-wide forms are cleared via cascadeDeletePartner's dynamic
+  // partner_id sweep (information_schema-driven), not a static list; this
+  // entry only covers the org-owned axis of the GDPR org cascade.
+  'ticket_forms',
   'ticket_parts',
   'tickets',
   'time_entries',

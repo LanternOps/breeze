@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { Save, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -28,6 +30,7 @@ const severityStyles: Record<AlertSeverity, string> = {
 };
 
 export default function AlertRuleEditor() {
+  const { t } = useTranslation('alerts');
   const [templates, setTemplates] = useState<TemplateOption[]>([]);
   const [targetsByType, setTargetsByType] = useState<Record<TargetType, TargetOption[]>>({
     org: [],
@@ -179,7 +182,7 @@ export default function AlertRuleEditor() {
             onClick={fetchData}
             className="text-sm text-primary hover:underline"
           >
-            Try again
+            {t('alertRuleEditor.tryAgain')}
           </button>
         </div>
       </div>
@@ -190,8 +193,8 @@ export default function AlertRuleEditor() {
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Alert Rule Editor</h2>
-          <p className="text-sm text-muted-foreground">Bind templates to targets and override behavior.</p>
+          <h2 className="text-lg font-semibold">{t('alertRuleEditor.alertRuleEditor')}</h2>
+          <p className="text-sm text-muted-foreground">{t('alertRuleEditor.bindTemplatesToTargetsAndOverrideBehavior')}</p>
         </div>
         <button
           type="button"
@@ -200,7 +203,7 @@ export default function AlertRuleEditor() {
           className="inline-flex h-10 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
         >
           <Save className="h-4 w-4" />
-          {isSaving ? 'Saving...' : 'Save rule'}
+          {isSaving ? t('common:states.saving') : t('alertRuleEditor.saveRule')}
         </button>
       </div>
 
@@ -213,10 +216,10 @@ export default function AlertRuleEditor() {
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-6">
           <div className="rounded-md border p-4">
-            <h3 className="text-sm font-semibold">Template Selection</h3>
+            <h3 className="text-sm font-semibold">{t('alertRuleEditor.templateSelection')}</h3>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Template</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertRuleEditor.template')}</label>
                 <select
                   value={templateId}
                   onChange={event => setTemplateId(event.target.value)}
@@ -230,7 +233,7 @@ export default function AlertRuleEditor() {
                 </select>
               </div>
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Template severity</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertRuleEditor.templateSeverity')}</label>
                 <div
                   className={cn(
                     'mt-1 flex h-10 items-center rounded-md border px-3 text-sm font-medium',
@@ -244,30 +247,30 @@ export default function AlertRuleEditor() {
           </div>
 
           <div className="rounded-md border p-4">
-            <h3 className="text-sm font-semibold">Targets</h3>
+            <h3 className="text-sm font-semibold">{t('alertRuleEditor.targets')}</h3>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Target type</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertRuleEditor.targetType')}</label>
                 <select
                   value={targetType}
                   onChange={event => handleTargetTypeChange(event.target.value as TargetType)}
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
-                  <option value="org">Organization</option>
-                  <option value="site">Site</option>
-                  <option value="group">Group</option>
-                  <option value="device">Device</option>
+                  <option value="org">{t('alertRuleEditor.organization')}</option>
+                  <option value="site">{t('alertRuleEditor.site')}</option>
+                  <option value="group">{t('alertRuleEditor.group')}</option>
+                  <option value="device">{t('alertRuleEditor.device')}</option>
                 </select>
               </div>
               <div>
-                <label className="text-xs font-medium uppercase text-muted-foreground">Target</label>
+                <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertRuleEditor.target')}</label>
                 <select
                   value={targetId}
                   onChange={event => setTargetId(event.target.value)}
                   className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   {targetOptions.length === 0 ? (
-                    <option value="">No targets available</option>
+                    <option value="">{t('alertRuleEditor.noTargetsAvailable')}</option>
                   ) : (
                     targetOptions.map(option => (
                       <option key={option.id} value={option.id}>
@@ -283,8 +286,8 @@ export default function AlertRuleEditor() {
           <div className="rounded-md border p-4">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-semibold">Override settings</h3>
-                <p className="text-xs text-muted-foreground">Optional rule-level overrides.</p>
+                <h3 className="text-sm font-semibold">{t('alertRuleEditor.overrideSettings')}</h3>
+                <p className="text-xs text-muted-foreground">{t('alertRuleEditor.optionalRuleLevelOverrides')}</p>
               </div>
               <button
                 type="button"
@@ -296,7 +299,7 @@ export default function AlertRuleEditor() {
                     : 'bg-muted text-muted-foreground'
                 )}
               >
-                {overrideEnabled ? 'Overrides on' : 'Overrides off'}
+                {overrideEnabled ? t('alertRuleEditor.overridesOn') : t('alertRuleEditor.overridesOff')}
                 {overrideEnabled ? <ToggleRight className="h-4 w-4" /> : <ToggleLeft className="h-4 w-4" />}
               </button>
             </div>
@@ -304,21 +307,21 @@ export default function AlertRuleEditor() {
             {overrideEnabled && (
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="text-xs font-medium uppercase text-muted-foreground">Severity override</label>
+                  <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertRuleEditor.severityOverride')}</label>
                   <select
                     value={overrideSeverity}
                     onChange={event => setOverrideSeverity(event.target.value as AlertSeverity)}
                     className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
-                    <option value="critical">Critical</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
-                    <option value="info">Info</option>
+                    <option value="critical">{t('alertRuleEditor.critical')}</option>
+                    <option value="high">{t('alertRuleEditor.high')}</option>
+                    <option value="medium">{t('alertRuleEditor.medium')}</option>
+                    <option value="low">{t('alertRuleEditor.low')}</option>
+                    <option value="info">{t('alertRuleEditor.info')}</option>
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs font-medium uppercase text-muted-foreground">Cooldown override</label>
+                  <label className="text-xs font-medium uppercase text-muted-foreground">{t('alertRuleEditor.cooldownOverride')}</label>
                   <input
                     type="number"
                     value={overrideCooldown}
@@ -333,8 +336,8 @@ export default function AlertRuleEditor() {
 
         <div className="space-y-6">
           <div className="rounded-md border p-4">
-            <h3 className="text-sm font-semibold">Rule Status</h3>
-            <p className="mt-2 text-xs text-muted-foreground">Toggle the rule on or off without deleting it.</p>
+            <h3 className="text-sm font-semibold">{t('alertRuleEditor.ruleStatus')}</h3>
+            <p className="mt-2 text-xs text-muted-foreground">{t('alertRuleEditor.toggleTheRuleOnOrOffWithout')}</p>
             <button
               type="button"
               onClick={() => setActive(prev => !prev)}
@@ -343,31 +346,31 @@ export default function AlertRuleEditor() {
                 active ? 'bg-emerald-500/20 text-emerald-700 border-emerald-500/30' : 'bg-muted text-muted-foreground'
               )}
             >
-              {active ? 'Active' : 'Paused'}
+              {active ? t('common:states.active') : t('alertRuleEditor.paused')}
               {active ? <ToggleRight className="h-5 w-5" /> : <ToggleLeft className="h-5 w-5" />}
             </button>
           </div>
 
           <div className="rounded-md border p-4">
-            <h3 className="text-sm font-semibold">Summary</h3>
+            <h3 className="text-sm font-semibold">{t('alertRuleEditor.summary')}</h3>
             <div className="mt-3 space-y-2 text-sm">
               <p className="flex justify-between">
-                <span className="text-muted-foreground">Template</span>
-                <span className="font-medium">{selectedTemplate?.name ?? 'Not set'}</span>
+                <span className="text-muted-foreground">{t('alertRuleEditor.template')}</span>
+                <span className="font-medium">{selectedTemplate?.name ?? t('alertRuleEditor.notSet')}</span>
               </p>
               <p className="flex justify-between">
-                <span className="text-muted-foreground">Target type</span>
+                <span className="text-muted-foreground">{t('alertRuleEditor.targetType')}</span>
                 <span className="font-medium">{targetType}</span>
               </p>
               <p className="flex justify-between">
-                <span className="text-muted-foreground">Target</span>
+                <span className="text-muted-foreground">{t('alertRuleEditor.target')}</span>
                 <span className="font-medium">
-                  {targetOptions.find(option => option.id === targetId)?.name ?? 'Not set'}
+                  {targetOptions.find(option => option.id === targetId)?.name ?? t('alertRuleEditor.notSet')}
                 </span>
               </p>
               {overrideEnabled && (
                 <p className="flex justify-between">
-                  <span className="text-muted-foreground">Override severity</span>
+                  <span className="text-muted-foreground">{t('alertRuleEditor.overrideSeverity')}</span>
                   <span className="font-medium">{overrideSeverity}</span>
                 </p>
               )}

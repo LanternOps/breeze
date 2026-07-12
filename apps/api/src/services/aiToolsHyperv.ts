@@ -7,13 +7,14 @@
  */
 
 import { db } from '../db';
-import { backupJobs, backupSnapshots, devices, hypervVms } from '../db/schema';
+import { backupJobs, devices, hypervVms } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
@@ -392,19 +393,12 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
       if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
 
-      const snapshotConditions: SQL[] = [eq(backupSnapshots.id, snapshotId)];
-      const sc = orgWhere(auth, backupSnapshots.orgId);
-      if (sc) snapshotConditions.push(sc);
-      const [snapshot] = await db
-        .select({
-          id: backupSnapshots.id,
-          providerSnapshotId: backupSnapshots.snapshotId,
-          metadata: backupSnapshots.metadata,
-        })
-        .from(backupSnapshots)
-        .where(and(...snapshotConditions))
-        .limit(1);
-      if (!snapshot) return JSON.stringify({ error: 'Snapshot not found or access denied' });
+      // Load the snapshot under org AND site scope (source device site gated),
+      // so a site-restricted caller cannot import a cross-site snapshot onto a
+      // Hyper-V host they legitimately own.
+      const snapshotResult = await loadSnapshotWithSiteAccess(auth, snapshotId);
+      if ('error' in snapshotResult) return JSON.stringify({ error: snapshotResult.error });
+      const snapshot = snapshotResult.snapshot;
       const metadata =
         snapshot.metadata && typeof snapshot.metadata === 'object' && !Array.isArray(snapshot.metadata)
           ? snapshot.metadata as Record<string, unknown>

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, sql, desc, and } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';

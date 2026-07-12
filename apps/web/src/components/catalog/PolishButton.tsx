@@ -6,6 +6,7 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { Dialog } from '../shared/Dialog';
 import { polishTextRequest, type PolishResult } from '../../lib/api/catalog';
+import { useTranslation } from 'react-i18next';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -51,19 +52,20 @@ function FieldDiff({
   idSuffix: string;
   field: 'name' | 'description';
 }) {
+  const { t } = useTranslation('common');
   const unchanged = (before ?? '') === (after ?? '');
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-2">
         <span className="text-xs font-medium text-muted-foreground">{label}</span>
-        {unchanged && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">No change</span>}
+        {unchanged && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{t('longTail.catalog.PolishButton.noChange')}</span>}
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <div
           className="rounded-md border bg-muted/40 p-2 text-sm whitespace-pre-wrap break-words text-muted-foreground"
           data-testid={`polish-before-${field}-${idSuffix}`}
         >
-          {before || <span className="italic opacity-60">empty</span>}
+          {before || <span className="italic opacity-60">{t('longTail.catalog.PolishButton.empty')}</span>}
         </div>
         <div
           className={`rounded-md border p-2 text-sm whitespace-pre-wrap break-words ${
@@ -71,7 +73,7 @@ function FieldDiff({
           }`}
           data-testid={`polish-after-${field}-${idSuffix}`}
         >
-          {after || <span className="italic opacity-60">empty</span>}
+          {after || <span className="italic opacity-60">{t('longTail.catalog.PolishButton.empty')}</span>}
         </div>
       </div>
     </div>
@@ -81,6 +83,7 @@ function FieldDiff({
 export default function PolishButton({
   getText, onApply, idSuffix, disabled, label, compact,
 }: PolishButtonProps) {
+  const { t } = useTranslation('common');
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const headingId = useId();
@@ -91,7 +94,7 @@ export default function PolishButton({
     const name = input.name?.trim() ? input.name : undefined;
     const description = input.description?.trim() ? input.description : undefined;
     if (!name && !description) {
-      showToast({ message: 'Enter a name or description to polish first.', type: 'error' });
+      showToast({ message: t('longTail.catalog.PolishButton.errors.enterText'), type: 'error' });
       return;
     }
     setBusy(true);
@@ -103,7 +106,7 @@ export default function PolishButton({
         // error: AI_PARSE 502 / rate-limit carry a server message runAction
         // surfaces verbatim; this fallback string shows only on a transport
         // failure or an unparseable success body.
-        errorFallback: "Couldn't polish that — try editing it manually.",
+        errorFallback: t('longTail.catalog.PolishButton.errors.polishFailed'),
         parseSuccess: (data) => (data as { data: PolishResult }).data,
         onUnauthorized: UNAUTHORIZED,
       });
@@ -118,7 +121,7 @@ export default function PolishButton({
       const nameVisiblySame = result.name === null || trimEq(result.name, name);
       const descVisiblySame = result.description === null || trimEq(result.description, description);
       if (!result.factChanges && (!result.changed || (nameVisiblySame && descVisiblySame))) {
-        showToast({ message: 'Already looks good — no changes suggested.', type: 'success' });
+        showToast({ message: t('longTail.catalog.PolishButton.messages.noChanges'), type: 'success' });
         return;
       }
       setPreview({
@@ -131,7 +134,7 @@ export default function PolishButton({
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) {
-        showToast({ message: "Couldn't polish that — try editing it manually.", type: 'error' });
+        showToast({ message: t('longTail.catalog.PolishButton.errors.polishFailed'), type: 'error' });
       }
     } finally {
       setBusy(false);
@@ -142,7 +145,7 @@ export default function PolishButton({
     if (!preview) return;
     onApply({ name: preview.afterName, description: preview.afterDescription });
     setPreview(null);
-    showToast({ message: 'Polished text applied.', type: 'success' });
+    showToast({ message: t('longTail.catalog.PolishButton.messages.applied'), type: 'success' });
   };
 
   return (
@@ -153,7 +156,7 @@ export default function PolishButton({
         disabled={disabled || busy}
         aria-busy={busy}
         data-testid={`polish-btn-${idSuffix}`}
-        title="Clean up the wording with AI — your numbers and specs stay; review the preview before applying"
+        title={t('longTail.catalog.PolishButton.title')}
         className={
           compact
             ? 'inline-flex h-8 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:opacity-50'
@@ -161,13 +164,13 @@ export default function PolishButton({
         }
       >
         {busy && <Loader2 className={`animate-spin ${compact ? 'h-3 w-3' : 'h-3.5 w-3.5'}`} aria-hidden="true" />}
-        {busy ? 'Polishing…' : (label ?? '✨ Polish with AI')}
+        {busy ? t('longTail.catalog.PolishButton.polishing') : (label ?? t('longTail.catalog.PolishButton.defaultLabel'))}
       </button>
 
       <Dialog
         open={preview !== null}
         onClose={() => setPreview(null)}
-        title="Polish preview"
+        title={t('longTail.catalog.PolishButton.preview.dialogTitle')}
         labelledBy={headingId}
         maxWidth="2xl"
         className="flex max-h-[85vh] flex-col"
@@ -175,10 +178,9 @@ export default function PolishButton({
         {preview && (
           <>
             <div className="border-b px-5 py-4">
-              <h2 id={headingId} className="text-base font-semibold">Review polished text</h2>
+              <h2 id={headingId} className="text-base font-semibold">{t('longTail.catalog.PolishButton.preview.title')}</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                This cleans up wording and formatting. Your numbers, measurements, and
-                prices are kept as entered — review the before/after below before applying.
+                {t('longTail.catalog.PolishButton.preview.description')}
               </p>
             </div>
             <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
@@ -188,17 +190,15 @@ export default function PolishButton({
                   data-testid={`polish-fact-warning-${idSuffix}`}
                   className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-900 dark:text-amber-200"
                 >
-                  <p className="font-medium">⚠️ Double-check the details before applying.</p>
+                  <p className="font-medium">{t('longTail.catalog.PolishButton.preview.warningTitle')}</p>
                   <p className="mt-0.5 text-xs">
-                    Our automatic check thinks a number, measurement, or code may have
-                    changed. Compare the before/after carefully — the AI can reword copy,
-                    but it must not alter a spec, price, or model.
+                    {t('longTail.catalog.PolishButton.preview.warningDescription')}
                   </p>
                   {(preview.factChanges.added.length > 0 || preview.factChanges.removed.length > 0) && (
                     <div className="mt-2 flex flex-col gap-1.5 text-xs">
                       {([
-                        { tokens: preview.factChanges.added, label: 'Added (verify these are real):', k: 'a', chip: 'bg-amber-500/20' },
-                        { tokens: preview.factChanges.removed, label: 'Removed:', k: 'r', chip: 'bg-amber-500/10 line-through opacity-80' },
+                        { tokens: preview.factChanges.added, label: t('longTail.catalog.PolishButton.preview.addedLabel'), k: 'a', chip: 'bg-amber-500/20' },
+                        { tokens: preview.factChanges.removed, label: t('longTail.catalog.PolishButton.preview.removedLabel'), k: 'r', chip: 'bg-amber-500/10 line-through opacity-80' },
                       ] as const).map(({ tokens, label, k, chip }) => tokens.length > 0 && (
                         <div key={k} className="flex flex-wrap items-center gap-1">
                           <span className="font-medium">{label}</span>
@@ -213,13 +213,13 @@ export default function PolishButton({
               )}
               {preview.beforeName !== null && (
                 <FieldDiff
-                  label="Name" field="name" idSuffix={idSuffix}
+                  label={t('common:labels.name')} field="name" idSuffix={idSuffix}
                   before={preview.beforeName} after={preview.afterName}
                 />
               )}
               {preview.beforeDescription !== null && (
                 <FieldDiff
-                  label="Description" field="description" idSuffix={idSuffix}
+                  label={t('common:labels.description')} field="description" idSuffix={idSuffix}
                   before={preview.beforeDescription} after={preview.afterDescription}
                 />
               )}
@@ -231,7 +231,7 @@ export default function PolishButton({
                 data-testid={`polish-cancel-${idSuffix}`}
                 className="inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -239,7 +239,7 @@ export default function PolishButton({
                 data-testid={`polish-apply-${idSuffix}`}
                 className="inline-flex h-9 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
               >
-                Apply changes
+                {t('longTail.catalog.PolishButton.actions.applyChanges')}
               </button>
             </div>
           </>

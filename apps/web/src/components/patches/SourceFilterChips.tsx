@@ -1,11 +1,13 @@
+import { useTranslation } from 'react-i18next';
+
 type Source = 'all' | 'microsoft' | 'apple' | 'linux' | 'third_party';
 
-const labels: Record<Source, string> = {
-  all: 'All',
-  microsoft: 'Microsoft',
-  apple: 'Apple',
-  linux: 'Linux',
-  third_party: 'Third-party',
+const labelKeys: Record<Source, string> = {
+  all: 'sourceFilterChips.sources.all',
+  microsoft: 'sourceFilterChips.sources.microsoft',
+  apple: 'sourceFilterChips.sources.apple',
+  linux: 'sourceFilterChips.sources.linux',
+  third_party: 'sourceFilterChips.sources.thirdParty',
 };
 
 const order: Source[] = ['all', 'microsoft', 'apple', 'linux', 'third_party'];
@@ -17,6 +19,7 @@ interface Props {
 }
 
 export default function SourceFilterChips({ counts, value, onChange }: Props) {
+  const { t } = useTranslation('patches');
   const total =
     (counts.microsoft ?? 0) +
     (counts.apple ?? 0) +
@@ -40,7 +43,7 @@ export default function SourceFilterChips({ counts, value, onChange }: Props) {
                 : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
             }`}
           >
-            {labels[source]}{' '}
+            {t(/* i18n-dynamic */ labelKeys[source])}{' '}
             <span data-testid={`patches-count-${source}`} className="ml-1 opacity-80">
               {count}
             </span>

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Check, Copy, Loader2, Download, Link, ArrowLeft, Info } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
@@ -24,6 +25,7 @@ function detectPlatform(): Platform {
 }
 
 export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onFinish }: EnrollDeviceStepProps) {
+  const { t } = useTranslation('auth');
   const userPlatform = detectPlatform();
 
   // Tab state
@@ -69,22 +71,22 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       const res = await fetchWithAuth('/devices/onboarding-token', { method: 'POST' });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setTokenError(extractApiError(data, 'Failed to generate installation token'));
+        setTokenError(extractApiError(data, t('setup.enroll.errors.generateTokenFailed')));
         return;
       }
       const data = await res.json();
       if (!data.token) {
-        setTokenError('Server returned empty token. Please try again.');
+        setTokenError(t('setup.enroll.errors.emptyToken'));
         return;
       }
       setOnboardingToken(data.token);
       if (data.enrollmentSecret) setEnrollmentSecret(data.enrollmentSecret);
     } catch {
-      setTokenError('Failed to generate token. Check your connection.');
+      setTokenError(t('setup.enroll.errors.tokenConnectionFailed'));
     } finally {
       setTokenLoading(false);
     }
-  }, [cliInitialized]);
+  }, [cliInitialized, t]);
 
   // Auto-init CLI if that's the default tab
   useEffect(() => {
@@ -117,7 +119,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
 
       if (!keyRes.ok) {
         const body = await keyRes.json().catch(() => ({}));
-        setDownloadError(body.error || `Failed to create enrollment key (${keyRes.status})`);
+        setDownloadError(body.error || t('setup.enroll.errors.createEnrollmentKeyFailed', { status: keyRes.status }));
         return;
       }
 
@@ -138,7 +140,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
 
       if (!dlRes.ok) {
         const body = await dlRes.json().catch(() => ({}));
-        setDownloadError(body.error || `Download failed (${dlRes.status})`);
+        setDownloadError(body.error || t('setup.enroll.errors.downloadFailed', { status: dlRes.status }));
         return;
       }
 
@@ -157,9 +159,9 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       setDownloadSuccess(true);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        setDownloadError('Download timed out. Please check your connection and try again.');
+        setDownloadError(t('setup.enroll.errors.downloadTimedOut'));
       } else {
-        setDownloadError(err instanceof Error ? err.message : 'Unknown error');
+        setDownloadError(err instanceof Error ? err.message : t('setup.common.unknownError'));
       }
     } finally {
       setDownloading(false);
@@ -186,7 +188,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
 
       if (!keyRes.ok) {
         const body = await keyRes.json().catch(() => ({}));
-        setLinkError(body.error || `Failed to create enrollment key (${keyRes.status})`);
+        setLinkError(body.error || t('setup.enroll.errors.createEnrollmentKeyFailed', { status: keyRes.status }));
         return;
       }
 
@@ -200,14 +202,14 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
 
       if (!linkRes.ok) {
         const body = await linkRes.json().catch(() => ({}));
-        setLinkError(body.error || `Failed to generate link (${linkRes.status})`);
+        setLinkError(body.error || t('setup.enroll.errors.generateLinkFailed', { status: linkRes.status }));
         return;
       }
 
       const linkData = await linkRes.json();
       setGeneratedLink(linkData.shortUrl ?? linkData.url);
     } catch (err) {
-      setLinkError(err instanceof Error ? err.message : 'Unknown error');
+      setLinkError(err instanceof Error ? err.message : t('setup.common.unknownError'));
     } finally {
       setLinkLoading(false);
     }
@@ -219,9 +221,9 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       await navigator.clipboard.writeText(generatedLink);
       setLinkCopied(true);
       setTimeout(() => setLinkCopied(false), 2000);
-      showToast({ type: 'success', message: 'Link copied to clipboard' });
+      showToast({ type: 'success', message: t('setup.enroll.toasts.linkCopied') });
     } catch {
-      showToast({ type: 'error', message: 'Failed to copy link' });
+      showToast({ type: 'error', message: t('setup.enroll.toasts.linkCopyFailed') });
     }
   };
 
@@ -232,16 +234,16 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       setTokenCopied(true);
       setTimeout(() => setTokenCopied(false), 2000);
     } catch {
-      showToast({ type: 'error', message: 'Failed to copy token' });
+      showToast({ type: 'error', message: t('setup.enroll.toasts.tokenCopyFailed') });
     }
   };
 
   const handleCopyCommand = async (command: string) => {
     try {
       await navigator.clipboard.writeText(command);
-      showToast({ type: 'success', message: 'Command copied to clipboard' });
+      showToast({ type: 'success', message: t('setup.enroll.toasts.commandCopied') });
     } catch {
-      showToast({ type: 'error', message: 'Failed to copy command' });
+      showToast({ type: 'error', message: t('setup.enroll.toasts.commandCopyFailed') });
     }
   };
 
@@ -263,9 +265,9 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Install the Breeze agent</h2>
+        <h2 className="text-lg font-semibold">{t('setup.enroll.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Download an installer or use the command line to set up your first device.
+          {t('setup.enroll.description')}
         </p>
       </div>
 
@@ -282,7 +284,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
-            {tab === 'installer' ? 'Download Installer' : 'CLI Commands'}
+            {tab === 'installer' ? t('setup.enroll.tabs.installer') : t('setup.enroll.tabs.cli')}
           </button>
         ))}
       </div>
@@ -292,7 +294,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
         <div className="space-y-5">
           {/* Platform selector */}
           <div>
-            <label className="block text-sm font-medium mb-1.5">Platform</label>
+            <label className="block text-sm font-medium mb-1.5">{t('setup.enroll.platform')}</label>
             <div className="flex gap-2">
               {(['windows', 'macos'] as const).map((p) => (
                 <button
@@ -305,19 +307,19 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground border-border'
                   }`}
                 >
-                  {p === 'windows' ? 'Windows (.msi)' : 'macOS (.zip)'}
+                  {p === 'windows' ? t('setup.enroll.platforms.windowsInstaller') : t('setup.enroll.platforms.macosInstaller')}
                 </button>
               ))}
             </div>
             <p className="mt-1.5 text-xs text-muted-foreground">
-              For Linux, use the CLI Commands tab.
+              {t('setup.enroll.linuxCliHint')}
             </p>
           </div>
 
           {/* Device count */}
           <div>
             <label htmlFor="setup-device-count" className="block text-sm font-medium mb-1.5">
-              Number of devices
+              {t('setup.enroll.deviceCount')}
             </label>
             <input
               id="setup-device-count"
@@ -329,7 +331,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              How many devices will use this installer.
+              {t('setup.enroll.deviceCountHint')}
             </p>
           </div>
 
@@ -341,11 +343,11 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
             className="w-full h-10 rounded-md bg-primary text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {downloading ? (
-              <><Loader2 className="h-4 w-4 animate-spin" /> Generating installer...</>
+              <><Loader2 className="h-4 w-4 animate-spin" /> {t('setup.enroll.generatingInstaller')}</>
             ) : downloadSuccess ? (
-              <><Check className="h-4 w-4" /> Downloaded</>
+              <><Check className="h-4 w-4" /> {t('setup.enroll.downloaded')}</>
             ) : (
-              <><Download className="h-4 w-4" /> Download Installer</>
+              <><Download className="h-4 w-4" /> {t('setup.enroll.downloadInstaller')}</>
             )}
           </button>
 
@@ -357,9 +359,9 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
             className="w-full h-10 rounded-md border border-primary text-sm font-medium text-primary hover:bg-primary/5 disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {linkLoading ? (
-              <><Loader2 className="h-4 w-4 animate-spin" /> Generating link...</>
+              <><Loader2 className="h-4 w-4 animate-spin" /> {t('setup.enroll.generatingLink')}</>
             ) : (
-              <><Link className="h-4 w-4" /> Generate Shareable Link</>
+              <><Link className="h-4 w-4" /> {t('setup.enroll.generateShareableLink')}</>
             )}
           </button>
 
@@ -367,7 +369,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           {generatedLink && (
             <div className="rounded-md border border-green-500/40 bg-green-500/10 p-3 space-y-2">
               <p className="text-xs font-medium text-green-700 dark:text-green-300">
-                Share this link to download the installer from any computer:
+                {t('setup.enroll.shareLinkDescription')}
               </p>
               <div className="flex items-center gap-2">
                 <input
@@ -383,12 +385,12 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                   className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 flex items-center gap-1.5"
                 >
                   {linkCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                  {linkCopied ? 'Copied' : 'Copy'}
+                  {linkCopied ? t('setup.common.copied') : t('setup.common.copy')}
                 </button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Valid for {deviceCount > 1 ? `${deviceCount} downloads` : '1 download'}.
-                No login required.
+                {t('setup.enroll.linkValidity', { count: deviceCount })}{' '}
+                {t('setup.enroll.noLoginRequired')}
               </p>
             </div>
           )}
@@ -397,20 +399,20 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           {downloadError && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
               {downloadError}
-              <button type="button" onClick={handleDownload} className="ml-2 underline hover:no-underline">Retry</button>
+              <button type="button" onClick={handleDownload} className="ml-2 underline hover:no-underline">{t('setup.common.retry')}</button>
             </div>
           )}
           {linkError && (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
               {linkError}
-              <button type="button" onClick={handleGenerateLink} className="ml-2 underline hover:no-underline">Retry</button>
+              <button type="button" onClick={handleGenerateLink} className="ml-2 underline hover:no-underline">{t('setup.common.retry')}</button>
             </div>
           )}
 
           {/* Success */}
           {downloadSuccess && (
             <div className="rounded-md border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-700 dark:text-green-300">
-              Installer downloaded. Run it on {deviceCount > 1 ? `up to ${deviceCount} devices` : 'the target device'} to enroll.
+              {t('setup.enroll.downloadSuccess', { count: deviceCount })}
             </div>
           )}
         </div>
@@ -422,11 +424,11 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           {/* Token */}
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-              Step 1 — Copy your installation token
+              {t('setup.enroll.cli.step1')}
             </p>
             <div className="rounded-lg border bg-muted/30 p-4">
               <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium">Installation Token</label>
+                <label className="text-sm font-medium">{t('setup.enroll.cli.installationToken')}</label>
                 <button
                   type="button"
                   onClick={handleCopyToken}
@@ -434,13 +436,13 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                   className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50"
                 >
                   <Copy className="h-3 w-3" />
-                  {tokenCopied ? 'Copied!' : 'Copy'}
+                  {tokenCopied ? t('setup.common.copiedBang') : t('setup.common.copy')}
                 </button>
               </div>
               {tokenLoading ? (
                 <div className="flex items-center gap-2 py-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span className="text-sm text-muted-foreground">Generating token...</span>
+                  <span className="text-sm text-muted-foreground">{t('setup.enroll.cli.generatingToken')}</span>
                 </div>
               ) : tokenError ? (
                 <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
@@ -450,12 +452,12 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                     onClick={() => { setCliInitialized(false); void initializeCli(); }}
                     className="ml-2 underline hover:no-underline"
                   >
-                    Retry
+                    {t('setup.common.retry')}
                   </button>
                 </div>
               ) : (
                 <code className="block rounded-md bg-background p-3 text-sm font-mono break-all">
-                  {onboardingToken || 'No token available'}
+                  {onboardingToken || t('setup.enroll.cli.noTokenAvailable')}
                 </code>
               )}
             </div>
@@ -475,7 +477,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
             return (
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-                  Step 2 — Run the install command
+                  {t('setup.enroll.cli.step2')}
                 </p>
                 <div className="flex gap-1 mb-3">
                   {(['windows', 'macos', 'linux'] as const).map((os) => (
@@ -489,7 +491,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                       }`}
                     >
-                      {os === 'windows' ? 'Windows' : os === 'macos' ? 'macOS' : 'Linux'}
+                      {os === 'windows' ? t('setup.enroll.platforms.windows') : os === 'macos' ? t('setup.enroll.platforms.macos') : t('setup.enroll.platforms.linux')}
                     </button>
                   ))}
                 </div>
@@ -501,6 +503,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                     <button
                       type="button"
                       onClick={() => handleCopyCommand(commands[selectedOS])}
+                      aria-label={t('setup.enroll.cli.copyCommand')}
                       className="shrink-0 p-1 hover:bg-muted rounded"
                     >
                       <Copy className="h-4 w-4" />
@@ -508,7 +511,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
                   </div>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  {selectedOS === 'windows' ? 'Run as Administrator in PowerShell' : 'Run in Terminal'}
+                  {selectedOS === 'windows' ? t('setup.enroll.cli.runAsAdmin') : t('setup.enroll.cli.runInTerminal')}
                 </p>
               </div>
             );
@@ -521,8 +524,9 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
         <div className="flex gap-2">
           <Info className="h-4 w-4 mt-0.5 shrink-0 text-blue-600" />
           <p className="text-blue-700 dark:text-blue-300 text-xs">
-            Installers and tokens expire in 24 hours. Need to enroll many devices?
-            Generate bulk enrollment keys from <span className="font-medium">Settings &rarr; Enrollment Keys</span> after setup.
+            {t('setup.enroll.expirationNotice')}{' '}
+            <span className="font-medium">{t('setup.enroll.enrollmentKeysPath')}</span>{' '}
+            {t('setup.enroll.afterSetup')}
           </p>
         </div>
       </div>
@@ -537,7 +541,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
               className="inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"
             >
               <ArrowLeft className="h-4 w-4" />
-              Back
+              {t('setup.common.back')}
             </button>
           )}
         </div>
@@ -548,7 +552,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
           className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50"
         >
           {finishing && <Loader2 className="h-4 w-4 animate-spin" />}
-          Continue to Dashboard
+          {t('setup.enroll.continueToDashboard')}
         </button>
       </div>
     </div>

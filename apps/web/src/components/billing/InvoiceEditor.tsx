@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -14,6 +16,7 @@ import {
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import PolishButton from '../catalog/PolishButton';
 import { listCatalog, type CatalogItem } from '../../lib/api/catalog';
+import { formatPercent } from '@/lib/i18n/format';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -45,7 +48,7 @@ function useSavedFlash(): [boolean, () => void] {
 // Visually-hidden polite live region — announces a transient "Saved" to screen
 // readers, pairing with the dirty-ring clearing that sighted users see. The
 // single per-field announcer (no toast) so SR users hear "Saved" once.
-function SrSaved({ show, label = 'Saved', testId }: { show: boolean; label?: string; testId?: string }) {
+function SrSaved({ show, label, testId }: { show: boolean; label: string; testId?: string }) {
   // role="status" already implies aria-live="polite" — don't double it.
   return <span role="status" className="sr-only" data-testid={testId}>{show ? label : ''}</span>;
 }
@@ -58,6 +61,7 @@ function fieldRing(dirty: boolean, saved: boolean): string {
 }
 
 export default function InvoiceEditor({ detail, onChanged }: Props) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('invoices', 'write');
   // Cost/margin is a read affordance (mirrors InvoiceDetail + the quote rails'
@@ -122,10 +126,10 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
   const loadCatalog = useCallback(async () => {
     const res = await listCatalog({ isActive: true, limit: 200 });
     if (res.status === 401) return UNAUTHORIZED();
-    if (!res.ok) { handleActionError(new Error(res.statusText), 'Failed to load catalog.'); return; }
+    if (!res.ok) { handleActionError(new Error(res.statusText), t('invoiceEditor.errors.loadCatalog')); return; }
     const body = (await res.json()) as { data: CatalogItem[] };
     setCatalog(body.data ?? []);
-  }, []);
+  }, [t]);
 
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
 
@@ -154,11 +158,11 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         const q = Number(manualQty);
         const p = Number(manualPrice);
         if (!Number.isFinite(q) || q <= 0) {
-          handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+          handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
           return;
         }
         if (!Number.isFinite(p) || p < 0) {
-          handleActionError(new Error('invalid price'), 'Enter a unit price of 0 or more.');
+          handleActionError(new Error('invalid price'), t('invoiceEditor.errors.nonNegativeUnitPrice'));
           return;
         }
         await runAction({
@@ -172,8 +176,8 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               taxable: manualTaxable,
             }),
           }),
-          errorFallback: 'Could not add line.',
-          successMessage: 'Line added',
+          errorFallback: t('invoiceEditor.errors.addLine'),
+          successMessage: t('invoiceEditor.success.lineAdded'),
           onUnauthorized: UNAUTHORIZED,
         });
         setManualName(''); setManualDesc(''); setManualQty('1'); setManualPrice('0.00'); setManualTaxable(false);
@@ -181,7 +185,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         if (!picked) return;
         const pq = Number(pickQty);
         if (!Number.isFinite(pq) || pq <= 0) {
-          handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+          handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
           return;
         }
         const path = picked.isBundle
@@ -192,15 +196,15 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           : { catalogItemId: picked.id, quantity: pq };
         await runAction({
           request: () => fetchWithAuth(path, { method: 'POST', body: JSON.stringify(body) }),
-          errorFallback: 'Could not add line.',
-          successMessage: 'Line added',
+          errorFallback: t('invoiceEditor.errors.addLine'),
+          successMessage: t('invoiceEditor.success.lineAdded'),
           onUnauthorized: UNAUTHORIZED,
         });
         setPicked(null); setPickQty('1');
       }
       refresh();
-    }, 'Could not add line.'),
-  [runScoped, addMode, manualName, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh]);
+    }, t('invoiceEditor.errors.addLine')),
+  [runScoped, addMode, manualName, manualDesc, manualQty, manualPrice, manualTaxable, picked, pickQty, invoice.id, refresh, t]);
 
   // Inline edit of an existing line. `scopeKey` is per-field so one in-flight
   // save (e.g. qty) never disables the sibling controls. Returns whether it
@@ -211,24 +215,24 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         request: () => fetchWithAuth(`/invoices/${invoice.id}/lines/${lineId}`, {
           method: 'PATCH', body: JSON.stringify(patch),
         }),
-        errorFallback: 'Could not update line.',
+        errorFallback: t('invoiceEditor.errors.updateLine'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not update line.'),
-  [runScoped, invoice.id, refresh]);
+    }, t('invoiceEditor.errors.updateLine')),
+  [runScoped, invoice.id, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
       await runAction({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/lines/${lineId}`, { method: 'DELETE' }),
-        errorFallback: 'Could not remove line.',
-        successMessage: 'Line removed',
+        errorFallback: t('invoiceEditor.errors.removeLine'),
+        successMessage: t('invoiceEditor.success.lineRemoved'),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
-    }, 'Could not remove line.'),
-  [runScoped, invoice.id, refresh]);
+    }, t('invoiceEditor.errors.removeLine')),
+  [runScoped, invoice.id, refresh, t]);
 
   const saveNotes = useCallback(async () => {
     if (!notesDirty) return;
@@ -237,15 +241,15 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         request: () => fetchWithAuth(`/invoices/${invoice.id}`, {
           method: 'PATCH', body: JSON.stringify({ notes }),
         }),
-        errorFallback: 'Could not save notes.',
-        successMessage: 'Notes saved',
+        errorFallback: t('invoiceEditor.errors.saveNotes'),
+        successMessage: t('invoiceEditor.success.notesSaved'),
         onUnauthorized: UNAUTHORIZED,
       });
       setNotesDirty(false);
       refresh();
-    }, 'Could not save notes.');
+    }, t('invoiceEditor.errors.saveNotes'));
     if (ok) flashNotesSaved();
-  }, [notesDirty, notes, invoice.id, refresh, runScoped, flashNotesSaved]);
+  }, [notesDirty, notes, invoice.id, refresh, runScoped, flashNotesSaved, t]);
 
   const saveTerms = useCallback(async () => {
     if (!termsDirty) return;
@@ -254,15 +258,15 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         request: () => fetchWithAuth(`/invoices/${invoice.id}`, {
           method: 'PATCH', body: JSON.stringify({ termsAndConditions: terms }),
         }),
-        errorFallback: 'Could not save terms.',
-        successMessage: 'Terms saved',
+        errorFallback: t('invoiceEditor.errors.saveTerms'),
+        successMessage: t('invoiceEditor.success.termsSaved'),
         onUnauthorized: UNAUTHORIZED,
       });
       setTermsDirty(false);
       refresh();
-    }, 'Could not save terms.');
+    }, t('invoiceEditor.errors.saveTerms'));
     if (ok) flashTermsSaved();
-  }, [termsDirty, terms, invoice.id, refresh, runScoped, flashTermsSaved]);
+  }, [termsDirty, terms, invoice.id, refresh, runScoped, flashTermsSaved, t]);
 
   // Tax rate is inherited from partner Billing settings, not set per invoice. When
   // a line is marked taxable but no rate is configured, the Tax row reads $0.00
@@ -277,7 +281,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           className="rounded-md border border-warning/40 bg-warning/15 px-4 py-3 text-sm text-[hsl(36_92%_28%)] dark:text-warning"
           data-testid="invoice-unapproved-warning"
         >
-          {unapprovedCount} line{unapprovedCount === 1 ? '' : 's'} reference unapproved time. Review before issuing.
+          {t('invoiceEditor.unapprovedTime', { count: unapprovedCount })}
         </div>
       )}
 
@@ -288,12 +292,12 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
             <table className="w-full text-sm" data-testid="invoice-editor-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Item</th>
-                  <th className="px-3 py-2 text-right font-medium">Qty</th>
-                  <th className="px-3 py-2 text-right font-medium">Price</th>
-                  <th className="px-3 py-2 text-center font-medium">Tax</th>
-                  <th className="px-3 py-2 text-center font-medium" title="Whether this line appears on the customer's invoice">Customer-visible</th>
-                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                  <th className="px-3 py-2 font-medium">{t('invoiceEditor.table.item')}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t('invoiceEditor.table.qty')}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t('invoiceEditor.table.price')}</th>
+                  <th className="px-3 py-2 text-center font-medium">{t('invoiceEditor.table.tax')}</th>
+                  <th className="px-3 py-2 text-center font-medium" title={t('invoiceEditor.table.customerVisibleTitle')}>{t('invoiceEditor.table.customerVisible')}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t('invoiceEditor.table.total')}</th>
                   <th className="px-3 py-2" />
                 </tr>
               </thead>
@@ -301,7 +305,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                 {parentLines.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-3 py-8 text-center text-sm text-muted-foreground">
-                      No lines yet. Add catalog items, a bundle, or a manual line below.
+                      {t('invoiceEditor.table.empty')}
                     </td>
                   </tr>
                 ) : (
@@ -326,7 +330,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-add-line">
             {/* Segmented control — same vocabulary as the New-invoice source toggle
                 so "pick one mode" looks identical everywhere in the invoice flow. */}
-            <div className="mb-3 inline-flex gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label="Add line source">
+            <div className="mb-3 inline-flex gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label={t('invoiceEditor.addLine.sourceAria')}>
               {(['catalog', 'manual'] as AddMode[]).map((m) => (
                 <button
                   key={m}
@@ -338,7 +342,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                     addMode === m ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
-                  {m === 'catalog' ? 'Catalog item' : 'Manual line'}
+                  {m === 'catalog' ? t('invoiceEditor.addLine.catalogItem') : t('invoiceEditor.addLine.manualLine')}
                 </button>
               ))}
             </div>
@@ -355,40 +359,40 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                 />
               )}
               <input
-                type="text" placeholder="Name" aria-label="Line name" value={manualName}
+                type="text" placeholder={t('invoiceEditor.fields.name')} aria-label={t('invoiceEditor.fields.lineName')} value={manualName}
                 onChange={(e) => setManualName(e.target.value)}
                 data-testid="invoice-manual-name"
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_80px_100px_auto_auto]">
                 <input
-                  type="text" placeholder="Description (optional)" aria-label="Line description" value={manualDesc}
+                  type="text" placeholder={t('invoiceEditor.fields.descriptionOptional')} aria-label={t('invoiceEditor.fields.lineDescription')} value={manualDesc}
                   onChange={(e) => setManualDesc(e.target.value)}
                   data-testid="invoice-manual-desc"
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <input
-                  type="number" min="0" step="0.01" placeholder="Qty" aria-label="Quantity" value={manualQty}
+                  type="number" min="0" step="0.01" placeholder={t('invoiceEditor.table.qty')} aria-label={t('invoiceEditor.fields.quantity')} value={manualQty}
                   onChange={(e) => setManualQty(e.target.value)}
                   data-testid="invoice-manual-qty"
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <input
-                  type="number" min="0" step="0.01" placeholder="Price" aria-label="Unit price" value={manualPrice}
+                  type="number" min="0" step="0.01" placeholder={t('invoiceEditor.table.price')} aria-label={t('invoiceEditor.fields.unitPrice')} value={manualPrice}
                   onChange={(e) => setManualPrice(e.target.value)}
                   data-testid="invoice-manual-price"
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <label className="flex items-center gap-1 text-xs">
                   <input type="checkbox" checked={manualTaxable} onChange={(e) => setManualTaxable(e.target.checked)} data-testid="invoice-manual-taxable" />
-                  Taxable
+                  {t('invoiceEditor.fields.taxable')}
                 </label>
                 <button
                   type="button" onClick={() => void addLine()} disabled={isPending('addLine') || (!manualName.trim() && !manualDesc.trim())}
                   data-testid="invoice-add-line-submit"
                   className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
-                  Add
+                  {t('invoiceEditor.addLine.add')}
                 </button>
               </div>
               </div>
@@ -397,13 +401,13 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                 <span className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2.5 py-1.5 text-sm">
                   <span className="font-medium">{picked.name}</span>
                   {picked.isBundle && (
-                    <span className="rounded border border-border bg-background px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Bundle</span>
+                    <span className="rounded border border-border bg-background px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.addLine.bundle')}</span>
                   )}
-                  <button type="button" onClick={() => setPicked(null)} aria-label="Clear selection" className="ml-1 text-muted-foreground hover:text-foreground">×</button>
+                  <button type="button" onClick={() => setPicked(null)} aria-label={t('invoiceEditor.addLine.clearSelection')} className="ml-1 text-muted-foreground hover:text-foreground">×</button>
                 </span>
                 <input
                   type="number" min="0" step="0.01" value={pickQty}
-                  onChange={(e) => setPickQty(e.target.value)} aria-label="Quantity"
+                  onChange={(e) => setPickQty(e.target.value)} aria-label={t('invoiceEditor.fields.quantity')}
                   data-testid="invoice-pick-qty"
                   className="h-9 w-20 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
@@ -412,20 +416,20 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
                   data-testid="invoice-catalog-add"
                   className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                 >
-                  Add
+                  {t('invoiceEditor.addLine.add')}
                 </button>
               </div>
             ) : catalog.length === 0 ? (
               <p className="text-sm text-muted-foreground" data-testid="invoice-catalog-empty">
-                No catalog items.{' '}
-                <a href="/settings/catalog" className="underline hover:text-foreground">Add some in Product Catalog</a>.
+                {t('invoiceEditor.addLine.noCatalogItems')}{' '}
+                <a href="/settings/catalog" className="underline hover:text-foreground">{t('invoiceEditor.addLine.addInCatalog')}</a>.
               </p>
             ) : (
               <CatalogItemPicker
                 items={catalog}
                 onSelect={(it) => { setPicked(it); setPickQty('1'); }}
                 testId="invoice-catalog-picker"
-                placeholder="Search catalog by name or SKU"
+                placeholder={t('invoiceEditor.addLine.searchCatalog')}
               />
             )}
           </div>
@@ -435,16 +439,16 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
         {/* Summary + bill-to + notes + actions */}
         <div className="space-y-4">
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-summary">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Summary</h3>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.summary.title')}</h3>
             <dl className="space-y-1 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">Subtotal</dt><dd data-testid="invoice-subtotal">{formatMoney(invoice.subtotal, currency)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Tax{!noTaxRate ? ` (${(Number(invoice.taxRate) * 100).toFixed(2)}%)` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(invoice.taxTotal, currency)}</dd></div>
-              <div className="flex justify-between border-t pt-1 font-semibold"><dt>Total</dt><dd data-testid="invoice-total">{formatMoney(invoice.total, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.subtotal')}</dt><dd data-testid="invoice-subtotal">{formatMoney(invoice.subtotal, currency)}</dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('invoiceEditor.summary.tax')}{!noTaxRate ? ` (${formatPercent(Number(invoice.taxRate), { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}</dt><dd data-testid="invoice-tax">{formatMoney(invoice.taxTotal, currency)}</dd></div>
+              <div className="flex justify-between border-t pt-1 font-semibold"><dt>{t('invoiceEditor.summary.total')}</dt><dd data-testid="invoice-total">{formatMoney(invoice.total, currency)}</dd></div>
             </dl>
             {hasTaxableLine && noTaxRate && (
               <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-tax-rate-hint">
-                Lines are marked taxable, but no tax rate is set.{' '}
-                <a href="/settings/billing" className="underline hover:text-foreground">Set one in Billing settings</a>.
+                {t('invoiceEditor.summary.noTaxRate')}{' '}
+                <a href="/settings/billing" className="underline hover:text-foreground">{t('invoiceEditor.summary.setTaxRate')}</a>.
               </p>
             )}
             {/* Internal margin summary — at-a-glance profitability while building the
@@ -454,20 +458,20 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-bill-to">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Bill to</h3>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.billTo.title')}</h3>
             {invoice.billToName ? (
               <p className="text-sm">{invoice.billToName}</p>
             ) : (
               <p className="text-sm text-muted-foreground">
-                No billing contact set.{' '}
-                <a href="/settings/organizations" className="underline hover:text-foreground">Add one in Organization settings</a>.
+                {t('invoiceEditor.billTo.noContact')}{' '}
+                <a href="/settings/organizations" className="underline hover:text-foreground">{t('invoiceEditor.billTo.addInSettings')}</a>.
               </p>
             )}
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.notes.title')}</h3>
               <UnsavedBadge show={notesDirty} />
             </div>
             <textarea
@@ -484,13 +488,13 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               data-testid="invoice-notes"
               rows={3}
               className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(notesDirty, notesSaved)}`}
-              placeholder="Internal or customer notes…"
+              placeholder={t('invoiceEditor.notes.placeholder')}
             />
           </div>
 
           <div className="rounded-lg border bg-card p-4 shadow-xs">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Terms & Conditions</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('invoiceEditor.terms.title')}</h3>
               <UnsavedBadge show={termsDirty} />
             </div>
             <textarea
@@ -501,7 +505,7 @@ export default function InvoiceEditor({ detail, onChanged }: Props) {
               data-testid="invoice-terms"
               rows={3}
               className={`w-full rounded-md border bg-background px-3 py-2 text-sm transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(termsDirty, termsSaved)}`}
-              placeholder="Payment terms, warranty clauses, etc."
+              placeholder={t('invoiceEditor.terms.placeholder')}
             />
           </div>
 
@@ -524,6 +528,7 @@ function LineRow({
   onPatch: (lineId: string, patch: Record<string, unknown>, scopeKey: string) => Promise<boolean>;
   onRemove: (lineId: string) => void;
 }) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('invoices', 'write');
   // Per-field pending: only the in-flight control disables, so a slow qty save
@@ -593,7 +598,7 @@ function LineRow({
     if (next === (line.name ?? '')) { setName(line.name ?? ''); return; }
     // A line can't have both name and description blank (mirrors the manual-add rule).
     if (!next && !(line.description ?? '').trim()) {
-      handleActionError(new Error('empty line'), 'A line needs a name or a description.');
+      handleActionError(new Error('empty line'), t('invoiceEditor.errors.nameOrDescription'));
       setName(line.name ?? '');
       return;
     }
@@ -605,7 +610,7 @@ function LineRow({
     descEdited.current = false;
     if (next === (line.description ?? '')) { setDesc(line.description ?? ''); return; }
     if (!next && !(line.name ?? '').trim()) {
-      handleActionError(new Error('empty line'), 'A line needs a name or a description.');
+      handleActionError(new Error('empty line'), t('invoiceEditor.errors.nameOrDescription'));
       setDesc(line.description ?? '');
       return;
     }
@@ -618,7 +623,7 @@ function LineRow({
     if (n === Number(line.quantity)) { setQty(line.quantity); return; } // unchanged — silent (numeric compare)
     // A rejected entry no longer snaps back silently: tell the user why before reverting.
     if (!Number.isFinite(n) || n <= 0) {
-      handleActionError(new Error('invalid quantity'), 'Enter a quantity greater than 0.');
+      handleActionError(new Error('invalid quantity'), t('invoiceEditor.errors.quantityGreaterThanZero'));
       setQty(line.quantity);
       return;
     }
@@ -630,7 +635,7 @@ function LineRow({
     priceEdited.current = false;
     if (n === Number(line.unitPrice)) { setPrice(line.unitPrice); return; } // unchanged — silent (numeric compare)
     if (!Number.isFinite(n) || n < 0) {
-      handleActionError(new Error('invalid price'), 'Enter a unit price of 0 or more.');
+      handleActionError(new Error('invalid price'), t('invoiceEditor.errors.nonNegativeUnitPrice'));
       setPrice(line.unitPrice);
       return;
     }
@@ -643,7 +648,7 @@ function LineRow({
         <td className="px-3 py-2">
           <input
             type="text" value={name} disabled={!canWrite || isPending(nameKey)}
-            aria-label="Line name" placeholder="Name"
+            aria-label={t('invoiceEditor.fields.lineName')} placeholder={t('invoiceEditor.fields.name')}
             onChange={(e) => { setName(e.target.value); nameEdited.current = true; }}
             onBlur={commitName}
             data-testid={`invoice-line-name-${line.id}`}
@@ -653,7 +658,7 @@ function LineRow({
         <td className="px-3 py-2 text-right">
           <input
             type="number" min="0" step="0.01" value={qty} disabled={!canWrite || isPending(qtyKey)}
-            aria-label="Quantity"
+            aria-label={t('invoiceEditor.fields.quantity')}
             onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; }}
             onBlur={commitQty}
             data-testid={`invoice-line-qty-${line.id}`}
@@ -663,7 +668,7 @@ function LineRow({
         <td className="px-3 py-2 text-right">
           <input
             type="number" min="0" step="0.01" value={price} disabled={!canWrite || isPending(priceKey)}
-            aria-label="Unit price"
+            aria-label={t('invoiceEditor.fields.unitPrice')}
             onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; }}
             onBlur={commitPrice}
             data-testid={`invoice-line-price-${line.id}`}
@@ -686,7 +691,7 @@ function LineRow({
         </td>
         <td className="px-3 py-2 text-right">
           {formatMoney(line.lineTotal, currency)}
-          <SrSaved show={saved} testId={`invoice-line-saved-${line.id}`} />
+          <SrSaved show={saved} label={t('invoiceEditor.saved')} testId={`invoice-line-saved-${line.id}`} />
         </td>
         <td className="px-3 py-2 text-right">
           {canWrite && (
@@ -695,7 +700,7 @@ function LineRow({
               data-testid={`invoice-line-remove-${line.id}`}
               className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
             >
-              Remove
+              {t('invoiceEditor.remove')}
             </button>
           )}
         </td>
@@ -708,8 +713,8 @@ function LineRow({
             ref={descRef}
             value={desc}
             disabled={!canWrite || isPending(descKey)}
-            aria-label="Line description"
-            placeholder="Description (optional)"
+            aria-label={t('invoiceEditor.fields.lineDescription')}
+            placeholder={t('invoiceEditor.fields.descriptionOptional')}
             onChange={(e) => { setDesc(e.target.value); descEdited.current = true; autoGrowDesc(); }}
             onBlur={commitDesc}
             rows={2}
@@ -720,7 +725,7 @@ function LineRow({
       </tr>
       {children.map((ch) => (
         <tr key={ch.id} className="border-t bg-muted/20 text-xs text-muted-foreground" data-testid={`invoice-line-child-${ch.id}`}>
-          <td className="px-3 py-1.5 pl-8"><span aria-hidden="true">↳ </span>{lineTitle(ch)}{!ch.customerVisible ? ' (hidden)' : ''}</td>
+          <td className="px-3 py-1.5 pl-8"><span aria-hidden="true">↳ </span>{lineTitle(ch)}{!ch.customerVisible ? t('invoiceEditor.hiddenSuffix') : ''}</td>
           <td className="px-3 py-1.5 text-right">{ch.quantity}</td>
           <td className="px-3 py-1.5 text-right">{formatMoney(ch.unitPrice, currency)}</td>
           <td colSpan={4} />

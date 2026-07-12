@@ -424,3 +424,4 @@ describe('NetworkTopologyMap', () => {
     expect(onNodeClick).toHaveBeenCalledWith('gw');
   });
 });
+import '@/lib/i18n';

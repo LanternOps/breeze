@@ -1,7 +1,7 @@
 import { Hono, type Context, type Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { and, eq } from 'drizzle-orm';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { db } from '../../db';
 import { devices } from '../../db/schema';

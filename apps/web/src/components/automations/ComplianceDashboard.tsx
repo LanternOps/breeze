@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   TrendingUp,
   TrendingDown,
@@ -15,6 +17,9 @@ import {
   ChevronRight as ChevronRightIcon
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
+import { formatPercent } from '@/lib/i18n/format';
+
+type ScriptsT = TFunction<'scripts'>;
 
 export type ComplianceStatus = 'compliant' | 'non_compliant' | 'unknown';
 
@@ -67,26 +72,26 @@ type ComplianceDashboardProps = {
 
 const statusConfig: Record<ComplianceStatus, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
   compliant: {
-    label: 'Compliant',
+    label: 'status.compliant',
     color: 'text-green-600',
     bgColor: 'bg-green-500/20 border-green-500/40',
     icon: CheckCircle
   },
   non_compliant: {
-    label: 'Non-Compliant',
+    label: 'status.nonCompliant',
     color: 'text-red-600',
     bgColor: 'bg-red-500/20 border-red-500/40',
     icon: XCircle
   },
   unknown: {
-    label: 'Unknown',
+    label: 'status.unknown',
     color: 'text-gray-500',
     bgColor: 'bg-gray-500/20 border-gray-500/40',
     icon: AlertCircle
   }
 };
 
-function formatDate(dateString: string, timezone: string): string {
+function formatDate(dateString: string, timezone: string, t: ScriptsT): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -96,19 +101,19 @@ function formatDate(dateString: string, timezone: string): string {
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffMins < 1) return t('complianceDashboard.relativeTime.justNow');
+  if (diffMins < 60) return t('complianceDashboard.relativeTime.minutesAgo', { count: diffMins });
+  if (diffHours < 24) return t('complianceDashboard.relativeTime.hoursAgo', { count: diffHours });
+  if (diffDays < 7) return t('complianceDashboard.relativeTime.daysAgo', { count: diffDays });
   return date.toLocaleDateString([], { timeZone: timezone });
 }
 
-function CompliancePieChart({ data }: { data: { compliant: number; nonCompliant: number; unknown: number } }) {
+function CompliancePieChart({ data, t }: { data: { compliant: number; nonCompliant: number; unknown: number }; t: ScriptsT }) {
   const total = data.compliant + data.nonCompliant + data.unknown;
   if (total === 0) {
     return (
       <div className="flex h-40 w-40 items-center justify-center">
-        <span className="text-sm text-muted-foreground">No data</span>
+        <span className="text-sm text-muted-foreground">{t('complianceDashboard.noData')}</span>
       </div>
     );
   }
@@ -175,17 +180,17 @@ function CompliancePieChart({ data }: { data: { compliant: number; nonCompliant:
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-3xl font-bold">{Math.round(compliantPercent)}%</span>
-        <span className="text-xs text-muted-foreground">Compliant</span>
+        <span className="text-xs text-muted-foreground">{t('complianceDashboard.status.compliant')}</span>
       </div>
     </div>
   );
 }
 
-function TrendChart({ trend }: { trend: ComplianceTrend[] }) {
+function TrendChart({ trend, t }: { trend: ComplianceTrend[]; t: ScriptsT }) {
   if (trend.length < 2) {
     return (
       <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
-        Not enough data for trend
+        {t('complianceDashboard.trend.notEnoughData')}
       </div>
     );
   }
@@ -212,22 +217,22 @@ function TrendChart({ trend }: { trend: ComplianceTrend[] }) {
         {trendDirection === 'up' && (
           <>
             <TrendingUp className="h-4 w-4 text-green-500" />
-            <span className="text-sm text-green-600">+{(lastPercent - firstPercent).toFixed(1)}%</span>
+            <span className="text-sm text-green-600">+{formatPercent((lastPercent - firstPercent) / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
           </>
         )}
         {trendDirection === 'down' && (
           <>
             <TrendingDown className="h-4 w-4 text-red-500" />
-            <span className="text-sm text-red-600">{(lastPercent - firstPercent).toFixed(1)}%</span>
+            <span className="text-sm text-red-600">{formatPercent((lastPercent - firstPercent) / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>
           </>
         )}
         {trendDirection === 'flat' && (
           <>
             <Minus className="h-4 w-4 text-gray-500" />
-            <span className="text-sm text-muted-foreground">No change</span>
+            <span className="text-sm text-muted-foreground">{t('complianceDashboard.trend.noChange')}</span>
           </>
         )}
-        <span className="text-xs text-muted-foreground">vs last period</span>
+        <span className="text-xs text-muted-foreground">{t('complianceDashboard.trend.vsLastPeriod')}</span>
       </div>
       <svg className="h-24 w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
         <polyline
@@ -266,6 +271,7 @@ export default function ComplianceDashboard({
   onViewPolicy,
   timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 }: ComplianceDashboardProps) {
+  const { t } = useTranslation('scripts');
   const [deviceQuery, setDeviceQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
@@ -297,7 +303,7 @@ export default function ComplianceDashboard({
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-muted-foreground">
             <Shield className="h-5 w-5" />
-            <span className="text-sm font-medium">Overall Compliance</span>
+            <span className="text-sm font-medium">{t('complianceDashboard.overview.overall')}</span>
           </div>
           <p className={cn(
             'mt-2 text-3xl font-bold',
@@ -307,35 +313,38 @@ export default function ComplianceDashboard({
             {compliancePercent}%
           </p>
           <p className="text-sm text-muted-foreground">
-            {overallCompliance.compliant} of {overallCompliance.total} devices
+            {t('complianceDashboard.overview.deviceRatio', {
+              compliant: overallCompliance.compliant,
+              total: overallCompliance.total
+            })}
           </p>
         </div>
 
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-green-600">
             <CheckCircle className="h-5 w-5" />
-            <span className="text-sm font-medium">Compliant</span>
+            <span className="text-sm font-medium">{t('complianceDashboard.status.compliant')}</span>
           </div>
           <p className="mt-2 text-3xl font-bold">{overallCompliance.compliant}</p>
-          <p className="text-sm text-muted-foreground">devices passing all policies</p>
+          <p className="text-sm text-muted-foreground">{t('complianceDashboard.overview.passingAllPolicies')}</p>
         </div>
 
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-red-600">
             <XCircle className="h-5 w-5" />
-            <span className="text-sm font-medium">Non-Compliant</span>
+            <span className="text-sm font-medium">{t('complianceDashboard.status.nonCompliant')}</span>
           </div>
           <p className="mt-2 text-3xl font-bold">{overallCompliance.nonCompliant}</p>
-          <p className="text-sm text-muted-foreground">devices with violations</p>
+          <p className="text-sm text-muted-foreground">{t('complianceDashboard.overview.withViolations')}</p>
         </div>
 
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <div className="flex items-center gap-2 text-muted-foreground">
             <AlertCircle className="h-5 w-5" />
-            <span className="text-sm font-medium">Unknown</span>
+            <span className="text-sm font-medium">{t('complianceDashboard.status.unknown')}</span>
           </div>
           <p className="mt-2 text-3xl font-bold">{overallCompliance.unknown}</p>
-          <p className="text-sm text-muted-foreground">devices pending evaluation</p>
+          <p className="text-sm text-muted-foreground">{t('complianceDashboard.overview.pendingEvaluation')}</p>
         </div>
       </div>
 
@@ -343,21 +352,21 @@ export default function ComplianceDashboard({
       <div className="grid gap-6 md:grid-cols-2">
         {/* Pie Chart */}
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h3 className="text-sm font-semibold mb-4">Compliance by Status</h3>
+          <h3 className="text-sm font-semibold mb-4">{t('complianceDashboard.sections.byStatus')}</h3>
           <div className="flex items-center justify-center gap-8">
-            <CompliancePieChart data={overallCompliance} />
+            <CompliancePieChart data={overallCompliance} t={t} />
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <div className="h-3 w-3 rounded-full bg-green-500" />
-                <span className="text-sm">Compliant ({overallCompliance.compliant})</span>
+                <span className="text-sm">{t('complianceDashboard.legend.compliant', { count: overallCompliance.compliant })}</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="h-3 w-3 rounded-full bg-red-500" />
-                <span className="text-sm">Non-Compliant ({overallCompliance.nonCompliant})</span>
+                <span className="text-sm">{t('complianceDashboard.legend.nonCompliant', { count: overallCompliance.nonCompliant })}</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="h-3 w-3 rounded-full bg-gray-400" />
-                <span className="text-sm">Unknown ({overallCompliance.unknown})</span>
+                <span className="text-sm">{t('complianceDashboard.legend.unknown', { count: overallCompliance.unknown })}</span>
               </div>
             </div>
           </div>
@@ -365,18 +374,18 @@ export default function ComplianceDashboard({
 
         {/* Trend Chart */}
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <h3 className="text-sm font-semibold mb-4">Compliance Trend</h3>
-          <TrendChart trend={trend} />
+          <h3 className="text-sm font-semibold mb-4">{t('complianceDashboard.sections.trend')}</h3>
+          <TrendChart trend={trend} t={t} />
         </div>
       </div>
 
       {/* Policy Breakdown */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h3 className="text-sm font-semibold mb-4">Policy Breakdown</h3>
+        <h3 className="text-sm font-semibold mb-4">{t('complianceDashboard.sections.policyBreakdown')}</h3>
         <div className="space-y-3">
           {policies.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-4">
-              No policies configured
+              {t('complianceDashboard.empty.noPolicies')}
             </p>
           ) : (
             policies.map(policy => {
@@ -395,7 +404,10 @@ export default function ComplianceDashboard({
                     <div>
                       <p className="text-sm font-medium">{policy.policyName}</p>
                       <p className="text-xs text-muted-foreground">
-                        {policy.compliance.compliant} / {policy.compliance.total} compliant
+                        {t('complianceDashboard.policyComplianceRatio', {
+                          compliant: policy.compliance.compliant,
+                          total: policy.compliance.total
+                        })}
                       </p>
                     </div>
                   </div>
@@ -436,12 +448,12 @@ export default function ComplianceDashboard({
       {/* Non-Compliant Devices */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-4">
-          <h3 className="text-sm font-semibold">Non-Compliant Devices</h3>
+          <h3 className="text-sm font-semibold">{t('complianceDashboard.sections.nonCompliantDevices')}</h3>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="search"
-              placeholder="Search devices..."
+              placeholder={t('complianceDashboard.searchDevices')}
               value={deviceQuery}
               onChange={e => {
                 setDeviceQuery(e.target.value);
@@ -457,8 +469,8 @@ export default function ComplianceDashboard({
             <CheckCircle className="mx-auto h-8 w-8 text-green-500" />
             <p className="mt-2 text-sm text-muted-foreground">
               {nonCompliantDevices.length === 0
-                ? 'All devices are compliant!'
-                : 'No matching devices found.'}
+                ? t('complianceDashboard.empty.allCompliant')
+                : t('complianceDashboard.empty.noMatchingDevices')}
             </p>
           </div>
         ) : (
@@ -485,7 +497,7 @@ export default function ComplianceDashboard({
                         statusConfig[device.status].bgColor,
                         statusConfig[device.status].color
                       )}>
-                        {device.violationCount} violation{device.violationCount !== 1 ? 's' : ''}
+                        {t('complianceDashboard.violationCount', { count: device.violationCount })}
                       </span>
                       <button
                         type="button"
@@ -506,7 +518,7 @@ export default function ComplianceDashboard({
                       ))}
                       {device.violations.length > 3 && (
                         <p className="text-xs text-primary">
-                          +{device.violations.length - 3} more violations
+                          {t('complianceDashboard.moreViolations', { count: device.violations.length - 3 })}
                         </p>
                       )}
                     </div>
@@ -514,7 +526,7 @@ export default function ComplianceDashboard({
                   <div className="mt-2 pl-8">
                     <p className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Calendar className="h-3 w-3" />
-                      Last checked: {formatDate(device.lastCheckedAt, timezone)}
+                      {t('complianceDashboard.lastChecked', { date: formatDate(device.lastCheckedAt, timezone, t) })}
                     </p>
                   </div>
                 </div>
@@ -524,8 +536,11 @@ export default function ComplianceDashboard({
             {totalPages > 1 && (
               <div className="mt-4 flex items-center justify-between">
                 <p className="text-sm text-muted-foreground">
-                  Showing {startIndex + 1} to {Math.min(startIndex + pageSize, filteredDevices.length)} of{' '}
-                  {filteredDevices.length}
+                  {t('complianceDashboard.pagination.showing', {
+                    start: startIndex + 1,
+                    end: Math.min(startIndex + pageSize, filteredDevices.length),
+                    total: filteredDevices.length
+                  })}
                 </p>
                 <div className="flex items-center gap-2">
                   <button
@@ -537,7 +552,7 @@ export default function ComplianceDashboard({
                     <ChevronLeftIcon className="h-4 w-4" />
                   </button>
                   <span className="text-sm">
-                    Page {currentPage} of {totalPages}
+                    {t('complianceDashboard.pagination.page', { page: currentPage, total: totalPages })}
                   </span>
                   <button
                     type="button"

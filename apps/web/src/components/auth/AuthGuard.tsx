@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import { navigateTo } from '../../lib/navigation';
@@ -8,6 +9,7 @@ interface AuthGuardProps {
 }
 
 export default function AuthGuard({ children }: AuthGuardProps) {
+  const { t } = useTranslation('auth');
   const { isAuthenticated, isLoading, tokens } = useAuthStore();
   const [isChecking, setIsChecking] = useState(true);
   const [isRecovering, setIsRecovering] = useState(false);
@@ -78,7 +80,7 @@ export default function AuthGuard({ children }: AuthGuardProps) {
       <div className="flex h-screen items-center justify-center">
         <div className="text-center">
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('common.loading', { defaultValue: 'Loading...' })}</p>
         </div>
       </div>
     );
@@ -89,7 +91,7 @@ export default function AuthGuard({ children }: AuthGuardProps) {
     <div className="flex h-screen items-center justify-center">
       <div className="text-center">
         <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
-        <p className="mt-4 text-sm text-muted-foreground">Redirecting to login...</p>
+        <p className="mt-4 text-sm text-muted-foreground">{t('common.redirectingToLogin', { defaultValue: 'Redirecting to login...' })}</p>
       </div>
     </div>
   );

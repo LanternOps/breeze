@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
 import { Inbox } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -34,6 +36,7 @@ const STATUS_OPTIONS: Array<ElevationStatus | ''> = [
 const FLOW_OPTIONS: Array<ElevationFlowType | ''> = ['', 'uac_intercept', 'tech_jit_admin', 'ai_tool_action'];
 
 export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
+  const { t } = useTranslation('security');
   const [requests, setRequests] = useState<ElevationRequest[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 50, total: 0 });
   const [status, setStatus] = useState<ElevationStatus | ''>('pending');
@@ -61,19 +64,28 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
             void navigateTo('/login', { replace: true });
             return;
           }
-          throw new Error(`Failed to load requests (HTTP ${res.status})`);
+          throw new Error(
+            t('pamPamRequestsTab.errors.loadWithStatus', {
+              defaultValue: 'Failed to load requests (HTTP {{status}})',
+              status: res.status,
+            }),
+          );
         }
         const body = await res.json();
         setRequests((body.requests ?? []) as ElevationRequest[]);
         setPagination((body.pagination ?? { page: 1, limit: 50, total: 0 }) as Pagination);
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
-        setError(err instanceof Error ? err.message : 'Failed to load requests');
+        setError(
+          err instanceof Error
+            ? err.message
+            : t('pamPamRequestsTab.errors.load', { defaultValue: 'Failed to load requests' }),
+        );
       } finally {
         if (!signal?.aborted) setLoading(false);
       }
     },
-    [status, flowType, page],
+    [status, flowType, page, t],
   );
 
   useEffect(() => {
@@ -88,7 +100,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{t('pamPamRequestsTab.filters.status', { defaultValue: 'Status' })}</span>
           <select
             value={status}
             onChange={(e) => {
@@ -100,13 +112,13 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
           >
             {STATUS_OPTIONS.map((s) => (
               <option key={s || 'all'} value={s}>
-                {s ? STATUS_LABELS[s] : 'All statuses'}
+                {s ? STATUS_LABELS[s] : t('pamPamRequestsTab.filters.allStatuses', { defaultValue: 'All statuses' })}
               </option>
             ))}
           </select>
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Flow</span>
+          <span className="text-muted-foreground">{t('pamPamRequestsTab.filters.flow', { defaultValue: 'Flow' })}</span>
           <select
             value={flowType}
             onChange={(e) => {
@@ -118,13 +130,17 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
           >
             {FLOW_OPTIONS.map((f) => (
               <option key={f || 'all'} value={f}>
-                {f ? FLOW_LABELS[f] : 'All flows'}
+                {f ? FLOW_LABELS[f] : t('pamPamRequestsTab.filters.allFlows', { defaultValue: 'All flows' })}
               </option>
             ))}
           </select>
         </label>
         <span className="ml-auto text-xs text-muted-foreground">
-          {pagination.total} request{pagination.total === 1 ? '' : 's'}
+          {t('pamPamRequestsTab.summary.requestCount', {
+            defaultValue: '{{count}} request',
+            defaultValue_plural: '{{count}} requests',
+            count: pagination.total,
+          })}
         </span>
       </div>
 
@@ -140,21 +156,32 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
       {loading ? (
         <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
           <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          Loading requests…
+          {t('pamPamRequestsTab.loading', { defaultValue: 'Loading requests…' })}
         </div>
       ) : requests.length === 0 ? (
         <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
           <Inbox className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-2 text-sm font-medium">No elevation requests</p>
+          <p className="mt-2 text-sm font-medium">
+            {t('pamPamRequestsTab.empty.title', { defaultValue: 'No elevation requests' })}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">
             {status === 'pending'
-              ? 'Nothing waiting on you. New UAC prompts, JIT admin requests, and AI tool actions queue here.'
-              : 'Requests matching the current filters will appear here.'}
+              ? t('pamPamRequestsTab.empty.pendingDescription', {
+                  defaultValue:
+                    'Nothing waiting on you. New UAC prompts, JIT admin requests, and AI tool actions queue here.',
+                })
+              : t('pamPamRequestsTab.empty.filteredDescription', {
+                  defaultValue: 'Requests matching the current filters will appear here.',
+                })}
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            Not seeing expected requests? UAC capture is controlled per device by{' '}
+            {t('pamPamRequestsTab.empty.policyPrefix', {
+              defaultValue: 'Not seeing expected requests? UAC capture is controlled per device by',
+            })}{' '}
             <a href="/configuration-policies" className="underline underline-offset-2 hover:text-foreground">
-              Configuration Policies → Privileged Access
+              {t('pamPamRequestsTab.empty.policyLink', {
+                defaultValue: 'Configuration Policies → Privileged Access',
+              })}
             </a>.
           </p>
         </div>
@@ -163,12 +190,12 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b text-left text-xs text-muted-foreground">
-                <th className="px-3 py-2 font-medium">Requested</th>
-                <th className="px-3 py-2 font-medium">Device</th>
-                <th className="px-3 py-2 font-medium">User</th>
-                <th className="px-3 py-2 font-medium">Target</th>
-                <th className="px-3 py-2 font-medium">Flow</th>
-                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.requested', { defaultValue: 'Requested' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.device', { defaultValue: 'Device' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.user', { defaultValue: 'User' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.target', { defaultValue: 'Target' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.flow', { defaultValue: 'Flow' })}</th>
+                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.status', { defaultValue: 'Status' })}</th>
                 <th className="px-3 py-2 font-medium" />
               </tr>
             </thead>
@@ -196,7 +223,10 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                         {r.flowType === 'ai_tool_action' && r.riskTier != null && (
                           <span
                             data-testid={`pam-risk-tier-${r.id}`}
-                            title={`Risk tier ${r.riskTier}`}
+                            title={t('pamPamRequestsTab.table.riskTierTitle', {
+                              defaultValue: 'Risk tier {{tier}}',
+                              tier: r.riskTier,
+                            })}
                             className={`inline-flex shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold ${
                               r.riskTier >= 3
                                 ? 'bg-red-500/15 text-red-600 dark:text-red-400'
@@ -214,7 +244,10 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                       )}
                       {r.targetExecutableSigner && (
                         <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                          Signer: {r.targetExecutableSigner}
+                          {t('pamPamRequestsTab.table.signer', {
+                            defaultValue: 'Signer: {{signer}}',
+                            signer: r.targetExecutableSigner,
+                          })}
                         </div>
                       )}
                     </td>
@@ -258,7 +291,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                           data-testid={`pam-respond-btn-${r.id}`}
                           className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
                         >
-                          Respond
+                          {t('pamPamRequestsTab.actions.respond', { defaultValue: 'Respond' })}
                         </button>
                       )}
                       {canRevoke && (
@@ -268,17 +301,19 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                           data-testid={`pam-revoke-btn-${r.id}`}
                           className="rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
                         >
-                          Revoke
+                          {t('pamPamRequestsTab.actions.revoke', { defaultValue: 'Revoke' })}
                         </button>
                       )}
                       <button
                         type="button"
                         onClick={() => setRuleDraft(r)}
                         data-testid={`pam-create-rule-btn-${r.id}`}
-                        title="Create a PAM rule pre-filled from this request"
+                        title={t('pamPamRequestsTab.actions.ruleTitle', {
+                          defaultValue: 'Create a PAM rule pre-filled from this request',
+                        })}
                         className="ml-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
                       >
-                        Rule…
+                        {t('pamPamRequestsTab.actions.rule', { defaultValue: 'Rule…' })}
                       </button>
                     </td>
                   </tr>
@@ -297,10 +332,14 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
             onClick={() => setPage((p) => p - 1)}
             className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50"
           >
-            Previous
+            {t('pamPamRequestsTab.pagination.previous', { defaultValue: 'Previous' })}
           </button>
           <span className="text-xs text-muted-foreground">
-            Page {pagination.page} of {totalPages}
+            {t('pamPamRequestsTab.pagination.pageOf', {
+              defaultValue: 'Page {{page}} of {{totalPages}}',
+              page: pagination.page,
+              totalPages,
+            })}
           </span>
           <button
             type="button"
@@ -308,7 +347,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
             onClick={() => setPage((p) => p + 1)}
             className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50"
           >
-            Next
+            {t('common:actions.next', { defaultValue: 'Next' })}
           </button>
         </div>
       )}

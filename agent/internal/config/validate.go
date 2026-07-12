@@ -91,6 +91,17 @@ func (c *Config) ValidateTiered() ValidationResult {
 		}
 	}
 
+	if err := ValidateBackupServerURL(c.BackupServerURL); err != nil {
+		result.Fatals = append(result.Fatals, err)
+	}
+	// Self-heal a backup equal to the primary (a torn promote persist could
+	// leave this on disk, #2288): it is useless as a failover target and the
+	// server-side push ignores equal values, so nothing else would repair it.
+	if c.BackupServerURL != "" && c.BackupServerURL == c.ServerURL {
+		result.Warnings = append(result.Warnings, fmt.Errorf("backup_server_url equals server_url; clearing useless backup"))
+		c.BackupServerURL = ""
+	}
+
 	if c.AuthToken != "" {
 		for _, r := range c.AuthToken {
 			if unicode.IsControl(r) {
@@ -234,4 +245,28 @@ func (c *Config) ValidateTiered() ValidationResult {
 	c.PolicyConfigStateProbes = configProbes
 
 	return result
+}
+
+// ValidateBackupServerURL enforces the backup control-plane URL contract:
+// https only, http permitted for loopback hosts, "" means unset (valid).
+func ValidateBackupServerURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("backup_server_url %q is not a valid URL", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			return nil
+		}
+		return fmt.Errorf("backup_server_url must use https (http allowed only for localhost)")
+	default:
+		return fmt.Errorf("backup_server_url scheme must be http or https, got %q", u.Scheme)
+	}
 }

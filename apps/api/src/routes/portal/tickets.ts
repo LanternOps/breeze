@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
-import { db } from '../../db';
-import { tickets, ticketComments, ticketStatuses } from '../../db/schema';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { tickets, ticketComments, ticketStatuses, organizations } from '../../db/schema';
 import {
   listSchema,
   createTicketSchema,
@@ -19,9 +19,57 @@ import {
   writePortalAudit,
 } from './helpers';
 import { createTicket, TicketServiceError, portalCommentMutable, editTicketComment, deleteTicketComment } from '../../services/ticketService';
+import { listTicketFormsForOrg } from '../../services/ticketFormService';
 import { editCommentSchema } from '@breeze/shared';
 
 export const ticketRoutes = new Hono();
+
+// GET /tickets/forms — MUST live under the `/tickets/` prefix: portal auth is
+// applied per-prefix in routes/portal/index.ts (`use('/tickets/*', ...)`), so
+// a sibling path like `/ticket-forms` would ship with NO auth at all (the
+// prefix matcher does not cover it). MOUNT ORDER: this literal route is
+// registered BEFORE `GET /tickets/:id` below — Hono matches in registration
+// order, so registering it later would let the :id matcher swallow `forms`
+// (and 400 on the guid param). Same mount-order convention as Phase 1's
+// staff ticket router.
+// Portal runs under an org-scoped RLS context where partner-wide
+// ticket_forms rows are invisible (#1105 pattern), so the org's partnerId is
+// resolved under a system context first — mirrors routes/portal/quotes.ts:70
+// exactly. Slim payload only: no titleTemplate (the server composes
+// subjects, never the portal client).
+ticketRoutes.get('/tickets/forms', async (c) => {
+  const auth = c.get('portalAuth');
+
+  const [org] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, auth.user.orgId))
+        .limit(1)
+    )
+  );
+  if (!org) {
+    // Should never happen: portalAuth already resolved this org for the
+    // session, so a miss here means the org row vanished mid-request (or a
+    // deeper data-integrity bug). Degrade to an empty form list rather than
+    // 500ing the New Ticket page, but leave a breadcrumb — this is not a
+    // normal "no forms configured" case.
+    console.error('[portal] ticket-forms: session org not found', { orgId: auth.user.orgId });
+    return c.json({ data: [] });
+  }
+
+  const forms = await listTicketFormsForOrg({ id: auth.user.orgId, partnerId: org.partnerId }, { portalOnly: true });
+  const data = forms.map((f) => ({
+    id: f.id,
+    name: f.name,
+    description: f.description,
+    categoryId: f.categoryId,
+    fields: f.fields,
+    defaultPriority: f.defaultPriority,
+  }));
+  return c.json({ data });
+});
 
 ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
   const auth = c.get('portalAuth');
@@ -102,6 +150,8 @@ ticketRoutes.post('/tickets', zValidator('json', createTicketSchema), async (c) 
         subject: payload.subject,
         description: payload.description,
         priority: payload.priority,
+        formId: payload.formId,
+        formResponses: payload.formResponses,
         source: 'portal',
         submittedBy: auth.user.id,
         submitterEmail: auth.user.email,

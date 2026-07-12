@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -68,6 +70,7 @@ const EMPTY_PRIORITIES: PrioritiesState = Object.fromEntries(
 ) as PrioritiesState;
 
 export default function TicketPrioritiesTab() {
+  const { t } = useTranslation('settings');
   const [priorities, setPriorities] = useState<PrioritiesState>(EMPTY_PRIORITIES);
   const [draft, setDraft] = useState<DraftState>(buildDraft(EMPTY_PRIORITIES));
   const [loading, setLoading] = useState(true);
@@ -108,8 +111,8 @@ export default function TicketPrioritiesTab() {
             method: 'PUT',
             body: JSON.stringify({ priorities: buildPayload(draft) }),
           }),
-        errorFallback: "Couldn't save priorities and SLAs. Retry.",
-        successMessage: 'Priorities and SLAs saved',
+        errorFallback: t('ticketPrioritiesTab.couldnTSavePrioritiesAndSLAsRetry'),
+        successMessage: t('ticketPrioritiesTab.prioritiesAndSLAsSaved'),
         onUnauthorized: UNAUTHORIZED,
       });
       invalidateTicketConfig();
@@ -123,38 +126,35 @@ export default function TicketPrioritiesTab() {
   return (
     <div className="max-w-3xl" data-testid="ticket-priorities-tab">
       <div>
-        <h2 className="text-lg font-semibold">Priorities &amp; SLAs</h2>
+        <h2 className="text-lg font-semibold">{t('ticketPrioritiesTab.prioritiesAmpSLAs')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Rename ticket priorities and set the default response and resolution SLAs. These apply to new tickets across every organization you manage.
-        </p>
+          {t('ticketPrioritiesTab.renameTicketPrioritiesAndSetTheDefaultResponseAndResolut')}</p>
       </div>
 
       <div className="mt-6">
         {loading ? (
           <p className="text-center text-sm text-muted-foreground" data-testid="ticket-priorities-loading">
-            Loading.
-          </p>
+            {t('ticketPrioritiesTab.loading')}</p>
         ) : error ? (
           <p className="text-center text-sm text-muted-foreground" data-testid="ticket-priorities-error">
-            Priority settings failed to load.{' '}
+            {t('ticketPrioritiesTab.prioritySettingsFailedToLoad')}{' '}
             <button
               type="button"
               onClick={() => void load()}
               className="underline hover:text-foreground"
               data-testid="ticket-priorities-retry"
             >
-              Retry
-            </button>
+              {t('ticketPrioritiesTab.retry')}</button>
           </p>
         ) : (
           <>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b">
-                  <th className="pb-2 text-left text-xs font-semibold text-muted-foreground">Priority</th>
-                  <th className="pb-2 text-left text-xs font-semibold text-muted-foreground">Label</th>
-                  <th className="pb-2 text-left text-xs font-semibold text-muted-foreground">Response (min)</th>
-                  <th className="pb-2 text-left text-xs font-semibold text-muted-foreground">Resolution (min)</th>
+                  <th className="pb-2 text-left text-xs font-semibold text-muted-foreground">{t('ticketPrioritiesTab.priority')}</th>
+                  <th className="pb-2 text-left text-xs font-semibold text-muted-foreground">{t('ticketPrioritiesTab.label')}</th>
+                  <th className="pb-2 text-left text-xs font-semibold text-muted-foreground">{t('ticketPrioritiesTab.responseMin')}</th>
+                  <th className="pb-2 text-left text-xs font-semibold text-muted-foreground">{t('ticketPrioritiesTab.resolutionMin')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -200,8 +200,7 @@ export default function TicketPrioritiesTab() {
             </table>
 
             <p className="mt-3 text-xs text-muted-foreground">
-              These are your partner-wide SLA defaults. Each ticket uses the most specific SLA that applies — a per-ticket override, then its category, then an organization override — and falls back to these defaults otherwise. Leave a field blank to use the built-in default (Urgent and High only).
-            </p>
+              {t('ticketPrioritiesTab.theseAreYourPartnerWideSLADefaultsEachTicketUsesTheMostS')}</p>
 
             <div className="mt-4">
               <button
@@ -211,7 +210,7 @@ export default function TicketPrioritiesTab() {
                 className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                 data-testid="priorities-save"
               >
-                {saving ? 'Saving…' : 'Save'}
+                {saving ? t('ticketPrioritiesTab.saving') : t('ticketPrioritiesTab.save')}
               </button>
             </div>
           </>

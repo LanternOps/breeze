@@ -21,6 +21,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 // Platform type
 export type Platform = 'windows' | 'macos' | 'linux';
@@ -166,7 +168,7 @@ function formatDateTime(dateString?: string): string {
   });
 }
 
-function formatRelativeTime(dateString: string): string {
+function formatRelativeTime(dateString: string, translate: (key: string, options?: Record<string, unknown>) => string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
 
@@ -176,10 +178,10 @@ function formatRelativeTime(dateString: string): string {
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return diffMins + 'm ago';
-  if (diffHours < 24) return diffHours + 'h ago';
-  if (diffDays < 7) return diffDays + 'd ago';
+  if (diffMins < 1) return translate('eventViewer.time.justNow');
+  if (diffMins < 60) return translate('eventViewer.time.minutesAgo', { count: diffMins });
+  if (diffHours < 24) return translate('eventViewer.time.hoursAgo', { count: diffHours });
+  if (diffDays < 7) return translate('eventViewer.time.daysAgo', { count: diffDays });
   return date.toLocaleDateString();
 }
 
@@ -222,6 +224,7 @@ export default function EventViewer({
   onQueryEvents,
   onGetEvent
 }: EventViewerProps) {
+  const { t } = useTranslation('remote');
   const isMacOS = platform === 'macos';
   const defaultLogs = isMacOS ? defaultMacOSLogs : defaultWindowsLogs;
   const logs = propLogs || defaultLogs;
@@ -417,7 +420,7 @@ export default function EventViewer({
       <div className="w-1/5 min-w-[200px] border-r bg-muted/30 flex flex-col">
         <div className="p-4 border-b">
           <h3 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground">
-            {isMacOS ? 'Categories' : 'Event Logs'}
+            {isMacOS ? t('eventViewer.categories') : t('eventViewer.eventLogs')}
           </h3>
           {deviceName && (
             <p className="text-xs text-muted-foreground mt-1 truncate" title={deviceName}>
@@ -443,7 +446,7 @@ export default function EventViewer({
                 <p className="text-sm font-medium truncate">{log.displayName}</p>
                 {log.recordCount !== undefined && (
                   <p className="text-xs text-muted-foreground">
-                    {log.recordCount.toLocaleString()} events
+                    {t('eventViewer.eventCount', { count: log.recordCount })}
                   </p>
                 )}
               </div>
@@ -458,9 +461,9 @@ export default function EventViewer({
         <div className="p-4 border-b bg-muted/20">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold">{isMacOS ? selectedLog.charAt(0).toUpperCase() + selectedLog.slice(1) + ' Events' : selectedLog + ' Log'}</h2>
+              <h2 className="text-lg font-semibold">{isMacOS ? t('eventViewer.eventsTitle', { name: selectedLog.charAt(0).toUpperCase() + selectedLog.slice(1) }) : t('eventViewer.logTitle', { name: selectedLog })}</h2>
               <span className="text-sm text-muted-foreground">
-                ({filteredEvents.length} events)
+                ({t('eventViewer.eventCount', { count: filteredEvents.length })})
               </span>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -469,7 +472,7 @@ export default function EventViewer({
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <input
                   type="search"
-                  placeholder="Search events..."
+                  placeholder={t('eventViewer.searchPlaceholder')}
                   value={query}
                   onChange={(e) => {
                     setQuery(e.target.value);
@@ -491,7 +494,7 @@ export default function EventViewer({
                 )}
               >
                 <Filter className="h-4 w-4" />
-                Filters
+                {t('eventViewer.filters')}
                 {hasActiveFilters && (
                   <span className="ml-1 px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-xs">
                     {(levelFilters.size > 0 ? 1 : 0) + 
@@ -510,7 +513,7 @@ export default function EventViewer({
                 className="flex items-center gap-2 h-9 px-3 rounded-md border hover:bg-muted text-sm font-medium disabled:opacity-50"
               >
                 <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-                Refresh
+                {t('common:actions.refresh')}
               </button>
 
               {/* Auto-refresh */}
@@ -526,7 +529,7 @@ export default function EventViewer({
                   )}
                 >
                   <Clock className="h-4 w-4" />
-                  {autoRefresh ? refreshInterval + 's' : 'Auto'}
+                  {autoRefresh ? refreshInterval + 's' : t('eventViewer.auto')}
                 </button>
               </div>
 
@@ -537,7 +540,7 @@ export default function EventViewer({
                 className="flex items-center gap-2 h-9 px-3 rounded-md border hover:bg-muted text-sm font-medium"
               >
                 <Download className="h-4 w-4" />
-                Export
+                {t('common:actions.export')}
               </button>
             </div>
           </div>
@@ -548,7 +551,7 @@ export default function EventViewer({
               <div className="flex flex-wrap items-center gap-4">
                 {/* Level filters */}
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-2 block">Level</label>
+                  <label className="text-xs font-medium text-muted-foreground mb-2 block">{t('eventViewer.fields.level')}</label>
                   <div className="flex items-center gap-1">
                     {(Object.keys(levelConfig) as EventLevel[]).map((level) => {
                       const config = levelConfig[level];
@@ -567,7 +570,7 @@ export default function EventViewer({
                           )}
                         >
                           <Icon className={cn('h-3.5 w-3.5', isActive ? config.color : 'text-muted-foreground')} />
-                          {level}
+                          {t(/* i18n-dynamic */ `eventViewer.levels.${level.toLowerCase()}`)}
                         </button>
                       );
                     })}
@@ -576,7 +579,7 @@ export default function EventViewer({
 
                 {/* Source filter */}
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-2 block">Source</label>
+                  <label className="text-xs font-medium text-muted-foreground mb-2 block">{t('eventViewer.fields.source')}</label>
                   <select
                     value={sourceFilter}
                     onChange={(e) => {
@@ -585,7 +588,7 @@ export default function EventViewer({
                     }}
                     className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
-                    <option value="">All Sources</option>
+                    <option value="">{t('eventViewer.allSources')}</option>
                     {availableSources.map((source) => (
                       <option key={source} value={source}>{source}</option>
                     ))}
@@ -594,10 +597,10 @@ export default function EventViewer({
 
                 {/* Event ID filter */}
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-2 block">Event ID</label>
+                  <label className="text-xs font-medium text-muted-foreground mb-2 block">{t('eventViewer.fields.eventId')}</label>
                   <input
                     type="text"
-                    placeholder="e.g., 7036"
+                    placeholder={t('eventViewer.eventIdPlaceholder')}
                     value={eventIdFilter}
                     onChange={(e) => {
                       setEventIdFilter(e.target.value);
@@ -609,7 +612,7 @@ export default function EventViewer({
 
                 {/* Date range filter */}
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground mb-2 block">Date Range</label>
+                  <label className="text-xs font-medium text-muted-foreground mb-2 block">{t('eventViewer.dateRange')}</label>
                   <select
                     value={dateRangeFilter}
                     onChange={(e) => {
@@ -618,11 +621,11 @@ export default function EventViewer({
                     }}
                     className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   >
-                    <option value="all">All Time</option>
-                    <option value="1h">Last Hour</option>
-                    <option value="24h">Last 24 Hours</option>
-                    <option value="7d">Last 7 Days</option>
-                    <option value="30d">Last 30 Days</option>
+                    <option value="all">{t('eventViewer.ranges.allTime')}</option>
+                    <option value="1h">{t('eventViewer.ranges.lastHour')}</option>
+                    <option value="24h">{t('eventViewer.ranges.last24Hours')}</option>
+                    <option value="7d">{t('eventViewer.ranges.last7Days')}</option>
+                    <option value="30d">{t('eventViewer.ranges.last30Days')}</option>
                   </select>
                 </div>
 
@@ -634,7 +637,7 @@ export default function EventViewer({
                     className="flex items-center gap-1 h-8 px-2 text-sm text-muted-foreground hover:text-foreground self-end"
                   >
                     <X className="h-4 w-4" />
-                    Clear all
+                    {t('eventViewer.clearAll')}
                   </button>
                 )}
               </div>
@@ -652,11 +655,11 @@ export default function EventViewer({
             <table className="min-w-full divide-y">
               <thead className="bg-muted/40 sticky top-0">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3 w-24">Level</th>
-                  <th className="px-4 py-3 w-44">Date/Time</th>
-                  <th className="px-4 py-3 w-48">Source</th>
-                  <th className="px-4 py-3 w-20">{isMacOS ? 'ID' : 'Event ID'}</th>
-                  <th className="px-4 py-3">Message</th>
+                  <th className="px-4 py-3 w-24">{t('eventViewer.fields.level')}</th>
+                  <th className="px-4 py-3 w-44">{t('eventViewer.fields.dateTime')}</th>
+                  <th className="px-4 py-3 w-48">{t('eventViewer.fields.source')}</th>
+                  <th className="px-4 py-3 w-20">{isMacOS ? 'ID' : t('eventViewer.fields.eventId')}</th>
+                  <th className="px-4 py-3">{t('eventViewer.fields.message')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -672,7 +675,7 @@ export default function EventViewer({
                           className="mt-2 flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm hover:bg-muted"
                         >
                           <RefreshCw className="h-4 w-4" />
-                          Retry
+                          {t('common:actions.retry')}
                         </button>
                       </div>
                     </td>
@@ -681,10 +684,10 @@ export default function EventViewer({
                   <tr>
                     <td colSpan={5} className="px-4 py-12 text-center text-sm text-muted-foreground">
                       {!onQueryEvents
-                        ? 'No event logs available. Connect a query handler to fetch events from this device.'
+                        ? t('eventViewer.noHandler')
                         : hasActiveFilters
-                          ? 'No events found. Try adjusting your filters.'
-                          : 'No event logs available.'}
+                          ? t('eventViewer.noMatches')
+                          : t('eventViewer.noEvents')}
                     </td>
                   </tr>
                 ) : (
@@ -708,14 +711,14 @@ export default function EventViewer({
                             config.color
                           )}>
                             <Icon className="h-3.5 w-3.5" />
-                            {normalized}
+                            {t(/* i18n-dynamic */ `eventViewer.levels.${normalized.toLowerCase()}`)}
                           </div>
                         </td>
                         <td className="px-4 py-3 text-sm">
                           <div className="flex flex-col">
                             <span>{formatDateTime(event.timeCreated)}</span>
                             <span className="text-xs text-muted-foreground">
-                              {formatRelativeTime(event.timeCreated)}
+                              {formatRelativeTime(event.timeCreated, (key, options) => t(/* i18n-dynamic */ key, options))}
                             </span>
                           </div>
                         </td>
@@ -741,7 +744,7 @@ export default function EventViewer({
         {totalPages > 1 && (
           <div className="p-4 border-t flex items-center justify-between bg-muted/20">
             <p className="text-sm text-muted-foreground">
-              Showing {startIndex + 1} to {Math.min(startIndex + pageSize, filteredEvents.length)} of {filteredEvents.length}
+              {t('eventViewer.showing', { start: startIndex + 1, end: Math.min(startIndex + pageSize, filteredEvents.length), total: filteredEvents.length })}
             </p>
             <div className="flex items-center gap-2">
               <button
@@ -753,7 +756,7 @@ export default function EventViewer({
                 <ChevronLeft className="h-4 w-4" />
               </button>
               <span className="text-sm">
-                Page {currentPage} of {totalPages}
+                {t('eventViewer.page', { current: currentPage, total: totalPages })}
               </span>
               <button
                 type="button"
@@ -794,8 +797,8 @@ export default function EventViewer({
                   );
                 })()}
                 <div>
-                  <h3 className="text-sm font-semibold">Event Details</h3>
-                  <p className="text-sm text-muted-foreground">Record ID: {selectedEvent.recordId}</p>
+                  <h3 className="text-sm font-semibold">{t('eventViewer.detailsTitle')}</h3>
+                  <p className="text-sm text-muted-foreground">{t('eventViewer.recordId', { id: selectedEvent.recordId })}</p>
                 </div>
               </div>
               <button
@@ -813,7 +816,7 @@ export default function EventViewer({
                 {/* Summary */}
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Level</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.level')}</label>
                     {(() => {
                       const normalized = normalizeLevel(selectedEvent.level);
                       const cfg = levelConfig[normalized];
@@ -825,21 +828,21 @@ export default function EventViewer({
                           cfg.color
                         )}>
                           <LevelIcon className="h-4 w-4" />
-                          {normalized}
+                          {t(/* i18n-dynamic */ `eventViewer.levels.${normalized.toLowerCase()}`)}
                         </div>
                       );
                     })()}
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Event ID</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.eventId')}</label>
                     <p className="mt-1 text-sm font-mono">{selectedEvent.eventId}</p>
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Date/Time</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.dateTime')}</label>
                     <p className="mt-1 text-sm">{formatDateTime(selectedEvent.timeCreated)}</p>
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">{isMacOS ? 'Category' : 'Log Name'}</label>
+                    <label className="text-xs font-medium text-muted-foreground">{isMacOS ? t('eventViewer.fields.category') : t('eventViewer.fields.logName')}</label>
                     <p className="mt-1 text-sm">{isMacOS ? selectedEvent.category || selectedEvent.logName : selectedEvent.logName}</p>
                   </div>
                 </div>
@@ -848,14 +851,14 @@ export default function EventViewer({
 
                 {/* Source */}
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Source</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.source')}</label>
                   <p className="mt-1 text-sm">{selectedEvent.source}</p>
                 </div>
 
                 {/* Task Category */}
                 {selectedEvent.taskCategory && (
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Task Category</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.taskCategory')}</label>
                     <p className="mt-1 text-sm">{selectedEvent.taskCategory}</p>
                   </div>
                 )}
@@ -863,7 +866,7 @@ export default function EventViewer({
                 {/* Computer */}
                 {selectedEvent.computerName && (
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Computer</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.computer')}</label>
                     <p className="mt-1 text-sm">{selectedEvent.computerName}</p>
                   </div>
                 )}
@@ -873,13 +876,13 @@ export default function EventViewer({
                   <div className="grid grid-cols-2 gap-4">
                     {selectedEvent.processId && (
                       <div>
-                        <label className="text-xs font-medium text-muted-foreground">Process ID</label>
+                        <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.processId')}</label>
                         <p className="mt-1 text-sm font-mono">{selectedEvent.processId}</p>
                       </div>
                     )}
                     {selectedEvent.threadId && (
                       <div>
-                        <label className="text-xs font-medium text-muted-foreground">Thread ID</label>
+                        <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.threadId')}</label>
                         <p className="mt-1 text-sm font-mono">{selectedEvent.threadId}</p>
                       </div>
                     )}
@@ -889,7 +892,7 @@ export default function EventViewer({
                 {/* User */}
                 {selectedEvent.userId && (
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">User</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('common:labels.user')}</label>
                     <p className="mt-1 text-sm font-mono">{selectedEvent.userId}</p>
                   </div>
                 )}
@@ -898,7 +901,7 @@ export default function EventViewer({
 
                 {/* Message */}
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Message</label>
+                  <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.message')}</label>
                   <div className="mt-2 p-3 rounded-md bg-muted/50 border">
                     <p className="text-sm whitespace-pre-wrap wrap-break-word">{selectedEvent.message}</p>
                   </div>
@@ -907,7 +910,7 @@ export default function EventViewer({
                 {/* Keywords */}
                 {selectedEvent.keywords && selectedEvent.keywords.length > 0 && (
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Keywords</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.keywords')}</label>
                     <div className="mt-2 flex flex-wrap gap-1">
                       {selectedEvent.keywords.map((keyword, index) => (
                         <span
@@ -924,7 +927,7 @@ export default function EventViewer({
                 {/* Raw XML (Windows) */}
                 {selectedEvent.rawXml && (
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Raw XML</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.rawXml')}</label>
                     <pre className="mt-2 p-3 rounded-md bg-muted/50 border text-xs overflow-x-auto">
                       {selectedEvent.rawXml}
                     </pre>
@@ -934,7 +937,7 @@ export default function EventViewer({
                 {/* Details JSON (macOS) */}
                 {selectedEvent.details && Object.keys(selectedEvent.details).length > 0 && (
                   <div>
-                    <label className="text-xs font-medium text-muted-foreground">Details</label>
+                    <label className="text-xs font-medium text-muted-foreground">{t('eventViewer.fields.details')}</label>
                     <pre className="mt-2 p-3 rounded-md bg-muted/50 border text-xs overflow-x-auto">
                       {JSON.stringify(selectedEvent.details, null, 2)}
                     </pre>
@@ -953,7 +956,7 @@ export default function EventViewer({
                   className="flex items-center gap-2 px-3 py-2 rounded-md border hover:bg-muted text-sm"
                 >
                   <ExternalLink className="h-4 w-4" />
-                  Look up Event ID
+                  {t('eventViewer.lookupEventId')}
                 </a>
               )}
               <button
@@ -963,7 +966,7 @@ export default function EventViewer({
                 }}
                 className="flex items-center gap-2 px-3 py-2 rounded-md border hover:bg-muted text-sm"
               >
-                Copy Message
+                {t('eventViewer.copyMessage')}
               </button>
             </div>
           </div>

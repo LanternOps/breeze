@@ -16,8 +16,10 @@ import {
 } from 'lucide-react';
 import { cn, widthPercentClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { formatPercent } from '@/lib/i18n/format';
 import AccessDenied from '../shared/AccessDenied';
 import { formatTime } from '@/lib/dateTimeFormat';
+import { useTranslation } from 'react-i18next';
 
 type DeviceStatusData = {
   total: number;
@@ -77,6 +79,7 @@ export default function DashboardWidgets({
   refreshInterval = 60,
   timezone
 }: DashboardWidgetsProps) {
+  const { t } = useTranslation('reports');
   const effectiveTimezone = timezone || getBrowserTimezone();
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatusData | null>(null);
   const [alertCounts, setAlertCounts] = useState<AlertCountsData | null>(null);
@@ -219,11 +222,11 @@ export default function DashboardWidgets({
       if (sawForbidden) setForbidden(true);
       setLastUpdated(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
+      setError(err instanceof Error ? err.message : t('reports.dashboardWidgets.errors.loadDashboardData'));
     } finally {
       setLoading(false);
     }
-  }, [showDeviceStatus, showAlertCounts, showCompliance, showResources]);
+  }, [showDeviceStatus, showAlertCounts, showCompliance, showResources, t]);
 
   useEffect(() => {
     fetchData();
@@ -256,7 +259,7 @@ export default function DashboardWidgets({
   // A 403 is a permission denial, not a transient load failure — render the
   // access-denied state (no misleading retry) instead of a generic error card.
   if (forbidden) {
-    return <AccessDenied message="You don't have permission to view this dashboard data." />;
+    return <AccessDenied message={t('reports.dashboardWidgets.accessDenied')} />;
   }
 
   if (error) {
@@ -269,7 +272,7 @@ export default function DashboardWidgets({
           className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
         >
           <RefreshCw className="h-3 w-3" />
-          Retry
+          {t('reports.dashboardWidgets.retry')}
         </button>
       </div>
     );
@@ -285,12 +288,14 @@ export default function DashboardWidgets({
             <div className="flex items-center justify-between">
               <Monitor className="h-5 w-5 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
-                {((deviceStatus.online / (deviceStatus.total || 1)) * 100).toFixed(0)}% online
+                {t('reports.dashboardWidgets.onlinePercent', {
+                  percent: formatPercent(deviceStatus.online / (deviceStatus.total || 1), { maximumFractionDigits: 0 })
+                })}
               </span>
             </div>
             <div className="mt-4">
               <div className="text-2xl font-bold">{deviceStatus.total}</div>
-              <div className="text-sm text-muted-foreground">Total Devices</div>
+              <div className="text-sm text-muted-foreground">{t('reports.dashboardWidgets.totalDevices')}</div>
             </div>
             <div className="mt-4 flex gap-4 text-xs">
               <div className="flex items-center gap-1">
@@ -317,7 +322,7 @@ export default function DashboardWidgets({
               {alertCounts.critical > 0 && (
                 <span className="flex items-center gap-1 text-xs text-destructive">
                   <TrendingUp className="h-3 w-3" />
-                  {alertCounts.critical} critical
+                  {t('reports.dashboardWidgets.criticalCount', { count: alertCounts.critical })}
                 </span>
               )}
             </div>
@@ -325,7 +330,7 @@ export default function DashboardWidgets({
               <div className="text-2xl font-bold">
                 {alertCounts.critical + alertCounts.high + alertCounts.medium + alertCounts.low + alertCounts.info}
               </div>
-              <div className="text-sm text-muted-foreground">Active Alerts</div>
+              <div className="text-sm text-muted-foreground">{t('reports.dashboardWidgets.activeAlerts')}</div>
             </div>
             <div className="mt-4 flex gap-2">
               <span
@@ -371,13 +376,13 @@ export default function DashboardWidgets({
               <Shield className="h-5 w-5 text-muted-foreground" />
               {compliance.issueCount > 0 && (
                 <span className="text-xs text-warning">
-                  {compliance.issueCount} issue{compliance.issueCount > 1 ? 's' : ''}
+                  {t('reports.dashboardWidgets.issueCount', { count: compliance.issueCount })}
                 </span>
               )}
             </div>
             <div className="mt-4">
               <div className="text-2xl font-bold">{compliance.complianceScore}%</div>
-              <div className="text-sm text-muted-foreground">Compliance Score</div>
+              <div className="text-sm text-muted-foreground">{t('reports.dashboardWidgets.complianceScore')}</div>
             </div>
             <div className="mt-4">
               <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
@@ -402,27 +407,27 @@ export default function DashboardWidgets({
           <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex items-center justify-between">
               <Activity className="h-5 w-5 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">Averages</span>
+              <span className="text-xs text-muted-foreground">{t('reports.dashboardWidgets.averages')}</span>
             </div>
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Cpu className="h-3 w-3 text-muted-foreground" />
-                  <span className="text-xs">CPU</span>
+                  <span className="text-xs">{t('reports.dashboardWidgets.cpu')}</span>
                 </div>
                 <span className="text-sm font-medium">{resources.averages.cpu}%</span>
               </div>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <MemoryStick className="h-3 w-3 text-muted-foreground" />
-                  <span className="text-xs">Memory</span>
+                  <span className="text-xs">{t('reports.dashboardWidgets.memory')}</span>
                 </div>
                 <span className="text-sm font-medium">{resources.averages.ram}%</span>
               </div>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <HardDrive className="h-3 w-3 text-muted-foreground" />
-                  <span className="text-xs">Disk</span>
+                  <span className="text-xs">{t('reports.dashboardWidgets.disk')}</span>
                 </div>
                 <span className="text-sm font-medium">{resources.averages.disk}%</span>
               </div>
@@ -439,7 +444,7 @@ export default function DashboardWidgets({
             <div className="rounded-lg border bg-card p-4 shadow-xs">
               <div className="flex items-center gap-2 mb-4">
                 <Cpu className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Top CPU Usage</h3>
+                <h3 className="text-sm font-semibold">{t('reports.dashboardWidgets.topCpuUsage')}</h3>
               </div>
               <div className="space-y-3">
                 {resources.topCpu.slice(0, 5).map((device, index) => (
@@ -469,7 +474,7 @@ export default function DashboardWidgets({
             <div className="rounded-lg border bg-card p-4 shadow-xs">
               <div className="flex items-center gap-2 mb-4">
                 <MemoryStick className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Top Memory Usage</h3>
+                <h3 className="text-sm font-semibold">{t('reports.dashboardWidgets.topMemoryUsage')}</h3>
               </div>
               <div className="space-y-3">
                 {resources.topRam.slice(0, 5).map((device, index) => (
@@ -499,7 +504,7 @@ export default function DashboardWidgets({
             <div className="rounded-lg border bg-card p-4 shadow-xs">
               <div className="flex items-center gap-2 mb-4">
                 <HardDrive className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Top Disk Usage</h3>
+                <h3 className="text-sm font-semibold">{t('reports.dashboardWidgets.topDiskUsage')}</h3>
               </div>
               <div className="space-y-3">
                 {resources.topDisk.slice(0, 5).map((device, index) => (
@@ -528,14 +533,14 @@ export default function DashboardWidgets({
 
       {/* Last Updated */}
       <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
-        <span>Last updated: {formatTime(lastUpdated, { timeZone: effectiveTimezone })}</span>
+        <span>{t('reports.dashboardWidgets.lastUpdated', { time: formatTime(lastUpdated, { timeZone: effectiveTimezone }) })}</span>
         <button
           type="button"
           onClick={fetchData}
           className="flex items-center gap-1 hover:text-foreground"
         >
           <RefreshCw className="h-3 w-3" />
-          Refresh
+          {t('reports.dashboardWidgets.refresh')}
         </button>
       </div>
     </div>

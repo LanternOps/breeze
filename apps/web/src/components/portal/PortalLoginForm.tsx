@@ -1,15 +1,14 @@
 import { useMemo } from 'react';
 import { useForm } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
-const portalLoginSchema = z.object({
-  organization: z.string().min(2, 'Enter your organization name or code'),
-  email: z.string().email('Enter a valid email address'),
-  password: z.string().min(8, 'Password must be at least 8 characters')
-});
-
-type PortalLoginValues = z.infer<typeof portalLoginSchema>;
+type PortalLoginValues = {
+  organization: string;
+  email: string;
+  password: string;
+};
 
 type PortalLoginFormProps = {
   onSubmit?: (values: PortalLoginValues) => void | Promise<void>;
@@ -23,9 +22,19 @@ export default function PortalLoginForm({
   onSubmit,
   onLookupOrg,
   errorMessage,
-  submitLabel = 'Sign in',
+  submitLabel,
   loading
 }: PortalLoginFormProps) {
+  const { t } = useTranslation('portal');
+  const portalLoginSchema = useMemo(
+    () =>
+      z.object({
+        organization: z.string().min(2, t('login.validation.organization')),
+        email: z.string().email(t('login.validation.email')),
+        password: z.string().min(8, t('login.validation.passwordLength'))
+      }),
+    [t]
+  );
   const {
     register,
     handleSubmit,
@@ -52,14 +61,14 @@ export default function PortalLoginForm({
     >
       <div className="space-y-2">
         <label htmlFor="organization" className="text-sm font-medium">
-          Organization
+          {t('login.organization')}
         </label>
         <div className="flex items-center gap-2">
           <input
             id="organization"
             type="text"
             autoComplete="organization"
-            placeholder="Acme Corp or ORG-123"
+            placeholder={t('login.organizationPlaceholder')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('organization')}
           />
@@ -68,7 +77,7 @@ export default function PortalLoginForm({
             onClick={() => onLookupOrg?.(orgValue)}
             className="h-10 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:bg-muted"
           >
-            Lookup
+            {t('login.lookup')}
           </button>
         </div>
         {errors.organization && (
@@ -78,13 +87,13 @@ export default function PortalLoginForm({
 
       <div className="space-y-2">
         <label htmlFor="email" className="text-sm font-medium">
-          Email
+          {t('login.email')}
         </label>
         <input
           id="email"
           type="email"
           autoComplete="email"
-          placeholder="you@company.com"
+          placeholder={t('login.emailPlaceholder')}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('email')}
         />
@@ -93,13 +102,13 @@ export default function PortalLoginForm({
 
       <div className="space-y-2">
         <label htmlFor="password" className="text-sm font-medium">
-          Password
+          {t('login.password')}
         </label>
         <input
           id="password"
           type="password"
           autoComplete="current-password"
-          placeholder="Enter your password"
+          placeholder={t('login.passwordPlaceholder')}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('password')}
         />
@@ -119,15 +128,15 @@ export default function PortalLoginForm({
         disabled={isLoading}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Signing in...' : submitLabel}
+        {isLoading ? t('login.signingIn') : submitLabel ?? t('login.submit')}
       </button>
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <a href="/portal/forgot-password" className="hover:text-foreground hover:underline">
-          Forgot password?
+          {t('login.forgotPassword')}
         </a>
         <a href="/portal/support" className="hover:text-foreground hover:underline">
-          Need help?
+          {t('login.needHelp')}
         </a>
       </div>
     </form>

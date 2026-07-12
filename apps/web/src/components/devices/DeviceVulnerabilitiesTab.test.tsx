@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 

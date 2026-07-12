@@ -154,6 +154,8 @@ export const heartbeatSchema = z.object({
   // recovers to monitoring — previously only watchdog FAILOVER heartbeats wrote
   // it, leaving the dashboard stale and the server re-sending watchdogUpgradeTo.
   watchdogVersion: z.string().max(20).optional().catch(undefined),
+  // #2288 — the control-plane base URL the agent used for this heartbeat.
+  serverUrl: z.string().max(512).optional().catch(undefined),
   ipHistoryUpdate: z.object({
     deviceId: z.string().optional().catch(undefined),
     currentIPs: z.array(ipEntrySchema).max(100).nullish().catch(undefined),

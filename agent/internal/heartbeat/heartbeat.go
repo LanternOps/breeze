@@ -37,6 +37,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
+	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
 	"github.com/breeze-rmm/agent/internal/patching"
@@ -60,6 +61,8 @@ import (
 var log = logging.L("heartbeat")
 var desktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
+const backupProbeThreshold = 10 // keep in sync with agent/cmd/breeze-watchdog
+
 type HeartbeatPayload struct {
 	Metrics          *collectors.SystemMetrics `json:"metrics,omitempty"`
 	MetricsAvailable *bool                     `json:"metricsAvailable,omitempty"`
@@ -74,18 +77,22 @@ type HeartbeatPayload struct {
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual              *bool               `json:"isVirtual,omitempty"`
-	VirtualizationPlatform string              `json:"virtualizationPlatform,omitempty"`
-	HealthStatus           map[string]any      `json:"healthStatus,omitempty"`
-	DroppedLogs            int64               `json:"droppedLogs,omitempty"`
-	HelperVersion          string              `json:"helperVersion,omitempty"`
-	WatchdogVersion        string              `json:"watchdogVersion,omitempty"`
-	TCCPermissions         *ipc.TCCStatus      `json:"tccPermissions,omitempty"`
-	DesktopAccess          *DesktopAccessState `json:"desktopAccess,omitempty"`
-	Hostname               string              `json:"hostname,omitempty"`
-	OSVersion              string              `json:"osVersion,omitempty"`
-	OSBuild                string              `json:"osBuild,omitempty"`
-	IsHeadless             bool                `json:"isHeadless"`
+	IsVirtual              *bool          `json:"isVirtual,omitempty"`
+	VirtualizationPlatform string         `json:"virtualizationPlatform,omitempty"`
+	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
+	DroppedLogs            int64          `json:"droppedLogs,omitempty"`
+	HelperVersion          string         `json:"helperVersion,omitempty"`
+	WatchdogVersion        string         `json:"watchdogVersion,omitempty"`
+	// ServerURL is the control-plane base URL this heartbeat is POSTed to
+	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
+	// the backup URL and the device row shows real fleet position.
+	ServerURL      string              `json:"serverUrl,omitempty"`
+	TCCPermissions *ipc.TCCStatus      `json:"tccPermissions,omitempty"`
+	DesktopAccess  *DesktopAccessState `json:"desktopAccess,omitempty"`
+	Hostname       string              `json:"hostname,omitempty"`
+	OSVersion      string              `json:"osVersion,omitempty"`
+	OSBuild        string              `json:"osBuild,omitempty"`
+	IsHeadless     bool                `json:"isHeadless"`
 	// Current-state power/battery telemetry (#2142). Pointer + omitempty so an
 	// old agent (or a platform that can't report power state) omits the field
 	// and the server keeps whatever it last knew rather than clobbering it.
@@ -360,6 +367,7 @@ type Heartbeat struct {
 	watchdogVersionDisk       string
 	watchdogVersionRead       bool
 	watchdogVersionReadWarned bool
+	hbConsecutiveFailures     int // guarded by h.mu
 }
 
 func New(cfg *config.Config) *Heartbeat {
@@ -367,11 +375,18 @@ func New(cfg *config.Config) *Heartbeat {
 }
 
 func newHeartbeatHTTPClient(tlsCfg *tls.Config) *http.Client {
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Clone DefaultTransport so proxy support (ProxyFromEnvironment) and the
+	// idle-conn/timeout defaults survive; a bare &http.Transport{} would
+	// silently strand proxied agents. Dials then go through the
+	// last-known-good DNS cache (#2288); TLS (including the mTLS client
+	// cert) sits above it, so hostname verification is unchanged — the cache
+	// alters where we dial, never what we trust.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = netcache.Shared().DialContext
 	if tlsCfg != nil {
-		client.Transport = &http.Transport{TLSClientConfig: tlsCfg}
+		transport.TLSClientConfig = tlsCfg
 	}
-	return client
+	return &http.Client{Timeout: 30 * time.Second, Transport: transport}
 }
 
 func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString, tlsCfg *tls.Config) *Heartbeat {
@@ -1102,7 +1117,7 @@ func (h *Heartbeat) sendMonitoringResults(results []monitoring.CheckResult) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/monitoring-results", h.config.ServerURL, h.config.AgentID)
+	url := h.monitoringResultsURL()
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -1173,7 +1188,7 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 		return err
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/%s", h.config.ServerURL, h.config.AgentID, endpoint)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/%s", h.serverURL(), h.config.AgentID, endpoint)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -1283,7 +1298,7 @@ func (h *Heartbeat) sendProcessSample() {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/process-sample", h.config.ServerURL, h.config.AgentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/process-sample", h.serverURL(), h.config.AgentID)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -1313,7 +1328,7 @@ func (h *Heartbeat) submitPeripheralEvents(events []peripheral.PeripheralEvent) 
 		return fmt.Errorf("marshal peripheral events: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/peripherals/events", h.config.ServerURL, h.config.AgentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/peripherals/events", h.serverURL(), h.config.AgentID)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -1658,6 +1673,56 @@ func equalPolicyConfigProbes(left, right []config.PolicyConfigStateProbe) bool {
 	return true
 }
 
+// decideBackupURLUpdate is the pure decision core for a pushed
+// backup_server_url value. Empty string = clear, equal-to-primary and
+// invalid values are ignored. Returns (newValue, apply).
+func decideBackupURLUpdate(raw any, primary, current string) (string, bool) {
+	s, ok := raw.(string)
+	if !ok {
+		log.Warn("ignoring non-string backup_server_url config update payload")
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if s == current {
+		return "", false
+	}
+	if s == "" {
+		return "", true // clear
+	}
+	if s == primary {
+		log.Debug("ignoring backup_server_url identical to primary server_url")
+		return "", false
+	}
+	if err := config.ValidateBackupServerURL(s); err != nil {
+		log.Warn("ignoring invalid backup_server_url config update", "error", err.Error())
+		return "", false
+	}
+	return s, true
+}
+
+func (h *Heartbeat) applyBackupServerURLConfig(raw any) {
+	h.mu.Lock()
+	primary, current := h.config.ServerURL, h.config.BackupServerURL
+	h.mu.Unlock()
+
+	val, apply := decideBackupURLUpdate(raw, primary, current)
+	if !apply {
+		return
+	}
+	h.mu.Lock()
+	h.config.BackupServerURL = val
+	h.mu.Unlock()
+	if err := config.SetAndPersist("backup_server_url", val); err != nil {
+		log.Warn("failed to persist backup_server_url", "error", err.Error())
+		return
+	}
+	if val == "" {
+		log.Info("cleared backup server URL")
+	} else {
+		log.Info("stored backup server URL", "backupServerUrl", val)
+	}
+}
+
 func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	if len(update) == 0 {
 		return
@@ -1692,6 +1757,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasPS {
 		h.applyPatchSourceConfig(psRaw)
+	}
+
+	// Backup control-plane URL (#2288). Key absent = no change; present
+	// empty string = clear. Snake_case and camelCase both accepted.
+	bsRaw, hasBS := update["backup_server_url"]
+	if !hasBS {
+		bsRaw, hasBS = update["backupServerUrl"]
+	}
+	if hasBS {
+		h.applyBackupServerURLConfig(bsRaw)
 	}
 
 	// Apply onedrive_helper_settings if present (Phase 2). No-op on non-Windows.
@@ -2405,7 +2480,7 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 		log.Error("failed to marshal boot performance", "error", err.Error())
 		return
 	}
-	url := fmt.Sprintf("%s/api/v1/agents/%s/boot-performance", h.config.ServerURL, h.config.AgentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/boot-performance", h.serverURL(), h.config.AgentID)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -2451,7 +2526,7 @@ func (h *Heartbeat) sendReliabilityMetrics(sentAt time.Time) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/reliability", h.config.ServerURL, h.config.AgentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/reliability", h.serverURL(), h.config.AgentID)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -2518,6 +2593,97 @@ func (h *Heartbeat) runHeartbeat() {
 		return
 	}
 	h.sendHeartbeat()
+}
+
+func (h *Heartbeat) serverURL() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.config.ServerURL
+}
+
+func (h *Heartbeat) monitoringResultsURL() string {
+	return fmt.Sprintf("%s/api/v1/agents/%s/monitoring-results", h.serverURL(), h.config.AgentID)
+}
+
+func (h *Heartbeat) resetHeartbeatFailures() {
+	h.mu.Lock()
+	h.hbConsecutiveFailures = 0
+	h.mu.Unlock()
+}
+
+// recordHeartbeatFailure advances the consecutive-failure counter and, past
+// the threshold, probes the backup URL with a full authenticated heartbeat.
+// A successful response from the backup is the validate-before-persist gate:
+// only then do we promote-and-swap. A failed probe persists nothing; we
+// re-probe every subsequent failed cycle.
+func (h *Heartbeat) recordHeartbeatFailure(payload *HeartbeatPayload) {
+	h.mu.Lock()
+	h.hbConsecutiveFailures++
+	failures := h.hbConsecutiveFailures
+	backup := h.config.BackupServerURL
+	h.mu.Unlock()
+
+	if failures < backupProbeThreshold || backup == "" {
+		return
+	}
+	log.Warn("primary server unreachable, probing backup", "failures", failures, "backupServerUrl", backup)
+	response, ok := h.doHeartbeatPost(backup, payload)
+	if !ok {
+		return
+	}
+	// Promote BEFORE processing the response: its directives (commands,
+	// upgrades, token/cert rotation) must run against the control plane that
+	// issued them, and their result/rotation requests read h.serverURL().
+	// Promotion is synchronous (in-memory swap + single-write persist), so by
+	// the time any directive runs, the probed URL is current everywhere.
+	h.promoteBackupServerURL(backup)
+	h.resetHeartbeatFailures()
+	// Drop the probe response's own backup_server_url directive: promotion
+	// just installed the old primary as the rollback backup, and letting the
+	// probe clear/replace it one cycle earlier than the next regular
+	// heartbeat buys nothing while costing the rollback if this promotion
+	// turns out to be a false positive.
+	delete(response.ConfigUpdate, "backup_server_url")
+	delete(response.ConfigUpdate, "backupServerUrl")
+	h.processHeartbeatResponse(response)
+}
+
+// promoteBackupServerURL swaps probedURL — the backup that just answered a
+// fully authenticated heartbeat — to primary in the shared in-memory config
+// and persists both sides of the swap. The old primary remains the backup so
+// the same probe logic can roll back a false-positive promotion.
+//
+// probedURL is a parameter, NOT re-read from config: the probe response's
+// own configUpdate is applied inside postHeartbeat and may have already
+// rewritten or cleared BackupServerURL (the API sends the key on every
+// heartbeat — a backup instance with the env var unset pushes a clear).
+// Only the URL that actually passed the probe may be promoted; re-reading
+// config here bricked stragglers with server_url="" during migrations.
+func (h *Heartbeat) promoteBackupServerURL(probedURL string) {
+	if probedURL == "" {
+		log.Error("refusing to promote empty backup server URL")
+		return
+	}
+	h.mu.Lock()
+	oldPrimary := h.config.ServerURL
+	newPrimary := probedURL
+	h.config.ServerURL = newPrimary
+	h.config.BackupServerURL = oldPrimary
+	h.mu.Unlock()
+
+	h.fileTransferMgr.SetServerURL(newPrimary)
+	if h.wsClient != nil {
+		h.wsClient.SetServerURL(newPrimary)
+	}
+
+	if err := config.SetAllAndPersist(map[string]any{
+		"server_url":        newPrimary,
+		"backup_server_url": oldPrimary,
+	}); err != nil {
+		log.Error("failed to persist promoted server URL swap", "error", err.Error())
+	}
+	log.Warn("PROMOTED backup server URL to primary",
+		"newServerUrl", newPrimary, "rollbackBackupUrl", oldPrimary)
 }
 
 // sendHeartbeatWithWatchdog wraps sendHeartbeat with a watchdog that dumps all
@@ -2716,13 +2882,42 @@ func (h *Heartbeat) sendHeartbeat() {
 		}
 	}
 
+	if h.postHeartbeat(h.serverURL(), &payload) {
+		h.resetHeartbeatFailures()
+		return
+	}
+	h.recordHeartbeatFailure(&payload)
+}
+
+// postHeartbeat POSTs the payload to baseURL and, on an authenticated 2xx,
+// processes the full response (configUpdate, commands, upgrades, rotation).
+// The regular heartbeat path uses this; the backup PROBE path must NOT — it
+// uses doHeartbeatPost + processHeartbeatResponse separately so promotion
+// runs between validation and side effects (see recordHeartbeatFailure).
+func (h *Heartbeat) postHeartbeat(baseURL string, payload *HeartbeatPayload) bool {
+	response, ok := h.doHeartbeatPost(baseURL, payload)
+	if !ok {
+		return false
+	}
+	h.processHeartbeatResponse(response)
+	return true
+}
+
+// doHeartbeatPost sends the heartbeat and validates the response up to and
+// including the JSON decode — the authenticated-2xx gate — WITHOUT executing
+// any of the response's directives. Side effects (commands, upgrades, token
+// and cert rotation, configUpdate) live in processHeartbeatResponse: a backup
+// probe must promote the probed URL first, so those directives run against
+// the control plane that actually issued them.
+func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (*HeartbeatResponse, bool) {
+	payload.ServerURL = baseURL
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Error("failed to marshal heartbeat", "error", err.Error())
-		return
+		return nil, false
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/heartbeat", h.config.ServerURL, h.config.AgentID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/heartbeat", baseURL, h.config.AgentID)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -2733,25 +2928,25 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	resp, err := httputil.Do(ctx, h.httpClient(), "POST", url, body, headers, h.retryCfg)
 	if err != nil {
-		log.Error("failed to send heartbeat", "error", err.Error())
+		log.Error("failed to send heartbeat", "server", baseURL, "error", err.Error())
 		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
-		return
+		return nil, false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		log.Warn("heartbeat returned 401")
+		log.Warn("heartbeat returned 401", "server", baseURL)
 		h.healthMon.Update("heartbeat", health.Degraded, "unauthorized")
 		if h.authMon != nil {
 			h.authMon.RecordAuthFailure()
 		}
-		return
+		return nil, false
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		log.Warn("heartbeat returned non-OK status", "status", resp.StatusCode)
+		log.Warn("heartbeat returned non-OK status", "server", baseURL, "status", resp.StatusCode)
 		h.healthMon.Update("heartbeat", health.Degraded, fmt.Sprintf("status %d", resp.StatusCode))
-		return
+		return nil, false
 	}
 
 	h.healthMon.Update("heartbeat", health.Healthy, "")
@@ -2779,9 +2974,18 @@ func (h *Heartbeat) sendHeartbeat() {
 	var response HeartbeatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		log.Error("failed to decode heartbeat response", "error", err.Error())
-		return
+		return nil, false
 	}
+	return &response, true
+}
 
+// processHeartbeatResponse executes the directives carried by a validated
+// heartbeat response: configUpdate, manifest trust keys, commands, upgrades,
+// cert/token rotation, tunnel policy, and helper settings. Callers must have
+// already made the response's origin the current server URL (the regular
+// path trivially has; the probe path promotes first) so that command results
+// and rotation requests go back to the control plane that issued them.
+func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
 	}
@@ -2974,7 +3178,7 @@ func (h *Heartbeat) handleCertRenewal() {
 	log.Info("mTLS cert renewal requested by server")
 
 	token := h.secureToken.Reveal()
-	renewClient := api.NewClient(h.config.ServerURL, token, h.config.AgentID)
+	renewClient := api.NewClient(h.serverURL(), token, h.config.AgentID)
 
 	renewResp, err := renewClient.RenewCert()
 	if err != nil {
@@ -3053,7 +3257,7 @@ func (h *Heartbeat) handleTokenRotation() {
 	log.Info("agent token rotation requested by server")
 
 	currentToken := h.secureToken.Reveal()
-	rotateClient := api.NewClient(h.config.ServerURL, currentToken, h.config.AgentID)
+	rotateClient := api.NewClient(h.serverURL(), currentToken, h.config.AgentID)
 	rotateResp, err := rotateClient.RotateToken()
 	if err != nil {
 		log.Error("agent token rotation failed", "error", err.Error())
@@ -3245,7 +3449,7 @@ func (h *Heartbeat) submitCommandResult(commandID string, result tools.CommandRe
 		return fmt.Errorf("failed to marshal result: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/commands/%s/result", h.config.ServerURL, h.config.AgentID, commandID)
+	url := fmt.Sprintf("%s/api/v1/agents/%s/commands/%s/result", h.serverURL(), h.config.AgentID, commandID)
 	headers := http.Header{
 		"Content-Type":  {"application/json"},
 		"Authorization": {h.authHeader()},
@@ -3890,7 +4094,7 @@ const watchdogUpgradeRetryCooldown = 30 * time.Minute
 // download lives in one place.
 func (h *Heartbeat) downloadWatchdogBinary(targetVersion string) (string, error) {
 	u := updater.New(&updater.Config{
-		ServerURL:             h.config.ServerURL,
+		ServerURL:             h.serverURL(),
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		Component:             "watchdog",
@@ -3960,7 +4164,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.config.ServerURL,
+			ServerURL:             h.serverURL(),
 			AuthToken:             h.secureToken,
 			CurrentVersion:        h.agentVersion,
 			Component:             "user-helper",
@@ -4053,7 +4257,7 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
-			ServerURL:             h.config.ServerURL,
+			ServerURL:             h.serverURL(),
 			AuthToken:             h.secureToken,
 			CurrentVersion:        h.agentVersion,
 			Component:             "user-helper",
@@ -4176,7 +4380,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
 
 	updaterCfg := &updater.Config{
-		ServerURL:             h.config.ServerURL,
+		ServerURL:             h.serverURL(),
 		AuthToken:             h.secureToken,
 		CurrentVersion:        h.agentVersion,
 		BinaryPath:            binaryPath,

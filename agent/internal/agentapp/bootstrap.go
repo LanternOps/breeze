@@ -23,6 +23,7 @@ var bootstrapInstallData string
 
 type bootstrapResult struct {
 	ServerURL        string `json:"serverUrl"`
+	BackupServerURL  string `json:"backupServerUrl"`
 	EnrollmentKey    string `json:"enrollmentKey"`
 	EnrollmentSecret string `json:"enrollmentSecret"`
 	SiteID           string `json:"siteId"`
@@ -30,8 +31,13 @@ type bootstrapResult struct {
 
 // resolveBootstrapInputs decides which token/server to use. Property token +
 // server take precedence (explicit silent-install intent); otherwise the
-// [TOKEN@HOST] in the installer filename is used, with the host promoted to an
-// https:// server URL. Mirrors the macOS payload-then-filename precedence.
+// [TOKEN@HOST] in the installer filename is used, with the host (which may
+// carry a decoded `host:port`) promoted to an https:// server URL. The
+// promotion is unconditionally https; servers running the #2341 fix refuse
+// to emit a filename-token download for a non-https URL, but an MSI from an
+// older self-hosted server may still embed an http-only host — redemption
+// then fails loudly (install rollback), never silently. Mirrors the macOS
+// payload-then-filename precedence.
 func resolveBootstrapInputs(data string) (token, server string, err error) {
 	parts := strings.SplitN(data, "|", 3)
 	var installerPath, propToken, propServer string
@@ -123,6 +129,7 @@ func runBootstrap() {
 	// the resolved key — the server derives the site from the (child) key and
 	// returns it in the enroll response (cfg.SiteID = enrollResp.SiteID).
 	serverURL = res.ServerURL
+	backupServerURL = res.BackupServerURL
 	enrollmentSecret = res.EnrollmentSecret
 	enrollDevice(res.EnrollmentKey)
 }

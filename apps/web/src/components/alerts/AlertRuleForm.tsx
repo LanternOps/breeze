@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -55,54 +57,55 @@ type AlertRuleFormProps = {
   notificationChannels?: NotificationChannel[];
 };
 
-const severityOptions: { value: AlertSeverity; label: string; color: string }[] = [
-  { value: 'critical', label: 'Critical', color: 'bg-red-500' },
-  { value: 'high', label: 'High', color: 'bg-orange-500' },
-  { value: 'medium', label: 'Medium', color: 'bg-yellow-500' },
-  { value: 'low', label: 'Low', color: 'bg-blue-500' },
-  { value: 'info', label: 'Info', color: 'bg-gray-500' }
+const severityOptions: { value: AlertSeverity; color: string }[] = [
+  { value: 'critical', color: 'bg-red-500' },
+  { value: 'high', color: 'bg-orange-500' },
+  { value: 'medium', color: 'bg-yellow-500' },
+  { value: 'low', color: 'bg-blue-500' },
+  { value: 'info', color: 'bg-gray-500' }
 ];
 
 const targetTypeOptions = [
-  { value: 'all', label: 'All Devices' },
-  { value: 'site', label: 'Specific Sites' },
-  { value: 'group', label: 'Specific Groups' },
-  { value: 'device', label: 'Specific Devices' }
+  { value: 'all' },
+  { value: 'site' },
+  { value: 'group' },
+  { value: 'device' }
 ];
 
 const metricOptions = [
-  { value: 'cpu', label: 'CPU Usage' },
-  { value: 'ram', label: 'Memory Usage' },
-  { value: 'disk', label: 'Disk Usage' },
-  { value: 'network', label: 'Network Usage' }
+  { value: 'cpu' },
+  { value: 'ram' },
+  { value: 'disk' },
+  { value: 'network' }
 ];
 
 const operatorOptions = [
-  { value: 'gt', label: '> (greater than)' },
-  { value: 'lt', label: '< (less than)' },
-  { value: 'gte', label: '>= (greater than or equal)' },
-  { value: 'lte', label: '<= (less than or equal)' },
-  { value: 'eq', label: '= (equal to)' },
-  { value: 'neq', label: '!= (not equal to)' }
+  { value: 'gt' },
+  { value: 'lt' },
+  { value: 'gte' },
+  { value: 'lte' },
+  { value: 'eq' },
+  { value: 'neq' }
 ];
 
 const conditionTypeOptions = [
-  { value: 'metric', label: 'Metric Condition' },
-  { value: 'status', label: 'Status Condition' },
-  { value: 'custom', label: 'Custom Field' }
+  { value: 'metric' },
+  { value: 'status' },
+  { value: 'custom' }
 ];
 
 export default function AlertRuleForm({
   onSubmit,
   onCancel,
   defaultValues,
-  submitLabel = 'Save rule',
+  submitLabel,
   loading,
   sites = [],
   groups = [],
   devices = [],
   notificationChannels = []
 }: AlertRuleFormProps) {
+  const { t } = useTranslation('alerts');
   const {
     register,
     handleSubmit,
@@ -196,11 +199,11 @@ export default function AlertRuleForm({
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="rule-name" className="text-sm font-medium">
-            Rule name
+            {t('alertRuleForm.ruleName')}
           </label>
           <input
             id="rule-name"
-            placeholder="High CPU Alert"
+            placeholder={t('alertRuleForm.highCpuAlert')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...register('name')}
           />
@@ -209,8 +212,8 @@ export default function AlertRuleForm({
 
         <div className="space-y-2">
           <label htmlFor="rule-severity" className="text-sm font-medium">
-            Severity
-            <HelpTooltip text="Determines notification routing and dashboard priority. Critical alerts page on-call immediately." />
+            {t('alertRuleForm.severity')}
+            <HelpTooltip text={t('alertRuleForm.severityHelp')} />
           </label>
           <Controller
             name="severity"
@@ -230,7 +233,7 @@ export default function AlertRuleForm({
                     )}
                   >
                     <span className={cn('h-3 w-3 rounded-full', opt.color)} />
-                    {opt.label}
+                    {t(/* i18n-dynamic */ `alertRuleForm.severityOption.${opt.value}`)}
                   </button>
                 ))}
               </div>
@@ -241,11 +244,11 @@ export default function AlertRuleForm({
 
         <div className="space-y-2 md:col-span-2">
           <label htmlFor="rule-description" className="text-sm font-medium">
-            Description
+            {t('alertRuleForm.description')}
           </label>
           <textarea
             id="rule-description"
-            placeholder="Describe what this rule monitors..."
+            placeholder={t('alertRuleForm.describeWhatThisRuleMonitors')}
             rows={2}
             className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring resize-none"
             {...register('description')}
@@ -256,7 +259,7 @@ export default function AlertRuleForm({
       {/* Target Selection */}
       <div className="rounded-md border bg-muted/20 p-4">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold">Target Devices</h3>
+          <h3 className="text-sm font-semibold">{t('alertRuleForm.targetDevices')}</h3>
           <div className="flex rounded-md border">
             <button
               type="button"
@@ -266,7 +269,7 @@ export default function AlertRuleForm({
                 targetViewMode === 'simple' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
               )}
             >
-              Simple
+              {t('alertRuleForm.simple')}
             </button>
             <button
               type="button"
@@ -277,7 +280,7 @@ export default function AlertRuleForm({
               )}
             >
               <Filter className="h-3 w-3 inline mr-1" />
-              Advanced
+              {t('alertRuleForm.advanced')}
             </button>
           </div>
         </div>
@@ -285,14 +288,14 @@ export default function AlertRuleForm({
         {targetViewMode === 'simple' ? (
           <div className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Target Type</label>
+              <label className="text-sm font-medium">{t('alertRuleForm.targetType')}</label>
               <select
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 {...register('targetType')}
               >
                 {targetTypeOptions.map(opt => (
                   <option key={opt.value} value={opt.value}>
-                    {opt.label}
+                    {t(/* i18n-dynamic */ `alertRuleForm.targetTypeOption.${opt.value}`)}
                   </option>
                 ))}
               </select>
@@ -301,7 +304,7 @@ export default function AlertRuleForm({
             {watchTargetType !== 'all' && targetOptions.length > 0 && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">
-                  Select {watchTargetType === 'site' ? 'Sites' : watchTargetType === 'group' ? 'Groups' : 'Devices'}
+                  {t('alertRuleForm.selectTargetType', { target: t(/* i18n-dynamic */ `alertRuleForm.targetPlural.${watchTargetType}`) })}
                 </label>
                 <div className="max-h-48 overflow-y-auto rounded-md border bg-background p-2">
                   {targetOptions.map(target => (
@@ -324,7 +327,7 @@ export default function AlertRuleForm({
 
             {watchTargetType !== 'all' && targetOptions.length === 0 && (
               <p className="text-sm text-muted-foreground">
-                No {watchTargetType === 'site' ? 'sites' : watchTargetType === 'group' ? 'groups' : 'devices'} available.
+                {t('alertRuleForm.noTargetsAvailable', { target: t(/* i18n-dynamic */ `alertRuleForm.targetPluralLower.${watchTargetType}`) })}
               </p>
             )}
           </div>
@@ -359,10 +362,10 @@ export default function AlertRuleForm({
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-sm font-semibold">
-              Conditions
-              <HelpTooltip text="All conditions must be met simultaneously for the alert to fire. Add multiple for compound rules." />
+              {t('alertRuleForm.conditions')}
+              <HelpTooltip text={t('alertRuleForm.conditionsHelp')} />
             </h3>
-            <p className="text-xs text-muted-foreground">Define when this alert should trigger</p>
+            <p className="text-xs text-muted-foreground">{t('alertRuleForm.defineWhenThisAlertShouldTrigger')}</p>
           </div>
           <button
             type="button"
@@ -370,7 +373,7 @@ export default function AlertRuleForm({
             className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
           >
             <Plus className="h-4 w-4" />
-            Add Condition
+            {t('alertRuleForm.addCondition')}
           </button>
         </div>
 
@@ -386,14 +389,14 @@ export default function AlertRuleForm({
                   <GripVertical className="h-5 w-5 text-muted-foreground mt-2.5 cursor-move" />
                   <div className="flex-1 grid gap-4 sm:grid-cols-2 md:grid-cols-4">
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">Type</label>
+                      <label className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.type')}</label>
                       <select
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                         {...register(`conditions.${index}.type`)}
                       >
                         {conditionTypeOptions.map(opt => (
                           <option key={opt.value} value={opt.value}>
-                            {opt.label}
+                            {t(/* i18n-dynamic */ `alertRuleForm.conditionTypeOption.${opt.value}`)}
                           </option>
                         ))}
                       </select>
@@ -402,33 +405,33 @@ export default function AlertRuleForm({
                     {watchConditions?.[index]?.type === 'metric' && (
                       <>
                         <div className="space-y-1">
-                          <label className="text-xs font-medium text-muted-foreground">Metric</label>
+                          <label className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.metric')}</label>
                           <select
                             className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`conditions.${index}.metric`)}
                           >
                             {metricOptions.map(opt => (
                               <option key={opt.value} value={opt.value}>
-                                {opt.label}
+                                {t(/* i18n-dynamic */ `alertRuleForm.metricOption.${opt.value}`)}
                               </option>
                             ))}
                           </select>
                         </div>
                         <div className="space-y-1">
-                          <label className="text-xs font-medium text-muted-foreground">Operator</label>
+                          <label className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.operator')}</label>
                           <select
                             className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`conditions.${index}.operator`)}
                           >
                             {operatorOptions.map(opt => (
                               <option key={opt.value} value={opt.value}>
-                                {opt.label}
+                                {t(/* i18n-dynamic */ `alertRuleForm.operatorOption.${opt.value}`)}
                               </option>
                             ))}
                           </select>
                         </div>
                         <div className="space-y-1">
-                          <label className="text-xs font-medium text-muted-foreground">Value (%)</label>
+                          <label className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.value')}</label>
                           <input
                             type="number"
                             min={0}
@@ -443,7 +446,7 @@ export default function AlertRuleForm({
                     {watchConditions?.[index]?.type === 'status' && (
                       <div className="space-y-1 sm:col-span-3">
                         <label className="text-xs font-medium text-muted-foreground">
-                          Offline Duration (minutes)
+                          {t('alertRuleForm.offlineDurationMinutes')}
                         </label>
                         <input
                           type="number"
@@ -453,7 +456,7 @@ export default function AlertRuleForm({
                           {...register(`conditions.${index}.duration`)}
                         />
                         <p className="text-xs text-muted-foreground">
-                          Alert when device is offline for this many minutes
+                          {t('alertRuleForm.alertWhenDeviceIsOfflineForThis')}
                         </p>
                       </div>
                     )}
@@ -461,17 +464,17 @@ export default function AlertRuleForm({
                     {watchConditions?.[index]?.type === 'custom' && (
                       <>
                         <div className="space-y-1">
-                          <label className="text-xs font-medium text-muted-foreground">Field Name</label>
+                          <label className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.fieldName')}</label>
                           <input
-                            placeholder="custom_field"
+                            placeholder={t('alertRuleForm.customField')}
                             className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`conditions.${index}.field`)}
                           />
                         </div>
                         <div className="space-y-1 sm:col-span-2">
-                          <label className="text-xs font-medium text-muted-foreground">Condition</label>
+                          <label className="text-xs font-medium text-muted-foreground">{t('alertRuleForm.condition')}</label>
                           <input
-                            placeholder="value > 100"
+                            placeholder={t('alertRuleForm.value100')}
                             className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                             {...register(`conditions.${index}.customCondition`)}
                           />
@@ -484,7 +487,7 @@ export default function AlertRuleForm({
                     onClick={() => remove(index)}
                     disabled={fields.length === 1}
                     className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Remove condition"
+                    title={t('alertRuleForm.removeCondition')}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -497,7 +500,7 @@ export default function AlertRuleForm({
         {fields.length === 0 && (
           <div className="rounded-md border border-dashed p-6 text-center">
             <p className="text-sm text-muted-foreground">
-              No conditions defined. Click "Add Condition" to create one.
+              {t('alertRuleForm.noConditionsDefinedClickAddConditionTo')}
             </p>
           </div>
         )}
@@ -506,8 +509,8 @@ export default function AlertRuleForm({
       {/* Notification Channels */}
       <div className="rounded-md border bg-muted/20 p-4">
         <h3 className="text-sm font-semibold mb-4">
-          Notification Channels
-          <HelpTooltip text="Where to send alerts. Configure channels in Settings > Notification Channels." />
+          {t('alertRuleForm.notificationChannels')}
+          <HelpTooltip text={t('alertRuleForm.notificationChannelsHelp')} />
         </h3>
         {notificationChannels.length > 0 ? (
           <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
@@ -536,14 +539,14 @@ export default function AlertRuleForm({
           </div>
         ) : (
             <p className="text-sm text-muted-foreground">
-              No notification channels configured.{' '}
+              {t('alertRuleForm.noNotificationChannelsConfigured')}{' '}
             <a
               href="/alerts/channels"
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary hover:underline"
             >
-              Create one
+              {t('alertRuleForm.createOne')}
             </a>
             </p>
         )}
@@ -551,12 +554,12 @@ export default function AlertRuleForm({
 
       {/* Advanced Settings */}
       <div className="rounded-md border bg-muted/20 p-4">
-        <h3 className="text-sm font-semibold mb-4">Advanced Settings</h3>
+        <h3 className="text-sm font-semibold mb-4">{t('alertRuleForm.advancedSettings')}</h3>
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="cooldown-minutes" className="text-sm font-medium">
-              Cooldown Period (minutes)
-              <HelpTooltip text="After firing, the rule waits this long before it can fire again for the same device." />
+              {t('alertRuleForm.cooldownPeriodMinutes')}
+              <HelpTooltip text={t('alertRuleForm.cooldownHelp')} />
             </label>
             <input
               id="cooldown-minutes"
@@ -570,12 +573,12 @@ export default function AlertRuleForm({
               <p className="text-sm text-destructive">{errors.cooldownMinutes.message}</p>
             )}
             <p className="text-xs text-muted-foreground">
-              Minimum time between alerts for the same condition
+              {t('alertRuleForm.minimumTimeBetweenAlertsForTheSame')}
             </p>
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Auto-Resolve</label>
+            <label className="text-sm font-medium">{t('alertRuleForm.autoResolve')}</label>
             <Controller
               name="autoResolve"
               control={control}
@@ -588,13 +591,13 @@ export default function AlertRuleForm({
                     className="h-4 w-4 rounded border-border"
                   />
                   <span className="text-sm">
-                    Automatically resolve when condition is no longer met
+                    {t('alertRuleForm.automaticallyResolveWhenConditionIsNoLonger')}
                   </span>
                 </label>
               )}
             />
             <p className="text-xs text-muted-foreground">
-              When enabled, alerts will auto-resolve if the metric returns to normal
+              {t('alertRuleForm.whenEnabledAlertsWillAutoResolveIf')}
             </p>
           </div>
         </div>
@@ -607,14 +610,14 @@ export default function AlertRuleForm({
           onClick={onCancel}
           className="h-11 w-full rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted sm:w-auto sm:px-6"
         >
-          Cancel
+          {t('alertRuleForm.cancel')}
         </button>
         <button
           type="submit"
           disabled={isLoading}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >
-          {isLoading ? 'Saving...' : submitLabel}
+          {isLoading ? t('common:states.saving') : (submitLabel ?? t('alertRuleForm.saveRule'))}
         </button>
       </div>
     </form>

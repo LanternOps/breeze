@@ -13,7 +13,38 @@ describe('ticket validators', () => {
       subject: 'Printer offline'
     });
     expect(r.success).toBe(true);
-    if (r.success) expect(r.data.priority).toBe('normal');
+    if (r.success) expect(r.data.priority).toBeUndefined();
+  });
+
+  it('createTicketSchema: subject optional only when formId present; formResponses passthrough', () => {
+    const orgId = '3f2f1d8e-1111-4222-8333-444455556666';
+    const formId = '9a8b7c6d-1111-4222-8333-444455556666';
+    expect(createTicketSchema.safeParse({ orgId }).success).toBe(false); // no subject, no form
+    expect(createTicketSchema.safeParse({ orgId, formId }).success).toBe(true);
+    const r = createTicketSchema.safeParse({ orgId, formId, formResponses: { affected_user: 'jdoe' } });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.formResponses).toEqual({ affected_user: 'jdoe' });
+  });
+
+  it('createTicketSchema: formResponses without formId is rejected', () => {
+    const orgId = '3f2f1d8e-1111-4222-8333-444455556666';
+    const formId = '9a8b7c6d-1111-4222-8333-444455556666';
+    // formResponses with no formId has nothing to validate against — reject it.
+    const bad = createTicketSchema.safeParse({ orgId, subject: 'x', formResponses: { affected_user: 'jdoe' } });
+    expect(bad.success).toBe(false);
+    if (!bad.success) {
+      expect(bad.error.issues.some((i) => i.path[0] === 'formResponses' && /requires formId/i.test(i.message))).toBe(true);
+    }
+    // formId + formResponses together still accepted.
+    expect(createTicketSchema.safeParse({ orgId, formId, formResponses: { affected_user: 'jdoe' } }).success).toBe(true);
+    // Plain ticket (neither) still accepted.
+    expect(createTicketSchema.safeParse({ orgId, subject: 'x' }).success).toBe(true);
+  });
+
+  it('createTicketSchema: priority no longer injects a default', () => {
+    const r = createTicketSchema.safeParse({ orgId: '3f2f1d8e-1111-4222-8333-444455556666', subject: 'x' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.priority).toBeUndefined();
   });
 
   it('rejects empty subject and invalid orgId', () => {

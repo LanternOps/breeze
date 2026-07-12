@@ -72,6 +72,112 @@ func isDeniedSystemPath(cleanPath string) bool {
 	return false
 }
 
+// sensitiveReadPatterns are lowercased, forward-slash-normalized path fragments
+// for credential/secret stores that must never be exfiltrated via a file read or
+// directory list. This is a defense-in-depth deny-list (SR5-01): the primary
+// gate is the API re-tiering that forces devices.execute + Tier-3 approval, but
+// the agent runs as root/LocalSystem and must not blindly trust the path it is
+// handed. Matched at a path-component boundary (see matchesPathFragment) so e.g.
+// ".../config/system" does not spuriously match ".../config/systemprofile".
+var sensitiveReadPatterns = []string{
+	// Unix / Linux credential + secret stores
+	"/etc/shadow",
+	"/etc/gshadow",
+	"/etc/sudoers",
+	"/etc/sudoers.d",
+	"/etc/ssl/private",
+	// macOS shadow-equivalent
+	"/private/etc/master.passwd",
+	"/etc/master.passwd",
+	// Windows registry credential hives
+	"/windows/system32/config/sam",
+	"/windows/system32/config/security",
+	"/windows/system32/config/system",
+	"/windows/ntds/ntds.dit",
+}
+
+// sensitiveReadBasenames are lowercased filenames that are credential stores
+// regardless of directory (browser password databases, etc.).
+var sensitiveReadBasenames = map[string]bool{
+	"login data":     true, // Chrome / Edge / Brave / Chromium
+	"key4.db":        true, // Firefox NSS key DB
+	"logins.json":    true, // Firefox saved logins
+	"signons.sqlite": true, // legacy Firefox logins
+	"cookies.sqlite": true, // Firefox cookies (session theft)
+}
+
+// matchesPathFragment reports whether frag occurs in norm at a path-component
+// boundary: as an exact match, a trailing component, or an interior directory.
+func matchesPathFragment(norm, frag string) bool {
+	return norm == frag ||
+		strings.HasSuffix(norm, frag) ||
+		strings.Contains(norm, frag+"/")
+}
+
+// isSensitiveReadPath reports whether reading/listing the given path would expose
+// a well-known secret store. The comparison is OS-agnostic (backslashes are
+// normalized to forward slashes and case is folded), so a Windows target checked
+// on a Unix host still matches.
+func isSensitiveReadPath(p string) bool {
+	// Normalize backslashes explicitly: filepath.ToSlash is a no-op on Unix, but
+	// the agent may be asked to read a Windows path (or a Windows path may reach
+	// a Unix test host), so fold both separators unconditionally.
+	norm := strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
+
+	for _, frag := range sensitiveReadPatterns {
+		if matchesPathFragment(norm, frag) {
+			return true
+		}
+	}
+
+	base := norm
+	if i := strings.LastIndex(norm, "/"); i >= 0 {
+		base = norm[i+1:]
+	}
+	if sensitiveReadBasenames[base] {
+		return true
+	}
+
+	// SSH private keys: any file under a .ssh directory whose name looks like a
+	// private key (id_*, identity) and is not the public half (*.pub).
+	if strings.Contains(norm, "/.ssh/") {
+		if base == "identity" || base == "authorized_keys" {
+			return true
+		}
+		if strings.HasPrefix(base, "id_") && !strings.HasSuffix(base, ".pub") {
+			return true
+		}
+	}
+
+	// macOS keychains
+	if strings.Contains(norm, "/library/keychains/") ||
+		strings.HasSuffix(base, ".keychain") ||
+		strings.HasSuffix(base, ".keychain-db") {
+		return true
+	}
+
+	return false
+}
+
+// enforceReadContainment blocks reads/lists of obviously-sensitive credential
+// stores. Symlinks are resolved first (filepath.EvalSymlinks) so a symlink whose
+// own name is innocuous cannot be used to escape the deny-list. Both the literal
+// path and the resolved path are checked.
+func enforceReadContainment(cleanPath string) error {
+	if isSensitiveReadPath(cleanPath) {
+		return fmt.Errorf("read denied on sensitive path: %s", cleanPath)
+	}
+	// EvalSymlinks requires the target to exist; if it can't be resolved the
+	// literal check above already ran, and the subsequent os.Stat/Open will
+	// surface any not-exist error.
+	if resolved, err := filepath.EvalSymlinks(cleanPath); err == nil && resolved != cleanPath {
+		if isSensitiveReadPath(resolved) {
+			return fmt.Errorf("read denied on sensitive path (via symlink): %s", cleanPath)
+		}
+	}
+	return nil
+}
+
 // ListDrives enumerates available drives/mount points.
 func ListDrives(_ map[string]any) CommandResult {
 	return listDrivesOS(time.Now())
@@ -93,6 +199,11 @@ func ListFiles(payload map[string]any) CommandResult {
 
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
+
+	// Defense-in-depth: never enumerate a credential store directory (SR5-01).
+	if err := enforceReadContainment(cleanPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
 
 	limit := GetPayloadInt(payload, "limit", defaultFileListLimit)
 	if limit < 1 {
@@ -164,6 +275,11 @@ func ReadFile(payload map[string]any) CommandResult {
 
 	// Normalize path separators
 	cleanPath := filepath.Clean(path)
+
+	// Defense-in-depth: never read a credential store, even symlinked (SR5-01).
+	if err := enforceReadContainment(cleanPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
 
 	// Check file info first
 	info, err := os.Stat(cleanPath)

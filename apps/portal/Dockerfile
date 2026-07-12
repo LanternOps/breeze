@@ -14,9 +14,14 @@ WORKDIR /app
 FROM base AS deps
 WORKDIR /app
 
-# Copy workspace configuration + portal manifest (portal has no workspace deps)
+# Copy workspace configuration + portal manifest. The portal depends on
+# packages/shared SOURCE at build time (runtime @breeze/shared imports, e.g. the
+# ticket intake-form validators, resolved via the tsconfig path alias), so the
+# shared manifest must be present for lockfile workspace resolution here and the
+# shared source must be copied into the builder stage below — mirrors apps/web/Dockerfile.
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/portal/package.json ./apps/portal/
+COPY packages/shared/package.json ./packages/shared/
 
 # Install all dependencies
 RUN pnpm install --frozen-lockfile --prefer-offline
@@ -36,12 +41,15 @@ ENV NODE_ENV=${NODE_ENV}
 ENV PORTAL_BASE_PATH=${PORTAL_BASE_PATH}
 ENV PUBLIC_API_URL=${PUBLIC_API_URL}
 
-# Copy dependencies from deps stage
+# Copy dependencies from deps stage (packages/ carries packages/shared/node_modules
+# so @breeze/shared's own deps — e.g. zod — resolve during the build)
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/portal/node_modules ./apps/portal/node_modules
+COPY --from=deps /app/packages ./packages
 
-# Copy source code
+# Copy source code (packages/ = @breeze/shared source, imported at runtime by the portal)
 COPY apps/portal ./apps/portal
+COPY packages ./packages
 COPY tsconfig.json ./
 
 # Build the Astro application

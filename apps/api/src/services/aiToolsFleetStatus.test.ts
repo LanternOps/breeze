@@ -23,6 +23,14 @@ vi.mock('../db/schema/devices', () => ({
     osType: 'd.os_type',
     status: 'd.status',
     orgId: 'd.org_id',
+    siteId: 'd.site_id',
+  },
+}));
+
+vi.mock('../db/schema/orgs', () => ({
+  enrollmentKeys: {
+    id: 'ek.id',
+    siteId: 'ek.site_id',
   },
 }));
 
@@ -43,6 +51,8 @@ function mockSelectQueue(results: unknown[][]): void {
     const result = queue.shift() ?? [];
     const chain: any = {
       from: vi.fn().mockReturnThis(),
+      // The invites query now joins enrollment_keys for the site sub-axis.
+      leftJoin: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnValue(Promise.resolve(result)),
     };
     return chain as any;

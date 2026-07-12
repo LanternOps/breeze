@@ -11,8 +11,10 @@ import {
 import { extractApiError } from '@/lib/apiError';
 import {
   applyAppearancePreferences,
+  applyResolvedLocalePreferences,
   type Density,
   type FontPreference,
+  type LocalePreference,
   type TimeFormatPreference,
   type ThemePreference,
 } from '@/lib/appearance';
@@ -22,6 +24,7 @@ export interface UserPreferences {
   density?: Density;
   font?: FontPreference;
   timeFormat?: TimeFormatPreference;
+  locale?: LocalePreference;
 }
 
 /** A single permission grant ({ resource, action }), mirroring the API. */
@@ -918,7 +921,12 @@ export async function apiLogout(): Promise<void> {
 export async function fetchAndApplyPreferences(): Promise<void> {
   try {
     const response = await fetchWithAuth('/users/me');
-    if (!response.ok) return;
+    if (!response.ok) {
+      console.warn(
+        `[fetchAndApplyPreferences] GET /users/me returned ${response.status}; locale resolution skipped`
+      );
+      return;
+    }
 
     const data = await response.json();
     // isPlatformAdmin rides along with this refresh: fresh logins carry it in
@@ -937,8 +945,13 @@ export async function fetchAndApplyPreferences(): Promise<void> {
       useAuthStore.getState().updateUser({ preferences: data.preferences });
       applyAppearancePreferences(data.preferences);
     }
-  } catch {
-    // Non-critical — localStorage still has the cached theme
+    applyResolvedLocalePreferences(data.preferences?.locale, data.partnerDefaultLocale);
+  } catch (err) {
+    // Non-critical for theme — localStorage still has the cached theme — but this
+    // also skips locale resolution, which guards against cross-account locale
+    // leakage on shared browsers (see applyResolvedLocalePreferences). Log so that
+    // failure isn't silent.
+    console.warn('[fetchAndApplyPreferences] failed to fetch /users/me; locale resolution skipped:', err);
   }
 }
 

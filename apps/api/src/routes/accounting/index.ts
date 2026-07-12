@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { and, eq } from 'drizzle-orm';

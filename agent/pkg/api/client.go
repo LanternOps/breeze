@@ -79,6 +79,7 @@ type EnrollResponse struct {
 	HelperAuthToken   string             `json:"helperAuthToken"`
 	OrgID             string             `json:"orgId"`
 	SiteID            string             `json:"siteId"`
+	BackupServerURL   string             `json:"backupServerUrl"`
 	Config            AgentConfig        `json:"config"`
 	Mtls              *MtlsCertData      `json:"mtls"`
 	ManifestTrustKeys []ManifestTrustKey `json:"manifestTrustKeys,omitempty"`

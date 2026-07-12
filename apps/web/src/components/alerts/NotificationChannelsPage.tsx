@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Plus, Trash2, GripVertical, ArrowUpDown, ChevronDown, ChevronRight } from 'lucide-react';
 import NotificationChannelList, { type NotificationChannel } from './NotificationChannelList';
 import NotificationChannelForm, { type NotificationChannelFormValues } from './NotificationChannelForm';
@@ -10,6 +11,7 @@ import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
+import { i18n } from '../../lib/i18n';
 
 // Exported for unit-testing without mounting the full component.
 export async function runChannelTest(
@@ -20,8 +22,8 @@ export async function runChannelTest(
     // T shape only informs isApiFailure/extractApiError; return value is unused.
     await runAction<{ testResult?: { success: boolean; message?: string } }>({
       request: () => fetchWithAuth(`/alerts/channels/${channel.id}/test`, { method: 'POST' }),
-      successMessage: `Test notification sent to "${channel.name}"`,
-      errorFallback: 'Channel test failed',
+      successMessage: i18n.t('alerts:notificationChannelsPage.testNotificationSent', { name: channel.name }),
+      errorFallback: i18n.t('alerts:notificationChannelsPage.channelTestFailed'),
       onUnauthorized: deps.onUnauthorized,
     });
   } catch (err) {
@@ -34,7 +36,7 @@ export async function runChannelTest(
     // is not silent (the exact class WS-A exists to remove). Mirrors the
     // catch pattern used by the sibling handlers in this file.
     if (!(err instanceof ActionError)) {
-      showToast({ message: err instanceof Error ? err.message : 'Channel test failed', type: 'error' });
+      showToast({ message: err instanceof Error ? err.message : i18n.t('alerts:notificationChannelsPage.channelTestFailed'), type: 'error' });
     }
     // ActionError non-401: already toasted by runAction — fall through to refetch.
   }
@@ -50,9 +52,9 @@ export async function runChannelSave(
   await runAction({
     request: () => fetchWithAuth(opts.url, { method: opts.method, body: JSON.stringify(opts.payload) }),
     successMessage: opts.isCreate
-      ? (name ? `Channel "${name}" created` : 'Channel created')
-      : (name ? `Channel "${name}" saved` : 'Channel saved'),
-    errorFallback: 'Failed to save channel',
+      ? (name ? i18n.t('alerts:notificationChannelsPage.channelCreatedWithName', { name }) : i18n.t('alerts:notificationChannelsPage.channelCreated'))
+      : (name ? i18n.t('alerts:notificationChannelsPage.channelSavedWithName', { name }) : i18n.t('alerts:notificationChannelsPage.channelSaved')),
+    errorFallback: i18n.t('alerts:notificationChannelsPage.failedToSaveChannel'),
     onUnauthorized: deps.onUnauthorized,
   });
 }
@@ -64,8 +66,8 @@ export async function runChannelDelete(
 ): Promise<void> {
   await runAction({
     request: () => fetchWithAuth(`/alerts/channels/${channel.id}`, { method: 'DELETE' }),
-    successMessage: `Channel "${channel.name}" deleted`,
-    errorFallback: 'Failed to delete channel',
+    successMessage: i18n.t('alerts:notificationChannelsPage.channelDeletedWithName', { name: channel.name }),
+    errorFallback: i18n.t('alerts:notificationChannelsPage.failedToDeleteChannel'),
     onUnauthorized: deps.onUnauthorized,
   });
 }
@@ -91,8 +93,8 @@ export async function runRoutingRuleSave(
         ...(!isEdit && rule.ownerScope ? { ownerScope: rule.ownerScope } : {}),
       }),
     }),
-    successMessage: isEdit ? 'Routing rule saved' : 'Routing rule created',
-    errorFallback: 'Failed to save routing rule',
+    successMessage: isEdit ? i18n.t('alerts:notificationChannelsPage.routingRuleSaved') : i18n.t('alerts:notificationChannelsPage.routingRuleCreated'),
+    errorFallback: i18n.t('alerts:notificationChannelsPage.failedToSaveRoutingRule'),
     onUnauthorized: deps.onUnauthorized,
   });
 }
@@ -104,8 +106,8 @@ export async function runRoutingRuleDelete(
 ): Promise<void> {
   await runAction({
     request: () => fetchWithAuth(`/alerts/routing-rules/${ruleId}`, { method: 'DELETE' }),
-    successMessage: 'Routing rule deleted',
-    errorFallback: 'Failed to delete routing rule',
+    successMessage: i18n.t('alerts:notificationChannelsPage.routingRuleDeleted'),
+    errorFallback: i18n.t('alerts:notificationChannelsPage.failedToDeleteRoutingRule'),
     onUnauthorized: deps.onUnauthorized,
   });
 }
@@ -127,6 +129,7 @@ type RoutingRule = {
 };
 
 export default function NotificationChannelsPage() {
+  const { t } = useTranslation('alerts');
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -176,16 +179,16 @@ export default function NotificationChannelsPage() {
           return;
         }
         const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, 'Failed to fetch notification channels'));
+        throw new Error(extractApiError(data, t('notificationChannelsPage.failedToFetchNotificationChannels')));
       }
       const data = await response.json();
       setChannels(data.channels ?? data.data ?? (Array.isArray(data) ? data : []));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('notificationChannelsPage.genericError'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchChannels();
@@ -399,7 +402,7 @@ export default function NotificationChannelsPage() {
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('notificationChannelsPage.genericError'));
       }
       // ActionError non-401: runAction already toasted
     } finally {
@@ -418,7 +421,7 @@ export default function NotificationChannelsPage() {
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
+        setError(err instanceof Error ? err.message : t('notificationChannelsPage.genericError'));
       }
       // ActionError non-401: runAction already toasted
     } finally {
@@ -435,7 +438,7 @@ export default function NotificationChannelsPage() {
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        setError(err instanceof Error ? err.message : 'Failed to save routing rule');
+        setError(err instanceof Error ? err.message : t('notificationChannelsPage.failedToSaveRoutingRule'));
       }
       // ActionError non-401: runAction already toasted
     }
@@ -448,7 +451,7 @@ export default function NotificationChannelsPage() {
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
-        setError(err instanceof Error ? err.message : 'Failed to delete routing rule');
+        setError(err instanceof Error ? err.message : t('notificationChannelsPage.failedToDeleteRoutingRule'));
       }
       // ActionError non-401: runAction already toasted
     }
@@ -459,7 +462,7 @@ export default function NotificationChannelsPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading notification channels...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('notificationChannelsPage.loadingNotificationChannels')}</p>
         </div>
       </div>
     );
@@ -474,7 +477,7 @@ export default function NotificationChannelsPage() {
           onClick={fetchChannels}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('notificationChannelsPage.tryAgain')}
         </button>
       </div>
     );
@@ -485,9 +488,9 @@ export default function NotificationChannelsPage() {
       <AlertsTabStrip currentPath="/alerts/channels" />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Notification Channels</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('notificationChannelsPage.notificationChannels')}</h1>
           <p className="text-muted-foreground">
-            Configure where alert notifications are sent.
+            {t('notificationChannelsPage.configureWhereAlertNotificationsAreSent')}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -495,7 +498,7 @@ export default function NotificationChannelsPage() {
             href="/configuration-policies"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
           >
-            Configuration Policies
+            {t('notificationChannelsPage.configurationPolicies')}
           </a>
           <button
             type="button"
@@ -503,7 +506,7 @@ export default function NotificationChannelsPage() {
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             <Plus className="h-4 w-4" />
-            New Channel
+            {t('notificationChannelsPage.newChannel')}
           </button>
         </div>
       </div>
@@ -531,14 +534,14 @@ export default function NotificationChannelsPage() {
           <div className="flex items-center gap-3">
             <ArrowUpDown className="h-5 w-5 text-muted-foreground" />
             <div>
-              <h2 className="text-lg font-semibold">Notification Routing Rules</h2>
+              <h2 className="text-lg font-semibold">{t('notificationChannelsPage.notificationRoutingRules')}</h2>
               <p className="text-sm text-muted-foreground">
-                Route alerts to specific channels based on severity. First matching rule wins.
+                {t('notificationChannelsPage.routeAlertsToSpecificChannelsBasedOn')}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium">{routingRules.length} rule{routingRules.length !== 1 ? 's' : ''}</span>
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium">{t('notificationChannelsPage.ruleCount', { count: routingRules.length })}</span>
             {routingExpanded ? <ChevronDown className="h-5 w-5 text-muted-foreground" /> : <ChevronRight className="h-5 w-5 text-muted-foreground" />}
           </div>
         </button>
@@ -547,13 +550,13 @@ export default function NotificationChannelsPage() {
           <div className="border-t px-6 pb-6 pt-4">
             {routingRules.length === 0 && !showRuleForm ? (
               <div className="rounded-md border border-dashed py-8 text-center">
-                <p className="text-sm text-muted-foreground">No routing rules configured. All alerts go to all enabled channels.</p>
+                <p className="text-sm text-muted-foreground">{t('notificationChannelsPage.noRoutingRulesConfiguredAllAlertsGo')}</p>
                 <button
                   type="button"
                   onClick={() => { setEditingRule(null); setShowRuleForm(true); }}
                   className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
                 >
-                  <Plus className="h-3.5 w-3.5" /> Add Routing Rule
+                  <Plus className="h-3.5 w-3.5" /> {t('notificationChannelsPage.addRoutingRule')}
                 </button>
               </div>
             ) : (
@@ -570,26 +573,26 @@ export default function NotificationChannelsPage() {
                             {rule.orgId === null && (
                               <span
                                 className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary"
-                                title="Partner-wide rule — routes alerts from every organization"
+                                title={t('notificationChannelsPage.partnerWideRuleRoutesAlertsFromEvery')}
                                 data-testid="routing-rule-partner-wide-badge"
                               >
-                                All orgs
+                                {t('notificationChannelsPage.allOrgs')}
                               </span>
                             )}
                             {!rule.enabled && (
-                              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">Disabled</span>
+                              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{t('notificationChannelsPage.disabled')}</span>
                             )}
                           </div>
                           <div className="mt-0.5 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-                            <span>Priority: {rule.priority}</span>
+                            <span>{t('notificationChannelsPage.priority')} {rule.priority}</span>
                             {rule.conditions.severities && rule.conditions.severities.length > 0 && (
                               <span>
-                                Severities: {rule.conditions.severities.join(', ')}
+                                {t('notificationChannelsPage.severities')} {rule.conditions.severities.join(', ')}
                               </span>
                             )}
                             <span>
-                              Channels: {rule.channelIds.length === 0
-                                ? 'None'
+                              {t('notificationChannelsPage.channels')} {rule.channelIds.length === 0
+                                ? t('common:labels.none')
                                 : rule.channelIds
                                     .map(id => channels.find(c => c.id === id)?.name ?? id.slice(0, 8))
                                     .join(', ')}
@@ -602,7 +605,7 @@ export default function NotificationChannelsPage() {
                             onClick={() => { setEditingRule(rule); setShowRuleForm(true); }}
                             className="rounded-md px-2 py-1 text-xs font-medium hover:bg-muted"
                           >
-                            Edit
+                            {t('notificationChannelsPage.edit')}
                           </button>
                           <button
                             type="button"
@@ -621,7 +624,7 @@ export default function NotificationChannelsPage() {
                     onClick={() => { setEditingRule(null); setShowRuleForm(true); }}
                     className="mt-3 inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
                   >
-                    <Plus className="h-3.5 w-3.5" /> Add Rule
+                    <Plus className="h-3.5 w-3.5" /> {t('notificationChannelsPage.addRule')}
                   </button>
                 )}
               </>
@@ -648,7 +651,7 @@ export default function NotificationChannelsPage() {
           <div className="w-full max-w-3xl">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-xl font-bold">
-                {modalMode === 'create' ? 'Create Notification Channel' : 'Edit Notification Channel'}
+                {modalMode === 'create' ? t('notificationChannelsPage.createNotificationChannel') : t('notificationChannelsPage.editNotificationChannel')}
               </h2>
             </div>
             {error && (
@@ -659,7 +662,7 @@ export default function NotificationChannelsPage() {
             {/* Ownership scope — partner-scope creators only, create-only (#2130) */}
             {modalMode === 'create' && isPartnerScope && (
               <fieldset className="mb-4 space-y-2 rounded-md border bg-card p-4" data-testid="notification-channel-owner">
-                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">{t('notificationChannelsPage.scope')}</legend>
                 <label className="flex items-center gap-2 text-sm">
                   <input
                     type="radio"
@@ -667,7 +670,7 @@ export default function NotificationChannelsPage() {
                     onChange={() => setChannelOwnerScope('partner')}
                     data-testid="notification-channel-owner-partner"
                   />
-                  All organizations <span className="text-muted-foreground">(partner-wide channel — receives alerts from every org)</span>
+                  {t('notificationChannelsPage.allOrganizations')} <span className="text-muted-foreground">{t('notificationChannelsPage.partnerWideChannelReceivesAlertsFromEvery')}</span>
                 </label>
                 <label className="flex items-center gap-2 text-sm">
                   <input
@@ -676,7 +679,7 @@ export default function NotificationChannelsPage() {
                     onChange={() => setChannelOwnerScope('organization')}
                     data-testid="notification-channel-owner-org"
                   />
-                  This organization only
+                  {t('notificationChannelsPage.thisOrganizationOnly')}
                 </label>
               </fieldset>
             )}
@@ -688,7 +691,7 @@ export default function NotificationChannelsPage() {
                   ? transformChannelToForm(selectedChannel)
                   : undefined
               }
-              submitLabel={modalMode === 'create' ? 'Create Channel' : 'Save Changes'}
+              submitLabel={modalMode === 'create' ? t('notificationChannelsPage.createChannel') : t('common:actions.save')}
               loading={submitting}
             />
           </div>
@@ -699,11 +702,9 @@ export default function NotificationChannelsPage() {
       {modalMode === 'delete' && selectedChannel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Delete Notification Channel</h2>
+            <h2 className="text-lg font-semibold">{t('notificationChannelsPage.deleteNotificationChannel')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to delete{' '}
-              <span className="font-medium">{selectedChannel.name}</span>? This action cannot be
-              undone. Any alert rules using this channel will no longer send notifications to it.
+              {t('notificationChannelsPage.deleteChannelConfirm', { name: selectedChannel.name })}
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -711,7 +712,7 @@ export default function NotificationChannelsPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
+                {t('notificationChannelsPage.cancel')}
               </button>
               <button
                 type="button"
@@ -719,7 +720,7 @@ export default function NotificationChannelsPage() {
                 disabled={submitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? 'Deleting...' : 'Delete'}
+                {submitting ? t('notificationChannelsPage.deleting') : t('common:actions.delete')}
               </button>
             </div>
           </div>
@@ -750,6 +751,7 @@ function RoutingRuleForm({
   onSave: (rule: Omit<RoutingRule, 'id'> & { id?: string; ownerScope?: 'organization' | 'partner' }) => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation('alerts');
   const [name, setName] = useState(rule?.name ?? '');
   const [priority, setPriority] = useState(rule?.priority ?? 10);
   const [severities, setSeverities] = useState<string[]>(rule?.conditions.severities ?? []);
@@ -785,12 +787,12 @@ function RoutingRuleForm({
 
   return (
     <div className="mt-4 rounded-md border bg-card p-4 space-y-4">
-      <h3 className="text-sm font-semibold">{rule ? 'Edit Routing Rule' : 'New Routing Rule'}</h3>
+      <h3 className="text-sm font-semibold">{rule ? t('notificationChannelsPage.editRoutingRule') : t('notificationChannelsPage.newRoutingRule')}</h3>
 
       {/* Ownership scope — partner-scope creators only, create-only (#2130) */}
       {!rule && showOwnerScope && (
         <fieldset className="space-y-2 rounded-md border p-3" data-testid="routing-rule-owner">
-          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">Scope</legend>
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">{t('notificationChannelsPage.scope')}</legend>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="radio"
@@ -798,7 +800,7 @@ function RoutingRuleForm({
               onChange={() => setOwnerScope('partner')}
               data-testid="routing-rule-owner-partner"
             />
-            All organizations <span className="text-muted-foreground">(partner-wide rule)</span>
+            {t('notificationChannelsPage.allOrganizations')} <span className="text-muted-foreground">{t('notificationChannelsPage.partnerWideRule')}</span>
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -807,23 +809,23 @@ function RoutingRuleForm({
               onChange={() => setOwnerScope('organization')}
               data-testid="routing-rule-owner-org"
             />
-            This organization only
+            {t('notificationChannelsPage.thisOrganizationOnly')}
           </label>
         </fieldset>
       )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
-          <label className="text-xs font-medium text-muted-foreground">Name</label>
+          <label className="text-xs font-medium text-muted-foreground">{t('notificationChannelsPage.name')}</label>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Critical to PagerDuty"
+            placeholder={t('notificationChannelsPage.eGCriticalToPagerduty')}
             className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
         </div>
         <div>
-          <label className="text-xs font-medium text-muted-foreground">Priority (lower = higher)</label>
+          <label className="text-xs font-medium text-muted-foreground">{t('notificationChannelsPage.priorityLowerHigher')}</label>
           <input
             type="number"
             min={1}
@@ -836,8 +838,8 @@ function RoutingRuleForm({
       </div>
 
       <div>
-        <label className="text-xs font-medium text-muted-foreground">Match Severities</label>
-        <p className="text-xs text-muted-foreground mb-2">Leave empty to match all severities.</p>
+        <label className="text-xs font-medium text-muted-foreground">{t('notificationChannelsPage.matchSeverities')}</label>
+        <p className="text-xs text-muted-foreground mb-2">{t('notificationChannelsPage.leaveEmptyToMatchAllSeverities')}</p>
         <div className="flex flex-wrap gap-2">
           {SEVERITY_OPTIONS.map((sev) => (
             <button
@@ -850,14 +852,14 @@ function RoutingRuleForm({
                   : 'hover:bg-muted'
               }`}
             >
-              {sev}
+              {t(/* i18n-dynamic */ `notificationChannelsPage.severity.${sev}`)}
             </button>
           ))}
         </div>
       </div>
 
       <div>
-        <label className="text-xs font-medium text-muted-foreground">Route to Channels</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('notificationChannelsPage.routeToChannels')}</label>
         <div className="mt-2 space-y-1">
           {channels.map((ch) => (
             <label key={ch.id} className="flex items-center gap-2 cursor-pointer rounded-md px-2 py-1 hover:bg-muted">
@@ -872,7 +874,7 @@ function RoutingRuleForm({
             </label>
           ))}
           {channels.length === 0 && (
-            <p className="text-xs text-muted-foreground">No channels configured yet.</p>
+            <p className="text-xs text-muted-foreground">{t('notificationChannelsPage.noChannelsConfiguredYet')}</p>
           )}
         </div>
       </div>
@@ -884,7 +886,7 @@ function RoutingRuleForm({
           onChange={(e) => setEnabled(e.target.checked)}
           className="h-4 w-4 rounded border-muted"
         />
-        <span className="text-sm">Enabled</span>
+        <span className="text-sm">{t('notificationChannelsPage.enabled')}</span>
       </label>
 
       <div className="flex justify-end gap-2">
@@ -893,7 +895,7 @@ function RoutingRuleForm({
           onClick={onCancel}
           className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
         >
-          Cancel
+          {t('notificationChannelsPage.cancel')}
         </button>
         <button
           type="button"
@@ -901,7 +903,7 @@ function RoutingRuleForm({
           disabled={!name.trim() || channelIds.length === 0}
           className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {rule ? 'Save Rule' : 'Create Rule'}
+          {rule ? t('notificationChannelsPage.saveRule') : t('notificationChannelsPage.createRule')}
         </button>
       </div>
     </div>

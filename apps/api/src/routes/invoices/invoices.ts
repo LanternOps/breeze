@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -37,7 +37,10 @@ const dueDateSchema = z.object({
 
 export function invoiceActorFrom(c: { get: (k: string) => unknown }): InvoiceActor {
   const auth = c.get('auth') as AuthContext;
-  return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds };
+  // These routes require partner/system scope, where allowedSiteIds is undefined
+  // (unrestricted) — threading it is a no-op today but keeps the actor honest if an
+  // org/site-scoped token is ever admitted here.
+  return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds, allowedSiteIds: auth.allowedSiteIds };
 }
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof InvoiceServiceError) return c.json({ error: err.message, code: err.code }, err.status);

@@ -1,4 +1,6 @@
-/**
+
+import { useTranslation } from 'react-i18next';/**
+import '../../lib/i18n';
  * VM Restore Wizard — Step 3: VM Specifications
  *
  * Configure memory, CPU, and disk resources for the restored VM.
@@ -22,17 +24,17 @@ export default function VMRestoreSpecsStep({
   onCpuChange,
   onDiskChange,
 }: VMRestoreSpecsStepProps) {
+  const { t } = useTranslation('backup');
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-lg font-semibold text-foreground">VM specifications</h3>
+        <h3 className="text-lg font-semibold text-foreground">{t('vMRestoreSpecsStep.vmSpecifications')}</h3>
         <p className="text-sm text-muted-foreground">
-          Configure resources for the virtual machine. Pre-filled from the backup hardware profile.
-        </p>
+          {t('vMRestoreSpecsStep.configureResourcesForTheVirtualMachinePreFilled')} </p>
       </div>
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="space-y-2">
-          <label htmlFor="vm-memory" className="text-xs font-medium text-muted-foreground">Memory (MB)</label>
+          <label htmlFor="vm-memory" className="text-xs font-medium text-muted-foreground">{t('vMRestoreSpecsStep.memoryMb')}</label>
           <input
             id="vm-memory"
             type="number"
@@ -44,7 +46,7 @@ export default function VMRestoreSpecsStep({
           />
         </div>
         <div className="space-y-2">
-          <label htmlFor="vm-cpu" className="text-xs font-medium text-muted-foreground">CPU Count</label>
+          <label htmlFor="vm-cpu" className="text-xs font-medium text-muted-foreground">{t('vMRestoreSpecsStep.cpuCount')}</label>
           <input
             id="vm-cpu"
             type="number"
@@ -56,7 +58,7 @@ export default function VMRestoreSpecsStep({
           />
         </div>
         <div className="space-y-2">
-          <label htmlFor="vm-disk" className="text-xs font-medium text-muted-foreground">Disk (GB)</label>
+          <label htmlFor="vm-disk" className="text-xs font-medium text-muted-foreground">{t('vMRestoreSpecsStep.diskGb')}</label>
           <input
             id="vm-disk"
             type="number"

@@ -56,7 +56,12 @@ vi.mock('../../db', () => ({
   db: {
     select: dbSelectMock,
     insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) }))
-  }
+  },
+  // GET /tickets/forms resolves the session org's partnerId under a system
+  // context (mirrors routes/portal/quotes.ts:70) — pass-through no-ops here,
+  // same convention as routes/portal/quotes.test.ts.
+  runOutsideDbContext: <T,>(fn: () => T): T => fn(),
+  withSystemDbAccessContext: <T,>(fn: () => Promise<T>): Promise<T> => fn()
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -73,7 +78,20 @@ vi.mock('../../db/schema', () => ({
   },
   ticketStatuses: {
     id: 'id', name: 'name', color: 'color'
+  },
+  organizations: {
+    id: 'id', partnerId: 'partnerId'
   }
+}));
+
+// ── ticketFormService mock ────────────────────────────────────────────────────
+
+const { listTicketFormsForOrgMock } = vi.hoisted(() => ({
+  listTicketFormsForOrgMock: vi.fn()
+}));
+
+vi.mock('../../services/ticketFormService', () => ({
+  listTicketFormsForOrg: listTicketFormsForOrgMock
 }));
 
 vi.mock('./helpers', () => ({
@@ -345,6 +363,159 @@ describe('portal ticket soft-delete exclusion', () => {
   });
 });
 
+// ── GET /tickets/forms — Task 4: portal forms read ───────────────────────────
+
+const FORM_ROW = {
+  id: 'f-1',
+  name: 'Printer Issue',
+  description: 'Report a printer problem',
+  categoryId: 'cat-1',
+  fields: [{ key: 'model', label: 'Printer model', type: 'text', required: true }],
+  defaultPriority: 'high',
+  // Fields that must NOT leak into the slim portal payload:
+  titleTemplate: '{{model}} is broken',
+  orgId: null,
+  partnerId: 'p-1',
+  isActive: true,
+  showInPortal: true,
+  sortOrder: 1,
+  version: 1,
+  createdAt: new Date(),
+  updatedAt: new Date()
+};
+
+describe('GET /tickets/forms', () => {
+  let app: ReturnType<typeof buildApp>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = buildApp();
+    // Org partnerId lookup: db.select({partnerId}).from(organizations).where(...).limit(1)
+    dbSelectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([{ partnerId: 'p-1' }]))
+        }))
+      }))
+    }));
+  });
+
+  it('resolves the session org + partnerId and calls listTicketFormsForOrg with portalOnly: true', async () => {
+    listTicketFormsForOrgMock.mockResolvedValue([FORM_ROW]);
+
+    const res = await app.request('/tickets/forms', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(listTicketFormsForOrgMock).toHaveBeenCalledWith(
+      { id: PORTAL_USER.orgId, partnerId: 'p-1' },
+      { portalOnly: true }
+    );
+  });
+
+  it('returns ONLY the slim keys (id, name, description, categoryId, fields, defaultPriority) — no titleTemplate or other columns', async () => {
+    listTicketFormsForOrgMock.mockResolvedValue([FORM_ROW]);
+
+    const res = await app.request('/tickets/forms', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Record<string, unknown>[] };
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toEqual({
+      id: FORM_ROW.id,
+      name: FORM_ROW.name,
+      description: FORM_ROW.description,
+      categoryId: FORM_ROW.categoryId,
+      fields: FORM_ROW.fields,
+      defaultPriority: FORM_ROW.defaultPriority
+    });
+    expect(body.data[0]).not.toHaveProperty('titleTemplate');
+    expect(body.data[0]).not.toHaveProperty('orgId');
+    expect(body.data[0]).not.toHaveProperty('partnerId');
+    expect(body.data[0]).not.toHaveProperty('showInPortal');
+  });
+
+  it('returns { data: [] } when the service returns no forms', async () => {
+    listTicketFormsForOrgMock.mockResolvedValue([]);
+
+    const res = await app.request('/tickets/forms', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ data: [] });
+  });
+});
+
+// ── GET /tickets/forms — mount-wiring regression (auth-prefix coverage) ───────
+//
+// routes/portal/index.ts protects the ticket router with
+// `portalRoutes.use('/tickets/*', portalAuthMiddleware)` — a `/tickets/*`
+// prefix, NOT a blanket `use('*')` like buildApp() above. A forms route
+// registered outside that prefix (the original `/ticket-forms` path) ships
+// with NO auth in production and 500s on the missing portalAuth context.
+// This suite wires the app the way index.ts ACTUALLY mounts it (same
+// use-prefix + route('/') calls, with a portalAuthMiddleware stand-in that
+// 401s without a session) so the auth-prefix coverage of the forms route is
+// asserted structurally, not assumed.
+describe('GET /tickets/forms — index.ts mount wiring', () => {
+  function buildMountedApp() {
+    const app = new Hono();
+    // Verbatim shape of routes/portal/index.ts: prefix-scoped auth middleware,
+    // then the router mounted at '/'. The stub mirrors portalAuthMiddleware's
+    // contract: 401 without a session credential, portalAuth set otherwise.
+    app.use('/tickets/*', async (c, next) => {
+      if (!c.req.header('Authorization')) {
+        return c.json({ error: 'Authentication required' }, 401);
+      }
+      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+      await next();
+    });
+    app.route('/', ticketRoutes);
+    return app;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbSelectMock.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([{ partnerId: 'p-1' }]))
+        }))
+      }))
+    }));
+  });
+
+  it('WITHOUT a session: 401 — proves the /tickets/* auth prefix covers the forms route', async () => {
+    const app = buildMountedApp();
+    const res = await app.request('/tickets/forms');
+    expect(res.status).toBe(401);
+    expect(listTicketFormsForOrgMock).not.toHaveBeenCalled();
+  });
+
+  it('WITH a session: 200 slim payload — proves /tickets/forms is not swallowed by the /tickets/:id matcher', async () => {
+    listTicketFormsForOrgMock.mockResolvedValue([FORM_ROW]);
+    const app = buildMountedApp();
+    const res = await app.request('/tickets/forms', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Record<string, unknown>[] };
+    expect(body.data[0]).toEqual({
+      id: FORM_ROW.id,
+      name: FORM_ROW.name,
+      description: FORM_ROW.description,
+      categoryId: FORM_ROW.categoryId,
+      fields: FORM_ROW.fields,
+      defaultPriority: FORM_ROW.defaultPriority
+    });
+  });
+});
+
 // ── POST /tickets — B1 fix: delegates to createTicket ────────────────────────
 
 const CREATED_AT = new Date('2026-01-15T10:00:00Z');
@@ -441,6 +612,83 @@ describe('POST /tickets — delegates to createTicket', () => {
     expect(res.status).toBe(404);
     const body = await res.json() as { error: string };
     expect(body.error).toMatch(/organization not found/i);
+  });
+
+  // ── Task 4: form-aware create ──────────────────────────────────────────────
+
+  it('passes formId and formResponses through to createTicket', async () => {
+    const FORM_ID = '3f2f1d8e-1111-4222-8333-444455556677';
+    const res = await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ formId: FORM_ID, formResponses: { model: 'HP LaserJet' } })
+    });
+
+    expect(res.status).toBe(201);
+    expect(createTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        formId: FORM_ID,
+        formResponses: { model: 'HP LaserJet' },
+        source: 'portal'
+      }),
+      expect.objectContaining({ userId: PORTAL_USER.id })
+    );
+  });
+
+  it('rejects formResponses without formId with a 400 (schema-level, before createTicket is called)', async () => {
+    const res = await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ formResponses: { model: 'HP LaserJet' } })
+    });
+
+    expect(res.status).toBe(400);
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a form-only submission with no subject/description', async () => {
+    const FORM_ID = '3f2f1d8e-1111-4222-8333-444455556677';
+    const res = await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ formId: FORM_ID, formResponses: { model: 'HP LaserJet' } })
+    });
+
+    expect(res.status).toBe(201);
+    expect(createTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({ formId: FORM_ID, subject: undefined, description: undefined }),
+      expect.anything()
+    );
+  });
+
+  it('accepts a legacy submission (subject + description, no form) unchanged', async () => {
+    const res = await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'Printer not working', description: 'It clicks' })
+    });
+
+    expect(res.status).toBe(201);
+    expect(createTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: 'Printer not working',
+        description: 'It clicks',
+        formId: undefined,
+        formResponses: undefined
+      }),
+      expect.anything()
+    );
+  });
+
+  it('rejects a blank subject with no formId with a 400', async () => {
+    const res = await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: '   ', description: 'It clicks' })
+    });
+
+    expect(res.status).toBe(400);
+    expect(createTicketMock).not.toHaveBeenCalled();
   });
 });
 

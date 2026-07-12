@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { FileUp, Loader2, PlusCircle, Trash2, CheckCircle2, Layers, Search, Copy, AlertCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 
 type OidRow = {
@@ -125,6 +126,7 @@ function parseOidValidation(payload: unknown): OidValidationResult[] {
 }
 
 export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 0, onTemplateSaved }: Props = {}) {
+  const { t } = useTranslation('common');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -171,7 +173,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       const response = await fetchWithAuth('/snmp/templates');
 
       if (!response.ok) {
-        throw new Error('Failed to fetch SNMP templates');
+        throw new Error(t('longTail.snmp.SNMPTemplateEditor.errors.fetchTemplates'));
       }
 
       const payload = await response.json();
@@ -201,11 +203,11 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
         applyTemplate(normalizedTemplates[0]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load templates');
+      setError(err instanceof Error ? err.message : t('longTail.snmp.SNMPTemplateEditor.errors.loadTemplates'));
     } finally {
       setLoading(false);
     }
-  }, [applyTemplate, handleNewTemplate, selectedTemplateId]);
+  }, [applyTemplate, handleNewTemplate, selectedTemplateId, t]);
 
   useEffect(() => {
     void fetchTemplates();
@@ -237,18 +239,18 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
 
       const response = await fetchWithAuth(`/snmp/oids/browse?${params.toString()}`);
       if (!response.ok) {
-        throw new Error('Failed to load OID browser results');
+        throw new Error(t('longTail.snmp.SNMPTemplateEditor.errors.loadOidBrowser'));
       }
 
       const payload = await response.json();
       setOidSearchResults(parseOidLookup(payload));
     } catch (err) {
       setOidSearchResults([]);
-      setOidSearchError(err instanceof Error ? err.message : 'Failed to load OID browser results');
+      setOidSearchError(err instanceof Error ? err.message : t('longTail.snmp.SNMPTemplateEditor.errors.loadOidBrowser'));
     } finally {
       setOidSearchLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -293,7 +295,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
     try {
       await navigator.clipboard.writeText(oid);
     } catch {
-      setError('Failed to copy OID to clipboard');
+      setError(t('longTail.snmp.SNMPTemplateEditor.errors.copyOid'));
     }
   };
 
@@ -329,7 +331,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
 
   const handleSave = async () => {
     if (!name.trim()) {
-      setError('Template name is required');
+      setError(t('longTail.snmp.SNMPTemplateEditor.errors.templateNameRequired'));
       return;
     }
 
@@ -350,7 +352,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
         .filter((row) => row.oid.length > 0);
 
       if (oidPayload.length === 0) {
-        throw new Error('At least one OID is required');
+        throw new Error(t('longTail.snmp.SNMPTemplateEditor.errors.oidRequired'));
       }
 
       const validationResponse = await fetchWithAuth('/snmp/oids/validate', {
@@ -359,7 +361,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       });
 
       if (!validationResponse.ok) {
-        throw new Error('Failed to validate OIDs');
+        throw new Error(t('longTail.snmp.SNMPTemplateEditor.errors.validateOids'));
       }
 
       const validationPayload = await validationResponse.json();
@@ -369,7 +371,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       const invalidResults = validationResults.filter((result) => !result.valid);
       if (invalidResults.length > 0) {
         const first = invalidResults[0];
-        throw new Error(first.errors?.[0] ?? `OID validation failed for ${first.oid}`);
+        throw new Error(first.errors?.[0] ?? t('longTail.snmp.SNMPTemplateEditor.errors.oidValidationFailedFor', { oid: first.oid }));
       }
 
       const templatePayload = {
@@ -402,7 +404,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error ?? errorData.message ?? 'Failed to save template');
+        throw new Error(errorData.error ?? errorData.message ?? t('longTail.snmp.SNMPTemplateEditor.errors.saveTemplate'));
       }
 
       const result = await response.json();
@@ -417,7 +419,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       }
       onTemplateSaved?.(savedTemplate.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save template');
+      setError(err instanceof Error ? err.message : t('longTail.snmp.SNMPTemplateEditor.errors.saveTemplate'));
     } finally {
       setValidating(false);
       setSaving(false);
@@ -435,7 +437,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-muted-foreground" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading SNMP templates...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('longTail.snmp.SNMPTemplateEditor.loading')}</p>
         </div>
       </div>
     );
@@ -450,8 +452,8 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
               <Layers className="h-6 w-6 text-muted-foreground" />
             </div>
             <div>
-              <h2 className="text-xl font-semibold">SNMP Template Editor</h2>
-              <p className="text-sm text-muted-foreground">Define which OIDs are collected for a device type.</p>
+              <h2 className="text-xl font-semibold">{t('longTail.snmp.SNMPTemplateEditor.title')}</h2>
+              <p className="text-sm text-muted-foreground">{t('longTail.snmp.SNMPTemplateEditor.description')}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -461,7 +463,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                 onChange={e => loadTemplate(e.target.value)}
                 className="h-10 rounded-md border bg-background px-3 text-sm"
               >
-                <option value="">Select template...</option>
+                <option value="">{t('longTail.snmp.SNMPTemplateEditor.selectTemplate')}</option>
                 {templates.map(t => (
                   <option key={t.id} value={t.id}>
                     {t.name}
@@ -475,7 +477,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
               className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
             >
               <PlusCircle className="h-4 w-4" />
-              New Template
+              {t('longTail.snmp.SNMPTemplateEditor.newTemplate')}
             </button>
           </div>
         </div>
@@ -488,45 +490,45 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       )}
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <h3 className="text-lg font-semibold">Template details</h3>
+        <h3 className="text-lg font-semibold">{t('longTail.snmp.SNMPTemplateEditor.templateDetails')}</h3>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="text-sm font-medium">Name</label>
+            <label className="text-sm font-medium">{t('common:labels.name')}</label>
             <input
               type="text"
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="Cisco Core"
+              placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.name')}
               className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
           </div>
           <div>
-            <label className="text-sm font-medium">Vendor</label>
+            <label className="text-sm font-medium">{t('longTail.snmp.SNMPTemplateEditor.vendor')}</label>
             <input
               type="text"
               value={vendor}
               onChange={e => setVendor(e.target.value)}
-              placeholder="Cisco"
+              placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.vendor')}
               className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
           </div>
           <div>
-            <label className="text-sm font-medium">Device type</label>
+            <label className="text-sm font-medium">{t('longTail.snmp.SNMPTemplateEditor.deviceType')}</label>
             <input
               type="text"
               value={deviceType}
               onChange={e => setDeviceType(e.target.value)}
-              placeholder="Core Switch"
+              placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.deviceType')}
               className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
           </div>
           <div>
-            <label className="text-sm font-medium">Description</label>
+            <label className="text-sm font-medium">{t('common:labels.description')}</label>
             <input
               type="text"
               value={description}
               onChange={e => setDescription(e.target.value)}
-              placeholder="High-throughput switches with multiple uplinks"
+              placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.description')}
               className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
           </div>
@@ -536,13 +538,13 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h3 className="text-lg font-semibold">OID list</h3>
-            <p className="text-sm text-muted-foreground">Configure the OIDs that power metrics and thresholds.</p>
+            <h3 className="text-lg font-semibold">{t('longTail.snmp.SNMPTemplateEditor.oidList')}</h3>
+            <p className="text-sm text-muted-foreground">{t('longTail.snmp.SNMPTemplateEditor.oidListDescription')}</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button type="button" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
               <FileUp className="h-4 w-4" />
-              Import from file
+              {t('longTail.snmp.SNMPTemplateEditor.importFromFile')}
             </button>
             <button
               type="button"
@@ -550,7 +552,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
               className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
             >
               <PlusCircle className="h-4 w-4" />
-              Add OID
+              {t('longTail.snmp.SNMPTemplateEditor.addOid')}
             </button>
           </div>
         </div>
@@ -558,7 +560,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
         <div className="mt-4 space-y-4">
           {oids.length === 0 ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
-              No OIDs configured. Click "Add OID" to get started.
+              {t('longTail.snmp.SNMPTemplateEditor.emptyOids')}
             </div>
           ) : (
             oids.map(row => {
@@ -573,7 +575,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                 >
                   <div className="grid gap-3 md:grid-cols-4">
                     <div>
-                      <label className="text-xs font-medium text-muted-foreground">OID</label>
+                      <label className="text-xs font-medium text-muted-foreground">{t('longTail.snmp.SNMPTemplateEditor.oid')}</label>
                       <input
                         type="text"
                         value={row.oid}
@@ -583,36 +585,36 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-medium text-muted-foreground">Name</label>
+                      <label className="text-xs font-medium text-muted-foreground">{t('common:labels.name')}</label>
                       <input
                         type="text"
                         value={row.name}
                         onChange={event => updateOid(row.id, 'name', event.target.value)}
-                        placeholder="System Uptime"
+                        placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.oidName')}
                         className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-medium text-muted-foreground">Type</label>
+                      <label className="text-xs font-medium text-muted-foreground">{t('common:labels.type')}</label>
                       <select
                         value={row.type}
                         onChange={event => updateOid(row.id, 'type', event.target.value)}
                         className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
                       >
-                        <option>Gauge</option>
-                        <option>Counter64</option>
-                        <option>TimeTicks</option>
-                        <option>Integer</option>
-                        <option>OctetString</option>
+                        <option value="Gauge">{t('longTail.snmp.SNMPTemplateEditor.oidTypes.gauge')}</option>
+                        <option value="Counter64">{t('longTail.snmp.SNMPTemplateEditor.oidTypes.counter64')}</option>
+                        <option value="TimeTicks">{t('longTail.snmp.SNMPTemplateEditor.oidTypes.timeTicks')}</option>
+                        <option value="Integer">{t('longTail.snmp.SNMPTemplateEditor.oidTypes.integer')}</option>
+                        <option value="OctetString">{t('longTail.snmp.SNMPTemplateEditor.oidTypes.octetString')}</option>
                       </select>
                     </div>
                     <div>
-                      <label className="text-xs font-medium text-muted-foreground">Description</label>
+                      <label className="text-xs font-medium text-muted-foreground">{t('common:labels.description')}</label>
                       <input
                         type="text"
                         value={row.description}
                         onChange={event => updateOid(row.id, 'description', event.target.value)}
-                        placeholder="What this OID measures"
+                        placeholder={t('longTail.snmp.SNMPTemplateEditor.placeholders.oidDescription')}
                         className="mt-2 w-full rounded-md border bg-background px-3 py-2 text-sm"
                       />
                     </div>
@@ -626,13 +628,13 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                           <AlertCircle className="h-3 w-3" />
                         )}
                         {validation.valid
-                          ? (validationWarnings[0] ?? 'Validated')
-                          : (validation.errors?.[0] ?? 'OID validation failed')}
+                          ? (validationWarnings[0] ?? t('longTail.snmp.SNMPTemplateEditor.validated'))
+                          : (validation.errors?.[0] ?? t('longTail.snmp.SNMPTemplateEditor.oidValidationFailed'))}
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <AlertCircle className="h-3 w-3" />
-                        Not validated yet
+                        {t('longTail.snmp.SNMPTemplateEditor.notValidatedYet')}
                       </div>
                     )}
                     <button
@@ -641,7 +643,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                       className="inline-flex items-center gap-1 text-xs text-red-600"
                     >
                       <Trash2 className="h-3 w-3" />
-                      Remove
+                      {t('common:actions.remove')}
                     </button>
                   </div>
                 </div>
@@ -654,19 +656,19 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex items-start justify-between">
           <div>
-            <h3 className="text-lg font-semibold">OID browser</h3>
-            <p className="text-sm text-muted-foreground">Search available OIDs and add them to this template.</p>
+            <h3 className="text-lg font-semibold">{t('longTail.snmp.SNMPTemplateEditor.oidBrowser')}</h3>
+            <p className="text-sm text-muted-foreground">{t('longTail.snmp.SNMPTemplateEditor.oidBrowserDescription')}</p>
           </div>
           <button
             type="button"
             onClick={() => void fetchOidBrowserResults(oidQuery)}
             className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
           >
-            Refresh
+            {t('common:actions.refresh')}
           </button>
         </div>
         <div className="mt-4">
-          <label className="text-xs font-medium text-muted-foreground">Search by OID or name</label>
+          <label className="text-xs font-medium text-muted-foreground">{t('longTail.snmp.SNMPTemplateEditor.searchByOidOrName')}</label>
           <div className="mt-2 flex items-center rounded-md border bg-background px-3">
             <Search className="h-4 w-4 text-muted-foreground" />
             <input
@@ -687,11 +689,11 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
           {oidSearchLoading ? (
             <div className="flex items-center gap-2 rounded-md border border-dashed bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading OID browser...
+              {t('longTail.snmp.SNMPTemplateEditor.loadingOidBrowser')}
             </div>
           ) : oidSearchResults.length === 0 ? (
             <div className="rounded-md border border-dashed bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
-              No matching OIDs found.
+              {t('longTail.snmp.SNMPTemplateEditor.noMatchingOids')}
             </div>
           ) : (
             oidSearchResults.map(result => (
@@ -700,7 +702,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                   <div>
                     <p className="text-sm font-medium text-foreground">{result.name}</p>
                     <p className="font-mono text-xs text-muted-foreground">{result.oid}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{result.description || 'No description provided.'}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{result.description || t('longTail.snmp.SNMPTemplateEditor.noDescriptionProvided')}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <button
@@ -709,7 +711,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                       className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted"
                     >
                       <Copy className="h-3 w-3" />
-                      Copy
+                      {t('common:actions.copy')}
                     </button>
                     <button
                       type="button"
@@ -717,7 +719,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
                       className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground"
                     >
                       <PlusCircle className="h-3 w-3" />
-                      Add
+                      {t('common:actions.add')}
                     </button>
                   </div>
                 </div>
@@ -741,10 +743,10 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
           {saving || validating ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
-              {validating ? 'Validating OIDs...' : 'Saving...'}
+              {validating ? t('longTail.snmp.SNMPTemplateEditor.validatingOids') : t('longTail.snmp.SNMPTemplateEditor.saving')}
             </>
           ) : (
-            'Save template'
+            t('longTail.snmp.SNMPTemplateEditor.saveTemplate')
           )}
         </button>
       </div>

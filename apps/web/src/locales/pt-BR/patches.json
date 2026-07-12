@@ -1,0 +1,463 @@
+{
+  "patchApprovalModal": {
+    "title": "Revisar patch",
+    "close": "Fechar",
+    "cancel": "Cancelar",
+    "deferUntil": "Adiar até",
+    "actions": {
+      "approve": {
+        "label": "Aprovar",
+        "description": "Permitir que este patch seja implantado automaticamente ou na próxima janela de manutenção."
+      },
+      "decline": {
+        "label": "Recusar",
+        "description": "Bloquear a implantação deste patch até que ele seja revisado novamente."
+      },
+      "defer": {
+        "label": "Adiar",
+        "description": "Adiar a decisão e revisar mais tarde."
+      }
+    },
+    "notes": {
+      "label": "Observações",
+      "placeholder": "Adicione contexto ou um motivo para a decisão..."
+    },
+    "errors": {
+      "partnerLevel": "As aprovações de patches são gerenciadas no nível do parceiro",
+      "chooseDeferUntil": "Escolha até quando o patch deve ficar adiado",
+      "updateFailed": "Falha ao atualizar a aprovação do patch"
+    },
+    "toast": {
+      "approved": "Patch aprovado",
+      "declined": "Patch recusado",
+      "deferred": "Patch adiado"
+    },
+    "confirm": {
+      "title": "Confirmar aprovação do patch",
+      "selectedOrganization": "a organização selecionada",
+      "messageOne": "Aprovar patch em {{count}} dispositivo em {{org}}?",
+      "messageMany": "Aprovar patch em {{count}} dispositivos em {{org}}?"
+    }
+  },
+  "patchComplianceView": {
+    "unknownDevice": "Desconhecido",
+    "emptyValue": "—",
+    "searchPlaceholder": "Pesquisar dispositivos...",
+    "showing": "Mostrando {{shown}} de {{total}}",
+    "empty": "Nenhum dispositivo encontrado.",
+    "emptyFiltered": "Nenhum dispositivo corresponde aos filtros.",
+    "errors": {
+      "fetchData": "Falha ao buscar dados de patches",
+      "loadPendingPatches": "Falha ao carregar patches pendentes do dispositivo {{deviceId}}"
+    },
+    "actions": {
+      "tryAgain": "Tentar novamente",
+      "export": "Exportar",
+      "refreshCompliance": "Atualizar dados de conformidade",
+      "clear": "Limpar",
+      "scan": "Verificar",
+      "install": "Instalar",
+      "installCount": "Instalar ({{count}})",
+      "view": "Ver"
+    },
+    "export": {
+      "selectOrganization": "Selecione uma organização para exportar um relatório de conformidade",
+      "generateFailed": "Falha ao gerar relatório",
+      "queued": "Relatório de conformidade {{reportId}} enfileirado. Preparando download...",
+      "ready": "Relatório de conformidade {{reportId}} pronto. Iniciando download...",
+      "failed": "Relatório de conformidade {{reportId}} falhou",
+      "checkFailed": "Falha ao verificar o status do relatório",
+      "noReportId": "O relatório foi enfileirado, mas nenhum ID de relatório foi retornado"
+    },
+    "summary": {
+      "compliantPercent": "{{percent}}% em conformidade",
+      "devices": "{{compliant}} de {{total}} dispositivos",
+      "pendingDevices": "{{count}} com patches pendentes",
+      "approved": "{{count}} aprovados",
+      "pendingApproval": "{{count}} aguardando aprovação",
+      "critical": "{{count}} críticos",
+      "reboot": "{{count}} reinicialização"
+    },
+    "filters": {
+      "allDevices": "Todos os dispositivos ({{count}})",
+      "pendingPatches": "Patches pendentes ({{count}})",
+      "critical": "Críticos ({{count}})",
+      "pendingReboot": "Reinicialização pendente ({{count}})",
+      "thirdPartyPending": "Pendentes de terceiros ({{count}})",
+      "compliant": "Em conformidade ({{count}})"
+    },
+    "selection": {
+      "selected": "{{count}} selecionados",
+      "selectAll": "Selecionar todos",
+      "deselectAll": "Desmarcar todos",
+      "selectDevice": "Selecionar {{name}}",
+      "deselectDevice": "Desmarcar {{name}}"
+    },
+    "table": {
+      "device": "Dispositivo",
+      "status": "Status",
+      "approved": "Aprovados",
+      "approvedTitle": "Patches pendentes aprovados para instalação",
+      "pendingApproval": "Aguardando aprovação",
+      "pendingApprovalTitle": "Patches pendentes ainda aguardando aprovação",
+      "osPatches": "Patches do SO",
+      "osPatchesTitle": "Atualizações pendentes do Windows Update, Apple ou gerenciadores de pacotes Linux",
+      "thirdParty": "Terceiros",
+      "thirdPartyTitle": "Atualizações pendentes de fontes de terceiros ou personalizadas",
+      "critical": "Críticos",
+      "criticalTitle": "Patches pendentes classificados como severidade crítica",
+      "lastActivity": "Última atividade",
+      "lastActivityTitle": "Atividade mais recente de instalação ou verificação de patches",
+      "reboot": "Reinicialização",
+      "rebootTitle": "O SO informa uma reinicialização pendente — por qualquer causa (atualizações do Windows, CBS, renomeações de arquivos pendentes); informado pelo agente. Para dispositivos offline, isso reflete o estado no último check-in.",
+      "actions": "Ações"
+    },
+    "status": {
+      "ok": "OK",
+      "outstanding": "{{count}} pendentes"
+    },
+    "reboot": {
+      "offlineTitle": "O dispositivo está offline — isso reflete o estado do SO no último check-in e pode estar desatualizado.",
+      "yes": "Sim",
+      "yesAsOf": "Sim · desde {{time}}"
+    },
+    "relative": {
+      "justNow": "agora mesmo",
+      "minutesAgo": "há {{count}} min",
+      "hoursAgo": "há {{count}} h",
+      "daysAgo": "há {{count}} d"
+    },
+    "activity": {
+      "noActivity": "Nenhuma atividade registrada",
+      "installed": "Instalado {{time}}",
+      "scanned": "Verificado {{time}}",
+      "lastScanned": "Última verificação {{time}}",
+      "lastInstalled": "Última instalação {{time}}",
+      "noScan": "Nenhuma verificação registrada",
+      "noInstall": "Nenhuma instalação registrada"
+    },
+    "confirm": {
+      "title": "Confirmar ação em frota",
+      "selectedOrganization": "a organização selecionada",
+      "scanAction": "Verificar patches",
+      "installAction": "Instalar patches",
+      "messageOne": "{{action}} em {{count}} dispositivo em {{org}}?",
+      "messageMany": "{{action}} em {{count}} dispositivos em {{org}}?",
+      "messageMultiOrg": "{{action}} em {{count}} dispositivos em {{orgCount}} organizações ({{orgNames}})?"
+    }
+  },
+  "patchInstallHistory": {
+    "title": "Histórico de operações de patch",
+    "loading": "Carregando histórico de patches...",
+    "empty": "Nenhuma operação de patch encontrada.",
+    "emptyValue": "--",
+    "unknownPatch": "Patch desconhecido",
+    "operationCountOne": "{{count}} operação",
+    "operationCountMany": "{{count}} operações",
+    "errors": {
+      "fetchHistory": "Falha ao buscar histórico de patches"
+    },
+    "actions": {
+      "retry": "Tentar novamente",
+      "refresh": "Atualizar",
+      "refreshing": "Atualizando...",
+      "clearFilters": "Limpar filtros"
+    },
+    "filters": {
+      "allTypes": "Todos os tipos",
+      "allStatus": "Todos os status"
+    },
+    "operationTypes": {
+      "install": "Instalar",
+      "scan": "Verificar",
+      "rollback": "Reverter",
+      "download": "Baixar"
+    },
+    "status": {
+      "completed": "Concluído",
+      "failed": "Falhou",
+      "pending": "Pendente",
+      "running": "Em execução",
+      "timeout": "Tempo esgotado",
+      "unknown": "Desconhecido"
+    },
+    "table": {
+      "operation": "Operação",
+      "status": "Status",
+      "patches": "Patches",
+      "duration": "Duração",
+      "date": "Data"
+    },
+    "pagination": {
+      "showing": "Mostrando {{start}} a {{end}} de {{total}}",
+      "pageStatus": "Página {{current}} de {{total}}"
+    },
+    "duration": {
+      "lessThanSecond": "<1s",
+      "seconds": "{{count}}s",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s"
+    },
+    "relative": {
+      "justNow": "Agora mesmo",
+      "minutesAgo": "há {{count}} min",
+      "hoursAgo": "há {{count}} h",
+      "daysAgo": "há {{count}} d"
+    },
+    "detail": {
+      "installed": "Instalado",
+      "failed": "Falhou",
+      "pending": "Pendente",
+      "scanned": "Verificado",
+      "rebootRequired": "Reinicialização necessária",
+      "yes": "Sim",
+      "started": "Iniciado",
+      "completed": "Concluído",
+      "error": "Erro",
+      "patchResults": "Resultados dos patches",
+      "reboot": "Reinicializar",
+      "empty": "Nenhum resultado detalhado de patch disponível.",
+      "table": {
+        "patch": "Patch",
+        "kb": "KB",
+        "status": "Status",
+        "error": "Erro"
+      }
+    }
+  },
+  "patchList": {
+    "title": "Patches",
+    "summary": "{{shown}} de {{total}} patches",
+    "searchPlaceholder": "Pesquisar patches...",
+    "loading": "Carregando patches...",
+    "empty": "Nenhum patch encontrado. Tente ajustar sua pesquisa ou filtros.",
+    "vendorBy": "por {{vendor}}",
+    "moreCves": "+{{count}} mais",
+    "sortBy": "Ordenar por {{label}}",
+    "errors": {
+      "approvePatches": "Falha ao aprovar patches",
+      "declinePatches": "Falha ao recusar patches"
+    },
+    "severity": {
+      "critical": "Crítica",
+      "important": "Importante",
+      "moderate": "Moderada",
+      "low": "Baixa"
+    },
+    "approval": {
+      "pending": "Pendente",
+      "approved": "Aprovado",
+      "declined": "Recusado",
+      "deferred": "Adiado"
+    },
+    "filters": {
+      "allSeverities": "Todas as severidades",
+      "allStatus": "Todos os status",
+      "moreFilters": "Mais filtros",
+      "lessFilters": "Menos filtros",
+      "allSources": "Todas as fontes",
+      "allOs": "Todos os SOs"
+    },
+    "actions": {
+      "deploy": "Implantar",
+      "review": "Revisar",
+      "details": "Detalhes",
+      "approveCount": "Aprovar {{count}}",
+      "declineCount": "Recusar {{count}}",
+      "deployCount": "Implantar {{count}}",
+      "clearSelection": "Limpar seleção",
+      "tryAgain": "Tentar novamente"
+    },
+    "selection": {
+      "selected": "{{count}} selecionados",
+      "selectAll": "Selecionar todos",
+      "deselectAll": "Desmarcar todos",
+      "selectAllPatches": "Selecionar todos os patches",
+      "deselectAllPatches": "Desmarcar todos os patches",
+      "selectPatch": "Selecionar {{title}}",
+      "deselectPatch": "Desmarcar {{title}}"
+    },
+    "table": {
+      "patch": "Patch",
+      "severity": "Severidade",
+      "source": "Fonte",
+      "os": "SO",
+      "release": "Lançamento",
+      "approval": "Aprovação",
+      "actions": "Ações"
+    },
+    "pagination": {
+      "rowsPerPage": "Linhas por página",
+      "pageStatus": "Página {{current}} de {{total}}"
+    }
+  },
+  "patchesPage": {
+    "title": "Gerenciamento de patches",
+    "description": "Gerencie anéis de atualização, aprovações, conformidade e implantações de patches.",
+    "ringScopeHint": "Os anéis de atualização são gerenciados no nível do parceiro",
+    "loadingRings": "Carregando anéis de atualização...",
+    "tabs": {
+      "compliance": "Conformidade",
+      "patches": "Patches",
+      "updateRings": "Anéis de atualização"
+    },
+    "actions": {
+      "runScan": "Executar verificação",
+      "scanning": "Verificando...",
+      "newRing": "Novo anel",
+      "tryAgain": "Tentar novamente",
+      "scan": "Verificar",
+      "close": "Fechar",
+      "saving": "Salvando...",
+      "creating": "Criando...",
+      "saveChanges": "Salvar alterações",
+      "createRing": "Criar anel"
+    },
+    "errors": {
+      "fetchRings": "Falha ao buscar anéis de atualização",
+      "fetchPatches": "Falha ao buscar patches",
+      "partnerLevel": "As aprovações de patches são gerenciadas no nível do parceiro",
+      "approvePatches": "Falha ao aprovar patches",
+      "approveCountOne": "Falha ao aprovar {{count}} patch",
+      "approveCountMany": "Falha ao aprovar {{count}} patches",
+      "declineCount": "Falha ao recusar {{count}} patches",
+      "loadDevicesForScan": "Falha ao carregar dispositivos para verificação",
+      "noDevicesForScan": "Nenhum dispositivo disponível para verificação",
+      "updateRing": "Falha ao atualizar anel",
+      "createRing": "Falha ao criar anel de atualização",
+      "deleteRing": "Falha ao excluir anel"
+    },
+    "toast": {
+      "ringSaved": "Anel de atualização salvo",
+      "ringCreated": "Anel de atualização criado",
+      "ringDeleted": "Anel de atualização excluído",
+      "chooseDevicesForInstall": "Escolha os dispositivos para instalar este patch na aba Conformidade."
+    },
+    "scan": {
+      "confirmTitle": "Confirmar verificação de patches",
+      "selectedOrganization": "a organização selecionada",
+      "confirmMessageOne": "Verificar patches em {{count}} dispositivo em {{org}}?",
+      "confirmMessageMany": "Verificar patches em {{count}} dispositivos em {{org}}?",
+      "confirmMessageMultiOrg": "Verificar patches em {{count}} dispositivos em {{orgCount}} organizações ({{orgNames}})?",
+      "failedFallback": "Falha na verificação de patches",
+      "deviceOne": "dispositivo",
+      "deviceMany": "dispositivos",
+      "failedToQueue": "{{count}} falharam ao entrar na fila",
+      "skipped": "{{count}} ignorados (sem acesso / não encontrados)",
+      "failedZero": "Falha na verificação de patches: 0 de {{requested}} {{noun}} enfileirados.",
+      "failedZeroWithShortfall": "Falha na verificação de patches: 0 de {{requested}} {{noun}} enfileirados ({{shortfall}}).",
+      "queuedPartial": "Verificação de patches enfileirada para {{queued}} de {{requested}} {{noun}} — {{shortfall}}.",
+      "dispatchedSuffix": ", {{count}} despachados imediatamente",
+      "queuedSuccess": "Verificação de patches enfileirada para {{queued}} {{noun}}{{dispatchSuffix}}."
+    },
+    "ringModal": {
+      "editTitle": "Editar anel de atualização",
+      "createTitle": "Criar anel de atualização"
+    }
+  },
+  "ringSelector": {
+    "label": "Anel de atualização:",
+    "allRings": "Todos os anéis",
+    "ringOption": "{{name}} (ordem {{order}}, +{{days}}d)"
+  },
+  "sourceFilterChips": {
+    "sources": {
+      "all": "Todos",
+      "microsoft": "Microsoft",
+      "apple": "Apple",
+      "linux": "Linux",
+      "thirdParty": "Terceiros"
+    }
+  },
+  "updateRingForm": {
+    "validation": {
+      "selectCategory": "Selecione uma categoria",
+      "selectSeverity": "Selecione pelo menos uma severidade para aprovação automática.",
+      "nameRequired": "O nome do anel é obrigatório"
+    },
+    "categories": {
+      "security": "Atualizações de segurança",
+      "feature": "Atualizações de recursos",
+      "firmware": "Firmware",
+      "driver": "Drivers",
+      "thirdPartyApp": "Apps de terceiros",
+      "definitions": "Atualizações de definições"
+    },
+    "severities": {
+      "critical": "Crítica",
+      "important": "Importante",
+      "moderate": "Moderada",
+      "low": "Baixa"
+    },
+    "approveToggle": {
+      "ariaLabel": "Aprovar patches automaticamente",
+      "autoApprove": "Aprovar automaticamente",
+      "manual": "Manual"
+    },
+    "holdAfterRelease": "Reter após o lançamento",
+    "days": "dias",
+    "fields": {
+      "name": "Nome",
+      "rolloutOrder": "Ordem de implantação",
+      "description": "Descrição",
+      "deadlineDays": "Prazo (dias)",
+      "rebootGraceHours": "Carência de reinicialização (horas)",
+      "autoApproveSeverities": "Severidades com aprovação automática",
+      "category": "Categoria"
+    },
+    "placeholders": {
+      "name": "ex.: Piloto, Geral",
+      "description": "Opcional — para que este anel serve",
+      "noDeadline": "Sem prazo"
+    },
+    "help": {
+      "rolloutOrder": "Números menores são implantados primeiro."
+    },
+    "installEnforcement": {
+      "title": "Obrigatoriedade de instalação",
+      "description": "Quanto tempo os dispositivos têm para instalar patches aprovados e por quanto tempo um usuário pode adiar a reinicialização. O comportamento de reinicialização em si é definido por política na aba Patch."
+    },
+    "approvalPolicy": {
+      "title": "Política de aprovação",
+      "description": "O que é aprovado automaticamente neste anel e por quanto tempo reter um patch após o lançamento pelo fornecedor. O padrão se aplica a todas as categorias; adicione uma substituição para tratar uma delas de forma diferente.",
+      "allCategories": "Todas as categorias",
+      "default": "Padrão",
+      "severityNote": "As severidades se aplicam a atualizações do SO. Atualizações de apps de terceiros (winget, Homebrew) não têm severidade do fornecedor — quando uma política habilita fontes de outros softwares, elas são aprovadas automaticamente no ritmo deste anel, independentemente das severidades selecionadas aqui.",
+      "manualDefault": "Todos os patches neste anel precisam de aprovação manual.",
+      "manualCategory": "Patches nesta categoria precisam de aprovação manual.",
+      "noOverrides": "Todas as categorias seguem o padrão. Adicione uma substituição para tratar uma delas de forma diferente."
+    },
+    "usage": {
+      "messageOne": "Este anel se aplica a {{count}} dispositivo. As alterações entram em vigor no próximo check-in dele.",
+      "messageMany": "Este anel se aplica a {{count}} dispositivos. As alterações entram em vigor no próximo check-in deles."
+    },
+    "actions": {
+      "addOverride": "Adicionar substituição",
+      "removeOverride": "Remover substituição",
+      "cancel": "Cancelar",
+      "saving": "Salvando...",
+      "saveRing": "Salvar anel"
+    }
+  },
+  "updateRingList": {
+    "title": "Anéis de atualização",
+    "summary": "{{shown}} de {{total}} anéis",
+    "searchPlaceholder": "Pesquisar anéis...",
+    "empty": "Nenhum anel de atualização encontrado.",
+    "emptyValue": "—",
+    "none": "Nenhum",
+    "days": "{{count}} dias",
+    "editRing": "Editar {{name}}",
+    "deleteRing": "Excluir {{name}}",
+    "pageStatus": "Página {{current}} de {{total}}",
+    "table": {
+      "order": "Ordem",
+      "ring": "Anel",
+      "deferral": "Adiamento",
+      "deadline": "Prazo",
+      "devices": "Dispositivos",
+      "compliance": "Conformidade",
+      "updated": "Atualizado",
+      "actions": "Ações"
+    }
+  }
+}

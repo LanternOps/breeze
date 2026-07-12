@@ -1,38 +1,58 @@
-import { Square, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
-import type { ActionPlanStep } from '@breeze/shared';
-import { cn, widthPercentClass } from '@/lib/utils';
+import { Square, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import type { ActionPlanStep } from "@breeze/shared";
+import { cn, widthPercentClass } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 
 /** Human-readable tool name */
 function formatToolName(name: string): string {
-  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 interface AiPlanProgressBarProps {
   steps: ActionPlanStep[];
   currentStepIndex: number;
-  status: 'executing' | 'completed' | 'aborted';
+  status: "executing" | "completed" | "aborted";
   onAbort?: () => void;
 }
 
-export default function AiPlanProgressBar({ steps, currentStepIndex, status, onAbort }: AiPlanProgressBarProps) {
-  const completedCount = steps.filter((s) => s.status === 'completed').length;
-  const progressPct = steps.length > 0 ? (completedCount / steps.length) * 100 : 0;
+export default function AiPlanProgressBar({
+  steps,
+  currentStepIndex,
+  status,
+  onAbort,
+}: AiPlanProgressBarProps) {
+  const { t } = useTranslation("ai");
+  const completedCount = steps.filter((s) => s.status === "completed").length;
+  const progressPct =
+    steps.length > 0 ? (completedCount / steps.length) * 100 : 0;
   const currentStep = steps[currentStepIndex];
-  const isFinished = status === 'completed' || status === 'aborted';
+  const isFinished = status === "completed" || status === "aborted";
 
   return (
     <div className="my-2 rounded-lg border border-blue-600/40 bg-blue-100/30 p-3 dark:bg-blue-950/20">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {status === 'executing' && <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />}
-          {status === 'completed' && <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />}
-          {status === 'aborted' && <XCircle className="h-3.5 w-3.5 text-red-400" />}
+          {status === "executing" && (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
+          )}
+          {status === "completed" && (
+            <CheckCircle2 className="h-3.5 w-3.5 text-green-400" />
+          )}
+          {status === "aborted" && (
+            <XCircle className="h-3.5 w-3.5 text-red-400" />
+          )}
           <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
             {isFinished
-              ? status === 'completed'
-                ? `Plan completed (${completedCount}/${steps.length})`
-                : `Plan aborted at step ${currentStepIndex + 1}`
-              : `Executing: Step ${currentStepIndex + 1} of ${steps.length}`}
+              ? status === "completed"
+                ? t("aiPlanProgressBar.completed", {
+                    completed: completedCount,
+                    total: steps.length,
+                  })
+                : t("aiPlanProgressBar.aborted", { step: currentStepIndex + 1 })
+              : t("aiPlanProgressBar.executing", {
+                  step: currentStepIndex + 1,
+                  total: steps.length,
+                })}
           </span>
         </div>
         {!isFinished && onAbort && (
@@ -41,7 +61,7 @@ export default function AiPlanProgressBar({ steps, currentStepIndex, status, onA
             className="flex items-center gap-1 rounded bg-red-700/80 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-red-600"
           >
             <Square className="h-3 w-3" />
-            Stop
+            {t("aiPlanProgressBar.stop")}
           </button>
         )}
       </div>
@@ -50,9 +70,13 @@ export default function AiPlanProgressBar({ steps, currentStepIndex, status, onA
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
         <div
           className={cn(
-            'h-full rounded-full transition-all duration-500',
-            status === 'aborted' ? 'bg-red-500/60' : status === 'completed' ? 'bg-green-500/60' : 'bg-blue-500/60',
-            widthPercentClass(progressPct)
+            "h-full rounded-full transition-all duration-500",
+            status === "aborted"
+              ? "bg-red-500/60"
+              : status === "completed"
+                ? "bg-green-500/60"
+                : "bg-blue-500/60",
+            widthPercentClass(progressPct),
           )}
         />
       </div>
@@ -61,7 +85,12 @@ export default function AiPlanProgressBar({ steps, currentStepIndex, status, onA
       {!isFinished && currentStep && (
         <p className="mt-1.5 text-xs text-gray-500 truncate dark:text-gray-400">
           {formatToolName(currentStep.toolName)}
-          {currentStep.reasoning && <span className="text-gray-400 dark:text-gray-600"> — {currentStep.reasoning}</span>}
+          {currentStep.reasoning && (
+            <span className="text-gray-400 dark:text-gray-600">
+              {" "}
+              — {currentStep.reasoning}
+            </span>
+          )}
         </p>
       )}
 
@@ -71,13 +100,20 @@ export default function AiPlanProgressBar({ steps, currentStepIndex, status, onA
           <div
             key={i}
             className={`h-1 flex-1 rounded-full ${
-              step.status === 'completed' ? 'bg-green-500' :
-              step.status === 'failed' ? 'bg-red-500' :
-              step.status === 'executing' ? 'bg-blue-500 animate-pulse' :
-              step.status === 'skipped' ? 'bg-gray-400 dark:bg-gray-600' :
-              'bg-gray-300 dark:bg-gray-700'
+              step.status === "completed"
+                ? "bg-green-500"
+                : step.status === "failed"
+                  ? "bg-red-500"
+                  : step.status === "executing"
+                    ? "bg-blue-500 animate-pulse"
+                    : step.status === "skipped"
+                      ? "bg-gray-400 dark:bg-gray-600"
+                      : "bg-gray-300 dark:bg-gray-700"
             }`}
-            title={`Step ${i + 1}: ${formatToolName(step.toolName)}`}
+            title={t("aiPlanProgressBar.stepTitle", {
+              step: i + 1,
+              name: formatToolName(step.toolName),
+            })}
           />
         ))}
       </div>

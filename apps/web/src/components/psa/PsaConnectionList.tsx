@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export type PsaProvider = 'jira' | 'servicenow' | 'connectwise' | 'autotask' | 'freshservice' | 'zendesk';
 
@@ -48,21 +49,21 @@ const providerMeta: Record<PsaProvider, { label: string; className: string }> = 
   }
 };
 
-const statusConfig: Record<PsaConnectionStatus, { label: string; className: string }> = {
+const statusConfig: Record<PsaConnectionStatus, { labelKey: string; className: string }> = {
   active: {
-    label: 'Active',
+    labelKey: 'states.active',
     className: 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400'
   },
   paused: {
-    label: 'Paused',
+    labelKey: 'longTail.psa.PsaConnectionList.status.paused',
     className: 'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400'
   },
   error: {
-    label: 'Error',
+    labelKey: 'states.error',
     className: 'border-destructive/40 bg-destructive/10 text-destructive'
   },
   syncing: {
-    label: 'Syncing',
+    labelKey: 'longTail.psa.PsaConnectionList.status.syncing',
     className: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-400'
   }
 };
@@ -130,11 +131,12 @@ export default function PsaConnectionList({
   onDelete,
   timezone
 }: PsaConnectionListProps) {
+  const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<PsaConnectionStatus | 'all'>('all');
 
   const formatDate = (value: string | null) => {
-    if (!value) return 'Never';
+    if (!value) return t('longTail.psa.PsaConnectionList.never');
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], { timeZone: timezone });
   };
@@ -162,15 +164,15 @@ export default function PsaConnectionList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">PSA Connections</h2>
+          <h2 className="text-lg font-semibold">{t('longTail.psa.PsaConnectionList.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredConnections.length} of {connections.length} connections
+            {t('longTail.psa.PsaConnectionList.connectionCount', { filtered: filteredConnections.length, total: connections.length })}
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             type="search"
-            placeholder="Search connections"
+            placeholder={t('longTail.psa.PsaConnectionList.searchPlaceholder')}
             value={query}
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
@@ -182,7 +184,7 @@ export default function PsaConnectionList({
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? 'All statuses' : statusConfig[status as PsaConnectionStatus].label}
+                {status === 'all' ? t('longTail.psa.PsaConnectionList.filters.allStatuses') : t(/* i18n-dynamic */ statusConfig[status as PsaConnectionStatus].labelKey)}
               </option>
             ))}
           </select>
@@ -193,11 +195,11 @@ export default function PsaConnectionList({
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Provider</th>
-              <th className="px-4 py-3">Connection</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Last Sync</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.provider')}</th>
+              <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.connection')}</th>
+              <th className="px-4 py-3">{t('common:labels.status')}</th>
+              <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.lastSync')}</th>
+              <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -220,11 +222,11 @@ export default function PsaConnectionList({
                         />
                       </svg>
                     </div>
-                    <p className="text-sm font-medium text-muted-foreground">No PSA connections configured</p>
+                    <p className="text-sm font-medium text-muted-foreground">{t('longTail.psa.PsaConnectionList.empty.title')}</p>
                     <p className="text-sm text-muted-foreground">
                       {connections.length === 0
-                        ? 'Connect a PSA provider to start syncing tickets.'
-                        : 'No connections match your search or filters.'}
+                        ? t('longTail.psa.PsaConnectionList.empty.noConnections')
+                        : t('longTail.psa.PsaConnectionList.empty.noMatches')}
                     </p>
                   </div>
                 </td>
@@ -243,7 +245,7 @@ export default function PsaConnectionList({
                     <td className="px-4 py-3 text-sm font-medium">{connection.name}</td>
                     <td className="px-4 py-3 text-sm">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle.className}`}>
-                        {statusStyle.label}
+                        {t(/* i18n-dynamic */ statusStyle.labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -256,14 +258,14 @@ export default function PsaConnectionList({
                           onClick={() => onEdit?.(connection)}
                           className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
                         >
-                          Edit
+                          {t('common:actions.edit')}
                         </button>
                         <button
                           type="button"
                           onClick={() => onSyncNow?.(connection)}
                           className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
                         >
-                          Sync now
+                          {t('longTail.psa.PsaConnectionList.actions.syncNow')}
                         </button>
                         <button
                           type="button"
@@ -273,14 +275,14 @@ export default function PsaConnectionList({
                           )}
                           className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
                         >
-                          {connection.status === 'active' ? 'Pause' : 'Resume'}
+                          {connection.status === 'active' ? t('longTail.psa.PsaConnectionList.actions.pause') : t('longTail.psa.PsaConnectionList.actions.resume')}
                         </button>
                         <button
                           type="button"
                           onClick={() => onDelete?.(connection)}
                           className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
                         >
-                          Delete
+                          {t('common:actions.delete')}
                         </button>
                       </div>
                     </td>

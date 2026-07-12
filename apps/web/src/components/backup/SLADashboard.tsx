@@ -13,6 +13,9 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import SLAConfigDialog from './SLAConfigDialog';
 import AlphaBadge from '../shared/AlphaBadge';
+import { formatPercent } from '@/lib/i18n/format';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -53,6 +56,7 @@ const eventTypeBadge: Record<string, { label: string; className: string }> = {
 // ── Component ─────────────────────────────────────────────────────
 
 export default function SLADashboard() {
+  const { t } = useTranslation('backup');
   const [dashboard, setDashboard] = useState<SLADashboardData>({});
   const [configs, setConfigs] = useState<SLAConfig[]>([]);
   const [events, setEvents] = useState<SLAEvent[]>([]);
@@ -140,7 +144,7 @@ export default function SLADashboard() {
       <div className="flex items-center justify-center py-16">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading SLA data...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('sLADashboard.loadingSlaData')}</p>
         </div>
       </div>
     );
@@ -160,19 +164,19 @@ export default function SLADashboard() {
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-success" />
-            <p className="text-xs font-medium text-muted-foreground">Compliance</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('sLADashboard.compliance')}</p>
           </div>
           <p className={cn(
             'mt-1 text-2xl font-bold',
             compliance >= 95 ? 'text-success' : compliance >= 80 ? 'text-warning' : 'text-destructive'
           )}>
-            {compliance.toFixed(1)}%
+            {formatPercent(compliance / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
           </p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-destructive" />
-            <p className="text-xs font-medium text-muted-foreground">Active Breaches</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('sLADashboard.activeBreaches')}</p>
           </div>
           <p className={cn('mt-1 text-2xl font-bold', activeBreaches > 0 ? 'text-destructive' : 'text-foreground')}>
             {activeBreaches}
@@ -181,53 +185,52 @@ export default function SLADashboard() {
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-primary" />
-            <p className="text-xs font-medium text-muted-foreground">Avg RPO</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('sLADashboard.avgRpo')}</p>
           </div>
-          <p className="mt-1 text-2xl font-bold text-foreground">{avgRpo} min</p>
+          <p className="mt-1 text-2xl font-bold text-foreground">{avgRpo} {t('sLADashboard.min')}</p>
         </div>
         <div className="rounded-lg border bg-card p-4 shadow-xs">
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-primary" />
-            <p className="text-xs font-medium text-muted-foreground">Avg RTO</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('sLADashboard.avgRto')}</p>
           </div>
-          <p className="mt-1 text-2xl font-bold text-foreground">{avgRto} min</p>
+          <p className="mt-1 text-2xl font-bold text-foreground">{avgRto} {t('sLADashboard.min')}</p>
         </div>
       </div>
 
       {/* SLA Configs */}
       <div className="rounded-lg border bg-card p-5 shadow-xs">
         <div className="flex items-center justify-between">
-          <h3 className="font-semibold">SLA Configurations</h3>
+          <h3 className="font-semibold">{t('sLADashboard.slaConfigurations')}</h3>
           <button
             type="button"
             onClick={handleAdd}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
-            <Plus className="h-3.5 w-3.5" /> Add SLA Config
-          </button>
+            <Plus className="h-3.5 w-3.5" /> {t('sLADashboard.addSlaConfig')} </button>
         </div>
 
         {configs.length === 0 ? (
-          <p className="mt-4 text-sm text-muted-foreground">No SLA configurations defined.</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('sLADashboard.noSlaConfigurationsDefined')}</p>
         ) : (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">Name</th>
-                  <th className="pb-2 pr-4 font-medium">RPO Target</th>
-                  <th className="pb-2 pr-4 font-medium">RTO Target</th>
-                  <th className="pb-2 pr-4 font-medium">Devices</th>
-                  <th className="pb-2 pr-4 font-medium">Active</th>
-                  <th className="pb-2 font-medium">Actions</th>
+                  <th className="pb-2 pr-4 font-medium">{t('sLADashboard.name')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('sLADashboard.rpoTarget')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('sLADashboard.rtoTarget')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('sLADashboard.devices')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('sLADashboard.active')}</th>
+                  <th className="pb-2 font-medium">{t('sLADashboard.actions')}</th>
                 </tr>
               </thead>
               <tbody>
                 {configs.map((cfg) => (
                   <tr key={cfg.id} className="border-b last:border-0">
                     <td className="py-2.5 pr-4 font-medium text-foreground">{cfg.name}</td>
-                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.rpoMinutes} min</td>
-                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.rtoMinutes} min</td>
+                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.rpoMinutes} {t('sLADashboard.min')}</td>
+                    <td className="py-2.5 pr-4 text-muted-foreground">{cfg.rtoMinutes} {t('sLADashboard.min')}</td>
                     <td className="py-2.5 pr-4 text-muted-foreground">{cfg.deviceCount ?? 0}</td>
                     <td className="py-2.5 pr-4">
                       <button
@@ -252,8 +255,7 @@ export default function SLADashboard() {
                         onClick={() => handleEdit(cfg)}
                         className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
                       >
-                        Edit
-                      </button>
+                        {t('sLADashboard.edit')} </button>
                     </td>
                   </tr>
                 ))}
@@ -265,21 +267,20 @@ export default function SLADashboard() {
 
       {/* Breach Events */}
       <div className="rounded-lg border bg-card p-5 shadow-xs">
-        <h3 className="font-semibold">Breach Events</h3>
+        <h3 className="font-semibold">{t('sLADashboard.breachEvents')}</h3>
         {events.length === 0 ? (
           <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
             <CheckCircle2 className="h-4 w-4 text-success" />
-            No breach events recorded.
-          </div>
+            {t('sLADashboard.noBreachEventsRecorded')} </div>
         ) : (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">Device</th>
-                  <th className="pb-2 pr-4 font-medium">Event Type</th>
-                  <th className="pb-2 pr-4 font-medium">Detected</th>
-                  <th className="pb-2 font-medium">Resolved</th>
+                  <th className="pb-2 pr-4 font-medium">{t('sLADashboard.device')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('sLADashboard.eventType')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('sLADashboard.detected')}</th>
+                  <th className="pb-2 font-medium">{t('sLADashboard.resolved')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -304,8 +305,7 @@ export default function SLADashboard() {
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-destructive">
-                            <XCircle className="h-3 w-3" /> Active
-                          </span>
+                            <XCircle className="h-3 w-3" /> {t('sLADashboard.active')} </span>
                         )}
                       </td>
                     </tr>

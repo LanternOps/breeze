@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import '@/lib/i18n';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 type Perm = { resource: string; action: string };

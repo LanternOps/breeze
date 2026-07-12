@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, Plug, Search } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
@@ -7,6 +9,7 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { computeMarginBreakdown, priceFromCostMarkup, formatMarginSummary } from './marginMath';
+import { formatNumber } from '@/lib/i18n/format';
 
 const MASKED = '********';
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -92,6 +95,7 @@ function sellPriceDefault(product: EcProduct, defaultMarkupPct: number | null): 
 }
 
 function TdSynnexEcExpressPanel() {
+  const { t } = useTranslation('settings');
   const [status, setStatus] = useState<EcStatus | null>(null);
   const [config, setConfig] = useState<ConfigForm>(EMPTY_CONFIG);
   const [loading, setLoading] = useState(true);
@@ -117,7 +121,7 @@ function TdSynnexEcExpressPanel() {
       }
       if (!res.ok) {
         const errBody = await res.json().catch(() => null) as { error?: string } | null;
-        throw new Error(errBody?.error ?? 'TD SYNNEX Pricing settings failed to load.');
+        throw new Error(errBody?.error ?? t('tdSynnexEcExpressPanel.tDSYNNEXPricingSettingsFailedToLoad'));
       }
       const body = (await res.json()) as { data: EcStatus };
       setStatus(body.data);
@@ -125,7 +129,7 @@ function TdSynnexEcExpressPanel() {
     } catch (err) {
       console.error('[td-synnex-ec] status load failed', err);
       showToast({
-        message: err instanceof Error ? err.message : 'TD SYNNEX Pricing settings failed to load.',
+        message: err instanceof Error ? err.message : t('tdSynnexEcExpressPanel.tDSYNNEXPricingSettingsFailedToLoad'),
         type: 'error',
       });
     } finally {
@@ -157,11 +161,11 @@ function TdSynnexEcExpressPanel() {
   }, []);
 
   const connectionLabel = useMemo(() => {
-    if (status?.lastTestStatus === 'success') return 'Last test succeeded';
-    if (status?.lastTestStatus === 'failed') return status.lastTestError ?? 'Last test failed';
-    if (status?.configured) return 'Configured';
-    return 'Not configured';
-  }, [status]);
+    if (status?.lastTestStatus === 'success') return t('tdSynnexEcExpressPanel.lastTestSucceeded');
+    if (status?.lastTestStatus === 'failed') return status.lastTestError ?? t('tdSynnexEcExpressPanel.lastTestFailed');
+    if (status?.configured) return t('tdSynnexEcExpressPanel.configured');
+    return t('tdSynnexEcExpressPanel.notConfigured');
+  }, [status, t]);
 
   const saveConfig = useCallback(async () => {
     setSaving(true);
@@ -179,8 +183,8 @@ function TdSynnexEcExpressPanel() {
             },
           }),
         }),
-        errorFallback: 'TD SYNNEX Pricing settings failed to save.',
-        successMessage: 'TD SYNNEX Pricing settings saved',
+        errorFallback: t('tdSynnexEcExpressPanel.tDSYNNEXPricingSettingsFailedToSave'),
+        successMessage: t('tdSynnexEcExpressPanel.tDSYNNEXPricingSettingsSaved'),
         onUnauthorized: UNAUTHORIZED,
       });
       setStatus(result.data);
@@ -197,8 +201,8 @@ function TdSynnexEcExpressPanel() {
     try {
       const result = await runAction<{ data: EcStatus }>({
         request: () => fetchWithAuth('/catalog/distributors/td-synnex-ec/test', { method: 'POST' }),
-        errorFallback: 'TD SYNNEX Pricing connection test failed.',
-        successMessage: 'TD SYNNEX Pricing connection test succeeded',
+        errorFallback: t('tdSynnexEcExpressPanel.tDSYNNEXPricingConnectionTestFailed'),
+        successMessage: t('tdSynnexEcExpressPanel.tDSYNNEXPricingConnectionTestSucceeded'),
         onUnauthorized: UNAUTHORIZED,
       });
       setStatus(result.data);
@@ -226,18 +230,18 @@ function TdSynnexEcExpressPanel() {
       // A null body means the response wasn't valid JSON — treat that as a failure
       // rather than silently rendering an empty result set.
       if (body === null) {
-        throw new Error('TD SYNNEX Pricing lookup failed (invalid response).');
+        throw new Error(t('tdSynnexEcExpressPanel.tDSYNNEXPricingLookupFailedInvalidResponse'));
       }
       // Honor the runAction failure contract: a non-2xx status OR an HTTP-200
       // { success:false } body both count as failures (CLAUDE.md no-silent-mutations).
       if (isApiFailure(body, res.status)) {
-        throw new Error(extractApiError(body, 'TD SYNNEX Pricing lookup failed.'));
+        throw new Error(extractApiError(body, t('tdSynnexEcExpressPanel.tDSYNNEXPricingLookupFailed')));
       }
       const results = body?.data ?? [];
       setProducts(results);
       setSellPrices(Object.fromEntries(results.map((p) => [p.synnexSku, sellPriceDefault(p, defaultMarkupPct)])));
     } catch (err) {
-      showToast({ message: err instanceof Error ? err.message : 'TD SYNNEX Pricing lookup failed.', type: 'error' });
+      showToast({ message: err instanceof Error ? err.message : t('tdSynnexEcExpressPanel.tDSYNNEXPricingLookupFailed'), type: 'error' });
     } finally {
       setSearching(false);
     }
@@ -246,7 +250,7 @@ function TdSynnexEcExpressPanel() {
   const importProduct = useCallback(async (product: EcProduct) => {
     const sellPrice = toMoney(sellPrices[product.synnexSku] ?? '');
     if (sellPrice === null) {
-      showToast({ message: 'Enter a valid sell price.', type: 'error' });
+      showToast({ message: t('tdSynnexEcExpressPanel.enterAValidSellPrice'), type: 'error' });
       return;
     }
     setImportingSku(product.synnexSku);
@@ -268,8 +272,8 @@ function TdSynnexEcExpressPanel() {
             },
           }),
         }),
-        errorFallback: 'TD SYNNEX Pricing item import failed.',
-        successMessage: `Imported ${product.name}`,
+        errorFallback: t('tdSynnexEcExpressPanel.tDSYNNEXPricingItemImportFailed'),
+        successMessage: t('tdSynnexEcExpressPanel.imported', { name: product.name }),
         onUnauthorized: UNAUTHORIZED,
       });
     } catch (err) {
@@ -280,7 +284,7 @@ function TdSynnexEcExpressPanel() {
   }, [sellPrices, autoTaxHardware]);
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground" data-testid="td-synnex-ec-loading">Loading TD SYNNEX Pricing.</p>;
+    return <p className="text-sm text-muted-foreground" data-testid="td-synnex-ec-loading">{t('tdSynnexEcExpressPanel.loadingTDSYNNEXPricing')}</p>;
   }
 
   return (
@@ -289,11 +293,9 @@ function TdSynnexEcExpressPanel() {
         <div>
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Plug className="h-4 w-4" aria-hidden="true" />
-            TD SYNNEX Pricing
-          </h2>
+            {t('tdSynnexEcExpressPanel.tDSYNNEXPricing')}</h2>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            Connect TD SYNNEX EC Express to look up real-time pricing and availability and import hardware into Breeze.
-          </p>
+            {t('tdSynnexEcExpressPanel.connectTDSYNNEXECExpressToLookUpRealTimePricingAndAvaila')}</p>
         </div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="td-synnex-ec-status-label">
           {status?.lastTestStatus === 'success' && <CheckCircle2 className="h-4 w-4 text-green-600" aria-hidden="true" />}
@@ -303,8 +305,7 @@ function TdSynnexEcExpressPanel() {
 
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-xs font-medium">
-          Customer No
-          <input
+          {t('tdSynnexEcExpressPanel.customerNo')}<input
             value={config.customerNo}
             onChange={(e) => setConfig((f) => ({ ...f, customerNo: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -312,8 +313,7 @@ function TdSynnexEcExpressPanel() {
           />
         </label>
         <label className="text-xs font-medium">
-          Region
-          <input
+          {t('tdSynnexEcExpressPanel.region')}<input
             value={config.region}
             onChange={(e) => setConfig((f) => ({ ...f, region: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -321,8 +321,7 @@ function TdSynnexEcExpressPanel() {
           />
         </label>
         <label className="text-xs font-medium">
-          Email
-          <input
+          {t('tdSynnexEcExpressPanel.email')}<input
             value={config.email}
             onChange={(e) => setConfig((f) => ({ ...f, email: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -330,8 +329,7 @@ function TdSynnexEcExpressPanel() {
           />
         </label>
         <label className="text-xs font-medium">
-          Password
-          <input
+          {t('tdSynnexEcExpressPanel.password')}<input
             value={config.password}
             onChange={(e) => setConfig((f) => ({ ...f, password: e.target.value }))}
             className="mt-1 w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
@@ -350,8 +348,7 @@ function TdSynnexEcExpressPanel() {
             onChange={(e) => setConfig((f) => ({ ...f, enabled: e.target.checked }))}
             data-testid="td-synnex-ec-enabled"
           />
-          Enabled
-        </label>
+          {t('tdSynnexEcExpressPanel.enabled')}</label>
         <button
           type="button"
           onClick={() => void saveConfig()}
@@ -359,7 +356,7 @@ function TdSynnexEcExpressPanel() {
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           data-testid="td-synnex-ec-save"
         >
-          {saving ? 'Saving.' : 'Save settings'}
+          {saving ? t('tdSynnexEcExpressPanel.saving') : t('tdSynnexEcExpressPanel.saveSettings')}
         </button>
         <button
           type="button"
@@ -368,7 +365,7 @@ function TdSynnexEcExpressPanel() {
           className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50"
           data-testid="td-synnex-ec-test"
         >
-          {testing ? 'Testing.' : 'Test connection'}
+          {testing ? t('tdSynnexEcExpressPanel.testing') : t('tdSynnexEcExpressPanel.testConnection')}
         </button>
       </div>
 
@@ -387,7 +384,7 @@ function TdSynnexEcExpressPanel() {
                 if (e.key === 'Enter') void lookup();
               }}
               className="w-full rounded-md border bg-background py-1.5 pl-8 pr-2.5 text-sm"
-              placeholder="SYNNEX SKU or mfg part #"
+              placeholder={t('tdSynnexEcExpressPanel.sYNNEXSKUOrMfgPart')}
               data-testid="td-synnex-ec-lookup-query"
             />
           </div>
@@ -398,7 +395,7 @@ function TdSynnexEcExpressPanel() {
             className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-50"
             data-testid="td-synnex-ec-lookup"
           >
-            {searching ? 'Looking up.' : 'Look up'}
+            {searching ? t('tdSynnexEcExpressPanel.lookingUp') : t('tdSynnexEcExpressPanel.lookUp')}
           </button>
         </div>
 
@@ -421,23 +418,23 @@ function TdSynnexEcExpressPanel() {
                     <p className="text-xs text-muted-foreground">{product.description}</p>
                   )}
                   <div className="text-xs text-muted-foreground">
-                    SYNNEX SKU {product.synnexSku}
-                    {product.mfgPartNo ? ` · MFG ${product.mfgPartNo}` : ''}
+                    {t('tdSynnexEcExpressPanel.sYNNEXSKU')}{product.synnexSku}
+                    {product.mfgPartNo ? t('tdSynnexEcExpressPanel.manufacturerPart', { part: product.mfgPartNo }) : ''}
                   </div>
                 </div>
 
                 <div className="grid gap-2 text-sm sm:grid-cols-3">
                   <div>
-                    <div className="text-xs text-muted-foreground">Your cost</div>
-                    <div>{product.cost !== null ? `${product.currency ?? 'USD'} ${product.cost.toFixed(2)}` : 'N/A'}</div>
+                    <div className="text-xs text-muted-foreground">{t('tdSynnexEcExpressPanel.yourCost')}</div>
+                    <div>{product.cost !== null ? `${product.currency ?? t('tdSynnexEcExpressPanel.uSD')} ${formatNumber(product.cost, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : t('tdSynnexEcExpressPanel.nA')}</div>
                   </div>
                   <div>
-                    <div className="text-xs text-muted-foreground">MSRP</div>
-                    <div>{product.msrp !== null ? `${product.currency ?? 'USD'} ${product.msrp.toFixed(2)}` : 'N/A'}</div>
+                    <div className="text-xs text-muted-foreground">{t('tdSynnexEcExpressPanel.mSRP')}</div>
+                    <div>{product.msrp !== null ? `${product.currency ?? t('tdSynnexEcExpressPanel.uSD')} ${formatNumber(product.msrp, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : t('tdSynnexEcExpressPanel.nA')}</div>
                   </div>
                   <div>
-                    <div className="text-xs text-muted-foreground">Total available</div>
-                    <div>{product.totalQty ?? 'N/A'}</div>
+                    <div className="text-xs text-muted-foreground">{t('tdSynnexEcExpressPanel.totalAvailable')}</div>
+                    <div>{product.totalQty ?? t('tdSynnexEcExpressPanel.nA')}</div>
                   </div>
                 </div>
 
@@ -445,16 +442,16 @@ function TdSynnexEcExpressPanel() {
                   <table className="min-w-full divide-y text-xs" data-testid={`td-synnex-ec-warehouses-${product.synnexSku}`}>
                     <thead>
                       <tr className="text-left text-muted-foreground">
-                        <th className="px-2 py-1 font-medium">Warehouse</th>
-                        <th className="px-2 py-1 font-medium">Available</th>
-                        <th className="px-2 py-1 font-medium">On order</th>
-                        <th className="px-2 py-1 font-medium">ETA</th>
+                        <th className="px-2 py-1 font-medium">{t('tdSynnexEcExpressPanel.warehouse')}</th>
+                        <th className="px-2 py-1 font-medium">{t('tdSynnexEcExpressPanel.available')}</th>
+                        <th className="px-2 py-1 font-medium">{t('tdSynnexEcExpressPanel.onOrder')}</th>
+                        <th className="px-2 py-1 font-medium">{t('tdSynnexEcExpressPanel.eTA')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
                       {product.warehouses.map((wh, idx) => (
                         <tr key={`${product.synnexSku}-${wh.code ?? idx}`}>
-                          <td className="px-2 py-1">{wh.code ?? 'N/A'}</td>
+                          <td className="px-2 py-1">{wh.code ?? t('tdSynnexEcExpressPanel.nA')}</td>
                           <td className="px-2 py-1">{wh.available}</td>
                           <td className="px-2 py-1">{wh.onOrder}</td>
                           <td className="px-2 py-1">{wh.eta ?? '-'}</td>
@@ -466,8 +463,7 @@ function TdSynnexEcExpressPanel() {
 
                 <div className="flex flex-wrap items-end gap-2">
                   <label className="text-xs font-medium">
-                    Sell price
-                    <input
+                    {t('tdSynnexEcExpressPanel.sellPrice')}<input
                       value={sellPrices[product.synnexSku] ?? ''}
                       onChange={(e) => setSellPrices((s) => ({ ...s, [product.synnexSku]: e.target.value }))}
                       inputMode="decimal"
@@ -482,7 +478,7 @@ function TdSynnexEcExpressPanel() {
                     className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                     data-testid="td-synnex-ec-import"
                   >
-                    {importingSku === product.synnexSku ? 'Importing.' : 'Import to catalog'}
+                    {importingSku === product.synnexSku ? t('tdSynnexEcExpressPanel.importing') : t('tdSynnexEcExpressPanel.importToCatalog')}
                   </button>
                 </div>
                 {(() => {
@@ -494,7 +490,7 @@ function TdSynnexEcExpressPanel() {
                       className={`text-xs font-medium ${negative ? 'text-red-600' : 'text-muted-foreground'}`}
                       data-testid={`td-synnex-ec-margin-${product.synnexSku}`}
                     >
-                      {formatMarginSummary(breakdown, product.currency ?? 'USD')}
+                      {formatMarginSummary(breakdown, product.currency ?? t('tdSynnexEcExpressPanel.uSD'))}
                       {negative ? ' — selling below cost' : ''}
                     </p>
                   );

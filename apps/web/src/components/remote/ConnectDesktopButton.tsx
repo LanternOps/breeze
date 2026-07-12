@@ -8,6 +8,8 @@ import { getViewerDownloadInfo, getAllViewerDownloads } from '@/lib/viewerDownlo
 import { buildRemoteVncPageUrl } from '@/lib/remoteTunnelUrls';
 import { extractApiError } from '@/lib/apiError';
 import { showToast } from '@/components/shared/Toast';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 
 interface Props {
   deviceId: string;
@@ -56,6 +58,7 @@ function canFallbackToVNC(
 function desktopAccessUnavailableReason(
   desktopAccess: DesktopAccessState | null | undefined,
   remoteAccessPolicy?: RemoteAccessPolicy | null,
+  translate?: (key: string) => string,
 ): string | null {
   if (!desktopAccess || desktopAccess.mode !== 'unavailable') {
     return null;
@@ -68,23 +71,24 @@ function desktopAccessUnavailableReason(
 
   switch (desktopAccess.reason) {
     case 'unsupported_os':
-      return 'Login-window desktop requires macOS 14 (Sonoma) or later. Enable VNC Relay in the device\'s configuration policy to connect at the login screen.';
+      return translate?.('connectDesktopButton.unavailable.unsupportedOs') ?? null;
     case 'missing_entitlement':
-      return 'Login-window desktop is blocked until the required Apple entitlement is approved';
+      return translate?.('connectDesktopButton.unavailable.missingEntitlement') ?? null;
     case 'manual_install':
-      return 'Login-window desktop is only supported for managed installs';
+      return translate?.('connectDesktopButton.unavailable.manualInstall') ?? null;
     case 'missing_permission':
-      return 'macOS permissions required for unattended desktop access are still missing';
+      return translate?.('connectDesktopButton.unavailable.missingPermission') ?? null;
     case 'virtual_display_unavailable':
-      return 'No capturable display is available for this Mac. Enable VNC Relay to connect via macOS Screen Sharing.';
+      return translate?.('connectDesktopButton.unavailable.virtualDisplay') ?? null;
     case 'helper_not_connected':
-      return 'The macOS desktop helper is not connected yet. Enable VNC Relay to connect via macOS Screen Sharing.';
+      return translate?.('connectDesktopButton.unavailable.helperNotConnected') ?? null;
     default:
-      return 'Desktop is unavailable on this device';
+      return translate?.('connectDesktopButton.unavailable.default') ?? null;
   }
 }
 
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, disabledTitle, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null }: Props) {
+  const { t } = useTranslation('remote');
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback' | 'denied'>('idle');
   const [error, setError] = useState<string | null>(null);
   // Populated when the VNC auto-fallback path times out — carries the info needed
@@ -156,13 +160,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       if (!hasRemoteAccessLauncher && launcherSkipReason && launcherSkipReason !== 'no_provider_configured') {
         const friendly =
           launcherSkipReason === 'missing_device_identifier'
-            ? 'This device is missing the per-device identifier the partner-configured remote tool needs (e.g. the RustDesk peer ID). Falling back to built-in remote desktop. Set the identifier in Device Settings → Custom Fields.'
+            ? t('connectDesktopButton.launcherSkip.missingIdentifier')
             : launcherSkipReason === 'provider_disabled'
-              ? 'The partner-configured remote tool for this device is currently disabled. Falling back to built-in remote desktop.'
+              ? t('connectDesktopButton.launcherSkip.providerDisabled')
               : launcherSkipReason === 'empty_url_template'
-                ? 'The partner-configured remote tool has no URL template set. Falling back to built-in remote desktop.'
+                ? t('connectDesktopButton.launcherSkip.emptyUrlTemplate')
                 : launcherSkipReason === 'config_error'
-                  ? 'Could not resolve the partner-configured remote tool (config error). Falling back to built-in remote desktop.'
+                  ? t('connectDesktopButton.launcherSkip.configError')
                   : null;
         if (friendly) {
           // 'error' type matches the loud-failure styling the other launcher
@@ -208,9 +212,9 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           );
           showToast({
             type: 'error',
-            message: 'Remote launch unavailable: security check failed. Please contact your administrator.',
+            message: t('connectDesktopButton.errors.securityCheckToast'),
           });
-          setError('Remote launch blocked by security policy');
+          setError(t('connectDesktopButton.errors.securityPolicy'));
           setStatus('idle');
           return;
         }
@@ -236,9 +240,9 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           );
           showToast({
             type: 'error',
-            message: 'Remote launch unavailable: security check failed. Please contact your administrator.',
+            message: t('connectDesktopButton.errors.securityCheckToast'),
           });
-          setError('Remote launch blocked by security policy');
+          setError(t('connectDesktopButton.errors.securityPolicy'));
           setStatus('idle');
           return;
         }
@@ -253,10 +257,10 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           { level: 'warning', extra: { deviceId, status: launchRes.status } },
         );
         const friendly = launchRes.status === 404
-          ? 'Remote launch failed: device record changed. Please refresh and try again.'
-          : 'Remote launch failed: server error. Please contact your administrator.';
+          ? t('connectDesktopButton.errors.deviceChanged')
+          : t('connectDesktopButton.errors.server');
         showToast({ type: 'error', message: friendly });
-        setError(`Remote launch failed (HTTP ${launchRes.status})`);
+        setError(t('connectDesktopButton.errors.http', { status: launchRes.status }));
         setStatus('idle');
         return;
       }
@@ -274,8 +278,8 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         });
 
         if (!tunnelRes.ok) {
-          const err = await tunnelRes.json().catch(() => ({ error: 'Failed to create VNC tunnel' }));
-          throw new Error(err.error || 'Failed to create VNC tunnel');
+          const err = await tunnelRes.json().catch(() => ({ error: t('connectDesktopButton.errors.createVncTunnel') }));
+          throw new Error(err.error || t('connectDesktopButton.errors.createVncTunnel'));
         }
 
         const tunnel = await tunnelRes.json();
@@ -284,7 +288,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         const codeRes = await fetchWithAuth(`/tunnels/${tunnel.id}/connect-code`, { method: 'POST' });
         if (!codeRes.ok) {
           fetchWithAuth(`/tunnels/${tunnel.id}`, { method: 'DELETE' }).catch(() => {});
-          throw new Error('Failed to issue VNC connect code');
+          throw new Error(t('connectDesktopButton.errors.issueVncCode'));
         }
         const { code } = await codeRes.json();
 
@@ -316,7 +320,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                 return;
               }
               if (data.status === 'failed') {
-                setError(extractApiError(data, 'VNC tunnel failed to open'));
+                setError(extractApiError(data, t('connectDesktopButton.errors.vncTunnelFailed')));
                 setStatus('idle');
                 return;
               }
@@ -358,7 +362,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
       if (!response.ok) {
         const err = await response.json();
-        throw new Error(err.error || 'Failed to create desktop session');
+        throw new Error(err.error || t('connectDesktopButton.errors.createDesktopSession'));
       }
 
       const session = await response.json();
@@ -369,14 +373,14 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         method: 'POST',
       });
       if (!codeResponse.ok) {
-        const err = await codeResponse.json().catch(() => ({ error: 'Failed to create desktop connect code' }));
+        const err = await codeResponse.json().catch(() => ({ error: t('connectDesktopButton.errors.createDesktopCode') }));
         endSession(session.id);
-        throw new Error(err.error || 'Failed to create desktop connect code');
+        throw new Error(err.error || t('connectDesktopButton.errors.createDesktopCode'));
       }
       const codeData = await codeResponse.json() as { code?: string };
       if (!codeData.code) {
         endSession(session.id);
-        throw new Error('Invalid desktop connect code response');
+        throw new Error(t('connectDesktopButton.errors.invalidDesktopCode'));
       }
 
       // Build deep link URL
@@ -433,10 +437,10 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
 
       pollTimerRef.current = setTimeout(poll, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connection failed');
+      setError(err instanceof Error ? err.message : t('connectDesktopButton.errors.connectionFailed'));
       setStatus('idle');
     }
-  }, [deviceId, desktopAccess, remoteAccessPolicy, endSession]);
+  }, [deviceId, desktopAccess, remoteAccessPolicy, endSession, t]);
 
   const handleDismiss = useCallback(() => {
     setVncFallback(null);
@@ -482,10 +486,10 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         <MonitorOff className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
         <div className="flex-1">
           <p className="font-medium text-red-800 dark:text-red-300">
-            Connection denied
+            {t('connectDesktopButton.denied.title')}
           </p>
           <p className="mt-1 text-xs text-red-700 dark:text-red-400">
-            The user denied the remote connection.
+            {t('connectDesktopButton.denied.description')}
           </p>
           <div className="mt-2.5">
             <button
@@ -493,7 +497,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
               onClick={handleDismissDenied}
               className="text-xs text-muted-foreground transition hover:text-foreground"
             >
-              Dismiss
+              {t('connectDesktopButton.dismiss')}
             </button>
           </div>
         </div>
@@ -520,10 +524,10 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
           <div className="flex-1">
             <p className="font-medium text-blue-800 dark:text-blue-300">
-              Viewer didn't open?
+              {t('connectDesktopButton.fallback.title')}
             </p>
             <p className="mt-1 text-xs text-blue-700 dark:text-blue-400">
-              Open the VNC session in your browser instead.
+              {t('connectDesktopButton.fallback.vncDescription')}
             </p>
             <div className="mt-2.5 flex items-center gap-3">
               <button
@@ -532,14 +536,14 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                 className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
               >
                 <Globe className="h-3.5 w-3.5" />
-                Open in Browser
+                {t('connectDesktopButton.openInBrowser')}
               </button>
               <button
                 type="button"
                 onClick={handleCancelVnc}
                 className="text-xs text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
             </div>
           </div>
@@ -559,10 +563,10 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           <Monitor className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
           <div className="flex-1">
             <p className="font-medium text-amber-800 dark:text-amber-300">
-              Viewer didn't open?
+              {t('connectDesktopButton.fallback.title')}
             </p>
             <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-              If the viewer opened, you can dismiss this. Otherwise, download it below.
+              {t('connectDesktopButton.fallback.viewerDescription')}
             </p>
             {(() => {
               const downloadInfo = getViewerDownloadInfo();
@@ -577,14 +581,14 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                       className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700"
                     >
                       <Download className="h-3.5 w-3.5" />
-                      Download for {downloadInfo.label}
+                      {t('connectDesktopButton.downloadFor', { platform: downloadInfo.label })}
                     </a>
                     <button
                       type="button"
                       onClick={handleDismiss}
                       className="text-xs text-muted-foreground transition hover:text-foreground"
                     >
-                      Dismiss
+                      {t('connectDesktopButton.dismiss')}
                     </button>
                   </div>
                 );
@@ -611,7 +615,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                     onClick={handleDismiss}
                     className="text-xs text-muted-foreground transition hover:text-foreground"
                   >
-                    Dismiss
+                    {t('connectDesktopButton.dismiss')}
                   </button>
                 </div>
               );
@@ -629,11 +633,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     )
   ) : null;
 
-  const headlessTitle = 'This device has no display \u2014 remote desktop is unavailable';
-  const desktopAccessUnavailable = desktopAccessUnavailableReason(desktopAccess, remoteAccessPolicy);
+  const headlessTitle = t('connectDesktopButton.unavailable.headless');
+  const desktopAccessUnavailable = desktopAccessUnavailableReason(desktopAccess, remoteAccessPolicy, (key) => t(/* i18n-dynamic */ key));
   const policyDisabled = remoteAccessPolicy?.webrtcDesktop === false;
   const policyTitle = policyDisabled
-    ? `Remote desktop is disabled by policy${remoteAccessPolicy?.policyName ? ` "${remoteAccessPolicy.policyName}"` : ''}`
+    ? remoteAccessPolicy?.policyName
+      ? t('connectDesktopButton.policyDisabledNamed', { name: remoteAccessPolicy.policyName })
+      : t('connectDesktopButton.policyDisabled')
     : null;
   const unavailableTitle = policyTitle ?? desktopAccessUnavailable ?? headlessTitle;
 
@@ -663,7 +669,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
             className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-muted-foreground cursor-not-allowed opacity-50"
           >
             <MonitorOff className="h-4 w-4" />
-            Desktop Unavailable
+            {t('connectDesktopButton.desktopUnavailable')}
           </button>
         </div>
       );
@@ -678,7 +684,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground cursor-not-allowed opacity-50"
         >
           <MonitorOff className="h-4 w-4" />
-          Desktop Unavailable
+          {t('connectDesktopButton.desktopUnavailable')}
         </button>
       </div>
     );
@@ -691,7 +697,7 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           type="button"
           onClick={handleConnect}
           disabled={disabled || status === 'creating' || status === 'launching'}
-          title={error || (disabled ? disabledTitle : undefined) || 'Connect Desktop'}
+          title={error || (disabled ? disabledTitle : undefined) || t('connectDesktopButton.connectDesktop')}
           className={`flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
         >
           {status === 'creating' || status === 'launching' ? (
@@ -717,10 +723,10 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
           className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
         >
           <Monitor className="h-4 w-4" />
-          {error ? 'Connection failed' :
-           status === 'creating' ? 'Connecting...' :
-           status === 'launching' ? 'Launching...' :
-           'Connect Desktop'}
+          {error ? t('connectDesktopButton.errors.connectionFailed') :
+           status === 'creating' ? t('connectDesktopButton.connecting') :
+           status === 'launching' ? t('connectDesktopButton.launching') :
+           t('connectDesktopButton.connectDesktop')}
         </button>
         {fallbackContent}
         {deniedContent}
@@ -738,10 +744,10 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         className={`flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${error ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900' : 'bg-background hover:bg-muted'}`}
       >
         <Monitor className="h-4 w-4" />
-        {error ? 'Connection failed' :
-         status === 'creating' ? 'Creating session...' :
-         status === 'launching' ? 'Launching viewer...' :
-         'Connect Desktop'}
+        {error ? t('connectDesktopButton.errors.connectionFailed') :
+         status === 'creating' ? t('connectDesktopButton.creatingSession') :
+         status === 'launching' ? t('connectDesktopButton.launchingViewer') :
+         t('connectDesktopButton.connectDesktop')}
         {status === 'idle' && !error && <ExternalLink className="w-3.5 h-3.5 opacity-60" />}
       </button>
 

@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { CheckCircle, Settings2 } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
@@ -20,16 +22,16 @@ type Device = { id: string; name: string };
 
 // Past-tense verbs for bulk-action success toasts. Without this, `${action}d`
 // produces "suppressd".
-const BULK_PAST_TENSE: Record<string, string> = {
+const BULK_PAST_TENSE_KEY: Record<string, string> = {
   acknowledge: 'acknowledged',
   resolve: 'resolved',
   suppress: 'suppressed',
   dismiss: 'dismissed',
 };
 
-function normalizeAlertRows(rows: Record<string, unknown>[]): Alert[] {
+function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: string): Alert[] {
   return rows.map((row) => {
-    const deviceName = row.deviceName ?? row.deviceHostname ?? row.hostname ?? 'Unknown device';
+    const deviceName = row.deviceName ?? row.deviceHostname ?? row.hostname ?? unknownDevice;
     const contextData = row.contextData ?? row.context;
     const anomalyContext = row.anomalyContext ?? normalizeMetricAnomalyContext(contextData);
     return {
@@ -45,6 +47,7 @@ function normalizeAlertRows(rows: Record<string, unknown>[]): Alert[] {
 }
 
 export default function AlertsPage() {
+  const { t } = useTranslation('alerts');
   const mlFlags = useMlFeatureFlags();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
@@ -87,17 +90,17 @@ export default function AlertsPage() {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch alerts');
+        throw new Error(t('alertsPage.failedToFetchAlerts'));
       }
       const data = await response.json();
       const raw: Record<string, unknown>[] = data.data ?? data.alerts ?? (Array.isArray(data) ? data : []);
-      setAlerts(normalizeAlertRows(raw));
+      setAlerts(normalizeAlertRows(raw, t('alertsPage.unknownDevice')));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('alertsPage.genericError'));
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId]);
+  }, [currentOrgId, t]);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -108,14 +111,14 @@ export default function AlertsPage() {
         setDevices(
           raw.map((d) => ({
             id: String(d.id ?? ''),
-            name: String(d.displayName ?? d.hostname ?? d.name ?? 'Unknown'),
+            name: String(d.displayName ?? d.hostname ?? d.name ?? t('alertsPage.unknownDevice')),
           }))
         );
       }
     } catch (err) {
       console.error('Failed to fetch devices:', err);
     }
-  }, [currentOrgId]);
+  }, [currentOrgId, t]);
 
   const fetchAlertDetails = useCallback(async (alertId: string) => {
     try {
@@ -193,8 +196,8 @@ export default function AlertsPage() {
     try {
       await runAction({
         request: () => fetchWithAuth(`/alerts/${alert.id}/acknowledge`, { method: 'POST' }),
-        errorFallback: 'Failed to acknowledge alert',
-        successMessage: 'Alert acknowledged',
+        errorFallback: t('alertsPage.failedToAcknowledgeAlert'),
+        successMessage: t('alertsPage.alertAcknowledged'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
 
@@ -213,7 +216,7 @@ export default function AlertsPage() {
     } catch (err) {
       // runAction already toasted any ActionError (and 401 → login redirect).
       if (!(err instanceof ActionError)) {
-        showToast({ message: 'Failed to acknowledge alert', type: 'error' });
+        showToast({ message: t('alertsPage.failedToAcknowledgeAlert'), type: 'error' });
       }
     } finally {
       setSubmitting(false);
@@ -230,8 +233,8 @@ export default function AlertsPage() {
           method: 'POST',
           body: JSON.stringify({ note })
         }),
-        errorFallback: 'Failed to resolve alert',
-        successMessage: 'Alert resolved',
+        errorFallback: t('alertsPage.failedToResolveAlert'),
+        successMessage: t('alertsPage.alertResolved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
 
@@ -243,7 +246,7 @@ export default function AlertsPage() {
       fetchAlerts();
     } catch (err) {
       if (!(err instanceof ActionError)) {
-        showToast({ message: 'Failed to resolve alert', type: 'error' });
+        showToast({ message: t('alertsPage.failedToResolveAlert'), type: 'error' });
       }
     } finally {
       setSubmitting(false);
@@ -275,7 +278,7 @@ export default function AlertsPage() {
     ));
 
     showToast({
-      message: `"${alert.title}" suppressed`,
+      message: t('alertsPage.alertSuppressed', { title: alert.title }),
       type: 'undo',
       onUndo: revert,
       duration: 5000,
@@ -298,7 +301,7 @@ export default function AlertsPage() {
         const body = await response.json().catch(() => null);
         revert();
         console.error('[alerts] suppress failed', alert.id, response.status);
-        showToast({ message: body?.error ?? 'Failed to suppress alert', type: 'error' });
+        showToast({ message: body?.error ?? t('alertsPage.failedToSuppressAlert'), type: 'error' });
       } else {
         fetchAlerts();
       }
@@ -310,7 +313,7 @@ export default function AlertsPage() {
       // AbortError/TypeError text is browser jargon, not user-facing copy).
       revert();
       console.error('[alerts] suppress failed', alert.id, err);
-      showToast({ message: 'Failed to suppress alert', type: 'error' });
+      showToast({ message: t('alertsPage.failedToSuppressAlert'), type: 'error' });
     }
   };
 
@@ -330,31 +333,34 @@ export default function AlertsPage() {
             ...(until ? { until: until.toISOString() } : {})
           })
         }),
-        errorFallback: `Failed to ${action} alerts`,
+        errorFallback: t('alertsPage.failedBulkAction', { action }),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       await fetchAlerts();
 
-      const past = BULK_PAST_TENSE[action] ?? `${action}d`;
+      const past = BULK_PAST_TENSE_KEY[action] ? t(/* i18n-dynamic */ `alertsPage.bulkPast.${BULK_PAST_TENSE_KEY[action]}`) : action;
       const updated = result?.updated ?? 0;
       const skipped = result?.skipped ?? 0;
       const failed = result?.failed ?? 0;
-      const extras = [skipped ? `${skipped} skipped` : '', failed ? `${failed} failed` : '']
+      const extras = [
+        skipped ? t('alertsPage.skippedCount', { count: skipped }) : '',
+        failed ? t('alertsPage.failedCount', { count: failed }) : ''
+      ]
         .filter(Boolean).join(', ');
       if (updated === 0) {
         showToast({
-          message: `No alerts ${past}${extras ? ` — ${extras}` : ''}`,
+          message: t('alertsPage.noAlertsBulkActioned', { action: past, extras: extras ? ` — ${extras}` : '' }),
           type: failed > 0 ? 'error' : 'warning',
         });
       } else {
         showToast({
-          message: `${updated} alert${updated > 1 ? 's' : ''} ${past}${extras ? ` (${extras})` : ''}`,
+          message: t('alertsPage.alertsBulkActioned', { count: updated, action: past, extras: extras ? ` (${extras})` : '' }),
           type: failed > 0 ? 'warning' : 'success',
         });
       }
     } catch (err) {
       if (!(err instanceof ActionError)) {
-        showToast({ message: `Failed to ${action} alerts`, type: 'error' });
+        showToast({ message: t('alertsPage.failedBulkAction', { action }), type: 'error' });
       }
     } finally {
       setSubmitting(false);
@@ -407,7 +413,7 @@ export default function AlertsPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading alerts...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('alertsPage.loadingAlerts')}</p>
         </div>
       </div>
     );
@@ -422,7 +428,7 @@ export default function AlertsPage() {
           onClick={fetchAlerts}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('alertsPage.tryAgain')}
         </button>
       </div>
     );
@@ -432,11 +438,11 @@ export default function AlertsPage() {
     <div className="space-y-5">
       <AlertsTabStrip currentPath="/alerts" />
       <div>
-        <h1 className="text-xl font-bold tracking-tight">Alerts</h1>
+        <h1 className="text-xl font-bold tracking-tight">{t('alertsPage.alerts')}</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Monitor alerts across your devices. Rules are managed in{' '}
+          {t('alertsPage.monitorAlertsAcrossYourDevicesRulesAre')}{' '}
           <a href="/configuration-policies" className="text-primary hover:underline">
-            Configuration Policies
+            {t('alertsPage.configurationPolicies')}
           </a>.
         </p>
       </div>
@@ -460,18 +466,19 @@ export default function AlertsPage() {
       {pendingBulk && (
         <div className="flex items-center gap-3 rounded-md border border-warning/40 bg-warning/10 px-4 py-3">
           <span className="text-sm font-medium">
-            {pendingBulk.action === 'dismiss'
-              ? 'Permanently dismiss'
-              : pendingBulk.action === 'suppress'
-                ? 'Suppress'
-                : pendingBulk.action === 'resolve'
-                  ? 'Resolve'
-                  : 'Update'}{' '}
-            {pendingBulk.alerts.length} alert{pendingBulk.alerts.length > 1 ? 's' : ''}?
+            {t('alertsPage.bulkConfirmQuestion', {
+              action: pendingBulk.action === 'dismiss'
+                ? t('alertsPage.bulkAction.dismiss')
+                : pendingBulk.action === 'suppress'
+                  ? t('alertsPage.bulkAction.suppress')
+                  : pendingBulk.action === 'resolve'
+                    ? t('alertsPage.bulkAction.resolve')
+                    : t('alertsPage.bulkAction.update'),
+              count: pendingBulk.alerts.length,
+            })}
             {pendingBulk.action === 'dismiss' && (
               <span className="ml-1 font-normal text-muted-foreground">
-                Dismissed alerts are hidden for good. Warranty expiry won't re-alert for the
-                same end date; other alerts can still fire fresh if their condition recurs.
+                {t('alertsPage.dismissedAlertsAreHiddenForGoodWarranty')}
               </span>
             )}
           </span>
@@ -481,7 +488,7 @@ export default function AlertsPage() {
               onClick={() => setPendingBulk(null)}
               className="h-8 rounded-md border px-3 text-sm font-medium hover:bg-muted"
             >
-              Cancel
+              {t('alertsPage.cancel')}
             </button>
             <button
               type="button"
@@ -489,7 +496,7 @@ export default function AlertsPage() {
               disabled={submitting}
               className="h-8 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
-              {submitting ? 'Processing...' : 'Confirm'}
+              {submitting ? t('common:states.processing') : t('common:actions.confirm')}
             </button>
           </div>
         </div>
@@ -500,16 +507,16 @@ export default function AlertsPage() {
           <div className="rounded-full bg-success/10 p-4 mb-4">
             <CheckCircle className="h-8 w-8 text-success" />
           </div>
-          <h2 className="text-lg font-semibold text-foreground mb-1">All clear</h2>
+          <h2 className="text-lg font-semibold text-foreground mb-1">{t('alertsPage.allClear')}</h2>
           <p className="text-sm text-muted-foreground max-w-sm mb-4">
-            No active alerts. Your fleet is healthy.
+            {t('alertsPage.noActiveAlertsYourFleetIsHealthy')}
           </p>
           <a
             href="/configuration-policies"
             className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition"
           >
             <Settings2 className="h-4 w-4" />
-            Set up alert rules
+            {t('alertsPage.setUpAlertRules')}
           </a>
         </div>
       ) : (

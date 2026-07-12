@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   ChevronRight,
   Folder,
@@ -150,6 +151,7 @@ export default function ScriptCategoryTree({
   scripts: externalScripts,
   onSelectCategory
 }: ScriptCategoryTreeProps) {
+  const { t } = useTranslation('scripts');
   const [internalCategories, setInternalCategories] = useState<ScriptCategory[]>([]);
   const [scripts, setScripts] = useState<ScriptItem[]>(externalScripts ?? []);
   const [loading, setLoading] = useState(!externalCategories && !externalScripts);
@@ -181,7 +183,7 @@ export default function ScriptCategoryTree({
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error('Failed to fetch scripts');
+        throw new Error(t('scriptCategoryTree.errors.fetch'));
       }
 
       const data = await response.json();
@@ -209,11 +211,11 @@ export default function ScriptCategoryTree({
 
       setScripts(scriptItems);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('scriptCategoryTree.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, [externalCategories, externalScripts]);
+  }, [externalCategories, externalScripts, t]);
 
   useEffect(() => {
     fetchData();
@@ -239,9 +241,9 @@ export default function ScriptCategoryTree({
   }, [contextMenu]);
 
   const selectedCategoryName = useMemo(() => {
-    if (!selectedCategoryId) return 'All Scripts';
-    return findCategoryName(categories, selectedCategoryId) ?? 'Selected Category';
-  }, [categories, selectedCategoryId]);
+    if (!selectedCategoryId) return t('scriptCategoryTree.allScripts');
+    return findCategoryName(categories, selectedCategoryId) ?? t('scriptCategoryTree.selectedCategory');
+  }, [categories, selectedCategoryId, t]);
 
   const highlightedCategoryIds = useMemo(() => {
     if (!selectedCategoryId) return new Set<string>();
@@ -304,7 +306,7 @@ export default function ScriptCategoryTree({
 
       setRenameTargetId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename category');
+      setError(err instanceof Error ? err.message : t('scriptCategoryTree.errors.rename'));
     } finally {
       setSaving(false);
     }
@@ -432,7 +434,7 @@ export default function ScriptCategoryTree({
         <div className="flex items-center justify-center py-12">
           <div className="text-center">
             <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
-            <p className="mt-4 text-sm text-muted-foreground">Loading categories...</p>
+            <p className="mt-4 text-sm text-muted-foreground">{t('scriptCategoryTree.loading')}</p>
           </div>
         </div>
       </div>
@@ -450,7 +452,7 @@ export default function ScriptCategoryTree({
           onClick={fetchData}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
-          Try again
+          {t('common:actions.retry')}
         </button>
       </div>
     );
@@ -462,8 +464,8 @@ export default function ScriptCategoryTree({
         <div className="w-full lg:w-1/2">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold">Script Categories</h2>
-              <p className="text-sm text-muted-foreground">Organize scripts into nested folders.</p>
+              <h2 className="text-lg font-semibold">{t('scriptCategoryTree.title')}</h2>
+              <p className="text-sm text-muted-foreground">{t('scriptCategoryTree.description')}</p>
             </div>
             <button
               type="button"
@@ -471,7 +473,7 @@ export default function ScriptCategoryTree({
               className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
             >
               <FolderPlus className="h-4 w-4" />
-              New Category
+              {t('scriptCategoryTree.actions.newCategory')}
             </button>
           </div>
 
@@ -484,7 +486,7 @@ export default function ScriptCategoryTree({
           <div className="mt-4 space-y-2">
             {categories.length === 0 ? (
               <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-                No categories found. Create one to get started.
+                {t('scriptCategoryTree.empty.categories')}
               </div>
             ) : (
               categories.map(category => renderCategory(category))
@@ -497,13 +499,13 @@ export default function ScriptCategoryTree({
             <p className="text-sm font-semibold">{selectedCategoryName}</p>
             <p className="text-xs text-muted-foreground">
               {selectedCategoryId
-                ? `Scripts tagged under ${selectedCategoryName} and its subcategories`
-                : 'Select a category to highlight its scripts.'}
+                ? t('scriptCategoryTree.highlightDescription', { category: selectedCategoryName })
+                : t('scriptCategoryTree.selectDescription')}
             </p>
             <div className="mt-4 space-y-2 max-h-80 overflow-y-auto">
               {scripts.length === 0 ? (
                 <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
-                  No scripts found.
+                  {t('scriptCategoryTree.empty.scripts')}
                 </div>
               ) : (
                 scripts.map(script => {
@@ -520,10 +522,10 @@ export default function ScriptCategoryTree({
                     >
                       <div>
                         <p className="font-medium">{script.name}</p>
-                        <p className="text-xs text-muted-foreground">ID: {script.id}</p>
+                        <p className="text-xs text-muted-foreground">{t('scriptCategoryTree.idLabel', { id: script.id })}</p>
                       </div>
                       <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', statusStyles[script.status])}>
-                        {script.status}
+                        {t(/* i18n-dynamic */ `scriptCategoryTree.status.${script.status}`)}
                       </span>
                     </div>
                   );
@@ -551,7 +553,7 @@ export default function ScriptCategoryTree({
             className="flex w-full items-center gap-2 px-3 py-2 hover:bg-muted"
           >
             <Pencil className="h-4 w-4" />
-            Rename
+            {t('scriptCategoryTree.actions.rename')}
           </button>
           <button
             type="button"
@@ -562,7 +564,7 @@ export default function ScriptCategoryTree({
             className="flex w-full items-center gap-2 px-3 py-2 hover:bg-muted"
           >
             <FolderPlus className="h-4 w-4" />
-            Add Subcategory
+            {t('scriptCategoryTree.actions.addSubcategory')}
           </button>
           <button
             type="button"
@@ -573,7 +575,7 @@ export default function ScriptCategoryTree({
             className="flex w-full items-center gap-2 px-3 py-2 text-red-600 hover:bg-red-500/10"
           >
             <Trash2 className="h-4 w-4" />
-            Delete
+            {t('common:actions.delete')}
           </button>
         </div>
       )}
@@ -581,8 +583,8 @@ export default function ScriptCategoryTree({
       {renameTargetId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-            <h3 className="text-lg font-semibold">Rename Category</h3>
-            <p className="mt-1 text-sm text-muted-foreground">Update the category title.</p>
+            <h3 className="text-lg font-semibold">{t('scriptCategoryTree.renameDialog.title')}</h3>
+            <p className="mt-1 text-sm text-muted-foreground">{t('scriptCategoryTree.renameDialog.description')}</p>
             <input
               value={renameValue}
               onChange={event => setRenameValue(event.target.value)}
@@ -595,7 +597,7 @@ export default function ScriptCategoryTree({
                 disabled={saving}
                 className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -604,7 +606,7 @@ export default function ScriptCategoryTree({
                 className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
               >
                 {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-                Save
+                {t('common:actions.save')}
               </button>
             </div>
           </div>
@@ -615,12 +617,12 @@ export default function ScriptCategoryTree({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
             <h3 className="text-lg font-semibold">
-              {newCategoryParentId === 'root' ? 'New Category' : 'Add Subcategory'}
+              {newCategoryParentId === 'root' ? t('scriptCategoryTree.newDialog.title') : t('scriptCategoryTree.newDialog.subcategoryTitle')}
             </h3>
             <p className="mt-1 text-sm text-muted-foreground">
               {newCategoryParentId === 'root'
-                ? 'Create a new top-level category.'
-                : 'Name the new subcategory.'}
+                ? t('scriptCategoryTree.newDialog.description')
+                : t('scriptCategoryTree.newDialog.subcategoryDescription')}
             </p>
             <input
               value={newCategoryName}
@@ -636,14 +638,14 @@ export default function ScriptCategoryTree({
                 }}
                 className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
                 onClick={handleAddSubcategory}
                 className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
               >
-                Add
+                {t('common:actions.add')}
               </button>
             </div>
           </div>
@@ -653,9 +655,9 @@ export default function ScriptCategoryTree({
       {deleteTargetId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-            <h3 className="text-lg font-semibold text-red-600">Delete Category</h3>
+            <h3 className="text-lg font-semibold text-red-600">{t('scriptCategoryTree.deleteDialog.title')}</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              This will remove the category and its subcategories. Scripts will remain but become uncategorized.
+              {t('scriptCategoryTree.deleteDialog.description')}
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -663,14 +665,14 @@ export default function ScriptCategoryTree({
                 onClick={() => setDeleteTargetId(null)}
                 className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
                 onClick={handleDeleteCategory}
                 className="rounded-md bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600"
               >
-                Delete
+                {t('common:actions.delete')}
               </button>
             </div>
           </div>

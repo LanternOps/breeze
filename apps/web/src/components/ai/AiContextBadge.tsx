@@ -1,29 +1,31 @@
-import type { ReactNode } from 'react';
-import { Monitor, Bell, LayoutDashboard, Tag } from 'lucide-react';
-import type { AiPageContext } from '@breeze/shared';
+import type { ReactNode } from "react";
+import { Monitor, Bell, LayoutDashboard, Tag } from "lucide-react";
+import type { AiPageContext } from "@breeze/shared";
+import { useTranslation } from "react-i18next";
 
 interface AiContextBadgeProps {
   context: AiPageContext;
 }
 
 export default function AiContextBadge({ context }: AiContextBadgeProps) {
+  const { t } = useTranslation("ai");
   let icon: ReactNode = <Tag className="h-3 w-3" />;
-  let label = 'Context';
+  let label = t("aiContextBadge.context");
 
   switch (context.type) {
-    case 'device':
+    case "device":
       icon = <Monitor className="h-3 w-3" />;
       label = context.hostname;
       break;
-    case 'alert':
+    case "alert":
       icon = <Bell className="h-3 w-3" />;
       label = context.title;
       break;
-    case 'dashboard':
+    case "dashboard":
       icon = <LayoutDashboard className="h-3 w-3" />;
-      label = context.orgName ?? 'Dashboard';
+      label = context.orgName ?? t("aiContextBadge.dashboard");
       break;
-    case 'custom':
+    case "custom":
       icon = <Tag className="h-3 w-3" />;
       label = context.label;
       break;

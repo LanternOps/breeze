@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -11,16 +11,21 @@ import {
   Trash2,
   HardDrive,
   RotateCcw,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
   type LucideIcon,
-} from 'lucide-react';
-import { formatDateTime } from '@/lib/dateTimeFormat';
-import { fetchWithAuth } from '../../stores/auth';
+} from "lucide-react";
+import { formatDateTime } from "@/lib/dateTimeFormat";
+import { fetchWithAuth } from "../../stores/auth";
+import { useTranslation } from "react-i18next";
+import "../../lib/i18n";
 
 type ActivityEvent = {
   id: string;
   action?: string;
   message?: string;
-  result?: 'success' | 'failure' | 'denied';
+  result?: "success" | "failure" | "denied";
   initiatedBy?: string | null;
   timestamp?: string;
   actor?: { type?: string; name?: string; email?: string | null };
@@ -29,12 +34,17 @@ type ActivityEvent = {
 type DeviceActivityFeedProps = {
   deviceId: string;
   timezone?: string;
-  // 'rail' is the right-column card (default). 'strip' is the full-width
-  // placement used when the parent collapses the rail; its empty state is a
-  // single compact line rather than the stacked heading/paragraph/link.
-  layout?: 'rail' | 'strip';
+  // When true (and on lg+ screens), the pane renders as a thin vertical bar
+  // showing the item count instead of the full card. The parent owns this state
+  // and animates the rail width; below lg the full card always renders.
+  collapsed?: boolean;
+  // Toggles the collapsed state. Wired to both the collapsed bar (expand) and
+  // the header chevron in the expanded card (collapse). Omit to disable the
+  // affordance entirely.
+  onToggleCollapse?: () => void;
   // Reports whether the pane has anything worth showing (events or active
-  // alerts) so the parent can collapse the rail when it's empty.
+  // alerts) so the parent can pick the data-driven default (open when there's
+  // content, collapsed when empty).
   onHasContentChange?: (hasContent: boolean) => void;
 };
 
@@ -43,30 +53,30 @@ type DeviceActivityFeedProps = {
 // Config/policy churn, discovery, and monitoring noise are intentionally
 // excluded — the full set lives on the Activities tab.
 const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
-  { prefix: 'device.command', icon: Power },              // reboot / shutdown / wake / lock / refresh
-  { prefix: 'script.', icon: Terminal },                  // run / cancel
-  { prefix: 'device.remote_access', icon: Monitor },      // remote session launched
-  { prefix: 'device.patch', icon: Download },             // patch install / rollback
-  { prefix: 'device.software', icon: Package },           // software install / uninstall / update
-  { prefix: 'device.maintenance', icon: Wrench },         // maintenance enable / disable
-  { prefix: 'device.filesystem.cleanup', icon: HardDrive },
-  { prefix: 'device.decommission', icon: Trash2 },
-  { prefix: 'device.permanent_delete', icon: Trash2 },
-  { prefix: 'device.restore', icon: RotateCcw },
+  { prefix: "device.command", icon: Power }, // reboot / shutdown / wake / lock / refresh
+  { prefix: "script.", icon: Terminal }, // run / cancel
+  { prefix: "device.remote_access", icon: Monitor }, // remote session launched
+  { prefix: "device.patch", icon: Download }, // patch install / rollback
+  { prefix: "device.software", icon: Package }, // software install / uninstall / update
+  { prefix: "device.maintenance", icon: Wrench }, // maintenance enable / disable
+  { prefix: "device.filesystem.cleanup", icon: HardDrive },
+  { prefix: "device.decommission", icon: Trash2 },
+  { prefix: "device.permanent_delete", icon: Trash2 },
+  { prefix: "device.restore", icon: RotateCcw },
   // Automated agent-dispatched commands (scheduled patches, automations). Listed
   // here ONLY so ruleFor() can pick an icon — they are deliberately excluded
   // from ACTION_PREFIXES below. The server surfaces these solely via the
   // actor-scoped includeAutomated predicate (system actors, no manual twin);
   // sending them as plain action prefixes would re-admit the manual
   // (actor_type='user') twin rows and double-list them.
-  { prefix: 'agent.command.install_patches', icon: Download },
-  { prefix: 'agent.command.rollback_patches', icon: RotateCcw },
-  { prefix: 'agent.command.script', icon: Terminal },
-  { prefix: 'agent.command.software_uninstall', icon: Package },
-  { prefix: 'agent.command.software_update', icon: Package },
+  { prefix: "agent.command.install_patches", icon: Download },
+  { prefix: "agent.command.rollback_patches", icon: RotateCcw },
+  { prefix: "agent.command.script", icon: Terminal },
+  { prefix: "agent.command.software_uninstall", icon: Package },
+  { prefix: "agent.command.software_update", icon: Package },
 ];
 
-const AUTOMATED_ACTION_PREFIX = 'agent.command.';
+const AUTOMATED_ACTION_PREFIX = "agent.command.";
 
 function ruleFor(action?: string) {
   if (!action) return undefined;
@@ -78,9 +88,11 @@ function ruleFor(action?: string) {
 // most of them client-side (issue #1726). The agent.command.* rules are
 // excluded — those rows arrive only through the actor-scoped includeAutomated
 // predicate, never as plain prefix matches (see the comment above).
-const ACTION_PREFIXES = ACTION_RULES.filter((r) => !r.prefix.startsWith(AUTOMATED_ACTION_PREFIX))
+const ACTION_PREFIXES = ACTION_RULES.filter(
+  (r) => !r.prefix.startsWith(AUTOMATED_ACTION_PREFIX),
+)
   .map((r) => r.prefix)
-  .join(',');
+  .join(",");
 
 // How many filtered rows to request per page. Small fixed window for a fast,
 // predictable first paint; "Load more" pulls the next page on demand.
@@ -89,19 +101,19 @@ const PAGE_SIZE = 10;
 // initiatedBy values worth surfacing — a person doing something is implicit via
 // the actor name, but "this happened automatically" is the interesting signal.
 const INITIATOR_LABELS: Record<string, string> = {
-  ai: 'AI',
-  automation: 'Automation',
-  policy: 'Policy',
-  schedule: 'Schedule',
-  integration: 'Integration',
+  ai: "AI",
+  automation: "Automation",
+  policy: "Policy",
+  schedule: "Schedule",
+  integration: "Integration",
 };
 
 function timeAgo(value?: string): string {
-  if (!value) return '';
+  if (!value) return "";
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '';
+  if (Number.isNaN(d.getTime())) return "";
   const mins = Math.floor((Date.now() - d.getTime()) / 60000);
-  if (mins < 1) return 'Just now';
+  if (mins < 1) return "Just now";
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h ago`;
@@ -120,9 +132,11 @@ function absoluteTime(value?: string, timezone?: string): string | undefined {
 export default function DeviceActivityFeed({
   deviceId,
   timezone,
-  layout = 'rail',
+  collapsed = false,
+  onToggleCollapse,
   onHasContentChange,
 }: DeviceActivityFeedProps) {
+  const { t } = useTranslation("devices");
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [activeAlerts, setActiveAlerts] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -163,20 +177,24 @@ export default function DeviceActivityFeed({
       }
       try {
         const eventsUrl = `/devices/${deviceId}/events?limit=${PAGE_SIZE}&page=${page}&includeAutomated=true&actions=${encodeURIComponent(
-          ACTION_PREFIXES
+          ACTION_PREFIXES,
         )}`;
         // The active-alert count is only needed on the initial load.
         const [eventsRes, alertsRes] = await Promise.all([
           fetchWithAuth(eventsUrl, { signal }),
           isFirst
-            ? fetchWithAuth(`/devices/${deviceId}/alerts?status=active`, { signal })
+            ? fetchWithAuth(`/devices/${deviceId}/alerts?status=active`, {
+                signal,
+              })
             : Promise.resolve(null),
         ]);
         if (signal.aborted) return;
-        if (!eventsRes.ok) throw new Error('events');
+        if (!eventsRes.ok) throw new Error("events");
 
         const eventsJson = await eventsRes.json();
-        const pageEvents: ActivityEvent[] = Array.isArray(eventsJson?.data) ? eventsJson.data : [];
+        const pageEvents: ActivityEvent[] = Array.isArray(eventsJson?.data)
+          ? eventsJson.data
+          : [];
         setEvents((prev) => (isFirst ? pageEvents : [...prev, ...pageEvents]));
         setHasMore(pageEvents.length === PAGE_SIZE);
         setLoadedPage(page);
@@ -203,7 +221,7 @@ export default function DeviceActivityFeed({
         }
       }
     },
-    [deviceId]
+    [deviceId],
   );
 
   // Reload from page 1 whenever the device changes; abort any in-flight request
@@ -246,11 +264,72 @@ export default function DeviceActivityFeed({
 
   const visible = events;
 
+  // Total noteworthy items for the collapsed-bar badge: recent actions plus any
+  // active alerts (an alert with no events is still worth surfacing).
+  const itemCount = events.length + activeAlerts;
+  const countLabel = itemCount > 99 ? '99+' : `${itemCount}${hasMore ? '+' : ''}`;
+
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-xs">
-      <div className="flex items-center gap-2">
-        <Activity className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-lg font-semibold">Activity</h3>
+    <>
+      {/* Collapsed state — a thin vertical handle (desktop only; below lg the
+          full card always renders). Clicking it expands the rail. */}
+      {collapsed && (
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          data-testid="activity-rail-collapsed"
+          aria-label={`${t("deviceActivityFeed.activity")}${
+            activeAlerts > 0
+              ? `, ${activeAlerts} ${t("deviceActivityFeed.activeAlert")}${
+                  activeAlerts === 1 ? "" : t("deviceActivityFeed.s")
+                }`
+              : ""
+          }`}
+          className={`hidden w-full flex-col items-center gap-3 rounded-lg border bg-card py-4 shadow-xs transition hover:bg-muted/50 lg:flex lg:h-full ${
+            activeAlerts > 0 ? 'border-warning/40' : ''
+          }`}
+        >
+          <Activity className={`h-4 w-4 ${activeAlerts > 0 ? 'text-warning' : 'text-muted-foreground'}`} />
+          {loading ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" aria-hidden="true" />
+          ) : itemCount > 0 ? (
+            <span
+              className={`rounded-full px-1.5 py-0.5 text-xs font-semibold tabular-nums ${
+                activeAlerts > 0 ? 'bg-warning/15 text-warning' : 'bg-primary/10 text-primary'
+              }`}
+            >
+              {countLabel}
+            </span>
+          ) : null}
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground [writing-mode:vertical-rl]">
+            {t("deviceActivityFeed.activity")}
+          </span>
+          <ChevronLeft className="mt-auto h-4 w-4 text-muted-foreground" aria-hidden="true" />
+        </button>
+      )}
+
+      {/* Expanded card — hidden on desktop while collapsed so it never overflows
+          the 44px rail; always visible below lg. */}
+      <div className={`rounded-lg border bg-card p-6 shadow-xs ${collapsed ? 'lg:hidden' : ''}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-lg font-semibold">
+            {t("deviceActivityFeed.activity")}
+          </h3>
+        </div>
+        {onToggleCollapse && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            aria-label={`${t("common:filters.collapse")} ${t(
+              "deviceActivityFeed.activity",
+            ).toLocaleLowerCase()}`}
+            className="hidden rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground lg:inline-flex"
+          >
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       {/* Pinned alert summary — only when this device has active alerts. */}
@@ -261,9 +340,12 @@ export default function DeviceActivityFeed({
         >
           <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
           <span className="flex-1">
-            {activeAlerts} active alert{activeAlerts === 1 ? '' : 's'}
+            {activeAlerts} {t("deviceActivityFeed.activeAlert")}
+            {activeAlerts === 1 ? "" : t("deviceActivityFeed.s")}
           </span>
-          <span className="text-muted-foreground">View →</span>
+          <span className="text-muted-foreground">
+            {t("deviceActivityFeed.view")}
+          </span>
         </a>
       )}
 
@@ -282,55 +364,59 @@ export default function DeviceActivityFeed({
           </div>
         ) : error ? (
           <p className="text-sm text-muted-foreground">
-            Couldn&apos;t load activity.{' '}
+            {t("deviceActivityFeed.couldnTLoadActivity")}{" "}
             <button
               type="button"
               onClick={reload}
               className="font-medium text-primary hover:underline"
             >
-              Retry
+              {t("deviceActivityFeed.retry")}{" "}
             </button>
           </p>
         ) : visible.length === 0 ? (
-          layout === 'strip' ? (
-            <div
-              data-testid="activity-empty-strip"
-              className="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground"
-            >
-              <span>No recent actions on this device.</span>
-              <a href="#activities" className="font-medium text-primary hover:underline">
-                View all activity →
-              </a>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No recent actions on this device.</p>
-          )
+          <p className="text-sm text-muted-foreground">
+            {t("deviceActivityFeed.noRecentActionsOnThisDevice")}
+          </p>
         ) : (
           <ul className="space-y-3">
             {visible.map((e) => {
               const Icon = ruleFor(e.action)?.icon ?? Activity;
-              const initiator = e.initiatedBy ? INITIATOR_LABELS[e.initiatedBy] : undefined;
-              const failed = e.result === 'failure' || e.result === 'denied';
+              const initiator = e.initiatedBy
+                ? INITIATOR_LABELS[e.initiatedBy]
+                : undefined;
+              const failed = e.result === "failure" || e.result === "denied";
               // Tag the automated-dispatch rows (the agent.command.* family the
               // server returns only for non-user actors) as "Automated". Keyed on
               // the action, not actor.type, so other system-actor rows aren't
               // mislabeled — and an explicit initiatedBy label still wins.
-              const automated = !initiator && (e.action ?? '').startsWith(AUTOMATED_ACTION_PREFIX);
-              const namedActor = e.actor?.name && e.actor.name !== 'System' ? e.actor.name : undefined;
+              const automated =
+                !initiator &&
+                (e.action ?? "").startsWith(AUTOMATED_ACTION_PREFIX);
+              const namedActor =
+                e.actor?.name && e.actor.name !== "System"
+                  ? e.actor.name
+                  : undefined;
               // For automated rows the "Automated" chip already conveys the actor,
               // so drop the generic "System" label and keep only a real name.
-              const who = automated ? namedActor : namedActor ?? initiator ?? e.actor?.name;
+              const who = automated
+                ? namedActor
+                : (namedActor ?? initiator ?? e.actor?.name);
               return (
                 <li key={e.id} className="flex gap-3">
                   <div
                     className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
-                      failed ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'
+                      failed
+                        ? "bg-destructive/10 text-destructive"
+                        : "bg-muted text-muted-foreground"
                     }`}
                   >
                     <Icon className="h-4 w-4" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium" title={e.message || e.action}>
+                    <p
+                      className="truncate text-sm font-medium"
+                      title={e.message || e.action}
+                    >
                       {e.message || e.action}
                     </p>
                     <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
@@ -343,12 +429,18 @@ export default function DeviceActivityFeed({
                       )}
                       {automated && (
                         <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                          Automated
+                          {t("deviceActivityFeed.automated")}{" "}
                         </span>
                       )}
                       {who && <span aria-hidden="true">·</span>}
-                      <span title={absoluteTime(e.timestamp, timezone)}>{timeAgo(e.timestamp)}</span>
-                      {failed && <span className="font-medium text-destructive">· Failed</span>}
+                      <span title={absoluteTime(e.timestamp, timezone)}>
+                        {timeAgo(e.timestamp)}
+                      </span>
+                      {failed && (
+                        <span className="font-medium text-destructive">
+                          {t("deviceActivityFeed.failed")}
+                        </span>
+                      )}
                     </p>
                   </div>
                 </li>
@@ -365,24 +457,31 @@ export default function DeviceActivityFeed({
               disabled={loadingMore}
               className="text-sm font-medium text-primary hover:underline disabled:opacity-60"
             >
-              {loadingMore ? 'Loading…' : loadMoreError ? 'Try again' : 'Load more'}
+              {loadingMore
+                ? t("deviceActivityFeed.loading")
+                : loadMoreError
+                  ? t("deviceActivityFeed.tryAgain")
+                  : t("deviceActivityFeed.loadMore")}
             </button>
             {loadMoreError && !loadingMore && (
-              <span className="text-xs text-destructive">Couldn&apos;t load more.</span>
+              <span className="text-xs text-destructive">
+                {t("deviceActivityFeed.couldnTLoadMore")}
+              </span>
             )}
           </div>
         )}
       </div>
 
-      {!loading && !error && !(layout === 'strip' && visible.length === 0) && (
+      {!loading && !error && (
         <a
           href="#activities"
           className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
         >
-          View all activity
-          <span aria-hidden="true">→</span>
+          {t("deviceActivityFeed.viewAllActivity2")}{" "}
+          <span aria-hidden="true">{t("deviceActivityFeed.text")}</span>
         </a>
       )}
-    </div>
+      </div>
+    </>
   );
 }

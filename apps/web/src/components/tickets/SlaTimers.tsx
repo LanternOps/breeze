@@ -1,3 +1,5 @@
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import type { TicketDetail } from './ticketConfig';
 import { formatRelative } from './ticketConfig';
 
@@ -31,12 +33,13 @@ function timerState(
 }
 
 function TimerRow({ label, state, testId }: { label: string; state: TimerState; testId: string }) {
+  const { t } = useTranslation('tickets');
   const text =
-    state.kind === 'met' ? 'Met'
-    : state.kind === 'missed' ? 'Not met'
-    : state.kind === 'breached' ? 'Breached'
-    : state.kind === 'paused' ? `Paused · ${formatRelative(state.minutesLeft)} left`
-    : `${formatRelative(state.minutesLeft)} left`;
+    state.kind === 'met' ? t('slaTimers.state.met')
+    : state.kind === 'missed' ? t('slaTimers.state.notMet')
+    : state.kind === 'breached' ? t('slaTimers.state.breached')
+    : state.kind === 'paused' ? t('slaTimers.state.pausedLeft', { relative: formatRelative(state.minutesLeft) })
+    : t('slaTimers.state.left', { relative: formatRelative(state.minutesLeft) });
   const tone =
     state.kind === 'breached' ? 'text-red-700 dark:text-red-400'
     : state.kind === 'met' ? 'text-success'
@@ -50,6 +53,7 @@ function TimerRow({ label, state, testId }: { label: string; state: TimerState; 
 }
 
 export function SlaTimers({ ticket, now = new Date() }: { ticket: TicketDetail; now?: Date }) {
+  const { t } = useTranslation('tickets');
   const breached = new Set((ticket.slaBreachReason ?? '').split(',').map((s) => s.trim()));
   const hasResponse = !!ticket.responseSlaMinutes;
   const hasResolution = !!ticket.resolutionSlaMinutes;
@@ -57,14 +61,14 @@ export function SlaTimers({ ticket, now = new Date() }: { ticket: TicketDetail; 
   const terminal = ticket.status === 'resolved' || ticket.status === 'closed';
   return (
     <div className="space-y-2" data-testid="sla-timers">
-      <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">SLA</h3>
+      <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('slaTimers.title')}</h3>
       {hasResponse && (
-        <TimerRow label="First response" testId="sla-timer-response"
+        <TimerRow label={t('slaTimers.firstResponse')} testId="sla-timer-response"
           state={timerState(ticket.responseSlaMinutes!, ticket.firstResponseAt, breached.has('response'),
             terminal, ticket.createdAt, ticket.slaPausedAt, ticket.slaPausedMinutes, now)} />
       )}
       {hasResolution && (
-        <TimerRow label="Resolution" testId="sla-timer-resolution"
+        <TimerRow label={t('slaTimers.resolution')} testId="sla-timer-resolution"
           // resolvedAt is stamped on resolve/close and cleared on reopen (ticketService);
           // terminal + updatedAt covers legacy rows that predate the stamp.
           state={timerState(ticket.resolutionSlaMinutes!, ticket.resolvedAt ?? (terminal ? ticket.updatedAt : null),
@@ -72,7 +76,9 @@ export function SlaTimers({ ticket, now = new Date() }: { ticket: TicketDetail; 
       )}
       {ticket.slaPausedAt && !terminal && (
         <p className="text-xs text-muted-foreground" data-testid="sla-timers-paused">
-          Clock paused while the ticket is {ticket.status === 'on_hold' ? 'on hold' : 'pending'}.
+          {t('slaTimers.clockPaused', {
+            status: ticket.status === 'on_hold' ? t('slaTimers.status.onHold') : t('slaTimers.status.pending'),
+          })}
         </p>
       )}
     </div>

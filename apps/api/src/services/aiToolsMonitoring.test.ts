@@ -287,6 +287,73 @@ describe('manage_monitors — site-axis enforcement', () => {
     });
   });
 
+  // ─── create action (SR5-08) ──────────────────────────────────────────────
+
+  describe('action: create', () => {
+    // db.insert().values().returning() → [monitor]
+    function insertReturning(monitor: Record<string, unknown>) {
+      return {
+        values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([monitor]) }),
+      } as any;
+    }
+    // db.select().from().where().limit() → [{ id }] (asset org-ownership check).
+    function assetOwnerLookup(found: boolean) {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(found ? [{ id: ASSET_ALLOWED }] : []) }),
+        }),
+      } as any;
+    }
+
+    const CREATE = {
+      action: 'create',
+      name: 'db-probe',
+      monitorType: 'tcp_port',
+      target: '10.0.0.5:5432',
+    };
+
+    it('denies a site-restricted caller creating an UNBOUND monitor (fail-closed)', async () => {
+      const out = JSON.parse(await handle({ ...CREATE }, makeSiteRestrictedAuth()));
+      expect(out.error).toMatch(/site-restricted/i);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('denies a site-restricted caller binding an asset in a forbidden site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(assetOwnerLookup(true))   // org-ownership check passes
+        .mockReturnValueOnce(assetLookup('site-2'));    // asset resolves to denied site
+      const out = JSON.parse(await handle({ ...CREATE, assetId: ASSET_ALLOWED }, makeSiteRestrictedAuth()));
+      expect(out.error).toMatch(/site-restricted/i);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('rejects a cross-org assetId (fail-closed)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(assetOwnerLookup(false)); // asset not in caller org
+      const out = JSON.parse(await handle({ ...CREATE, assetId: ASSET_DENIED }, makeSiteRestrictedAuth()));
+      expect(out.error).toMatch(/asset not found or access denied/i);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('allows a site-restricted caller binding an asset in an allowed site', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(assetOwnerLookup(true))   // org-ownership check passes
+        .mockReturnValueOnce(assetLookup('site-1'));    // asset resolves to allowed site
+      vi.mocked(db.insert).mockReturnValue(insertReturning({ id: 'new-mon', name: 'db-probe' }));
+      const out = JSON.parse(await handle({ ...CREATE, assetId: ASSET_ALLOWED }, makeSiteRestrictedAuth()));
+      expect(out.success).toBe(true);
+      expect(vi.mocked(db.insert)).toHaveBeenCalledOnce();
+    });
+
+    it('allows an unrestricted caller to create an assetless monitor (behavior preserved)', async () => {
+      vi.mocked(db.insert).mockReturnValue(insertReturning({ id: 'new-mon', name: 'db-probe' }));
+      const out = JSON.parse(await handle({ ...CREATE }, makeUnrestrictedAuth()));
+      expect(out.success).toBe(true);
+      // No asset lookups for an unrestricted, unbound create.
+      expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.insert)).toHaveBeenCalledOnce();
+    });
+  });
+
   // ─── unrestricted caller invariant ───────────────────────────────────────
 
   describe('unrestricted caller bypass', () => {

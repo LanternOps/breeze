@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import '@/lib/i18n';
 
 // Mock showToast so runAction (used by handleExport) writes to the spy.
 const showToast = vi.fn();

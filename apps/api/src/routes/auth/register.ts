@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { eq, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partners, partnerUsers } from '../../db/schema';
@@ -193,7 +193,11 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         adminEmail: email,
         adminName: name,
         passwordHash,
-        origin: { mcp: false },
+        origin: {
+          mcp: false,
+          ip: getTrustedClientIpOrUndefined(c),
+          userAgent: c.req.header('user-agent'),
+        },
         status: isHosted() ? 'pending' : 'active',
       });
       partnerIdForLog = result.partnerId;

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
@@ -8,11 +10,12 @@ import CisBaselinesTab from './CisBaselinesTab';
 import CisRemediationsTab from './CisRemediationsTab';
 import type { CisSummary } from './types';
 
-const tabs = ['Compliance', 'Baselines', 'Remediations'] as const;
+const tabs = ['compliance', 'baselines', 'remediations'] as const;
 type Tab = (typeof tabs)[number];
 
 export default function CisHardeningPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('Compliance');
+  const { t } = useTranslation('security');
+  const [activeTab, setActiveTab] = useState<Tab>('compliance');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [summary, setSummary] = useState<CisSummary | null>(null);
@@ -42,7 +45,7 @@ export default function CisHardeningPage() {
       setBaselinesCount(baselinesData.pagination?.total ?? 0);
       setPendingRemediations(remediationsData.pagination?.total ?? 0);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load CIS data');
+      setError(err instanceof Error ? err.message : t('cisHardeningCisHardeningPage.messages.loadFailed'));
     } finally {
       setLoading(false);
     }
@@ -58,9 +61,9 @@ export default function CisHardeningPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h2 className="text-xl font-semibold">CIS Hardening</h2>
+          <h2 className="text-xl font-semibold">{t('cisHardeningCisHardeningPage.title')}</h2>
           <p className="text-sm text-muted-foreground">
-            Configuration baselines, compliance scoring, and remediation tracking.
+            {t('cisHardeningCisHardeningPage.description')}
           </p>
         </div>
         <button
@@ -70,7 +73,7 @@ export default function CisHardeningPage() {
           className="inline-flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-sm hover:bg-muted disabled:opacity-60"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-          Refresh
+          {t('cisHardeningCisHardeningPage.actions.refresh')}
         </button>
       </div>
 
@@ -106,15 +109,15 @@ export default function CisHardeningPage() {
                       : 'border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground'
                   )}
                 >
-                  {tab}
+                  {t(/* i18n-dynamic */ `cisHardeningCisHardeningPage.tabs.${tab}`)}
                 </button>
               ))}
             </nav>
           </div>
 
-          {activeTab === 'Compliance' && <CisComplianceTab refreshKey={refreshKey} />}
-          {activeTab === 'Baselines' && <CisBaselinesTab refreshKey={refreshKey} onMutate={handleRefresh} />}
-          {activeTab === 'Remediations' && <CisRemediationsTab refreshKey={refreshKey} />}
+          {activeTab === 'compliance' && <CisComplianceTab refreshKey={refreshKey} />}
+          {activeTab === 'baselines' && <CisBaselinesTab refreshKey={refreshKey} onMutate={handleRefresh} />}
+          {activeTab === 'remediations' && <CisRemediationsTab refreshKey={refreshKey} />}
         </>
       )}
     </div>

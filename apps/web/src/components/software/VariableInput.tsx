@@ -1,20 +1,27 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { Braces, AlertTriangle } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
+import { Braces, AlertTriangle } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   BUILTIN_INSTALLER_VARIABLES,
   customFieldToken,
   findUnknownTokens,
   type InstallerVariable,
   type InstallerVariableGroup,
-} from '@/lib/installerVariables';
-
+} from "@/lib/installerVariables";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/lib/i18n";
 export interface DeviceCustomField {
   fieldKey: string;
   name: string;
 }
-
 interface VariableInputProps {
   value: string;
   onChange: (value: string) => void;
@@ -23,12 +30,15 @@ interface VariableInputProps {
   customFields?: DeviceCustomField[];
   /** Applied as the input's `id` so a parent `<label htmlFor>` can associate a visible label. */
   id?: string;
-  'aria-describedby'?: string;
+  "aria-describedby"?: string;
   className?: string;
 }
-
-const GROUP_ORDER: InstallerVariableGroup[] = ['Organization', 'Site', 'Device', 'Custom fields'];
-
+const GROUP_ORDER: InstallerVariableGroup[] = [
+  "Organization",
+  "Site",
+  "Device",
+  "Custom fields",
+];
 /**
  * A single-line text input for installer URLs / silent args that accepts
  * `{{...}}` deploy-time variables. Adds an "Insert variable" menu (rendered in a
@@ -42,30 +52,32 @@ export default function VariableInput({
   customFields = [],
   id,
   className,
-  'aria-describedby': ariaDescribedBy,
+  "aria-describedby": ariaDescribedBy,
 }: VariableInputProps) {
+  useTranslation("policies");
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState<{ top: number; left: number; width: number }>();
+  const [coords, setCoords] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  }>();
   const warnId = useId();
-
   const knownKeys = useMemo(
     () => new Set(customFields.map((f) => f.fieldKey)),
     [customFields],
   );
-
   const variables = useMemo<InstallerVariable[]>(() => {
     const custom: InstallerVariable[] = customFields.map((f) => ({
       token: customFieldToken(f.fieldKey),
       label: f.name || f.fieldKey,
-      group: 'Custom fields',
+      group: "Custom fields",
       example: f.fieldKey,
     }));
     return [...BUILTIN_INSTALLER_VARIABLES, ...custom];
   }, [customFields]);
-
   const grouped = useMemo(() => {
     const map = new Map<InstallerVariableGroup, InstallerVariable[]>();
     for (const v of variables) {
@@ -73,29 +85,33 @@ export default function VariableInput({
       list.push(v);
       map.set(v.group, list);
     }
-    return GROUP_ORDER.map((g) => [g, map.get(g) ?? []] as const).filter(([, l]) => l.length > 0);
+    return GROUP_ORDER.map((g) => [g, map.get(g) ?? []] as const).filter(
+      ([, l]) => l.length > 0,
+    );
   }, [variables]);
-
   // Custom-field keys load async; until they arrive, accept custom-field tokens
   // on structure alone so a slow fetch never flags a valid `{{device.customField.x}}`.
   const unknownTokens = useMemo(
-    () => findUnknownTokens(value, knownKeys, { requireKnownCustomKeys: knownKeys.size > 0 }),
+    () =>
+      findUnknownTokens(value, knownKeys, {
+        requireKnownCustomKeys: knownKeys.size > 0,
+      }),
     [value, knownKeys],
   );
-
   const positionMenu = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
     const width = 288;
     // Right-align the menu to the trigger, clamped to the viewport.
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const left = Math.max(
+      8,
+      Math.min(rect.right - width, window.innerWidth - width - 8),
+    );
     setCoords({ top: rect.bottom + 4, left, width });
   };
-
   useLayoutEffect(() => {
     if (open) positionMenu();
   }, [open]);
-
   useEffect(() => {
     if (!open) return;
     const onScroll = () => positionMenu();
@@ -108,24 +124,23 @@ export default function VariableInput({
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === "Escape") {
         e.stopPropagation();
         setOpen(false);
         triggerRef.current?.focus();
       }
     };
-    window.addEventListener('scroll', onScroll, true);
-    window.addEventListener('resize', onScroll);
-    document.addEventListener('pointerdown', onPointer, true);
-    document.addEventListener('keydown', onKey, true);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    document.addEventListener("pointerdown", onPointer, true);
+    document.addEventListener("keydown", onKey, true);
     return () => {
-      window.removeEventListener('scroll', onScroll, true);
-      window.removeEventListener('resize', onScroll);
-      document.removeEventListener('pointerdown', onPointer, true);
-      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+      document.removeEventListener("pointerdown", onPointer, true);
+      document.removeEventListener("keydown", onKey, true);
     };
   }, [open]);
-
   const insert = (token: string) => {
     const el = inputRef.current;
     const start = el?.selectionStart ?? value.length;
@@ -140,7 +155,6 @@ export default function VariableInput({
       el?.setSelectionRange(caret, caret);
     });
   };
-
   return (
     <div className="relative">
       <div className="flex items-stretch gap-2">
@@ -152,10 +166,13 @@ export default function VariableInput({
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           aria-invalid={unknownTokens.length > 0 || undefined}
-          aria-describedby={cn(ariaDescribedBy, unknownTokens.length > 0 && warnId) || undefined}
+          aria-describedby={
+            cn(ariaDescribedBy, unknownTokens.length > 0 && warnId) || undefined
+          }
           className={cn(
-            'h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
-            unknownTokens.length > 0 && 'border-destructive/60 focus:ring-destructive/40',
+            "h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring",
+            unknownTokens.length > 0 &&
+              "border-destructive/60 focus:ring-destructive/40",
             className,
           )}
         />
@@ -165,26 +182,37 @@ export default function VariableInput({
           onClick={() => setOpen((o) => !o)}
           aria-haspopup="menu"
           aria-expanded={open}
-          title="Insert a deploy-time variable"
+          title={i18n.t(
+            "policies:software.variableInput.insertADeployTimeVariable",
+          )}
           className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-medium text-muted-foreground hover:bg-muted focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
           <Braces className="h-4 w-4" />
-          <span className="hidden sm:inline">Insert variable</span>
+          <span className="hidden sm:inline">
+            {i18n.t("policies:software.variableInput.insertVariable")}
+          </span>
         </button>
       </div>
 
       {unknownTokens.length > 0 && (
-        <p id={warnId} className="mt-1 flex items-start gap-1.5 text-xs text-destructive">
+        <p
+          id={warnId}
+          className="mt-1 flex items-start gap-1.5 text-xs text-destructive"
+        >
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
-            Unknown variable {unknownTokens.join(', ')} — pick one from Insert variable.
+            {i18n.t("policies:software.variableInput.unknownVariable")}
+            {unknownTokens.join(", ")}
+            {i18n.t(
+              "policies:software.variableInput.pickOneFromInsertVariable",
+            )}
           </span>
         </p>
       )}
 
       {open &&
         coords &&
-        typeof document !== 'undefined' &&
+        typeof document !== "undefined" &&
         createPortal(
           <div
             ref={menuRef}
@@ -206,7 +234,9 @@ export default function VariableInput({
                     className="flex w-full items-baseline justify-between gap-3 rounded px-2 py-1.5 text-left hover:bg-muted focus:bg-muted focus:outline-hidden"
                   >
                     <span className="min-w-0">
-                      <span className="block truncate text-sm text-foreground">{v.label}</span>
+                      <span className="block truncate text-sm text-foreground">
+                        {v.label}
+                      </span>
                       <span className="block truncate font-mono text-[11px] text-muted-foreground">
                         {v.token}
                       </span>

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { CheckCircle, XCircle, Clock, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useTranslation } from 'react-i18next';
 
 export type WebhookDeliveryStatus = 'success' | 'failed' | 'pending';
 
@@ -26,12 +27,6 @@ const statusStyles: Record<WebhookDeliveryStatus, string> = {
   pending: 'bg-amber-500/10 text-amber-700'
 };
 
-const statusLabels: Record<WebhookDeliveryStatus, string> = {
-  success: 'Success',
-  failed: 'Failed',
-  pending: 'Pending'
-};
-
 const statusIcons: Record<WebhookDeliveryStatus, typeof CheckCircle> = {
   success: CheckCircle,
   failed: XCircle,
@@ -49,6 +44,7 @@ export default function WebhookDeliveryHistory({
   onRetry,
   timezone
 }: WebhookDeliveryHistoryProps) {
+  const { t } = useTranslation('common');
   const [retryingId, setRetryingId] = useState<string | null>(null);
 
   const handleRetry = async (delivery: WebhookDelivery) => {
@@ -64,9 +60,9 @@ export default function WebhookDeliveryHistory({
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div>
-        <h2 className="text-lg font-semibold">Delivery History</h2>
+        <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhookDeliveryHistory.title')}</h2>
         <p className="text-sm text-muted-foreground">
-          {deliveries.length} delivery attempts
+          {t('longTail.webhooks.WebhookDeliveryHistory.deliveryAttempts', { count: deliveries.length })}
         </p>
       </div>
 
@@ -74,18 +70,18 @@ export default function WebhookDeliveryHistory({
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-3">Timestamp</th>
-              <th className="px-4 py-3">Event</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Response</th>
-              <th className="px-4 py-3 text-right">Action</th>
+              <th className="px-4 py-3">{t('longTail.webhooks.WebhookDeliveryHistory.headers.timestamp')}</th>
+              <th className="px-4 py-3">{t('longTail.webhooks.WebhookDeliveryHistory.headers.event')}</th>
+              <th className="px-4 py-3">{t('common:labels.status')}</th>
+              <th className="px-4 py-3">{t('longTail.webhooks.WebhookDeliveryHistory.headers.response')}</th>
+              <th className="px-4 py-3 text-right">{t('longTail.webhooks.WebhookDeliveryHistory.headers.action')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {deliveries.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-4 py-12 text-center">
-                  <p className="text-sm text-muted-foreground">No delivery attempts yet.</p>
+                  <p className="text-sm text-muted-foreground">{t('longTail.webhooks.WebhookDeliveryHistory.empty')}</p>
                 </td>
               </tr>
             ) : (
@@ -107,7 +103,7 @@ export default function WebhookDeliveryHistory({
                         )}
                       >
                         <Icon className="h-3.5 w-3.5" />
-                        {statusLabels[delivery.status]}
+                        {t(/* i18n-dynamic */ `longTail.webhooks.WebhookDeliveryHistory.status.${delivery.status}`)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -121,7 +117,7 @@ export default function WebhookDeliveryHistory({
                         className="inline-flex h-8 items-center gap-1 rounded-md border px-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <RotateCcw className="h-3.5 w-3.5" />
-                        {isRetrying ? 'Retrying...' : 'Retry'}
+                        {isRetrying ? t('longTail.webhooks.WebhookDeliveryHistory.retrying') : t('common:actions.retry')}
                       </button>
                     </td>
                   </tr>

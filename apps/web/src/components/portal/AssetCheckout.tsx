@@ -1,14 +1,13 @@
 import { useMemo } from 'react';
 import { useForm } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 
-const assetCheckoutSchema = z.object({
-  expectedReturnDate: z.string().min(1, 'Select an expected return date'),
-  notes: z.string().optional()
-});
-
-type AssetCheckoutValues = z.infer<typeof assetCheckoutSchema>;
+type AssetCheckoutValues = {
+  expectedReturnDate: string;
+  notes?: string;
+};
 
 type AssetCheckoutProps = {
   assetName?: string;
@@ -22,9 +21,18 @@ export default function AssetCheckout({
   assetName,
   onSubmit,
   errorMessage,
-  submitLabel = 'Request checkout',
+  submitLabel,
   loading
 }: AssetCheckoutProps) {
+  const { t } = useTranslation('portal');
+  const assetCheckoutSchema = useMemo(
+    () =>
+      z.object({
+        expectedReturnDate: z.string().min(1, t('assetCheckout.validation.expectedReturnDate')),
+        notes: z.string().optional()
+      }),
+    [t]
+  );
   const {
     register,
     handleSubmit,
@@ -47,15 +55,17 @@ export default function AssetCheckout({
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
       <div>
-        <h2 className="text-sm font-semibold text-foreground">Asset checkout</h2>
+        <h2 className="text-sm font-semibold text-foreground">{t('assetCheckout.title')}</h2>
         {assetName && (
-          <p className="text-xs text-muted-foreground">Requesting: {assetName}</p>
+          <p className="text-xs text-muted-foreground">
+            {t('assetCheckout.requesting', { assetName })}
+          </p>
         )}
       </div>
 
       <div className="space-y-2">
         <label htmlFor="expectedReturnDate" className="text-sm font-medium">
-          Expected return date
+          {t('assetCheckout.expectedReturnDate')}
         </label>
         <input
           id="expectedReturnDate"
@@ -70,12 +80,12 @@ export default function AssetCheckout({
 
       <div className="space-y-2">
         <label htmlFor="notes" className="text-sm font-medium">
-          Notes (optional)
+          {t('assetCheckout.notes')}
         </label>
         <textarea
           id="notes"
           rows={3}
-          placeholder="Add any pickup or delivery details"
+          placeholder={t('assetCheckout.notesPlaceholder')}
           className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           {...register('notes')}
         />
@@ -92,7 +102,7 @@ export default function AssetCheckout({
         disabled={isLoading}
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Submitting request...' : submitLabel}
+        {isLoading ? t('assetCheckout.submitting') : submitLabel ?? t('assetCheckout.submit')}
       </button>
     </form>
   );

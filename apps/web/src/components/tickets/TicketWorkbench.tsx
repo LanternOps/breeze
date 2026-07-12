@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import '@/lib/i18n';
+import { useTranslation } from 'react-i18next';
 import { ExternalLink, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TicketTemplateVars } from '@breeze/shared';
@@ -16,7 +18,7 @@ import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
 import TicketPartsCard from './TicketPartsCard';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
-import { fetchTicketConfig, statusLabel, priorityLabel, activeStatusesByCore, type TicketConfig } from '../../lib/ticketConfigApi';
+import { fetchTicketConfig, activeStatusesByCore, type TicketConfig } from '../../lib/ticketConfigApi';
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
@@ -29,7 +31,14 @@ interface TagEditorProps {
   'data-testid'?: string;
 }
 
+type TFunction = ReturnType<typeof useTranslation>['t'];
+
+function translatedPriorityLabel(config: TicketConfig | null, priority: TicketPriority, t: TFunction): string {
+  return config?.priorities[priority]?.label ?? t(/* i18n-dynamic */ `ticketWorkbench.priority.${priority}`);
+}
+
 function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEditorProps) {
+  const { t } = useTranslation('tickets');
   const [input, setInput] = useState('');
 
   const addTag = () => {
@@ -49,7 +58,7 @@ function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEdit
             data-testid={`ticket-workbench-tag-remove-${tag}`}
             className="ml-0.5 hover:text-destructive"
             onClick={() => onChange(value.filter((t) => t !== tag))}
-            aria-label={`Remove tag ${tag}`}
+            aria-label={t('ticketWorkbench.tags.removeTag', { tag })}
           >
             ×
           </button>
@@ -65,10 +74,10 @@ function TagEditor({ value, max = 20, onChange, 'data-testid': testId }: TagEdit
             if (e.key === 'Enter') { e.preventDefault(); addTag(); }
           }}
           onBlur={addTag}
-          placeholder="Add tag…"
+          placeholder={t('ticketWorkbench.tags.addTag')}
           maxLength={50}
           className="rounded border bg-background px-1.5 py-0.5 text-xs outline-hidden focus:ring-1 focus:ring-ring"
-          aria-label="Add tag"
+          aria-label={t('ticketWorkbench.tags.addTagAria')}
         />
       )}
     </div>
@@ -111,6 +120,7 @@ type TicketTriageSuggestion = {
 };
 
 export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
+  const { t } = useTranslation('tickets');
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -173,21 +183,21 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       if (res.status === 404 || res.status === 403) {
         if (background) return; // keep the current view; a reconcile 404 isn't a load failure
         setTicket(null);
-        setError('Ticket not found. It may have been deleted, or you may not have access to it.');
+        setError(t('ticketWorkbench.notFound'));
         setErrorKind('not-found');
         return;
       }
-      if (!res.ok) throw new Error('Ticket failed to load.');
+      if (!res.ok) throw new Error(t('ticketWorkbench.loadFailed'));
       const body = await res.json();
       setTicket(body.data);
     } catch (e) {
       if (background) return; // swallow — the mutation already succeeded
-      setError(e instanceof Error ? e.message : 'Ticket failed to load.');
+      setError(e instanceof Error ? e.message : t('ticketWorkbench.loadFailed'));
       setErrorKind('load');
     } finally {
       if (!background) setLoading(false);
     }
-  }, [ticketId]);
+  }, [ticketId, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -362,12 +372,18 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
 
   // Returns true on success, false on a swallowed ActionError — callers with
   // form state (resolve/pending) must only close/clear when the POST landed.
-  const mutate = useCallback(async (path: string, body: unknown, success: string, optimistic?: Partial<TicketDetail>): Promise<boolean> => {
+  const mutate = useCallback(async (
+    path: string,
+    body: unknown,
+    successMessage: string,
+    errorFallback: string,
+    optimistic?: Partial<TicketDetail>,
+  ): Promise<boolean> => {
     try {
       await runAction({
         request: () => fetchWithAuth(`/tickets/${ticketId}${path}`, { method: 'POST', body: JSON.stringify(body) }),
-        errorFallback: `${success} failed. Retry.`,
-        successMessage: success,
+        errorFallback,
+        successMessage,
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       afterMutation(optimistic);
@@ -385,8 +401,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     try {
       const result = await runAction<{ data: { invoice: { id: string } } }>({
         request: () => fetchWithAuth(`/tickets/${ticketId}/invoice`, { method: 'POST' }),
-        errorFallback: 'Could not create an invoice from this ticket.',
-        successMessage: 'Draft invoice created',
+        errorFallback: t('ticketWorkbench.invoice.createFailed'),
+        successMessage: t('ticketWorkbench.invoice.created'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       const newId = result?.data?.invoice?.id;
@@ -396,15 +412,15 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     } finally {
       setCreatingInvoice(false);
     }
-  }, [ticketId, creatingInvoice]);
+  }, [ticketId, creatingInvoice, t]);
 
   const handleMoveOrg = useCallback((targetOrgId: string) => {
     void runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}/move-org`, { method: 'POST', body: JSON.stringify({ orgId: targetOrgId }) }),
-      errorFallback: 'Move failed. Retry.',
+      errorFallback: t('ticketWorkbench.move.failed'),
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
-  }, [ticketId, load]);
+  }, [ticketId, load, t]);
 
   // Soft-delete this ticket (tickets:manage). Confirm-gated by the ConfirmDialog
   // below. On success the ticket leaves every queue: in full-page mode we
@@ -417,8 +433,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     try {
       await runAction({
         request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'DELETE' }),
-        errorFallback: 'Delete failed. Retry.',
-        successMessage: 'Ticket deleted',
+        errorFallback: t('ticketWorkbench.delete.failed'),
+        successMessage: t('ticketWorkbench.delete.deleted'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setDeleteOpen(false);
@@ -429,7 +445,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     } finally {
       setDeleting(false);
     }
-  }, [deleting, ticketId, onChanged, expanded]);
+  }, [deleting, ticketId, onChanged, expanded, t]);
 
   const applyTriageSuggestion = useCallback(async () => {
     if (!triageSuggestion || applyingTriage) return;
@@ -445,8 +461,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           method: 'POST',
           body: JSON.stringify(body),
         }),
-        errorFallback: 'Could not apply ticket triage suggestion.',
-        successMessage: 'Ticket triage suggestion applied',
+        errorFallback: t('ticketWorkbench.triage.applyFailed'),
+        successMessage: t('ticketWorkbench.triage.applied'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setTriageSuggestion(null);
@@ -456,7 +472,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     } finally {
       setApplyingTriage(false);
     }
-  }, [afterMutation, applyingTriage, ticketId, triageSuggestion]);
+  }, [afterMutation, applyingTriage, ticketId, triageSuggestion, t]);
 
   const rejectTriageSuggestion = useCallback(async () => {
     if (!triageSuggestion || rejectingTriage) return;
@@ -467,8 +483,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           method: 'POST',
           body: JSON.stringify({}),
         }),
-        errorFallback: 'Could not save ticket triage feedback.',
-        successMessage: 'Ticket triage feedback saved',
+        errorFallback: t('ticketWorkbench.triage.feedbackFailed'),
+        successMessage: t('ticketWorkbench.triage.feedbackSaved'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setTriageSuggestion(null);
@@ -477,7 +493,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     } finally {
       setRejectingTriage(false);
     }
-  }, [rejectingTriage, ticketId, triageSuggestion]);
+  }, [rejectingTriage, ticketId, triageSuggestion, t]);
 
   // Fallback path: option values are the six core enums; POST {status}.
   const onStatusChange = useCallback(async (status: TicketStatus) => {
@@ -485,8 +501,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     if (status === 'resolved') { setResolveOpen(true); return; }
     if (status === 'pending' || status === 'on_hold') { setPendingOpen(status); return; }
     // Core path clears any custom-status decoration the row may have carried.
-    await mutate('/status', { status }, 'Status updated', { status, statusName: null, statusColor: null });
-  }, [mutate]);
+    await mutate('/status', { status }, t('ticketWorkbench.toast.statusUpdated'), t('ticketWorkbench.toast.statusUpdateFailed'), { status, statusName: null, statusColor: null });
+  }, [mutate, t]);
 
   // Config path: option values are custom-status row ids; the chosen row's
   // coreStatus drives the same resolve/pending forms, and the POST sends
@@ -501,41 +517,41 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       return;
     }
     setPendingStatusId(null);
-    await mutate('/status', { statusId }, 'Status updated', { status: row.coreStatus, statusName: row.name, statusColor: row.color ?? null });
-  }, [config, mutate]);
+    await mutate('/status', { statusId }, t('ticketWorkbench.toast.statusUpdated'), t('ticketWorkbench.toast.statusUpdateFailed'), { status: row.coreStatus, statusName: row.name, statusColor: row.color ?? null });
+  }, [config, mutate, t]);
 
   const submitResolve = useCallback(async () => {
     if (!resolutionNote.trim()) return;
     const target = pendingStatusId ? { statusId: pendingStatusId } : { status: 'resolved' as const };
     const note = resolutionNote.trim();
-    const ok = await mutate('/status', { ...target, resolutionNote: note }, 'Ticket resolved', { status: 'resolved', resolutionNote: note });
+    const ok = await mutate('/status', { ...target, resolutionNote: note }, t('ticketWorkbench.toast.ticketResolved'), t('ticketWorkbench.toast.resolveFailed'), { status: 'resolved', resolutionNote: note });
     if (!ok) return; // keep the form open and the typed note intact on failure
     setResolveOpen(false);
     setResolutionNote('');
     setPendingStatusId(null);
-  }, [mutate, resolutionNote, pendingStatusId]);
+  }, [mutate, resolutionNote, pendingStatusId, t]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
     const reason = pendingReason.trim();
     const target = pendingStatusId ? { statusId: pendingStatusId } : { status: pendingOpen };
-    const ok = await mutate('/status', { ...target, ...(reason ? { pendingReason: reason } : {}) }, 'Status updated', { status: pendingOpen, pendingReason: reason || null });
+    const ok = await mutate('/status', { ...target, ...(reason ? { pendingReason: reason } : {}) }, t('ticketWorkbench.toast.statusUpdated'), t('ticketWorkbench.toast.statusUpdateFailed'), { status: pendingOpen, pendingReason: reason || null });
     if (!ok) return; // keep the form open and the typed reason intact on failure
     setPendingOpen(null);
     setPendingReason('');
     setPendingStatusId(null);
-  }, [mutate, pendingOpen, pendingReason, pendingStatusId]);
+  }, [mutate, pendingOpen, pendingReason, pendingStatusId, t]);
 
   const sendComment = useCallback(async (content: string, isPublic: boolean) => {
     await runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}/comments`, { method: 'POST', body: JSON.stringify({ content, isPublic }) }),
-      errorFallback: 'Reply failed. Retry.',
+      errorFallback: t('ticketWorkbench.toast.replyFailed'),
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     });
     // The new comment can only come from the server; reconcile in the background
     // so the composer releases the instant the POST lands (the feed fills in next).
     afterMutation();
-  }, [ticketId, afterMutation]);
+  }, [ticketId, afterMutation, t]);
 
   // Generic field PATCH — saves any { subject } / { description } / etc. patch.
   // afterMutation with the optimistic patch paints the change locally and
@@ -543,10 +559,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const handleFieldSave = useCallback((patch: Record<string, unknown>) => {
     void runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
-      errorFallback: 'Update failed. Retry.',
+      errorFallback: t('ticketWorkbench.toast.updateFailed'),
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     }).then(() => afterMutation(patch as Partial<TicketDetail>)).catch((err) => { if (!(err instanceof ActionError)) throw err; });
-  }, [ticketId, afterMutation]);
+  }, [ticketId, afterMutation, t]);
 
   const openRequesterEditor = useCallback(() => {
     if (!ticket) return;
@@ -573,18 +589,18 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const handleEditComment = useCallback((commentId: string, content: string) => {
     void runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'PATCH', body: JSON.stringify({ content }) }),
-      errorFallback: 'Comment edit failed. Retry.',
+      errorFallback: t('ticketWorkbench.toast.commentEditFailed'),
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
-  }, [ticketId, load]);
+  }, [ticketId, load, t]);
 
   const handleDeleteComment = useCallback((commentId: string) => {
     void runAction({
       request: () => fetchWithAuth(`/tickets/${ticketId}/comments/${commentId}`, { method: 'DELETE' }),
-      errorFallback: 'Comment delete failed. Retry.',
+      errorFallback: t('ticketWorkbench.toast.commentDeleteFailed'),
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
-  }, [ticketId, load]);
+  }, [ticketId, load, t]);
 
   // Skeleton only on the first load of a ticket. Refreshes (send, status
   // change, refreshToken bump) keep the tree mounted so composer state —
@@ -597,11 +613,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   if (error || !ticket) {
     return (
       <div className="p-6 text-center" data-testid="ticket-workbench-error">
-        <p className="text-sm text-muted-foreground">{error ?? 'Ticket failed to load.'}</p>
+        <p className="text-sm text-muted-foreground">{error ?? t('ticketWorkbench.loadFailed')}</p>
         {errorKind === 'not-found' ? (
-          <a href="/tickets" className="mt-2 inline-block rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="ticket-workbench-back">Back to queue</a>
+          <a href="/tickets" className="mt-2 inline-block rounded-md border px-3 py-1.5 text-sm hover:bg-muted" data-testid="ticket-workbench-back">{t('ticketWorkbench.backToQueue')}</a>
         ) : (
-          <button type="button" onClick={() => void load()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">Retry</button>
+          <button type="button" onClick={() => void load()} className="mt-2 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">{t('common:actions.retry')}</button>
         )}
       </div>
     );
@@ -617,7 +633,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     : null;
   const headerStatusColor = ticket.statusColor ?? config?.statuses.find((s) => s.id === selectedStatusId)?.color ?? null;
   const suggestedCategoryName = triageSuggestion?.categoryId
-    ? (categories.find((category) => category.id === triageSuggestion.categoryId)?.name ?? triageSuggestion.categoryName ?? 'Suggested category')
+    ? (categories.find((category) => category.id === triageSuggestion.categoryId)?.name ?? triageSuggestion.categoryName ?? t('ticketWorkbench.triage.suggestedCategory'))
     : null;
   const triageReasons = triageSuggestion?.reasons.filter((reason) => reason.trim().length > 0) ?? [];
 
@@ -633,7 +649,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             key={ticket.subject}
             className="min-w-0 flex-1 truncate bg-transparent text-base font-semibold outline-hidden hover:bg-muted/30 focus:bg-muted/30 focus:ring-1 focus:ring-ring rounded px-1 -mx-1"
             data-testid="ticket-workbench-subject-edit"
-            aria-label="Ticket subject"
+            aria-label={t('ticketWorkbench.ticketSubject')}
             onBlur={(e) => {
               const next = e.target.value.trim();
               if (!next || next === ticket.subject) return;
@@ -654,7 +670,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             }}
           />
           {!expanded && (
-            <a href={`/tickets/${ticket.id}`} className="ml-auto rounded p-1 text-muted-foreground hover:text-foreground" title="Open full page" data-testid="ticket-workbench-expand">
+            <a href={`/tickets/${ticket.id}`} className="ml-auto rounded p-1 text-muted-foreground hover:text-foreground" title={t('ticketWorkbench.openFullPage')} data-testid="ticket-workbench-expand">
               <ExternalLink className="h-4 w-4" />
             </a>
           )}
@@ -687,11 +703,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               className={cn('rounded-md border border-l-4 px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
               style={headerStatusColor ? { borderLeftColor: headerStatusColor } : undefined}
               data-testid="ticket-workbench-status"
-              aria-label="Status"
+              aria-label={t('common:labels.status')}
             >
               {activeStatusesByCore(config).map(({ coreStatus, statuses }) =>
                 statuses.length > 0 ? (
-                  <optgroup key={coreStatus} label={statusConfig[coreStatus].label}>
+                  <optgroup key={coreStatus} label={t(/* i18n-dynamic */ `ticketWorkbench.status.${coreStatus}`)}>
                     {statuses.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </optgroup>
                 ) : null
@@ -703,9 +719,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               onChange={(e) => void onStatusChange(e.target.value as TicketStatus)}
               className={cn('rounded-md border px-2 py-1 text-xs font-medium', statusConfig[ticket.status].color)}
               data-testid="ticket-workbench-status"
-              aria-label="Status"
+              aria-label={t('common:labels.status')}
             >
-              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{statusConfig[s].label}</option>)}
+              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{t(/* i18n-dynamic */ `ticketWorkbench.status.${s}`)}</option>)}
             </select>
           )}
           <select
@@ -714,15 +730,15 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               const priority = e.target.value as TicketPriority;
               void runAction({
                 request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ priority }) }),
-                errorFallback: 'Priority update failed. Retry.',
+                errorFallback: t('ticketWorkbench.toast.priorityUpdateFailed'),
                 onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
               }).then(() => afterMutation({ priority })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
             }}
             className={cn('rounded-md border px-2 py-1 text-xs font-medium', priorityConfig[ticket.priority].color)}
             data-testid="ticket-workbench-priority"
-            aria-label="Priority"
+            aria-label={t('ticketWorkbench.priorityLabel')}
           >
-            {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{priorityLabel(config, p)}</option>)}
+            {PRIORITY_OPTIONS.map((p) => <option key={p} value={p}>{translatedPriorityLabel(config, p, t)}</option>)}
           </select>
           {categories.length > 0 && (
             <select
@@ -732,17 +748,17 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 if (categoryId === (ticket.categoryId ?? null)) return;
                 void runAction({
                   request: () => fetchWithAuth(`/tickets/${ticketId}`, { method: 'PATCH', body: JSON.stringify({ categoryId }) }),
-                  errorFallback: 'Category update failed. Retry.',
+                  errorFallback: t('ticketWorkbench.toast.categoryUpdateFailed'),
                   onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
                 }).then(() => afterMutation({ categoryId })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
               }}
               className="max-w-[180px] rounded-md border bg-background px-2 py-1 text-xs text-foreground"
               data-testid="ticket-workbench-category"
-              aria-label="Category"
+              aria-label={t('ticketWorkbench.categoryLabel')}
             >
-              <option value="">No category</option>
+              <option value="">{t('ticketWorkbench.noCategory')}</option>
               {ticket.categoryId && !categories.some((category) => category.id === ticket.categoryId) && (
-                <option value={ticket.categoryId}>Current category</option>
+                <option value={ticket.categoryId}>{t('ticketWorkbench.currentCategory')}</option>
               )}
               {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
             </select>
@@ -754,34 +770,34 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 const next = e.target.value || null;
                 if (next === (ticket.assignedTo ?? null)) return; // no-op guard: never write a bogus feed entry
                 const picked = next ? assignees?.find((u) => u.id === next) : null;
-                void mutate('/assign', { assigneeId: next }, next ? 'Assigned' : 'Unassigned', {
+                void mutate('/assign', { assigneeId: next }, next ? t('ticketWorkbench.toast.assigned') : t('ticketWorkbench.toast.unassigned'), t('ticketWorkbench.toast.assignFailed'), {
                   assignedTo: next,
                   assigneeName: picked ? (picked.name || picked.email) : null
                 });
               }}
               className="max-w-[180px] rounded-md border bg-background px-2 py-1 text-xs text-foreground"
               data-testid="ticket-workbench-assignee"
-              aria-label="Assignee"
+              aria-label={t('ticketWorkbench.assignee')}
             >
-              <option value="">Unassigned</option>
+              <option value="">{t('ticketWorkbench.unassigned')}</option>
               {ticket.assignedTo && !assignees.some((u) => u.id === ticket.assignedTo) && (
                 // Assignee exists but is RLS-invisible to this caller (partner staff seen
                 // from org scope) — show a redacted label instead of pretending unassigned.
-                <option value={ticket.assignedTo}>{ticket.assigneeName ?? 'MSP staff'}</option>
+                <option value={ticket.assignedTo}>{ticket.assigneeName ?? t('ticketWorkbench.mspStaff')}</option>
               )}
               {assignees.map((u) => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
             </select>
           ) : ticket.assignedTo ? (
             <button
               type="button"
-              onClick={() => void mutate('/assign', { assigneeId: null }, 'Unassigned', { assignedTo: null, assigneeName: null })}
+              onClick={() => void mutate('/assign', { assigneeId: null }, t('ticketWorkbench.toast.unassigned'), t('ticketWorkbench.toast.assignFailed'), { assignedTo: null, assigneeName: null })}
               className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
               data-testid="ticket-workbench-unassign"
             >
-              Assignee: {ticket.assigneeName ?? 'MSP staff'} ✕
+              {t('ticketWorkbench.assigneeValue', { assignee: ticket.assigneeName ?? t('ticketWorkbench.mspStaff') })}
             </button>
           ) : (
-            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground" data-testid="ticket-workbench-unassigned">Unassigned</span>
+            <span className="rounded-md border px-2 py-1 text-xs text-muted-foreground" data-testid="ticket-workbench-unassigned">{t('ticketWorkbench.unassigned')}</span>
           )}
           <button
             type="button"
@@ -790,7 +806,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             className="ml-auto rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
             data-testid="ticket-workbench-create-invoice"
           >
-            {creatingInvoice ? 'Creating…' : 'Create invoice'}
+            {creatingInvoice ? t('ticketWorkbench.invoice.creating') : t('ticketWorkbench.invoice.create')}
           </button>
           <button
             type="button"
@@ -798,7 +814,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             className="text-xs text-muted-foreground hover:text-foreground"
             onClick={() => { setMoveOrgOpen(true); setMoveOrgTargetId(''); }}
           >
-            Move to another org…
+            {t('ticketWorkbench.move.open')}
           </button>
           {canManage && (
             <button
@@ -807,13 +823,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               className="text-xs text-destructive hover:underline"
               onClick={() => setDeleteOpen(true)}
             >
-              Delete
+              {t('common:actions.delete')}
             </button>
           )}
         </div>
         {moveOrgOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-move-org-form">
-            <label className="text-xs font-medium" htmlFor="move-org-select">Move to organization</label>
+            <label className="text-xs font-medium" htmlFor="move-org-select">{t('ticketWorkbench.move.label')}</label>
             <select
               id="move-org-select"
               data-testid="ticket-workbench-move-org-select"
@@ -821,7 +837,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               onChange={(e) => setMoveOrgTargetId(e.target.value)}
               className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-xs"
             >
-              <option value="">Select organization…</option>
+              <option value="">{t('ticketWorkbench.move.selectOrganization')}</option>
               {orgs.filter((o) => o.id !== ticket.orgId).map((o) => (
                 <option key={o.id} value={o.id}>{o.name}</option>
               ))}
@@ -833,7 +849,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 onClick={() => setMoveOrgOpen(false)}
                 className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -842,7 +858,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 onClick={() => { if (moveOrgTargetId) { handleMoveOrg(moveOrgTargetId); setMoveOrgOpen(false); } }}
                 className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
               >
-                Move
+                {t('ticketWorkbench.move.confirm')}
               </button>
             </div>
           </div>
@@ -853,16 +869,16 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5 text-xs font-medium">
                   <Sparkles className="h-3.5 w-3.5 text-primary" />
-                  Suggested triage
+                  {t('ticketWorkbench.triage.title')}
                 </div>
                 {triageLoading ? (
-                  <p className="mt-1 text-xs text-muted-foreground">Checking ticket signals…</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{t('ticketWorkbench.triage.checking')}</p>
                 ) : triageSuggestion ? (
                   <>
                     <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-                      {triageSuggestion.priority && <span>Priority: {priorityLabel(config, triageSuggestion.priority)}</span>}
-                      {suggestedCategoryName && <span>Category: {suggestedCategoryName}</span>}
-                      <span>{Math.round(triageSuggestion.confidence * 100)}% confidence</span>
+                      {triageSuggestion.priority && <span>{t('ticketWorkbench.triage.priority', { priority: translatedPriorityLabel(config, triageSuggestion.priority, t) })}</span>}
+                      {suggestedCategoryName && <span>{t('ticketWorkbench.triage.category', { category: suggestedCategoryName })}</span>}
+                      <span>{t('ticketWorkbench.triage.confidence', { percent: Math.round(triageSuggestion.confidence * 100) })}</span>
                     </div>
                     {triageReasons.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1.5" data-testid="ticket-triage-reasons">
@@ -888,7 +904,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                     className="inline-flex items-center justify-center rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     data-testid="ticket-triage-reject"
                   >
-                    {rejectingTriage ? 'Saving…' : 'Not right'}
+                    {rejectingTriage ? t('common:states.saving') : t('ticketWorkbench.triage.notRight')}
                   </button>
                   <button
                     type="button"
@@ -897,7 +913,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                     className="inline-flex items-center justify-center rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     data-testid="ticket-triage-apply"
                   >
-                    {applyingTriage ? 'Applying…' : 'Apply'}
+                    {applyingTriage ? t('ticketWorkbench.triage.applying') : t('common:actions.apply')}
                   </button>
                 </div>
               )}
@@ -906,7 +922,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         )}
         {resolveOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-resolve-form">
-            <label className="text-xs font-medium" htmlFor="resolve-note">Resolution note (visible to requester)</label>
+            <label className="text-xs font-medium" htmlFor="resolve-note">{t('ticketWorkbench.resolve.noteLabel')}</label>
             <textarea
               id="resolve-note"
               value={resolutionNote}
@@ -916,7 +932,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               data-testid="ticket-workbench-resolve-note"
             />
             <div className="mt-1.5 flex justify-end gap-2">
-              <button type="button" onClick={() => { setResolveOpen(false); setPendingStatusId(null); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">Cancel</button>
+              <button type="button" onClick={() => { setResolveOpen(false); setPendingStatusId(null); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">{t('common:actions.cancel')}</button>
               <button
                 type="button"
                 onClick={() => void submitResolve()}
@@ -924,14 +940,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 className="rounded-md bg-success px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
                 data-testid="ticket-workbench-resolve-submit"
               >
-                Resolve ticket
+                {t('ticketWorkbench.resolve.submit')}
               </button>
             </div>
           </div>
         )}
         {pendingOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-pending-form">
-            <label className="text-xs font-medium" htmlFor="pending-reason">What are you waiting on? (optional)</label>
+            <label className="text-xs font-medium" htmlFor="pending-reason">{t('ticketWorkbench.pending.reasonLabel')}</label>
             <textarea
               id="pending-reason"
               value={pendingReason}
@@ -942,14 +958,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               data-testid="ticket-workbench-pending-reason"
             />
             <div className="mt-1.5 flex justify-end gap-2">
-              <button type="button" onClick={() => { setPendingOpen(null); setPendingReason(''); setPendingStatusId(null); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">Cancel</button>
+              <button type="button" onClick={() => { setPendingOpen(null); setPendingReason(''); setPendingStatusId(null); }} className="rounded-md border px-2 py-1 text-xs hover:bg-muted">{t('common:actions.cancel')}</button>
               <button
                 type="button"
                 onClick={() => void submitPending()}
                 className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white"
                 data-testid="ticket-workbench-pending-submit"
               >
-                {pendingOpen === 'pending' ? 'Set pending' : 'Put on hold'}
+                {pendingOpen === 'pending' ? t('ticketWorkbench.pending.setPending') : t('ticketWorkbench.pending.putOnHold')}
               </button>
             </div>
           </div>
@@ -978,7 +994,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                       className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
                       data-testid="ticket-workbench-description-cancel-btn"
                     >
-                      Cancel
+                      {t('common:actions.cancel')}
                     </button>
                     <button
                       type="button"
@@ -990,7 +1006,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                       className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white"
                       data-testid="ticket-workbench-description-save-btn"
                     >
-                      Save
+                      {t('common:actions.save')}
                     </button>
                   </div>
                 </div>
@@ -999,7 +1015,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                   {ticket.description ? (
                     <p className="flex-1 whitespace-pre-wrap text-sm">{ticket.description}</p>
                   ) : (
-                    <p className="flex-1 text-sm text-muted-foreground italic">No description.</p>
+                    <p className="flex-1 text-sm text-muted-foreground italic">{t('ticketWorkbench.description.empty')}</p>
                   )}
                   <button
                     type="button"
@@ -1007,7 +1023,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                     className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
                     data-testid="ticket-workbench-description-edit-btn"
                   >
-                    {ticket.description ? 'Edit' : 'Add description'}
+                    {ticket.description ? t('common:actions.edit') : t('ticketWorkbench.description.add')}
                   </button>
                 </div>
               )}
@@ -1035,7 +1051,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               <TicketPartsCard ticketId={ticket.id} />
               <dl className="space-y-3">
                 <div>
-                  <dt className="text-xs text-muted-foreground">Requester</dt>
+                  <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.requester.label')}</dt>
                   <dd>
                     {editingRequester ? (
                       <div className="space-y-2">
@@ -1044,13 +1060,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                           onChange={(e) => setReqSel(e.target.value)}
                           className="w-full rounded-md border bg-background px-2 py-1 text-xs"
                           data-testid="ticket-workbench-requester-select"
-                          aria-label="Requester"
+                          aria-label={t('ticketWorkbench.requester.label')}
                         >
-                          <option value="">Unknown</option>
+                          <option value="">{t('common:states.unknown')}</option>
                           {requesters.map((r) => (
                             <option key={r.id} value={r.id}>{r.name ? `${r.name} (${r.email})` : r.email}</option>
                           ))}
-                          <option value={MANUAL_REQUESTER}>Someone else…</option>
+                          <option value={MANUAL_REQUESTER}>{t('ticketWorkbench.requester.someoneElse')}</option>
                         </select>
                         {reqSel === MANUAL_REQUESTER && (
                           <div className="space-y-1">
@@ -1058,8 +1074,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                               value={reqName}
                               onChange={(e) => setReqName(e.target.value)}
                               maxLength={255}
-                              placeholder="Name"
-                              aria-label="Requester name"
+                              placeholder={t('common:labels.name')}
+                              aria-label={t('ticketWorkbench.requester.nameAria')}
                               className="w-full rounded-md border bg-background px-2 py-1 text-xs"
                               data-testid="ticket-workbench-requester-name"
                             />
@@ -1068,8 +1084,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                               value={reqEmail}
                               onChange={(e) => setReqEmail(e.target.value)}
                               maxLength={255}
-                              placeholder="Email (optional)"
-                              aria-label="Requester email"
+                              placeholder={t('ticketWorkbench.requester.emailPlaceholder')}
+                              aria-label={t('ticketWorkbench.requester.emailAria')}
                               className="w-full rounded-md border bg-background px-2 py-1 text-xs"
                               data-testid="ticket-workbench-requester-email"
                             />
@@ -1082,7 +1098,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                             className="rounded-md border px-2 py-0.5 text-xs hover:bg-muted"
                             data-testid="ticket-workbench-requester-cancel"
                           >
-                            Cancel
+                            {t('common:actions.cancel')}
                           </button>
                           <button
                             type="button"
@@ -1090,14 +1106,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                             className="rounded-md bg-primary px-2 py-0.5 text-xs font-medium text-white"
                             data-testid="ticket-workbench-requester-save"
                           >
-                            Save
+                            {t('common:actions.save')}
                           </button>
                         </div>
                       </div>
                     ) : (
                       <div className="group flex items-start gap-2">
                         <span className="flex-1" data-testid="ticket-workbench-requester">
-                          {ticket.submitterName ?? ticket.submitterEmail ?? 'Unknown'}
+                          {ticket.submitterName ?? ticket.submitterEmail ?? t('common:states.unknown')}
                         </span>
                         <button
                           type="button"
@@ -1105,21 +1121,21 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                           className="shrink-0 rounded px-1 text-xs text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
                           data-testid="ticket-workbench-requester-edit"
                         >
-                          Edit
+                          {t('common:actions.edit')}
                         </button>
                       </div>
                     )}
                   </dd>
                 </div>
-                <div><dt className="text-xs text-muted-foreground">Source</dt><dd className="capitalize">{ticket.source}</dd></div>
-                <div><dt className="text-xs text-muted-foreground">Created</dt><dd>{formatDateTime(ticket.createdAt)}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.source')}</dt><dd className="capitalize">{ticket.source}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">{t('common:labels.createdAt')}</dt><dd>{formatDateTime(ticket.createdAt)}</dd></div>
                 <div>
-                  <dt className="text-xs text-muted-foreground">Due date</dt>
+                  <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.dueDate')}</dt>
                   <dd>
                     <input
                       type="date"
                       data-testid="ticket-workbench-due"
-                      aria-label="Due date"
+                      aria-label={t('ticketWorkbench.dueDate')}
                       value={ticket.dueDate ? ticket.dueDate.slice(0, 10) : ''}
                       onChange={(e) => handleFieldSave({ dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })}
                       className="rounded-md border bg-background px-2 py-1 text-xs"
@@ -1127,7 +1143,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-muted-foreground">Tags</dt>
+                  <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.tags.label')}</dt>
                   <dd>
                     <TagEditor
                       data-testid="ticket-workbench-tags"
@@ -1138,7 +1154,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-muted-foreground">Device</dt>
+                  <dt className="text-xs text-muted-foreground">{t('common:labels.device')}</dt>
                   <dd>
                     <div data-testid="ticket-workbench-device" className="flex items-center gap-2 text-xs">
                       {ticket.deviceId ? (
@@ -1150,7 +1166,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                           {ticket.deviceHostname ?? ticket.deviceId}
                         </a>
                       ) : (
-                        <span>No device</span>
+                        <span>{t('ticketWorkbench.device.none')}</span>
                       )}
                       {ticket.deviceId && (
                         <button
@@ -1159,20 +1175,20 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                           className="hover:text-destructive"
                           onClick={() => handleFieldSave({ deviceId: null })}
                         >
-                          Unlink
+                          {t('ticketWorkbench.device.unlink')}
                         </button>
                       )}
                     </div>
                   </dd>
                 </div>
-                {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">Waiting on</dt><dd>{ticket.pendingReason}</dd></div>}
+                {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.waitingOn')}</dt><dd>{ticket.pendingReason}</dd></div>}
                 {ticket.resolutionNote && (ticket.status === 'resolved' || ticket.status === 'closed') && (
-                  <div><dt className="text-xs text-muted-foreground">Resolution</dt><dd>{ticket.resolutionNote}</dd></div>
+                  <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.resolution')}</dt><dd>{ticket.resolutionNote}</dd></div>
                 )}
                 <div>
-                  <dt className="text-xs text-muted-foreground">Linked alerts</dt>
+                  <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.linkedAlerts')}</dt>
                   <dd className="space-y-1">
-                    {ticket.alertLinks.length === 0 && <span className="text-muted-foreground">None</span>}
+                    {ticket.alertLinks.length === 0 && <span className="text-muted-foreground">{t('common:labels.none')}</span>}
                     {ticket.alertLinks.map((l) => (
                       <a key={l.id} href={`/alerts#${l.alertId}`} className="block truncate hover:underline" data-testid={`ticket-alert-link-${l.alertId}`}>
                         {l.alertTitle ?? l.alertId}
@@ -1191,9 +1207,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => void handleDelete()}
         isLoading={deleting}
-        title="Delete this ticket?"
-        message="This hides the ticket from all queues. An admin can restore it from the Archived queue."
-        confirmLabel="Delete ticket"
+        title={t('ticketWorkbench.deleteDialog.title')}
+        message={t('ticketWorkbench.deleteDialog.message')}
+        confirmLabel={t('ticketWorkbench.deleteDialog.confirm')}
         confirmTestId="ticket-delete-confirm"
       />
     </div>

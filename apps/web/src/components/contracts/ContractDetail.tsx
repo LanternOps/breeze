@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
+import '@/lib/i18n';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import {
@@ -7,8 +9,6 @@ import {
   deleteContract,
   generateContractInvoice,
   getContractEstimate,
-  formatCadence,
-  CONTRACT_STATUS_LABELS,
   type ContractDetail as ContractDetailData,
   type ContractEstimate,
   type ContractLineType,
@@ -26,10 +26,10 @@ interface Props {
 }
 
 const LINE_TYPE_LABELS: Record<ContractLineType, string> = {
-  flat: 'Flat fee',
-  per_device: 'Per device',
-  per_seat: 'Per seat',
-  manual: 'Manual quantity',
+  flat: 'contracts.shared.lineType.flat',
+  per_device: 'contracts.shared.lineType.perDevice',
+  per_seat: 'contracts.shared.lineType.perSeat',
+  manual: 'contracts.shared.lineType.manual',
 };
 
 // Which lifecycle transitions are offered for each status (mirrors the API's
@@ -43,13 +43,14 @@ const TRANSITIONS_FOR_STATUS: Record<ContractStatus, ContractTransition[]> = {
 };
 
 const TRANSITION_LABELS: Record<ContractTransition, string> = {
-  activate: 'Activate',
-  pause: 'Pause',
-  resume: 'Resume',
-  cancel: 'Cancel',
+  activate: 'contracts.shared.transition.activate',
+  pause: 'contracts.shared.transition.pause',
+  resume: 'contracts.shared.transition.resume',
+  cancel: 'contracts.shared.transition.cancel',
 };
 
 export default function ContractDetail({ detail, onChanged }: Props) {
+  const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const { contract, lines, periods } = detail;
   const currency = contract.currencyCode;
@@ -80,17 +81,17 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     try {
       await runAction({
         request: () => contractTransition(contract.id, verb),
-        errorFallback: `Could not ${verb} the contract.`,
-        successMessage: `Contract ${verb === 'activate' ? 'activated' : verb === 'pause' ? 'paused' : verb === 'resume' ? 'resumed' : 'cancelled'}`,
+        errorFallback: t(/* i18n-dynamic */ `contracts.contractDetail.errors.transition.${verb}`),
+        successMessage: t(/* i18n-dynamic */ `contracts.contractDetail.toast.transition.${verb}`),
         onUnauthorized: UNAUTHORIZED,
       });
       refresh();
     } catch (err) {
-      handleActionError(err, `Could not ${verb} the contract.`);
+      handleActionError(err, t(/* i18n-dynamic */ `contracts.contractDetail.errors.transition.${verb}`));
     } finally {
       setBusy(false);
     }
-  }, [busy, contract.id, refresh]);
+  }, [busy, contract.id, refresh, t]);
 
   const generateNow = useCallback(async () => {
     if (busy) return;
@@ -98,8 +99,8 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     try {
       const result = await runAction<{ data?: { invoiceId?: string } }>({
         request: () => generateContractInvoice(contract.id),
-        errorFallback: 'Could not generate an invoice.',
-        successMessage: 'Invoice generated',
+        errorFallback: t('contracts.contractDetail.errors.generateInvoice'),
+        successMessage: t('contracts.contractDetail.toast.invoiceGenerated'),
         onUnauthorized: UNAUTHORIZED,
       });
       const invoiceId = result?.data?.invoiceId;
@@ -109,11 +110,11 @@ export default function ContractDetail({ detail, onChanged }: Props) {
         refresh();
       }
     } catch (err) {
-      handleActionError(err, 'Could not generate an invoice.');
+      handleActionError(err, t('contracts.contractDetail.errors.generateInvoice'));
     } finally {
       setBusy(false);
     }
-  }, [busy, contract.id, refresh]);
+  }, [busy, contract.id, refresh, t]);
 
   const remove = useCallback(async () => {
     if (busy) return;
@@ -121,18 +122,18 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     try {
       await runAction({
         request: () => deleteContract(contract.id),
-        errorFallback: 'Could not delete the draft.',
-        successMessage: 'Draft deleted',
+        errorFallback: t('contracts.contractDetail.errors.deleteDraft'),
+        successMessage: t('contracts.contractDetail.toast.draftDeleted'),
         onUnauthorized: UNAUTHORIZED,
       });
       setDelOpen(false);
       void navigateTo('/contracts');
     } catch (err) {
-      handleActionError(err, 'Could not delete the draft.');
+      handleActionError(err, t('contracts.contractDetail.errors.deleteDraft'));
     } finally {
       setBusy(false);
     }
-  }, [busy, contract.id]);
+  }, [busy, contract.id, t]);
 
   const availableTransitions = TRANSITIONS_FOR_STATUS[contract.status] ?? [];
   const canGenerate = contract.status === 'active';
@@ -145,47 +146,55 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header">
             <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
               <div>
-                <dt className="text-xs uppercase text-muted-foreground">Billing timing</dt>
-                <dd className="mt-1 font-medium capitalize">{contract.billingTiming === 'advance' ? 'In advance' : 'In arrears'}</dd>
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.billingTiming')}</dt>
+                <dd className="mt-1 font-medium capitalize">{t(/* i18n-dynamic */ `contracts.shared.billingTiming.${contract.billingTiming}`)}</dd>
               </div>
               <div>
-                <dt className="text-xs uppercase text-muted-foreground">Cadence</dt>
-                <dd className="mt-1 font-medium">{formatCadence(contract.intervalMonths)}</dd>
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.cadence')}</dt>
+                <dd className="mt-1 font-medium">
+                  {contract.intervalMonths === 1
+                    ? t('contracts.shared.cadence.monthly')
+                    : contract.intervalMonths === 3
+                      ? t('contracts.shared.cadence.quarterly')
+                      : contract.intervalMonths === 12
+                        ? t('contracts.shared.cadence.annual')
+                        : t('contracts.shared.cadence.custom', { count: contract.intervalMonths })}
+                </dd>
               </div>
               <div>
-                <dt className="text-xs uppercase text-muted-foreground">Start date</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.startDate')}</dt>
                 <dd className="mt-1 font-medium">{formatDate(contract.startDate)}</dd>
               </div>
               <div>
-                <dt className="text-xs uppercase text-muted-foreground">End date</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.endDate')}</dt>
                 <dd className="mt-1 font-medium">{formatDate(contract.endDate)}</dd>
               </div>
               <div>
-                <dt className="text-xs uppercase text-muted-foreground">Next billing</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.nextBilling')}</dt>
                 <dd className="mt-1 font-medium">{formatDate(contract.nextBillingAt)}</dd>
               </div>
               <div>
-                <dt className="text-xs uppercase text-muted-foreground">Auto-issue</dt>
-                <dd className="mt-1 font-medium">{contract.autoIssue ? 'Yes' : 'No (drafts)'}</dd>
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.autoIssue')}</dt>
+                <dd className="mt-1 font-medium">{contract.autoIssue ? t('common:labels.yes') : t('contracts.contractDetail.values.noDrafts')}</dd>
               </div>
               <div>
-                <dt className="text-xs uppercase text-muted-foreground">Renewal</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.renewal')}</dt>
                 <dd className="mt-1 font-medium" data-testid="contract-renewal-status">
                   {contract.autoRenew ? (
                     <>
-                      <span>Auto-renews</span>
-                      {' '}every {contract.renewalTermMonths ?? '—'} months
-                      {contract.endDate ? <> · current term ends {formatDate(contract.endDate)}</> : null}
-                      {contract.renewalNoticeDays != null ? <> · {contract.renewalNoticeDays}-day notice</> : null}
+                      <span>{t('contracts.contractDetail.renewal.autoRenews')}</span>
+                      {' '}{t('contracts.contractDetail.renewal.everyMonths', { count: contract.renewalTermMonths ?? '—' })}
+                      {contract.endDate ? <> {t('contracts.contractDetail.renewal.currentTermEnds', { date: formatDate(contract.endDate) })}</> : null}
+                      {contract.renewalNoticeDays != null ? <> {t('contracts.contractDetail.renewal.noticeDays', { count: contract.renewalNoticeDays })}</> : null}
                     </>
                   ) : (
-                    <span>Does not auto-renew</span>
+                    <span>{t('contracts.contractDetail.renewal.doesNotAutoRenew')}</span>
                   )}
                 </dd>
               </div>
               {/* Estimated value per billing period, from live device/seat counts. */}
               <div>
-                <dt className="text-xs uppercase text-muted-foreground">Est. / period</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.estimatedPerPeriod')}</dt>
                 <dd className="mt-1 font-medium tabular-nums" data-testid="contract-estimate-stat">
                   {estimate ? formatMoney(estimate.periodTotal, currency) : '—'}
                 </dd>
@@ -193,7 +202,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             </dl>
             {contract.notes && (
               <div className="mt-4 border-t pt-3">
-                <dt className="text-xs uppercase text-muted-foreground">Notes</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.notes')}</dt>
                 <dd className="mt-1 whitespace-pre-wrap text-sm">{contract.notes}</dd>
               </div>
             )}
@@ -204,29 +213,29 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             <table className="w-full text-sm" data-testid="contract-detail-lines">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Type</th>
-                  <th className="px-3 py-2 font-medium">Description</th>
-                  <th className="px-3 py-2 text-right font-medium">Unit price</th>
-                  <th className="px-3 py-2 text-right font-medium">Qty</th>
-                  <th className="px-3 py-2 text-center font-medium">Tax</th>
+                  <th className="px-3 py-2 font-medium">{t('common:labels.type')}</th>
+                  <th className="px-3 py-2 font-medium">{t('common:labels.description')}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t('contracts.contractDetail.table.unitPrice')}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t('contracts.contractDetail.table.qty')}</th>
+                  <th className="px-3 py-2 text-center font-medium">{t('contracts.contractDetail.table.tax')}</th>
                 </tr>
               </thead>
               <tbody>
                 {lines.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-3 py-8 text-center text-sm text-muted-foreground">
-                      This contract has no lines.
+                      {t('contracts.contractDetail.table.empty')}
                     </td>
                   </tr>
                 ) : (
                   lines.map((l) => (
                     <tr key={l.id} className="border-t" data-testid={`contract-detail-line-${l.id}`}>
-                      <td className="px-3 py-2">{LINE_TYPE_LABELS[l.lineType]}</td>
+                      <td className="px-3 py-2">{t(/* i18n-dynamic */ LINE_TYPE_LABELS[l.lineType])}</td>
                       <td className="px-3 py-2">{l.description}</td>
                       <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
                       <td className="px-3 py-2 text-right">
                         {l.lineType === 'per_device' || l.lineType === 'per_seat'
-                          ? <span className="text-muted-foreground">auto</span>
+                          ? <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>
                           : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
                       </td>
                       <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
@@ -240,21 +249,21 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           {/* Billing-period history */}
           <div className="rounded-lg border bg-card shadow-xs">
             <h3 className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Billing history
+              {t('contracts.contractDetail.billingHistory.title')}
             </h3>
             <table className="w-full text-sm" data-testid="contract-periods">
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">Period</th>
-                  <th className="px-3 py-2 font-medium">Generated</th>
-                  <th className="px-3 py-2 font-medium">Invoice</th>
+                  <th className="px-3 py-2 font-medium">{t('contracts.contractDetail.billingHistory.period')}</th>
+                  <th className="px-3 py-2 font-medium">{t('contracts.contractDetail.billingHistory.generated')}</th>
+                  <th className="px-3 py-2 font-medium">{t('contracts.contractDetail.billingHistory.invoice')}</th>
                 </tr>
               </thead>
               <tbody>
                 {periods.length === 0 ? (
                   <tr>
                     <td colSpan={3} className="px-3 py-8 text-center text-sm text-muted-foreground" data-testid="contract-periods-empty">
-                      No invoices have been generated yet.
+                      {t('contracts.contractDetail.billingHistory.empty')}
                     </td>
                   </tr>
                 ) : (
@@ -269,7 +278,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                             data-testid={`period-invoice-link-${p.id}`}
                             className="text-primary hover:underline"
                           >
-                            View invoice
+                            {t('contracts.contractDetail.billingHistory.viewInvoice')}
                           </a>
                         ) : (
                           <span className="text-muted-foreground">—</span>
@@ -292,12 +301,12 @@ export default function ContractDetail({ detail, onChanged }: Props) {
               visible badge moved to the header. */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-detail-summary">
             <span className="sr-only" data-testid="contract-detail-status">
-              {CONTRACT_STATUS_LABELS[contract.status]}
+              {t(/* i18n-dynamic */ `contracts.shared.status.${contract.status}`)}
             </span>
             <p className="text-sm text-muted-foreground">
               {canGenerate
-                ? 'This contract is active and will generate invoices on its cadence.'
-                : 'Invoices generate while the contract is active.'}
+                ? t('contracts.contractDetail.summary.active')
+                : t('contracts.contractDetail.summary.inactive')}
             </p>
           </div>
 
@@ -321,7 +330,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                           : 'border hover:bg-muted'
                     }`}
                   >
-                    {TRANSITION_LABELS[verb]}
+                    {t(/* i18n-dynamic */ TRANSITION_LABELS[verb])}
                   </button>
                 );
               })}
@@ -337,7 +346,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
               data-testid="generate-now-btn"
               className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
             >
-              Generate invoice now
+              {t('contracts.contractDetail.actions.generateInvoiceNow')}
             </button>
           )}
 
@@ -349,7 +358,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
               data-testid="contract-delete-open"
               className="inline-flex w-full items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
             >
-              Delete draft
+              {t('contracts.contractDetail.actions.deleteDraft')}
             </button>
           )}
         </div>
@@ -360,9 +369,9 @@ export default function ContractDetail({ detail, onChanged }: Props) {
         onClose={() => setCancelOpen(false)}
         onConfirm={() => { setCancelOpen(false); void transition('cancel'); }}
         isLoading={busy}
-        title="Cancel this contract?"
-        message="Cancelling stops all future invoicing on this contract. This can’t be undone — you’d have to create a new contract to resume billing."
-        confirmLabel="Cancel contract"
+        title={t('contracts.contractDetail.cancelConfirm.title')}
+        message={t('contracts.contractDetail.cancelConfirm.message')}
+        confirmLabel={t('contracts.contractDetail.cancelConfirm.confirm')}
         confirmTestId="contract-cancel-confirm"
       />
 
@@ -371,9 +380,9 @@ export default function ContractDetail({ detail, onChanged }: Props) {
         onClose={() => setDelOpen(false)}
         onConfirm={() => void remove()}
         isLoading={busy}
-        title="Delete draft contract"
-        message="This permanently deletes the draft contract. This cannot be undone."
-        confirmLabel="Delete draft"
+        title={t('contracts.contractDetail.deleteConfirm.title')}
+        message={t('contracts.contractDetail.deleteConfirm.message')}
+        confirmLabel={t('contracts.contractDetail.deleteConfirm.confirm')}
         confirmTestId="contract-delete-confirm"
       />
     </div>

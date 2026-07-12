@@ -1,27 +1,19 @@
 import { useId, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import PasswordInput from './PasswordInput';
 import PasswordStrength from './PasswordStrength';
 
-const partnerRegisterSchema = z
-  .object({
-    companyName: z.string().min(2, 'Company name must be at least 2 characters'),
-    name: z.string().min(2, 'Name must be at least 2 characters'),
-    email: z.string().email('Enter a valid email address'),
-    password: z.string().min(8, 'Password must be at least 8 characters'),
-    confirmPassword: z.string().min(8, 'Confirm your password'),
-    acceptTerms: z.boolean().refine(val => val === true, {
-      message: 'You must accept the terms of service'
-    })
-  })
-  .refine(data => data.password === data.confirmPassword, {
-    message: 'Passwords do not match',
-    path: ['confirmPassword']
-  });
-
-type PartnerRegisterFormValues = z.infer<typeof partnerRegisterSchema>;
+type PartnerRegisterFormValues = {
+  companyName: string;
+  name: string;
+  email: string;
+  password: string;
+  confirmPassword: string;
+  acceptTerms: boolean;
+};
 
 type PartnerRegisterFormProps = {
   onSubmit?: (values: PartnerRegisterFormValues) => void | Promise<void>;
@@ -34,6 +26,26 @@ export default function PartnerRegisterForm({
   errorMessage,
   loading
 }: PartnerRegisterFormProps) {
+  const { t } = useTranslation('auth');
+  const partnerRegisterSchema = useMemo(
+    () =>
+      z
+        .object({
+          companyName: z.string().min(2, t('validation.companyNameMin', { defaultValue: 'Company name must be at least 2 characters' })),
+          name: z.string().min(2, t('validation.nameMin', { defaultValue: 'Name must be at least 2 characters' })),
+          email: z.string().email(t('validation.email', { defaultValue: 'Enter a valid email address' })),
+          password: z.string().min(8, t('validation.passwordMin', { defaultValue: 'Password must be at least 8 characters' })),
+          confirmPassword: z.string().min(8, t('validation.confirmPassword', { defaultValue: 'Confirm your password' })),
+          acceptTerms: z.boolean().refine(val => val === true, {
+            message: t('validation.acceptTerms', { defaultValue: 'You must accept the terms of service' }),
+          }),
+        })
+        .refine(data => data.password === data.confirmPassword, {
+          message: t('validation.passwordsDoNotMatch', { defaultValue: 'Passwords do not match' }),
+          path: ['confirmPassword'],
+        }),
+    [t],
+  );
   const {
     register,
     handleSubmit,
@@ -70,20 +82,20 @@ export default function PartnerRegisterForm({
     >
       {/* Company section */}
       <div>
-        <h2 className="text-base font-semibold">Your company</h2>
+        <h2 className="text-base font-semibold">{t('partnerRegister.company.title', { defaultValue: 'Your company' })}</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
-          This creates your MSP account in Breeze
+          {t('partnerRegister.company.description', { defaultValue: 'This creates your MSP account in Breeze' })}
         </p>
       </div>
 
       <div className="space-y-2">
         <label htmlFor="companyName" className="text-sm font-medium">
-          Company name
+          {t('fields.companyName', { defaultValue: 'Company name' })}
         </label>
         <input
           id="companyName"
           type="text"
-          placeholder="Acme IT Services"
+          placeholder={t('placeholders.companyName', { defaultValue: 'Acme IT Services' })}
           className={inputClass}
           data-testid="register-company-name"
           {...register('companyName')}
@@ -95,22 +107,22 @@ export default function PartnerRegisterForm({
 
       {/* Account section */}
       <div className="border-t pt-6">
-        <h2 className="text-base font-semibold">Your account</h2>
+        <h2 className="text-base font-semibold">{t('partnerRegister.account.title', { defaultValue: 'Your account' })}</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
-          You'll be the first admin for this company
+          {t('partnerRegister.account.description', { defaultValue: "You'll be the first admin for this company" })}
         </p>
       </div>
 
       <div className="space-y-4">
         <div className="space-y-2">
           <label htmlFor="name" className="text-sm font-medium">
-            Full name
+            {t('fields.fullName', { defaultValue: 'Full name' })}
           </label>
           <input
             id="name"
             type="text"
             autoComplete="name"
-            placeholder="Jane Doe"
+            placeholder={t('placeholders.fullName', { defaultValue: 'Jane Doe' })}
             className={inputClass}
             data-testid="register-name"
             {...register('name')}
@@ -122,13 +134,13 @@ export default function PartnerRegisterForm({
 
         <div className="space-y-2">
           <label htmlFor="email" className="text-sm font-medium">
-            Work email
+            {t('fields.workEmail', { defaultValue: 'Work email' })}
           </label>
           <input
             id="email"
             type="email"
             autoComplete="email"
-            placeholder="you@company.com"
+            placeholder={t('placeholders.email', { defaultValue: 'you@company.com' })}
             className={inputClass}
             data-testid="register-email"
             {...register('email')}
@@ -140,12 +152,12 @@ export default function PartnerRegisterForm({
 
         <div className="space-y-2">
           <label htmlFor="password" className="text-sm font-medium">
-            Password
+            {t('fields.password', { defaultValue: 'Password' })}
           </label>
           <PasswordInput
             id="password"
             autoComplete="new-password"
-            placeholder="Create a password"
+            placeholder={t('placeholders.createPassword', { defaultValue: 'Create a password' })}
             data-testid="register-password"
             aria-invalid={errors.password ? true : undefined}
             aria-describedby={errors.password ? passwordErrId : undefined}
@@ -163,12 +175,12 @@ export default function PartnerRegisterForm({
 
         <div className="space-y-2">
           <label htmlFor="confirmPassword" className="text-sm font-medium">
-            Confirm password
+            {t('fields.confirmPassword', { defaultValue: 'Confirm password' })}
           </label>
           <PasswordInput
             id="confirmPassword"
             autoComplete="new-password"
-            placeholder="Re-enter your password"
+            placeholder={t('placeholders.confirmPassword', { defaultValue: 'Re-enter your password' })}
             data-testid="register-confirm-password"
             aria-invalid={errors.confirmPassword ? true : undefined}
             aria-describedby={errors.confirmPassword ? confirmErrId : undefined}
@@ -189,23 +201,23 @@ export default function PartnerRegisterForm({
           {...register('acceptTerms')}
         />
         <label htmlFor="acceptTerms" className="text-sm leading-snug text-muted-foreground">
-          I agree to the{' '}
+          {t('partnerRegister.terms.prefix', { defaultValue: 'I agree to the' })}{' '}
           <a
             href="https://breezermm.com/legal/terms-of-service"
             target="_blank"
             rel="noopener noreferrer"
             className="text-primary hover:underline"
           >
-            Terms of Service
+            {t('partnerRegister.terms.termsOfService', { defaultValue: 'Terms of Service' })}
           </a>{' '}
-          and{' '}
+          {t('partnerRegister.terms.and', { defaultValue: 'and' })}{' '}
           <a
             href="https://breezermm.com/legal/privacy-policy"
             target="_blank"
             rel="noopener noreferrer"
             className="text-primary hover:underline"
           >
-            Privacy Policy
+            {t('partnerRegister.terms.privacyPolicy', { defaultValue: 'Privacy Policy' })}
           </a>
         </label>
       </div>
@@ -226,13 +238,15 @@ export default function PartnerRegisterForm({
         data-testid="register-submit"
         className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? 'Creating account...' : 'Create company account'}
+        {isLoading
+          ? t('partnerRegister.creating', { defaultValue: 'Creating account...' })
+          : t('partnerRegister.createCompanyAccount', { defaultValue: 'Create company account' })}
       </button>
 
       <p className="text-center text-sm text-muted-foreground">
-        Already have an account?{' '}
+        {t('common.alreadyHaveAccount', { defaultValue: 'Already have an account?' })}{' '}
         <a href="/login" className="font-medium text-primary hover:underline">
-          Sign in
+          {t('common.signIn', { defaultValue: 'Sign in' })}
         </a>
       </p>
     </form>

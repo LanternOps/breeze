@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { DocumentWorkspace, type DocumentTab } from './shared/DocumentWorkspace';
@@ -7,16 +9,16 @@ import InvoiceEditor from './InvoiceEditor';
 import InvoiceDetail from './InvoiceDetail';
 import InvoiceDocumentPreview from './InvoiceDocument';
 import InvoiceActions from './InvoiceActions';
-import { type InvoiceDetail as InvoiceDetailData, STATUS_ROLES, statusLabel } from './invoiceTypes';
+import { type InvoiceDetail as InvoiceDetailData, STATUS_ROLES } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 type Tab = 'editor' | 'preview' | 'detail';
 
-const TAB_LABELS: { value: Tab; label: string }[] = [
-  { value: 'editor', label: 'Editor' },
-  { value: 'preview', label: 'Preview' },
-  { value: 'detail', label: 'Detail' },
+const TAB_LABELS: { value: Tab; labelKey: string }[] = [
+  { value: 'editor', labelKey: 'invoiceWorkspace.tabs.editor' },
+  { value: 'preview', labelKey: 'invoiceWorkspace.tabs.preview' },
+  { value: 'detail', labelKey: 'invoiceWorkspace.tabs.detail' },
 ];
 
 interface Props {
@@ -31,6 +33,7 @@ function readTab(isDraft: boolean): Tab {
 }
 
 export default function InvoiceWorkspace({ invoiceId }: Props) {
+  const { t } = useTranslation('billing');
   const [detail, setDetail] = useState<InvoiceDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -41,24 +44,24 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
   // discard the user's in-progress local state and cursor position. Only the
   // initial load shows the spinner / replaces the view on error.
   const fetchDetail = useCallback(async (quiet = false) => {
-    if (!invoiceId) { setError('Missing invoice id'); setLoading(false); return; }
+    if (!invoiceId) { setError(t('invoiceWorkspace.errors.missingId')); setLoading(false); return; }
     try {
       if (!quiet) setLoading(true);
       setError(undefined);
       const res = await fetchWithAuth(`/invoices/${invoiceId}`);
       if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { if (!quiet) setError('Invoice not found.'); return; }
-      if (!res.ok) throw new Error('Failed to load invoice');
+      if (res.status === 404) { if (!quiet) setError(t('invoiceWorkspace.errors.notFound')); return; }
+      if (!res.ok) throw new Error(t('invoiceWorkspace.errors.loadFailed'));
       const body = (await res.json()) as { data: InvoiceDetailData };
       setDetail(body.data);
     } catch (err) {
       // A failed quiet reload leaves the editor intact; the inline action's own
       // runAction toast already surfaced the failure.
-      if (!quiet) setError(err instanceof Error ? err.message : 'Failed to load invoice');
+      if (!quiet) setError(err instanceof Error ? err.message : t('invoiceWorkspace.errors.loadFailed'));
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, [invoiceId]);
+  }, [invoiceId, t]);
 
   const load = useCallback(() => fetchDetail(false), [fetchDetail]);
   const reload = useCallback(() => fetchDetail(true), [fetchDetail]);
@@ -95,10 +98,10 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
   if (error || !detail) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center text-sm text-destructive" data-testid="invoice-workspace-error">
-        {error ?? 'Invoice unavailable.'}
+        {error ?? t('invoiceWorkspace.errors.unavailable')}
         <div>
           <a href="/billing/invoices" className="mt-3 inline-block rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted">
-            Back to invoices
+            {t('invoiceWorkspace.backToInvoices')}
           </a>
         </div>
       </div>
@@ -108,18 +111,21 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
   // The Editor only applies to drafts, so it's hidden once an invoice is issued —
   // no dead-end tab that just shows a "can't edit" message. A stale #editor hash
   // on a non-draft falls back to Detail.
-  const tabs: DocumentTab[] = TAB_LABELS.map((t) => ({
-    id: t.value,
-    label: t.label,
-    hidden: t.value === 'editor' && !isDraft,
+  const tabs: DocumentTab[] = TAB_LABELS.map((tabDef) => ({
+    id: tabDef.value,
+    label: t(/* i18n-dynamic */ tabDef.labelKey),
+    hidden: tabDef.value === 'editor' && !isDraft,
   }));
   const activeTab: Tab = tabs.some((t) => t.id === tab && !t.hidden) ? tab : 'detail';
 
   const roles = STATUS_ROLES[detail.invoice.status];
+  const invoiceStatusLabel = detail.invoice.status === 'sent' && !detail.invoice.sentAt
+    ? t('invoice.status.issued')
+    : t(/* i18n-dynamic */ `invoice.status.${detail.invoice.status}`);
   const statusPill = (
     <StatusPill
       role={roles.role}
-      label={statusLabel(detail.invoice)}
+      label={invoiceStatusLabel}
       className={roles.className ? `${roles.className} shrink-0` : 'shrink-0'}
       testId="invoice-workspace-status"
     />
@@ -129,8 +135,8 @@ export default function InvoiceWorkspace({ invoiceId }: Props) {
     <DocumentWorkspace
       idPrefix="invoice"
       backHref="/billing/invoices"
-      backLabel="Invoices"
-      title={detail.invoice.invoiceNumber ?? 'Draft invoice'}
+      backLabel={t('invoiceWorkspace.backLabel')}
+      title={detail.invoice.invoiceNumber ?? t('invoiceWorkspace.draftTitle')}
       statusPill={statusPill}
       // Primary actions live in the header so Issue / Issue & Send (the
       // money-moment) and Download are reachable from any tab, not buried inside

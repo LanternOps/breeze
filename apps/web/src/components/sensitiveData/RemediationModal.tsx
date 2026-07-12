@@ -1,5 +1,7 @@
+import '@/lib/i18n';
 import { useState } from 'react';
 import { X, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { REMEDIATION_ACTIONS } from './constants';
@@ -13,6 +15,7 @@ type RemediationModalProps = {
 type Step = 'select' | 'confirm' | 'second_approval' | 'result';
 
 export default function RemediationModal({ findingIds, onClose, onComplete }: RemediationModalProps) {
+  const { t } = useTranslation('security');
   const [step, setStep] = useState<Step>('select');
   const [action, setAction] = useState('');
   const [secondApprovalToken, setSecondApprovalToken] = useState('');
@@ -64,29 +67,52 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
       const json = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        throw new Error(json.error || 'Remediation failed');
+        throw new Error(
+          json.error ||
+            t('sensitiveDataRemediationModal.errors.remediationFailed', {
+              defaultValue: 'Remediation failed',
+            }),
+        );
       }
 
       setResult(json.data ?? {});
       setStep('result');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Remediation failed');
+      setError(
+        err instanceof Error
+          ? err.message
+          : t('sensitiveDataRemediationModal.errors.remediationFailed', {
+              defaultValue: 'Remediation failed',
+            }),
+      );
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <Dialog open={true} onClose={onClose} title="Remediate Findings" maxWidth="md" className="p-6">
+    <Dialog
+      open={true}
+      onClose={onClose}
+      title={t('sensitiveDataRemediationModal.title', { defaultValue: 'Remediate Findings' })}
+      maxWidth="md"
+      className="p-6"
+    >
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Remediate Findings</h2>
+          <h2 className="text-lg font-semibold">
+            {t('sensitiveDataRemediationModal.title', { defaultValue: 'Remediate Findings' })}
+          </h2>
           <button type="button" onClick={onClose} className="rounded-md p-1 hover:bg-muted">
             <X className="h-5 w-5" />
           </button>
         </div>
 
         <p className="mt-2 text-sm text-muted-foreground">
-          {findingIds.length} finding{findingIds.length !== 1 ? 's' : ''} selected
+          {t('sensitiveDataRemediationModal.selectedCount', {
+            defaultValue: '{{count}} finding selected',
+            defaultValue_plural: '{{count}} findings selected',
+            count: findingIds.length,
+          })}
         </p>
 
         {error && (
@@ -113,14 +139,18 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
                 <div>
                   <span className="text-sm font-medium">{a.label}</span>
                   {a.destructive && (
-                    <span className="ml-2 text-xs text-destructive">Destructive</span>
+                    <span className="ml-2 text-xs text-destructive">
+                      {t('sensitiveDataRemediationModal.badges.destructive', {
+                        defaultValue: 'Destructive',
+                      })}
+                    </span>
                   )}
                 </div>
               </button>
             ))}
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" onClick={onClose} className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted">
-                Cancel
+                {t('common:actions.cancel', { defaultValue: 'Cancel' })}
               </button>
               <button
                 type="button"
@@ -128,7 +158,11 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
                 disabled={!action || submitting}
                 className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
-                {submitting ? 'Processing...' : 'Continue'}
+                {submitting
+                  ? t('sensitiveDataRemediationModal.actions.processing', {
+                      defaultValue: 'Processing...',
+                    })
+                  : t('sensitiveDataRemediationModal.actions.continue', { defaultValue: 'Continue' })}
               </button>
             </div>
           </div>
@@ -140,17 +174,30 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
             <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="h-5 w-5 text-destructive" />
-                <span className="font-semibold text-destructive">Destructive Action</span>
+                <span className="font-semibold text-destructive">
+                  {t('sensitiveDataRemediationModal.confirm.title', {
+                    defaultValue: 'Destructive Action',
+                  })}
+                </span>
               </div>
               <p className="mt-2 text-sm">
-                You are about to <strong>{selectedAction?.label.toLowerCase()}</strong>{' '}
-                {findingIds.length} finding{findingIds.length !== 1 ? 's' : ''}.
-                This action may modify or remove files on target devices.
+                {t('sensitiveDataRemediationModal.confirm.beforeAction', {
+                  defaultValue: 'You are about to',
+                })}{' '}
+                <strong>{selectedAction?.label.toLowerCase()}</strong>{' '}
+                {t('sensitiveDataRemediationModal.confirm.findingCount', {
+                  defaultValue: '{{count}} finding.',
+                  defaultValue_plural: '{{count}} findings.',
+                  count: findingIds.length,
+                })}{' '}
+                {t('sensitiveDataRemediationModal.confirm.afterCount', {
+                  defaultValue: 'This action may modify or remove files on target devices.',
+                })}
               </p>
             </div>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setStep('select')} className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted">
-                Back
+                {t('common:actions.back', { defaultValue: 'Back' })}
               </button>
               <button
                 type="button"
@@ -158,7 +205,13 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
                 disabled={submitting}
                 className="h-9 rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50"
               >
-                {submitting ? 'Processing...' : isSecureDelete ? 'Next' : 'Confirm'}
+                {submitting
+                  ? t('sensitiveDataRemediationModal.actions.processing', {
+                      defaultValue: 'Processing...',
+                    })
+                  : isSecureDelete
+                    ? t('common:actions.next', { defaultValue: 'Next' })
+                    : t('common:actions.confirm', { defaultValue: 'Confirm' })}
               </button>
             </div>
           </div>
@@ -169,22 +222,30 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
           <div className="mt-4 space-y-4">
             <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4">
               <p className="text-sm font-medium text-destructive">
-                Secure delete requires a second approval token.
+                {t('sensitiveDataRemediationModal.secondApproval.notice', {
+                  defaultValue: 'Secure delete requires a second approval token.',
+                })}
               </p>
             </div>
             <div>
-              <label className="text-sm font-medium">Approval Token</label>
+              <label className="text-sm font-medium">
+                {t('sensitiveDataRemediationModal.secondApproval.approvalToken', {
+                  defaultValue: 'Approval Token',
+                })}
+              </label>
               <input
                 type="password"
                 value={secondApprovalToken}
                 onChange={(e) => setSecondApprovalToken(e.target.value)}
-                placeholder="Enter second approval token"
+                placeholder={t('sensitiveDataRemediationModal.secondApproval.placeholder', {
+                  defaultValue: 'Enter second approval token',
+                })}
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               />
             </div>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setStep('confirm')} className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted">
-                Back
+                {t('common:actions.back', { defaultValue: 'Back' })}
               </button>
               <button
                 type="button"
@@ -192,7 +253,13 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
                 disabled={submitting}
                 className="h-9 rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50"
               >
-                {submitting ? 'Processing...' : 'Confirm Secure Delete'}
+                {submitting
+                  ? t('sensitiveDataRemediationModal.actions.processing', {
+                      defaultValue: 'Processing...',
+                    })
+                  : t('sensitiveDataRemediationModal.actions.confirmSecureDelete', {
+                      defaultValue: 'Confirm Secure Delete',
+                    })}
               </button>
             </div>
           </div>
@@ -202,15 +269,34 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
         {step === 'result' && result && (
           <div className="mt-4 space-y-4">
             <div className="rounded-md border border-success/30 bg-success/10 p-4">
-              <p className="text-sm font-medium text-success">Remediation initiated successfully.</p>
+              <p className="text-sm font-medium text-success">
+                {t('sensitiveDataRemediationModal.result.success', {
+                  defaultValue: 'Remediation initiated successfully.',
+                })}
+              </p>
               {typeof result.updated === 'number' && (
-                <p className="mt-1 text-sm text-success">{result.updated} finding(s) updated</p>
+                <p className="mt-1 text-sm text-success">
+                  {t('sensitiveDataRemediationModal.result.updated', {
+                    defaultValue: '{{count}} finding(s) updated',
+                    count: result.updated,
+                  })}
+                </p>
               )}
               {Array.isArray(result.queued) && result.queued.length > 0 && (
-                <p className="mt-1 text-sm text-success">{result.queued.length} command(s) queued</p>
+                <p className="mt-1 text-sm text-success">
+                  {t('sensitiveDataRemediationModal.result.queued', {
+                    defaultValue: '{{count}} command(s) queued',
+                    count: result.queued.length,
+                  })}
+                </p>
               )}
               {Array.isArray(result.failed) && result.failed.length > 0 && (
-                <p className="mt-1 text-sm text-destructive">{result.failed.length} failed</p>
+                <p className="mt-1 text-sm text-destructive">
+                  {t('sensitiveDataRemediationModal.result.failed', {
+                    defaultValue: '{{count}} failed',
+                    count: result.failed.length,
+                  })}
+                </p>
               )}
             </div>
             <div className="flex justify-end">
@@ -219,7 +305,7 @@ export default function RemediationModal({ findingIds, onClose, onComplete }: Re
                 onClick={onComplete}
                 className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
               >
-                Done
+                {t('common:actions.done', { defaultValue: 'Done' })}
               </button>
             </div>
           </div>

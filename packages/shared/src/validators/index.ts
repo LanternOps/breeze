@@ -800,6 +800,7 @@ export * from './ai';
 // ============================================
 
 export * from './tickets';
+export * from './ticketForms';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';

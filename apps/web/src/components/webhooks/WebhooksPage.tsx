@@ -6,6 +6,7 @@ import WebhookDeliveryHistory, { type WebhookDelivery } from './WebhookDeliveryH
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { extractApiError } from '@/lib/apiError';
+import { Trans, useTranslation } from 'react-i18next';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
 
@@ -16,7 +17,7 @@ type PayloadPreview = {
 
 const defaultEventType = webhookEventOptions[0]?.value ?? 'device.online';
 
-const formatPayloadPreview = (payload?: string | null): PayloadPreview => {
+const formatPayloadPreview = (payload: string | null | undefined, t: (key: string) => string): PayloadPreview => {
   if (!payload?.trim()) {
     return { preview: '', error: '' };
   }
@@ -24,7 +25,7 @@ const formatPayloadPreview = (payload?: string | null): PayloadPreview => {
   try {
     return { preview: JSON.stringify(JSON.parse(payload), null, 2), error: '' };
   } catch {
-    return { preview: payload, error: 'Payload template is not valid JSON.' };
+    return { preview: payload, error: t('longTail.webhooks.WebhooksPage.errors.invalidPayloadTemplate') };
   }
 };
 
@@ -34,6 +35,7 @@ const getWebhookEnabled = (webhook: Webhook) => {
 };
 
 export default function WebhooksPage() {
+  const { t } = useTranslation('common');
   const { currentOrgId } = useOrgStore();
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,16 +55,16 @@ export default function WebhooksPage() {
       setError(undefined);
       const response = await fetchWithAuth('/webhooks');
       if (!response.ok) {
-        throw new Error('Failed to fetch webhooks');
+        throw new Error(t('longTail.webhooks.WebhooksPage.errors.fetchWebhooks'));
       }
       const data = await response.json();
       setWebhooks(data.data ?? data.webhooks ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const fetchDeliveries = useCallback(async (webhookId: string) => {
     try {
@@ -70,17 +72,17 @@ export default function WebhooksPage() {
       setDeliveriesError(undefined);
       const response = await fetchWithAuth(`/webhooks/${webhookId}/deliveries`);
       if (!response.ok) {
-        throw new Error('Failed to fetch delivery history');
+        throw new Error(t('longTail.webhooks.WebhooksPage.errors.fetchDeliveries'));
       }
       const data = await response.json();
       setDeliveries(data.data ?? data.deliveries ?? []);
     } catch (err) {
-      setDeliveriesError(err instanceof Error ? err.message : 'Unable to load delivery history');
+      setDeliveriesError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.loadDeliveries'));
       setDeliveries([]);
     } finally {
       setDeliveriesLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     fetchWebhooks();
@@ -115,15 +117,15 @@ export default function WebhooksPage() {
   );
 
   const payloadPreview = useMemo(
-    () => formatPayloadPreview(activeWebhook?.payloadTemplate),
-    [activeWebhook?.payloadTemplate]
+    () => formatPayloadPreview(activeWebhook?.payloadTemplate, t),
+    [activeWebhook?.payloadTemplate, t]
   );
 
   const labelMap = useMemo(() => {
     const map = new Map<string, string>();
-    webhookEventOptions.forEach(option => map.set(option.value, option.label));
+    webhookEventOptions.forEach(option => map.set(option.value, t(/* i18n-dynamic */ option.labelKey)));
     return map;
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!activeWebhook) return;
@@ -157,7 +159,7 @@ export default function WebhooksPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Test failed');
+        throw new Error(t('longTail.webhooks.WebhooksPage.errors.testFailed'));
       }
 
       await fetchWebhooks();
@@ -165,7 +167,7 @@ export default function WebhooksPage() {
         await fetchDeliveries(webhook.id);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Test failed');
+      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.testFailed'));
     }
   };
 
@@ -177,7 +179,7 @@ export default function WebhooksPage() {
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to ${enabled ? 'enable' : 'disable'} webhook`);
+        throw new Error(enabled ? t('longTail.webhooks.WebhooksPage.errors.enableWebhook') : t('longTail.webhooks.WebhooksPage.errors.disableWebhook'));
       }
 
       setWebhooks(prev =>
@@ -188,7 +190,7 @@ export default function WebhooksPage() {
         )
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
     }
   };
 
@@ -253,13 +255,13 @@ export default function WebhooksPage() {
 
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(extractApiError(data, 'Failed to save webhook'));
+        throw new Error(extractApiError(data, t('longTail.webhooks.WebhooksPage.errors.saveWebhook')));
       }
 
       await fetchWebhooks();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
     } finally {
       setSubmitting(false);
     }
@@ -275,13 +277,13 @@ export default function WebhooksPage() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to delete webhook');
+        throw new Error(t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'));
       }
 
       await fetchWebhooks();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.generic'));
     } finally {
       setSubmitting(false);
     }
@@ -297,12 +299,12 @@ export default function WebhooksPage() {
       );
 
       if (!response.ok) {
-        throw new Error('Failed to retry delivery');
+        throw new Error(t('longTail.webhooks.WebhooksPage.errors.retryDelivery'));
       }
 
       await fetchDeliveries(activeWebhookId);
     } catch (err) {
-      setDeliveriesError(err instanceof Error ? err.message : 'Failed to retry delivery');
+      setDeliveriesError(err instanceof Error ? err.message : t('longTail.webhooks.WebhooksPage.errors.retryDelivery'));
     }
   };
 
@@ -311,7 +313,7 @@ export default function WebhooksPage() {
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
           <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading webhooks...</p>
+          <p className="mt-4 text-sm text-muted-foreground">{t('longTail.webhooks.WebhooksPage.loading')}</p>
         </div>
       </div>
     );
@@ -326,7 +328,7 @@ export default function WebhooksPage() {
           onClick={fetchWebhooks}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          Try again
+          {t('longTail.webhooks.WebhooksPage.actions.tryAgain')}
         </button>
       </div>
     );
@@ -336,7 +338,7 @@ export default function WebhooksPage() {
     ? activeWebhook.auth?.type ?? (activeWebhook.bearerToken ? 'bearer' : 'hmac')
     : 'hmac';
 
-  const authLabel = authSummary === 'bearer' ? 'Bearer token' : 'HMAC signature';
+  const authLabel = authSummary === 'bearer' ? t('longTail.webhooks.WebhooksPage.auth.bearerToken') : t('longTail.webhooks.WebhooksPage.auth.hmacSignature');
   const authHeader = authSummary === 'bearer' ? 'Authorization: Bearer ***' : 'X-Signature: sha256=***';
 
   const testEventOptions = activeWebhook?.events?.length
@@ -347,8 +349,8 @@ export default function WebhooksPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Webhooks</h1>
-          <p className="text-muted-foreground">Deliver events to external systems.</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t('longTail.webhooks.WebhooksPage.title')}</h1>
+          <p className="text-muted-foreground">{t('longTail.webhooks.WebhooksPage.subtitle')}</p>
         </div>
         <button
           type="button"
@@ -356,7 +358,7 @@ export default function WebhooksPage() {
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
-          New Webhook
+          {t('longTail.webhooks.WebhooksPage.actions.newWebhook')}
         </button>
       </div>
 
@@ -381,7 +383,7 @@ export default function WebhooksPage() {
           <div className="rounded-lg border bg-card p-6 shadow-xs">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h2 className="text-lg font-semibold">Webhook details</h2>
+                <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhooksPage.details.title')}</h2>
                 <p className="text-sm text-muted-foreground">{activeWebhook.name}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -390,7 +392,7 @@ export default function WebhooksPage() {
                   onClick={() => handleEdit(activeWebhook)}
                   className="inline-flex h-9 items-center justify-center rounded-md border px-3 text-xs font-medium hover:bg-muted"
                 >
-                  Edit webhook
+                  {t('longTail.webhooks.WebhooksPage.actions.editWebhook')}
                 </button>
                 <button
                   type="button"
@@ -398,7 +400,7 @@ export default function WebhooksPage() {
                   className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
                 >
                   <Send className="h-3.5 w-3.5" />
-                  Test webhook
+                  {t('longTail.webhooks.WebhooksPage.actions.testWebhook')}
                 </button>
               </div>
             </div>
@@ -406,13 +408,13 @@ export default function WebhooksPage() {
             <div className="mt-6 grid gap-6 lg:grid-cols-2">
               <div className="space-y-4">
                 <div>
-                  <label className="text-sm font-medium">Endpoint</label>
+                  <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.endpoint')}</label>
                   <div className="mt-2 rounded-md border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
                     {activeWebhook.url}
                   </div>
                 </div>
                 <div>
-                  <label className="text-sm font-medium">Test event</label>
+                  <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.testEvent')}</label>
                   <select
                     value={testEvent}
                     onChange={event => setTestEvent(event.target.value)}
@@ -425,24 +427,26 @@ export default function WebhooksPage() {
                     ))}
                   </select>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Tests use the selected event and your payload template.
+                    {t('longTail.webhooks.WebhooksPage.details.testEventHelp')}
                   </p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium">Authentication</label>
+                  <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.authentication')}</label>
                   <div className="mt-2 space-y-1 rounded-md border bg-muted/20 px-3 py-2 text-sm">
                     <p className="font-medium">{authLabel}</p>
-                    <p className="text-xs text-muted-foreground">Header: {authHeader}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {t('longTail.webhooks.WebhooksPage.auth.header', { header: authHeader })}
+                    </p>
                   </div>
                 </div>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Payload template preview</label>
+                <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.payloadPreview')}</label>
                 <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
                   {payloadPreview.preview ? (
                     <pre className="max-h-64 overflow-auto">{payloadPreview.preview}</pre>
                   ) : (
-                    <p className="text-xs text-muted-foreground">No payload template saved yet.</p>
+                    <p className="text-xs text-muted-foreground">{t('longTail.webhooks.WebhooksPage.details.noPayloadTemplate')}</p>
                   )}
                 </div>
                 {payloadPreview.error && (
@@ -457,7 +461,7 @@ export default function WebhooksPage() {
               <div className="flex items-center justify-center rounded-lg border bg-card p-6 shadow-xs">
                 <div className="text-center">
                   <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                  <p className="mt-3 text-sm text-muted-foreground">Loading delivery history...</p>
+                  <p className="mt-3 text-sm text-muted-foreground">{t('longTail.webhooks.WebhooksPage.loadingDeliveryHistory')}</p>
                 </div>
               </div>
             ) : deliveriesError ? (
@@ -468,7 +472,7 @@ export default function WebhooksPage() {
                   onClick={() => activeWebhookId && fetchDeliveries(activeWebhookId)}
                   className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
                 >
-                  Try again
+                  {t('longTail.webhooks.WebhooksPage.actions.tryAgain')}
                 </button>
               </div>
             ) : (
@@ -478,7 +482,7 @@ export default function WebhooksPage() {
         </div>
       ) : (
         <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground">
-          Select a webhook to view delivery history and testing tools.
+          {t('longTail.webhooks.WebhooksPage.emptySelection')}
         </div>
       )}
 
@@ -487,7 +491,7 @@ export default function WebhooksPage() {
           <div className="w-full max-w-3xl">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-xl font-bold">
-                {modalMode === 'create' ? 'Create Webhook' : 'Edit Webhook'}
+                {modalMode === 'create' ? t('longTail.webhooks.WebhooksPage.modal.createTitle') : t('longTail.webhooks.WebhooksPage.modal.editTitle')}
               </h2>
             </div>
             {error && (
@@ -503,7 +507,7 @@ export default function WebhooksPage() {
                   ? transformWebhookToForm(selectedWebhook)
                   : undefined
               }
-              submitLabel={modalMode === 'create' ? 'Create Webhook' : 'Save Changes'}
+              submitLabel={modalMode === 'create' ? t('longTail.webhooks.WebhooksPage.actions.createWebhook') : t('longTail.webhooks.WebhooksPage.actions.saveChanges')}
               loading={submitting}
             />
           </div>
@@ -513,11 +517,14 @@ export default function WebhooksPage() {
       {modalMode === 'delete' && selectedWebhook && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">Delete Webhook</h2>
+            <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhooksPage.delete.title')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Are you sure you want to delete{' '}
-              <span className="font-medium">{selectedWebhook.name}</span>? This action cannot be
-              undone.
+              <Trans
+                i18nKey="longTail.webhooks.WebhooksPage.delete.confirm"
+                ns="common"
+                values={{ name: selectedWebhook.name }}
+                components={{ strong: <span className="font-medium" /> }}
+              />
             </p>
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -525,7 +532,7 @@ export default function WebhooksPage() {
                 onClick={handleCloseModal}
                 className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
               >
-                Cancel
+                {t('common:actions.cancel')}
               </button>
               <button
                 type="button"
@@ -533,7 +540,7 @@ export default function WebhooksPage() {
                 disabled={submitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? 'Deleting...' : 'Delete'}
+                {submitting ? t('longTail.webhooks.WebhooksPage.actions.deleting') : t('common:actions.delete')}
               </button>
             </div>
           </div>
