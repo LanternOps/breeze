@@ -323,6 +323,65 @@ describe('oauthRoutes rate limits', () => {
     expect(rateLimiter).toHaveBeenCalledWith(null, 'oauth:register:203.0.113.17', 10, 3600);
   });
 
+  it('rejects DCR registration with a remote http:// redirect_uri (MCP-OAUTH-09)', async () => {
+    const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
+    const app = await importApp(rateLimiter);
+
+    const res = await app.request('/oauth/reg', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': '203.0.113.30',
+      },
+      body: JSON.stringify({
+        client_name: 'phish',
+        redirect_uris: ['http://attacker.example/cb'],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('invalid_redirect_uri');
+  });
+
+  it('rejects http://localhost redirect_uri but not the loopback IP (RFC 8252)', async () => {
+    const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
+
+    const rejected = await (await importApp(rateLimiter)).request('/oauth/reg', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.31' },
+      body: JSON.stringify({ client_name: 'x', redirect_uris: ['http://localhost:8080/cb'] }),
+    });
+    expect(rejected.status).toBe(400);
+    expect((await rejected.json() as { error: string }).error).toBe('invalid_redirect_uri');
+
+    // The literal loopback IP passes the pre-handler and falls through to the
+    // provider bridge (mocked to throw → onError yields the 200 sentinel).
+    const accepted = await (await importApp(rateLimiter)).request('/oauth/reg', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.31' },
+      body: JSON.stringify({ client_name: 'x', redirect_uris: ['http://127.0.0.1:49152/cb'] }),
+    });
+    expect(accepted.status).toBe(200);
+  });
+
+  it('applies the redirect-uri transport policy to registration-management updates (MCP-OAUTH-09)', async () => {
+    const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
+    const app = await importApp(rateLimiter);
+
+    const res = await app.request('/oauth/reg/client-1', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.32' },
+      body: JSON.stringify({
+        client_name: 'x',
+        redirect_uris: ['https://ok.example/cb', 'http://attacker.example/cb'],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe('invalid_redirect_uri');
+  });
+
   it('rate-limits registration-management deletes', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
     const app = await importApp(rateLimiter);

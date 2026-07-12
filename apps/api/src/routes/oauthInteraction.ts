@@ -148,11 +148,35 @@ if (MCP_OAUTH_ENABLED) {
     // DCR time per RFC 7591). Fall back to the auth-request param if some
     // client somehow sent one, then to the opaque client_id as a last resort
     // so the heading never renders blank.
+    //
+    // MCP-OAUTH-08: this display name is UNVERIFIED, attacker-controllable DCR
+    // metadata. An anonymous DCR caller picks any `client_name` it likes
+    // ("Claude", "Microsoft"), so the consent UI must never present it as a
+    // trusted identity. We hard-code `verification: 'unverified'` — the bit is
+    // NOT derived from any client-supplied field — and ship the exact callback
+    // redirect_uri + origin so the user can see where the authorization code
+    // will actually be routed (the real anti-phishing signal).
     const registeredName = (clientRow?.metadata as { client_name?: unknown } | undefined)?.client_name;
-    const clientName =
+    const displayName =
       (typeof registeredName === 'string' && registeredName.trim()) ||
       (typeof (details.params as any).client_name === 'string' && (details.params as any).client_name) ||
       clientId;
+
+    // The redirect_uri for THIS authorization request is where the code will
+    // be delivered. Surface it (and its origin) so the user approves a
+    // specific callback destination, not just a name. If it is absent or
+    // unparseable we send empty strings and let the consent form fail closed
+    // rather than render a consent screen missing the destination.
+    const rawRedirectUri = (details.params as { redirect_uri?: unknown }).redirect_uri;
+    const redirectUri = typeof rawRedirectUri === 'string' ? rawRedirectUri : '';
+    let redirectOrigin = '';
+    if (redirectUri) {
+      try {
+        redirectOrigin = new URL(redirectUri).origin;
+      } catch {
+        redirectOrigin = '';
+      }
+    }
 
     // On a first-visit single-step flow the prompt is `login`, and
     // `prompt.details.scopes.new` doesn't exist yet — fall back to the
@@ -187,7 +211,10 @@ if (MCP_OAUTH_ENABLED) {
       uid: details.uid,
       client: {
         client_id: clientId,
-        client_name: clientName,
+        display_name: displayName,
+        verification: 'unverified' as const,
+        redirect_uri: redirectUri,
+        redirect_origin: redirectOrigin,
       },
       scopes: displayScopes,
       resource: resource ?? null,

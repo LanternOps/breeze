@@ -15,9 +15,23 @@ const jsonResponse = (payload: unknown, status = 200): Response =>
     json: vi.fn().mockResolvedValue(payload),
   }) as unknown as Response;
 
-const interactionFixture = (overrides: Partial<{ partners: { partnerId: string; partnerName: string }[]; scopes: string[]; client_name: string }> = {}) => ({
+const interactionFixture = (
+  overrides: Partial<{
+    partners: { partnerId: string; partnerName: string }[];
+    scopes: string[];
+    display_name: string;
+    redirect_uri: string;
+    redirect_origin: string;
+  }> = {},
+) => ({
   uid: 'uid-1',
-  client: { client_id: 'client_abc', client_name: overrides.client_name ?? 'Claude' },
+  client: {
+    client_id: 'client_abc',
+    display_name: overrides.display_name ?? 'Claude',
+    verification: 'unverified' as const,
+    redirect_uri: overrides.redirect_uri ?? 'https://claude.ai/api/mcp/auth_callback',
+    redirect_origin: overrides.redirect_origin ?? 'https://claude.ai',
+  },
   scopes: overrides.scopes ?? ['mcp:read', 'mcp:write'],
   resource: 'https://us.2breeze.app/mcp/server',
   partners: overrides.partners ?? [{ partnerId: 'p1', partnerName: 'Acme MSP' }],
@@ -59,14 +73,52 @@ describe('ConsentForm', () => {
 
   it('omits the client_id subtitle when client_name fell back to client_id', async () => {
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({
-        ...interactionFixture(),
-        client: { client_id: 'client_abc', client_name: 'client_abc' },
-      }),
+      jsonResponse(interactionFixture({ display_name: 'client_abc' })),
     );
     render(<ConsentForm uid="uid-1" />);
     expect(await screen.findByText(/client_abc wants to access your Breeze tenant/)).toBeTruthy();
     expect(screen.queryByText(/Client ID:/)).toBeNull();
+  });
+
+  it('labels the integration as unverified (MCP-OAUTH-08)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactionFixture()));
+    render(<ConsentForm uid="uid-1" />);
+    expect(await screen.findByText(/Unverified integration/)).toBeTruthy();
+    expect(screen.getByText(/self-reported and could impersonate/)).toBeTruthy();
+  });
+
+  it('shows the exact callback origin the code will be sent to (MCP-OAUTH-08)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        interactionFixture({
+          redirect_uri: 'https://claude.ai/api/mcp/auth_callback?x=1',
+          redirect_origin: 'https://claude.ai',
+        }),
+      ),
+    );
+    render(<ConsentForm uid="uid-1" />);
+    const origin = await screen.findByTestId('oauth-callback-origin');
+    expect(origin.textContent).toBe('https://claude.ai');
+  });
+
+  it('renders a script-bearing display name as inert escaped text, never markup (MCP-OAUTH-08)', async () => {
+    const malicious = '<script>alert(1)</script>Claude';
+    fetchMock.mockResolvedValueOnce(jsonResponse(interactionFixture({ display_name: malicious })));
+    const { container } = render(<ConsentForm uid="uid-1" />);
+    // The literal (unescaped) string appears in the heading as text…
+    expect(await screen.findByText(new RegExp('<script>alert\\(1\\)</script>Claude'))).toBeTruthy();
+    // …and no real <script> element was injected into the DOM.
+    expect(container.querySelector('script')).toBeNull();
+  });
+
+  it('fails closed when the callback redirect metadata is missing (MCP-OAUTH-08)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(interactionFixture({ redirect_uri: '', redirect_origin: '' })),
+    );
+    render(<ConsentForm uid="uid-1" />);
+    expect(await screen.findByText(/Can't verify the callback destination/)).toBeTruthy();
+    // No Approve button in the fail-closed state.
+    expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull();
   });
 
   it('shows mcp:execute as a high-risk device action scope', async () => {

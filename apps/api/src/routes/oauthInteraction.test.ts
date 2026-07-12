@@ -104,7 +104,7 @@ function details(overrides: Record<string, unknown> = {}): {
   uid: string;
   exp: number;
   save: ReturnType<typeof vi.fn>;
-  params: { client_id: string; client_name: string; resource: string; scope: string };
+  params: { client_id: string; client_name: string; resource: string; scope: string; redirect_uri?: string };
   prompt: { details: { scopes: { new: string[] } } };
   result?: unknown;
 } {
@@ -121,6 +121,7 @@ function details(overrides: Record<string, unknown> = {}): {
       client_name: 'Claude Desktop',
       resource: 'https://api.example/mcp/server',
       scope: 'openid offline_access mcp:read mcp:write',
+      redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
     },
     prompt: { details: { scopes: { new: ['openid', 'offline_access'] } } },
     ...overrides,
@@ -242,7 +243,13 @@ describe('oauthInteractionRoutes', () => {
     expect(res.status).toBe(200);
     expect(body).toEqual({
       uid: 'uid-1',
-      client: { client_id: 'client-1', client_name: 'Claude Desktop' },
+      client: {
+        client_id: 'client-1',
+        display_name: 'Claude Desktop',
+        verification: 'unverified',
+        redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+        redirect_origin: 'https://claude.ai',
+      },
       scopes: ['openid', 'offline_access'],
       resource: 'https://api.example/mcp/server',
       partners: [{ partnerId: PARTNER_ID, partnerName: 'Acme MSP', effectiveScopes: ['mcp:read', 'mcp:write'] }],
@@ -290,17 +297,67 @@ describe('oauthInteractionRoutes', () => {
         client_id: 'rxZLeLQMmTDp53sY3sTuv',
         resource: 'https://api.example/mcp/server',
         scope: 'openid offline_access mcp:read',
+        redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
       },
     }));
     queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
     queueSelect([{ metadata: {} }], 'limit');
     const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
-    const body = await res.json() as { client: { client_id: string; client_name: string } };
+    const body = await res.json() as { client: { client_id: string; display_name: string } };
     expect(res.status).toBe(200);
     expect(body.client).toEqual({
       client_id: 'rxZLeLQMmTDp53sY3sTuv',
-      client_name: 'rxZLeLQMmTDp53sY3sTuv',
+      display_name: 'rxZLeLQMmTDp53sY3sTuv',
+      verification: 'unverified',
+      redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+      redirect_origin: 'https://claude.ai',
     });
+  });
+
+  it('MCP-OAUTH-08: marks the client unverified and exposes the exact callback origin', async () => {
+    mocks.interactionDetails.mockResolvedValue(details({
+      params: {
+        client_id: 'client-1',
+        // Attacker-controlled DCR display name impersonating a trusted brand.
+        client_name: 'Microsoft 365',
+        resource: 'https://api.example/mcp/server',
+        scope: 'openid offline_access mcp:read',
+        redirect_uri: 'https://attacker.example.com:8443/steal?x=1',
+      },
+    }));
+    queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
+    queueSelect([{ metadata: { client_name: 'Microsoft 365' } }], 'limit');
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const body = await res.json() as {
+      client: { verification: string; redirect_uri: string; redirect_origin: string; display_name: string };
+    };
+    expect(res.status).toBe(200);
+    // Verification is a hard-coded server constant, NEVER derived from the
+    // client-supplied name — so a spoofed "Microsoft 365" stays unverified.
+    expect(body.client.verification).toBe('unverified');
+    expect(body.client.display_name).toBe('Microsoft 365');
+    expect(body.client.redirect_uri).toBe('https://attacker.example.com:8443/steal?x=1');
+    // The origin strips path/query so the user sees the true destination host.
+    expect(body.client.redirect_origin).toBe('https://attacker.example.com:8443');
+  });
+
+  it('MCP-OAUTH-08: returns empty redirect metadata when the auth request omits redirect_uri (form fails closed)', async () => {
+    mocks.interactionDetails.mockResolvedValue(details({
+      params: {
+        client_id: 'client-1',
+        client_name: 'Claude Desktop',
+        resource: 'https://api.example/mcp/server',
+        scope: 'openid offline_access mcp:read',
+        // no redirect_uri
+      },
+    }));
+    queueSelect([{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }]);
+    queueSelect([{ metadata: { client_name: 'Claude Desktop' } }], 'limit');
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const body = await res.json() as { client: { redirect_uri: string; redirect_origin: string } };
+    expect(res.status).toBe(200);
+    expect(body.client.redirect_uri).toBe('');
+    expect(body.client.redirect_origin).toBe('');
   });
 
   it('returns access_denied redirect when consent is denied', async () => {
