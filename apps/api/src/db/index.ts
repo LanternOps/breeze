@@ -37,6 +37,59 @@ const client = postgres(requestDatabaseConfig.url, {
   max_lifetime: 60 * 30,
   connect_timeout: 10,
 });
+
+export interface RequestDatabaseRole {
+  currentUser: string;
+  isSuperuser: boolean;
+  bypassesRls: boolean;
+}
+
+const REQUEST_DATABASE_ROLE_REMEDIATION =
+  'Set DATABASE_URL_APP to a NOSUPERUSER NOBYPASSRLS role, or configure ' +
+  'BREEZE_APP_DB_PASSWORD/POSTGRES_PASSWORD so Breeze can derive the breeze_app URL.';
+
+/**
+ * Reads the effective role from the exact module-scope postgres.js client that
+ * backs `db`. This must not use a separate probe connection: startup is proving
+ * the identity and RLS capabilities of the pool that will serve requests.
+ */
+export async function getRequestDatabaseRole(): Promise<RequestDatabaseRole> {
+  const rows = await client`
+    SELECT current_user AS "currentUser",
+           rolsuper AS "isSuperuser",
+           rolbypassrls AS "bypassesRls"
+    FROM pg_roles
+    WHERE rolname = current_user
+  `;
+  const role = rows[0] as RequestDatabaseRole | undefined;
+
+  if (!role) {
+    throw new Error(
+      '[database] Could not verify the effective request database role: ' +
+        `pg_roles returned no row for current_user. ${REQUEST_DATABASE_ROLE_REMEDIATION}`,
+    );
+  }
+
+  return role;
+}
+
+export async function assertRequestDatabaseRoleSafe(): Promise<RequestDatabaseRole> {
+  const role = await getRequestDatabaseRole();
+  const unsafeCapabilities: string[] = [];
+  if (role.isSuperuser) unsafeCapabilities.push('SUPERUSER');
+  if (role.bypassesRls) unsafeCapabilities.push('BYPASSRLS');
+
+  if (unsafeCapabilities.length > 0) {
+    throw new Error(
+      `[database] Unsafe effective request database role "${role.currentUser}": ` +
+        `${unsafeCapabilities.join(' and ')}. Request handlers require a ` +
+        `NOSUPERUSER NOBYPASSRLS role. ${REQUEST_DATABASE_ROLE_REMEDIATION}`,
+    );
+  }
+
+  return role;
+}
+
 const baseDb = drizzle(client, { schema });
 const dbContextStorage = new AsyncLocalStorage<typeof baseDb>();
 // Parallel store holding the DbAccessContext METADATA (scope + allowlists) for
