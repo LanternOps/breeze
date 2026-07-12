@@ -834,6 +834,81 @@ describe('oauthInteractionRoutes', () => {
       .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read');
   });
 
+  it('MCP-OAUTH-01 (Fix round 1): the un-narrowed missingResourceScopes union cannot smuggle broader scopes into the grant', async () => {
+    // Mirrors REAL oidc-provider state, not the idealized shape the earlier
+    // MCP-OAUTH-01 tests used. `checkResource` runs at /oauth/auth time,
+    // BEFORE any partner is chosen (hasGrant:false), so on essentially every
+    // real first-time MCP consent `prompt.details.missingResourceScopes`
+    // is populated with the CLIENT'S FULL REQUESTED scope set for the MCP
+    // resource — not narrowed by any partner policy. The pre-existing
+    // unconditional loop over `missingResourceScopes` (oauthInteraction.ts
+    // ~line 299) used to call `grant.addResourceScope(res, ...)` with that
+    // full set. Because `Grant.addResourceScope` UNIONS with prior values
+    // (node_modules/.../oidc-provider/lib/models/grant.js:143-160), a LATER
+    // narrower `addResourceScope` call from the effective-scopes narrowing
+    // below could never shrink it back down — so the first access token
+    // minted after consent would carry the client's full requested scopes,
+    // not the partner's `mcp_allowed_scopes` policy. This is MCP-OAUTH-01.
+    const d = details({
+      session: { accountId: 'u1' },
+      prompt: {
+        details: {
+          scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write', 'mcp:execute'] },
+          missingResourceScopes: {
+            'https://api.example/mcp/server': ['mcp:read', 'mcp:write', 'mcp:execute'],
+          },
+        },
+      },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
+    queueUpdate();
+    queueInsertGrantReturning({ firstConsented: true });
+    // Selected partner's policy allows only mcp:read.
+    mocks.computeEffectiveMcpScopes.mockResolvedValueOnce(['mcp:read']);
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+
+    expect(res.status).toBe(200);
+
+    // Assert on the calls themselves — not just the net getResourceScope()
+    // result — so union semantics cannot smuggle a broader scope through:
+    // collect every addResourceScope call that ever touched the MCP
+    // resource and every rejectResourceScope call that ever subtracted from
+    // it, and prove the union of (added - rejected) is exactly {mcp:read}.
+    const grantInstance = mocks.Grant.instances[0] as unknown as {
+      addResourceScope: { mock: { calls: [string, string][] } };
+      rejectResourceScope?: { mock: { calls: [string, string][] } };
+    };
+    const MCP_RESOURCE = 'https://api.example/mcp/server';
+    const addedScopes = new Set(
+      grantInstance.addResourceScope.mock.calls
+        .filter(([res]) => res === MCP_RESOURCE)
+        .flatMap(([, scope]) => scope.split(' ')),
+    );
+    const rejectedScopes = new Set(
+      (grantInstance.rejectResourceScope?.mock.calls ?? [])
+        .filter(([res]) => res === MCP_RESOURCE)
+        .flatMap(([, scope]) => scope.split(' ')),
+    );
+    const netScopes = new Set([...addedScopes].filter((s) => !rejectedScopes.has(s)));
+
+    expect(netScopes).toEqual(new Set(['mcp:read']));
+    // Belt-and-suspenders: this implementation's chosen fix owns the MCP
+    // resource with a single write of exactly the narrowed set — prove that
+    // directly too, so a future refactor that reintroduces a second,
+    // broader `addResourceScope` call for this resource (even one that
+    // "happens" to net out correctly today) fails this test immediately.
+    const mcpResourceCalls = grantInstance.addResourceScope.mock.calls
+      .filter(([res]) => res === MCP_RESOURCE);
+    expect(mcpResourceCalls).toEqual([[MCP_RESOURCE, 'mcp:read']]);
+  });
+
   it('GET /interaction/:uid: login-prompt fallback returns scopes from params', async () => {
     // Mirror of the POST fallback: the GET endpoint serving the consent UI
     // must surface the requested scopes when prompt.details is empty,

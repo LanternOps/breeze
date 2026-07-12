@@ -303,7 +303,19 @@ if (MCP_OAUTH_ENABLED) {
 
     const missingResourceScopes =
       (promptDetails.missingResourceScopes as Record<string, string[]> | undefined) ?? {};
+    // MCP-OAUTH-01 (Fix round 1): oidc-provider's `checkResource` runs at
+    // /oauth/auth time, BEFORE a partner is chosen (hasGrant:false at that
+    // point), so `missingResourceScopes[OAUTH_RESOURCE_URL]` is populated
+    // with the client's FULL requested scope set — never narrowed by any
+    // partner policy. `Grant.addResourceScope` UNIONS with prior values
+    // (oidc-provider lib/models/grant.js addResourceScope), so if this loop
+    // wrote that unfiltered set here, the later partner-policy-narrowed
+    // `addResourceScope` call below could never shrink it back down. Skip
+    // the MCP resource here entirely — the effective-scopes call below owns
+    // it exclusively and unconditionally, so it is the ONLY write the MCP
+    // resource ever receives. Non-MCP resources (if any) are unaffected.
     for (const [res, scopes] of Object.entries(missingResourceScopes)) {
+      if (res === OAUTH_RESOURCE_URL) continue;
       grant.addResourceScope(res, scopes.join(' '));
     }
     // H3: only grant the intersection of (requested) ∩ (displayed). The UI
@@ -369,7 +381,11 @@ if (MCP_OAUTH_ENABLED) {
     // `scope` parameter). Granting them in both places means the consent
     // prompt is auto-satisfied on resume.
     if (finalGrantedScopes.length) grant.addOIDCScope(finalGrantedScopes.join(' '));
-    if (resource && !missingResourceScopes[resource] && effectiveMcpScopes.length) {
+    // MCP-OAUTH-01 (Fix round 1): unconditional — this is the ONLY write
+    // the MCP resource ever receives (the missingResourceScopes loop above
+    // explicitly skips it), so there is no earlier broader write for
+    // Grant.addResourceScope's union semantics to fail to shrink.
+    if (resource && effectiveMcpScopes.length) {
       grant.addResourceScope(resource, effectiveMcpScopes.join(' '));
     }
 
