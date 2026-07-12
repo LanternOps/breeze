@@ -115,7 +115,24 @@ vi.mock('../db/schema', () => ({
     userInfoUrl: 'userInfoUrl',
     jwksUrl: 'jwksUrl'
   },
-  ssoSessions: {},
+  ssoSessions: {
+    id: 'id',
+    providerId: 'providerId',
+    state: 'state',
+    nonce: 'nonce',
+    codeVerifier: 'codeVerifier',
+    redirectUrl: 'redirectUrl',
+    linkUserId: 'linkUserId',
+    // SR2-11 binding columns (2026-07-16 migration): kept in the mock so any
+    // eq()/insert reference on them resolves to a real key instead of
+    // `undefined` (an empty-object mock silently breaks assertions on these).
+    providerVersion: 'providerVersion',
+    initiatingAuthEpoch: 'initiatingAuthEpoch',
+    initiatingMfaEpoch: 'initiatingMfaEpoch',
+    initiatingSessionId: 'initiatingSessionId',
+    expiresAt: 'expiresAt',
+    createdAt: 'createdAt',
+  },
   ssoVerifiedDomains: {
     id: 'id',
     orgId: 'orgId',
@@ -207,7 +224,7 @@ vi.mock('../middleware/auth', () => ({
   })
 }));
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { createTokenPair, rateLimiter } from '../services';
 import { authMiddleware } from '../middleware/auth';
 import {
@@ -683,6 +700,53 @@ describe('sso routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
+  });
+
+  // Regression guard (SR2-11): sso_sessions is now system-scope-only under
+  // FORCE RLS, with no ON DELETE CASCADE from sso_providers. Before the
+  // cleanup deletes were wrapped in withSystemDbAccessContext, the first
+  // delete (sso_sessions) would 0-row from the admin's tenant-scoped
+  // context whenever a pending session existed, and the sso_providers
+  // delete three lines later would then die with FK violation 23503 — i.e.
+  // provider deletion would fail within 10 minutes of any login attempt.
+  // This asserts the happy path still returns 200 with all three deletes
+  // issued and system context invoked around the cleanup.
+  it('deletes a provider with a pending session present (FK-violation regression guard)', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID }])
+        })
+      })
+    } as any);
+
+    // First delete call = ssoSessions — simulate a pending session row
+    // existing (matched by the providerId filter) that must be cleared
+    // before the FK-checked ssoProviders delete below can succeed.
+    vi.mocked(db.delete)
+      .mockReturnValueOnce({ where: vi.fn().mockResolvedValue([{ id: 'pending-session-id' }]) } as any)
+      .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)
+      .mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID }])
+        })
+      } as any);
+
+    const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+
+    // All three deletes fired (sso_sessions, user_sso_identities, sso_providers)...
+    expect(db.delete).toHaveBeenCalledTimes(3);
+    // ...and the sso_sessions/user_sso_identities cleanup ran through system
+    // context, not the caller's tenant-scoped context.
+    expect(runOutsideDbContext).toHaveBeenCalled();
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
   });
 
   it('rejects testing non-OIDC providers', async () => {

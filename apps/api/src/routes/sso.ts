@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { eq, and, gt, ne, isNull } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   ssoProviders,
   ssoSessions,
@@ -707,9 +707,17 @@ ssoRoutes.delete(
     return c.json({ error: 'Access denied' }, 403);
   }
 
-  // Delete related records first
-  await db.delete(ssoSessions).where(eq(ssoSessions.providerId, providerId));
-  await db.delete(userSsoIdentities).where(eq(userSsoIdentities.providerId, providerId));
+  // sso_sessions is system-scope-only and user_sso_identities is user-id-scoped
+  // (breeze_current_user_id()) under RLS. On the bare pool, from an admin's
+  // tenant-scoped context, BOTH of these silently delete 0 rows — and neither FK
+  // cascades, so the sso_providers delete below then dies with FK violation
+  // 23503. Provider cleanup is a legitimate system operation: run it as one.
+  await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      await db.delete(ssoSessions).where(eq(ssoSessions.providerId, providerId));
+      await db.delete(userSsoIdentities).where(eq(userSsoIdentities.providerId, providerId));
+    })
+  );
 
   const [deleted] = await db
     .delete(ssoProviders)
@@ -1116,15 +1124,25 @@ ssoRoutes.post(
     const state = generateState();
     const nonce = generateNonce();
 
-    await db.insert(ssoSessions).values({
-      providerId: provider.id,
-      state,
-      nonce,
-      codeVerifier: pkce.codeVerifier,
-      redirectUrl: '/settings/profile',
-      linkUserId: auth.user.id,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000)
-    });
+    // sso_sessions is system-scope-only under RLS (2026-07-16 migration): this
+    // insert ran on the bare pool and only worked because the table had no
+    // policies. The row is a pre-auth transaction record, not tenant data — it
+    // is consumed by the unauthenticated callback, which also runs in system
+    // context. runOutsideDbContext first: we are inside the authenticated
+    // request's org/partner-scoped context here.
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () =>
+        db.insert(ssoSessions).values({
+          providerId: provider.id,
+          state,
+          nonce,
+          codeVerifier: pkce.codeVerifier,
+          redirectUrl: '/settings/profile',
+          linkUserId: auth.user.id,
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000)
+        })
+      )
+    );
 
     const authUrl = buildAuthorizationUrl({
       config,
