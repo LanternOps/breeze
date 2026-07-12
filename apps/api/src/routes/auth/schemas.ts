@@ -42,10 +42,17 @@ export const registerPartnerSchema = z.object({
   })
 });
 
+// TOTP/SMS codes are 6 digits; recovery codes are `XXXX-XXXX` (8 [A-Z0-9]
+// with a hyphen). Accept either shape here; the handler routes on `method`.
+const totpOrSmsCode = /^\d{6}$/;
+const recoveryCode = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/i;
 export const mfaVerifySchema = z.object({
-  code: z.string().length(6),
+  code: z.string().refine(
+    (v) => totpOrSmsCode.test(v.trim()) || recoveryCode.test(v.trim()),
+    { message: 'Invalid code format' },
+  ),
   tempToken: z.string().optional(),
-  method: z.enum(['totp', 'sms']).optional()
+  method: z.enum(['totp', 'sms', 'recovery']).optional(),
 });
 
 export const phoneVerifySchema = z.object({

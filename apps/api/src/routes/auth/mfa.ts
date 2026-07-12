@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users, organizations } from '../../db/schema';
@@ -30,6 +30,7 @@ import {
   encryptMfaSecret,
   decryptMfaSecret,
   decryptMfaSecretForMigration,
+  hashRecoveryCode,
   hashRecoveryCodes,
   mfaDisabledResponse,
   resolveCurrentUserTokenContext,
@@ -118,7 +119,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     return mfaDisabledResponse(c);
   }
 
-  const { code, tempToken } = c.req.valid('json');
+  const { code, tempToken, method } = c.req.valid('json');
   const redis = getRedis();
 
   if (!redis) {
@@ -213,7 +214,53 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       return c.json({ error: 'Use passkey verification for this MFA session' }, 400);
     }
 
-    if (effectiveMethod === 'sms') {
+    // Recovery-code login. Independent of the account's primary factor: a user
+    // locked out of their authenticator falls back to a stored recovery code.
+    // Remove exactly one matching hash with a server-side RELATIVE jsonb delete
+    // (`mfaRecoveryCodes - inputHash`) guarded by `@> [inputHash]`. This is the
+    // ONLY correct concurrency shape — it composes under READ COMMITTED:
+    //   - two concurrent DISTINCT valid codes each delete their OWN element from
+    //     the row's committed value (Postgres re-evaluates `-` against the
+    //     latest committed array), so both succeed and NEITHER resurrects the
+    //     other's hash. A stale read-modify-write (SET = a JS array computed
+    //     from a pre-read snapshot) would resurrect the co-winner's hash — never
+    //     do that.
+    //   - two concurrent IDENTICAL codes serialize on the row; the loser's `@>`
+    //     guard fails against the winner's committed value → rowCount 0 → 401.
+    // Single-winner AND no-resurrection are proven against real Postgres (Task 9).
+    if (method === 'recovery') {
+      const inputHash = hashRecoveryCode(code);
+      const stored = Array.isArray(user.mfaRecoveryCodes) ? (user.mfaRecoveryCodes as string[]) : [];
+      if (!stored.includes(inputHash)) {
+        void auditUserLoginFailure(c, {
+          userId: user.id, email: user.email, name: user.name,
+          reason: 'mfa_recovery_code_invalid', details: { method: 'recovery' },
+        });
+        return c.json({ error: 'Invalid MFA code' }, 401);
+      }
+      const removed = await withSystemDbAccessContext(() =>
+        db
+          .update(users)
+          .set({ mfaRecoveryCodes: sql`${users.mfaRecoveryCodes} - ${inputHash}`, updatedAt: new Date() })
+          .where(and(eq(users.id, user.id), sql`${users.mfaRecoveryCodes} @> ${JSON.stringify([inputHash])}::jsonb`))
+          .returning({ id: users.id }),
+      );
+      if (removed.length === 0) {
+        // A concurrent winner already consumed this exact hash — reject the loser.
+        return c.json({ error: 'Invalid MFA code' }, 401);
+      }
+      writeAuthAudit(c, {
+        orgId: undefined,
+        action: 'auth.mfa.recovery_code.used',
+        result: 'success',
+        userId: user.id,
+        email: user.email,
+        // Best-effort count from the PRE-update snapshot only — never read the
+        // post-update array back, and never log the code or its hash.
+        details: { remainingApprox: Math.max(0, stored.length - 1) },
+      });
+      valid = true;
+    } else if (effectiveMethod === 'sms') {
       const phone = user.phoneNumber;
       if (!phone) {
         return c.json({ error: 'No phone number configured for SMS MFA' }, 400);

@@ -188,6 +188,12 @@ vi.mock('../services/passwordResetEligibility', () => ({
   getPasswordResetEligibilityForUser: vi.fn().mockResolvedValue({ allowed: true, userId: 'user-123', email: 'test@example.com' }),
 }));
 
+// SR2-09: spy on the audit sink so the recovery-code tests can assert no
+// code/hash material ever lands in an audit call.
+vi.mock('../services/auditService', () => ({
+  createAuditLogAsync: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -240,6 +246,8 @@ import {
 } from '../services/passwordResetEligibility';
 import { db } from '../db';
 import { runPostCommitCleanup } from '../services/authLifecycle';
+import { createAuditLogAsync } from '../services/auditService';
+import { hashRecoveryCode } from './auth/helpers';
 
 // SR2-08: stub `db.transaction` so advanceUserEpochs/revokeAllRefreshFamilies
 // (kept REAL, see the authLifecycle mock above) run against a fake `tx`
@@ -1263,6 +1271,154 @@ describe('auth routes', () => {
         expect.anything(),
       );
       expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
+    });
+  });
+
+  // SR2-09: recovery-code login. A user locked out of TOTP/SMS can fall back
+  // to a stored recovery code. Removal must be a single-use, concurrency-safe
+  // consume — proven here via the happy path + unknown-code/loser rejection;
+  // the true concurrent-winner proof lives in Task 9 (real Postgres).
+  describe('POST /auth/mfa/verify — recovery-code login (SR2-09)', () => {
+    const recoveryCode = 'ABCD-2345';
+    const recoveryHash = hashRecoveryCode(recoveryCode);
+    const otherHash = hashRecoveryCode('WXYZ-9999');
+
+    const liveUserRow = {
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      status: 'active',
+      mfaEnabled: true,
+      mfaSecret: 'PLAINSECRET123',
+      mfaMethod: 'totp',
+      phoneNumber: null,
+      avatarUrl: null,
+      isPlatformAdmin: false,
+      mfaRecoveryCodes: [recoveryHash, otherHash],
+      partnerId: 'partner-1',
+      roleId: 'role-1',
+    };
+
+    function pendingRecord(overrides: Record<string, unknown> = {}) {
+      return JSON.stringify({
+        userId: 'user-1',
+        mfaMethod: 'totp',
+        passkeyAvailable: false,
+        authEpoch: 1,
+        mfaEpoch: 1,
+        statusExpectation: 'active',
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        expiresAt: Date.now() + 5 * 60 * 1000,
+        ...overrides,
+      });
+    }
+
+    let getMock: ReturnType<typeof vi.fn>;
+    let delMock: ReturnType<typeof vi.fn>;
+    let setMock: ReturnType<typeof vi.fn>;
+    let updateWhereMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      const chain: any = {
+        from: vi.fn(() => chain),
+        innerJoin: vi.fn(() => chain),
+        leftJoin: vi.fn(() => chain),
+        where: vi.fn(() => chain),
+        limit: vi.fn(() => Promise.resolve([liveUserRow])),
+      };
+      vi.mocked(db.select).mockReturnValue(chain as any);
+
+      updateWhereMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'user-1' }]),
+      });
+      setMock = vi.fn().mockReturnValue({ where: updateWhereMock });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      getMock = vi.fn();
+      delMock = vi.fn();
+      vi.mocked(getRedis).mockReturnValue({ get: getMock, del: delMock, setex: vi.fn() } as any);
+      vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+    });
+
+    async function postMfaVerify(body: { tempToken: string; code: string; method?: string }) {
+      return app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('mints tokens on a valid recovery code, removing exactly the matching hash via a relative jsonb delete (not a stale full-array SET)', async () => {
+      getMock.mockResolvedValue(pendingRecord());
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: recoveryCode, method: 'recovery' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body).toMatchObject({ mfaRequired: false });
+
+      // The recovery UPDATE must be the concurrency-safe relative delete —
+      // never a JS-computed "remaining array" SET (that form can resurrect a
+      // sibling code under two concurrent distinct-code removals). It runs
+      // BEFORE the shared mint flow's own "update last login" write, so it
+      // must be the first db.update().set() call.
+      expect(setMock.mock.calls.length).toBeGreaterThanOrEqual(1);
+      const setPayload = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect('mfaRecoveryCodes' in setPayload).toBe(true);
+      expect(Array.isArray(setPayload.mfaRecoveryCodes)).toBe(false);
+      const serializedSetPayload = JSON.stringify(setPayload.mfaRecoveryCodes);
+      expect(serializedSetPayload).toContain(recoveryHash);
+      expect(serializedSetPayload).not.toContain(recoveryCode);
+
+      // The removal query is scoped to this exact user + guarded by the
+      // matching-hash containment check (first update().set().where() call).
+      expect(updateWhereMock.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ sub: 'user-1', mfa: true }),
+        expect.anything(),
+      );
+      // Exactly one pending-record consume on success — the recovery branch
+      // itself never calls redis.del; the shared post-`valid` consume does.
+      expect(delMock).toHaveBeenCalledTimes(1);
+      expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
+    });
+
+    it('rejects an unknown recovery code with 401 and no code/hash material in the audit trail', async () => {
+      getMock.mockResolvedValue(pendingRecord());
+      const unknownCode = 'ZZZZ-0000';
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: unknownCode, method: 'recovery' });
+
+      expect(res.status).toBe(401);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body).toMatchObject({ error: 'Invalid MFA code' });
+      expect(createTokenPair).not.toHaveBeenCalled();
+      // Never even attempts the DB removal for a hash that isn't present.
+      expect(setMock).not.toHaveBeenCalled();
+
+      // The failure audit is fire-and-forget (`void auditUserLoginFailure(...)`)
+      // — flush pending microtasks before inspecting the mock.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const auditCalls = vi.mocked(createAuditLogAsync).mock.calls;
+      expect(auditCalls.length).toBeGreaterThan(0);
+      const unknownHash = hashRecoveryCode(unknownCode);
+      for (const [params] of auditCalls) {
+        const serialized = JSON.stringify(params);
+        expect(serialized).not.toContain(unknownCode);
+        expect(serialized).not.toContain(unknownHash);
+      }
+    });
+
+    it('rejects the loser when the DB removal reports zero rows (concurrent winner already consumed this hash)', async () => {
+      getMock.mockResolvedValue(pendingRecord());
+      updateWhereMock.mockReturnValue({ returning: vi.fn().mockResolvedValue([]) });
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: recoveryCode, method: 'recovery' });
+
+      expect(res.status).toBe(401);
+      expect(createTokenPair).not.toHaveBeenCalled();
     });
   });
 
