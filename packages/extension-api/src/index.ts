@@ -39,6 +39,8 @@ const manifestSchema = z
       }),
     entry: z.string().min(1),
     migrationsDir: z.string().min(1).default('migrations'),
+    // Opts /api/v1/<routeNamespace>/agent/ out of the global per-IP rate
+    // limiter (agent-token auth carries its own per-agent/org limits).
     agentRoutes: z.boolean().optional(),
     tenancy: tenancySchema.optional().default({
       orgCascadeDeleteTables: [],
