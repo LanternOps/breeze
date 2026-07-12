@@ -80,7 +80,8 @@ function makeTx() {
             table: tableRef === 'partners.id' || tableRef?._t === 'partners' ? 'partners' : 'unknown',
             values,
           });
-          // returning() is called on user disable + api key revoke.
+          // returning() is called on user disable + api key revoke, and on
+          // Task 9's advanceUserEpochs (SET shape carries `authEpoch`).
           const ret: any = Promise.resolve(undefined);
           ret.returning = () => {
             // Heuristic: route by which set() shape we're seeing.
@@ -92,6 +93,9 @@ function makeTx() {
             }
             if (values?.status === 'active') {
               return Promise.resolve(txMockState.reEnabledUsers);
+            }
+            if (values && 'authEpoch' in values) {
+              return Promise.resolve([{ authEpoch: 1, mfaEpoch: 0, emailEpoch: 0, passwordResetEpoch: 0 }]);
             }
             return Promise.resolve([]);
           };
@@ -167,6 +171,24 @@ vi.mock('../../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn(async () => undefined),
 }));
 
+// Task 9: advanceUserEpochs/revokeAllRefreshFamilies stay REAL (they run
+// against the `tx` stub above and are exercised via the epoch/family-revoke
+// coverage below); runPostCommitCleanup is mocked so tests control the
+// post-commit outcome (redisOk/permissionCacheOk/oauthOk) per user without
+// exercising the real Redis/permission-cache/OAuth side effects it wraps.
+vi.mock('../../services/authLifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/authLifecycle')>();
+  return {
+    ...actual,
+    runPostCommitCleanup: vi.fn(async () => ({
+      redisOk: true,
+      permissionCacheOk: true,
+      oauthOk: true,
+      oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
+    })),
+  };
+});
+
 vi.mock('../../services/remoteSessionTeardown', () => ({
   terminateUserRemoteSessions: vi.fn(async () => 0),
   TEARDOWN_FAILED: -1,
@@ -220,6 +242,7 @@ import { adminRoutes } from './index';
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
+import { runPostCommitCleanup } from '../../services/authLifecycle';
 import { terminateUserRemoteSessions } from '../../services/remoteSessionTeardown';
 import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 
@@ -476,10 +499,18 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const setStatusValues = txMockState.updates.map((u) => u.values?.status);
     expect(setStatusValues).toEqual(expect.arrayContaining(['suspended', 'disabled', 'revoked']));
 
-    // JWT revocation called for each affected user.
-    expect(revokeAllUserTokens).toHaveBeenCalledTimes(2);
-    expect(revokeAllUserTokens).toHaveBeenCalledWith('u-1');
-    expect(revokeAllUserTokens).toHaveBeenCalledWith('u-2');
+    // Post-commit cleanup (Redis token cutoff, permission-cache clear,
+    // OAuth-artifact revocation) called for each affected user.
+    expect(runPostCommitCleanup).toHaveBeenCalledTimes(2);
+    expect(runPostCommitCleanup).toHaveBeenCalledWith('u-1');
+    expect(runPostCommitCleanup).toHaveBeenCalledWith('u-2');
+
+    // Task 9: auth epoch advanced + refresh-token families revoked for each
+    // disabled user, inside the SAME suspend transaction.
+    const epochUpdates = txMockState.updates.filter((u) => u.values && 'authEpoch' in u.values);
+    const familyUpdates = txMockState.updates.filter((u) => u.values && 'revokedReason' in u.values);
+    expect(epochUpdates).toHaveLength(2);
+    expect(familyUpdates).toHaveLength(2);
 
     // Audit log written with the right action + details.
     expect(createAuditLog).toHaveBeenCalledTimes(1);
@@ -513,14 +544,21 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const body = (await res.json()) as { userCount: number };
     expect(body.userCount).toBe(1); // only u-2
 
-    // JWT revocation must NOT be called for admin-1.
-    const revokedIds = vi.mocked(revokeAllUserTokens).mock.calls.map((call) => call[0]);
-    expect(revokedIds).not.toContain('admin-1');
-    expect(revokedIds).toContain('u-2');
+    // Post-commit cleanup must NOT run for admin-1.
+    const cleanedUpIds = vi.mocked(runPostCommitCleanup).mock.calls.map((call) => call[0]);
+    expect(cleanedUpIds).not.toContain('admin-1');
+    expect(cleanedUpIds).toContain('u-2');
   });
 
-  it('returns 500 with tokenRevocationFailed when Redis revocation throws (does NOT silently 200)', async () => {
-    vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('Redis unavailable'));
+  it('returns 500 with tokenRevocationFailed when post-commit Redis cutoff reports failure (does NOT silently 200)', async () => {
+    // Post-commit cleanup never throws (see authLifecycle.test.ts for that
+    // contract); it reports the failure via `redisOk: false` instead. affectedUserIds
+    // is [u-1, u-2] — fail only the first call.
+    vi.mocked(runPostCommitCleanup).mockResolvedValueOnce({
+      redisOk: false,
+      permissionCacheOk: true,
+      oauthOk: true,
+    });
 
     const app = buildApp(platformAdminAuth);
     const res = await app.request('/admin/partners/partner-1/suspend-for-abuse', {
@@ -537,7 +575,8 @@ describe('admin/abuse — suspend mutation behavior', () => {
     expect(body.error).toBe('partial_suspend');
     expect(body.tokenRevocationFailed).toBe(true);
     expect(body.tokenRevocationFailures).toHaveLength(1);
-    expect(body.tokenRevocationFailures[0]!.error).toContain('Redis unavailable');
+    expect(body.tokenRevocationFailures[0]!.userId).toBe('u-1');
+    expect(body.tokenRevocationFailures[0]!.error).toContain('Redis');
 
     // Audit log is still written, but with result='failure'.
     const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
@@ -549,7 +588,11 @@ describe('admin/abuse — suspend mutation behavior', () => {
     const originalEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     try {
-      vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('Redis unavailable: internal-path-xyz'));
+      vi.mocked(runPostCommitCleanup).mockResolvedValueOnce({
+        redisOk: false,
+        permissionCacheOk: true,
+        oauthOk: true,
+      });
       vi.mocked(revokeAllPartnerOauthArtifacts).mockRejectedValueOnce(new Error('oauth revocation cache write failed: postgres constraint xyz'));
 
       const app = buildApp(platformAdminAuth);
@@ -686,6 +729,12 @@ describe('admin/abuse — remote session teardown on suspend', () => {
       grantsRevoked: 0,
       refreshTokensRevoked: 0,
       jtisRevoked: 0,
+    } as never);
+    vi.mocked(runPostCommitCleanup).mockResolvedValue({
+      redisOk: true,
+      permissionCacheOk: true,
+      oauthOk: true,
+      oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
     } as never);
   });
 

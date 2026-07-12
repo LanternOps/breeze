@@ -13,8 +13,8 @@ import {
   apiKeys,
 } from '../../db/schema';
 import { createAuditLog } from '../../services/auditService';
-import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
+import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../../services/authLifecycle';
 import { restorePartnerTenantAccess } from '../../services/tenantLifecycle';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
@@ -186,6 +186,17 @@ abuseRoutes.post(
         const disableResult = await disablePartnerUsersForSuspension(tx, partnerId);
         const userCount = disableResult.length;
 
+        // Task 9: multi-user mutation — advance each disabled user's auth
+        // epoch and durably revoke their refresh-token families in the SAME
+        // transaction as the disable, so a rollback undoes all three
+        // together. RLS on refresh_token_families is user-id-scoped (self OR
+        // system); this transaction already runs under the system context
+        // above, so the revoke is visible/effective for every target user.
+        for (const { id } of disableResult) {
+          await advanceUserEpochs(tx, id, { auth: true });
+          await revokeAllRefreshFamilies(tx, id, 'suspended');
+        }
+
         // Revoke API keys for orgs under this partner.
         const partnerOrgs = await tx
           .select({ id: organizations.id })
@@ -219,25 +230,26 @@ abuseRoutes.post(
       return c.json({ error: 'partner not found' }, 404);
     }
 
-    // Outside the transaction: revoke each affected user's JWTs in Redis.
-    // If Redis is degraded, the DB suspend has already committed but the
-    // existing JWTs would still be honoured until natural expiry — that is
-    // a partial-suspend that the operator MUST know about. We surface the
-    // failure as 500 + audit with result='failure' so they can fail-close
-    // (e.g. flush Redis manually, then re-run the suspend).
+    // Outside the transaction: run the lifecycle service's post-commit
+    // cleanup (Redis token cutoff, permission-cache clear, per-user OAuth-
+    // artifact revocation) for every affected user. Never throws — see
+    // runPostCommitCleanup's doc comment. If the Redis cutoff step failed,
+    // the DB suspend (and the epoch bump + durable refresh-family revocation
+    // already committed inside the transaction) still stands, but the
+    // existing JWT would be honoured until natural expiry — a partial-
+    // suspend the operator MUST know about. We surface that as 500 + audit
+    // with result='failure' so they can fail-close (e.g. flush Redis
+    // manually, then re-run the suspend).
     const tokenRevocationFailures: Array<{ userId: string; error: string }> = [];
-    const revokeResults = await Promise.allSettled(
-      result.affectedUserIds.map((id) => revokeAllUserTokens(id)),
+    const cleanupResults = await Promise.all(
+      result.affectedUserIds.map((id) => runPostCommitCleanup(id)),
     );
-    revokeResults.forEach((settled, idx) => {
-      if (settled.status === 'rejected') {
-        const userId = result.affectedUserIds[idx]!;
-        const err = settled.reason;
+    cleanupResults.forEach((cleanup, idx) => {
+      if (!cleanup.redisOk) {
         tokenRevocationFailures.push({
-          userId,
-          error: err instanceof Error ? err.message : String(err),
+          userId: result.affectedUserIds[idx]!,
+          error: 'Redis token cutoff failed — see server logs for detail',
         });
-        captureException(err, c);
       }
     });
 

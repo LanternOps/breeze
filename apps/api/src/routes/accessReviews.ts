@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   accessReviews,
   accessReviewItems,
@@ -16,10 +16,9 @@ import {
   organizations
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
-import { clearPermissionCache, PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
-import { revokeAllUserTokens } from '../services/tokenRevocation';
-import { revokeUserAccess } from '../services/userSuspension';
+import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
 
 export const accessReviewRoutes = new Hono();
 
@@ -458,81 +457,80 @@ accessReviewRoutes.post(
       );
 
     const revokedUserIds = revokedItems.map((item) => item.userId);
-
-    const result = await db.transaction(async (tx) => {
-      // Apply revocations - remove users from the scope
-      if (revokedUserIds.length > 0) {
-        if (scopeContext.scope === 'partner') {
-          await tx
-            .delete(partnerUsers)
-            .where(
-              and(
-                eq(partnerUsers.partnerId, scopeContext.partnerId),
-                inArray(partnerUsers.userId, revokedUserIds)
-              )
-            );
-        } else {
-          await tx
-            .delete(organizationUsers)
-            .where(
-              and(
-                eq(organizationUsers.orgId, scopeContext.orgId),
-                inArray(organizationUsers.userId, revokedUserIds)
-              )
-            );
-        }
-      }
-
-      // Mark review as completed
-      const [updatedReview] = await tx
-        .update(accessReviews)
-        .set({
-          status: 'completed',
-          completedAt: new Date(),
-          updatedAt: new Date()
-        })
-        .where(eq(accessReviews.id, reviewId))
-        .returning({
-          id: accessReviews.id,
-          status: accessReviews.status,
-          completedAt: accessReviews.completedAt
-        });
-
-      if (!updatedReview) {
-        throw new HTTPException(500, { message: 'Failed to complete review' });
-      }
-
-      return {
-        review: updatedReview,
-        revokedCount: revokedItems.length
-      };
-    });
-
     const uniqueRevokedUserIds = [...new Set(revokedUserIds)];
-    await Promise.all(uniqueRevokedUserIds.map((userId) => clearPermissionCache(userId)));
 
-    // Task 14: revoke each removed user's JWTs in Redis so their existing
-    // access token (≤15min TTL) stops granting tenant-scoped access on the
-    // next request. Best-effort per user: a Redis failure leaves the
-    // tenant-link deleted and the JWT will expire naturally; we log and
-    // continue so the review still completes successfully.
-    await Promise.all(
-      uniqueRevokedUserIds.map((userId) =>
-        revokeAllUserTokens(userId).catch((err) => {
-          console.error('[access-review] token revoke failed for user', userId, err);
-        }),
-      ),
+    // Task 9: this is a MULTI-user mutation revoking OTHER users' access.
+    // refresh_token_families is user-id-scoped under RLS (self OR system);
+    // the ambient request context here is the caller's own partner/org
+    // scope, which cannot see (let alone revoke) another user's family rows.
+    // Run the whole apply transaction under a system context so the epoch
+    // bump + family revoke are visible/effective for every revoked user —
+    // otherwise this is the classic RLS silent-zero-row-write trap.
+    const result = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db.transaction(async (tx) => {
+          // Apply revocations - remove users from the scope
+          if (revokedUserIds.length > 0) {
+            if (scopeContext.scope === 'partner') {
+              await tx
+                .delete(partnerUsers)
+                .where(
+                  and(
+                    eq(partnerUsers.partnerId, scopeContext.partnerId),
+                    inArray(partnerUsers.userId, revokedUserIds)
+                  )
+                );
+            } else {
+              await tx
+                .delete(organizationUsers)
+                .where(
+                  and(
+                    eq(organizationUsers.orgId, scopeContext.orgId),
+                    inArray(organizationUsers.userId, revokedUserIds)
+                  )
+                );
+            }
+
+            for (const userId of uniqueRevokedUserIds) {
+              await advanceUserEpochs(tx, userId, { auth: true });
+              await revokeAllRefreshFamilies(tx, userId, 'membership-removed');
+            }
+          }
+
+          // Mark review as completed
+          const [updatedReview] = await tx
+            .update(accessReviews)
+            .set({
+              status: 'completed',
+              completedAt: new Date(),
+              updatedAt: new Date()
+            })
+            .where(eq(accessReviews.id, reviewId))
+            .returning({
+              id: accessReviews.id,
+              status: accessReviews.status,
+              completedAt: accessReviews.completedAt
+            });
+
+          if (!updatedReview) {
+            throw new HTTPException(500, { message: 'Failed to complete review' });
+          }
+
+          return {
+            review: updatedReview,
+            revokedCount: revokedItems.length
+          };
+        })
+      )
     );
-    // Also revoke OAuth grants/refresh tokens (e.g. MCP) for each removed user
-    // so a previously authorized refresh token can't keep minting access
-    // tokens after access is revoked. Best-effort per user, same as above.
-    await Promise.all(
-      uniqueRevokedUserIds.map((userId) =>
-        revokeUserAccess(userId).catch((err) => {
-          console.error('[access-review] oauth revoke failed for user', userId, err);
-        }),
-      ),
-    );
+
+    // Hot-path cleanup after the durable commit above: Redis token cutoff,
+    // permission-cache clear, and per-user OAuth-artifact revocation. Never
+    // throws — a failure leaves the tenant-link deleted (and the epoch bump
+    // + family revoke already committed) but the existing JWT would be
+    // honoured until natural expiry; logged, not surfaced, so the review
+    // still completes successfully.
+    await Promise.all(uniqueRevokedUserIds.map((userId) => runPostCommitCleanup(userId)));
 
     writeRouteAudit(c, {
       orgId: scopeContext.scope === 'organization' ? scopeContext.orgId : null,

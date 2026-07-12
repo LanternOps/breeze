@@ -34,9 +34,8 @@ import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userRequiresSetup } from './auth/helpers';
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
-import { revokeUserAccess } from '../services/userSuspension';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
-import { revokeAllUserTokens } from '../services/tokenRevocation';
+import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from '../services/authLifecycle';
 
 export const userRoutes = new Hono();
 
@@ -1394,20 +1393,40 @@ userRoutes.patch(
       updates.disabledReason = null;
     }
 
-    const [updated] = await db
-      .update(users)
-      .set(updates)
-      .where(eq(users.id, userId))
-      .returning({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        status: users.status
-      });
+    const [updated] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db.transaction(async (tx) => {
+          const [row] = await tx
+            .update(users)
+            .set(updates)
+            .where(eq(users.id, userId))
+            .returning({
+              id: users.id,
+              email: users.email,
+              name: users.name,
+              status: users.status
+            });
+          if (row) {
+            // Any admin update to this user invalidates prior sessions:
+            // advance auth_epoch and durably revoke refresh families in the
+            // SAME transaction so a rollback undoes both together.
+            await advanceUserEpochs(tx, userId, { auth: true });
+            await revokeAllRefreshFamilies(tx, userId, `status:${row.status ?? 'changed'}`);
+          }
+          return [row];
+        })
+      )
+    );
 
     if (!updated) {
       return c.json({ error: 'Failed to update user' }, 500);
     }
+
+    // Hot-path cleanup after the durable commit above: Redis token cutoff,
+    // permission-cache clear, and OAuth-artifact revocation. Never throws —
+    // see runPostCommitCleanup's doc comment for the partial-failure contract
+    // this PATCH relies on below.
+    const cleanup = await runPostCommitCleanup(updated.id);
 
     // Suspension hook: when status transitions from active → disabled we must
     // revoke every outstanding OAuth artifact (refresh tokens, grant cache
@@ -1420,7 +1439,6 @@ userRoutes.patch(
       record.status === 'active' &&
       updated.status !== 'active';
 
-    let oauthRevocation: Awaited<ReturnType<typeof revokeUserAccess>> | undefined;
     if (becameInactive) {
       // Kill any live remote-desktop sessions immediately so a suspended /
       // deactivated operator loses screen, input and clipboard control right
@@ -1437,19 +1455,16 @@ userRoutes.patch(
           503
         );
       }
-      try {
-        oauthRevocation = await revokeUserAccess(updated.id);
-      } catch (err) {
-        // Revocation cache failure → the DB rows are still marked revoked
-        // but access JWTs would survive until natural expiry. Treat this as
-        // a hard failure so the operator knows suspension is partial.
+      if (!cleanup.oauthOk) {
+        // The DB rows are still marked revoked (committed above) but access
+        // JWTs would survive until natural expiry. Treat this as a hard
+        // failure so the operator knows suspension is partial.
         return c.json(
           { error: 'Failed to revoke active sessions; suspension is partial. Retry.' },
           503
         );
       }
     }
-    await clearPermissionCache(updated.id);
 
     writeUserAudit(c, auth, scopeContext, {
       action: becameInactive ? 'user.suspended' : 'user.update',
@@ -1460,11 +1475,11 @@ userRoutes.patch(
         previousStatus: record.status,
         newStatus: updated.status,
         scope: scopeContext.scope,
-        ...(oauthRevocation
+        ...(becameInactive && cleanup.oauthResult
           ? {
-              grantsRevoked: oauthRevocation.grantsRevoked,
-              refreshTokensRevoked: oauthRevocation.refreshTokensRevoked,
-              jtisRevoked: oauthRevocation.jtisRevoked
+              grantsRevoked: cleanup.oauthResult.grantsRevoked,
+              refreshTokensRevoked: cleanup.oauthResult.refreshTokensRevoked,
+              jtisRevoked: cleanup.oauthResult.jtisRevoked
             }
           : {})
       }
@@ -1492,24 +1507,25 @@ userRoutes.patch(
 // has to see the user's memberships across EVERY tenant. An org admin's RLS
 // view hides partner memberships and other orgs' rows, so a request-scoped
 // check would falsely report a still-active multi-org user as orphaned and
-// wrongly disable them. The caller is assumed to already be inside this file's
-// system-scoped removal transaction so the just-deleted membership is visible.
-async function neutralizeUserIfOrphaned(userId: string): Promise<void> {
-  const [partnerLink] = await db
+// wrongly disable them. Takes the caller's `tx` (not the bare `db`) so the
+// just-deleted membership — still uncommitted on this connection — is visible
+// to the SELECTs below; a separate connection would not see it yet.
+async function neutralizeUserIfOrphaned(tx: Tx, userId: string): Promise<void> {
+  const [partnerLink] = await tx
     .select({ id: partnerUsers.id })
     .from(partnerUsers)
     .where(eq(partnerUsers.userId, userId))
     .limit(1);
   if (partnerLink) return;
 
-  const [orgLink] = await db
+  const [orgLink] = await tx
     .select({ id: organizationUsers.id })
     .from(organizationUsers)
     .where(eq(organizationUsers.userId, userId))
     .limit(1);
   if (orgLink) return;
 
-  await db
+  await tx
     .update(users)
     .set({
       status: 'disabled',
@@ -1535,33 +1551,39 @@ async function neutralizeUserIfOrphaned(userId: string): Promise<void> {
  * dropping it (the #1375 0-row trap). Tenant safety is preserved by the
  * explicit membership-delete WHERE clause, scoped to the caller's own
  * partner/org from their authenticated context — exactly as the request-scoped
- * delete was before. Running delete + check + neutralize in one transaction is
- * what makes the just-deleted membership visible to the orphan check.
+ * delete was before. The membership delete, orphan neutralize, epoch advance
+ * and refresh-family revoke all run in ONE `db.transaction` inside the system
+ * context so a rollback undoes all of them together, and so the just-deleted
+ * membership is visible to the orphan check.
  */
 async function removeMembershipForScope(
   scopeContext: ScopeContext,
   userId: string
 ): Promise<{ deleted: boolean }> {
   return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const deleted =
-        scopeContext.scope === 'partner'
-          ? await db
-              .delete(partnerUsers)
-              .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
-              .returning({ id: partnerUsers.id })
-          : await db
-              .delete(organizationUsers)
-              .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
-              .returning({ id: organizationUsers.id });
+    withSystemDbAccessContext(() =>
+      db.transaction(async (tx) => {
+        const deleted =
+          scopeContext.scope === 'partner'
+            ? await tx
+                .delete(partnerUsers)
+                .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
+                .returning({ id: partnerUsers.id })
+            : await tx
+                .delete(organizationUsers)
+                .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
+                .returning({ id: organizationUsers.id });
 
-      if (deleted.length === 0) {
-        return { deleted: false };
-      }
+        if (deleted.length === 0) {
+          return { deleted: false };
+        }
 
-      await neutralizeUserIfOrphaned(userId);
-      return { deleted: true };
-    })
+        await neutralizeUserIfOrphaned(tx, userId);
+        await advanceUserEpochs(tx, userId, { auth: true });
+        await revokeAllRefreshFamilies(tx, userId, 'membership-removed');
+        return { deleted: true };
+      })
+    )
   );
 }
 
@@ -1586,20 +1608,11 @@ userRoutes.delete(
         resourceId: userId,
         details: { scope: 'partner' }
       });
-      await clearPermissionCache(userId);
-      // Task 14: revoke the removed user's JWTs so the existing access
-      // token can't keep granting partner-scoped reads/writes for up to 15
-      // minutes (access-TTL). Best-effort: a Redis failure here leaves the
-      // DB row deleted and the JWT will expire on its own — we log and
-      // continue so the remove still succeeds.
-      await revokeAllUserTokens(userId).catch((err) => {
-        console.error('[users] token revoke failed after partner-user removal:', err);
-      });
-      // Also revoke OAuth grants/refresh tokens (e.g. MCP) so a removed user's
-      // refresh token can't keep minting access tokens after they lose access.
-      await revokeUserAccess(userId).catch((err) => {
-        console.error('[users] oauth revoke failed after partner-user removal:', err);
-      });
+      // Task 9: the epoch bump + durable refresh-family revocation already
+      // committed inside removeMembershipForScope's transaction. This runs
+      // the hot-path cleanup (Redis token cutoff, permission-cache clear,
+      // OAuth-artifact revocation) after that commit.
+      await runPostCommitCleanup(userId);
 
       return c.json({ success: true });
     }
@@ -1615,15 +1628,8 @@ userRoutes.delete(
       resourceId: userId,
       details: { scope: 'organization' }
     });
-    await clearPermissionCache(userId);
-    // Task 14: see comment above — same rationale for org-scope users.
-    await revokeAllUserTokens(userId).catch((err) => {
-      console.error('[users] token revoke failed after org-user removal:', err);
-    });
-    // Also revoke OAuth grants/refresh tokens (e.g. MCP) — see partner branch.
-    await revokeUserAccess(userId).catch((err) => {
-      console.error('[users] oauth revoke failed after org-user removal:', err);
-    });
+    // Task 9: see comment above — same rationale for org-scope users.
+    await runPostCommitCleanup(userId);
 
     return c.json({ success: true });
   }

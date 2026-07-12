@@ -66,23 +66,33 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => (c: any, next: any) => next())
 }));
 
+// Kept mocked (unreferenced by assertions below) purely so the real
+// authLifecycle module — loaded via importOriginal just below — doesn't pull
+// in a live Redis/DB-backed implementation at import time.
 vi.mock('../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined)
 }));
 
-vi.mock('../services/userSuspension', () => ({
-  revokeUserAccess: vi.fn().mockResolvedValue({
-    grantsRevoked: 0,
-    refreshTokensRevoked: 0,
-    jtisRevoked: 0,
-  })
-}));
+// Task 9: advanceUserEpochs/revokeAllRefreshFamilies stay REAL (they run
+// against the mocked `tx` below); runPostCommitCleanup is mocked so tests
+// control the post-commit outcome per user without exercising the real
+// Redis/permission-cache/OAuth side effects it wraps.
+vi.mock('../services/authLifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/authLifecycle')>();
+  return {
+    ...actual,
+    runPostCommitCleanup: vi.fn().mockResolvedValue({
+      redisOk: true,
+      permissionCacheOk: true,
+      oauthOk: true,
+      oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
+    })
+  };
+});
 
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
-import { clearPermissionCache } from '../services/permissions';
-import { revokeAllUserTokens } from '../services/tokenRevocation';
-import { revokeUserAccess } from '../services/userSuspension';
+import { runPostCommitCleanup } from '../services/authLifecycle';
 
 describe('access review routes', () => {
   let app: Hono;
@@ -378,12 +388,41 @@ describe('access review routes', () => {
   });
 
   describe('POST /access-reviews/:id/complete', () => {
-    it('should complete a review and revoke access', async () => {
-      const updatedReview = {
-        id: 'review-1',
-        status: 'completed',
-        completedAt: new Date()
-      };
+    const updatedReview = {
+      id: 'review-1',
+      status: 'completed',
+      completedAt: new Date()
+    };
+
+    // Task 9: the membership delete, the epoch advance + refresh-family
+    // revoke for each revoked user, and the review-completion update all run
+    // in ONE db.transaction (now under a system context — see the
+    // runOutsideDbContext/withSystemDbAccessContext mock at the top of this
+    // file). Route .returning() generically: advanceUserEpochs and the final
+    // accessReviews update both just need a truthy row back;
+    // revokeAllRefreshFamilies never calls .returning() at all.
+    function mockCompleteTx() {
+      const txDelete = vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined)
+      });
+      const capturedUpdates: Array<Record<string, unknown>> = [];
+      const txUpdate = vi.fn((_table: any) => ({
+        set: (values: Record<string, unknown>) => {
+          capturedUpdates.push(values);
+          return {
+            where: () => ({
+              returning: () => Promise.resolve([updatedReview])
+            })
+          };
+        }
+      }));
+      vi.mocked(db.transaction).mockImplementation(async (fn) => {
+        return fn({ delete: txDelete, update: txUpdate } as any);
+      });
+      return { txDelete, txUpdate, capturedUpdates };
+    }
+
+    function seedReviewSelects(revokedItems: Array<{ userId: string }>) {
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
@@ -401,26 +440,14 @@ describe('access review routes', () => {
         } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([
-              { userId: 'user-1' },
-              { userId: 'user-2' }
-            ])
+            where: vi.fn().mockResolvedValue(revokedItems)
           })
         } as any);
+    }
 
-      const txDelete = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      });
-      const txUpdate = vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([updatedReview])
-          })
-        })
-      });
-      vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ delete: txDelete, update: txUpdate } as any);
-      });
+    it('should complete a review, advance each revoked user\'s epoch + revoke their refresh families in-tx, and run post-commit cleanup', async () => {
+      seedReviewSelects([{ userId: 'user-1' }, { userId: 'user-2' }]);
+      const { capturedUpdates } = mockCompleteTx();
 
       const res = await app.request('/access-reviews/review-1/complete', {
         method: 'POST',
@@ -431,64 +458,25 @@ describe('access review routes', () => {
       const body = await res.json();
       expect(body.status).toBe('completed');
       expect(body.revokedCount).toBe(2);
-      expect(clearPermissionCache).toHaveBeenCalledWith('user-1');
-      expect(clearPermissionCache).toHaveBeenCalledWith('user-2');
-      // Task 14: every revoked user must have their JWTs killed in Redis
-      // so the ≤15min access-token TTL window can't keep their tenant
-      // claim alive after the access review completes.
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-2');
-      expect(revokeAllUserTokens).toHaveBeenCalledTimes(2);
-      // OAuth grants/refresh tokens (e.g. MCP) must also be revoked per user
-      // so a previously authorized refresh token stops minting access tokens.
-      expect(revokeUserAccess).toHaveBeenCalledWith('user-1');
-      expect(revokeUserAccess).toHaveBeenCalledWith('user-2');
-      expect(revokeUserAccess).toHaveBeenCalledTimes(2);
+      // advanceUserEpochs-shaped updates (auth_epoch increment) — one per
+      // revoked user.
+      expect(capturedUpdates.filter((v) => 'authEpoch' in v)).toHaveLength(2);
+      // revokeAllRefreshFamilies-shaped updates (revoked_at/revoked_reason).
+      expect(capturedUpdates.filter((v) => 'revokedReason' in v)).toHaveLength(2);
+      // Post-commit cleanup (Redis token cutoff, permission-cache clear,
+      // OAuth-artifact revocation) runs once per unique revoked user.
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('user-1');
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('user-2');
+      expect(runPostCommitCleanup).toHaveBeenCalledTimes(2);
     });
 
-    it('still completes the review when token revocation fails (best-effort)', async () => {
-      // Redis outage: revocation throws. The DB delete already committed,
-      // so we must not block the review on the cache write — log + continue.
-      vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
-
-      const updatedReview = {
-        id: 'review-1',
-        status: 'completed',
-        completedAt: new Date()
-      };
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: 'review-1', status: 'in_progress' }])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ userId: 'user-1' }])
-          })
-        } as any);
-
-      const txDelete = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      });
-      const txUpdate = vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([updatedReview])
-          })
-        })
-      });
-      vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ delete: txDelete, update: txUpdate } as any);
+    it('still completes the review (200) even when post-commit cleanup reports a partial failure for one user (best-effort, never throws)', async () => {
+      seedReviewSelects([{ userId: 'user-1' }, { userId: 'user-2' }]);
+      mockCompleteTx();
+      vi.mocked(runPostCommitCleanup).mockResolvedValueOnce({
+        redisOk: false,
+        permissionCacheOk: true,
+        oauthOk: true
       });
 
       const res = await app.request('/access-reviews/review-1/complete', {
@@ -497,82 +485,12 @@ describe('access review routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-    });
-
-    it('still completes when OAuth grant revocation fails for ONE user (Promise.all isolation)', async () => {
-      // revokeUserAccess (OAuth grants/refresh tokens) runs per-user inside a
-      // Promise.all. Each call is best-effort (.catch log-and-continue). If one
-      // user's revocation rejects WITHOUT its own .catch, the whole Promise.all
-      // rejects and the request 500s — and the other users' revocations are not
-      // guaranteed to have been attempted. This pins that isolation: user-1's
-      // OAuth revoke fails, but the review still completes (200) and user-2's
-      // revocation still fires.
-      vi.mocked(revokeUserAccess).mockImplementation(async (userId: string) => {
-        if (userId === 'user-1') throw new Error('oauth store down');
-        return { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 };
-      });
-
-      const updatedReview = {
-        id: 'review-1',
-        status: 'completed',
-        completedAt: new Date()
-      };
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ id: 'review-1', status: 'in_progress' }])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([
-              { userId: 'user-1' },
-              { userId: 'user-2' }
-            ])
-          })
-        } as any);
-
-      const txDelete = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      });
-      const txUpdate = vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([updatedReview])
-          })
-        })
-      });
-      vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ delete: txDelete, update: txUpdate } as any);
-      });
-
-      const res = await app.request('/access-reviews/review-1/complete', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.status).toBe('completed');
-      expect(body.revokedCount).toBe(2);
-      // Both users' OAuth revocations were attempted despite user-1 rejecting —
-      // the per-call .catch isolated the failure from the rest of the batch.
-      expect(revokeUserAccess).toHaveBeenCalledWith('user-1');
-      expect(revokeUserAccess).toHaveBeenCalledWith('user-2');
-      expect(revokeUserAccess).toHaveBeenCalledTimes(2);
-      // JWT revocation for both users is unaffected by the OAuth-store failure.
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-2');
+      // Both users' cleanup was still attempted despite user-1's partial
+      // failure — Promise.all never short-circuits since cleanup never
+      // rejects.
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('user-1');
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('user-2');
+      expect(runPostCommitCleanup).toHaveBeenCalledTimes(2);
     });
 
     it('should reject completion with pending items', async () => {

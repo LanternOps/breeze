@@ -206,25 +206,34 @@ vi.mock('../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined)
 }));
 
-vi.mock('../services/userSuspension', () => ({
-  revokeUserAccess: vi.fn().mockResolvedValue({
-    grantsRevoked: 0,
-    refreshTokensRevoked: 0,
-    jtisRevoked: 0,
-  })
-}));
-
 vi.mock('../services/remoteSessionTeardown', () => ({
   terminateUserRemoteSessions: vi.fn().mockResolvedValue(0),
   TEARDOWN_FAILED: -1,
 }));
 
+// advanceUserEpochs/revokeAllRefreshFamilies stay REAL so tests can assert on
+// the tx-shaped `users`/`refresh_token_families` updates they issue.
+// runPostCommitCleanup is mocked so tests control the post-commit outcome
+// (redisOk/permissionCacheOk/oauthOk) without exercising the real Redis/OAuth
+// side effects it wraps.
+vi.mock('../services/authLifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/authLifecycle')>();
+  return {
+    ...actual,
+    runPostCommitCleanup: vi.fn().mockResolvedValue({
+      redisOk: true,
+      permissionCacheOk: true,
+      oauthOk: true,
+      oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
+    })
+  };
+});
+
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
-import { revokeAllUserTokens } from '../services/tokenRevocation';
-import { revokeUserAccess } from '../services/userSuspension';
+import { runPostCommitCleanup } from '../services/authLifecycle';
 import { terminateUserRemoteSessions } from '../services/remoteSessionTeardown';
 // Mocked above — imported to drive failure paths via mockResolvedValueOnce.
 import { writeAvatar, deleteAvatar, readAvatarBuffer } from '../services/avatarStorage';
@@ -1501,6 +1510,76 @@ describe('user routes', () => {
       });
       expect(res.status).toBe(400);
     });
+
+    // Task 9: the status update, the auth-epoch advance, and the durable
+    // refresh-family revoke must all land in the SAME db.transaction, with
+    // the lifecycle service's post-commit cleanup running exactly once after
+    // it commits (epoch).
+    it('advances the auth epoch and revokes refresh-token families in the same transaction, then runs post-commit cleanup (epoch)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: '11111111-1111-1111-1111-111111111111',
+                    email: 'u@example.com',
+                    name: 'User',
+                    status: 'active',
+                    roleId: 'role-1',
+                    roleName: 'Admin',
+                    orgAccess: 'all',
+                    orgIds: null,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+
+      // Minimal `tx` stub: routes .returning() by the SET shape.
+      // advanceUserEpochs sets `authEpoch`; anything else is the main users
+      // update. revokeAllRefreshFamilies never calls .returning().
+      const capturedUpdates: Array<Record<string, unknown>> = [];
+      const txUpdate = vi.fn((_table: any) => ({
+        set: (values: Record<string, unknown>) => {
+          capturedUpdates.push(values);
+          return {
+            where: () => ({
+              returning: () =>
+                'authEpoch' in values
+                  ? Promise.resolve([{ authEpoch: 1, mfaEpoch: 0, emailEpoch: 0, passwordResetEpoch: 0 }])
+                  : Promise.resolve([
+                      {
+                        id: '11111111-1111-1111-1111-111111111111',
+                        email: 'u@example.com',
+                        name: 'User',
+                        status: 'disabled',
+                      },
+                    ])
+            })
+          };
+        }
+      }));
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({ update: txUpdate }));
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ status: 'disabled' })
+      });
+
+      expect(res.status).toBe(200);
+      // advanceUserEpochs-shaped update on `users` (auth_epoch increment).
+      expect(capturedUpdates.some((v) => 'authEpoch' in v)).toBe(true);
+      // revokeAllRefreshFamilies-shaped update on `refresh_token_families`
+      // (revoked_at/revoked_reason via COALESCE).
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      expect(runPostCommitCleanup).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('POST /users/:id/role', () => {
@@ -1629,16 +1708,53 @@ describe('user routes', () => {
     });
   });
 
-  describe('DELETE /users/:id (Task 14: JWT revocation on removal)', () => {
-    it('removes a partner user and revokes their JWTs', async () => {
-      // partner_users delete returns a row → 200, and we expect Redis revoke
-      // to fire so the ex-member's ≤15min-TTL access token stops granting
-      // partner-scoped reads/writes on the very next request.
-      vi.mocked(db.delete).mockReturnValueOnce({
+  describe('DELETE /users/:id (Task 9/14: epoch bump + refresh-family revoke + post-commit cleanup on removal)', () => {
+    // removeMembershipForScope now runs the membership delete + orphan
+    // neutralization + advanceUserEpochs + revokeAllRefreshFamilies in ONE
+    // db.transaction (system context). Build a minimal `tx` stub: `select`
+    // backs the orphan check (hasOtherMembership controls whether it finds a
+    // remaining link and short-circuits neutralize), `update` captures every
+    // `.set()` call's values so tests can assert the epoch/family-revoke
+    // shapes fired, and routes .returning() by whether the values look like
+    // an epoch bump (mirrors advanceUserEpochs' real SET shape).
+    function mockRemoveMembershipTx(opts: { deletedRows: Array<{ id: string }>; hasOtherMembership?: boolean }) {
+      const { deletedRows, hasOtherMembership = true } = opts;
+      const capturedUpdates: Array<Record<string, unknown>> = [];
+      const txDelete = vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'link-1' }])
+          returning: vi.fn().mockResolvedValue(deletedRows)
         })
-      } as any);
+      });
+      const txSelect = vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(hasOtherMembership ? [{ id: 'other-link' }] : [])
+          })
+        })
+      });
+      const txUpdate = vi.fn((_table: any) => ({
+        set: (values: Record<string, unknown>) => {
+          capturedUpdates.push(values);
+          return {
+            where: () => {
+              const ret: any = Promise.resolve(undefined);
+              ret.returning = () =>
+                values && 'authEpoch' in values
+                  ? Promise.resolve([{ authEpoch: 1, mfaEpoch: 0, emailEpoch: 0, passwordResetEpoch: 0 }])
+                  : Promise.resolve([]);
+              return ret;
+            }
+          };
+        }
+      }));
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) =>
+        fn({ delete: txDelete, select: txSelect, update: txUpdate })
+      );
+      return { txDelete, txSelect, txUpdate, capturedUpdates };
+    }
+
+    it('removes a partner user, advances their epoch + revokes refresh families in-tx, then runs post-commit cleanup', async () => {
+      const { capturedUpdates } = mockRemoveMembershipTx({ deletedRows: [{ id: 'link-1' }] });
 
       const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
         method: 'DELETE',
@@ -1646,20 +1762,16 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
-      expect(revokeAllUserTokens).toHaveBeenCalledTimes(1);
-      // OAuth grants/refresh tokens (e.g. MCP) must also be revoked so a
-      // removed user's refresh token can't keep minting access tokens.
-      expect(revokeUserAccess).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
-      expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      // advanceUserEpochs-shaped update (auth_epoch increment).
+      expect(capturedUpdates.some((v) => 'authEpoch' in v)).toBe(true);
+      // revokeAllRefreshFamilies-shaped update (revoked_at/revoked_reason).
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
+      expect(runPostCommitCleanup).toHaveBeenCalledTimes(1);
     });
 
-    it('does not revoke JWTs when no row was deleted (404)', async () => {
-      vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([])
-        })
-      } as any);
+    it('does not run post-commit cleanup when no row was deleted (404)', async () => {
+      mockRemoveMembershipTx({ deletedRows: [] });
 
       const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
         method: 'DELETE',
@@ -1667,19 +1779,16 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(404);
-      expect(revokeAllUserTokens).not.toHaveBeenCalled();
+      expect(runPostCommitCleanup).not.toHaveBeenCalled();
     });
 
-    it('still 200s when token revocation fails (best-effort)', async () => {
-      // Redis outage during revoke — the partner_users row already deleted,
-      // we must not roll the response back. The ≤15min-TTL natural expiry
-      // is the fallback. Operator visibility comes from the log line.
-      vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
-      vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'link-1' }])
-        })
-      } as any);
+    it('still 200s even when post-commit cleanup reports a partial failure (best-effort, never throws)', async () => {
+      vi.mocked(runPostCommitCleanup).mockResolvedValueOnce({
+        redisOk: false,
+        permissionCacheOk: true,
+        oauthOk: true
+      });
+      mockRemoveMembershipTx({ deletedRows: [{ id: 'link-1' }] });
 
       const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
         method: 'DELETE',
@@ -1687,32 +1796,9 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });
 
-    it('still 200s (partner branch) when OAuth grant revocation fails (best-effort)', async () => {
-      // revokeUserAccess (OAuth grants/refresh tokens) is best-effort: a failure
-      // here (e.g. OAuth store down) must NOT roll back the already-deleted
-      // partner_users row. The .catch in DELETE /:id isolates it, mirroring the
-      // revokeAllUserTokens best-effort case above.
-      vi.mocked(revokeUserAccess).mockRejectedValueOnce(new Error('oauth store down'));
-      vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'link-1' }])
-        })
-      } as any);
-
-      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
-        method: 'DELETE',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
-      expect(revokeUserAccess).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
-    });
-
-    it('removes an organization user and revokes their JWTs', async () => {
+    it('removes an organization user, advances their epoch + revokes refresh families, then runs post-commit cleanup', async () => {
       // Same shape for organization-scope removals — org-scoped JWTs also
       // carry an accessibleOrgIds claim that must be invalidated.
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
@@ -1725,11 +1811,7 @@ describe('user routes', () => {
         return next();
       });
 
-      vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'link-2' }])
-        })
-      } as any);
+      const { capturedUpdates } = mockRemoveMembershipTx({ deletedRows: [{ id: 'link-2' }] });
 
       const res = await app.request('/users/22222222-2222-2222-2222-222222222222', {
         method: 'DELETE',
@@ -1737,48 +1819,44 @@ describe('user routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
-      expect(revokeAllUserTokens).toHaveBeenCalledTimes(1);
-      expect(revokeUserAccess).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
-    });
-
-    it('still 200s (org branch) when OAuth grant revocation fails (best-effort)', async () => {
-      // Org-scope removal: same best-effort isolation for revokeUserAccess. The
-      // organization_users row is already deleted; an OAuth-store failure must
-      // not roll the response back.
-      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
-        c.set('auth', {
-          scope: 'organization',
-          partnerId: null,
-          orgId: 'org-456',
-          user: { id: 'user-123', email: 'test@example.com' }
-        });
-        return next();
-      });
-      vi.mocked(revokeUserAccess).mockRejectedValueOnce(new Error('oauth store down'));
-      vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'link-2' }])
-        })
-      } as any);
-
-      const res = await app.request('/users/22222222-2222-2222-2222-222222222222', {
-        method: 'DELETE',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
-      expect(revokeUserAccess).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
+      expect(capturedUpdates.some((v) => 'authEpoch' in v)).toBe(true);
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
+      expect(runPostCommitCleanup).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('PATCH /users/:id remote session teardown on deactivation', () => {
     const teardownMock = vi.mocked(terminateUserRemoteSessions);
 
+    // The status PATCH mutation now runs update(users) + advanceUserEpochs +
+    // revokeAllRefreshFamilies in ONE db.transaction. Build a minimal `tx`
+    // stub whose `update` routes .returning() by the SET shape: an
+    // advanceUserEpochs call sets `authEpoch`, so anything else is the main
+    // users update and gets `updatedRow`. revokeAllRefreshFamilies never
+    // calls .returning() so its result is unused.
+    function mockPatchTx(updatedRow: { id: string; email: string; name: string; status: string } | null) {
+      const capturedUpdates: Array<Record<string, unknown>> = [];
+      const txUpdate = vi.fn((_table: any) => ({
+        set: (values: Record<string, unknown>) => {
+          capturedUpdates.push(values);
+          return {
+            where: () => ({
+              returning: () =>
+                'authEpoch' in values
+                  ? Promise.resolve([{ authEpoch: 1, mfaEpoch: 0, emailEpoch: 0, passwordResetEpoch: 0 }])
+                  : Promise.resolve(updatedRow ? [updatedRow] : [])
+            })
+          };
+        }
+      }));
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({ update: txUpdate }));
+      return { txUpdate, capturedUpdates };
+    }
+
     // getScopedUser (partner scope) → select().from().innerJoin().innerJoin().where().limit()
-    // returns the existing record. Then update(users).set().where().returning()
-    // returns the updated row. Seed both so the becameInactive branch runs.
+    // returns the existing record. seedPatch also wires the transaction to
+    // return the post-mutation row so the becameInactive branch runs.
     function seedPatch(
       recordStatus: 'active' | 'invited' | 'disabled',
       updatedStatus: 'active' | 'invited' | 'disabled',
@@ -1806,20 +1884,12 @@ describe('user routes', () => {
         }),
       } as any);
 
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([
-              {
-                id: '11111111-1111-1111-1111-111111111111',
-                email: 'u@example.com',
-                name: 'User',
-                status: updatedStatus,
-              },
-            ]),
-          }),
-        }),
-      } as any);
+      return mockPatchTx({
+        id: '11111111-1111-1111-1111-111111111111',
+        email: 'u@example.com',
+        name: 'User',
+        status: updatedStatus,
+      });
     }
 
     function patchStatus(status: string) {
@@ -1873,20 +1943,12 @@ describe('user routes', () => {
           }),
         }),
       } as any);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([
-              {
-                id: '11111111-1111-1111-1111-111111111111',
-                email: 'u@example.com',
-                name: 'Renamed',
-                status: 'active',
-              },
-            ]),
-          }),
-        }),
-      } as any);
+      mockPatchTx({
+        id: '11111111-1111-1111-1111-111111111111',
+        email: 'u@example.com',
+        name: 'Renamed',
+        status: 'active',
+      });
 
       const res = await app.request('/users/11111111-1111-1111-1111-111111111111', {
         method: 'PATCH',
