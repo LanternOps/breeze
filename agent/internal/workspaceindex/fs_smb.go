@@ -15,6 +15,36 @@ import (
 	"github.com/hirochachacha/go-smb2"
 )
 
+// Dial seams, overridable in tests so TCP-connect and NTLM-negotiation
+// failure paths (including hostile error strings) are exercisable without a
+// live SMB server. Production values are set here and never mutated at runtime.
+var (
+	smbTCPDial = func(ctx context.Context, address string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	}
+	smbSessionDial = func(ctx context.Context, initiator *smb2.NTLMInitiator, conn net.Conn) (smbMountableSession, error) {
+		s, err := (&smb2.Dialer{Initiator: initiator}).DialContext(ctx, conn)
+		if err != nil {
+			return nil, err
+		}
+		return realSession{s}, nil
+	}
+)
+
+// smbMountableSession is the slice of *smb2.Session DialSMB needs; behind an
+// interface so the auth seam above can return a fake.
+type smbMountableSession interface {
+	smbSession
+	MountWithContext(ctx context.Context, shareName string) (smbShare, error)
+}
+
+type realSession struct{ s *smb2.Session }
+
+func (r realSession) Logoff() error { return r.s.Logoff() }
+func (r realSession) MountWithContext(ctx context.Context, shareName string) (smbShare, error) {
+	return r.s.WithContext(ctx).Mount(shareName)
+}
+
 type smbShare interface {
 	ReadDir(string) ([]os.FileInfo, error)
 	Lstat(string) (os.FileInfo, error)
@@ -162,7 +192,7 @@ func DialSMB(ctx context.Context, unc string, cred *Credential) (SourceFS, io.Cl
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(host, "445"))
+	conn, err := smbTCPDial(dialCtx, net.JoinHostPort(host, "445"))
 	if err != nil {
 		credentialCopy.Zero()
 		return nil, nil, redactor.dialFailure("dial", err)
@@ -183,13 +213,13 @@ func DialSMB(ctx context.Context, unc string, cred *Credential) (SourceFS, io.Cl
 		initiator.Domain = ""
 	}()
 
-	session, err := (&smb2.Dialer{Initiator: initiator}).DialContext(dialCtx, conn)
+	session, err := smbSessionDial(dialCtx, initiator, conn)
 	if err != nil {
 		_ = conn.Close()
 		credentialCopy.Zero()
 		return nil, nil, redactor.dialFailure("authenticate", err)
 	}
-	share, err := session.WithContext(dialCtx).Mount(shareName)
+	share, err := session.MountWithContext(dialCtx, shareName)
 	if err != nil {
 		_ = session.Logoff()
 		_ = conn.Close()

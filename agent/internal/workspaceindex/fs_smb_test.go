@@ -3,12 +3,16 @@ package workspaceindex
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hirochachacha/go-smb2"
 )
 
 func TestParseUNC(t *testing.T) {
@@ -162,20 +166,24 @@ func TestSMBFSCloseCleansUpAndZeroesRetainedCredential(t *testing.T) {
 }
 
 type fakeSMBShare struct {
-	entries     []os.FileInfo
-	statInfo    os.FileInfo
-	readDirErr  error
-	readDirPath string
-	lstatPath   string
-	umountCalls int
+	entries      []os.FileInfo
+	statInfo     os.FileInfo
+	readDirErr   error
+	readDirPath  string
+	lstatPath    string
+	umountCalls  int
+	readDirCalls int
+	lstatCalls   int
 }
 
 func (f *fakeSMBShare) ReadDir(name string) ([]os.FileInfo, error) {
+	f.readDirCalls++
 	f.readDirPath = name
 	return f.entries, f.readDirErr
 }
 
 func (f *fakeSMBShare) Lstat(name string) (os.FileInfo, error) {
+	f.lstatCalls++
 	f.lstatPath = name
 	return f.statInfo, nil
 }
@@ -211,3 +219,52 @@ func (f fakeSMBFileInfo) Mode() fs.FileMode  { return f.mode }
 func (f fakeSMBFileInfo) ModTime() time.Time { return time.Time{} }
 func (f fakeSMBFileInfo) IsDir() bool        { return f.mode.IsDir() }
 func (f fakeSMBFileInfo) Sys() any           { return nil }
+
+// Auth-failure redaction through the dial seam: even if the negotiation layer
+// returned a hostile error embedding the password, DialSMB must redact it.
+func TestDialSMBAuthFailureRedactsLeakyError(t *testing.T) {
+	const password = "hunter2-ntlm-secret"
+	origTCP, origSession := smbTCPDial, smbSessionDial
+	t.Cleanup(func() { smbTCPDial, smbSessionDial = origTCP, origSession })
+
+	smbTCPDial = func(context.Context, string) (net.Conn, error) {
+		client, server := net.Pipe()
+		t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+		return client, nil
+	}
+	smbSessionDial = func(_ context.Context, initiator *smb2.NTLMInitiator, _ net.Conn) (smbMountableSession, error) {
+		return nil, fmt.Errorf("NTLM negotiation rejected for %s with password %s", initiator.User, initiator.Password)
+	}
+
+	_, _, err := DialSMB(context.Background(), `\\nas01.test\projects`, &Credential{
+		Username: "svc-reader",
+		Password: password,
+	})
+	if err == nil {
+		t.Fatal("DialSMB should fail when session negotiation fails")
+	}
+	if !strings.Contains(err.Error(), "nas01.test") || !strings.Contains(err.Error(), "authenticate") {
+		t.Fatalf("error should carry host + operation context, got: %v", err)
+	}
+	if strings.Contains(err.Error(), password) {
+		t.Fatalf("auth error leaked the password: %v", err)
+	}
+}
+
+// resolve()-level traversal rejection: attacker-shaped names never reach the share.
+func TestSMBFSRejectsTraversalPaths(t *testing.T) {
+	share := &fakeSMBShare{}
+	fys := &smbFS{share: share, host: "nas01", shareName: "projects"}
+	for _, name := range []string{"..", "../x", `..\x`, "a/../b", `a\..\b`, "a/../../b"} {
+		if _, err := fys.ReadDir(name); err == nil {
+			t.Fatalf("ReadDir(%q) should be rejected", name)
+		}
+		if _, err := fys.Stat(name); err == nil {
+			t.Fatalf("Stat(%q) should be rejected", name)
+		}
+	}
+	if share.readDirCalls != 0 || share.lstatCalls != 0 {
+		t.Fatalf("share must never be reached for traversal names (ReadDir=%d, Lstat=%d)",
+			share.readDirCalls, share.lstatCalls)
+	}
+}
