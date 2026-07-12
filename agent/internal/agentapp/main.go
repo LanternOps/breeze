@@ -36,6 +36,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/unifi"
 	"github.com/breeze-rmm/agent/internal/userhelper"
 	"github.com/breeze-rmm/agent/internal/websocket"
+	"github.com/breeze-rmm/agent/internal/workspaceindex"
 	"github.com/breeze-rmm/agent/pkg/api"
 	"github.com/spf13/cobra"
 )
@@ -385,14 +386,22 @@ type agentComponents struct {
 	// unifiDone closes after the collector loop goroutine has fully exited.
 	// nil when unifiCancel is nil.
 	unifiDone <-chan struct{}
+
+	// workspaceIndexCancel cancels the server-driven workspace indexing loop.
+	// nil when the local kill switch disables the loop.
+	workspaceIndexCancel context.CancelFunc
+	// workspaceIndexDone closes after crawls and watchers have fully exited.
+	// nil when workspaceIndexCancel is nil.
+	workspaceIndexDone <-chan struct{}
 }
 
 // shutdownAgent gracefully stops all agent components.
 //
 // Every blocking stage is wrapped with a deadline so that a stuck HTTP flush
 // (common during OS shutdown when the network has already gone down) can't
-// pin the process past systemd's TimeoutStopSec. Total worst case is bounded
-// by the sum of per-stage timeouts; the unit file caps the outer wait at 15s.
+// pin the process past its shutdown budget. The workspace-index terminal flush
+// gets a longer local allowance, though the service manager may enforce a
+// shorter outer deadline.
 func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
@@ -421,6 +430,18 @@ func shutdownAgent(comps *agentComponents) {
 		if comps.unifiDone != nil {
 			runWithTimeout("unifi collector stop", 2*time.Second, func() {
 				<-comps.unifiDone
+			})
+		}
+	}
+
+	// Cancel workspace indexing before core network teardown. A canceled crawl
+	// sends one terminal CompleteRun using a non-canceled context, so allow the
+	// client's 30-second HTTP timeout plus a small scheduling margin.
+	if comps.workspaceIndexCancel != nil {
+		comps.workspaceIndexCancel()
+		if comps.workspaceIndexDone != nil {
+			runWithTimeout("workspace index stop", 35*time.Second, func() {
+				<-comps.workspaceIndexDone
 			})
 		}
 	}
@@ -729,6 +750,25 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		})
 	}
 
+	var workspaceIndexCancel context.CancelFunc
+	var workspaceIndexDone <-chan struct{}
+	if cfg.WorkspaceIndex.Enabled != nil && !*cfg.WorkspaceIndex.Enabled {
+		log.Debug("workspace indexing disabled by local configuration")
+	} else {
+		workspaceClient := workspaceindex.NewClient(workspaceindex.ClientConfig{
+			ServerURL:    cfg.ServerURL,
+			EndpointBase: cfg.WorkspaceIndex.EndpointBase,
+			AuthToken:    secureToken,
+			HTTPClient:   newUnifiAPIClient(secureToken, tlsCfg),
+			AuthMonitor:  authMon,
+		})
+		var workspaceIndexCtx context.Context
+		workspaceIndexCtx, workspaceIndexCancel = context.WithCancel(context.Background())
+		workspaceIndexDone = workspaceindex.StartLoop(workspaceIndexCtx, workspaceindex.Deps{
+			Client: workspaceClient,
+		})
+	}
+
 	// PAM Track 3: subscribe to Microsoft-Windows-LUA ETW provider for
 	// UAC consent discovery. Windows-only; no-op stub on other platforms
 	// (see etwlua_start_other.go). ctx scoped to the agent process so
@@ -771,15 +811,17 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	}
 
 	return &agentComponents{
-		hb:               hb,
-		wsClient:         wsClient,
-		secureToken:      secureToken,
-		etwluaCancel:     etwCancel,
-		etwluaDone:       etwluaDone,
-		supervisorCancel: supervisorCancel,
-		supervisorDone:   supervisorDone,
-		unifiCancel:      unifiCancel,
-		unifiDone:        unifiDone,
+		hb:                   hb,
+		wsClient:             wsClient,
+		secureToken:          secureToken,
+		etwluaCancel:         etwCancel,
+		etwluaDone:           etwluaDone,
+		supervisorCancel:     supervisorCancel,
+		supervisorDone:       supervisorDone,
+		unifiCancel:          unifiCancel,
+		unifiDone:            unifiDone,
+		workspaceIndexCancel: workspaceIndexCancel,
+		workspaceIndexDone:   workspaceIndexDone,
 	}, nil
 }
 

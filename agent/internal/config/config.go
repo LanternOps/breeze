@@ -156,6 +156,13 @@ type Config struct {
 	// Watchdog configuration for the breeze-watchdog service.
 	Watchdog WatchdogConfig `mapstructure:"watchdog" yaml:"watchdog"`
 
+	// WorkspaceIndex controls the server-driven workspace indexing loop.
+	// Enabled nil defaults to on; explicit false is a hard local kill switch.
+	WorkspaceIndex struct {
+		Enabled      *bool  `mapstructure:"enabled" yaml:"enabled"`
+		EndpointBase string `mapstructure:"endpoint_base" yaml:"endpoint_base"`
+	} `mapstructure:"workspace_index" yaml:"workspace_index"`
+
 	// IsService is a runtime flag set when the agent is running as a system service
 	// (Windows SCM, macOS launchd, Linux systemd). It is not persisted to config.
 	IsService bool `mapstructure:"-"`

@@ -472,6 +472,16 @@ func TestWatchdogDefaults(t *testing.T) {
 	}
 }
 
+func TestWorkspaceIndexDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.WorkspaceIndex.Enabled != nil {
+		t.Errorf("Enabled default: want nil (server-driven enabled), got %v", *cfg.WorkspaceIndex.Enabled)
+	}
+	if cfg.WorkspaceIndex.EndpointBase != "" {
+		t.Errorf("EndpointBase default: want empty (client default), got %q", cfg.WorkspaceIndex.EndpointBase)
+	}
+}
+
 // TestIsSecretYAMLKey verifies the drift-proof predicate that decides which
 // config keys belong in secrets.yaml vs agent.yaml. Finding #6.
 func TestIsSecretYAMLKey(t *testing.T) {
@@ -503,6 +513,7 @@ func TestIsSecretYAMLKey(t *testing.T) {
 		}
 	}
 }
+
 
 // TestSaveToStripsBackupS3SecretsFromAgentYAML is the regression test for
 // Finding #6: backup_s3_access_key and backup_s3_secret_key must not appear in
@@ -724,4 +735,3 @@ func TestSaveToAbortsWhenStripFails(t *testing.T) {
 		t.Fatalf("agent.yaml leaked the auth token after a failed strip: %q", data)
 	}
 }
-
