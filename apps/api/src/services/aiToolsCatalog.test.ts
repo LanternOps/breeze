@@ -280,6 +280,30 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     expect(parsed.item.attributes.distributor.msrp).toBe(150);
   });
 
+  it('redacts revenueAllocation from bundle components for org-scoped callers', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeChain([{ id: ITEM_ID, isBundle: true, attributes: {} }], {}) as any)
+      .mockReturnValueOnce(
+        makeChain(
+          [{ id: 'comp-row', componentItemId: 'c1', quantity: '2', showOnInvoice: false, revenueAllocation: '60.00' }],
+          {}
+        ) as any
+      );
+
+    const orgAuth = {
+      user: { id: 'u1' },
+      partnerId: PARTNER_ID,
+      scope: 'organization',
+      orgId: 'org-1',
+      accessibleOrgIds: ['org-1'],
+    } as any;
+    const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, orgAuth);
+    const parsed = JSON.parse(out);
+    expect(parsed.components).toEqual([
+      { id: 'comp-row', componentItemId: 'c1', quantity: '2', showOnInvoice: false },
+    ]);
+  });
+
   it('handles items with no distributor attributes (empty attributes object)', async () => {
     const row = { id: ITEM_ID, partnerId: PARTNER_ID, createdBy: null, isBundle: false, attributes: {} };
     vi.mocked(db.select).mockReturnValueOnce(makeChain([row], {}) as any);

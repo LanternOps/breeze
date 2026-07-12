@@ -230,7 +230,13 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
             eq(catalogBundleComponents.partnerId, partnerId)
           )
         );
-      return JSON.stringify({ item: sanitized, components });
+      // Same org-scope defense-in-depth as the item's cost fields:
+      // revenueAllocation is the partner's internal revenue split.
+      const sanitizedComponents =
+        auth.scope === 'organization'
+          ? components.map(({ revenueAllocation: _ra, ...rest }) => rest)
+          : components;
+      return JSON.stringify({ item: sanitized, components: sanitizedComponents });
     }
   });
 
