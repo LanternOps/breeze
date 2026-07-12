@@ -24,6 +24,11 @@ import {
 } from '../../services/mfaSecretCrypto';
 import { DEFAULT_ALLOWED_ORIGINS, shouldIncludeDefaultOrigins } from '../../services/corsOrigins';
 import { assertActiveTenantContext } from '../../services/tenantStatus';
+import {
+  getRecoveryCodePepper as recoveryCodePepper,
+  hashRecoveryCode as hashSingleRecoveryCode,
+  hashRecoveryCodes as hashAllRecoveryCodes,
+} from '../../services/recoveryCodeAuth';
 import type { PublicTokenPayload, UserTokenContext } from './schemas';
 import {
   REFRESH_COOKIE_NAME,
@@ -614,25 +619,15 @@ export function decryptMfaSecretForMigration(secret: string | null | undefined):
 }
 
 export function getRecoveryCodePepper(): string {
-  const pepper = process.env.MFA_RECOVERY_CODE_PEPPER?.trim();
-  if (pepper) return pepper;
-
-  if (process.env.NODE_ENV === 'test') {
-    return 'test-mfa-recovery-code-pepper';
-  }
-
-  throw new Error('No MFA recovery code pepper configured. Set MFA_RECOVERY_CODE_PEPPER.');
+  return recoveryCodePepper();
 }
 
 export function hashRecoveryCode(code: string): string {
-  const normalizedCode = code.trim().toUpperCase();
-  return createHash('sha256')
-    .update(`${getRecoveryCodePepper()}:${normalizedCode}`)
-    .digest('hex');
+  return hashSingleRecoveryCode(code);
 }
 
 export function hashRecoveryCodes(codes: string[]): string[] {
-  return codes.map(hashRecoveryCode);
+  return hashAllRecoveryCodes(codes);
 }
 
 // ============================================
@@ -923,7 +918,7 @@ export async function auditUserLoginFailure(
 
 export function auditLogin(
   c: RequestLike,
-  opts: { orgId: string | null; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string; method?: string }
+  opts: { orgId: string | null; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string; method?: string; remainingRecoveryCodes?: number }
 ): void {
   createAuditLogAsync({
     orgId: opts.orgId ?? undefined,
@@ -933,7 +928,14 @@ export function auditLogin(
     resourceType: 'user',
     resourceId: opts.userId,
     resourceName: opts.name,
-    details: { method: opts.method ?? 'password', mfa: opts.mfa, scope: opts.scope },
+    details: {
+      method: opts.method ?? 'password',
+      mfa: opts.mfa,
+      scope: opts.scope,
+      ...(opts.remainingRecoveryCodes === undefined
+        ? {}
+        : { remainingRecoveryCodes: opts.remainingRecoveryCodes }),
+    },
     ipAddress: opts.ip,
     userAgent: c.req.header('user-agent'),
     result: 'success'

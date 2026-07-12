@@ -71,6 +71,9 @@ vi.mock('../services', () => ({
   }),
   readPendingMfa: vi.fn(),
   issueVerifiedPendingMfaSession: vi.fn(),
+  completeRecoveryCodeLogin: vi.fn(),
+  RecoveryCodeInvalidError: class RecoveryCodeInvalidError extends Error {},
+  RecoveryCodeUnavailableError: class RecoveryCodeUnavailableError extends Error {},
   PendingMfaInvalidError: class PendingMfaInvalidError extends Error {},
   PendingMfaUnavailableError: class PendingMfaUnavailableError extends Error {},
   createSession: vi.fn(),
@@ -352,6 +355,8 @@ import {
   decideAuthenticatedUserSession,
   readPendingMfa,
   issueVerifiedPendingMfaSession,
+  completeRecoveryCodeLogin,
+  RecoveryCodeInvalidError,
   PendingMfaInvalidError,
   recordAccountFailure,
   clearAccountFailures,
@@ -504,6 +509,21 @@ describe('auth routes', () => {
         familyId: 'family-id-mock',
       },
       authority: { roleId: 'role-1', orgId: null, partnerId: 'partner-1', scope: 'partner' },
+    } as never);
+    vi.mocked(completeRecoveryCodeLogin).mockResolvedValue({
+      user: {
+        id: 'user-123', email: 'test@example.com', name: 'Test User', status: 'active',
+        mfaEnabled: true, avatarUrl: null, isPlatformAdmin: false,
+      },
+      tokens: {
+        accessToken: 'recovery-access-token', refreshToken: 'recovery-refresh-token',
+        refreshJti: 'recovery-jti', expiresInSeconds: 900, familyId: 'recovery-family',
+      },
+      authority: { roleId: 'role-1', orgId: null, partnerId: 'partner-1', scope: 'partner' },
+      remainingCount: 1,
+      authEpoch: 1,
+      mfaEpoch: 2,
+      revokedFamilyCount: 2,
     } as never);
     vi.mocked(revokeUserSessionFamilyForLogout).mockResolvedValue({ status: 'revoked' });
     sendAccountLockedMock.mockClear();
@@ -1151,6 +1171,58 @@ describe('auth routes', () => {
       expect(res.status).toBe(401);
       expect(res.headers.get('set-cookie')).toBeNull();
       expect(issueUserSession).not.toHaveBeenCalled();
+    });
+
+    it('burns a recovery-code pending login through the atomic recovery flow and redacts audit data', async () => {
+      const rawCode = 'abcd-ef12';
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tempToken: 'v2-temp-token', method: 'recovery_code', code: rawCode,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(completeRecoveryCodeLogin).toHaveBeenCalledWith({
+        tempToken: 'v2-temp-token', code: rawCode, mobileDeviceId: undefined,
+      });
+      expect(readPendingMfa).not.toHaveBeenCalled();
+      expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toContain('recovery-refresh-token');
+      expect(JSON.stringify(mfaMutationState.auditWrites)).not.toContain(rawCode);
+      expect(JSON.stringify(mfaMutationState.auditWrites)).not.toContain('ABCD-EF12');
+    });
+
+    it('returns the same generic failure for a wrong or replayed recovery code without a token', async () => {
+      vi.mocked(completeRecoveryCodeLogin)
+        .mockRejectedValueOnce(new RecoveryCodeInvalidError());
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tempToken: 'v2-temp-token', method: 'recovery_code', code: 'ABCD-EF12',
+        }),
+      });
+
+      expect(res.status).toBe(401);
+      await expect(res.json()).resolves.toEqual({ error: 'Invalid MFA code' });
+      expect(res.headers.get('set-cookie')).toBeNull();
+    });
+
+    it('returns the generic MFA failure for a missing recovery code', async () => {
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token', method: 'recovery_code' }),
+      });
+
+      expect(res.status).toBe(401);
+      await expect(res.json()).resolves.toEqual({ error: 'Invalid MFA code' });
+      expect(completeRecoveryCodeLogin).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
     });
 
     it.each([

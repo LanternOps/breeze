@@ -42,12 +42,23 @@ export const registerPartnerSchema = z.object({
   })
 });
 
-export const mfaVerifySchema = z.object({
-  code: z.string().length(6),
+export const standardMfaVerifySchema = z.object({
+  code: z.string().regex(/^\d{6}$/),
   tempToken: z.string().optional(),
   method: z.enum(['totp', 'sms']).optional(),
   mfaGrant: z.string().min(32).max(512).optional(),
-});
+}).strict();
+
+const recoveryCodeMfaVerifySchema = z.object({
+  code: z.string().regex(/^[A-Za-z0-9]{4}-[A-Za-z0-9]{4}$/),
+  tempToken: z.string().min(1),
+  method: z.literal('recovery_code'),
+}).strict();
+
+export const mfaVerifySchema = z.union([
+  recoveryCodeMfaVerifySchema,
+  standardMfaVerifySchema,
+]);
 
 export const mfaStepUpPurposeSchema = z.enum([
   'passkey.register',

@@ -29,6 +29,30 @@ describe('auth feature flag defaults', () => {
 });
 
 describe('MFA step-up and protected enrollment schemas', () => {
+  it('uses a discriminated recovery-code login payload with the documented format', async () => {
+    const { mfaVerifySchema } = await import('./schemas');
+
+    expect(mfaVerifySchema.safeParse({
+      tempToken: 'pending-token',
+      method: 'recovery_code',
+      code: 'abcd-ef12',
+    }).success).toBe(true);
+    expect(mfaVerifySchema.safeParse({
+      tempToken: 'pending-token',
+      method: 'totp',
+      code: '123456',
+    }).success).toBe(true);
+    expect(mfaVerifySchema.safeParse({
+      tempToken: 'pending-token',
+      method: 'recovery_code',
+      code: 'ABCDEF12',
+    }).success).toBe(false);
+    expect(mfaVerifySchema.safeParse({
+      tempToken: 'pending-token',
+      method: 'recovery_code',
+    }).success).toBe(false);
+  });
+
   it('requires exactly one passkey registration authorization reference', async () => {
     const { passkeyRegisterOptionsSchema } = await import('./schemas');
     expect(passkeyRegisterOptionsSchema.safeParse({ currentPassword: 'password' }).success).toBe(true);

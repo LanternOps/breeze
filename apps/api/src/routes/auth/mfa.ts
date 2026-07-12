@@ -17,12 +17,20 @@ import {
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
   readPendingMfa,
+  completeRecoveryCodeLogin,
+  RecoveryCodeInvalidError,
+  RecoveryCodeUnavailableError,
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { authMiddleware } from '../../middleware/auth';
 import type { AuthContext } from '../../middleware/auth';
-import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema } from './schemas';
+import {
+  ENABLE_2FA,
+  mfaVerifySchema,
+  standardMfaVerifySchema,
+  mfaEnableSchema,
+} from './schemas';
 import {
   getClientIP,
   setRefreshTokenCookie,
@@ -68,7 +76,7 @@ const mfaSetupSchema = passwordOnlySchema.extend({
 const mfaEnableWithPasswordSchema = mfaEnableSchema.extend({
   currentPassword: z.string().min(1).max(256)
 });
-const mfaDisableSchema = mfaVerifySchema.extend({
+const mfaDisableSchema = standardMfaVerifySchema.extend({
   currentPassword: z.string().min(1).max(256)
 });
 
@@ -328,12 +336,75 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', mfaSetupSchema),
 });
 
 // MFA verify (for login or setup confirmation)
-mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => {
+mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result, c) => {
+  if (result.success) return;
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    return;
+  }
+  if (typeof raw === 'object' && raw !== null
+    && (raw as { method?: unknown }).method === 'recovery_code') {
+    return c.json({ error: 'Invalid MFA code' }, 401);
+  }
+}), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
-  const { code, tempToken, mfaGrant } = c.req.valid('json');
+  const verification = c.req.valid('json');
+  const { code, tempToken, method } = verification;
+  const mfaGrant = 'mfaGrant' in verification ? verification.mfaGrant : undefined;
+
+  if (tempToken && method === 'recovery_code') {
+    let completed;
+    try {
+      completed = await completeRecoveryCodeLogin({
+        tempToken,
+        code,
+        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      });
+    } catch (error) {
+      if (error instanceof RecoveryCodeInvalidError) {
+        return c.json({ error: 'Invalid MFA code' }, 401);
+      }
+      if (error instanceof RecoveryCodeUnavailableError) {
+        return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+      }
+      throw error;
+    }
+    const { user: issuedUser, tokens, authority, remainingCount } = completed;
+    await withSystemDbAccessContext(() => db
+      .update(users)
+      .set({ lastLoginAt: new Date() })
+      .where(eq(users.id, issuedUser.id)));
+    auditLogin(c, {
+      orgId: authority.orgId ?? null,
+      userId: issuedUser.id,
+      email: issuedUser.email,
+      name: issuedUser.name,
+      mfa: true,
+      scope: authority.scope,
+      ip: getClientIP(c),
+      method: 'recovery_code',
+      remainingRecoveryCodes: remainingCount,
+    });
+    setRefreshTokenCookie(c, tokens.refreshToken);
+    return c.json({
+      user: {
+        id: issuedUser.id,
+        email: issuedUser.email,
+        name: issuedUser.name,
+        mfaEnabled: true,
+        avatarUrl: issuedUser.avatarUrl,
+        isPlatformAdmin: issuedUser.isPlatformAdmin === true,
+      },
+      tokens: toPublicTokens(tokens),
+      mfaRequired: false,
+      requiresSetup: userRequiresSetup(issuedUser),
+    });
+  }
   const redis = getRedis();
 
   if (!redis) {
