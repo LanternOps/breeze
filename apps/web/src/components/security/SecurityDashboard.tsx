@@ -646,11 +646,9 @@ export default function SecurityDashboard({
       {anyLoadFailed && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
           <p className="text-sm text-destructive">
-            {t(
-              loadFailures.overview && loadFailures.vulnerabilities
-                ? "securitySecurityDashboard.securityDataCouldNotBeLoaded"
-                : "securitySecurityDashboard.someSecurityDataCouldNotBeLoaded",
-            )}
+            {loadFailures.overview && loadFailures.vulnerabilities
+              ? t("securitySecurityDashboard.securityDataCouldNotBeLoaded")
+              : t("securitySecurityDashboard.someSecurityDataCouldNotBeLoaded")}
           </p>
           <button
             type="button"
@@ -788,11 +786,9 @@ export default function SecurityDashboard({
               <div className="mt-4 h-64">
                 {!overview || overview.trend.length === 0 ? (
                   <div className="flex h-full items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
-                    {t(
-                      overview
-                        ? "securitySecurityDashboard.noDataAvailable"
-                        : "securitySecurityDashboard.dataUnavailable",
-                    )}
+                    {overview
+                      ? t("securitySecurityDashboard.noDataAvailable")
+                      : t("securitySecurityDashboard.dataUnavailable")}
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height="100%">
