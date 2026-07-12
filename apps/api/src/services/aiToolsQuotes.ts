@@ -310,8 +310,11 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             // used to be the only "read" workaround (#2361) and silently bumped
             // updatedAt. Now that get_quote exists, point callers at it.
             if (Object.values(patch).every((v) => v === undefined)) {
+              // Note: unknown keys are stripped by updateQuoteSchema first, so a
+              // patch of only unrecognized/line-level fields lands here too.
               return validationErrorJson(
-                'patch is empty — nothing to update. Use get_quote to read a quote.'
+                'patch contains no updatable header fields — nothing to update. ' +
+                'Use get_quote to read a quote; use update_line for line fields.'
               );
             }
             await updateQuote(quoteId, patch, actor);
