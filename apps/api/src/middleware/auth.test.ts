@@ -56,9 +56,13 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   users: {
     id: 'id',
+    partnerId: 'partnerId',
+    orgId: 'orgId',
     email: 'email',
     name: 'name',
     status: 'status',
+    authEpoch: 'authEpoch',
+    mfaEpoch: 'mfaEpoch',
     passwordChangedAt: 'passwordChangedAt',
     mfaEnabled: 'mfaEnabled',
     isPlatformAdmin: 'isPlatformAdmin'
@@ -101,20 +105,30 @@ const basePayload = {
   partnerId: 'partner-123',
   scope: 'organization' as const,
   type: 'access' as const,
+  ae: 4,
+  me: 7,
+  sid: 'session-family-123',
   mfa: false,
   iat: 1_700_000_000
 };
 
 const activeUser = {
   id: 'user-123',
+  userId: 'user-123',
+  partnerId: 'partner-123',
+  orgId: 'org-123',
   email: 'test@example.com',
   name: 'Test User',
   status: 'active',
+  authEpoch: 4,
+  mfaEpoch: 7,
   passwordChangedAt: null as Date | null,
   // Default to enrolled so existing tests don't pick up the new role-MFA
   // gate; the gate-specific tests below override this explicitly.
   mfaEnabled: true,
-  isPlatformAdmin: false
+  isPlatformAdmin: false,
+  orgAccess: 'none' as const,
+  orgIds: null as string[] | null
 };
 
 // User who hasn't enrolled MFA yet — used by force_mfa gate tests.
@@ -172,6 +186,14 @@ function buildAuthApp() {
   app.use(authMiddleware);
   app.get('/test', (c) => c.json({ auth: c.get('auth') }));
   return app;
+}
+
+function buildTrackedAuthApp() {
+  const nextHandler = vi.fn((c: any) => c.json({ ok: true }));
+  const app = new Hono();
+  app.use(authMiddleware);
+  app.get('/test', nextHandler);
+  return { app, nextHandler };
 }
 
 describe('authMiddleware', () => {
@@ -257,6 +279,108 @@ describe('authMiddleware', () => {
       basePayload.iat,
       passwordChangedAt
     );
+  });
+
+  it('rejects an auth-epoch mismatch before request DB context or next', async () => {
+    const { app, nextHandler } = buildTrackedAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({ ...basePayload, ae: activeUser.authEpoch - 1 });
+    mockUserSelect([activeUser]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(401);
+    expect(nextHandler).not.toHaveBeenCalled();
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('rejects an MFA-epoch mismatch before request DB context or next', async () => {
+    const { app, nextHandler } = buildTrackedAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({ ...basePayload, me: activeUser.mfaEpoch - 1 });
+    mockUserSelect([activeUser]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(401);
+    expect(nextHandler).not.toHaveBeenCalled();
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('rejects a system token when live platform-admin authority was removed', async () => {
+    const { app, nextHandler } = buildTrackedAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      scope: 'system',
+      partnerId: null,
+      orgId: null
+    });
+    mockUserSelect([{ ...activeUser, isPlatformAdmin: false }]);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(nextHandler).not.toHaveBeenCalled();
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('rejects an organization token when its exact live membership was removed', async () => {
+    const { app, nextHandler } = buildTrackedAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([]) as any);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(nextHandler).not.toHaveBeenCalled();
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('rejects a partner token when its exact live membership was removed', async () => {
+    const { app, nextHandler } = buildTrackedAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      scope: 'partner',
+      orgId: null
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([{ ...activeUser, orgId: null }]) as any)
+      .mockReturnValueOnce(selectWithLimit([]) as any);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(nextHandler).not.toHaveBeenCalled();
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('continues only after an exact organization membership matches live authority', async () => {
+    const { app, nextHandler } = buildTrackedAuthApp();
+    vi.mocked(verifyToken).mockResolvedValue(basePayload);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{
+        userId: activeUser.id,
+        orgId: activeUser.orgId
+      }]) as any);
+
+    const res = await app.request('/test', {
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(nextHandler).toHaveBeenCalledOnce();
+    expect(withDbAccessContext).toHaveBeenCalledOnce();
   });
 
   it('sets auth context for valid token', async () => {
@@ -349,7 +473,12 @@ describe('authMiddleware', () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
-      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'selected', orgIds: ['org-a', 'org-b'] }]) as any)
+      .mockReturnValueOnce(selectWithLimit([{
+        userId: activeUser.id,
+        partnerId: activeUser.partnerId,
+        orgAccess: 'selected',
+        orgIds: ['org-a', 'org-b']
+      }]) as any)
       .mockReturnValueOnce(selectWithWhere([{ id: 'org-a' }]) as any);
 
     const res = await app.request('/test', {
@@ -372,7 +501,12 @@ describe('authMiddleware', () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
-      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+      .mockReturnValueOnce(selectWithLimit([{
+        userId: activeUser.id,
+        partnerId: activeUser.partnerId,
+        orgAccess: 'none',
+        orgIds: null
+      }]) as any);
 
     const res = await app.request('/test', {
       headers: { Authorization: 'Bearer token' }
@@ -415,7 +549,9 @@ describe('authMiddleware', () => {
     vi.mocked(db.select)
       // 1) user lookup
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-      // 2) role lookup via partner_users INNER JOIN roles
+      // 2) exact live partner membership
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+      // 3) role lookup via partner_users INNER JOIN roles
       .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: true }]) as any);
 
     const res = await app.request('/api/v1/partner/me', {
@@ -445,13 +581,13 @@ describe('authMiddleware', () => {
     vi.mocked(db.select)
       // 1) user lookup
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-      // 2) role lookup — would say "force MFA" but we never reach it
+      // 2) exact live partner membership
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+      // 3) role lookup — would say "force MFA" but we never reach it
       //    because the path is exempt before the gate runs role lookup.
       //    Still — the gate path-checks AFTER doing the role lookup, so
       //    we still need to return forceMfa here.
-      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: true }]) as any)
-      // 3) computeAccessibleOrgIds → partnerUsers (orgAccess only)
-      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: true }]) as any);
 
     const res = await app.request('/api/v1/auth/mfa/setup-totp', {
       method: 'POST',
@@ -477,8 +613,8 @@ describe('authMiddleware', () => {
     vi.mocked(db.select)
       // 1) user lookup — mfaEnabled=true (default activeUser)
       .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
-      // 2) Gate is skipped, so the next select is computeAccessibleOrgIds
-      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+      // 2) exact live partner membership; its orgAccess is reused downstream
+      .mockReturnValueOnce(selectWithLimit([activeUser]) as any);
 
     const res = await app.request('/api/v1/partner/me', {
       method: 'POST',
@@ -501,10 +637,10 @@ describe('authMiddleware', () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+      // exact live partner membership
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
       // forceMfa=false → gate passes
-      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: false }]) as any)
-      // computeAccessibleOrgIds
-      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: false }]) as any);
 
     const res = await app.request('/api/v1/partner/me', {
       method: 'POST',
@@ -558,13 +694,10 @@ describe('authMiddleware', () => {
       });
 
       vi.mocked(db.select)
-        // Only the user lookup — the role lookup must be skipped, so we
-        // intentionally do NOT mock selectWithJoinLimit. If the middleware
-        // calls db.select a second time the mock returns undefined and the
-        // test fails with a destructuring error, proving the short-circuit.
+        // User lookup plus exact live partner membership. The role lookup
+        // must be skipped, so we intentionally do NOT mock a join chain.
         .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-        // computeAccessibleOrgIds (last select)
-        .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+        .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any);
 
       const res = await app.request('/api/v1/partner/me', {
         method: 'POST',

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import type { LoginContext } from '@breeze/shared';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { partners, ssoProviders, partnerLoginBranding } from '../../db/schema';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { getRedis, rateLimiter } from '../../services';
@@ -39,7 +39,7 @@ loginContextRoutes.get('/login-context', async (c) => {
 
   let context: LoginContext;
   try {
-    context = await withSystemDbAccessContext(async () => {
+    context = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
       const partnerRows = await db.select({ id: partners.id }).from(partners).limit(2);
       if (partnerRows.length !== 1 || !partnerRows[0]) {
         return { branding: null, partnerSso: null };
@@ -80,7 +80,7 @@ loginContextRoutes.get('/login-context', async (c) => {
             }
           : null
       };
-    });
+    }));
   } catch (err) {
     // This endpoint gates login-page RENDERING on a public, unauthenticated
     // route — a DB blip must degrade to the stock login page, never surface

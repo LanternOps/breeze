@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../db', () => ({
   db: { select: vi.fn() },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
@@ -32,7 +33,7 @@ vi.mock('../../services/sentry', () => ({
 }));
 
 import { loginContextRoutes } from './loginContext';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { rateLimiter, getRedis } from '../../services';
 import { captureException } from '../../services/sentry';
 
@@ -114,6 +115,8 @@ describe('GET /auth/login-context (#2183)', () => {
         enforceSSO: true
       }
     });
+    expect(runOutsideDbContext).toHaveBeenCalledOnce();
+    expect(withSystemDbAccessContext).toHaveBeenCalledOnce();
   });
 
   it('passes through enforceSSO: false when the provider does not enforce SSO', async () => {

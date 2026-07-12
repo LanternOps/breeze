@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizationUsers, organizations, roles } from '../db/schema';
 import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
@@ -94,6 +94,10 @@ declare module 'hono' {
   }
 }
 
+function withTrueSystemDbAccess<T>(fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
 /**
  * Build the AuthContext site-axis closure (`canAccessSite`). An `undefined`
  * allowlist means unrestricted — returns true for every site (partner/system
@@ -133,7 +137,7 @@ async function userRoleRequiresMfa(
   // outage can be relieved by ops with an env flag (no code deploy).
   if (!mfaForcePartnerAdmin()) return false;
 
-  return withSystemDbAccessContext(async () => {
+  return withTrueSystemDbAccess(async () => {
     if (scope === 'organization' && orgId) {
       const [row] = await db
         .select({ forceMfa: roles.forceMfa })
@@ -200,16 +204,135 @@ interface OrgReach {
    * member. Distinct from `orgIds`: a 'selected' user whose selection happens
    * to cover every current org still must NOT pass 'all'-gated actions
    * (partner-wide writes apply to future orgs too). null for system/org scope
-   * and for membership-less partner tokens.
+   * (membership-less partner tokens are rejected before this is computed).
    */
   partnerOrgAccess: 'all' | 'selected' | 'none' | null;
+}
+
+interface LivePartnerMembership {
+  userId: string;
+  partnerId: string;
+  orgAccess: 'all' | 'selected' | 'none';
+  orgIds: string[] | null;
+}
+
+async function resolveLiveAuthority(payload: TokenPayload) {
+  return withTrueSystemDbAccess(async () => {
+    const [user] = await db
+      .select({
+        id: users.id,
+        partnerId: users.partnerId,
+        orgId: users.orgId,
+        email: users.email,
+        name: users.name,
+        status: users.status,
+        authEpoch: users.authEpoch,
+        mfaEpoch: users.mfaEpoch,
+        passwordChangedAt: users.passwordChangedAt,
+        mfaEnabled: users.mfaEnabled,
+        isPlatformAdmin: users.isPlatformAdmin
+      })
+      .from(users)
+      .where(eq(users.id, payload.sub))
+      .limit(1);
+
+    if (!user) {
+      throw new HTTPException(401, { message: 'User not found' });
+    }
+
+    if (user.status !== 'active') {
+      throw new HTTPException(403, { message: 'Account is not active' });
+    }
+
+    if (
+      payload.ae !== user.authEpoch
+      || payload.me !== user.mfaEpoch
+      || isTokenIssuedBeforePasswordChange(payload.iat, user.passwordChangedAt)
+    ) {
+      throw new HTTPException(401, { message: 'Invalid or expired token' });
+    }
+
+    let partnerMembership: LivePartnerMembership | null = null;
+
+    if (payload.scope === 'system') {
+      if (!user.isPlatformAdmin || payload.partnerId !== null || payload.orgId !== null) {
+        throw new HTTPException(403, { message: 'Insufficient permissions' });
+      }
+    } else if (payload.scope === 'organization') {
+      if (
+        !payload.partnerId
+        || !payload.orgId
+        || user.partnerId !== payload.partnerId
+        || user.orgId !== payload.orgId
+      ) {
+        throw new HTTPException(403, { message: 'Insufficient permissions' });
+      }
+
+      const [membership] = await db
+        .select({
+          userId: organizationUsers.userId,
+          orgId: organizationUsers.orgId
+        })
+        .from(organizationUsers)
+        .where(and(
+          eq(organizationUsers.userId, user.id),
+          eq(organizationUsers.orgId, payload.orgId)
+        ))
+        .limit(1);
+
+      if (
+        !membership
+        || membership.userId !== user.id
+        || membership.orgId !== payload.orgId
+      ) {
+        throw new HTTPException(403, { message: 'Insufficient permissions' });
+      }
+    } else if (payload.scope === 'partner') {
+      if (!payload.partnerId || payload.orgId !== null || user.partnerId !== payload.partnerId) {
+        throw new HTTPException(403, { message: 'Insufficient permissions' });
+      }
+
+      const [membership] = await db
+        .select({
+          userId: partnerUsers.userId,
+          partnerId: partnerUsers.partnerId,
+          orgAccess: partnerUsers.orgAccess,
+          orgIds: partnerUsers.orgIds
+        })
+        .from(partnerUsers)
+        .where(and(
+          eq(partnerUsers.userId, user.id),
+          eq(partnerUsers.partnerId, payload.partnerId)
+        ))
+        .limit(1);
+
+      if (
+        !membership
+        || membership.userId !== user.id
+        || membership.partnerId !== payload.partnerId
+      ) {
+        throw new HTTPException(403, { message: 'Insufficient permissions' });
+      }
+      partnerMembership = membership;
+    } else {
+      throw new HTTPException(403, { message: 'Insufficient permissions' });
+    }
+
+    await assertActiveTenantContext({
+      scope: payload.scope,
+      partnerId: payload.partnerId,
+      orgId: payload.orgId,
+    });
+
+    return { user, partnerMembership };
+  });
 }
 
 async function computeAccessibleOrgIds(
   scope: 'system' | 'partner' | 'organization',
   partnerId: string | null,
   orgId: string | null,
-  userId: string
+  partnerMembership: LivePartnerMembership | null
 ): Promise<OrgReach> {
   if (scope === 'system') {
     // System users can access all orgs - null indicates no filter
@@ -222,27 +345,10 @@ async function computeAccessibleOrgIds(
   }
 
   if (scope === 'partner' && partnerId) {
-    // This lookup runs BEFORE withDbAccessContext sets the request's scope,
-    // so partner_users and organizations are queried with no breeze.* GUCs
-    // set. Once those tables are under RLS, scope='none' (the default)
-    // denies everything. Run the whole lookup under a system-scope context
-    // so the pre-auth read works; the returned list is only used to build
-    // the real (non-system) context the request then runs under.
-    return withSystemDbAccessContext(async (): Promise<OrgReach> => {
-      const [partnerMembership] = await db
-        .select({
-          orgAccess: partnerUsers.orgAccess,
-          orgIds: partnerUsers.orgIds
-        })
-        .from(partnerUsers)
-        .where(
-          and(
-            eq(partnerUsers.userId, userId),
-            eq(partnerUsers.partnerId, partnerId)
-          )
-        )
-        .limit(1);
-
+    // Exact membership was already resolved and validated before this helper.
+    // Organization enumeration still runs before the request context exists,
+    // so use a true outside→system context for the RLS-protected read.
+    return withTrueSystemDbAccess(async (): Promise<OrgReach> => {
       if (!partnerMembership) {
         return { orgIds: [], partnerOrgAccess: null };
       }
@@ -384,49 +490,16 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 
-  // Fetch user to ensure they still exist and are active. Pre-auth lookup —
-  // must run under system scope because the request's real scope isn't
-  // applied until further down (see the withDbAccessContext call below).
-  const [user] = await withSystemDbAccessContext(async () =>
-    db
-      .select({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        status: users.status,
-        passwordChangedAt: users.passwordChangedAt,
-        mfaEnabled: users.mfaEnabled,
-        isPlatformAdmin: users.isPlatformAdmin
-      })
-      .from(users)
-      .where(eq(users.id, payload.sub))
-      .limit(1)
-  );
-
-  if (!user) {
-    throw new HTTPException(401, { message: 'User not found' });
-  }
-
-  if (user.status !== 'active') {
-    throw new HTTPException(403, { message: 'Account is not active' });
-  }
-
-  if (isTokenIssuedBeforePasswordChange(payload.iat, user.passwordChangedAt)) {
-    throw new HTTPException(401, { message: 'Invalid or expired token' });
-  }
-
+  let liveAuthority: Awaited<ReturnType<typeof resolveLiveAuthority>>;
   try {
-    await assertActiveTenantContext({
-      scope: payload.scope,
-      partnerId: payload.partnerId,
-      orgId: payload.orgId,
-    });
+    liveAuthority = await resolveLiveAuthority(payload);
   } catch (err) {
     if (err instanceof TenantInactiveError) {
       throw new HTTPException(403, { message: 'Tenant is not active' });
     }
     throw err;
   }
+  const { user, partnerMembership } = liveAuthority;
 
   // Role-level MFA gate. If the user's role requires MFA and they
   // haven't enabled it, short-circuit to 428 Precondition Required.
@@ -468,7 +541,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     payload.scope,
     payload.partnerId,
     payload.orgId,
-    user.id
+    partnerMembership
   );
   // Create helper functions
   const orgCondition = (orgIdColumn: PgColumn): SQL | undefined => {
