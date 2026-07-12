@@ -23,7 +23,10 @@ import {
 } from '../../services/authLifecycle';
 import { neutralizeUserIfOrphaned } from '../../services/userMembershipLifecycle';
 import { invalidatePartnerUsersInTransaction } from '../../services/tenantLifecycle';
-import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
+import {
+  activatePendingPartnerAndInvalidateSessions,
+  restoreSuspendedPartnerInTransaction,
+} from '../../services/partnerActivation';
 import { findExistingInviteUser } from '../../services/inviteUserReuse';
 import {
   authorizeOrganizationLifecycleWrite,
@@ -235,6 +238,83 @@ describe('transactional authentication lifecycle', () => {
     expect(userAfter?.authEpoch).toBe(1);
     expect(familyAfter?.revokedAt).toBeNull();
   });
+
+  it('denies direct unsuspend of a non-suspended partner without lifecycle mutations', async () => {
+    const partner = await createPartner({ status: 'pending' });
+    const user = await createUser({ partnerId: partner.id, withMembership: true });
+    const familyId = '10000000-0000-4000-8000-000000000009';
+    await getTestDb().update(partners).set({
+      emailVerifiedAt: new Date(),
+      paymentMethodAttachedAt: new Date(),
+    }).where(eq(partners.id, partner.id));
+    await insertFamily(user.id, familyId);
+
+    const result = await withAuthLifecycleSystemTransaction((tx) =>
+      restoreSuspendedPartnerInTransaction(tx, partner.id)
+    );
+
+    expect(result).toEqual({ notFound: true });
+    const [partnerAfter] = await getTestDb().select().from(partners).where(eq(partners.id, partner.id));
+    const [userAfter] = await getTestDb().select().from(users).where(eq(users.id, user.id));
+    const [familyAfter] = await getTestDb()
+      .select()
+      .from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, familyId));
+    expect(partnerAfter?.status).toBe('pending');
+    expect(userAfter?.authEpoch).toBe(1);
+    expect(familyAfter?.revokedAt).toBeNull();
+  });
+
+  it.each([
+    { verified: false, expectedStatus: 'pending' as const },
+    { verified: true, expectedStatus: 'active' as const },
+  ])(
+    'restores a suspended paid partner to $expectedStatus and invalidates tagged and untagged users',
+    async ({ verified, expectedStatus }) => {
+      const partner = await createPartner({ status: 'suspended' });
+      const taggedUser = await createUser({ partnerId: partner.id, withMembership: true });
+      const untaggedUser = await createUser({ partnerId: partner.id, withMembership: true });
+      const taggedFamilyId = '10000000-0000-4000-8000-000000000010';
+      const untaggedFamilyId = '10000000-0000-4000-8000-000000000011';
+      await getTestDb().update(partners).set({
+        emailVerifiedAt: verified ? new Date() : null,
+        paymentMethodAttachedAt: new Date(),
+      }).where(eq(partners.id, partner.id));
+      await getTestDb().update(users).set({
+        status: 'disabled',
+        disabledReason: 'partner_suspended',
+      }).where(eq(users.id, taggedUser.id));
+      await insertFamily(taggedUser.id, taggedFamilyId);
+      await insertFamily(untaggedUser.id, untaggedFamilyId);
+
+      const result = await withAuthLifecycleSystemTransaction((tx) =>
+        restoreSuspendedPartnerInTransaction(tx, partner.id)
+      );
+
+      expect(result).toMatchObject({
+        notFound: false,
+        status: expectedStatus,
+        userCount: 1,
+      });
+      if (result.notFound) throw new Error('suspended partner unexpectedly rejected');
+      expect(new Set(result.affectedUserIds)).toEqual(new Set([taggedUser.id, untaggedUser.id]));
+
+      const [partnerAfter] = await getTestDb().select().from(partners).where(eq(partners.id, partner.id));
+      const userRows = await getTestDb().select().from(users).where(
+        sql`${users.id} in (${taggedUser.id}, ${untaggedUser.id})`,
+      );
+      const familyRows = await getTestDb().select().from(refreshTokenFamilies).where(
+        sql`${refreshTokenFamilies.familyId} in (${taggedFamilyId}, ${untaggedFamilyId})`,
+      );
+      expect(partnerAfter?.status).toBe(expectedStatus);
+      expect(userRows).toHaveLength(2);
+      expect(userRows.every((row) => row.status === 'active' && row.authEpoch === 2)).toBe(true);
+      expect(familyRows).toHaveLength(2);
+      expect(familyRows.every((family) =>
+        family.revokedAt !== null && family.revokedReason === 'partner-reactivated'
+      )).toBe(true);
+    },
+  );
 
   it('blocks cross-partner active-user invite reuse without lifecycle or membership side effects', async () => {
     const invitingPartner = await createPartner();

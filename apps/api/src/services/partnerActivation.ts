@@ -1,6 +1,6 @@
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { db } from '../db';
-import { organizationUsers, organizations, partners, partnerUsers } from '../db/schema';
+import { organizationUsers, organizations, partners, partnerUsers, users } from '../db/schema';
 import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
@@ -58,6 +58,26 @@ export interface PartnerActivationStatusMetadata {
   message?: string;
   actionUrl?: string;
   actionLabel?: string;
+}
+
+export const PARTNER_SUSPENSION_DISABLED_REASON = 'partner_suspended';
+
+/** Restore only users carrying the marker written by partner suspension. */
+export function reEnableSuspensionDisabledUsers(
+  tx: AuthLifecycleTransaction,
+  partnerId: string,
+) {
+  return tx
+    .update(users)
+    .set({ status: 'active', disabledReason: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(users.partnerId, partnerId),
+        eq(users.status, 'disabled'),
+        eq(users.disabledReason, PARTNER_SUSPENSION_DISABLED_REASON),
+      ),
+    )
+    .returning({ id: users.id });
 }
 
 /**
@@ -176,4 +196,74 @@ export async function activatePendingPartnerAndInvalidateSessions(
   }
 
   return { activated: true, userIds };
+}
+
+/**
+ * Restore one explicitly suspended partner without bypassing the normal
+ * activation gates. The row lock keeps the eligibility check, status write,
+ * suspension-marker cleanup, and durable auth invalidation atomic with respect
+ * to concurrent partner lifecycle changes.
+ */
+export async function restoreSuspendedPartnerInTransaction(
+  tx: AuthLifecycleTransaction,
+  partnerId: string,
+) {
+  const [partner] = await tx
+    .select({
+      id: partners.id,
+      status: partners.status,
+      emailVerifiedAt: partners.emailVerifiedAt,
+      paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
+    })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1)
+    .for('update');
+
+  // Deliberately use the same response shape for missing and ineligible rows:
+  // callers must not be able to use this endpoint as a partner-status oracle.
+  if (!partner || partner.status !== 'suspended') {
+    return { notFound: true as const };
+  }
+
+  // Snapshot the whole partner population before changing any user rows. Auth
+  // invalidation is based on tenant membership, not on which accounts happen
+  // to carry the partner_suspended marker.
+  const partnerUserRows = await tx
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.partnerId, partnerId));
+
+  const newStatus: 'active' | 'pending' = shouldActivatePendingPartner({
+    status: 'pending',
+    emailVerifiedAt: partner.emailVerifiedAt,
+    paymentMethodAttachedAt: partner.paymentMethodAttachedAt,
+  })
+    ? 'active'
+    : 'pending';
+
+  await tx
+    .update(partners)
+    .set({ status: newStatus, updatedAt: new Date() })
+    .where(eq(partners.id, partnerId));
+
+  // Restore only users disabled by suspension; independently invalidate every
+  // affected partner user. Include the returned rows defensively and dedupe so
+  // a concurrent legacy/membership repair cannot leave a restored user out.
+  const reEnabled = await reEnableSuspensionDisabledUsers(tx, partnerId);
+  const affectedUserIds = [...new Set([
+    ...partnerUserRows.map((user) => user.id),
+    ...reEnabled.map((user) => user.id),
+  ])];
+  for (const userId of affectedUserIds) {
+    await advanceUserSecurityState(tx, userId);
+    await revokeAllUserSessionFamilies(tx, userId, 'partner-reactivated');
+  }
+
+  return {
+    notFound: false as const,
+    status: newStatus,
+    userCount: reEnabled.length,
+    affectedUserIds,
+  };
 }

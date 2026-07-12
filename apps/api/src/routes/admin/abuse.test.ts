@@ -9,6 +9,7 @@ const txMockState = vi.hoisted(() => ({
   partner: null as null | {
     id: string;
     status: string;
+    emailVerifiedAt: Date | null;
     paymentMethodAttachedAt: Date | null;
   },
   partnerDevices: [] as Array<{ id: string }>,
@@ -25,7 +26,7 @@ const txMockState = vi.hoisted(() => ({
 
 const lifecycleMocks = vi.hoisted(() => ({
   advance: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
-  revokeFamilies: vi.fn(async () => 1),
+  revokeFamilies: vi.fn(async (_tx: unknown, _userId: string, _reason: string) => 1),
   withSystemTransaction: vi.fn(),
 }));
 
@@ -60,7 +61,7 @@ function makeTx() {
             // user list on call 3 of suspend, orgs on call 4. Differentiate
             // with thenable+limit so the right call gets the right shape.
             const thenable: any = Promise.resolve(
-              call === 3
+              call === 2 || call === 3
                 ? txMockState.partnerUserRows
                 : call === 4
                 ? txMockState.partnerOrgs
@@ -68,8 +69,13 @@ function makeTx() {
                 ? [txMockState.partner]
                 : [],
             );
-            thenable.limit = () =>
-              Promise.resolve(txMockState.partner ? [txMockState.partner] : []);
+            thenable.limit = () => {
+              const limited: any = Promise.resolve(
+                txMockState.partner ? [txMockState.partner] : [],
+              );
+              limited.for = () => limited;
+              return limited;
+            };
             return thenable;
           },
           innerJoin: () => ({
@@ -139,7 +145,12 @@ vi.mock('../../db/schema', async (importOriginal) => ({
   // via remoteSessionTeardown) resolve; override the tables this suite asserts
   // on with opaque tokens below.
   ...(await importOriginal<typeof import('../../db/schema')>()),
-  partners: { id: 'partners.id', status: 'partners.status', paymentMethodAttachedAt: 'partners.pma' },
+  partners: {
+    id: 'partners.id',
+    status: 'partners.status',
+    emailVerifiedAt: 'partners.emailVerifiedAt',
+    paymentMethodAttachedAt: 'partners.pma',
+  },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
   devices: { id: 'devices.id', orgId: 'devices.orgId' },
   deviceCommands: {
@@ -263,7 +274,12 @@ const partnerAdminAuth: FakeAuth = {
 
 function resetState() {
   Object.assign(txMockState, {
-    partner: { id: 'partner-1', status: 'active', paymentMethodAttachedAt: new Date() },
+    partner: {
+      id: 'partner-1',
+      status: 'suspended',
+      emailVerifiedAt: new Date(),
+      paymentMethodAttachedAt: new Date(),
+    },
     partnerDevices: [{ id: 'd-1' }, { id: 'd-2' }, { id: 'd-3' }],
     partnerOrgs: [{ id: 'org-1' }, { id: 'org-2' }],
     partnerUserRows: [
@@ -284,7 +300,15 @@ function resetState() {
   lifecycleMocks.revokeFamilies.mockResolvedValue(1);
   lifecycleMocks.withSystemTransaction.mockReset();
   lifecycleMocks.withSystemTransaction.mockImplementation(
-    async (fn: (tx: unknown) => Promise<unknown>) => fn(makeTx()),
+    async (fn: (tx: unknown) => Promise<unknown>) => {
+      const updateCount = txMockState.updates.length;
+      try {
+        return await fn(makeTx());
+      } catch (error) {
+        txMockState.updates.splice(updateCount);
+        throw error;
+      }
+    },
   );
 }
 
@@ -820,7 +844,12 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
   it('does NOT restore the fleet when the partner only returns to pending (no payment method)', async () => {
     // Without a payment method the unsuspend routes back to 'pending'; agents
     // stay gated off (and token-suspended) until full activation.
-    txMockState.partner = { id: 'partner-1', status: 'suspended', paymentMethodAttachedAt: null };
+    txMockState.partner = {
+      id: 'partner-1',
+      status: 'suspended',
+      emailVerifiedAt: new Date(),
+      paymentMethodAttachedAt: null,
+    };
     const app = buildApp(platformAdminAuth);
     const res = await app.request('/admin/partners/partner-1/unsuspend', {
       method: 'POST',
@@ -850,5 +879,93 @@ describe('admin/abuse — unsuspend agent-fleet restore', () => {
     expect(body.cleanupFailures).toEqual(['agent-restore']);
     const auditCall = vi.mocked(createAuditLog).mock.calls[0]![0]!;
     expect(auditCall.result).toBe('failure');
+  });
+});
+
+describe('admin/abuse — unsuspend lifecycle gates', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetState();
+    process.env.NODE_ENV = 'test';
+  });
+
+  async function requestUnsuspend() {
+    return buildApp(platformAdminAuth).request('/admin/partners/partner-1/unsuspend', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'restoring after security review' }),
+    });
+  }
+
+  it('denies direct unsuspend of a pending partner without mutation or invalidation', async () => {
+    txMockState.partner = {
+      id: 'partner-1',
+      status: 'pending',
+      emailVerifiedAt: new Date(),
+      paymentMethodAttachedAt: new Date(),
+    };
+
+    const res = await requestUnsuspend();
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'partner not found' });
+    expect(txMockState.updates).toEqual([]);
+    expect(lifecycleMocks.advance).not.toHaveBeenCalled();
+    expect(lifecycleMocks.revokeFamilies).not.toHaveBeenCalled();
+    expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+    expect(createAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('restores a suspended paid but unverified partner to pending', async () => {
+    txMockState.partner = {
+      id: 'partner-1',
+      status: 'suspended',
+      emailVerifiedAt: null,
+      paymentMethodAttachedAt: new Date(),
+    };
+
+    const res = await requestUnsuspend();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'pending' });
+    expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+  });
+
+  it('restores a suspended verified and paid partner to active', async () => {
+    const res = await requestUnsuspend();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'active' });
+    expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
+  });
+
+  it('invalidates every partner user even when the user was not tagged partner_suspended', async () => {
+    txMockState.reEnabledUsers = [{ id: 'u-1' }];
+
+    const res = await requestUnsuspend();
+
+    expect(res.status).toBe(200);
+    for (const userId of ['u-1', 'u-2']) {
+      expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), userId);
+      expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
+        expect.anything(),
+        userId,
+        'partner-reactivated',
+      );
+    }
+  });
+
+  it('rolls back status and re-enable writes when full-user durable invalidation fails', async () => {
+    lifecycleMocks.revokeFamilies.mockImplementation(async (_tx, userId, _reason) => {
+      if (userId === 'u-2') throw new Error('family invalidation failed');
+      return 1;
+    });
+
+    const res = await requestUnsuspend();
+
+    expect(res.status).toBe(500);
+    expect(txMockState.updates).toEqual([]);
+    expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+    expect(createAuditLog).not.toHaveBeenCalled();
   });
 });

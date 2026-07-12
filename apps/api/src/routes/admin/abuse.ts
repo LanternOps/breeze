@@ -25,6 +25,12 @@ import {
   revokeAllUserSessionFamilies,
   withAuthLifecycleSystemTransaction,
 } from '../../services/authLifecycle';
+import {
+  PARTNER_SUSPENSION_DISABLED_REASON,
+  restoreSuspendedPartnerInTransaction,
+} from '../../services/partnerActivation';
+
+export { reEnableSuspensionDisabledUsers } from '../../services/partnerActivation';
 
 export const abuseRoutes = new Hono();
 
@@ -32,8 +38,6 @@ export const abuseRoutes = new Hono();
 // re-enables exactly the users carrying it, leaving users disabled for any other
 // reason (compromise, off-boarding, manual admin action → NULL) untouched.
 // See #917 (L-5).
-const SUSPENSION_DISABLED_REASON = 'partner_suspended';
-
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
 
 /**
@@ -50,30 +54,16 @@ type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
 export function disablePartnerUsersForSuspension(tx: Tx, partnerId: string) {
   return tx
     .update(users)
-    .set({ status: 'disabled', disabledReason: SUSPENSION_DISABLED_REASON, updatedAt: new Date() })
+    .set({
+      status: 'disabled',
+      disabledReason: PARTNER_SUSPENSION_DISABLED_REASON,
+      updatedAt: new Date(),
+    })
     .where(
       and(
         eq(users.partnerId, partnerId),
         eq(users.isPlatformAdmin, false),
         eq(users.status, 'active'),
-      ),
-    )
-    .returning({ id: users.id });
-}
-
-/**
- * Re-enable only the users that THIS partner's suspension disabled (marker set),
- * clearing the marker. Users disabled for any other reason stay disabled.
- */
-export function reEnableSuspensionDisabledUsers(tx: Tx, partnerId: string) {
-  return tx
-    .update(users)
-    .set({ status: 'active', disabledReason: null, updatedAt: new Date() })
-    .where(
-      and(
-        eq(users.partnerId, partnerId),
-        eq(users.status, 'disabled'),
-        eq(users.disabledReason, SUSPENSION_DISABLED_REASON),
       ),
     )
     .returning({ id: users.id });
@@ -399,42 +389,9 @@ abuseRoutes.post(
     const { reason } = c.req.valid('json');
     const auth = c.get('auth');
 
-    const result = await withAuthLifecycleSystemTransaction(async (tx) => {
-        const [partner] = await tx
-          .select({
-            id: partners.id,
-            paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
-          })
-          .from(partners)
-          .where(eq(partners.id, partnerId))
-          .limit(1);
-
-        if (!partner) {
-          return { notFound: true as const };
-        }
-
-        // Preserve the activation gate: only flip to 'active' if the partner
-        // has a payment method attached. Otherwise, route them back through
-        // the pending-activation flow.
-        const newStatus: 'active' | 'pending' = partner.paymentMethodAttachedAt
-          ? 'active'
-          : 'pending';
-
-        await tx
-          .update(partners)
-          .set({ status: newStatus, updatedAt: new Date() })
-          .where(eq(partners.id, partnerId));
-
-        // Only restore users THIS suspension disabled — not users disabled for
-        // compromise / off-boarding / manual admin action (#917 L-5).
-        const reEnabled = await reEnableSuspensionDisabledUsers(tx, partnerId);
-        for (const user of reEnabled) {
-          await advanceUserSecurityState(tx, user.id);
-          await revokeAllUserSessionFamilies(tx, user.id, 'partner-reactivated');
-        }
-
-        return { notFound: false as const, status: newStatus, userCount: reEnabled.length };
-    });
+    const result = await withAuthLifecycleSystemTransaction((tx) =>
+      restoreSuspendedPartnerInTransaction(tx, partnerId)
+    );
 
     if (result.notFound) {
       return c.json({ error: 'partner not found' }, 404);
