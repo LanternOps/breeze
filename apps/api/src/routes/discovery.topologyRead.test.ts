@@ -7,6 +7,7 @@ import { networkTopology, topologyManualNodes } from '../db/schema';
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/auditEvents', () => ({
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeAuditEvent: vi.fn(),
   writeRouteAudit: vi.fn(),
 }));

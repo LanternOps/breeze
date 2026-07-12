@@ -63,23 +63,26 @@ describe('redactSecretsFromOutput', () => {
 
   // --- ReDoS: pathological input must complete quickly, not hang the loop. ---
   it('handles pathological BEGIN-only input in bounded time', () => {
-    // 100k BEGIN markers (~2.7 MB) with NO END marker. Under the old unbounded
+    // 30k BEGIN markers (~0.8 MB) with NO END marker. Under the old unbounded
     // `[\s\S]*?` PEM regex each BEGIN scanned to end-of-string, so this
     // backtracked ~O(n²) and would run for many minutes, blocking the event
     // loop. With the 16 KiB-bounded gap each match attempt is bounded → linear
-    // (measured ~2.8 s here vs. effectively non-terminating before).
-    const input = '-----BEGIN PRIVATE KEY-----'.repeat(100_000);
+    // (~1 s idle vs. effectively non-terminating before).
+    const input = '-----BEGIN PRIVATE KEY-----'.repeat(30_000);
     const start = Date.now();
     const out = redactSecretsFromOutput(input);
     const elapsed = Date.now() - start;
     expect(typeof out).toBe('string');
-    // Generous ceiling: the pathological case previously would not return at
-    // all. Linear behavior finishes in well under this bound.
-    expect(elapsed).toBeLessThan(5_000);
+    // Deliberately loose ceiling: this only needs to separate linear behavior
+    // (seconds, even on a loaded shared CI runner or under parallel local
+    // forks) from the old ReDoS behavior (minutes / never returns, which the
+    // 30 s test timeout catches). A tight bound flaked on CI (6.7 s at 100k
+    // markers) and under local parallel runs.
+    expect(elapsed).toBeLessThan(20_000);
     // The lone headers are stripped by the truncated-key fallback.
     expect(out).not.toContain('-----BEGIN PRIVATE KEY-----');
     expect(out).toContain(REDACTED);
-  });
+  }, 30_000);
 
   // --- Truncated key: header + body but no END must still be fully redacted. ---
   it('redacts a truncated private key (BEGIN + body, no END marker)', () => {

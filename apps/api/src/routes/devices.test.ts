@@ -13,6 +13,7 @@ vi.mock('../services/remoteSessionTeardown', () => ({
 }));
 
 vi.mock('../services/auditEvents', () => ({
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeAuditEvent: vi.fn(),
   writeRouteAudit: vi.fn()
 }));
