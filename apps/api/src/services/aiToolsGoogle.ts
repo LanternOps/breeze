@@ -82,7 +82,7 @@ type DirectoryClient = ReturnType<typeof getDirectoryClient>;
  */
 export function canonicalizeUserEmail(raw: string): string | null {
   const email = raw.trim();
-  // Single addr-spec only: local@domain.tld, RFC-ish, no query operators.
+  // Single addr-spec only (user@example.com form), RFC-ish, no query operators.
   const STRICT_EMAIL = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
   if (!STRICT_EMAIL.test(email)) return null;
   // No embedded whitespace or wildcard survived the regex, but be explicit.
