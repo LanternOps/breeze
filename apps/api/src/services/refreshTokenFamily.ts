@@ -18,9 +18,15 @@
  * its own surrounding logic (db wrapping, audit trail, etc).
  */
 import { randomUUID } from 'crypto';
+import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
+import {
+  refreshTokenFamilies,
+  type RefreshTokenFamily,
+} from '../db/schema/refreshTokenFamilies';
 import { rememberJtiFamily } from './tokenRevocation';
+
+const REFRESH_TOKEN_FAMILY_ABSOLUTE_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Mints a fresh refresh-token family for a user and persists the audit row
@@ -38,13 +44,48 @@ import { rememberJtiFamily } from './tokenRevocation';
  */
 export async function mintRefreshTokenFamily(userId: string): Promise<string> {
   const familyId = randomUUID();
+  const absoluteExpiresAt = new Date(Date.now() + REFRESH_TOKEN_FAMILY_ABSOLUTE_LIFETIME_MS);
   await dbModule.withSystemDbAccessContext(async () => {
     await dbModule.db.insert(refreshTokenFamilies).values({
       familyId,
       userId,
+      absoluteExpiresAt,
     });
   });
   return familyId;
+}
+
+/**
+ * Loads an existing family from PostgreSQL and accepts it only while it is
+ * owned by the expected user, durably unrevoked, and inside its fixed absolute
+ * lifetime. The caller receives no distinction between missing and inactive
+ * families, avoiding an ownership/status oracle.
+ */
+export async function getActiveRefreshTokenFamily(
+  familyId: string,
+  userId: string
+): Promise<RefreshTokenFamily | null> {
+  const rows = await dbModule.withSystemDbAccessContext(async () =>
+    dbModule.db
+      .select()
+      .from(refreshTokenFamilies)
+      .where(and(
+        eq(refreshTokenFamilies.familyId, familyId),
+        eq(refreshTokenFamilies.userId, userId)
+      ))
+      .limit(1)
+  );
+  const family = rows[0];
+  if (
+    !family
+    || family.userId !== userId
+    || family.revokedAt !== null
+    || !(family.absoluteExpiresAt instanceof Date)
+    || family.absoluteExpiresAt.getTime() <= Date.now()
+  ) {
+    return null;
+  }
+  return family;
 }
 
 /**

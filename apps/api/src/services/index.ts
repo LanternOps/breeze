@@ -16,4 +16,5 @@ export * from './email';
 export * from './auditService';
 export * from './tokenRevocation';
 export * from './refreshTokenFamily';
+export * from './userSession';
 export * from './clientIp';

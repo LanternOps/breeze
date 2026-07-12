@@ -15,8 +15,22 @@ describe('jwt service', () => {
     orgId: 'org-123',
     partnerId: 'partner-123',
     scope: 'organization' as const,
-    mfa: false
+    mfa: false,
+    ae: 1,
+    me: 1,
+    sid: 'family-test-123',
+    fam: 'family-test-123'
   };
+
+  async function signFirstPartyToken(payload: Record<string, unknown>): Promise<string> {
+    return new SignJWT(payload)
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('15m')
+      .setIssuer('breeze')
+      .setAudience('breeze-api')
+      .sign(new TextEncoder().encode(process.env.JWT_SECRET!));
+  }
 
   describe('createAccessToken', () => {
     it('should create a valid JWT access token', async () => {
@@ -119,6 +133,34 @@ describe('jwt service', () => {
         debugSpy.mockRestore();
       }
     });
+
+    it.each([
+      ['ae', { ae: undefined, me: 7, sid: 'family-123' }],
+      ['me', { ae: 3, me: undefined, sid: 'family-123' }],
+      ['sid', { ae: 3, me: 7, sid: undefined }]
+    ])('rejects an access token missing %s', async (_claim, claims) => {
+      const token = await signFirstPartyToken({
+        ...testPayload,
+        ...claims,
+        type: 'access'
+      });
+
+      await expect(verifyToken(token)).resolves.toBeNull();
+    });
+
+    it.each([
+      ['ae', { ae: undefined, me: 7, fam: 'family-123' }],
+      ['me', { ae: 3, me: undefined, fam: 'family-123' }],
+      ['fam', { ae: 3, me: 7, fam: undefined }]
+    ])('rejects a refresh token missing %s', async (_claim, claims) => {
+      const token = await signFirstPartyToken({
+        ...testPayload,
+        ...claims,
+        type: 'refresh'
+      });
+
+      await expect(verifyToken(token)).resolves.toBeNull();
+    });
   });
 
   describe('mobile device binding claim (mdid) — SR-001', () => {
@@ -159,6 +201,20 @@ describe('jwt service', () => {
       expect(refreshDecoded?.type).toBe('refresh');
       expect(accessDecoded?.jti).toBeUndefined();
       expect(refreshDecoded?.jti).toBeDefined();
+    });
+
+    it('carries identical epochs and session family IDs in a valid pair', async () => {
+      const familyId = 'family-epoch-bound';
+      const result = await createTokenPair(
+        { ...testPayload, ae: 3, me: 7, sid: familyId },
+        { refreshFam: familyId }
+      );
+
+      const accessPayload = await verifyToken(result.accessToken);
+      const refreshPayload = await verifyToken(result.refreshToken);
+
+      expect(accessPayload).toMatchObject({ ae: 3, me: 7, sid: familyId, type: 'access' });
+      expect(refreshPayload).toMatchObject({ ae: 3, me: 7, fam: familyId, type: 'refresh' });
     });
   });
 

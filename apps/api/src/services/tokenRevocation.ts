@@ -386,8 +386,9 @@ export async function revokeFamily(familyId: string, reason: string): Promise<vo
 }
 
 /**
- * Returns true if the family has been revoked. Hot-path check uses Redis;
- * on Redis miss/error, falls back to the PG audit row.
+ * Returns true if the family has been revoked or passed its fixed absolute
+ * lifetime. Hot-path revocation uses Redis; on miss/error, PostgreSQL remains
+ * authoritative for both durable revocation and absolute expiry.
  *
  * Fail-closed: if BOTH Redis and PG are unreachable, returns true. The
  * trade-off matches `isUserTokenRevoked` — a brief outage blocks all
@@ -413,7 +414,10 @@ export async function isFamilyRevoked(familyId: string): Promise<boolean> {
   try {
     const rows = await dbModule.withSystemDbAccessContext(async () =>
       dbModule.db
-        .select({ revokedAt: refreshTokenFamilies.revokedAt })
+        .select({
+          revokedAt: refreshTokenFamilies.revokedAt,
+          absoluteExpiresAt: refreshTokenFamilies.absoluteExpiresAt,
+        })
         .from(refreshTokenFamilies)
         .where(eq(refreshTokenFamilies.familyId, familyId))
         .limit(1)
@@ -426,7 +430,7 @@ export async function isFamilyRevoked(familyId: string): Promise<boolean> {
       // forged; either way we reject.
       return true;
     }
-    return row.revokedAt !== null;
+    return row.revokedAt !== null || row.absoluteExpiresAt.getTime() <= Date.now();
   } catch (error) {
     console.error(
       '[token-revocation] Family-revoked DB lookup failed — failing closed:',

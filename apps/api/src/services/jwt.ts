@@ -184,6 +184,10 @@ export interface TokenPayload {
   partnerId: string | null;
   scope: 'system' | 'partner' | 'organization';
   type: 'access' | 'refresh';
+  // Durable user security epochs. Verification requires both claims so tokens
+  // minted before the lifecycle-hardening rollout fail closed.
+  ae: number;
+  me: number;
   // Indicates whether this token was issued after completing MFA.
   // For legacy tokens that predate this claim, verification defaults this to false.
   mfa: boolean;
@@ -192,15 +196,27 @@ export interface TokenPayload {
   // The lost-phone block is enforced against this SIGNED value, never a
   // client-supplied header (which is spoofable / omittable).
   mdid?: string;
-  // Refresh-token family id (Task 7 / RFC 9700 §4.13.2). Carried on REFRESH
-  // tokens only — access tokens never need it. Each /login mints a fresh
-  // family; every rotation inherits the family from the prior refresh token.
-  // Legacy tokens minted before this rollout have no `fam` and use the
-  // backwards-compat per-jti revocation path on /refresh.
+  // Access-token session id. It is the same durable refresh-token family id
+  // carried in the paired refresh token's `fam` claim.
+  sid?: string;
+  // Refresh-token family id (RFC 9700 §4.13.2). Required on refresh tokens
+  // and absent from access tokens. Each new session mints a fresh family;
+  // every rotation inherits the family from the prior refresh token.
   fam?: string;
   iat?: number;
   jti?: string;
 }
+
+/**
+ * Transitional input for low-level signers. First-party callers should use
+ * `issueUserSession`, which supplies all mandatory claims from live DB state.
+ * Keeping epochs optional here lets isolated non-session tests and the route
+ * migration land in separate, reviewable commits; `verifyToken` remains strict.
+ */
+export type TokenSigningPayload = Omit<TokenPayload, 'type' | 'ae' | 'me'> & {
+  ae?: number;
+  me?: number;
+};
 
 export interface ViewerTokenPayload {
   sub: string;
@@ -215,10 +231,12 @@ export function buildHeader(kid?: string): { alg: 'HS256'; kid?: string } {
   return kid ? { alg: 'HS256', kid } : { alg: 'HS256' };
 }
 
-export async function createAccessToken(payload: Omit<TokenPayload, 'type'>): Promise<string> {
+export async function createAccessToken(payload: TokenSigningPayload): Promise<string> {
   const { key, kid } = getSignKey();
+  const { fam: _famIgnored, ...accessPayload } = payload;
+  void _famIgnored;
 
-  return new SignJWT({ ...payload, type: 'access' })
+  return new SignJWT({ ...accessPayload, type: 'access' })
     .setProtectedHeader(buildHeader(kid))
     .setIssuedAt()
     .setExpirationTime(ACCESS_TOKEN_EXPIRY)
@@ -227,7 +245,7 @@ export async function createAccessToken(payload: Omit<TokenPayload, 'type'>): Pr
     .sign(key);
 }
 
-export async function createRefreshToken(payload: Omit<TokenPayload, 'type'>): Promise<string> {
+export async function createRefreshToken(payload: TokenSigningPayload): Promise<string> {
   return (await createRefreshTokenWithJti(payload)).token;
 }
 
@@ -237,12 +255,14 @@ export async function createRefreshToken(payload: Omit<TokenPayload, 'type'>): P
  * token. Used by `createTokenPair` for the family-aware path.
  */
 export async function createRefreshTokenWithJti(
-  payload: Omit<TokenPayload, 'type'>
+  payload: TokenSigningPayload
 ): Promise<{ token: string; jti: string }> {
   const { key, kid } = getSignKey();
   const jti = randomUUID();
+  const { sid: _sidIgnored, ...refreshPayload } = payload;
+  void _sidIgnored;
 
-  const token = await new SignJWT({ ...payload, type: 'refresh' })
+  const token = await new SignJWT({ ...refreshPayload, type: 'refresh' })
     .setProtectedHeader(buildHeader(kid))
     .setJti(jti)
     .setIssuedAt()
@@ -262,6 +282,23 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       algorithms: ['HS256']
     });
 
+    const type = payload.type;
+    const authEpoch = payload.ae;
+    const mfaEpoch = payload.me;
+    const sid = typeof payload.sid === 'string' && payload.sid.length > 0 ? payload.sid : undefined;
+    const fam = typeof payload.fam === 'string' && payload.fam.length > 0 ? payload.fam : undefined;
+    if (
+      (type !== 'access' && type !== 'refresh')
+      || !Number.isSafeInteger(authEpoch)
+      || (authEpoch as number) < 1
+      || !Number.isSafeInteger(mfaEpoch)
+      || (mfaEpoch as number) < 1
+      || (type === 'access' && !sid)
+      || (type === 'refresh' && !fam)
+    ) {
+      return null;
+    }
+
     return {
       sub: payload.sub as string,
       email: payload.email as string,
@@ -269,10 +306,13 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       orgId: payload.orgId as string | null,
       partnerId: payload.partnerId as string | null,
       scope: payload.scope as 'system' | 'partner' | 'organization',
-      type: payload.type as 'access' | 'refresh',
+      type,
+      ae: authEpoch as number,
+      me: mfaEpoch as number,
       mfa: payload.mfa === true,
       mdid: typeof payload.mdid === 'string' && payload.mdid.length > 0 ? payload.mdid : undefined,
-      fam: typeof payload.fam === 'string' && payload.fam.length > 0 ? payload.fam : undefined,
+      sid,
+      fam,
       iat: typeof payload.iat === 'number' ? payload.iat : undefined,
       jti: typeof payload.jti === 'string' ? payload.jti : undefined
     };
@@ -338,25 +378,30 @@ export async function verifyViewerAccessToken(token: string): Promise<ViewerToke
 
 export interface CreateTokenPairOptions {
   /**
-   * Refresh-token family id (Task 7). When present, the new refresh token
-   * carries this id in its `fam` claim. The access token never gets it.
-   * Callers that don't care about family tracking (legacy paths, or non-
-   * /login entry points) can omit this and tokens fall back to the
-   * backwards-compat per-jti revocation path on /refresh.
+   * Refresh-token family id. First-party session callers must supply it; the
+   * optional shape remains only for low-level non-session test/caller
+   * compatibility while `verifyToken` rejects refresh tokens without it.
    */
   refreshFam?: string;
 }
 
+export type TokenPair = {
+  accessToken: string;
+  refreshToken: string;
+  refreshJti: string;
+  expiresInSeconds: number;
+};
+
 export async function createTokenPair(
-  payload: Omit<TokenPayload, 'type'>,
+  payload: TokenSigningPayload,
   options: CreateTokenPairOptions = {}
-): Promise<{ accessToken: string; refreshToken: string; refreshJti: string; expiresInSeconds: number }> {
+): Promise<TokenPair> {
   // Strip `fam` from the access-token payload defensively — it should never
   // have been propagated there in the first place, but enforce here so any
   // future caller can't accidentally leak it.
   const { fam: _famIgnored, ...accessPayload } = payload;
   void _famIgnored;
-  const refreshPayload: Omit<TokenPayload, 'type'> = options.refreshFam
+  const refreshPayload: TokenSigningPayload = options.refreshFam
     ? { ...payload, fam: options.refreshFam }
     : payload;
 
