@@ -52,6 +52,7 @@ vi.mock('../../db/schema', () => ({
     agentTokenHash: 'agentTokenHash',
     previousTokenHash: 'previousTokenHash',
     previousTokenExpiresAt: 'previousTokenExpiresAt',
+    enrollmentIp: 'enrollment_ip',
   },
   deviceHardware: { deviceId: 'deviceId', serialNumber: 'serialNumber' },
   deviceNetwork: { deviceId: 'deviceId', macAddress: 'macAddress' },
@@ -91,7 +92,7 @@ vi.mock('../../services/warrantyWorker', () => ({
 }));
 
 vi.mock('../../services/partnerHooks', () => ({
-  dispatchHook: vi.fn(),
+  dispatchHook: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../services/tenantStatus', () => ({
@@ -105,6 +106,7 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { recordAgentEnrollment } from '../../services/anomalyMetrics';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
+import { getTrustedClientIp } from '../../services/clientIp';
 import { enrollmentRoutes } from './enrollment';
 
 function buildApp(): Hono {
@@ -887,6 +889,126 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
   });
 });
 
+describe('POST /agents/enroll — resolved-key denials are org-attributable', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+    vi.mocked(getActiveOrgTenant).mockResolvedValue({ orgId: 'org-active', partnerId: 'partner-active' });
+  });
+
+  it('attributes missing_enrollment_secret to the resolved key\'s org (not null)', async () => {
+    mockKeyLookup({
+      id: 'key-secret-1',
+      orgId: 'org-secret-1',
+      siteId: 'site-secret-1',
+      keySecretHash: 'per-key-secret-hash',
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'org-secret-1',
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'missing_enrollment_secret', keyId: 'key-secret-1' }),
+      }),
+    );
+  });
+
+  it('attributes invalid_enrollment_secret to the resolved key\'s org (not null)', async () => {
+    mockKeyLookup({
+      id: 'key-secret-2',
+      orgId: 'org-secret-2',
+      siteId: 'site-secret-2',
+      keySecretHash: createHash('sha256').update('the-real-secret').digest('hex'),
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...baseEnrollBody, enrollmentSecret: 'wrong-secret' }),
+    });
+
+    expect(resp.status).toBe(403);
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'org-secret-2',
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'invalid_enrollment_secret', keyId: 'key-secret-2' }),
+      }),
+    );
+  });
+
+  it('audits device_limit_reached denials with the resolved org — otherwise this signal is invisible to the abuse-signals denied CTE', async () => {
+    mockKeyLookup({
+      id: 'key-limit-1',
+      orgId: 'org-limit-1',
+      siteId: 'site-limit-1',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+    });
+
+    mockSelectRows([{ partnerId: 'partner-limit-1' }]);
+    mockSelectRows([{ maxDevices: 2 }]);
+    mockSelectRows([]); // no existing device
+
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 2 }]), // at cap
+          }),
+        }),
+        insert: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn(),
+      };
+      return fn(fakeTx);
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.code).toBe('DEVICE_LIMIT_REACHED');
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: 'org-limit-1',
+        action: 'agent.enroll',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'device_limit_reached',
+          enrollmentKeyId: 'key-limit-1',
+          partnerId: 'partner-limit-1',
+          currentDevices: 2,
+          maxDevices: 2,
+        }),
+      }),
+    );
+  });
+});
+
 describe('POST /agents/enroll — ENROLLMENT_SECRET_ENFORCEMENT_MODE', () => {
   const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 
@@ -1590,5 +1712,95 @@ describe('POST /agents/enroll — virtualization attribute persistence (#1387)',
     const deviceValues = (deviceInsertValues.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(deviceValues.isVirtual).toBe(true);
     expect(deviceValues.virtualizationPlatform).toBe('vmware');
+  });
+});
+
+describe('POST /agents/enroll — enrollment IP persistence', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+  });
+
+  // Stands up the full happy fresh-enroll path and returns the spy that
+  // captures the device INSERT .values(...) payload, mirroring
+  // arrangeFreshEnroll() above (#1387) — a mechanical extraction so this
+  // test (and any future ones) can assert on the persisted enrollmentIp.
+  function setupSuccessfulEnrollTransaction() {
+    mockKeyLookup({
+      id: 'key-ip',
+      orgId: 'org-ip',
+      siteId: 'site-ip',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: 10,
+      usageCount: 0,
+    });
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([
+            { id: 'key-ip', orgId: 'org-ip', siteId: 'site-ip' },
+          ]),
+        })),
+      })),
+    } as any);
+    mockSelectRows([{ partnerId: 'partner-ip' }]); // org lookup
+    mockSelectRows([{ maxDevices: null }]); // partner.maxDevices
+    mockSelectRows([]); // existing-device lookup → fresh
+
+    const deviceInsertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        { id: 'device-ip', orgId: 'org-ip', siteId: 'site-ip', hostname: 'host-1' },
+      ]),
+      onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const fakeTx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }]),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({ values: deviceInsertValues }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'key-ip' }]),
+            }),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      };
+      return fn(fakeTx);
+    });
+    return deviceInsertValues;
+  }
+
+  it('persists the enrolling client IP on the new device row', async () => {
+    const deviceInsertValues = setupSuccessfulEnrollTransaction();
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+    expect(resp.status).toBe(201);
+    expect(deviceInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ enrollmentIp: '127.0.0.1' }),
+    );
+  });
+
+  it('stores NULL enrollmentIp when the client IP could not be determined', async () => {
+    vi.mocked(getTrustedClientIp).mockReturnValueOnce('unknown');
+    const deviceInsertValues = setupSuccessfulEnrollTransaction();
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+    expect(resp.status).toBe(201);
+    expect(deviceInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ enrollmentIp: null }),
+    );
   });
 });

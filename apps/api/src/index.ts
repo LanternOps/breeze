@@ -204,6 +204,7 @@ import { initializeAutomationWorker, shutdownAutomationWorker } from './jobs/aut
 import { initializeSecurityPostureWorker, shutdownSecurityPostureWorker } from './jobs/securityPostureWorker';
 import { initializeReliabilityWorker, shutdownReliabilityWorker } from './jobs/reliabilityWorker';
 import { initializeUserRiskJobs, shutdownUserRiskJobs } from './jobs/userRiskJobs';
+import { initializeAbuseSignalsWorker, shutdownAbuseSignalsWorker } from './jobs/abuseSignalsSweep';
 import { initializeUserRiskRetention, shutdownUserRiskRetention } from './jobs/userRiskRetention';
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
 import { initializeReportScheduleWorker, shutdownReportScheduleWorker } from './jobs/reportScheduleWorker';
@@ -1153,6 +1154,7 @@ async function initializeWorkers(): Promise<void> {
     ['securityPostureWorker', initializeSecurityPostureWorker],
     ['reliabilityWorker', initializeReliabilityWorker],
     ['userRiskWorker', initializeUserRiskJobs],
+    ['abuseSignalsWorker', initializeAbuseSignalsWorker],
     ['userRiskRetention', initializeUserRiskRetention],
     ['backupVerificationJobs', initializeBackupVerificationJobs],
     ['policyAlertBridge', initializePolicyAlertBridge],
@@ -1365,6 +1367,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownSecurityPostureWorker,
     shutdownReliabilityWorker,
     shutdownUserRiskJobs,
+    shutdownAbuseSignalsWorker,
     shutdownUserRiskRetention,
     shutdownAutomationWorker,
     shutdownSoftwareRemediationWorker,

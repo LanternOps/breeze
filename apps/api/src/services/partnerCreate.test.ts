@@ -106,6 +106,7 @@ describe('createPartner', () => {
       adminName: 'Alex',
       passwordHash: 'hashed',
       origin: { mcp: false },
+      status: 'active',
     });
 
     // Basic return shape.
@@ -148,6 +149,7 @@ describe('createPartner', () => {
       adminName: 'Alex',
       passwordHash: 'hashed',
       origin: { mcp: false },
+      status: 'active',
     });
 
     const statusCalls = insertCalls.filter((c) => (c.table as any).__t === 'ticket_statuses');
@@ -181,6 +183,7 @@ describe('createPartner', () => {
       adminName: 'Alex',
       passwordHash: null,
       origin: { mcp: true, ip: '1.2.3.4', userAgent: 'ClaudeAgent/1.0' },
+      status: 'pending',
     });
 
     expect(result.mcpOrigin).toBe(true);
@@ -196,5 +199,23 @@ describe('createPartner', () => {
     // passwordHash passed through as null for MCP-originated partners.
     const userCall = insertCalls.find((c) => (c.table as any).__t === 'users')!;
     expect(userCall.values.passwordHash).toBeNull();
+  });
+
+  it('tags partner with signup_ip/signup_user_agent (not mcp_origin_*) when origin.mcp is false', async () => {
+    await createPartner({
+      orgName: 'Acme',
+      adminEmail: 'alex@acme.com',
+      adminName: 'Alex',
+      passwordHash: 'hashed',
+      origin: { mcp: false, ip: '198.51.100.7', userAgent: 'ua' },
+      status: 'active',
+    });
+
+    const partnerCall = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+    expect(partnerCall.values).toMatchObject({
+      signupIp: '198.51.100.7',
+      signupUserAgent: 'ua',
+      mcpOriginIp: null,
+    });
   });
 });

@@ -4,6 +4,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, users, organizations, sites, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods, mlFeedbackEvents, unifiCollectors, unifiDeviceTelemetry, unifiClients } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
 import { manifestSigningKeys } from '../../db/schema/manifestSigningKeys';
+import { partnerAbuseSignals } from '../../db/schema/abuseSignals';
 import { automations, automationRuns } from '../../db/schema/automations';
 import { configurationPolicies } from '../../db/schema/configurationPolicies';
 import { scripts, scriptExecutionBatches } from '../../db/schema/scripts';
@@ -41,15 +42,23 @@ import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
 // Tables that intentionally do not carry RLS isolation policies.
 // Add deliberately, with a comment.
 const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
-  // System-scoped: per-deployment infrastructure with no tenant column.
-  // Forced RLS, no policies → only system context can access. See
-  // INTENTIONAL_UNSCOPED below for the documented set.
+  // System-scoped: forced RLS with either no policies or a system-only
+  // policy — in both cases only the system DB context can access the table.
+  // See INTENTIONAL_UNSCOPED below for the documented set (some entries,
+  // like partner_abuse_signals, DO have a tenant column but are
+  // operator-only by design, not tenant-column-less).
   'manifest_signing_keys',
+  'partner_abuse_signals',
 ]);
 
-// System-scoped tables: per-deployment infrastructure with no tenant column.
-// These have ENABLE + FORCE ROW LEVEL SECURITY but no permissive policies —
-// only the system DB context (superuser / runOutsideDbContext) can access them.
+// System-scoped tables: forced RLS with either no permissive policies at all,
+// or a single system-only policy (`USING current_setting('breeze.scope',
+// true) = 'system'`) — in both cases only the system DB context (which sets
+// that GUC) can read/write, never the unprivileged breeze_app role under a
+// tenant-scoped context. Some of these have no tenant column at all
+// (per-deployment infrastructure); others (partner_abuse_signals) DO carry a
+// tenant column (partner_id) but are deliberately operator-only, not
+// tenant-readable, so they're listed here rather than under a tenant shape.
 // The auto-discovery query won't surface these (no org_id column, not in any
 // tenant list), but they are enumerated here for explicit documentation and
 // so that a future "all-tables RLS enabled" audit can assert against this list.
@@ -67,6 +76,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'software_product_resolutions', // Global DisplayName→product resolution cache/log (#2290). Forced RLS, system-only policy → only system context.
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
+  'partner_abuse_signals', // Operator abuse signals ABOUT partners. Forced RLS, system-only policy — partners must never see their own risk signals.
 ]);
 
 // Tables with org_id metadata that are intentionally not generic org-tenant
@@ -1400,6 +1410,184 @@ describe('manifest_signing_keys RLS — system-only enforcement (#639)', () => {
       expect(result).toHaveLength(1);
       expect(result[0]!.keyId).toBe(keyId);
       insertedKeyIds.push(keyId);
+    },
+  );
+});
+
+// ===========================================================================
+// partner_abuse_signals RLS lockout
+//
+// The catalog test above only proves partner_abuse_signals is in
+// INTENTIONAL_UNSCOPED as documentation. It does NOT prove Postgres rejects
+// a tenant-scoped (non-system) caller's INSERT/SELECT. This block forges
+// both as `breeze_app`, including the specific threat this table exists to
+// prevent: a partner reading abuse signals about ITSELF via a partner-scoped
+// context whose accessiblePartnerIds includes the row's own partner_id. The
+// system-scope branch confirms the abuse-signals sweep write path
+// (services/abuseSignals/persistence.ts) still works.
+// ===========================================================================
+describe('partner_abuse_signals RLS — system-only enforcement', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const partnerSlug = `rls-abuse-signals-partner-${runSuffix}`;
+
+  let partnerId: string;
+  const insertedSignalIds: string[] = [];
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerId) return;
+    await withSystemDbAccessContext(async () => {
+      const [partner] = await db
+        .insert(partners)
+        .values({
+          name: `RLS Abuse Signals Partner ${runSuffix}`,
+          slug: partnerSlug,
+          type: 'msp',
+          plan: 'pro',
+          status: 'active',
+        })
+        .returning({ id: partners.id });
+      if (!partner) throw new Error('failed to seed partner for abuse-signals RLS forge test');
+      partnerId = partner.id;
+    });
+  }
+
+  afterAll(async () => {
+    await withSystemDbAccessContext(async () => {
+      for (const id of insertedSignalIds) {
+        await db.delete(partnerAbuseSignals).where(eq(partnerAbuseSignals.id, id));
+      }
+      if (partnerId) await db.delete(partners).where(eq(partners.id, partnerId));
+    });
+  });
+
+  // Build a tenant-scoped (partner) DbAccessContext. Under this context,
+  // breeze_app should be unable to touch partner_abuse_signals — the table
+  // has ENABLE + FORCE RLS and a single system-only policy
+  // (`partner_abuse_signals_system_only`, `USING current_setting
+  // ('breeze.scope', true) = 'system'`), so only a caller whose session has
+  // that GUC set to 'system' can read/write. `withSystemDbAccessContext`
+  // does NOT bypass RLS — it still runs as the unprivileged `breeze_app`
+  // role; it sets `breeze.scope = 'system'`, which is exactly what this
+  // policy checks.
+  function partnerContext(accessiblePartnerId: string) {
+    return {
+      scope: 'partner' as const,
+      orgId: null,
+      accessibleOrgIds: [],
+      accessiblePartnerIds: [accessiblePartnerId],
+      userId: null,
+    };
+  }
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'INSERT as breeze_app under a tenant (partner-scoped) context is rejected by RLS',
+    async () => {
+      await ensureFixtures();
+
+      let caught: unknown;
+      try {
+        await withDbAccessContext(partnerContext(partnerId), async () =>
+          db.insert(partnerAbuseSignals).values({
+            partnerId,
+            signalKey: `rls-forge-deny-${runSuffix}`,
+            severity: 'watch',
+            score: 1,
+            evidence: {},
+          }),
+        );
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeDefined();
+      const cause = caught as
+        | { cause?: { message?: string }; message?: string }
+        | undefined;
+      const message = cause?.cause?.message ?? cause?.message ?? '';
+      expect(message).toMatch(/row-level security|permission denied/i);
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    "SELECT under a partner context matching the row's own partner_id returns zero rows",
+    async () => {
+      await ensureFixtures();
+
+      // Seed a row via system context so there's something the partner
+      // should fail to see — the specific threat this table exists to
+      // prevent: a partner reading abuse signals about itself.
+      const seededSignalKey = `rls-forge-seed-${runSuffix}`;
+      const seeded = await withSystemDbAccessContext(async () => {
+        return db
+          .insert(partnerAbuseSignals)
+          .values({
+            partnerId,
+            signalKey: seededSignalKey,
+            severity: 'alert',
+            score: 5,
+            evidence: { note: 'rls forge seed' },
+          })
+          .returning({ id: partnerAbuseSignals.id });
+      });
+      expect(seeded).toHaveLength(1);
+      insertedSignalIds.push(seeded[0]!.id);
+
+      // Now read under a partner context whose accessiblePartnerIds
+      // includes this exact partner — RLS with no permissive policy means
+      // the SELECT returns 0 rows OR Postgres throws permission denied.
+      let rows: unknown[] = [];
+      let err: unknown = null;
+      try {
+        rows = await withDbAccessContext(partnerContext(partnerId), async () =>
+          db
+            .select({ id: partnerAbuseSignals.id })
+            .from(partnerAbuseSignals)
+            .where(eq(partnerAbuseSignals.partnerId, partnerId)),
+        );
+      } catch (e) {
+        err = e;
+      }
+
+      if (err) {
+        const cause = err as
+          | { cause?: { message?: string }; message?: string };
+        const message = cause?.cause?.message ?? cause?.message ?? '';
+        expect(message).toMatch(/permission denied|row-level security/i);
+      } else {
+        expect(rows).toEqual([]);
+      }
+    },
+  );
+
+  it.runIf(!!process.env.DATABASE_URL)(
+    'withSystemDbAccessContext INSERT + SELECT round-trips successfully',
+    async () => {
+      await ensureFixtures();
+
+      const signalKey = `rls-forge-system-${runSuffix}`;
+      const result = await withSystemDbAccessContext(async () => {
+        return db
+          .insert(partnerAbuseSignals)
+          .values({
+            partnerId,
+            signalKey,
+            severity: 'info',
+            score: 0.5,
+            evidence: { note: 'system round-trip' },
+          })
+          .returning({ id: partnerAbuseSignals.id, signalKey: partnerAbuseSignals.signalKey });
+      });
+      expect(result).toHaveLength(1);
+      expect(result[0]!.signalKey).toBe(signalKey);
+      insertedSignalIds.push(result[0]!.id);
+
+      const readBack = await withSystemDbAccessContext(async () => {
+        return db
+          .select({ id: partnerAbuseSignals.id })
+          .from(partnerAbuseSignals)
+          .where(eq(partnerAbuseSignals.id, result[0]!.id));
+      });
+      expect(readBack).toHaveLength(1);
     },
   );
 });
