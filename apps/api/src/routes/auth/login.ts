@@ -24,7 +24,10 @@ import {
   recordAccountFailure,
   clearAccountFailures,
   isAccountLocked,
-  getAccountLockoutWindowSeconds
+  getAccountLockoutWindowSeconds,
+  createPendingMfaForLogin,
+  PendingMfaInvalidError,
+  PendingMfaUnavailableError,
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -49,8 +52,7 @@ import {
   NoTenantMembershipError,
   auditUserLoginFailure,
   auditLogin,
-  userRequiresSetup,
-  userHasUsablePasskey
+  userRequiresSetup
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
@@ -423,30 +425,26 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // Check if MFA is required. This happens after the SSO-only check so an
   // org-enforced SSO user cannot obtain an MFA temp token through password auth.
   if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
-    const tempToken = nanoid(32);
-    const mfaMethod = user.mfaMethod || 'totp';
-
-    // #2153: a passkey is a valid ALTERNATE second factor even when the
-    // account's primary `mfaMethod` is totp/sms. Registering a passkey
-    // deliberately does NOT clobber an existing totp/sms `mfaMethod` (see
-    // passkeys.ts register/verify — that would strand the working
-    // authenticator and risk lockout), so login must independently detect
-    // whether the account has any usable passkey and offer it as a choice.
-    // This ADDS an option; it never removes the primary factor's prompt.
-    // The helper reads under system scope (pre-auth) and fails closed — a
-    // probe error hides the alternate, it never blocks this login.
-    const passkeyAvailable = await userHasUsablePasskey(user.id);
-
-    await getRedis()!.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
-      userId: user.id,
-      mfaMethod,
-      amr: ['password'],
-      // Server-authoritative: the passkey MFA endpoints gate on this flag, so
-      // the client can't self-elevate to the passkey path without an actually
-      // registered credential (and /verify still re-checks credential
-      // ownership + assertion regardless).
-      passkeyAvailable
-    }));
+    let pendingLogin;
+    try {
+      pendingLogin = await createPendingMfaForLogin({
+        userId: user.id,
+        roleId: context.roleId,
+        orgId: context.orgId,
+        partnerId: context.partnerId,
+        scope: context.scope,
+        primaryAuthenticationMethod: 'password',
+      });
+    } catch (error) {
+      await floorPromise;
+      if (error instanceof PendingMfaUnavailableError) {
+        return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+      }
+      if (error instanceof PendingMfaInvalidError) {
+        return c.json(genericAuthError(), 401);
+      }
+      throw error;
+    }
 
     // Task 10: the password was verified correctly — clear the per-account
     // failure counter even though MFA still has to succeed. This keeps the
@@ -467,12 +465,12 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     await floorPromise;
     return c.json({
       mfaRequired: true,
-      tempToken,
-      mfaMethod,
+      tempToken: pendingLogin.tempToken,
+      mfaMethod: pendingLogin.primaryMfaMethod,
       // #2153: lets the login MFA screen offer "use a passkey instead" alongside
       // the primary factor's prompt when the account has a registered passkey.
-      passkeyAvailable,
-      phoneLast4: user.phoneNumber?.slice(-4) || null,
+      passkeyAvailable: pendingLogin.passkeyAvailable,
+      phoneLast4: pendingLogin.phoneLast4,
       user: null,
       tokens: null
     });

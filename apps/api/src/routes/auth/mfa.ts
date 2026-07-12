@@ -5,7 +5,6 @@ import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users, organizations } from '../../db/schema';
 import {
-  issueUserSession,
   generateMFASecret,
   verifyMFAToken,
   consumeMFAToken,
@@ -14,9 +13,12 @@ import {
   generateRecoveryCodes,
   rateLimiter,
   mfaLimiter,
-  getRedis
+  getRedis,
+  issueVerifiedPendingMfaSession,
+  PendingMfaInvalidError,
+  PendingMfaUnavailableError,
+  readPendingMfa,
 } from '../../services';
-import { parseAuthenticationMethods, type AuthenticationMethod } from '../../services/jwt';
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { authMiddleware } from '../../middleware/auth';
@@ -30,7 +32,6 @@ import {
   decryptMfaSecretForMigration,
   hashRecoveryCodes,
   mfaDisabledResponse,
-  resolveCurrentUserTokenContext,
   resolveUserAuditOrgId,
   writeAuthAudit,
   auditUserLoginFailure,
@@ -123,34 +124,21 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
   // Case 1: Verifying during login (has tempToken)
   if (tempToken) {
-    const pendingRaw = await redis.get(`mfa:pending:${tempToken}`);
-    if (!pendingRaw) {
-      return c.json({ error: 'Invalid or expired MFA session' }, 401);
-    }
-
-    // Parse pending data — supports both legacy (plain userId string) and new (JSON) format
-    let pendingUserId: string;
-    let pendingMfaMethod: string;
-    let pendingAmr: AuthenticationMethod[];
+    let pending;
     try {
-      const parsed = JSON.parse(pendingRaw);
-      if (typeof parsed.userId !== 'string'
-        || !['totp', 'sms', 'passkey'].includes(parsed.mfaMethod || 'totp')) {
-        return c.json({ error: 'Invalid or expired MFA session' }, 401);
+      pending = await readPendingMfa(tempToken);
+    } catch (error) {
+      if (error instanceof PendingMfaUnavailableError) {
+        return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
       }
-      pendingUserId = parsed.userId;
-      pendingMfaMethod = parsed.mfaMethod || 'totp';
-      const parsedAmr = parseAuthenticationMethods(parsed.amr, false);
-      if (!parsedAmr) {
-        return c.json({ error: 'Invalid or expired MFA session' }, 401);
-      }
-      pendingAmr = parsedAmr;
-    } catch {
+      throw error;
+    }
+    if (!pending) {
       return c.json({ error: 'Invalid or expired MFA session' }, 401);
     }
 
     // Rate limit MFA attempts
-    const rateCheck = await rateLimiter(redis, `mfa:${pendingUserId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+    const rateCheck = await rateLimiter(redis, `mfa:${pending.userId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
     if (!rateCheck.allowed) {
       return c.json({ error: 'Too many MFA attempts' }, 429);
     }
@@ -161,7 +149,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       db
         .select()
         .from(users)
-        .where(eq(users.id, pendingUserId))
+        .where(eq(users.id, pending.userId))
         .limit(1)
     );
 
@@ -170,7 +158,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     }
 
     // Use the server-stored method only — never allow the client to override
-    const effectiveMethod = pendingMfaMethod;
+    const effectiveMethod = pending.primaryMfaMethod;
 
     let valid = false;
     let migratedMfaSecret: string | null = null;
@@ -216,28 +204,24 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       return c.json({ error: 'Invalid MFA code' }, 401);
     }
 
-    // Clear temp token
-    await redis.del(`mfa:pending:${tempToken}`);
-
-    // Look up user's partner/org context
-    const mfaContext = await resolveCurrentUserTokenContext(user.id);
-    const mfaRoleId = mfaContext.roleId;
-    const mfaPartnerId = mfaContext.partnerId;
-    const mfaOrgId = mfaContext.orgId;
-    const mfaScope = mfaContext.scope;
-
-    const tokens = await issueUserSession({
-      userId: user.id,
-      email: user.email,
-      roleId: mfaRoleId,
-      orgId: mfaOrgId,
-      partnerId: mfaPartnerId,
-      scope: mfaScope,
-      mfa: true,
-      amr: [...pendingAmr, effectiveMethod as 'totp' | 'sms'],
-      // SR-001: bind to the mobile install id when present (MFA login path).
-      mobileDeviceId: readMobileDeviceId(c) ?? undefined
-    });
+    let completed;
+    try {
+      completed = await issueVerifiedPendingMfaSession({
+        tempToken,
+        expectedPending: pending,
+        verifiedMethod: effectiveMethod,
+        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      });
+    } catch (error) {
+      if (error instanceof PendingMfaUnavailableError) {
+        return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+      }
+      if (error instanceof PendingMfaInvalidError) {
+        return c.json({ error: 'Invalid or expired MFA session' }, 401);
+      }
+      throw error;
+    }
+    const { user: issuedUser, tokens, authority } = completed;
 
     // Update last login
     // System DB context required: the MFA-verify step is still unauthenticated,
@@ -251,26 +235,26 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
           lastLoginAt: new Date(),
           ...(migratedMfaSecret ? { mfaSecret: migratedMfaSecret, updatedAt: new Date() } : {})
         })
-        .where(eq(users.id, user.id))
+        .where(eq(users.id, issuedUser.id))
     );
 
-    auditLogin(c, { orgId: mfaOrgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: true, scope: mfaScope, ip: getClientIP(c) });
+    auditLogin(c, { orgId: authority.orgId ?? null, userId: issuedUser.id, email: issuedUser.email, name: issuedUser.name, mfa: true, scope: authority.scope, ip: getClientIP(c) });
 
     setRefreshTokenCookie(c, tokens.refreshToken);
 
-    const requiresSetup = userRequiresSetup(user);
+    const requiresSetup = userRequiresSetup(issuedUser);
 
     return c.json({
       user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
+        id: issuedUser.id,
+        email: issuedUser.email,
+        name: issuedUser.name,
         mfaEnabled: true,
-        avatarUrl: user.avatarUrl,
+        avatarUrl: issuedUser.avatarUrl,
         // Mirrors the password-login payload — the auth store is seeded from
         // whichever of the two completes the login, and the sidebar gates
         // platform-admin-only nav on this flag.
-        isPlatformAdmin: user.isPlatformAdmin === true
+        isPlatformAdmin: issuedUser.isPlatformAdmin === true
       },
       tokens: toPublicTokens(tokens),
       mfaRequired: false,

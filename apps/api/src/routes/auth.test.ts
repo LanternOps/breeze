@@ -29,6 +29,17 @@ vi.mock('../services', () => ({
   generateOTPAuthURL: vi.fn().mockReturnValue('otpauth://totp/...'),
   generateQRCode: vi.fn().mockResolvedValue('data:image/png;base64,...'),
   generateRecoveryCodes: vi.fn().mockReturnValue(['CODE-0001', 'CODE-0002']),
+  consumeMFAToken: vi.fn().mockResolvedValue(true),
+  createPendingMfaForLogin: vi.fn().mockResolvedValue({
+    tempToken: 'v2-temp-token',
+    primaryMfaMethod: 'totp',
+    passkeyAvailable: true,
+    phoneLast4: null,
+  }),
+  readPendingMfa: vi.fn(),
+  issueVerifiedPendingMfaSession: vi.fn(),
+  PendingMfaInvalidError: class PendingMfaInvalidError extends Error {},
+  PendingMfaUnavailableError: class PendingMfaUnavailableError extends Error {},
   createSession: vi.fn(),
   invalidateSession: vi.fn(),
   invalidateAllUserSessions: vi.fn(),
@@ -54,6 +65,8 @@ vi.mock('../services', () => ({
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
   mfaLimiter: { limit: 5, windowSeconds: 300 },
+  smsLoginSendLimiter: { limit: 3, windowSeconds: 300 },
+  smsLoginGlobalLimiter: { limit: 5, windowSeconds: 3600 },
   // Task 10: per-account lockout helpers. Default mocks mirror the
   // "no failures, not locked" happy path so existing tests keep working.
   recordAccountFailure: vi.fn().mockResolvedValue({ count: 1, locked: false, newlyLocked: false }),
@@ -248,6 +261,10 @@ import {
   getTrustedClientIp,
   rateLimiter,
   getRedis,
+  createPendingMfaForLogin,
+  readPendingMfa,
+  issueVerifiedPendingMfaSession,
+  PendingMfaInvalidError,
   recordAccountFailure,
   clearAccountFailures,
   isAccountLocked
@@ -296,6 +313,50 @@ describe('auth routes', () => {
     vi.mocked(isAccountLocked).mockResolvedValue(false);
     vi.mocked(recordAccountFailure).mockResolvedValue({ count: 1, locked: false, newlyLocked: false });
     vi.mocked(clearAccountFailures).mockResolvedValue(undefined);
+    vi.mocked(createPendingMfaForLogin).mockResolvedValue({
+      tempToken: 'v2-temp-token',
+      primaryMfaMethod: 'totp',
+      passkeyAvailable: true,
+      phoneLast4: null,
+    });
+    vi.mocked(readPendingMfa).mockResolvedValue({
+      version: 2,
+      userId: 'user-123',
+      authEpoch: 1,
+      mfaEpoch: 1,
+      expectedStatus: 'active',
+      roleId: 'role-1',
+      orgId: null,
+      partnerId: 'partner-1',
+      scope: 'partner',
+      policyRequired: false,
+      policySources: [],
+      allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
+      enrolledMethods: ['totp'],
+      primaryAuthenticationMethod: 'password',
+      primaryMfaMethod: 'totp',
+      issuedAt: '2026-07-12T12:00:00.000Z',
+      expiresAt: '2026-07-12T12:05:00.000Z',
+    });
+    vi.mocked(issueVerifiedPendingMfaSession).mockResolvedValue({
+      user: {
+        id: 'user-123',
+        email: 'test@example.com',
+        name: 'Test User',
+        status: 'active',
+        mfaEnabled: true,
+        avatarUrl: null,
+        isPlatformAdmin: false,
+      },
+      tokens: {
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        refreshJti: 'jti-mock',
+        expiresInSeconds: 900,
+        familyId: 'family-id-mock',
+      },
+      authority: { roleId: 'role-1', orgId: null, partnerId: 'partner-1', scope: 'partner' },
+    } as never);
     vi.mocked(revokeUserSessionFamilyForLogout).mockResolvedValue({ status: 'revoked' });
     sendAccountLockedMock.mockClear();
     app = new Hono();
@@ -819,6 +880,172 @@ describe('auth routes', () => {
       expect(body.mfaRequired).toBe(true);
       expect(body.tempToken).toBeDefined();
       expect(body.tokens).toBeNull();
+      expect(createPendingMfaForLogin).toHaveBeenCalledWith({
+        userId: 'user-123',
+        roleId: 'role-1',
+        orgId: null,
+        partnerId: 'partner-1',
+        scope: 'partner',
+        primaryAuthenticationMethod: 'password',
+      });
+      expect(body.tempToken).toBe('v2-temp-token');
+    });
+
+    it('routes TOTP completion through the atomic consolidated issuer', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'test@example.com',
+              name: 'Test User',
+              status: 'active',
+              mfaEnabled: true,
+              mfaMethod: 'totp',
+              mfaSecret: 'secret123',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token', code: '123456' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(readPendingMfa).toHaveBeenCalledWith('v2-temp-token');
+      expect(issueVerifiedPendingMfaSession).toHaveBeenCalledWith(expect.objectContaining({
+        tempToken: 'v2-temp-token',
+        verifiedMethod: 'totp',
+      }));
+      expect(issueUserSession).not.toHaveBeenCalled();
+    });
+
+    it('fails closed without a cookie or token when atomic pending consumption loses the race', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123', email: 'test@example.com', name: 'Test User', status: 'active',
+              mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'secret123',
+            }]),
+          }),
+        }),
+      } as any);
+      vi.mocked(issueVerifiedPendingMfaSession).mockRejectedValueOnce(new PendingMfaInvalidError());
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token', code: '123456' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(issueUserSession).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['totp', { mfaMethod: 'totp', mfaSecret: 'secret123', phoneNumber: null }],
+      ['sms', { mfaMethod: 'sms', mfaSecret: null, phoneNumber: '+15551234567' }],
+    ] as const)('allows exactly one %s token response when two consumers race', async (method, factorState) => {
+      vi.mocked(readPendingMfa).mockResolvedValue({
+        version: 2,
+        userId: 'user-123',
+        authEpoch: 1,
+        mfaEpoch: 1,
+        expectedStatus: 'active',
+        roleId: 'role-1',
+        orgId: null,
+        partnerId: 'partner-1',
+        scope: 'partner',
+        policyRequired: false,
+        policySources: [],
+        allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
+        enrolledMethods: [method],
+        primaryAuthenticationMethod: 'password',
+        primaryMfaMethod: method,
+        issuedAt: '2026-07-12T12:00:00.000Z',
+        expiresAt: '2026-07-12T12:05:00.000Z',
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'test@example.com',
+              name: 'Test User',
+              status: 'active',
+              mfaEnabled: true,
+              ...factorState,
+            }]),
+          }),
+        }),
+      } as any);
+      vi.mocked(issueVerifiedPendingMfaSession)
+        .mockResolvedValueOnce({
+          user: {
+            id: 'user-123', email: 'test@example.com', name: 'Test User', status: 'active',
+            mfaEnabled: true, avatarUrl: null, isPlatformAdmin: false,
+          },
+          tokens: {
+            accessToken: 'access-token', refreshToken: 'refresh-token', refreshJti: 'jti-mock',
+            expiresInSeconds: 900, familyId: 'family-id-mock',
+          },
+          authority: { roleId: 'role-1', orgId: null, partnerId: 'partner-1', scope: 'partner' },
+        } as never)
+        .mockRejectedValueOnce(new PendingMfaInvalidError());
+
+      const makeRequest = () => app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token', code: '123456' }),
+      });
+      const responses = await Promise.all([makeRequest(), makeRequest()]);
+
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 401]);
+      expect(responses.filter((response) => response.headers.has('set-cookie'))).toHaveLength(1);
+      expect(issueUserSession).not.toHaveBeenCalled();
+    });
+
+    it('uses strict V2 pending state before sending an SMS login code', async () => {
+      vi.mocked(readPendingMfa).mockResolvedValueOnce({
+        version: 2,
+        userId: 'user-123',
+        authEpoch: 1,
+        mfaEpoch: 1,
+        expectedStatus: 'active',
+        roleId: 'role-1',
+        orgId: null,
+        partnerId: 'partner-1',
+        scope: 'partner',
+        policyRequired: false,
+        policySources: [],
+        allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
+        enrolledMethods: ['sms'],
+        primaryAuthenticationMethod: 'password',
+        primaryMfaMethod: 'sms',
+        issuedAt: '2026-07-12T12:00:00.000Z',
+        expiresAt: '2026-07-12T12:05:00.000Z',
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ phoneNumber: '+15551234567' }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/sms/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(readPendingMfa).toHaveBeenCalledWith('v2-temp-token');
     });
 
     // ============================================================

@@ -14,6 +14,7 @@ export type {
   ViewerTokenPayload,
 } from './jwt';
 export * from './mfa';
+export * from './mfaAssurance';
 export * from './passkeys';
 export * from './session';
 export * from './rate-limit';

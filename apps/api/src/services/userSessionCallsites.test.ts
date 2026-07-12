@@ -150,10 +150,9 @@ describe('first-party user session issuer coverage', () => {
       'routes/auth/cfAccessRedirectLogin.ts',
       'routes/auth/invite.ts',
       'routes/auth/login.ts',
-      'routes/auth/mfa.ts',
-      'routes/auth/passkeys.ts',
       'routes/auth/register.ts',
       'routes/sso.ts',
+      'services/mfaAssurance.ts',
     ]);
     for (const file of issuers) {
       expect(

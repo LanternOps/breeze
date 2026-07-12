@@ -11,7 +11,9 @@ import {
   smsPhoneVerifyUserLimiter,
   smsLoginSendLimiter,
   smsLoginGlobalLimiter,
-  phoneConfirmLimiter
+  phoneConfirmLimiter,
+  PendingMfaUnavailableError,
+  readPendingMfa,
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { authMiddleware } from '../../middleware/auth';
@@ -262,18 +264,22 @@ phoneRoutes.post('/mfa/sms/send', zValidator('json', smsSendSchema), async (c) =
     return c.json({ error: 'SMS service not configured' }, 501);
   }
 
-  const pendingRaw = await redis.get(`mfa:pending:${tempToken}`);
-  if (!pendingRaw) {
+  let pending;
+  try {
+    pending = await readPendingMfa(tempToken);
+  } catch (error) {
+    if (error instanceof PendingMfaUnavailableError) {
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+    throw error;
+  }
+  if (!pending) {
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
-
-  let userId: string;
-  try {
-    const parsed = JSON.parse(pendingRaw);
-    userId = parsed.userId;
-  } catch {
-    return c.json({ error: 'Invalid MFA session data' }, 400);
+  if (!pending.allowedMethods.includes('sms') || !pending.enrolledMethods.includes('sms')) {
+    return c.json({ error: 'SMS MFA is not configured for this session' }, 400);
   }
+  const userId = pending.userId;
 
   // Look up phone number from DB (never store PII in Redis).
   // Pre-auth lookup — wrap in system scope so the `users` RLS policy

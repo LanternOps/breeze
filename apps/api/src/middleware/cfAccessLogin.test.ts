@@ -78,9 +78,21 @@ vi.mock('../db', () => {
 
 const tokenState = vi.hoisted(() => ({
   lastIdentity: null as Record<string, unknown> | null,
+  pendingInput: null as Record<string, unknown> | null,
 }));
 
 vi.mock('../services', () => ({
+  createPendingMfaForLogin: vi.fn(async (input: Record<string, unknown>) => {
+    tokenState.pendingInput = input;
+    return {
+      tempToken: 'v2-temp-token',
+      primaryMfaMethod: dbState.userRow?.mfaMethod ?? 'totp',
+      passkeyAvailable: dbState.userRow?.mfaMethod === 'passkey',
+      phoneLast4: null,
+    };
+  }),
+  PendingMfaInvalidError: class PendingMfaInvalidError extends Error {},
+  PendingMfaUnavailableError: class PendingMfaUnavailableError extends Error {},
   issueUserSession: vi.fn(
     async (identity: Record<string, unknown>) => {
       tokenState.lastIdentity = identity;
@@ -220,6 +232,7 @@ describe('cfAccessLoginMiddleware', () => {
     dbState.userRow = null;
     dbState.lastUpdateId = null;
     tokenState.lastIdentity = null;
+    tokenState.pendingInput = null;
     auditState.audits = [];
     auditState.loginFailures = [];
     contextState.value = {
@@ -414,6 +427,14 @@ describe('cfAccessLoginMiddleware', () => {
     expect(body.mfaMethod).toBe('totp');
     expect(body.tokens).toBeNull();
     expect(tokenState.lastIdentity).toBeNull(); // no full token mint yet
+    expect(tokenState.pendingInput).toEqual({
+      userId: activeUser.id,
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+      primaryAuthenticationMethod: 'cf_access',
+    });
   });
 
   it('issues an MFA temp token when user has passkey MFA and TRUSTS_MFA is false', async () => {

@@ -1,6 +1,5 @@
 import type { Context, Next } from 'hono';
 import { eq } from 'drizzle-orm';
-import { nanoid } from 'nanoid';
 import * as dbModule from '../db';
 import { users } from '../db/schema';
 import {
@@ -15,9 +14,11 @@ import {
   verifyCfAccessJwt,
 } from '../services/cfAccessJwt';
 import {
+  createPendingMfaForLogin,
   issueUserSession,
+  PendingMfaInvalidError,
+  PendingMfaUnavailableError,
 } from '../services';
-import { getRedis } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { TenantInactiveError } from '../services/tenantStatus';
 import { ENABLE_2FA } from '../routes/auth/schemas';
@@ -29,7 +30,6 @@ import {
   setRefreshTokenCookie,
   toPublicTokens,
   userRequiresSetup,
-  userHasUsablePasskey,
 } from '../routes/auth/helpers';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 
@@ -144,29 +144,29 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
   // shape the password handler uses.
   const trustsMfa = cfAccessTrustsMfa();
   if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey') && !trustsMfa) {
-    const redis = getRedis();
-    if (!redis) {
-      console.error('[cf-access-login] redis unavailable; cannot issue MFA temp token, falling through');
-      return next();
+    let pendingLogin;
+    try {
+      pendingLogin = await createPendingMfaForLogin({
+        userId: user.id,
+        roleId: context.roleId,
+        orgId: context.orgId,
+        partnerId: context.partnerId,
+        scope: context.scope,
+        primaryAuthenticationMethod: 'cf_access',
+      });
+    } catch (error) {
+      if (error instanceof PendingMfaUnavailableError || error instanceof PendingMfaInvalidError) {
+        console.error('[cf-access-login] cannot issue MFA V2 state; falling through');
+        return next();
+      }
+      throw error;
     }
-    const tempToken = nanoid(32);
-    const mfaMethod = user.mfaMethod || 'totp';
-    // #2153: mirror the password /login handler — a passkey is an accepted
-    // ALTERNATE second factor here too, even when the primary method is
-    // totp/sms. The helper fails closed, so a probe error just hides the
-    // alternate rather than blocking this CF-Access MFA challenge.
-    const passkeyAvailable = await userHasUsablePasskey(user.id);
-    await redis.setex(
-      `mfa:pending:${tempToken}`,
-      300,
-      JSON.stringify({ userId: user.id, mfaMethod, passkeyAvailable, amr: ['cf_access'] })
-    );
     return c.json({
       mfaRequired: true,
-      tempToken,
-      mfaMethod,
-      passkeyAvailable,
-      phoneLast4: user.phoneNumber?.slice(-4) || null,
+      tempToken: pendingLogin.tempToken,
+      mfaMethod: pendingLogin.primaryMfaMethod,
+      passkeyAvailable: pendingLogin.passkeyAvailable,
+      phoneLast4: pendingLogin.phoneLast4,
       user: null,
       tokens: null,
     });

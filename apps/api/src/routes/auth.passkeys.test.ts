@@ -65,6 +65,11 @@ vi.mock('../services', () => ({
   generateOTPAuthURL: vi.fn(),
   generateQRCode: vi.fn(),
   generateRecoveryCodes: vi.fn(),
+  createPendingMfaForLogin: vi.fn(),
+  readPendingMfa: vi.fn(),
+  issueVerifiedPendingMfaSession: vi.fn(),
+  PendingMfaInvalidError: class PendingMfaInvalidError extends Error {},
+  PendingMfaUnavailableError: class PendingMfaUnavailableError extends Error {},
   createSession: vi.fn(),
   invalidateSession: vi.fn(),
   invalidateAllUserSessions: vi.fn(),
@@ -249,7 +254,16 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
-import { issueUserSession, getRedis, rateLimiter, verifyPassword } from '../services';
+import {
+  issueUserSession,
+  getRedis,
+  rateLimiter,
+  verifyPassword,
+  createPendingMfaForLogin,
+  readPendingMfa,
+  issueVerifiedPendingMfaSession,
+  PendingMfaInvalidError,
+} from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
 
@@ -261,6 +275,28 @@ const user = {
   status: 'active',
   mfaEnabled: true,
   mfaMethod: 'passkey',
+  authEpoch: 1,
+  mfaEpoch: 1,
+};
+
+const pendingMfa = {
+  version: 2 as const,
+  userId: 'user-123',
+  authEpoch: 1,
+  mfaEpoch: 1,
+  expectedStatus: 'active' as const,
+  roleId: 'role-123',
+  orgId: null,
+  partnerId: 'partner-123',
+  scope: 'partner' as const,
+  policyRequired: false,
+  policySources: [] as const,
+  allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'] as const,
+  enrolledMethods: ['passkey'] as const,
+  primaryAuthenticationMethod: 'password' as const,
+  primaryMfaMethod: 'passkey' as const,
+  issuedAt: '2026-07-12T12:00:00.000Z',
+  expiresAt: '2026-07-12T12:05:00.000Z',
 };
 
 // Full row shape returned by the passkey INSERT `.returning()`. The
@@ -296,6 +332,24 @@ describe('passkey MFA auth routes', () => {
     redisMock.get.mockReset();
     redisMock.setex.mockReset();
     redisMock.del.mockReset();
+    vi.mocked(createPendingMfaForLogin).mockResolvedValue({
+      tempToken: 'temp-token',
+      primaryMfaMethod: 'passkey',
+      passkeyAvailable: true,
+      phoneLast4: null,
+    });
+    vi.mocked(readPendingMfa).mockResolvedValue(pendingMfa as never);
+    vi.mocked(issueVerifiedPendingMfaSession).mockResolvedValue({
+      user,
+      tokens: {
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        refreshJti: 'refresh-jti',
+        expiresInSeconds: 900,
+        familyId: 'family-passkey',
+      },
+      authority: { roleId: 'role-123', orgId: null, partnerId: 'partner-123', scope: 'partner' },
+    } as never);
     authState.requireAuthorizationHeader = true;
     authState.mfaSatisfied = true;
     passkeyMocks.generatePasskeyRegistrationOptions.mockResolvedValue({
@@ -420,11 +474,10 @@ describe('passkey MFA auth routes', () => {
       user: null,
       tokens: null,
     });
-    expect(redisMock.setex).toHaveBeenCalledWith(
-      expect.stringMatching(/^mfa:pending:/),
-      300,
-      expect.stringContaining('"mfaMethod":"passkey"'),
-    );
+    expect(createPendingMfaForLogin).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-123',
+      primaryAuthenticationMethod: 'password',
+    }));
   });
 
   // #2153: a TOTP-primary account with a registered passkey must be offered the
@@ -438,11 +491,15 @@ describe('passkey MFA auth routes', () => {
       mfaMethod: 'totp',
       mfaSecret: 'enc-secret',
     };
+    vi.mocked(createPendingMfaForLogin).mockResolvedValueOnce({
+      tempToken: 'temp-token',
+      primaryMfaMethod: 'totp',
+      passkeyAvailable: true,
+      phoneLast4: null,
+    });
     dbState.selectQueue.push(
       [totpUser],
       [{ partnerId: 'partner-1', roleId: 'role-1' }],
-      // passkey-availability probe → one active passkey exists
-      [{ id: 'passkey-credential-1' }],
     );
 
     const res = await app.request('/auth/login', {
@@ -460,15 +517,7 @@ describe('passkey MFA auth routes', () => {
       user: null,
       tokens: null,
     });
-    expect(redisMock.setex).toHaveBeenCalledWith(
-      expect.stringMatching(/^mfa:pending:/),
-      300,
-      expect.stringContaining('"passkeyAvailable":true'),
-    );
-    // The passkey probe must run under system DB context (pre-auth); otherwise
-    // the RLS user_passkeys read returns 0 rows and silently hides the option.
-    // Two+ system-scoped reads: the login user lookup + the passkey probe.
-    expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(createPendingMfaForLogin).toHaveBeenCalledOnce();
   });
 
   it('reports passkeyAvailable=false at login for a TOTP user with no passkey', async () => {
@@ -479,11 +528,15 @@ describe('passkey MFA auth routes', () => {
       mfaMethod: 'totp',
       mfaSecret: 'enc-secret',
     };
+    vi.mocked(createPendingMfaForLogin).mockResolvedValueOnce({
+      tempToken: 'temp-token',
+      primaryMfaMethod: 'totp',
+      passkeyAvailable: false,
+      phoneLast4: null,
+    });
     dbState.selectQueue.push(
       [totpUser],
       [{ partnerId: 'partner-1', roleId: 'role-1' }],
-      // passkey-availability probe → no passkeys
-      [],
     );
 
     const res = await app.request('/auth/login', {
@@ -498,11 +551,7 @@ describe('passkey MFA auth routes', () => {
       mfaMethod: 'totp',
       passkeyAvailable: false,
     });
-    expect(redisMock.setex).toHaveBeenCalledWith(
-      expect.stringMatching(/^mfa:pending:/),
-      300,
-      expect.stringContaining('"passkeyAvailable":false'),
-    );
+    expect(createPendingMfaForLogin).toHaveBeenCalledOnce();
   });
 
   // #2153: the passkey MFA endpoints must accept a pending session whose PRIMARY
@@ -539,14 +588,12 @@ describe('passkey MFA auth routes', () => {
   });
 
   it('verifies a passkey for a TOTP-primary pending session flagged passkeyAvailable', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'totp',
-      passkeyAvailable: true,
-      amr: ['password'],
-    }));
+    vi.mocked(readPendingMfa).mockResolvedValueOnce({
+      ...pendingMfa,
+      enrolledMethods: ['totp', 'passkey'],
+      primaryMfaMethod: 'totp',
+    } as never);
     dbState.selectQueue.push(
-      [{ ...user, mfaMethod: 'totp', mfaSecret: 'enc-secret' }],
       [{
         id: 'credential-row-1',
         userId: 'user-123',
@@ -556,7 +603,6 @@ describe('passkey MFA auth routes', () => {
         transports: ['internal'],
         disabledAt: null,
       }],
-      [{ partnerId: 'partner-123', roleId: 'role-123' }],
     );
 
     const res = await app.request('/auth/mfa/passkey/verify', {
@@ -569,10 +615,11 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(issueUserSession).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user-123', mfa: true }),
-    );
-    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+    expect(issueVerifiedPendingMfaSession).toHaveBeenCalledWith(expect.objectContaining({
+      verifiedMethod: 'passkey',
+    }));
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(redisMock.del).not.toHaveBeenCalled();
   });
 
   // #2153 security guard: the token-minting /verify endpoint must REFUSE a
@@ -580,12 +627,11 @@ describe('passkey MFA auth routes', () => {
   // half of pendingAllowsPasskey that mints tokens — regressing it to accept
   // any session would be a bypass, so it needs its own explicit test.
   it('rejects /mfa/passkey/verify for a TOTP session with no available passkey', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'totp',
-      passkeyAvailable: false,
-      amr: ['password'],
-    }));
+    vi.mocked(readPendingMfa).mockResolvedValueOnce({
+      ...pendingMfa,
+      enrolledMethods: ['totp'],
+      primaryMfaMethod: 'totp',
+    } as never);
 
     const res = await app.request('/auth/mfa/passkey/verify', {
       method: 'POST',
@@ -604,7 +650,7 @@ describe('passkey MFA auth routes', () => {
   });
 
   it('rejects a legacy bare-string pending token with no trustworthy AMR', async () => {
-    redisMock.get.mockResolvedValueOnce('user-123');
+    vi.mocked(readPendingMfa).mockResolvedValueOnce(null);
 
     const res = await app.request('/auth/mfa/passkey/options', {
       method: 'POST',
@@ -660,7 +706,6 @@ describe('passkey MFA auth routes', () => {
       amr: ['password'],
     }));
     dbState.selectQueue.push(
-      [user],
       [{
         id: 'credential-row-1',
         userId: 'user-123',
@@ -669,7 +714,6 @@ describe('passkey MFA auth routes', () => {
         counter: 0,
         transports: ['internal'],
       }],
-      [{ partnerId: 'partner-123', roleId: 'role-123' }],
     );
 
     const res = await app.request('/auth/mfa/passkey/verify', {
@@ -682,21 +726,55 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(issueUserSession).toHaveBeenCalledWith(
+    expect(issueVerifiedPendingMfaSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: 'user-123',
-        email: 'test@example.com',
-        mfa: true,
-        amr: ['password', 'passkey'],
+        tempToken: 'temp-token',
+        expectedPending: pendingMfa,
+        verifiedMethod: 'passkey',
       }),
     );
+    expect(issueUserSession).not.toHaveBeenCalled();
     expect(await res.json()).toMatchObject({
       mfaRequired: false,
       tokens: { accessToken: 'access-token', expiresInSeconds: 900 },
       user: { id: 'user-123', mfaEnabled: true },
     });
-    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+    expect(redisMock.del).not.toHaveBeenCalled();
     expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('returns exactly one passkey token response when two verified consumers race', async () => {
+    const credential = {
+      id: 'credential-row-1',
+      userId: 'user-123',
+      credentialId: 'credential-1',
+      publicKey: 'public-key',
+      counter: 0,
+      transports: ['internal'],
+      disabledAt: null,
+    };
+    dbState.selectQueue.push([credential], [credential]);
+    vi.mocked(issueVerifiedPendingMfaSession)
+      .mockResolvedValueOnce({
+        user,
+        tokens: {
+          accessToken: 'access-token', refreshToken: 'refresh-token', refreshJti: 'refresh-jti',
+          expiresInSeconds: 900, familyId: 'family-passkey',
+        },
+        authority: { roleId: 'role-123', orgId: null, partnerId: 'partner-123', scope: 'partner' },
+      } as never)
+      .mockRejectedValueOnce(new PendingMfaInvalidError());
+
+    const makeRequest = () => app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: 'temp-token', credential: { id: 'credential-1', response: {} } }),
+    });
+    const responses = await Promise.all([makeRequest(), makeRequest()]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 401]);
+    expect(responses.filter((response) => response.headers.has('set-cookie'))).toHaveLength(1);
+    expect(issueUserSession).not.toHaveBeenCalled();
   });
 
   it('rejects a passkey credential that belongs to another user', async () => {
@@ -706,7 +784,6 @@ describe('passkey MFA auth routes', () => {
       amr: ['password'],
     }));
     dbState.selectQueue.push(
-      [user],
       [{ id: 'passkey-2', userId: 'user-456', credentialId: 'credential-2' }],
     );
 
@@ -785,7 +862,6 @@ describe('passkey MFA auth routes', () => {
       amr: ['password'],
     }));
     dbState.selectQueue.push(
-      [user],
       [{
         id: 'credential-row-1',
         userId: 'user-123',
@@ -821,7 +897,6 @@ describe('passkey MFA auth routes', () => {
       amr: ['password'],
     }));
     dbState.selectQueue.push(
-      [user],
       [{
         id: 'credential-row-1',
         userId: 'user-123',
@@ -894,12 +969,16 @@ describe('passkey MFA auth routes', () => {
 
   // (d) A suspended user cannot complete passkey MFA even with a valid assertion.
   it('rejects passkey verify when the user account is no longer active', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+    dbState.selectQueue.push([{
+      id: 'credential-row-1',
       userId: 'user-123',
-      mfaMethod: 'passkey',
-      amr: ['password'],
-    }));
-    dbState.selectQueue.push([{ ...user, status: 'suspended' }]);
+      credentialId: 'credential-1',
+      publicKey: 'public-key',
+      counter: 0,
+      transports: ['internal'],
+      disabledAt: null,
+    }]);
+    vi.mocked(issueVerifiedPendingMfaSession).mockRejectedValueOnce(new PendingMfaInvalidError());
 
     const res = await app.request('/auth/mfa/passkey/verify', {
       method: 'POST',
@@ -918,11 +997,11 @@ describe('passkey MFA auth routes', () => {
 
   // (e) /mfa/passkey/options guards.
   it('returns 400 from passkey options when the pending session is not a passkey session', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'totp',
-      amr: ['password'],
-    }));
+    vi.mocked(readPendingMfa).mockResolvedValueOnce({
+      ...pendingMfa,
+      enrolledMethods: ['totp'],
+      primaryMfaMethod: 'totp',
+    } as never);
 
     const res = await app.request('/auth/mfa/passkey/options', {
       method: 'POST',
