@@ -10,6 +10,7 @@ import {
   oauthSessions,
 } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
+import { revokeClientFamilies } from './revocationService';
 import { ERROR_IDS, logOauthDebug, logOauthError } from './log';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
@@ -470,11 +471,19 @@ export class BreezeOidcAdapter {
     if (this.model === 'AccessToken' || this.model === 'RefreshToken') {
       await this.cacheRevocation(id);
     }
+    if (this.model === 'Client') {
+      // Registration-management DELETE of a shared DCR client. Enumerate and
+      // revoke EVERY grant family (writing grant + jti Redis markers so
+      // already-minted access JWTs die immediately) and set disabledAt LAST,
+      // only after all families are revoked. The old behavior — set disabledAt
+      // and nothing else — left minted access tokens valid until expiry
+      // (MCP-OAUTH-10). The service establishes its own system DB context.
+      await revokeClientFamilies(id, { kind: 'global' });
+      return;
+    }
     return asSystem(async () => {
       if (this.model === 'RefreshToken') {
         await db.update(oauthRefreshTokens).set({ revokedAt: new Date() }).where(eq(oauthRefreshTokens.id, id));
-      } else if (this.model === 'Client') {
-        await db.update(oauthClients).set({ disabledAt: new Date() }).where(eq(oauthClients.id, id));
       } else if (this.model === 'Session') {
         await db.delete(oauthSessions).where(eq(oauthSessions.id, id));
       } else if (this.model === 'Grant') {

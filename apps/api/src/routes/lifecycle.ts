@@ -18,9 +18,7 @@ import { approvalRequests } from '../db/schema/approvals';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
-import { revokeGrant, revokeJti } from '../oauth/revocationCache';
-import { ERROR_IDS, logOauthError } from '../oauth/log';
-import { ACCESS_TOKEN_TTL_SECONDS } from '../oauth/provider';
+import { revokeClientFamilies } from '../oauth/revocationService';
 import { resolveUserAuditOrgId } from './auth/helpers';
 import { PERMISSIONS } from '../services/permissions';
 
@@ -319,102 +317,16 @@ export async function revokeUserOauthClient(
   revokedByUserId: string,
   reason: string | null
 ): Promise<{ grantsRevoked: number; refreshTokensRevoked: number }> {
-  return asSystem(async () => {
-    const now = new Date();
-
-    // Mark grants revoked (per-user-per-client lifecycle).
-    const updatedGrants = await db
-      .update(oauthGrants)
-      .set({ revokedAt: now, revokedByUserId, revokedReason: reason })
-      .where(
-        and(
-          eq(oauthGrants.accountId, userId),
-          eq(oauthGrants.clientId, clientId),
-          isNull(oauthGrants.revokedAt)
-        )
-      )
-      .returning({ id: oauthGrants.id });
-
-    // Stamp + cache-revoke every active refresh token for the (user, client)
-    // pair so sibling JWTs are killed before natural expiry.
-    const tokens = await db
-      .select({
-        id: oauthRefreshTokens.id,
-        payload: oauthRefreshTokens.payload,
-        expiresAt: oauthRefreshTokens.expiresAt,
-      })
-      .from(oauthRefreshTokens)
-      .where(
-        and(
-          eq(oauthRefreshTokens.userId, userId),
-          eq(oauthRefreshTokens.clientId, clientId),
-          isNull(oauthRefreshTokens.revokedAt)
-        )
-      );
-
-    const seenGrants = new Set<string>();
-    for (const tok of tokens) {
-      const payload = tok.payload as { jti?: string; grantId?: string } | null;
-      if (payload?.jti) {
-        const ttl = Math.ceil((new Date(tok.expiresAt).getTime() - Date.now()) / 1000);
-        try {
-          await revokeJti(payload.jti, Math.max(ttl, 1));
-        } catch (err) {
-          logOauthError({
-            errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-            message: 'self-service jti revocation cache write failed',
-            err,
-            context: { jti: payload.jti, clientId, userId },
-          });
-          throw err;
-        }
-      }
-      if (payload?.grantId && !seenGrants.has(payload.grantId)) {
-        seenGrants.add(payload.grantId);
-        try {
-          await revokeGrant(payload.grantId, ACCESS_TOKEN_TTL_SECONDS);
-        } catch (err) {
-          logOauthError({
-            errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-            message: 'self-service grant revocation cache write failed',
-            err,
-            context: { grantId: payload.grantId, clientId, userId },
-          });
-          throw err;
-        }
-      }
-    }
-
-    // Belt-and-suspenders: also write a grant marker for any grant rows
-    // that didn't have a refresh token (direct authorize flows).
-    for (const grant of updatedGrants) {
-      if (seenGrants.has(grant.id)) continue;
-      seenGrants.add(grant.id);
-      try {
-        await revokeGrant(grant.id, ACCESS_TOKEN_TTL_SECONDS);
-      } catch (err) {
-        logOauthError({
-          errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
-          message: 'self-service grant-only revocation cache write failed',
-          err,
-          context: { grantId: grant.id, clientId, userId },
-        });
-        throw err;
-      }
-    }
-
-    if (tokens.length > 0) {
-      await db
-        .update(oauthRefreshTokens)
-        .set({ revokedAt: now })
-        .where(inArray(oauthRefreshTokens.id, tokens.map((t) => t.id)));
-    }
-
-    return {
-      grantsRevoked: updatedGrants.length,
-      refreshTokensRevoked: tokens.length,
-    };
-  });
+  // Grant discovery is authoritative from oauth_grants (user scope), so a
+  // code-only grant (auth-code access token, no refresh row) is revoked too.
+  // The service writes Redis markers before any DB mutation and throws on
+  // marker failure (fail closed). It establishes its own system DB context.
+  const { grants, refreshTokens } = await revokeClientFamilies(
+    clientId,
+    { kind: 'user', userId },
+    { revokedByUserId, reason: reason ?? undefined },
+  );
+  return { grantsRevoked: grants, refreshTokensRevoked: refreshTokens };
 }
 
 lifecycleRoutes.post(
