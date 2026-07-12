@@ -341,7 +341,9 @@ const envSchema = z
         (v) => !v || v.startsWith('postgres://') || v.startsWith('postgresql://'),
         { message: 'DATABASE_URL_APP must be a valid postgres:// or postgresql:// URL' },
       )
-      .describe('Optional unprivileged application DB connection. If unset, falls back to DATABASE_URL.'),
+      .describe(
+        'Explicit unprivileged request DB connection. If unset, Breeze derives the breeze_app URL using BREEZE_APP_DB_PASSWORD or POSTGRES_PASSWORD; production refuses direct DATABASE_URL fallback.',
+      ),
 
     BREEZE_APP_DB_PASSWORD: z
       .string()

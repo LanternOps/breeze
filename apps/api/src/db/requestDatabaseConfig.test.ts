@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   deriveAppConnectionString,
+  logRequestDatabaseConfigSource,
   resolveRequestDatabaseConfig,
 } from './requestDatabaseConfig';
 
@@ -78,6 +79,62 @@ describe('requestDatabaseConfig', () => {
       });
     });
 
+    it('rejects a malformed explicit request URL without leaking credentials', () => {
+      const username = 'request-url-user';
+      const password = 'request-url-password';
+
+      expect(() =>
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL_APP:
+            `postgresql://${username}:${password}@request-db:not-a-port/breeze`,
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          message: expect.not.stringContaining(username),
+        }),
+      );
+
+      try {
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL_APP:
+            `postgresql://${username}:${password}@request-db:not-a-port/breeze`,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).toMatch(/DATABASE_URL_APP.*valid.*single database\/HA endpoint/i);
+        expect(message).not.toContain(username);
+        expect(message).not.toContain(password);
+        expect(message).not.toContain('request-db:not-a-port');
+      }
+    });
+
+    it.each([
+      'postgresql://request-user:request-password@db-one,db-two/breeze',
+      'postgresql://request-user:request-password@db-one:5432,db-two:5432/breeze',
+    ])('rejects an explicit multi-host request URL without leaking credentials: %s', (url) => {
+      expect(() =>
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL_APP: url,
+        }),
+      ).toThrow(/DATABASE_URL_APP.*single database\/HA endpoint/i);
+
+      try {
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL_APP: url,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).not.toContain('request-user');
+        expect(message).not.toContain('request-password');
+        expect(message).not.toContain('db-one');
+        expect(message).not.toContain('db-two');
+      }
+    });
+
     it('derives the request URL using POSTGRES_PASSWORD', () => {
       expect(
         resolveRequestDatabaseConfig({
@@ -89,6 +146,48 @@ describe('requestDatabaseConfig', () => {
         url: 'postgresql://breeze_app:postgres-secret@db:5432/breeze',
         source: 'derived',
       });
+    });
+
+    it('prefers BREEZE_APP_DB_PASSWORD when both app password sources are present', () => {
+      expect(
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL: 'postgresql://admin:admin-secret@db:5432/breeze',
+          BREEZE_APP_DB_PASSWORD: 'app-specific-secret',
+          POSTGRES_PASSWORD: 'shared-postgres-secret',
+        }),
+      ).toEqual({
+        url: 'postgresql://breeze_app:app-specific-secret@db:5432/breeze',
+        source: 'derived',
+      });
+    });
+
+    it.each([
+      'postgresql://admin:admin-secret@db-one,db-two/breeze',
+      'postgresql://admin:admin-secret@db-one:5432,db-two:5432/breeze',
+    ])('rejects a derived multi-host request URL without leaking credentials: %s', (url) => {
+      expect(() =>
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL: url,
+          BREEZE_APP_DB_PASSWORD: 'request-secret',
+        }),
+      ).toThrow(/single database\/HA endpoint/i);
+
+      try {
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL: url,
+          BREEZE_APP_DB_PASSWORD: 'request-secret',
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).not.toContain('admin');
+        expect(message).not.toContain('admin-secret');
+        expect(message).not.toContain('request-secret');
+        expect(message).not.toContain('db-one');
+        expect(message).not.toContain('db-two');
+      }
     });
 
     it('refuses a production request pool without an unprivileged URL or password', () => {
@@ -120,6 +219,27 @@ describe('requestDatabaseConfig', () => {
         url: 'postgresql://admin:admin-secret@db:5432/breeze',
         source: 'development-fallback',
       });
+    });
+  });
+
+  describe('logRequestDatabaseConfigSource', () => {
+    it('warns for the non-production fallback using only its source label', () => {
+      const logger = { log: vi.fn(), warn: vi.fn() };
+      const url = 'postgresql://fallback-user:fallback-password@fallback-db:5432/breeze';
+
+      logRequestDatabaseConfigSource(
+        { url, source: 'development-fallback' },
+        logger,
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[database] Request pool configuration source: development-fallback',
+      );
+      expect(logger.log).not.toHaveBeenCalled();
+      const logged = JSON.stringify(logger.warn.mock.calls);
+      expect(logged).not.toContain(url);
+      expect(logged).not.toContain('fallback-user');
+      expect(logged).not.toContain('fallback-password');
     });
   });
 });
