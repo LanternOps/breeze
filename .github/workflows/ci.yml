@@ -1037,6 +1037,19 @@ jobs:
           DB_CONTEXTLESS_WRITE_STRICT: 'true'
         run: pnpm --filter=@breeze/api test:integration
 
+      # Dedicated exact-role enforcement runner. The general integration config
+      # excludes it because this suite manages a temporary BYPASSRLS role and
+      # must not inherit the shared TRUNCATE hooks. The preceding suite has
+      # already applied migrations and ensured the breeze_app login exists.
+      - name: Run request database role enforcement tests
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          NODE_ENV: test
+        run: pnpm --filter=@breeze/api test:request-db-role
+
       # The rls-coverage contract test inspects pg_catalog to verify every
       # tenant-scoped table has policies covering SELECT/INSERT/UPDATE/DELETE
       # via the right access helper. Runs against the same test DB AFTER

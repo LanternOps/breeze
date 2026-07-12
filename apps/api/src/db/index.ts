@@ -9,16 +9,13 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema';
 import { captureMessage } from '../services/sentry';
-import { resolveRequestDatabaseConfig } from './requestDatabaseConfig';
+import {
+  logRequestDatabaseConfigSource,
+  resolveRequestDatabaseConfig,
+} from './requestDatabaseConfig';
 
 const requestDatabaseConfig = resolveRequestDatabaseConfig();
-const requestDatabaseLog =
-  `[database] Request pool configuration source: ${requestDatabaseConfig.source}`;
-if (requestDatabaseConfig.source === 'development-fallback') {
-  console.warn(requestDatabaseLog);
-} else {
-  console.log(requestDatabaseLog);
-}
+logRequestDatabaseConfigSource(requestDatabaseConfig);
 
 // Pool sizing: postgres-js defaults to max=10, which causes cascading 504s
 // under heartbeat storms (e.g. a 1000-agent fleet reconnecting at once).

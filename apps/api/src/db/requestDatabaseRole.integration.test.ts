@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
+import { assertTestDatabaseUrlSafe } from '../testUtils/integrationDatabaseSafety';
 
 const ADMIN_DATABASE_URL = process.env.DATABASE_URL;
 const APP_DATABASE_URL = process.env.DATABASE_URL_APP;
@@ -11,6 +12,13 @@ if (!ADMIN_DATABASE_URL || !APP_DATABASE_URL) {
     'request database role tests require DATABASE_URL (admin) and DATABASE_URL_APP (breeze_app)',
   );
 }
+
+// These assertions intentionally run at module evaluation, before beforeAll can
+// construct the admin client or execute DROP/CREATE ROLE. Both URLs must stay
+// inside the same explicit local-test safety boundary as the shared integration
+// runner despite this suite not importing its hook-heavy setup module.
+assertTestDatabaseUrlSafe(ADMIN_DATABASE_URL, 'request database role admin setup');
+assertTestDatabaseUrlSafe(APP_DATABASE_URL, 'request database role app setup');
 
 let adminClient: Sql;
 let closeRequestPool: (() => Promise<void>) | undefined;
