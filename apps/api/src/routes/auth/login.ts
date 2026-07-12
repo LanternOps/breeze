@@ -29,6 +29,7 @@ import {
   getUserEpochs,
   getRefreshFamily
 } from '../../services';
+import { revokeRefreshFamilyById } from '../../services/authLifecycle';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
 import { authMiddleware } from '../../middleware/auth';
@@ -581,12 +582,40 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 // Logout
 loginRoutes.post('/logout', authMiddleware, async (c) => {
   const auth = c.get('auth');
+  // Resolve the family: access-token `sid` is authoritative; fall back to the
+  // refresh cookie's verified `fam` when present.
+  let familyId: string | null = auth.token.sid ?? null;
+  if (!familyId) {
+    const refreshToken = resolveRefreshToken(c);
+    if (refreshToken) {
+      const rp = await verifyToken(refreshToken);
+      familyId = rp?.type === 'refresh' ? (rp.fam ?? null) : null;
+    }
+  }
 
+  let durableOk = true;
+  if (familyId) {
+    try {
+      // Self-revocation: the request context's userId IS this user, so the
+      // user-id-scoped refresh_token_families RLS policy admits the write —
+      // the ambient db.transaction is fine here (unlike Task 9's admin paths).
+      await db.transaction(async (tx) => {
+        await revokeRefreshFamilyById(tx, familyId!, 'logout');
+      });
+    } catch (error) {
+      durableOk = false;
+      console.error('[auth] Durable logout revocation failed:', error);
+    }
+  }
+
+  // Post-commit best-effort Redis cleanup — same scope as today's logout
+  // (user-wide access-token cutoff + current refresh jti). Deliberately NOT
+  // runPostCommitCleanup: logout must not sweep the user's MCP OAuth grants.
   try {
     await revokeAllUserTokens(auth.user.id);
     await revokeCurrentRefreshTokenJti(c, auth.user.id);
   } catch (error) {
-    console.error('[auth] Failed to revoke tokens during logout — clearing cookie anyway:', error);
+    console.error('[auth] Logout Redis cleanup failed (durable revocation state above):', error);
   }
 
   createAuditLogAsync({
@@ -599,10 +628,17 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
     resourceName: auth.user.name,
     ipAddress: getClientIP(c),
     userAgent: c.req.header('user-agent'),
-    result: 'success'
+    result: durableOk ? 'success' : 'failure',
+    details: durableOk ? undefined : { reason: 'durable_revocation_failed', familyId },
   });
 
+  // Always clear the local cookie — even on durable failure the client should
+  // drop its credential; the durable revoke is retried by ops via the audit.
   clearRefreshTokenCookie(c);
+
+  if (!durableOk) {
+    return c.json({ error: 'Logout could not be fully completed. Please try again.' }, 500);
+  }
   return c.json({ success: true });
 });
 

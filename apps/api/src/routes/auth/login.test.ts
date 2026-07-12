@@ -4,10 +4,15 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     update: vi.fn(),
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({})),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('../../services/authLifecycle', () => ({
+  revokeRefreshFamilyById: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -79,7 +84,16 @@ vi.mock('../../services/mobileDeviceBinding', () => ({
 }));
 
 vi.mock('../../middleware/auth', () => ({
-  authMiddleware: vi.fn((_c: unknown, next: () => unknown) => next()),
+  authMiddleware: vi.fn((c: any, next: () => unknown) => {
+    c.set('auth', {
+      scope: 'organization',
+      partnerId: null,
+      orgId: 'org-1',
+      user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
+      token: { sid: 'family-1' },
+    });
+    return next();
+  }),
 }));
 
 // NOTE: auditUserLoginFailure is NOT a bare vi.fn() here. The real helper
@@ -153,13 +167,16 @@ import {
   isRefreshTokenJtiRevoked,
   revokeFamily,
   revokeRefreshTokenJti,
+  revokeAllUserTokens,
   bindRefreshJtiToFamily,
   isTokenIssuedBeforePasswordChange,
   getUserEpochs,
   getRefreshFamily,
 } from '../../services';
+import { revokeRefreshFamilyById } from '../../services/authLifecycle';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
+import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import {
   resolveCurrentUserTokenContext,
@@ -167,6 +184,7 @@ import {
   resolveRefreshToken,
   validateCookieCsrfRequest,
   clearRefreshTokenCookie,
+  revokeCurrentRefreshTokenJti,
 } from './helpers';
 
 function selectChain(rows: unknown[]) {
@@ -674,5 +692,90 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
 
     expect(res.status).toBe(401);
     expect(createTokenPair).not.toHaveBeenCalled();
+  });
+});
+
+// Task 10 — truthful logout (SR2-04): a copied refresh token used to survive
+// up to 7 days if Redis was down, because logout only ever did Redis cleanup
+// inside a try/catch that swallowed errors and always returned {success:
+// true}. Logout must now durably revoke the caller's own refresh family in
+// the DB FIRST, then do the same Redis cleanup it always did, and only report
+// success when the durable revoke actually committed.
+describe('POST /logout', () => {
+  async function postLogout() {
+    return loginRoutes.request('/logout', { method: 'POST' });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(revokeRefreshFamilyById).mockResolvedValue(undefined);
+    vi.mocked(revokeAllUserTokens).mockResolvedValue(undefined);
+    vi.mocked(revokeCurrentRefreshTokenJti).mockResolvedValue(undefined);
+    vi.mocked(resolveRefreshToken).mockReturnValue(null);
+  });
+
+  it('durably revokes the sid family, runs Redis cleanup, clears the cookie, and returns 200', async () => {
+    const res = await postLogout();
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ success: true });
+
+    // Durable revoke happens inside db.transaction, keyed on the access
+    // token's sid (set to 'family-1' by the authMiddleware mock above) —
+    // NOT a bare fire-and-forget call outside a transaction.
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(revokeRefreshFamilyById).toHaveBeenCalledWith(expect.anything(), 'family-1', 'logout');
+
+    // Same Redis cleanup logout always did — scoped to this session, never
+    // runPostCommitCleanup's user-wide MCP OAuth grant sweep.
+    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
+    expect(revokeCurrentRefreshTokenJti).toHaveBeenCalledWith(expect.anything(), 'user-1');
+
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'user.logout', result: 'success' }),
+    );
+  });
+
+  it('returns 500 with a failure audit when the durable revoke throws, but still clears the cookie', async () => {
+    vi.mocked(db.transaction).mockRejectedValueOnce(new Error('connection lost'));
+
+    const res = await postLogout();
+    const body = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(body).not.toEqual({ success: true });
+
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'user.logout',
+        result: 'failure',
+        details: { reason: 'durable_revocation_failed', familyId: 'family-1' },
+      }),
+    );
+
+    // The failure audit must never carry raw token/session material — only
+    // the family id (an opaque UUID, not a bearer credential) and a reason.
+    const auditCall = vi.mocked(createAuditLogAsync).mock.calls[0]?.[0] as { details?: unknown };
+    expect(JSON.stringify(auditCall.details)).not.toMatch(/eyJ|Bearer|refresh_token/i);
+  });
+
+  it('still reports success and clears the cookie when Redis cleanup fails after the durable revoke already committed', async () => {
+    vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
+
+    const res = await postLogout();
+    const body = await res.json();
+
+    // The durable revocation already committed — Redis is best-effort cleanup
+    // layered on top, so its failure must not flip the reported outcome.
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ success: true });
+    expect(revokeRefreshFamilyById).toHaveBeenCalledWith(expect.anything(), 'family-1', 'logout');
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'user.logout', result: 'success' }),
+    );
   });
 });
