@@ -520,7 +520,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 
 				// Send initial failover heartbeat.
 				stats := currentRestartStats(recovery, cfg.Watchdog.MaxRestartsPer24h)
-				resp, err := failoverClient.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
+				resp, err := failoverClient.SendHeartbeat(version, wd.State(), stats)
 				if err != nil {
 					failoverFailures++
 					lastDiskServerURL = noteFailoverHeartbeatFailure(failoverClient, journal, lastDiskServerURL, failoverFailures)
@@ -629,7 +629,7 @@ func handleFailoverPoll(
 ) {
 	// Send failover heartbeat.
 	stats := currentRestartStats(recovery, maxPer24h)
-	resp, err := fc.SendHeartbeat(version, wd.State(), journal.Recent(10), stats)
+	resp, err := fc.SendHeartbeat(version, wd.State(), stats)
 	if err != nil {
 		*failoverFailures = *failoverFailures + 1
 		*lastDiskServerURL = noteFailoverHeartbeatFailure(fc, journal, *lastDiskServerURL, *failoverFailures)
@@ -790,18 +790,34 @@ func handleFailoverCommand(
 			resultStatus = "failed"
 			errMsg = err.Error()
 		} else {
-			resultStatus = "completed"
-			result = map[string]any{
+			res := map[string]any{
 				"journal_entries": len(entries),
 				"state":           wd.State(),
 				"history":         wd.StateHistory(),
 			}
-			// Ship full journal entries.
-			if shipErr := fc.ShipLogs(entries); shipErr != nil {
+			// Ship full journal entries to the diagnostic-log endpoint. Only
+			// report "completed" if they actually reached the API — otherwise
+			// operators would see a false success for empty diagnostics.
+			shipped, shipErr := fc.ShipLogs(entries)
+			res["shipped_logs"] = shipped
+			if shipErr != nil {
 				journal.Log(watchdog.LevelWarn, "failover.ship_logs_failed", map[string]any{
-					"error": shipErr.Error(),
+					"error":   shipErr.Error(),
+					"shipped": shipped,
+					"total":   len(entries),
 				})
+				res["ship_error"] = shipErr.Error()
+				// partial flag records that some batches landed; the API's
+				// command-result status enum only accepts completed/failed/
+				// timeout, so any ship failure maps to "failed" while the
+				// payload carries the shipped/total detail.
+				res["partial"] = shipped > 0
+				resultStatus = "failed"
+				errMsg = shipErr.Error()
+			} else {
+				resultStatus = "completed"
 			}
+			result = res
 		}
 
 	case "update_agent":

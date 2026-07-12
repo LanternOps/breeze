@@ -65,6 +65,7 @@ vi.mock('../../services/reliabilityScoring', () => ({
 }));
 
 vi.mock('../../services/auditEvents', () => ({
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeAuditEvent: vi.fn(),
 }));
 

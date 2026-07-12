@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { apiKeys, devices, enrollmentKeys, organizationUsers, organizations, partnerUsers } from '../db/schema';
 import { revokeAllOrgOauthArtifacts, revokeAllPartnerOauthArtifacts } from '../oauth/grantRevocation';
@@ -73,6 +73,36 @@ async function severAgentCredentialsForOrgIds(
       )
     )
     .returning({ id: enrollmentKeys.id });
+
+  // Finding #3(b): suspending the token + invalidating the cache only fails the
+  // NEXT auth gate — an already-established agent WS keeps its captured
+  // authorization until it happens to reconnect. Sever live sockets for devices
+  // in the affected orgs so containment is immediate, not eventual.
+  //
+  // agentWs is imported dynamically (not statically): `routes/agentWs` pulls in
+  // a large graph of services, and a static service→route edge here risks an
+  // import cycle. Dynamic import at call time is the established de-cycling
+  // pattern in this repo (agentWs itself dynamically imports its result
+  // handlers). Best-effort: socket teardown must NEVER fail the credential
+  // revocation, which is the load-bearing containment step.
+  try {
+    const { disconnectAgent, getConnectedAgentIds } = await import('../routes/agentWs');
+    const connected = getConnectedAgentIds();
+    if (connected.length > 0) {
+      const connectedSet = new Set(connected);
+      const deviceRows = await db
+        .select({ agentId: devices.agentId })
+        .from(devices)
+        .where(and(inArray(devices.orgId, orgIds), isNotNull(devices.agentId)));
+      for (const row of deviceRows) {
+        if (row.agentId && connectedSet.has(row.agentId)) {
+          disconnectAgent(row.agentId, 4001, 'Tenant suspended');
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[tenantLifecycle] Failed to sever live agent sockets after credential cutoff:', err);
+  }
 
   return {
     agentTokensSuspended: suspended.length,

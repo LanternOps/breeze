@@ -14,6 +14,7 @@ const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/auditEvents', () => ({
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeRouteAudit: vi.fn()
 }));
 

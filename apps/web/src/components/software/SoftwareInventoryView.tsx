@@ -5,6 +5,8 @@ import { fetchWithAuth } from "../../stores/auth";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { toCsv } from "@/lib/csvExport";
+
 type InventoryItem = {
   id: string;
   device: string;
@@ -190,7 +192,9 @@ export default function SoftwareInventoryView({
       item.installDate,
       item.managed ? "Yes" : "No",
     ]);
-    const csvContent = [header, ...rows].map((row) => row.join(",")).join("\n");
+    // Neutralize spreadsheet-formula injection from agent-supplied fields
+    // (software/version/vendor) before quoting.
+    const csvContent = toCsv(header, rows);
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");

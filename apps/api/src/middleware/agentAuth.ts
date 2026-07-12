@@ -16,6 +16,20 @@ export interface AgentAuthContext {
   orgId: string;
   siteId: string;
   role: AgentCredentialRole;
+  /**
+   * SHA-256 hex of the bearer token that actually authenticated this request —
+   * i.e. the CURRENT-token hash the middleware matched (rotation-required
+   * previous-token callers are still surfaced via `agentTokenRotationRequired`,
+   * but must be rejected before any credential mint; see token.ts rotate-token).
+   * Used by rotate-token to compare-and-swap the rotation against the exact
+   * hash that authenticated, so a superseded/racing token cannot mint durable
+   * credentials. Never log or return this value.
+   *
+   * Optional at the type level so existing callers that build a partial agent
+   * context (tests, non-rotation routes) still typecheck; the real middleware
+   * ALWAYS populates it, and rotate-token fails closed if it is ever absent.
+   */
+  authTokenHash?: string;
 }
 
 export type AgentCredentialRole = 'agent' | 'watchdog';
@@ -418,6 +432,11 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     orgId: device.orgId,
     siteId: device.siteId,
     role: match.role,
+    // The exact hash that authenticated this request (current token). For a
+    // rotation-required previous-token match this is still the previous-token
+    // hash, but rotate-token rejects those before reaching any CAS, so callers
+    // that mint credentials only ever see the current-token hash here.
+    authTokenHash: tokenHash,
   });
 
   // #1105 — high-frequency, high-concurrency routes that self-manage their DB

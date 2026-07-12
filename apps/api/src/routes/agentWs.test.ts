@@ -149,6 +149,7 @@ vi.mock('../services/auditService', () => ({
 vi.mock('../services/auditEvents', () => ({
   ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
   writeAuditEvent: vi.fn(),
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
 }));
 
 vi.mock('../services/tenantStatus', () => ({
@@ -161,9 +162,12 @@ import {
   createAgentWsHandlers,
   createAgentWsRoutes,
   validateAgentToken,
+  disconnectAgent,
+  isAgentConnected,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
 } from './agentWs';
+import { writeAuditEvent } from '../services/auditEvents';
 import { isAgentTenantActive } from '../services/tenantStatus';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
 import { enqueueSnmpPollResults } from '../jobs/snmpWorker';
@@ -1222,5 +1226,232 @@ describe('agent websocket command results', () => {
     const app = createAgentWsRoutes(((_handler: unknown) => async (_c: any) => new Response('ws', { status: 101 })) as any);
     const res = await app.request('/agent-overlimit/ws');
     expect(res.status).toBe(429);
+  });
+});
+
+// Finding #4 — one authorized socket per agent. A second socket must close the
+// first, and disconnectAgent/revocation must always act on the authoritative
+// (newest) socket so no orphan survives.
+describe('Finding #4 — one-socket-per-agent invariant', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('closes the previous socket when a second socket opens for the same agent', async () => {
+    const preValidatedAgent = { deviceId: 'device-dup', orgId: 'org-dup' };
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    // Empty device select: onOpen registers the socket without reaching the
+    // (unmocked) command-claim path.
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-dup', preValidatedAgent);
+    const ws1 = wsMock();
+    const ws2 = wsMock();
+
+    await handlers.onOpen({}, ws1 as any);
+    await handlers.onOpen({}, ws2 as any);
+
+    expect(ws1.close).toHaveBeenCalledWith(4002, 'Superseded by newer connection');
+    expect(ws2.close).not.toHaveBeenCalled();
+    expect(isAgentConnected('agent-dup')).toBe(true);
+  });
+
+  it('disconnectAgent closes the current authoritative socket', async () => {
+    const preValidatedAgent = { deviceId: 'device-auth', orgId: 'org-auth' };
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-auth', preValidatedAgent);
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+
+    const outcome = disconnectAgent('agent-auth', 4041, 'Device decommissioned');
+
+    expect(outcome).toBe('closed');
+    expect(ws.close).toHaveBeenCalledWith(4041, 'Device decommissioned');
+  });
+
+  it('an orphaned socket cannot outlive its replacement — onClose of the orphan never evicts the live socket', async () => {
+    const preValidatedAgent = { deviceId: 'device-orphan', orgId: 'org-orphan' };
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-orphan', preValidatedAgent);
+    const ws1 = wsMock();
+    const ws2 = wsMock();
+
+    await handlers.onOpen({}, ws1 as any); // ws1 authoritative
+    await handlers.onOpen({}, ws2 as any); // ws2 supersedes; ws1 closed as orphan
+
+    // The orphan's late onClose must NOT evict ws2 from the connection map or
+    // clobber its ping state (both guarded by connection identity).
+    await handlers.onClose({}, ws1 as any);
+
+    expect(isAgentConnected('agent-orphan')).toBe(true);
+    disconnectAgent('agent-orphan');
+    expect(ws2.close).toHaveBeenCalled();
+  });
+});
+
+// Finding #3 — established sockets must stop acting once containment changes.
+describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('severs the socket on a command result when the device was quarantined after connect', async () => {
+    const preValidatedAgent = { deviceId: 'device-q', orgId: 'org-q' };
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-1' }]) as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any); // onOpen: register only
+
+    const handlers = createAgentWsHandlers('agent-q', preValidatedAgent);
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    vi.mocked(ws.close).mockClear();
+    vi.mocked(db.update).mockClear();
+
+    // command lookup returns a live row, then the lifecycle recheck sees the
+    // device is now quarantined.
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        { id: 'cmd-1', type: 'run_script', payload: {}, deviceId: 'device-q' },
+      ]) as any)
+      .mockReturnValueOnce(selectAgentDevice([{ status: 'quarantined', agentTokenSuspendedAt: null }]) as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '77777777-7777-4777-8777-777777777777',
+        status: 'completed',
+        stdout: 'ok',
+      }),
+    } as any, ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+    // Aborted before persisting: the command row is never terminally updated.
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('severs the socket on a heartbeat command-claim when the token was suspended after connect', async () => {
+    const preValidatedAgent = { deviceId: 'device-s', orgId: 'org-s' };
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any); // onOpen: register only
+
+    const handlers = createAgentWsHandlers('agent-s', preValidatedAgent);
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    vi.mocked(ws.close).mockClear();
+
+    // The claim path re-checks the same device row it fetches: a suspended
+    // token (org/partner tenant suspension denormalizes here) severs the socket.
+    vi.mocked(db.select).mockReturnValue(
+      selectAgentDevice([{ id: 'device-s', status: 'online', agentTokenSuspendedAt: new Date() }]) as any
+    );
+
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'heartbeat', timestamp: 123 }),
+    } as any, ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+  });
+});
+
+// Finding #8 — WS command results emit the same append-only audit as REST.
+// Finding #5 — WS result stdout/stderr are redacted before persistence.
+describe('Findings #8 / #5 — WS command-result audit + secret redaction', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('emits agent.command.result.submit exactly once after a real terminal transition', async () => {
+    const preValidatedAgent = { deviceId: 'device-a', orgId: 'org-a' };
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-1', type: 'run_script', payload: {}, deviceId: 'device-a' },
+    ]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-1' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-a', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '88888888-8888-4888-8888-888888888888',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'done',
+      }),
+    } as any, ws as any);
+
+    expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+    const auditEvent = vi.mocked(writeAuditEvent).mock.calls[0]![1];
+    expect(auditEvent).toMatchObject({
+      action: 'agent.command.result.submit',
+      actorType: 'agent',
+      actorId: 'agent-a',
+      orgId: 'org-a',
+      resourceType: 'device_command',
+      resourceId: '88888888-8888-4888-8888-888888888888',
+      result: 'success',
+      details: { commandType: 'run_script', status: 'completed', exitCode: 0 },
+    });
+  });
+
+  it('does NOT audit when the compare-and-set no-ops (duplicate/late result)', async () => {
+    const preValidatedAgent = { deviceId: 'device-a', orgId: 'org-a' };
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-1', type: 'run_script', payload: {}, deviceId: 'device-a' },
+    ]) as any);
+    // returning [] — the row was already terminal, so no transition occurred.
+    vi.mocked(db.update).mockReturnValue(updateResult([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-a', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '88888888-8888-4888-8888-888888888888',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'done',
+      }),
+    } as any, ws as any);
+
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('redacts a PEM private key from stdout before it is persisted', async () => {
+    const preValidatedAgent = { deviceId: 'device-r', orgId: 'org-r' };
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-1', type: 'run_script', payload: {}, deviceId: 'device-r' },
+    ]) as any);
+
+    // Capture the persisted result payload from the terminal UPDATE .set(...).
+    const setSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-1' }]) }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+
+    const handlers = createAgentWsHandlers('agent-r', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '99999999-9999-4999-8999-999999999999',
+        status: 'completed',
+        exitCode: 0,
+        stdout: `key follows:\n${pem}\nend`,
+      }),
+    } as any, ws as any);
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const stored = setSpy.mock.calls[0]![0] as { result: { stdout: string } };
+    expect(stored.result.stdout).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(stored.result.stdout).not.toContain('BEGIN RSA PRIVATE KEY');
   });
 });

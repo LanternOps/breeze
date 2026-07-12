@@ -22,6 +22,7 @@ vi.mock('../services/rate-limit', () => ({
   })),
 }));
 vi.mock('../services/auditEvents', () => ({
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeAuditEvent: vi.fn()
 }));
 // Enrollment now gates on tenant status; default to an active tenant so these

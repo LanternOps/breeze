@@ -48,8 +48,25 @@ vi.mock('../../middleware/auth', () => ({
   }),
 }));
 
+const { matchTokenMock } = vi.hoisted(() => ({
+  // Default: current-token match (no rotation required). Individual tests
+  // override to { tokenRotationRequired: true } to exercise the previous-token
+  // rejection on /renew-cert.
+  matchTokenMock: vi.fn(() => ({ tokenRotationRequired: false })),
+}));
 vi.mock('../../middleware/agentAuth', () => ({
-  matchAgentTokenHash: vi.fn(() => ({ mode: 'primary' })),
+  matchAgentTokenHash: matchTokenMock,
+}));
+
+// mtls.ts imports disconnectAgent from routes/agentWs to sever the agent
+// command channel on the quarantine path (Finding #3). Mock it so importing
+// mtls.ts doesn't pull the heavy agentWs → terminalWs chain, and so we can
+// assert the wiring fires.
+const { disconnectAgentMock } = vi.hoisted(() => ({
+  disconnectAgentMock: vi.fn(() => 'closed'),
+}));
+vi.mock('../agentWs', () => ({
+  disconnectAgent: disconnectAgentMock,
 }));
 
 const { tenantActiveMock } = vi.hoisted(() => ({
@@ -205,9 +222,34 @@ function mockDeviceLookup(row: Record<string, unknown> | null) {
   } as any);
 }
 
-function mockDbUpdateOk() {
+// The renew-cert writes use `.where(...).returning({ id })` and require exactly
+// one row; the org-settings PATCH writes just `await ...where(...)`. So the
+// where() result must be BOTH awaitable (thenable → undefined) AND expose a
+// `.returning()` that resolves to one device row. `rowCount` lets a test force
+// a 0-row write to exercise the fail-closed path.
+function mockDbUpdateOk(rowCount = 1) {
+  const rows = Array.from({ length: rowCount }, () => ({ id: DEVICE_ID }));
   dbUpdateMock.mockReturnValue({
-    set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    set: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue(rows),
+        then: (resolve: (v: unknown) => unknown) => resolve(undefined),
+      }),
+    }),
+  } as any);
+}
+
+// Queue an organizations.settings row for readOrgMtlsPolicyOrNull (the fail-
+// closed org mTLS policy read on /renew-cert). Pass null to simulate a missing
+// org row (drives the fail-closed 500). Must be queued AFTER the device lookup
+// since both go through dbSelectMock.mockReturnValueOnce in call order.
+function mockOrgSettingsLookup(settings: Record<string, unknown> | null = {}) {
+  dbSelectMock.mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(settings === null ? [] : [{ settings }]),
+      }),
+    }),
   } as any);
 }
 
@@ -245,6 +287,7 @@ describe('POST /renew-cert — E4 per-device cooldown', () => {
 
     // First request — success
     mockDeviceLookup(deviceRow);
+    mockOrgSettingsLookup(); // org policy row present (auto_reissue default)
     const first = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
       headers: { Authorization: `Bearer ${TOKEN}` },
@@ -328,6 +371,7 @@ describe('POST /renew-cert — tenant-status gate (F4)', () => {
       serialNumber: 'sn-1',
     });
     mockDeviceLookup(activeDeviceRow);
+    mockOrgSettingsLookup(); // org policy row present
 
     const res = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
@@ -349,11 +393,11 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
     mockDbUpdateOk();
   });
 
-  it('POST /renew-cert quarantine branch tears down live remote sessions', async () => {
-    // Expired cert + org expiredCertPolicy 'quarantine' (the getOrgMtlsSettings
-    // mock default) drives the renew handler into the quarantine branch, which
-    // must cut any in-flight desktop/terminal session to the now-isolated
-    // device. Dropping that call silently leaves live control running.
+  it('POST /renew-cert quarantine branch tears down live remote sessions AND severs the agent WS', async () => {
+    // Expired cert + org expiredCertPolicy 'quarantine' drives the renew handler
+    // into the quarantine branch, which must cut any in-flight desktop/terminal
+    // session AND sever the agent command WebSocket to the now-isolated device.
+    // Dropping either call silently leaves live control / command draining.
     const deviceRow = {
       id: DEVICE_ID,
       orgId: ORG_ID,
@@ -370,6 +414,7 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
     };
 
     mockDeviceLookup(deviceRow);
+    mockOrgSettingsLookup({ mtls: { expiredCertPolicy: 'quarantine' } });
     const res = await buildApp().request('/agents/renew-cert', {
       method: 'POST',
       headers: { Authorization: `Bearer ${TOKEN}` },
@@ -382,6 +427,8 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
     expect(issueCertMock).not.toHaveBeenCalled();
     // Wiring under test: live remote control to the quarantined device is cut.
     expect(terminateDeviceRemoteSessions).toHaveBeenCalledWith(DEVICE_ID);
+    // Finding #3: the agent command WebSocket is also severed (code 4041).
+    expect(disconnectAgentMock).toHaveBeenCalledWith(AGENT_ID, 4041, expect.any(String));
   });
 
   it('POST /:id/deny tears down live remote sessions for the denied device', async () => {
@@ -404,6 +451,97 @@ describe('remote-session teardown wiring on quarantine / deny', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true });
     expect(terminateDeviceRemoteSessions).toHaveBeenCalledWith(DEVICE_ID);
+  });
+});
+
+describe('POST /renew-cert — cert-issuing fail-closed guards', () => {
+  const baseDeviceRow = {
+    id: DEVICE_ID,
+    orgId: ORG_ID,
+    agentId: AGENT_ID,
+    hostname: 'host-1',
+    status: 'online',
+    agentTokenHash: TOKEN_HASH,
+    previousTokenHash: null,
+    previousTokenExpiresAt: null,
+    agentTokenSuspendedAt: null,
+    // Non-expired cert → the handler takes the issue path (not quarantine).
+    mtlsCertExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000),
+    mtlsCertCfId: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisState.clear();
+    issueCertMock.mockReset();
+    revokeCertMock.mockReset();
+    tenantActiveMock.mockResolvedValue(true);
+    matchTokenMock.mockReturnValue({ tokenRotationRequired: false });
+    mockDbUpdateOk();
+  });
+
+  it('Finding #2: rejects a PREVIOUS (superseded) token caller with 401 and issues no cert', async () => {
+    // The caller authenticated via the previous/rotated token — accepted for
+    // idempotent agent traffic, but NOT for minting new cert material. A stolen
+    // superseded token must not obtain a fresh certificate + private key.
+    matchTokenMock.mockReturnValueOnce({ tokenRotationRequired: true });
+    mockDeviceLookup(baseDeviceRow);
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error).toMatch(/rotate/i);
+    // No cert material is minted for a superseded token.
+    expect(issueCertMock).not.toHaveBeenCalled();
+  });
+
+  it('Finding #1: fails closed (500) and returns NO cert material when the metadata write affects 0 rows', async () => {
+    // A 0-row cert-metadata write under FORCE RLS would otherwise "succeed"
+    // silently, leaking an UNTRACKED cert (no serial/expiry/cfId recorded → not
+    // revocable later). The handler must deny AND revoke the just-issued cert.
+    issueCertMock.mockResolvedValue({
+      id: 'cf-cert-untracked',
+      certificate: 'CERT',
+      privateKey: 'KEY',
+      expiresOn: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      issuedOn: new Date().toISOString(),
+      serialNumber: 'sn-untracked',
+    });
+    mockDeviceLookup(baseDeviceRow);
+    mockOrgSettingsLookup(); // auto_reissue default → issue path
+    mockDbUpdateOk(0); // metadata write matches 0 rows
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    // Crucially, no certificate/privateKey is handed back on the fail-closed path.
+    expect(body.mtls).toBeUndefined();
+    expect(body.error).toMatch(/failed/i);
+    // The untracked cert is revoked so it can't be used.
+    expect(revokeCertMock).toHaveBeenCalledWith('cf-cert-untracked');
+  });
+
+  it('Finding #1: fails closed (500) when the org policy row is missing (no auto_reissue fallback)', async () => {
+    // A missing org row must NOT silently downgrade to auto_reissue and issue a
+    // cert against an org whose policy we can't resolve.
+    mockDeviceLookup(baseDeviceRow);
+    mockOrgSettingsLookup(null); // org row absent
+
+    const res = await buildApp().request('/agents/renew-cert', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(res.status).toBe(500);
+    expect(issueCertMock).not.toHaveBeenCalled();
   });
 });
 

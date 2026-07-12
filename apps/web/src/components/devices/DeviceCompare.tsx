@@ -23,6 +23,7 @@ import {
   formatDateTime as formatUserDateTime,
   formatTime as formatUserTime,
 } from "@/lib/dateTimeFormat";
+import { escapeCsvCell } from "@/lib/csvExport";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -580,13 +581,6 @@ function getPatchStatus(patches: PatchItem[], patchName: string): PatchStatus {
   return match?.status ?? "unknown";
 }
 
-function escapeCsv(value: string): string {
-  if (value.includes(",") || value.includes("\n") || value.includes('"')) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-}
-
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -1071,8 +1065,10 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
       ]);
     });
 
+    // Neutralize spreadsheet-formula injection from agent-supplied fields
+    // (hostname/cpuModel/software/patch/config values) before quoting.
     const csv = rows
-      .map((row) => row.map((value) => escapeCsv(value ?? "")).join(","))
+      .map((row) => row.map((value) => escapeCsvCell(value ?? "")).join(","))
       .join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);

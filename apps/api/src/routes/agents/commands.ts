@@ -29,6 +29,7 @@ import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../../services/agentCommandResultValidation';
+import { redactSecretsFromOutput } from '../../services/secretRedaction';
 
 export const commandsRoutes = new Hono();
 const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
@@ -39,13 +40,17 @@ function commandResultToStdout(data: z.infer<typeof commandResultSchema>): strin
 }
 
 function buildStoredCommandResult(data: z.infer<typeof commandResultSchema>, stdout: string | undefined) {
+  // Defense-in-depth: strip full PEM private-key blocks from agent output
+  // before it is persisted and later shown to scripts:read users. Pre-update
+  // agents don't redact server-side-visible output, so we redact here.
+  // Preserve null/undefined (don't coerce to '') to keep the stored shape stable.
   return {
     status: data.status,
     exitCode: data.exitCode,
-    stdout,
-    stderr: data.stderr,
+    stdout: stdout != null ? redactSecretsFromOutput(stdout) : stdout,
+    stderr: data.stderr != null ? redactSecretsFromOutput(data.stderr) : data.stderr,
     durationMs: data.durationMs,
-    error: data.error,
+    error: data.error != null ? redactSecretsFromOutput(data.error) : data.error,
   };
 }
 
@@ -181,8 +186,15 @@ commandsRoutes.post(
               startedAt,
               completedAt,
               exitCode: data.exitCode ?? null,
-              output: data.stdout ?? null,
-              errorMessage: data.error ?? data.stderr ?? null,
+              // Defense-in-depth: redact PEM private-key blocks from persisted
+              // software-install output/errors (mirrors buildStoredCommandResult).
+              output: data.stdout != null ? redactSecretsFromOutput(data.stdout) : null,
+              errorMessage:
+                data.error != null
+                  ? redactSecretsFromOutput(data.error)
+                  : data.stderr != null
+                    ? redactSecretsFromOutput(data.stderr)
+                    : null,
             })
             .where(and(
               eq(deploymentResults.deploymentId, deploymentIdFromCmd),
