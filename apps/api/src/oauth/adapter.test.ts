@@ -1,8 +1,14 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthAuthorizationCodes, oauthClients, oauthInteractions, oauthRefreshTokens } from '../db/schema';
-import { BreezeOidcAdapter } from './adapter';
-import { revokeGrant } from './revocationCache';
+import {
+  BreezeOidcAdapter,
+  refreshTokenStorageId,
+  restoreRefreshTokenPayload,
+  sanitizeRefreshTokenPayload,
+} from './adapter';
+import { revokeGrant, revokeJti } from './revocationCache';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 
 vi.mock('../db', () => ({
@@ -56,6 +62,23 @@ function collectSqlStrings(value: unknown): string {
     }
   }
   return out;
+}
+
+// Recursively collect every string reachable from a value. Used to prove that
+// a Drizzle `eq(column, value)` where-clause carries the digest (as a bound
+// Param.value) rather than the raw refresh-token id.
+function collectAllStrings(value: unknown, acc = new Set<string>(), seen = new WeakSet<object>()): Set<string> {
+  if (typeof value === 'string') {
+    acc.add(value);
+    return acc;
+  }
+  if (!value || typeof value !== 'object') return acc;
+  if (seen.has(value)) return acc;
+  seen.add(value);
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    collectAllStrings(v, acc, seen);
+  }
+  return acc;
 }
 
 function mockSelectRows(rows: unknown[]) {
@@ -350,5 +373,154 @@ describe('BreezeOidcAdapter', () => {
     }]);
 
     await expect(new BreezeOidcAdapter('RefreshToken').find('refresh_abc')).resolves.toBeUndefined();
+  });
+});
+
+describe('refresh-token storage helpers', () => {
+  it('refreshTokenStorageId returns the lowercase sha256 hex of the raw id', () => {
+    const rawId = 'refresh_raw_token_value';
+    const expected = createHash('sha256').update(rawId).digest('hex');
+    const digest = refreshTokenStorageId(rawId);
+    expect(digest).toBe(expected);
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('sanitizeRefreshTokenPayload deep-copies and drops jti while keeping other fields', () => {
+    const payload = {
+      jti: 'refresh_raw_token_value',
+      grantId: 'grant_abc',
+      accountId: 'user_abc',
+      clientId: 'client_abc',
+      exp: 1_900_000_000,
+      nested: { keep: true },
+    };
+    const sanitized = sanitizeRefreshTokenPayload(payload);
+    expect(sanitized).not.toHaveProperty('jti');
+    expect(sanitized).toMatchObject({
+      grantId: 'grant_abc',
+      accountId: 'user_abc',
+      clientId: 'client_abc',
+      exp: 1_900_000_000,
+      nested: { keep: true },
+    });
+    // Deep copy: original untouched, nested not shared by reference.
+    expect(payload).toHaveProperty('jti');
+    expect((sanitized as { nested: unknown }).nested).not.toBe(payload.nested);
+  });
+
+  it('restoreRefreshTokenPayload re-adds jti from the raw id without mutating the stored payload', () => {
+    const rawId = 'refresh_raw_token_value';
+    const stored = { grantId: 'grant_abc', accountId: 'user_abc' };
+    const restored = restoreRefreshTokenPayload(rawId, stored);
+    expect(restored).toMatchObject({ grantId: 'grant_abc', accountId: 'user_abc', jti: rawId });
+    expect(stored).not.toHaveProperty('jti');
+  });
+});
+
+describe('BreezeOidcAdapter RefreshToken digest storage', () => {
+  const uuid1 = '00000000-0000-4000-8000-000000000001';
+  const uuid2 = '00000000-0000-4000-8000-000000000002';
+  const uuid3 = '00000000-0000-4000-8000-000000000003';
+  const rawId = 'refresh_raw_token_value';
+  const digest = createHash('sha256').update(rawId).digest('hex');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
+  });
+
+  it('upsert persists the digest as the row id and strips jti from the stored payload', async () => {
+    const chain = mockInsertChain();
+    const payload = {
+      accountId: uuid1,
+      clientId: 'client_abc',
+      grantId: 'grant_abc',
+      jti: rawId,
+      exp: 1_900_000_000,
+      extra: { partner_id: uuid2, org_id: uuid3 },
+    };
+
+    await new BreezeOidcAdapter('RefreshToken').upsert(rawId, payload, 3600);
+
+    expect(insertMock).toHaveBeenCalledWith(oauthRefreshTokens);
+    const values = (chain.values.mock.calls[0] as unknown[])[0] as { id: string; payload: Record<string, unknown> };
+    expect(values.id).toBe(digest);
+    expect(values.payload).not.toHaveProperty('jti');
+    expect(values.payload).toMatchObject({ grantId: 'grant_abc', accountId: uuid1, clientId: 'client_abc' });
+    const conflict = (chain.onConflictDoUpdate.mock.calls[0] as unknown[])[0] as { set: { payload: Record<string, unknown> } };
+    expect(conflict.set.payload).not.toHaveProperty('jti');
+  });
+
+  it('find looks up by digest and restores jti to the raw id in memory', async () => {
+    const { where } = mockSelectRows([{
+      id: digest,
+      userId: uuid1,
+      clientId: 'client_abc',
+      partnerId: uuid2,
+      orgId: null,
+      payload: { accountId: 'user_abc', grantId: 'grant_abc' },
+      revokedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    const result = await new BreezeOidcAdapter('RefreshToken').find(rawId);
+
+    expect(result).toMatchObject({ accountId: 'user_abc', grantId: 'grant_abc', jti: rawId });
+    const strings = collectAllStrings((where.mock.calls[0] as unknown[])[0]);
+    expect(strings.has(digest)).toBe(true);
+    expect(strings.has(rawId)).toBe(false);
+  });
+
+  it('consume revokes the row addressed by the digest', async () => {
+    const chain = mockUpdateChain();
+
+    await new BreezeOidcAdapter('RefreshToken').consume(rawId);
+
+    expect(updateMock).toHaveBeenCalledWith(oauthRefreshTokens);
+    expect(chain.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
+    const strings = collectAllStrings((chain.where.mock.calls[0] as unknown[])[0]);
+    expect(strings.has(digest)).toBe(true);
+    expect(strings.has(rawId)).toBe(false);
+  });
+
+  it('destroy caches the jti marker under the digest and revokes the row by digest', async () => {
+    const futureExp = Math.floor(Date.now() / 1000) + 600;
+    mockSelectRows([{
+      id: digest,
+      payload: { grantId: 'grant_abc', exp: futureExp },
+      expiresAt: new Date(futureExp * 1000),
+    }]);
+    const chain = mockUpdateChain();
+
+    await new BreezeOidcAdapter('RefreshToken').destroy(rawId);
+
+    // Revocation-cache jti lookup for refresh tokens keys on the digest.
+    expect(revokeJti).toHaveBeenCalledWith(digest, expect.any(Number));
+    expect(revokeGrant).toHaveBeenCalledWith('grant_abc', expect.any(Number));
+    const strings = collectAllStrings((chain.where.mock.calls[0] as unknown[])[0]);
+    expect(strings.has(digest)).toBe(true);
+    expect(strings.has(rawId)).toBe(false);
+  });
+
+  it('reuse detection on a revoked row still fires revokeGrant through the digest lookup', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { where } = mockSelectRows([{
+      id: digest,
+      userId: uuid1,
+      clientId: 'client_abc',
+      partnerId: uuid2,
+      orgId: null,
+      payload: { accountId: 'user_abc', grantId: 'grant_abc' },
+      revokedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+    }]);
+
+    await expect(new BreezeOidcAdapter('RefreshToken').find(rawId)).resolves.toBeUndefined();
+
+    expect(vi.mocked(revokeGrant)).toHaveBeenCalledWith('grant_abc', expect.any(Number));
+    const strings = collectAllStrings((where.mock.calls[0] as unknown[])[0]);
+    expect(strings.has(digest)).toBe(true);
+    expect(strings.has(rawId)).toBe(false);
+    consoleError.mockRestore();
   });
 });
