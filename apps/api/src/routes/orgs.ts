@@ -13,7 +13,6 @@ import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import {
   restoreOrganizationTenantAccess,
-  restorePartnerTenantAccess,
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
   invalidateOrganizationUsersInTransaction,
@@ -782,6 +781,16 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     return c.json({ error: 'No updates provided' }, 400);
   }
 
+  // Partner activation is security-sensitive and owns additional eligibility
+  // and session-lifecycle invariants. Generic metadata/status mutation must not
+  // provide an alternate path around the guarded activation and unsuspend
+  // workflows, regardless of the partner's current state.
+  if (data.status === 'active') {
+    return c.json({
+      error: 'Partner activation must use the guarded activation or unsuspend workflow',
+    }, 409);
+  }
+
   if (data.slug !== undefined) {
     const clash = await db
       .select({ id: partners.id })
@@ -894,15 +903,6 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     const cleanup = await revokePartnerTenantAccess(partner.id, lifecycleSnapshot);
     cleanupStatus = cleanup.cleanupStatus;
     cleanupFailures = cleanup.cleanupFailures;
-  } else if ('status' in data && data.status === 'active') {
-    // Reactivation: restore agent tokens this partner's revoke suspended.
-    try {
-      await restorePartnerTenantAccess(partner.id);
-    } catch (error) {
-      cleanupStatus = 'partial';
-      cleanupFailures = ['agent-restore'];
-      console.error('[orgs] partner agent restore failed after durable status change', error);
-    }
   }
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);

@@ -569,30 +569,27 @@ describe('org routes', () => {
       expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
     });
 
-    it('restores the agent fleet when a partner is reactivated to active', async () => {
-      vi.mocked(db.update).mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', status: 'active', settings: {} }])
-          })
-        })
-      } as any);
+    it.each(['pending', 'suspended'] as const)(
+      'rejects direct %s-to-active mutation without lifecycle or cleanup side effects',
+      async (_currentStatus) => {
+        const res = await app.request('/orgs/partners/partner-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'active' })
+        });
 
-      const res = await app.request('/orgs/partners/partner-1', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'active' })
-      });
-
-      expect(res.status).toBe(200);
-      expect(tenantLifecycleTxMocks.invalidatePartner).toHaveBeenCalledWith(
-        expect.anything(),
-        'partner-1',
-        'partner-status-changed',
-      );
-      expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
-      expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
-    });
+        expect(res.status).toBe(409);
+        expect(await res.json()).toEqual({
+          error: 'Partner activation must use the guarded activation or unsuspend workflow',
+        });
+        expect(db.update).not.toHaveBeenCalled();
+        expect(db.select).not.toHaveBeenCalled();
+        expect(tenantLifecycleTxMocks.withSystemTransaction).not.toHaveBeenCalled();
+        expect(tenantLifecycleTxMocks.invalidatePartner).not.toHaveBeenCalled();
+        expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
+        expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
+      },
+    );
 
     it('rolls back a partner status transition when durable user invalidation fails', async () => {
       tenantLifecycleTxMocks.invalidatePartner.mockRejectedValueOnce(new Error('family update failed'));
@@ -627,6 +624,12 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(tenantLifecycleTxMocks.withSystemTransaction).toHaveBeenCalledTimes(1);
+      expect(tenantLifecycleTxMocks.invalidatePartner).toHaveBeenCalledWith(
+        expect.anything(),
+        'partner-1',
+        'partner-status-changed',
+      );
       expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
       expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
     });
