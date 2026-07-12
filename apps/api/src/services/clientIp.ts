@@ -124,12 +124,95 @@ function getImmediatePeerIp(c: RequestLike, fallback: string): string | undefine
     ?? undefined;
 }
 
+// --- Proxy-trust misconfiguration detection (#2364) -------------------------
+// When proxy-header trust is enabled but the immediate TCP peer is NOT in
+// TRUSTED_PROXY_CIDRS, we (correctly, fail-closed) ignore forwarded headers and
+// fall back to the socket address. In production that combination almost
+// always means the pinned proxy IP went stale (proxy container recreated
+// without a static `ipv4_address`) — every per-IP rate limit then pools onto
+// the proxy IP and audit-log IP attribution silently records the proxy as the
+// client. Detect it and warn LOUDLY, rate-limited per peer so a burst can't
+// flood logs. Pure in-memory — no I/O on the hot path. Observability only:
+// the returned IP is unchanged.
+
+const UNTRUSTED_PEER_WARN_INTERVAL_MS = 15 * 60 * 1000;
+// Hard cap on tracked peers so a rotating set of source IPs can't grow the
+// map unboundedly. When full, expired entries are pruned; if still full the
+// warning is emitted without being tracked (louder, never unbounded).
+const UNTRUSTED_PEER_WARN_MAX_TRACKED = 1024;
+const untrustedPeerLastWarnAt = new Map<string, number>();
+
+type ProxyTrustMetricsRecorder = {
+  onForwardedHeadersFromUntrustedPeer: () => void;
+};
+
+const noopRecorder: ProxyTrustMetricsRecorder = { onForwardedHeadersFromUntrustedPeer: () => {} };
+let proxyTrustMetricsRecorder: ProxyTrustMetricsRecorder = noopRecorder;
+
+// `routes/metrics.ts` registers the real Prometheus recorder at startup
+// (same thin-indirection pattern as `abuseMetrics.ts` / `anomalyMetrics.ts` —
+// services must not import routes). Until then this is a no-op.
+export function setProxyTrustMetricsRecorder(next: Partial<ProxyTrustMetricsRecorder> | null | undefined): void {
+  proxyTrustMetricsRecorder = {
+    onForwardedHeadersFromUntrustedPeer:
+      next?.onForwardedHeadersFromUntrustedPeer ?? noopRecorder.onForwardedHeadersFromUntrustedPeer,
+  };
+}
+
+export function _resetProxyTrustWarnStateForTests(): void {
+  untrustedPeerLastWarnAt.clear();
+  proxyTrustMetricsRecorder = noopRecorder;
+}
+
+function hasForwardedIpHeaders(c: RequestLike): boolean {
+  return Boolean(
+    (c.req.header('cf-connecting-ip') ?? c.req.header('CF-Connecting-IP'))
+    || (c.req.header('x-forwarded-for') ?? c.req.header('X-Forwarded-For'))
+    || (c.req.header('x-real-ip') ?? c.req.header('X-Real-IP')),
+  );
+}
+
+function warnForwardedHeadersFromUntrustedPeer(peerIp: string | undefined): void {
+  // Count every occurrence — Prometheus rates are only useful unsampled.
+  proxyTrustMetricsRecorder.onForwardedHeadersFromUntrustedPeer();
+
+  const key = peerIp ?? 'unknown';
+  const now = Date.now();
+  const lastWarnAt = untrustedPeerLastWarnAt.get(key);
+  if (lastWarnAt !== undefined && now - lastWarnAt < UNTRUSTED_PEER_WARN_INTERVAL_MS) {
+    return;
+  }
+
+  if (!untrustedPeerLastWarnAt.has(key) && untrustedPeerLastWarnAt.size >= UNTRUSTED_PEER_WARN_MAX_TRACKED) {
+    for (const [trackedPeer, at] of untrustedPeerLastWarnAt) {
+      if (now - at >= UNTRUSTED_PEER_WARN_INTERVAL_MS) untrustedPeerLastWarnAt.delete(trackedPeer);
+    }
+  }
+  if (untrustedPeerLastWarnAt.has(key) || untrustedPeerLastWarnAt.size < UNTRUSTED_PEER_WARN_MAX_TRACKED) {
+    untrustedPeerLastWarnAt.set(key, now);
+  }
+
+  console.warn(
+    `[proxy-trust] MISCONFIGURATION: request carried forwarded-ip headers (CF-Connecting-IP/X-Forwarded-For/X-Real-IP) `
+    + `from untrusted peer ${key}, which is not in TRUSTED_PROXY_CIDRS — falling back to the socket address. `
+    + `If this peer is your reverse proxy, TRUSTED_PROXY_CIDRS is likely STALE (proxy container recreated without a `
+    + `static ipv4_address): all per-IP rate limits are pooling onto the proxy IP and audit-log IP attribution is `
+    + `recording the proxy as every client. Fix TRUSTED_PROXY_CIDRS or pin the proxy IP (see docs/DEPLOY_PRODUCTION.md). `
+    + `Suppressed for this peer for ${UNTRUSTED_PEER_WARN_INTERVAL_MS / 60000} minutes.`,
+  );
+}
+// ---------------------------------------------------------------------------
+
 export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string {
   if (!shouldTrustProxyHeaders()) {
     return fallback;
   }
 
-  if (!isTrustedProxySource(getImmediatePeerIp(c, fallback))) {
+  const peerIp = getImmediatePeerIp(c, fallback);
+  if (!isTrustedProxySource(peerIp)) {
+    if (hasForwardedIpHeaders(c)) {
+      warnForwardedHeadersFromUntrustedPeer(peerIp);
+    }
     return fallback;
   }
 
