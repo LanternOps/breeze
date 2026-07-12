@@ -121,6 +121,55 @@ func TestEnqueueNonBlocking(t *testing.T) {
 	}
 }
 
+func TestCapFields(t *testing.T) {
+	// nil and small fields pass through untouched.
+	if got := capFields(nil); got != nil {
+		t.Fatalf("capFields(nil) = %v, want nil", got)
+	}
+	small := map[string]any{"key": "value"}
+	if got := capFields(small); len(got) != 1 || got["key"] != "value" {
+		t.Fatalf("small fields must pass through unchanged, got %v", got)
+	}
+
+	// Oversized fields are replaced with a small marker, not shipped as-is
+	// (one oversized entry would 400 the whole batch at the API, #2386).
+	huge := map[string]any{"dump": string(bytes.Repeat([]byte("x"), maxShippedFieldsJSONBytes+1))}
+	got := capFields(huge)
+	if _, stillThere := got["dump"]; stillThere {
+		t.Fatal("oversized field must be dropped")
+	}
+	marker, ok := got["fields_dropped"].(string)
+	if !ok || marker == "" {
+		t.Fatalf("expected fields_dropped marker, got %v", got)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal marker fields: %v", err)
+	}
+	if len(b) > maxShippedFieldsJSONBytes {
+		t.Fatalf("marker fields themselves exceed the ship limit: %d bytes", len(b))
+	}
+}
+
+func TestEnqueueCapsOversizedFields(t *testing.T) {
+	s := NewShipper(ShipperConfig{MinLevel: "debug"})
+	s.Enqueue(LogEntry{
+		Message: "watchdog",
+		Fields:  map[string]any{"goroutines": string(bytes.Repeat([]byte("g"), maxShippedFieldsJSONBytes+100))},
+	})
+	entry := <-s.buffer
+	b, err := json.Marshal(entry.Fields)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(b) > maxShippedFieldsJSONBytes {
+		t.Fatalf("buffered entry fields exceed ship limit: %d bytes", len(b))
+	}
+	if entry.Message != "watchdog" {
+		t.Fatalf("message must be preserved, got %q", entry.Message)
+	}
+}
+
 func TestShipBatchSendsGzipJSON(t *testing.T) {
 	var (
 		receivedBody []byte

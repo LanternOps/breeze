@@ -109,8 +109,36 @@ func (s *Shipper) Stop() {
 	s.wg.Wait()
 }
 
+// maxShippedFieldsJSONBytes mirrors the API log endpoint's per-entry cap
+// (apps/api/src/routes/agents/logs.ts rejects entries whose stringified
+// `fields` exceeds 32,000 chars — and a single oversized entry 400s the
+// whole batch, burning every legitimate entry shipped with it, #2386).
+// Byte length in Go is >= JSON.stringify().length for the same payload, so
+// checking bytes with a little headroom is conservative.
+const maxShippedFieldsJSONBytes = 31000
+
+// capFields enforces the API's per-entry `fields` size limit locally before
+// the entry is buffered, replacing oversized fields with a small marker so
+// one bloated entry cannot get the whole shipped batch rejected.
+func capFields(fields map[string]any) map[string]any {
+	if fields == nil {
+		return nil
+	}
+	b, err := json.Marshal(fields)
+	if err != nil || len(b) <= maxShippedFieldsJSONBytes {
+		// Marshal errors keep the original fields: shipBatch already
+		// reports batch-level marshal failures, and mangling the entry
+		// here would hide which field was unmarshalable.
+		return fields
+	}
+	return map[string]any{
+		"fields_dropped": fmt.Sprintf("fields JSON was %d bytes, exceeds ship limit of %d", len(b), maxShippedFieldsJSONBytes),
+	}
+}
+
 // Enqueue adds a log entry to the buffer. Non-blocking; drops if buffer is full.
 func (s *Shipper) Enqueue(entry LogEntry) {
+	entry.Fields = capFields(entry.Fields)
 	select {
 	case s.buffer <- entry:
 	default:
