@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users, organizations } from '../../db/schema';
+import { users } from '../../db/schema';
 import {
   generateRecoveryCodes,
   rateLimiter,
@@ -14,6 +14,7 @@ import {
   phoneConfirmLimiter
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { authMiddleware } from '../../middleware/auth';
 import { ENABLE_2FA, phoneVerifySchema, phoneConfirmSchema, smsSendSchema, smsMfaEnableSchema } from './schemas';
 import {
@@ -202,18 +203,18 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
     return c.json({ error: 'MFA is already enabled. Disable it first to switch methods.' }, 400);
   }
 
-  // Check org policy — is SMS allowed?
-  if (auth.orgId) {
-    const [org] = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, auth.orgId))
-      .limit(1);
-
-    const orgSettings = org?.settings as { security?: { allowedMfaMethods?: { sms?: boolean } } } | null;
-    if (orgSettings?.security?.allowedMfaMethods && !orgSettings.security.allowedMfaMethods.sms) {
-      return c.json({ error: 'Your organization does not allow SMS MFA' }, 403);
-    }
+  // Enforce the CANONICAL allowlist through the resolver (partner-inherited).
+  // The old reader consulted `security.allowedMfaMethods`, a spelling that is
+  // written nowhere → the SMS restriction silently no-opped. Passkey is always
+  // allowed; only totp/sms are gated by effective settings.
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId: auth.user.id,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  });
+  if (!policy.allowedMethods.sms) {
+    return c.json({ error: 'Your organization does not allow SMS MFA' }, 403);
   }
 
   // Generate recovery codes

@@ -1597,6 +1597,44 @@ describe('org routes', () => {
       expect(db.update).toHaveBeenCalled();
     });
 
+    // SR2-05: `security.allowedMfaMethods` is a legacy input alias — it must be
+    // folded into the canonical `security.allowedMethods` before the write and
+    // never persisted as a second key (the dead spelling the SMS-enable reader
+    // used to consult, silently no-opping the restriction).
+    it('folds the legacy security.allowedMfaMethods alias into allowedMethods and does not persist the alias', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // assertNotLocked('security', ['allowedMethods']) needs an org row (for
+      // partnerId) and a partner row (for its settings) — an empty partner
+      // settings object means nothing is locked.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue(Promise.resolve([{ partnerId: 'partner-123', settings: {} }]))
+        })
+      } as any);
+
+      let capturedUpdateData: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          capturedUpdateData = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }])
+            })
+          };
+        })
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { security: { allowedMfaMethods: { sms: false } } } })
+      });
+
+      expect(res.status).toBe(200);
+      expect(capturedUpdateData.settings.security.allowedMethods.sms).toBe(false);
+      expect(capturedUpdateData.settings.security.allowedMfaMethods).toBeUndefined();
+    });
+
     it('should allow system scope updates without partnerId context', async () => {
       setAuthContext({ scope: 'system', partnerId: null });
       vi.mocked(db.update).mockReturnValue({
