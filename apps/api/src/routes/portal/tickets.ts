@@ -39,6 +39,13 @@ export const ticketRoutes = new Hono();
 // class exists but is administratively disabled; 404 would misread as a bug).
 export const portalTicketsEnabledMiddleware: MiddlewareHandler = async (c, next) => {
   const auth = c.get('portalAuth');
+  // Defensive: only meaningful when mounted AFTER portalAuthMiddleware (index.ts
+  // registers it that way). If a refactor ever reorders the use() calls or mounts
+  // this on an unauthenticated prefix, fail closed with an explicit 401 instead
+  // of an opaque TypeError 500.
+  if (!auth) {
+    return c.json({ error: 'Authentication required' }, 401);
+  }
 
   const [row] = await db
     .select({ enableTickets: portalBranding.enableTickets })
@@ -47,7 +54,10 @@ export const portalTicketsEnabledMiddleware: MiddlewareHandler = async (c, next)
     .limit(1);
 
   if (row?.enableTickets === false) {
-    return c.json({ error: 'Ticketing is not enabled for this portal' }, 403);
+    // `code` lets the portal pages distinguish this 403 from other 403s on the
+    // same routes (e.g. portalAuthMiddleware's "Account is not active") and only
+    // redirect for THIS one. Keep in sync with apps/portal/src/pages/tickets/*.
+    return c.json({ error: 'Ticketing is not enabled for this portal', code: 'PORTAL_TICKETS_DISABLED' }, 403);
   }
 
   return next();

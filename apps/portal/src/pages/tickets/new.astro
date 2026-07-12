@@ -16,8 +16,17 @@ const formsResponse = await portalApi.getTicketForms(buildServerApiConfig(Astro.
 if (formsResponse.statusCode === 401) {
   return Astro.redirect(withBase('/login'));
 }
-if (formsResponse.statusCode === 403) {
+if (formsResponse.statusCode === 403 && formsResponse.code === 'PORTAL_TICKETS_DISABLED') {
   return Astro.redirect(withBase('/devices'));
+}
+if (formsResponse.error && formsResponse.statusCode !== 403) {
+  // Fail-open is intentional, but never invisible: without this breadcrumb a
+  // probe that fails on every page load (API down, portal→API network fault)
+  // would leave no portal-side trace while the form quietly degrades.
+  console.error('[portal] new-ticket gate probe failed; failing open', {
+    statusCode: formsResponse.statusCode,
+    error: formsResponse.error
+  });
 }
 ---
 

@@ -991,6 +991,9 @@ describe('portalTicketsEnabledMiddleware — enable_tickets gate (#2345)', () =>
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error).toBe('Ticketing is not enabled for this portal');
+    // Machine-readable code — the portal pages key their redirect on this so
+    // other 403s (e.g. "Account is not active") are not misread as "disabled".
+    expect(body.code).toBe('PORTAL_TICKETS_DISABLED');
   });
 
   it('enableTickets=false → 403 on POST /tickets (mutations gated, createTicket never called)', async () => {
@@ -1049,5 +1052,16 @@ describe('portalTicketsEnabledMiddleware — enable_tickets gate (#2345)', () =>
       headers: { Authorization: 'Bearer portal-token' }
     });
     expect(res.status).toBe(200);
+  });
+
+  it('mounted without portalAuth (misordered use()) → explicit 401, not a TypeError 500', async () => {
+    setupBrandingMock([{ enableTickets: false }]);
+    const app = new Hono();
+    // Deliberately NO auth middleware before the gate — simulates a future
+    // index.ts refactor reordering the use() calls.
+    app.use('/tickets/*', portalTicketsEnabledMiddleware);
+    app.route('/', ticketRoutes);
+    const res = await app.request('/tickets');
+    expect(res.status).toBe(401);
   });
 });
