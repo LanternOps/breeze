@@ -7,6 +7,8 @@ const {
   redisMock,
   passkeyMocks,
   authState,
+  mfaLockState,
+  twilioMocks,
 } = vi.hoisted(() => {
   const makeSelectChain = (rows: unknown[]) => {
     const chain: any = {
@@ -31,6 +33,7 @@ const {
     redisMock: {
       setex: vi.fn(),
       get: vi.fn(),
+      getdel: vi.fn(),
       del: vi.fn(),
     },
     passkeyMocks: {
@@ -45,6 +48,15 @@ const {
     authState: {
       requireAuthorizationHeader: true,
       mfaSatisfied: true,
+    },
+    mfaLockState: {
+      user: null as Record<string, unknown> | null,
+      activePasskeyCount: 0,
+      allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
+    },
+    twilioMocks: {
+      sendVerificationCode: vi.fn(),
+      checkVerificationCode: vi.fn(),
     },
   };
 });
@@ -63,6 +75,7 @@ vi.mock('../services', () => ({
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn(),
   verifyMFAToken: vi.fn(),
+  consumeMFAToken: vi.fn().mockResolvedValue(true),
   generateOTPAuthURL: vi.fn(),
   generateQRCode: vi.fn(),
   generateRecoveryCodes: vi.fn(),
@@ -98,6 +111,7 @@ vi.mock('../services', () => ({
   getAccountLockoutWindowSeconds: vi.fn(() => 15 * 60),
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
   getRedis: vi.fn(() => redisMock),
+  withAuthLifecycleSystemTransaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn({})),
   ...passkeyMocks,
 }));
 
@@ -123,9 +137,21 @@ vi.mock('../services/email', () => ({
 }));
 
 vi.mock('../services/twilio', () => ({
-  getTwilioService: vi.fn(() => ({
-    sendVerificationCode: vi.fn().mockResolvedValue({ success: true }),
-    checkVerificationCode: vi.fn().mockResolvedValue({ valid: true }),
+  getTwilioService: vi.fn(() => twilioMocks),
+}));
+
+vi.mock('../services/mfaAssuranceLocks', () => ({
+  lockMfaAssuranceState: vi.fn(async () => ({
+    user: mfaLockState.user,
+    activePasskeyCount: mfaLockState.activePasskeyCount,
+  })),
+}));
+
+vi.mock('../services/mfaPolicy', () => ({
+  resolveEffectiveMfaPolicy: vi.fn(async () => ({
+    required: false,
+    allowedMethods: mfaLockState.allowedMethods,
+    sources: [],
   })),
 }));
 
@@ -247,7 +273,16 @@ vi.mock('../middleware/auth', () => ({
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       orgId: 'org-123',
       partnerId: 'partner-123',
-      token: { mfa: authState.mfaSatisfied },
+      token: {
+        mfa: authState.mfaSatisfied,
+        roleId: 'role-123',
+        orgId: 'org-123',
+        partnerId: 'partner-123',
+        scope: 'organization',
+        sid: 'family-123',
+        ae: 4,
+        me: 7,
+      },
     });
     return next();
   }),
@@ -265,9 +300,11 @@ import {
   readPendingMfa,
   issueVerifiedPendingMfaSession,
   PendingMfaInvalidError,
+  consumeMFAToken,
 } from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
+import { issueMfaStepUpGrant } from './auth/helpers';
 
 const user = {
   id: 'user-123',
@@ -333,8 +370,35 @@ describe('passkey MFA auth routes', () => {
     dbState.insertReturning = [insertedPasskeyRow];
     dbState.updateReturningQueue = [];
     redisMock.get.mockReset();
+    redisMock.getdel.mockReset();
     redisMock.setex.mockReset();
     redisMock.del.mockReset();
+    const grantStore = new Map<string, string>();
+    redisMock.setex.mockImplementation(async (key: string, _ttl: number, value: string) => {
+      grantStore.set(key, value);
+      return 'OK';
+    });
+    redisMock.get.mockImplementation(async (key: string) => grantStore.get(key) ?? null);
+    redisMock.getdel.mockImplementation(async (key: string) => {
+      const value = grantStore.get(key) ?? null;
+      grantStore.delete(key);
+      return value;
+    });
+    mfaLockState.user = {
+      id: 'user-123',
+      status: 'active',
+      authEpoch: 4,
+      mfaEpoch: 7,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      phoneVerified: false,
+    };
+    mfaLockState.activePasskeyCount = 0;
+    mfaLockState.allowedMethods = new Set(['totp', 'sms', 'passkey', 'recovery_code']);
+    twilioMocks.sendVerificationCode.mockResolvedValue({ success: true });
+    twilioMocks.checkVerificationCode.mockResolvedValue({ valid: true });
+    vi.mocked(consumeMFAToken).mockResolvedValue(true);
     vi.mocked(createPendingMfaForLogin).mockResolvedValue({
       tempToken: 'temp-token',
       primaryMfaMethod: 'passkey',
@@ -444,6 +508,199 @@ describe('passkey MFA auth routes', () => {
         user: expect.objectContaining({ id: 'user-123', email: 'test@example.com' }),
       }),
     );
+  });
+
+  it('rejects password-only registration options once any existing factor protects the account', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user,
+      mfaSecret: 'TOTPSECRET',
+      mfaMethod: 'totp',
+    };
+
+    const res = await app.request('/auth/passkeys/register/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'correct-password' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
+  });
+
+  it('reads but does not consume a purpose-bound grant when issuing protected registration options', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user,
+      mfaSecret: 'TOTPSECRET',
+      mfaMethod: 'totp',
+    };
+    const mfaGrant = await issueMfaStepUpGrant({
+      purpose: 'passkey.register',
+      userId: 'user-123',
+      sessionId: 'family-123',
+      authEpoch: 4,
+      mfaEpoch: 7,
+      verifiedMethod: 'totp',
+    });
+    dbState.selectQueue.push([]);
+
+    const res = await app.request('/auth/passkeys/register/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ mfaGrant }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(redisMock.getdel).not.toHaveBeenCalled();
+    expect(passkeyMocks.generatePasskeyRegistrationOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorization: {
+          kind: 'mfa-step-up',
+          purpose: 'passkey.register',
+          grantHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      }),
+    );
+  });
+
+  it('consumes the same bound grant immediately before credential insertion and rejects replay', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user,
+      mfaSecret: 'TOTPSECRET',
+      mfaMethod: 'totp',
+    };
+    const mfaGrant = await issueMfaStepUpGrant({
+      purpose: 'passkey.register',
+      userId: 'user-123',
+      sessionId: 'family-123',
+      authEpoch: 4,
+      mfaEpoch: 7,
+      verifiedMethod: 'totp',
+    });
+    dbState.selectQueue.push([{ mfaSecret: 'TOTPSECRET', mfaMethod: 'totp' }]);
+
+    const request = () => app.request('/auth/passkeys/register/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ mfaGrant, credential: { id: 'candidate-credential', response: {} } }),
+    });
+    const first = await request();
+    const second = await request();
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(401);
+    const { db } = await import('../db');
+    expect(redisMock.getdel.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(db.insert).mock.invocationCallOrder[0]!,
+    );
+    expect(db.insert).toHaveBeenCalledOnce();
+  });
+
+  it('has exactly one winner when two candidate credentials race on one grant', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user,
+      mfaSecret: 'TOTPSECRET',
+      mfaMethod: 'totp',
+    };
+    const mfaGrant = await issueMfaStepUpGrant({
+      purpose: 'passkey.register',
+      userId: 'user-123',
+      sessionId: 'family-123',
+      authEpoch: 4,
+      mfaEpoch: 7,
+      verifiedMethod: 'totp',
+    });
+    dbState.selectQueue.push([{ mfaSecret: 'TOTPSECRET', mfaMethod: 'totp' }]);
+
+    const submit = (id: string) => app.request('/auth/passkeys/register/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ mfaGrant, credential: { id, response: {} } }),
+    });
+    const responses = await Promise.all([submit('candidate-a'), submit('candidate-b')]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 401]);
+    const { db } = await import('../db');
+    expect(db.insert).toHaveBeenCalledOnce();
+    expect(redisMock.getdel).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['totp', { code: '123456' }],
+    ['sms', { code: '123456' }],
+    ['passkey', { credential: { id: 'existing-credential', response: {} } }],
+  ] as const)('issues a passkey.register grant only after a live allowed %s proof', async (method, proof) => {
+    mfaLockState.user = {
+      ...mfaLockState.user,
+      mfaSecret: method === 'totp' ? 'TOTPSECRET' : null,
+      mfaMethod: method,
+      phoneNumber: method === 'sms' ? '+14155551234' : null,
+      phoneVerified: method === 'sms',
+    };
+    mfaLockState.activePasskeyCount = method === 'passkey' ? 1 : 0;
+    if (method === 'passkey') {
+      dbState.selectQueue.push([{
+        id: 'passkey-row-1',
+        userId: 'user-123',
+        credentialId: 'existing-credential',
+        publicKey: 'AQID',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }]);
+    }
+
+    const res = await app.request('/auth/mfa/step-up/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ purpose: 'passkey.register', method, ...proof }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { grant: string; verifiedMethod: string };
+    expect(Buffer.from(body.grant, 'base64url')).toHaveLength(32);
+    expect(body.verifiedMethod).toBe(method);
+  });
+
+  it('never lets the candidate new passkey serve as the existing-factor proof', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user,
+      mfaMethod: 'passkey',
+    };
+    mfaLockState.activePasskeyCount = 1;
+    dbState.selectQueue.push([]);
+
+    const res = await app.request('/auth/mfa/step-up/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({
+        purpose: 'passkey.register',
+        method: 'passkey',
+        credential: { id: 'candidate-not-yet-stored', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(passkeyMocks.verifyPasskeyAuthentication).not.toHaveBeenCalled();
+    expect(redisMock.setex).not.toHaveBeenCalled();
+  });
+
+  it('rejects an enrolled factor that live policy no longer allows', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user,
+      mfaSecret: 'TOTPSECRET',
+      mfaMethod: 'totp',
+    };
+    mfaLockState.allowedMethods = new Set(['passkey']);
+
+    const res = await app.request('/auth/mfa/step-up/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ purpose: 'passkey.register', method: 'totp', code: '123456' }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(consumeMFAToken).not.toHaveBeenCalled();
+    expect(redisMock.setex).not.toHaveBeenCalled();
   });
 
   it('rejects invalid or expired passkey registration challenges', async () => {

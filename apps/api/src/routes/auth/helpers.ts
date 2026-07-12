@@ -145,6 +145,203 @@ export async function requireCurrentPasswordStepUp(
   return null;
 }
 
+export const MFA_STEP_UP_GRANT_TTL_SECONDS = 5 * 60;
+
+export type MfaStepUpPurpose =
+  | 'passkey.register'
+  | 'totp.replace'
+  | 'sms.replace'
+  | 'email.change';
+
+export type MfaStepUpVerifiedMethod = 'totp' | 'sms' | 'passkey';
+
+export interface MfaStepUpGrantBinding {
+  purpose: MfaStepUpPurpose;
+  userId: string;
+  sessionId: string;
+  authEpoch: number;
+  mfaEpoch: number;
+  verifiedMethod: MfaStepUpVerifiedMethod;
+}
+
+export interface MfaStepUpGrantRecord extends MfaStepUpGrantBinding {
+  version: 1;
+  issuedAt: string;
+  expiresAt: string;
+}
+
+export type MfaStepUpGrantExpectedBinding = Omit<MfaStepUpGrantBinding, 'verifiedMethod'> & {
+  verifiedMethod?: MfaStepUpVerifiedMethod;
+};
+
+export class MfaStepUpGrantInvalidError extends Error {
+  constructor() {
+    super('MFA step-up grant is invalid or expired');
+    this.name = 'MfaStepUpGrantInvalidError';
+  }
+}
+
+export class MfaStepUpGrantUnavailableError extends Error {
+  constructor() {
+    super('MFA step-up authorization is unavailable');
+    this.name = 'MfaStepUpGrantUnavailableError';
+  }
+}
+
+const MFA_STEP_UP_PURPOSES = new Set<MfaStepUpPurpose>([
+  'passkey.register',
+  'totp.replace',
+  'sms.replace',
+  'email.change',
+]);
+const MFA_STEP_UP_METHODS = new Set<MfaStepUpVerifiedMethod>(['totp', 'sms', 'passkey']);
+const MFA_STEP_UP_RECORD_KEYS = [
+  'authEpoch',
+  'expiresAt',
+  'issuedAt',
+  'mfaEpoch',
+  'purpose',
+  'sessionId',
+  'userId',
+  'verifiedMethod',
+  'version',
+] as const;
+
+export function hashMfaStepUpGrant(rawGrant: string): string {
+  return createHash('sha256').update(rawGrant).digest('hex');
+}
+
+function mfaStepUpGrantKey(rawGrant: string): string {
+  return `auth:mfa-step-up-grant:${hashMfaStepUpGrant(rawGrant)}`;
+}
+
+function parseMfaStepUpGrantRecord(raw: string | null): MfaStepUpGrantRecord {
+  if (!raw) throw new MfaStepUpGrantInvalidError();
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new MfaStepUpGrantInvalidError();
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new MfaStepUpGrantInvalidError();
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (keys.length !== MFA_STEP_UP_RECORD_KEYS.length
+    || !keys.every((key, index) => key === MFA_STEP_UP_RECORD_KEYS[index])) {
+    throw new MfaStepUpGrantInvalidError();
+  }
+  if (record.version !== 1
+    || typeof record.userId !== 'string' || record.userId.length === 0
+    || typeof record.sessionId !== 'string' || record.sessionId.length === 0
+    || typeof record.purpose !== 'string' || !MFA_STEP_UP_PURPOSES.has(record.purpose as MfaStepUpPurpose)
+    || typeof record.verifiedMethod !== 'string'
+    || !MFA_STEP_UP_METHODS.has(record.verifiedMethod as MfaStepUpVerifiedMethod)
+    || !Number.isSafeInteger(record.authEpoch) || (record.authEpoch as number) < 1
+    || !Number.isSafeInteger(record.mfaEpoch) || (record.mfaEpoch as number) < 1
+    || typeof record.issuedAt !== 'string'
+    || typeof record.expiresAt !== 'string') {
+    throw new MfaStepUpGrantInvalidError();
+  }
+  const issuedAt = Date.parse(record.issuedAt);
+  const expiresAt = Date.parse(record.expiresAt);
+  if (!Number.isFinite(issuedAt)
+    || !Number.isFinite(expiresAt)
+    || new Date(issuedAt).toISOString() !== record.issuedAt
+    || new Date(expiresAt).toISOString() !== record.expiresAt
+    || expiresAt - issuedAt !== MFA_STEP_UP_GRANT_TTL_SECONDS * 1_000
+    || issuedAt > Date.now()
+    || expiresAt <= Date.now()) {
+    throw new MfaStepUpGrantInvalidError();
+  }
+  return record as unknown as MfaStepUpGrantRecord;
+}
+
+function mfaStepUpGrantMatches(
+  record: MfaStepUpGrantRecord,
+  expected: MfaStepUpGrantExpectedBinding,
+): boolean {
+  return record.purpose === expected.purpose
+    && record.userId === expected.userId
+    && record.sessionId === expected.sessionId
+    && record.authEpoch === expected.authEpoch
+    && record.mfaEpoch === expected.mfaEpoch
+    && (expected.verifiedMethod === undefined || record.verifiedMethod === expected.verifiedMethod);
+}
+
+function assertMatchingMfaStepUpGrant(
+  raw: string | null,
+  expected: MfaStepUpGrantExpectedBinding,
+): MfaStepUpGrantRecord {
+  const record = parseMfaStepUpGrantRecord(raw);
+  if (!mfaStepUpGrantMatches(record, expected)) throw new MfaStepUpGrantInvalidError();
+  return record;
+}
+
+/** Store only a SHA-256 reference; the opaque 256-bit bearer value is returned once. */
+export async function issueMfaStepUpGrant(input: MfaStepUpGrantBinding): Promise<string> {
+  const redis = getRedis();
+  if (!redis) throw new MfaStepUpGrantUnavailableError();
+  const rawGrant = randomBytes(32).toString('base64url');
+  const issuedAt = new Date();
+  const record: MfaStepUpGrantRecord = {
+    version: 1,
+    ...input,
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: new Date(issuedAt.getTime() + MFA_STEP_UP_GRANT_TTL_SECONDS * 1_000).toISOString(),
+  };
+  try {
+    await redis.setex(
+      mfaStepUpGrantKey(rawGrant),
+      MFA_STEP_UP_GRANT_TTL_SECONDS,
+      JSON.stringify(record),
+    );
+  } catch {
+    throw new MfaStepUpGrantUnavailableError();
+  }
+  return rawGrant;
+}
+
+/** Validate a grant for options/challenge binding without consuming it. */
+export async function readMfaStepUpGrant(
+  rawGrant: string,
+  expected: MfaStepUpGrantExpectedBinding,
+): Promise<MfaStepUpGrantRecord> {
+  const redis = getRedis();
+  if (!redis) throw new MfaStepUpGrantUnavailableError();
+  try {
+    return assertMatchingMfaStepUpGrant(await redis.get(mfaStepUpGrantKey(rawGrant)), expected);
+  } catch (error) {
+    if (error instanceof MfaStepUpGrantInvalidError) throw error;
+    throw new MfaStepUpGrantUnavailableError();
+  }
+}
+
+/** Re-check, then atomically burn and compare the exact record before mutation. */
+export async function consumeMfaStepUpGrant(
+  rawGrant: string,
+  expected: MfaStepUpGrantBinding,
+): Promise<MfaStepUpGrantRecord> {
+  const previouslyRead = await readMfaStepUpGrant(rawGrant, expected);
+  const redis = getRedis();
+  if (!redis) throw new MfaStepUpGrantUnavailableError();
+  let consumed: MfaStepUpGrantRecord;
+  try {
+    consumed = assertMatchingMfaStepUpGrant(
+      await redis.getdel(mfaStepUpGrantKey(rawGrant)),
+      expected,
+    );
+  } catch (error) {
+    if (error instanceof MfaStepUpGrantInvalidError) throw error;
+    throw new MfaStepUpGrantUnavailableError();
+  }
+  if (JSON.stringify(consumed) !== JSON.stringify(previouslyRead)) {
+    throw new MfaStepUpGrantInvalidError();
+  }
+  return consumed;
+}
+
 /**
  * L4 (critical) re-auth fallback for SSO-only / passwordless accounts that have
  * no password to satisfy {@link requireCurrentPasswordStepUp}. Verifies a fresh

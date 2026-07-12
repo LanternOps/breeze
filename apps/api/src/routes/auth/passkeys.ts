@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -6,6 +6,7 @@ import * as dbModule from '../../db';
 import { userPasskeys, users } from '../../db/schema';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import {
+  consumeMFAToken,
   getRedis,
   issueVerifiedPendingMfaSession,
   mfaLimiter,
@@ -13,8 +14,12 @@ import {
   PendingMfaUnavailableError,
   rateLimiter,
   readPendingMfa,
+  withAuthLifecycleSystemTransaction,
   type PendingMfaSessionV2,
 } from '../../services';
+import { lockMfaAssuranceState } from '../../services/mfaAssuranceLocks';
+import { resolveEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { getTwilioService } from '../../services/twilio';
 import {
   PasskeyChallengeError,
   authenticationInfoToPasskeyUpdateFields,
@@ -25,16 +30,36 @@ import {
   verifyPasskeyRegistration
 } from '../../services/passkeys';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
-import { ENABLE_2FA } from './schemas';
+import { decryptMfaTotpSecret } from '../../services/mfaSecretCrypto';
+import {
+  ENABLE_2FA,
+  mfaStepUpOptionsSchema,
+  mfaStepUpVerifySchema,
+  passkeyRegisterOptionsSchema,
+  passkeyRegisterVerifySchema,
+  webAuthnCredentialSchema,
+} from './schemas';
 import {
   auditLogin,
+  consumeMfaStepUpGrant,
   getClientIP,
+  hashMfaStepUpGrant,
+  issueMfaStepUpGrant,
+  MFA_STEP_UP_GRANT_TTL_SECONDS,
+  MfaStepUpGrantInvalidError,
+  MfaStepUpGrantUnavailableError,
   mfaDisabledResponse,
+  readMfaStepUpGrant,
   requireCurrentPasswordStepUp,
   setRefreshTokenCookie,
   toPublicTokens,
   userRequiresSetup,
   writeAuthAudit
+} from './helpers';
+import type {
+  MfaStepUpGrantExpectedBinding,
+  MfaStepUpPurpose,
+  MfaStepUpVerifiedMethod,
 } from './helpers';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
@@ -45,22 +70,7 @@ const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
 // validation (400) instead of falling through to a confusing "passkey not
 // registered" (403). Output type stays `any` so it forwards to the WebAuthn
 // library's typed verifiers unchanged.
-const webAuthnCredentialSchema = z
-  .any()
-  .refine(
-    (value): boolean => typeof value?.id === 'string' && value.id.length > 0,
-    { message: 'credential.id is required' }
-  );
-
 const passkeyNameSchema = z.string().trim().min(1).max(255);
-const registerOptionsSchema = z.object({
-  currentPassword: z.string().min(1).max(256),
-  name: passkeyNameSchema.optional()
-});
-const registerVerifySchema = z.object({
-  credential: webAuthnCredentialSchema,
-  name: passkeyNameSchema.optional()
-});
 const passkeyMfaOptionsSchema = z.object({
   tempToken: z.string().min(1)
 });
@@ -99,39 +109,220 @@ passkeyRoutes.get('/passkeys', authMiddleware, async (c) => {
   return c.json({ passkeys: rows.map(toPublicPasskey) });
 });
 
-passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('json', registerOptionsSchema), async (c) => {
+passkeyRoutes.post('/mfa/step-up/options', authMiddleware, zValidator('json', mfaStepUpOptionsSchema), async (c) => {
+  if (!ENABLE_2FA) return mfaDisabledResponse(c);
+  const auth = c.get('auth');
+  const { purpose, method } = c.req.valid('json');
+  let state;
+  try {
+    state = await loadMfaStepUpFactorState(auth);
+  } catch (error) {
+    return mfaStepUpErrorResponse(c, error);
+  }
+  if (!state.allowedExistingMethods.has(method)) {
+    return c.json({ error: 'The selected existing MFA factor is unavailable' }, 403);
+  }
+
+  const redis = getRedis();
+  if (!redis) return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+  const rateCheck = await rateLimiter(
+    redis,
+    `mfa:step-up-options:${auth.user.id}`,
+    mfaLimiter.limit * 4,
+    mfaLimiter.windowSeconds,
+  );
+  if (!rateCheck.allowed) return c.json({ error: 'Too many MFA attempts' }, 429);
+
+  if (method === 'passkey') {
+    const passkeys = await listActivePasskeys(auth.user.id);
+    if (passkeys.length === 0) return c.json({ error: 'The selected existing MFA factor is unavailable' }, 403);
+    const options = await generatePasskeyAuthenticationOptions({
+      userId: auth.user.id,
+      passkeys: passkeys.map(toStoredCredential),
+      challengePurpose: 'step-up-authentication',
+      stepUpPurpose: purpose,
+    });
+    return c.json({ method, options });
+  }
+  if (method === 'sms') {
+    const twilio = getTwilioService();
+    if (!twilio || !state.user.phoneNumber) {
+      return c.json({ error: 'The selected existing MFA factor is unavailable' }, 403);
+    }
+    const sent = await twilio.sendVerificationCode(state.user.phoneNumber);
+    if (!sent.success) return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+    return c.json({ method, phoneLast4: state.user.phoneNumber.slice(-4) });
+  }
+  return c.json({ method, ready: true });
+});
+
+passkeyRoutes.post('/mfa/step-up/verify', authMiddleware, zValidator('json', mfaStepUpVerifySchema), async (c) => {
+  if (!ENABLE_2FA) return mfaDisabledResponse(c);
+  const auth = c.get('auth');
+  const proof = c.req.valid('json');
+  const redis = getRedis();
+  if (!redis) return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+  const rateCheck = await rateLimiter(redis, `mfa:step-up:${auth.user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+  if (!rateCheck.allowed) return c.json({ error: 'Too many MFA attempts' }, 429);
+
+  let state;
+  try {
+    state = await loadMfaStepUpFactorState(auth);
+  } catch (error) {
+    return mfaStepUpErrorResponse(c, error);
+  }
+  if (!state.allowedExistingMethods.has(proof.method)) {
+    return c.json({ error: 'Invalid MFA proof' }, 401);
+  }
+
+  let valid = false;
+  if (proof.method === 'totp') {
+    const secret = decryptMfaTotpSecret(state.user.mfaSecret);
+    valid = Boolean(secret) && await consumeMFAToken(secret!, proof.code, auth.user.id);
+  } else if (proof.method === 'sms') {
+    const twilio = getTwilioService();
+    if (!twilio || !state.user.phoneNumber) return c.json({ error: 'Invalid MFA proof' }, 401);
+    const result = await twilio.checkVerificationCode(state.user.phoneNumber, proof.code);
+    if (result.serviceError) return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+    valid = result.valid;
+  } else {
+    const [passkey] = await db
+      .select()
+      .from(userPasskeys)
+      .where(and(
+        eq(userPasskeys.credentialId, proof.credential.id),
+        eq(userPasskeys.userId, auth.user.id),
+        isNull(userPasskeys.disabledAt),
+      ))
+      .limit(1);
+    if (passkey) {
+      try {
+        const verification = await verifyPasskeyAuthentication({
+          userId: auth.user.id,
+          response: proof.credential,
+          passkey: toStoredCredential(passkey),
+          challengePurpose: 'step-up-authentication',
+          stepUpPurpose: proof.purpose,
+        });
+        valid = verification.verified;
+        if (valid) {
+          const fields = authenticationInfoToPasskeyUpdateFields(verification);
+          await db.update(userPasskeys).set({ ...fields, updatedAt: new Date() }).where(eq(userPasskeys.id, passkey.id));
+        }
+      } catch (error) {
+        if (!(error instanceof PasskeyChallengeError)) throw error;
+      }
+    }
+  }
+  if (!valid) return c.json({ error: 'Invalid MFA proof' }, 401);
+
+  let finalState;
+  try {
+    finalState = await loadMfaStepUpFactorState(auth);
+  } catch (error) {
+    return mfaStepUpErrorResponse(c, error);
+  }
+  if (!finalState.allowedExistingMethods.has(proof.method)) {
+    return c.json({ error: 'Invalid MFA proof' }, 401);
+  }
+  try {
+    const grant = await issueMfaStepUpGrant({
+      ...mfaStepUpBinding(auth, proof.purpose),
+      verifiedMethod: proof.method,
+    });
+    return c.json({ grant, verifiedMethod: proof.method, expiresInSeconds: MFA_STEP_UP_GRANT_TTL_SECONDS });
+  } catch (error) {
+    return mfaStepUpErrorResponse(c, error);
+  }
+});
+
+passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('json', passkeyRegisterOptionsSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
-  const { currentPassword } = c.req.valid('json');
-
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd');
-  if (passwordError) return passwordError;
+  const { currentPassword, mfaGrant } = c.req.valid('json');
+  let state;
+  try {
+    state = await loadMfaStepUpFactorState(auth);
+  } catch (error) {
+    return mfaStepUpErrorResponse(c, error);
+  }
+  let authorization;
+  if (state.hasAnyFactor) {
+    if (!mfaGrant) return c.json({ error: 'Existing MFA factor proof is required' }, 403);
+    try {
+      const grantRecord = await readMfaStepUpGrant(mfaGrant, mfaStepUpBinding(auth, 'passkey.register'));
+      if (!state.allowedExistingMethods.has(grantRecord.verifiedMethod)) {
+        throw new MfaStepUpGrantInvalidError();
+      }
+    } catch (error) {
+      return mfaStepUpErrorResponse(c, error);
+    }
+    authorization = {
+      kind: 'mfa-step-up' as const,
+      purpose: 'passkey.register' as const,
+      grantHash: hashMfaStepUpGrant(mfaGrant),
+    };
+  } else {
+    if (!currentPassword) return c.json({ error: 'Current password is required for initial enrollment' }, 403);
+    const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd');
+    if (passwordError) return passwordError;
+    authorization = { kind: 'initial-password' as const };
+  }
 
   const existingPasskeys = await listActivePasskeys(auth.user.id);
   const options = await generatePasskeyRegistrationOptions({
     user: auth.user,
-    existingPasskeys: existingPasskeys.map(toStoredCredential)
+    existingPasskeys: existingPasskeys.map(toStoredCredential),
+    authorization,
   });
 
   return c.json({ options });
 });
 
-passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json', registerVerifySchema), async (c) => {
+passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json', passkeyRegisterVerifySchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
 
   const auth = c.get('auth');
-  const { credential, name } = c.req.valid('json');
+  const { credential, name, mfaGrant } = c.req.valid('json');
+  let state;
+  try {
+    state = await loadMfaStepUpFactorState(auth);
+  } catch (error) {
+    return mfaStepUpErrorResponse(c, error);
+  }
+  let grantRecord;
+  let authorization;
+  if (state.hasAnyFactor) {
+    if (!mfaGrant) return c.json({ error: 'Existing MFA factor proof is required' }, 403);
+    try {
+      grantRecord = await readMfaStepUpGrant(mfaGrant, mfaStepUpBinding(auth, 'passkey.register'));
+      if (!state.allowedExistingMethods.has(grantRecord.verifiedMethod)) {
+        throw new MfaStepUpGrantInvalidError();
+      }
+    } catch (error) {
+      return mfaStepUpErrorResponse(c, error);
+    }
+    authorization = {
+      kind: 'mfa-step-up' as const,
+      purpose: 'passkey.register' as const,
+      grantHash: hashMfaStepUpGrant(mfaGrant),
+    };
+  } else {
+    if (mfaGrant) return c.json({ error: 'Initial enrollment requires current-password authorization' }, 403);
+    authorization = { kind: 'initial-password' as const };
+  }
 
   let verification;
   try {
     verification = await verifyPasskeyRegistration({
       userId: auth.user.id,
-      response: credential
+      response: credential,
+      authorization,
     });
   } catch (err) {
     if (err instanceof PasskeyChallengeError) {
@@ -154,6 +345,20 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   }
 
   const fields = registrationInfoToPasskeyFields(verification, credential);
+  if (mfaGrant && grantRecord) {
+    try {
+      const finalState = await loadMfaStepUpFactorState(auth);
+      if (!finalState.allowedExistingMethods.has(grantRecord.verifiedMethod)) {
+        throw new MfaStepUpGrantInvalidError();
+      }
+      await consumeMfaStepUpGrant(mfaGrant, {
+        ...mfaStepUpBinding(auth, 'passkey.register'),
+        verifiedMethod: grantRecord.verifiedMethod,
+      });
+    } catch (error) {
+      return mfaStepUpErrorResponse(c, error);
+    }
+  }
   const [inserted] = await db
     .insert(userPasskeys)
     .values({
@@ -501,6 +706,71 @@ function findOwnedPasskey(id: string, userId: string): Promise<PasskeyRow[]> {
     .from(userPasskeys)
     .where(and(eq(userPasskeys.id, id), eq(userPasskeys.userId, userId), isNull(userPasskeys.disabledAt)))
     .limit(1);
+}
+
+function mfaStepUpBinding(
+  auth: AuthContext,
+  purpose: MfaStepUpPurpose,
+): MfaStepUpGrantExpectedBinding {
+  const { sid, ae, me } = auth.token;
+  if (!sid || !Number.isSafeInteger(ae) || !Number.isSafeInteger(me) || ae < 1 || me < 1) {
+    throw new MfaStepUpGrantInvalidError();
+  }
+  return {
+    purpose,
+    userId: auth.user.id,
+    sessionId: sid,
+    authEpoch: ae,
+    mfaEpoch: me,
+  };
+}
+
+async function loadMfaStepUpFactorState(auth: AuthContext) {
+  const binding = mfaStepUpBinding(auth, 'passkey.register');
+  return withAuthLifecycleSystemTransaction(async (tx) => {
+    const { user, activePasskeyCount } = await lockMfaAssuranceState(tx, {
+      partnerId: auth.token.partnerId,
+      userId: auth.user.id,
+    });
+    if (!user
+      || user.id !== auth.user.id
+      || user.status !== 'active'
+      || user.authEpoch !== binding.authEpoch
+      || user.mfaEpoch !== binding.mfaEpoch) {
+      throw new MfaStepUpGrantInvalidError();
+    }
+    const policy = await resolveEffectiveMfaPolicy({
+      userId: auth.user.id,
+      roleId: auth.token.roleId,
+      orgId: auth.token.orgId,
+      partnerId: auth.token.partnerId,
+      scope: auth.token.scope,
+      tx,
+    });
+    const existingMethods = new Set<MfaStepUpVerifiedMethod>();
+    if (typeof user.mfaSecret === 'string' && user.mfaSecret.length > 0) existingMethods.add('totp');
+    if (user.mfaMethod === 'sms' && user.phoneVerified && user.phoneNumber) existingMethods.add('sms');
+    if (activePasskeyCount > 0) existingMethods.add('passkey');
+    const allowedExistingMethods = new Set(
+      [...existingMethods].filter((method) => policy.allowedMethods.has(method)),
+    );
+    return {
+      user,
+      hasAnyFactor: existingMethods.size > 0,
+      existingMethods,
+      allowedExistingMethods,
+    };
+  });
+}
+
+function mfaStepUpErrorResponse(c: Context, error: unknown): Response {
+  if (error instanceof MfaStepUpGrantUnavailableError) {
+    return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+  }
+  if (error instanceof MfaStepUpGrantInvalidError) {
+    return c.json({ error: 'Invalid or expired MFA step-up authorization' }, 401);
+  }
+  throw error;
 }
 
 async function getMfaFactorState(auth: AuthContext): Promise<{

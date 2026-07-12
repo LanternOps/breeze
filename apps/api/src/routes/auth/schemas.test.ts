@@ -27,3 +27,40 @@ describe('auth feature flag defaults', () => {
     expect(ENABLE_REGISTRATION).toBe(true);
   });
 });
+
+describe('MFA step-up and protected enrollment schemas', () => {
+  it('requires exactly one passkey registration authorization reference', async () => {
+    const { passkeyRegisterOptionsSchema } = await import('./schemas');
+    expect(passkeyRegisterOptionsSchema.safeParse({ currentPassword: 'password' }).success).toBe(true);
+    expect(passkeyRegisterOptionsSchema.safeParse({ mfaGrant: 'g'.repeat(43) }).success).toBe(true);
+    expect(passkeyRegisterOptionsSchema.safeParse({}).success).toBe(false);
+    expect(passkeyRegisterOptionsSchema.safeParse({
+      currentPassword: 'password',
+      mfaGrant: 'g'.repeat(43),
+    }).success).toBe(false);
+  });
+
+  it('uses discriminated TOTP/SMS/passkey proof payloads', async () => {
+    const { mfaStepUpVerifySchema } = await import('./schemas');
+    const base = { purpose: 'passkey.register' };
+    expect(mfaStepUpVerifySchema.safeParse({ ...base, method: 'totp', code: '123456' }).success).toBe(true);
+    expect(mfaStepUpVerifySchema.safeParse({ ...base, method: 'sms', code: '123456' }).success).toBe(true);
+    expect(mfaStepUpVerifySchema.safeParse({
+      ...base,
+      method: 'passkey',
+      credential: { id: 'existing-credential', response: {} },
+    }).success).toBe(true);
+    expect(mfaStepUpVerifySchema.safeParse({ ...base, method: 'passkey', code: '123456' }).success).toBe(false);
+    expect(mfaStepUpVerifySchema.safeParse({ ...base, method: 'totp', credential: {} }).success).toBe(false);
+  });
+
+  it('rejects unsupported purposes and recovery-code proofs', async () => {
+    const { mfaStepUpOptionsSchema, mfaStepUpVerifySchema } = await import('./schemas');
+    expect(mfaStepUpOptionsSchema.safeParse({ purpose: 'unknown', method: 'totp' }).success).toBe(false);
+    expect(mfaStepUpVerifySchema.safeParse({
+      purpose: 'passkey.register',
+      method: 'recovery_code',
+      code: 'ABCD-EFGH',
+    }).success).toBe(false);
+  });
+});

@@ -37,10 +37,12 @@ const getRedisMock = vi.mocked(getRedis);
 
 function challengeRecord(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
+    version: 1,
     purpose: 'authentication',
     userId: 'u1',
     challenge: 'stored-challenge',
     createdAt: new Date().toISOString(),
+    binding: null,
     ...overrides,
   });
 }
@@ -89,11 +91,19 @@ describe('consumePasskeyChallenge (via verify fns)', () => {
 
   it('passes the stored challenge to @simplewebauthn for registration', async () => {
     redisMock.getdel.mockResolvedValue(
-      challengeRecord({ purpose: 'registration', challenge: 'reg-challenge' })
+      challengeRecord({
+        purpose: 'registration',
+        challenge: 'reg-challenge',
+        binding: { kind: 'initial-password' },
+      })
     );
     webauthnMocks.verifyRegistrationResponse.mockResolvedValue({ verified: true });
 
-    await verifyPasskeyRegistration({ userId: 'u1', response: {} as never });
+    await verifyPasskeyRegistration({
+      userId: 'u1',
+      response: {} as never,
+      authorization: { kind: 'initial-password' },
+    });
 
     expect(redisMock.getdel).toHaveBeenCalledWith('passkey:challenge:registration:u1');
     expect(webauthnMocks.verifyRegistrationResponse).toHaveBeenCalledWith(
@@ -179,6 +189,7 @@ describe('storePasskeyChallenge (via generate fns)', () => {
     await expect(
       generatePasskeyRegistrationOptions({
         user: { id: 'u1', email: 'a@b.co' },
+        authorization: { kind: 'initial-password' },
       })
     ).rejects.toThrow('Redis unavailable while storing passkey challenge');
   });
@@ -205,11 +216,147 @@ describe('storePasskeyChallenge (via generate fns)', () => {
   });
 });
 
+describe('purpose-bound registration authorization', () => {
+  const authorization = {
+    kind: 'mfa-step-up' as const,
+    purpose: 'passkey.register' as const,
+    grantHash: 'a'.repeat(64),
+  };
+
+  it('stores only the grant hash and purpose with the registration challenge', async () => {
+    webauthnMocks.generateRegistrationOptions.mockResolvedValue({ challenge: 'reg-c' });
+
+    await generatePasskeyRegistrationOptions({
+      user: { id: 'u1', email: 'a@b.co' },
+      authorization,
+    });
+
+    const [, , raw] = redisMock.setex.mock.calls[0]!;
+    expect(JSON.parse(raw as string)).toMatchObject({
+      version: 1,
+      purpose: 'registration',
+      binding: authorization,
+    });
+    expect(raw).not.toContain('opaque-raw-grant');
+  });
+
+  it('requires the same grant reference at registration verification', async () => {
+    redisMock.getdel.mockResolvedValue(challengeRecord({
+      purpose: 'registration',
+      binding: authorization,
+    }));
+    webauthnMocks.verifyRegistrationResponse.mockResolvedValue({ verified: true });
+
+    await verifyPasskeyRegistration({
+      userId: 'u1',
+      response: {} as never,
+      authorization,
+    });
+    expect(webauthnMocks.verifyRegistrationResponse).toHaveBeenCalledOnce();
+
+    redisMock.getdel.mockResolvedValue(challengeRecord({
+      purpose: 'registration',
+      binding: authorization,
+    }));
+    await expect(verifyPasskeyRegistration({
+      userId: 'u1',
+      response: {} as never,
+      authorization: { ...authorization, grantHash: 'b'.repeat(64) },
+    })).rejects.toThrow(/mismatched challenge record/i);
+  });
+
+  it('does not accept an initial-password verification for a grant-bound challenge', async () => {
+    redisMock.getdel.mockResolvedValue(challengeRecord({
+      purpose: 'registration',
+      binding: authorization,
+    }));
+
+    await expect(verifyPasskeyRegistration({
+      userId: 'u1',
+      response: {} as never,
+      authorization: { kind: 'initial-password' },
+    })).rejects.toThrow(/mismatched challenge record/i);
+    expect(webauthnMocks.verifyRegistrationResponse).not.toHaveBeenCalled();
+  });
+});
+
+describe('existing-passkey step-up proof challenge', () => {
+  it('uses a distinct one-time ceremony bound to the target purpose', async () => {
+    webauthnMocks.generateAuthenticationOptions.mockResolvedValue({ challenge: 'step-up-c' });
+
+    await generatePasskeyAuthenticationOptions({
+      userId: 'u1',
+      passkeys: [fakePasskey],
+      challengePurpose: 'step-up-authentication',
+      stepUpPurpose: 'passkey.register',
+    });
+
+    expect(redisMock.setex).toHaveBeenCalledWith(
+      'passkey:challenge:step-up-authentication:u1',
+      300,
+      expect.stringContaining('"stepUpPurpose":"passkey.register"'),
+    );
+  });
+
+  it('rejects a different target purpose and cannot be replayed', async () => {
+    const raw = challengeRecord({
+      purpose: 'step-up-authentication',
+      binding: { kind: 'step-up-proof', stepUpPurpose: 'passkey.register' },
+    });
+    redisMock.getdel.mockResolvedValueOnce(raw).mockResolvedValueOnce(null);
+    webauthnMocks.verifyAuthenticationResponse.mockResolvedValue({ verified: true });
+
+    await expect(verifyPasskeyAuthentication({
+      userId: 'u1',
+      response: {} as never,
+      passkey: fakePasskey,
+      challengePurpose: 'step-up-authentication',
+      stepUpPurpose: 'totp.replace',
+    })).rejects.toThrow(/mismatched challenge record/i);
+
+    await expect(verifyPasskeyAuthentication({
+      userId: 'u1',
+      response: {} as never,
+      passkey: fakePasskey,
+      challengePurpose: 'step-up-authentication',
+      stepUpPurpose: 'passkey.register',
+    })).rejects.toThrow(/missing or expired/i);
+    expect(webauthnMocks.verifyAuthenticationResponse).not.toHaveBeenCalled();
+  });
+
+  it('has one verifier when two existing-passkey proofs race on one challenge', async () => {
+    const raw = challengeRecord({
+      purpose: 'step-up-authentication',
+      binding: { kind: 'step-up-proof', stepUpPurpose: 'passkey.register' },
+    });
+    redisMock.getdel.mockResolvedValueOnce(raw).mockResolvedValueOnce(null);
+    webauthnMocks.verifyAuthenticationResponse.mockResolvedValue({ verified: true });
+    const input = {
+      userId: 'u1',
+      response: {} as never,
+      passkey: fakePasskey,
+      challengePurpose: 'step-up-authentication' as const,
+      stepUpPurpose: 'passkey.register' as const,
+    };
+
+    const outcomes = await Promise.allSettled([
+      verifyPasskeyAuthentication(input),
+      verifyPasskeyAuthentication(input),
+    ]);
+
+    expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect(webauthnMocks.verifyAuthenticationResponse).toHaveBeenCalledOnce();
+  });
+});
+
 describe('user-verification is required (no silent downgrade)', () => {
   it('generateRegistrationOptions requests userVerification: required', async () => {
     webauthnMocks.generateRegistrationOptions.mockResolvedValue({ challenge: 'c' });
 
-    await generatePasskeyRegistrationOptions({ user: { id: 'u1', email: 'a@b.co' } });
+    await generatePasskeyRegistrationOptions({
+      user: { id: 'u1', email: 'a@b.co' },
+      authorization: { kind: 'initial-password' },
+    });
 
     expect(webauthnMocks.generateRegistrationOptions).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -229,10 +376,17 @@ describe('user-verification is required (no silent downgrade)', () => {
   });
 
   it('verifyRegistration requires user verification', async () => {
-    redisMock.getdel.mockResolvedValue(challengeRecord({ purpose: 'registration' }));
+    redisMock.getdel.mockResolvedValue(challengeRecord({
+      purpose: 'registration',
+      binding: { kind: 'initial-password' },
+    }));
     webauthnMocks.verifyRegistrationResponse.mockResolvedValue({ verified: true });
 
-    await verifyPasskeyRegistration({ userId: 'u1', response: {} as never });
+    await verifyPasskeyRegistration({
+      userId: 'u1',
+      response: {} as never,
+      authorization: { kind: 'initial-password' },
+    });
 
     expect(webauthnMocks.verifyRegistrationResponse).toHaveBeenCalledWith(
       expect.objectContaining({ requireUserVerification: true })

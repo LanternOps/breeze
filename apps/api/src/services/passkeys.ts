@@ -14,7 +14,14 @@ const DEFAULT_RP_NAME = 'Breeze RMM';
 const DEFAULT_DEV_ORIGIN = 'http://localhost:4321';
 const CHALLENGE_TTL_SECONDS = 5 * 60;
 
-export type PasskeyPurpose = 'registration' | 'authentication';
+export type PasskeyPurpose = 'registration' | 'authentication' | 'step-up-authentication';
+export type PasskeyStepUpPurpose = 'passkey.register' | 'totp.replace' | 'sms.replace' | 'email.change';
+export type PasskeyRegistrationAuthorization =
+  | { kind: 'initial-password' }
+  | { kind: 'mfa-step-up'; purpose: PasskeyStepUpPurpose; grantHash: string };
+type PasskeyChallengeBinding =
+  | PasskeyRegistrationAuthorization
+  | { kind: 'step-up-proof'; stepUpPurpose: PasskeyStepUpPurpose };
 export type PasskeyTransport = 'ble' | 'cable' | 'hybrid' | 'internal' | 'nfc' | 'smart-card' | 'usb';
 export type PasskeyDeviceType = 'singleDevice' | 'multiDevice';
 
@@ -55,10 +62,12 @@ export type PasskeyAuthenticationUpdateFields = {
 };
 
 type ChallengeRecord = {
+  version: 1;
   purpose: PasskeyPurpose;
   userId: string;
   challenge: string;
   createdAt: string;
+  binding: PasskeyChallengeBinding | null;
 };
 
 export class PasskeyChallengeError extends Error {
@@ -87,6 +96,7 @@ export async function generatePasskeyRegistrationOptions(input: {
   user: PasskeyUser;
   existingPasskeys?: StoredPasskeyCredential[];
   timeout?: number;
+  authorization: PasskeyRegistrationAuthorization;
 }): Promise<Awaited<ReturnType<typeof generateRegistrationOptions>>> {
   const config = resolveWebAuthnConfig();
   const options = await generateRegistrationOptions({
@@ -107,16 +117,26 @@ export async function generatePasskeyRegistrationOptions(input: {
     }
   } satisfies GenerateRegistrationOptionsOpts);
 
-  await storePasskeyChallenge('registration', input.user.id, options.challenge);
+  await storePasskeyChallenge(
+    'registration',
+    input.user.id,
+    options.challenge,
+    input.authorization,
+  );
   return options;
 }
 
 export async function verifyPasskeyRegistration(input: {
   userId: string;
   response: VerifyRegistrationResponseOpts['response'];
+  authorization: PasskeyRegistrationAuthorization;
 }): Promise<Awaited<ReturnType<typeof verifyRegistrationResponse>>> {
   const config = resolveWebAuthnConfig();
-  const challenge = await consumePasskeyChallenge('registration', input.userId);
+  const challenge = await consumePasskeyChallenge(
+    'registration',
+    input.userId,
+    input.authorization,
+  );
 
   return verifyRegistrationResponse({
     response: input.response,
@@ -152,6 +172,8 @@ export async function generatePasskeyAuthenticationOptions(input: {
   userId: string;
   passkeys?: StoredPasskeyCredential[];
   timeout?: number;
+  challengePurpose?: 'authentication' | 'step-up-authentication';
+  stepUpPurpose?: PasskeyStepUpPurpose;
 }): Promise<Awaited<ReturnType<typeof generateAuthenticationOptions>>> {
   const config = resolveWebAuthnConfig();
   const allowCredentials = input.passkeys?.map((passkey) => ({
@@ -166,7 +188,9 @@ export async function generatePasskeyAuthenticationOptions(input: {
     allowCredentials: allowCredentials && allowCredentials.length > 0 ? allowCredentials : undefined
   } satisfies GenerateAuthenticationOptionsOpts);
 
-  await storePasskeyChallenge('authentication', input.userId, options.challenge);
+  const purpose = input.challengePurpose ?? 'authentication';
+  const binding = challengeBindingForAuthentication(purpose, input.stepUpPurpose);
+  await storePasskeyChallenge(purpose, input.userId, options.challenge, binding);
   return options;
 }
 
@@ -174,9 +198,16 @@ export async function verifyPasskeyAuthentication(input: {
   userId: string;
   response: VerifyAuthenticationResponseOpts['response'];
   passkey: StoredPasskeyCredential;
+  challengePurpose?: 'authentication' | 'step-up-authentication';
+  stepUpPurpose?: PasskeyStepUpPurpose;
 }): Promise<Awaited<ReturnType<typeof verifyAuthenticationResponse>>> {
   const config = resolveWebAuthnConfig();
-  const challenge = await consumePasskeyChallenge('authentication', input.userId);
+  const purpose = input.challengePurpose ?? 'authentication';
+  const challenge = await consumePasskeyChallenge(
+    purpose,
+    input.userId,
+    challengeBindingForAuthentication(purpose, input.stepUpPurpose),
+  );
 
   return verifyAuthenticationResponse({
     response: input.response,
@@ -220,7 +251,8 @@ export function passkeyToWebAuthnCredential(
 async function storePasskeyChallenge(
   purpose: PasskeyPurpose,
   userId: string,
-  challenge: string
+  challenge: string,
+  binding: PasskeyChallengeBinding | null,
 ): Promise<void> {
   const redis = getRedis();
   if (!redis) {
@@ -228,16 +260,22 @@ async function storePasskeyChallenge(
   }
 
   const record: ChallengeRecord = {
+    version: 1,
     purpose,
     userId,
     challenge,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    binding,
   };
 
   await redis.setex(passkeyChallengeKey(purpose, userId), CHALLENGE_TTL_SECONDS, JSON.stringify(record));
 }
 
-async function consumePasskeyChallenge(purpose: PasskeyPurpose, userId: string): Promise<string> {
+async function consumePasskeyChallenge(
+  purpose: PasskeyPurpose,
+  userId: string,
+  expectedBinding: PasskeyChallengeBinding | null,
+): Promise<string> {
   const redis = getRedis();
   if (!redis) {
     throw new PasskeyChallengeError('Redis unavailable while reading passkey challenge');
@@ -254,7 +292,12 @@ async function consumePasskeyChallenge(purpose: PasskeyPurpose, userId: string):
 
   try {
     const record = JSON.parse(raw) as ChallengeRecord;
-    if (record.purpose !== purpose || record.userId !== userId || typeof record.challenge !== 'string') {
+    if (record.version !== 1
+      || record.purpose !== purpose
+      || record.userId !== userId
+      || typeof record.challenge !== 'string'
+      || record.challenge.length === 0
+      || JSON.stringify(record.binding) !== JSON.stringify(expectedBinding)) {
       throw new Error('mismatched challenge record');
     }
     return record.challenge;
@@ -263,6 +306,22 @@ async function consumePasskeyChallenge(purpose: PasskeyPurpose, userId: string):
       `Invalid passkey challenge record: ${err instanceof Error ? err.message : String(err)}`
     );
   }
+}
+
+function challengeBindingForAuthentication(
+  purpose: 'authentication' | 'step-up-authentication',
+  stepUpPurpose: PasskeyStepUpPurpose | undefined,
+): PasskeyChallengeBinding | null {
+  if (purpose === 'authentication') {
+    if (stepUpPurpose !== undefined) {
+      throw new PasskeyChallengeError('Authentication challenge cannot carry a step-up purpose');
+    }
+    return null;
+  }
+  if (!stepUpPurpose) {
+    throw new PasskeyChallengeError('Step-up authentication requires a purpose');
+  }
+  return { kind: 'step-up-proof', stepUpPurpose };
 }
 
 function passkeyChallengeKey(purpose: PasskeyPurpose, userId: string): string {

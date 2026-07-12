@@ -48,6 +48,51 @@ export const mfaVerifySchema = z.object({
   method: z.enum(['totp', 'sms']).optional()
 });
 
+export const mfaStepUpPurposeSchema = z.enum([
+  'passkey.register',
+  'totp.replace',
+  'sms.replace',
+  'email.change',
+]);
+export const mfaStepUpMethodSchema = z.enum(['totp', 'sms', 'passkey']);
+const mfaStepUpCodeSchema = z.string().regex(/^\d{6}$/);
+export const webAuthnCredentialSchema = z
+  .any()
+  .refine(
+    (value): boolean => typeof value?.id === 'string' && value.id.length > 0,
+    { message: 'credential.id is required' },
+  );
+
+export const mfaStepUpOptionsSchema = z.object({
+  purpose: mfaStepUpPurposeSchema,
+  method: mfaStepUpMethodSchema,
+}).strict();
+
+export const mfaStepUpVerifySchema = z.discriminatedUnion('method', [
+  z.object({ purpose: mfaStepUpPurposeSchema, method: z.literal('totp'), code: mfaStepUpCodeSchema }).strict(),
+  z.object({ purpose: mfaStepUpPurposeSchema, method: z.literal('sms'), code: mfaStepUpCodeSchema }).strict(),
+  z.object({ purpose: mfaStepUpPurposeSchema, method: z.literal('passkey'), credential: webAuthnCredentialSchema }).strict(),
+]);
+
+export const passkeyRegisterOptionsSchema = z.object({
+  currentPassword: z.string().min(1).max(256).optional(),
+  mfaGrant: z.string().min(32).max(512).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (Boolean(value.currentPassword) === Boolean(value.mfaGrant)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Exactly one enrollment authorization is required',
+    });
+  }
+});
+
+export const passkeyRegisterVerifySchema = z.object({
+  credential: webAuthnCredentialSchema,
+  mfaGrant: z.string().min(32).max(512).optional(),
+  name: z.string().trim().min(1).max(255).optional(),
+}).strict();
+
 export const phoneVerifySchema = z.object({
   phoneNumber: z.string().regex(/^\+[1-9]\d{6,14}$/, 'Invalid phone number. Use E.164 format (e.g. +14155551234)'),
   currentPassword: z.string().min(1).max(256)
