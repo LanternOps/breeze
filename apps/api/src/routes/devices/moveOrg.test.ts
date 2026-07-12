@@ -50,6 +50,12 @@ vi.mock('../../services/deviceLinkGroups', () => ({
   dissolveLinkGroupIfBelowMinimum: vi.fn(async () => false),
 }));
 
+vi.mock('../../extensions/tenancyRegistry', () => ({
+  withExtensionDeviceCascade: (core: readonly string[]) => [...core],
+  withExtensionDeviceOrgDenormalized: (core: readonly string[]) => [...core],
+  withExtensionDeviceOrgMoveDelete: (core: readonly string[]) => ['demo_things', ...core],
+}));
+
 import { db } from '../../db';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -59,6 +65,7 @@ import { moveOrgRoutes } from './moveOrg';
 import {
   CUSTOM_ORG_REWRITE_TABLES,
   getDeviceOrgDenormalizedTables,
+  getDeviceOrgMoveDeleteTables,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
 
@@ -224,7 +231,7 @@ describe('POST /devices/:id/move-org', () => {
         ],
         siteRow: { id: TARGET_SITE },
       });
-      const { updatedTables, deviceUpdateSets } = rigTransactionSuccess();
+      const { updatedTables, statements, deviceUpdateSets } = rigTransactionSuccess();
 
       const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
         method: 'POST',
@@ -268,9 +275,14 @@ describe('POST /devices/:id/move-org', () => {
       // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
         ...getDeviceOrgDenormalizedTables(),
+        ...getDeviceOrgMoveDeleteTables(),
         ...CUSTOM_ORG_REWRITE_TABLES,
         ...DEVICE_SITE_DENORMALIZED_TABLES,
       ]);
+
+      expect(statements).toContain(
+        `DELETE FROM demo_things WHERE device_id = ${DEVICE_ID}`,
+      );
 
       // After the move, the live WS for this agent MUST be closed so the
       // reconnect handshake resolves the new org_id. Otherwise every

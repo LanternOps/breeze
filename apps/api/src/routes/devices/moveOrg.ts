@@ -17,7 +17,11 @@ import {
 } from './helpers';
 import { moveOrgSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { getDeviceOrgDenormalizedTables, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
+import {
+  getDeviceOrgDenormalizedTables,
+  getDeviceOrgMoveDeleteTables,
+  DEVICE_SITE_DENORMALIZED_TABLES,
+} from './core';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { disconnectAgent } from '../agentWs';
 import { captureException } from '../../services/sentry';
@@ -163,6 +167,13 @@ moveOrgRoutes.post(
           await tx.execute(
             sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,
           );
+        }
+
+        // Extension tables that must be DELETED (not re-stamped) on org-move: their rows
+        // FK a source/config row that stays in the old org, so rewriting org_id would
+        // corrupt cross-row consistency. See extension-api tenancy docs.
+        for (const table of getDeviceOrgMoveDeleteTables()) {
+          await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
         }
 
         // ticket_alert_links denormalizes org_id for RLS but has no

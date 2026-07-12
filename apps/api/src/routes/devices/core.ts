@@ -56,6 +56,7 @@ import { getGlobalEnrollmentSecret } from '../agents/enrollment';
 import {
   withExtensionDeviceCascade,
   withExtensionDeviceOrgDenormalized,
+  withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
 
 /**
@@ -133,6 +134,12 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {
   return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
+}
+
+const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [];
+
+export function getDeviceOrgMoveDeleteTables(): readonly string[] {
+  return withExtensionDeviceOrgMoveDelete(CORE_DEVICE_ORG_MOVE_DELETE_TABLES);
 }
 
 /** @deprecated Static core-only snapshot retained for call sites that predate extensions. */

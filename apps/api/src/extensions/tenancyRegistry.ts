@@ -28,6 +28,11 @@ export function withExtensionDeviceCascade(core: readonly string[]): string[] {
   return [...extra, ...core];
 }
 
+export function withExtensionDeviceOrgMoveDelete(core: readonly string[]): string[] {
+  const extra = getExtensionTenancy().flatMap((t) => t.deviceOrgMoveDeleteTables ?? []);
+  return [...extra, ...core];
+}
+
 export function withExtensionDeviceOrgDenormalized(core: readonly string[]): string[] {
   const extra = getExtensionTenancy().flatMap((t) => t.deviceOrgDenormalizedTables);
   return [...core, ...extra];
