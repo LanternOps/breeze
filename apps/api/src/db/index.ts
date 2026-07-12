@@ -9,15 +9,16 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema';
 import { captureMessage } from '../services/sentry';
+import { resolveRequestDatabaseConfig } from './requestDatabaseConfig';
 
-// Prefer DATABASE_URL_APP (the unprivileged breeze_app role) so RLS policies
-// are actually enforced. Fall back to DATABASE_URL for backward compatibility
-// with existing deployments; autoMigrate will warn loudly if that connection
-// has BYPASSRLS/SUPERUSER.
-const connectionString =
-  process.env.DATABASE_URL_APP
-  || process.env.DATABASE_URL
-  || 'postgresql://breeze:breeze@localhost:5432/breeze';
+const requestDatabaseConfig = resolveRequestDatabaseConfig();
+const requestDatabaseLog =
+  `[database] Request pool configuration source: ${requestDatabaseConfig.source}`;
+if (requestDatabaseConfig.source === 'development-fallback') {
+  console.warn(requestDatabaseLog);
+} else {
+  console.log(requestDatabaseLog);
+}
 
 // Pool sizing: postgres-js defaults to max=10, which causes cascading 504s
 // under heartbeat storms (e.g. a 1000-agent fleet reconnecting at once).
@@ -30,7 +31,7 @@ function getDbPoolMax(): number {
   return raw;
 }
 
-const client = postgres(connectionString, {
+const client = postgres(requestDatabaseConfig.url, {
   max: getDbPoolMax(),
   idle_timeout: 20,
   max_lifetime: 60 * 30,
