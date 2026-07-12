@@ -1,7 +1,12 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { fetchWithAuth, registerOrgIdProvider } from './auth';
-import { registerSessionTeardown } from './sessionTeardown';
+import {
+  awaitForWebSession,
+  captureWebSessionGeneration,
+  isCurrentWebSessionGeneration,
+  registerSessionTeardown,
+} from './sessionTeardown';
 import { isGlobalScopeRoute } from '../lib/routeScope';
 
 export interface Partner {
@@ -115,13 +120,14 @@ export const useOrgStore = create<OrgState>()(
       },
 
       fetchPartners: async () => {
+        const generation = captureWebSessionGeneration();
         set({ isLoading: true, error: null });
         try {
-          const response = await fetchWithAuth('/orgs/partners');
+          const response = await awaitForWebSession(generation, fetchWithAuth('/orgs/partners'));
           if (!response.ok) {
             throw new Error('Failed to fetch partners');
           }
-          const data = await response.json();
+          const data = await awaitForWebSession(generation, response.json());
           const partners = Array.isArray(data?.data)
             ? data.data
             : Array.isArray(data?.partners)
@@ -143,6 +149,7 @@ export const useOrgStore = create<OrgState>()(
             get().clearOrgContext();
           }
         } catch (error) {
+          if (!isCurrentWebSessionGeneration(generation)) return;
           set({
             error: error instanceof Error ? error.message : 'Failed to fetch partners',
             isLoading: false
@@ -151,16 +158,17 @@ export const useOrgStore = create<OrgState>()(
       },
 
       fetchOrganizations: async () => {
+        const generation = captureWebSessionGeneration();
         const { currentPartnerId } = get();
 
         set({ isLoading: true, error: null });
         try {
           const params = currentPartnerId ? `?partnerId=${currentPartnerId}` : '';
-          const response = await fetchWithAuth(`/orgs/organizations${params}`);
+          const response = await awaitForWebSession(generation, fetchWithAuth(`/orgs/organizations${params}`));
           if (!response.ok) {
             throw new Error('Failed to fetch organizations');
           }
-          const data = await response.json();
+          const data = await awaitForWebSession(generation, response.json());
           const organizations = Array.isArray(data?.data)
             ? data.data
             : Array.isArray(data?.organizations)
@@ -188,6 +196,7 @@ export const useOrgStore = create<OrgState>()(
             set({ currentOrgId: null, currentSiteId: null, sites: [], allOrgs: false });
           }
         } catch (error) {
+          if (!isCurrentWebSessionGeneration(generation)) return;
           set({
             error: error instanceof Error ? error.message : 'Failed to fetch organizations',
             isLoading: false
@@ -196,6 +205,7 @@ export const useOrgStore = create<OrgState>()(
       },
 
       fetchSites: async () => {
+        const generation = captureWebSessionGeneration();
         const { currentOrgId } = get();
         if (!currentOrgId) {
           set({ sites: [] });
@@ -204,11 +214,11 @@ export const useOrgStore = create<OrgState>()(
 
         set({ isLoading: true, error: null });
         try {
-          const response = await fetchWithAuth(`/orgs/sites?organizationId=${currentOrgId}`);
+          const response = await awaitForWebSession(generation, fetchWithAuth(`/orgs/sites?organizationId=${currentOrgId}`));
           if (!response.ok) {
             throw new Error('Failed to fetch sites');
           }
-          const data = await response.json();
+          const data = await awaitForWebSession(generation, response.json());
           const sites = Array.isArray(data?.data)
             ? data.data
             : Array.isArray(data?.sites)
@@ -221,6 +231,7 @@ export const useOrgStore = create<OrgState>()(
             isLoading: false
           });
         } catch (error) {
+          if (!isCurrentWebSessionGeneration(generation)) return;
           set({
             error: error instanceof Error ? error.message : 'Failed to fetch sites',
             isLoading: false

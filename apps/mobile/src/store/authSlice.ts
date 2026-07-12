@@ -20,16 +20,21 @@ import {
 async function persistAuthenticatedSession(token: string, user: User): Promise<void> {
   const generation = advanceSessionGeneration();
   await runAuthStorageExclusive(async () => {
-    if (!isCurrentSessionGeneration(generation)) throw new SessionGenerationStaleError();
-    await storeToken(token);
-    if (!isCurrentSessionGeneration(generation)) {
-      await clearAuthData();
-      throw new SessionGenerationStaleError();
-    }
-    await storeUser(user);
-    if (!isCurrentSessionGeneration(generation)) {
-      await clearAuthData();
-      throw new SessionGenerationStaleError();
+    try {
+      if (!isCurrentSessionGeneration(generation)) throw new SessionGenerationStaleError();
+      await storeToken(token);
+      if (!isCurrentSessionGeneration(generation)) throw new SessionGenerationStaleError();
+      await storeUser(user);
+      if (!isCurrentSessionGeneration(generation)) throw new SessionGenerationStaleError();
+    } catch (error) {
+      try {
+        await clearAuthData();
+      } catch (wipeError) {
+        const writeMessage = error instanceof Error ? error.message : 'Credential persistence failed';
+        const wipeMessage = wipeError instanceof Error ? wipeError.message : 'credential cleanup failed';
+        throw new Error(`${writeMessage}; ${wipeMessage}`);
+      }
+      throw error;
     }
   });
 }

@@ -3616,7 +3616,7 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 ## Wave 2 MFA client contracts — 2026-07-12
 
 **Branch:** `fix/core-mfa-policy-assurance`
-**Implementation:** `22d883aae` plus the Task 7 review-fix follow-up on this branch
+**Implementation:** `22d883aae` through the closure-review follow-up on this branch
 **Tested by:** Codex
 **Result:** PARTIAL
 
@@ -3629,8 +3629,8 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 
 ### Evidence
 
-- Re-review web: 11 files / 89 tests passed; full web: 438 files / 3,395 tests passed with bounded workers. The default-worker run passed 3,394 and hit one unrelated timing-sensitive AutomationTab test, which passed immediately in isolation (2/2).
-- Mobile: 27 files / 216 passed, 3 skipped; mobile and web typechecks passed.
+- Closure web: 10 files / 80 tests passed; full web: 440 files / 3,403 tests passed with bounded workers.
+- Mobile: 27 files / 217 passed, 3 skipped; mobile and web typechecks passed.
 - Focused Wave 2 API: 10 files / 540 tests passed.
 - Fresh branch database: all 389 migration files matched the ledger; RLS contract: 50 passed.
 - Real recovery concurrency: 1 passed, 4 skipped; exactly one concurrent token response.
@@ -3639,6 +3639,7 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 ### Issues Found
 
 - The independent re-review found and closed terminal in-memory org/AI teardown, generation-fenced mobile persistence/biometric races, and strict explicit-method selection on web/mobile. The integrated teardown test injects both callback and storage-removal failures while asserting all remaining memory, persistence, stream-cancellation, and rehydration cleanup.
+- Closure review additionally made explicit web login method arrays authoritative even when empty/malformed, fenced every org/AI async completion and stream event with a pre-cleanup web generation, caught rejected stream cancellation without an unhandled rejection, and compensates every partial mobile credential-write failure with a serialized wipe.
 - The shared `breeze_test` database belongs to a newer checkout and contains five ledger entries absent from this exact branch, so migration/RLS/recovery gates were rerun against isolated local test databases migrated from this branch.
 - A full five-case recovery integration run under Node 26 and the shared Redis service was unstable (three failures, including a cleanup deadlock). The required one-winner race was rerun and passed under supported Node 22 with isolated PostgreSQL and Redis.
 - Browser/API E2E remains blocked by the exact environment gap above; no production or external state was mutated.

@@ -107,6 +107,26 @@ describe('authenticated-session persistence boundary', () => {
     expect(auth.storeUser).not.toHaveBeenCalledWith(userA);
     expect(auth.clearAuthData).toHaveBeenCalled();
   });
+
+  it('wipes the partial token when the user write fails so startup cannot hydrate a mixed pair', async () => {
+    let storedToken: string | null = null;
+    let storedUser: typeof userA | null = userA;
+    auth.storeToken.mockImplementationOnce(async (token: string) => { storedToken = token; });
+    auth.storeUser.mockImplementationOnce(async () => { throw new Error('user storage failed'); });
+    auth.clearAuthData.mockImplementationOnce(async () => {
+      storedToken = null;
+      storedUser = null;
+    });
+    api.login.mockResolvedValueOnce({ kind: 'success', token: 'token-b', user: userB });
+    const store = makeStore();
+
+    const result = await store.dispatch(loginAsync({ email: userB.email, password: 'password' }));
+
+    expect(result.type).toBe('auth/login/rejected');
+    expect(storedToken).toBeNull();
+    expect(storedUser).toBeNull();
+    expect(store.getState().auth.user).toBeNull();
+  });
 });
 afterEach(() => vi.restoreAllMocks());
 

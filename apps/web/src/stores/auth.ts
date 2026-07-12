@@ -703,8 +703,10 @@ export function clearLocalAuthSession(
   persistentStorage: Pick<Storage, 'removeItem'> = localStorage,
   transientStorage: Pick<Storage, 'removeItem'> = sessionStorage,
 ): void {
-  useAuthStore.getState().logout();
+  // Advance the shared boundary before any store cleanup so completions from
+  // the expired account become stale before teardown starts mutating state.
   runSessionTeardown();
+  useAuthStore.getState().logout();
   for (const key of ['breeze-auth', 'breeze-org', 'breeze-ai-chat', 'breeze-workspace']) {
     try {
       persistentStorage.removeItem(key);
@@ -770,11 +772,12 @@ export async function apiLogin(email: string, password: string): Promise<{
 
     if (data.mfaRequired) {
       const primaryMethod: MfaMethod = data.mfaMethod || 'totp';
+      const hasExplicitMethods = Object.prototype.hasOwnProperty.call(data, 'allowedMethods');
       const serverMethods: MfaMethod[] = Array.isArray(data.allowedMethods)
         ? data.allowedMethods.filter((method: unknown): method is MfaMethod =>
             method === 'totp' || method === 'sms' || method === 'passkey' || method === 'recovery_code')
         : [];
-      const allowedMethods: MfaMethod[] = serverMethods.length > 0
+      const allowedMethods: MfaMethod[] = hasExplicitMethods
         ? [...new Set(serverMethods)]
         : [...new Set<MfaMethod>([
             primaryMethod,
