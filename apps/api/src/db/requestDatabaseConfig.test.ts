@@ -135,6 +135,31 @@ describe('requestDatabaseConfig', () => {
       }
     });
 
+    it.each([
+      'postgresql://request-user:request-password@db-one%2Cdb-two/breeze',
+      'postgresql://request-user:request-password@db-one%2cdb-two%3A6432/breeze',
+    ])('rejects an explicit encoded multi-host request URL without leaking credentials: %s', (url) => {
+      expect(() =>
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL_APP: url,
+        }),
+      ).toThrow(/DATABASE_URL_APP.*single database\/HA endpoint/i);
+
+      try {
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL_APP: url,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).not.toContain('request-user');
+        expect(message).not.toContain('request-password');
+        expect(message).not.toContain('db-one');
+        expect(message).not.toContain('db-two');
+      }
+    });
+
     it('derives the request URL using POSTGRES_PASSWORD', () => {
       expect(
         resolveRequestDatabaseConfig({
@@ -173,6 +198,34 @@ describe('requestDatabaseConfig', () => {
           BREEZE_APP_DB_PASSWORD: 'request-secret',
         }),
       ).toThrow(/single database\/HA endpoint/i);
+
+      try {
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL: url,
+          BREEZE_APP_DB_PASSWORD: 'request-secret',
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).not.toContain('admin');
+        expect(message).not.toContain('admin-secret');
+        expect(message).not.toContain('request-secret');
+        expect(message).not.toContain('db-one');
+        expect(message).not.toContain('db-two');
+      }
+    });
+
+    it.each([
+      'postgresql://admin:admin-secret@db-one%2Cdb-two/breeze',
+      'postgresql://admin:admin-secret@db-one%2cdb-two:5432/breeze',
+    ])('rejects a derived encoded multi-host request URL without leaking credentials: %s', (url) => {
+      expect(() =>
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL: url,
+          BREEZE_APP_DB_PASSWORD: 'request-secret',
+        }),
+      ).toThrow(/DATABASE_URL.*single database\/HA endpoint/i);
 
       try {
         resolveRequestDatabaseConfig({

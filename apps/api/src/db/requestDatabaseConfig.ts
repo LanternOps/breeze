@@ -20,7 +20,7 @@ function connectionHostSegment(connectionUrl: string): string | null {
 }
 
 function usesMultipleHosts(connectionUrl: string): boolean {
-  return connectionHostSegment(connectionUrl)?.includes(',') ?? false;
+  return /,|%2c/iu.test(connectionHostSegment(connectionUrl) ?? '');
 }
 
 function parseSingleEndpointUrl(connectionUrl: string, source: string): URL {
