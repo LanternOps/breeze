@@ -33,6 +33,21 @@ import {
   updateCatalogItem,
   type CatalogActor
 } from './catalogService';
+import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
+
+/**
+ * Params each manage_catalog action requires, presence-checked BEFORE any
+ * `String(...)` coercion so a missing id can't become the literal string
+ * "undefined" and die downstream as an opaque uuid/DB 500 (#2362 sweep).
+ */
+const MANAGE_CATALOG_REQUIRED: Record<string, readonly string[]> = {
+  create_item: ['item'],
+  update_item: ['catalogId', 'item'],
+  archive_item: ['catalogId'],
+  set_org_price: ['catalogId', 'orgId', 'override'],
+  remove_org_price: ['catalogId', 'orgId'],
+  set_bundle_components: ['catalogId', 'components'],
+};
 
 function actorFromAuth(auth: AuthContext): CatalogActor {
   return {
@@ -195,10 +210,17 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const actor = actorFromAuth(auth);
-      const s = (k: string) => (input[k] == null ? undefined : String(input[k]));
+
+      const action = String(input.action);
+      const required = MANAGE_CATALOG_REQUIRED[action];
+      if (!required) {
+        return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
+      }
+      const missing = missingParamsJson(input, action, required);
+      if (missing) return missing;
 
       try {
-        switch (input.action) {
+        switch (action) {
           case 'create_item':
             return JSON.stringify(await createCatalogItem(input.item as CreateCatalogItemInput, actor));
           case 'update_item':
@@ -229,10 +251,10 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
               actor
             ));
           default:
-            return JSON.stringify({ error: `Unknown action: ${s('action')}` });
+            return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
         }
       } catch (err) {
-        const json = serviceErrorToJson(err);
+        const json = serviceErrorToJson(err) ?? zodErrorToJson(err);
         if (json) return json;
         throw err;
       }

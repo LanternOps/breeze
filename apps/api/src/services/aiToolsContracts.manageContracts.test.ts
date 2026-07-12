@@ -158,4 +158,13 @@ describe('manage_contracts', () => {
 
     expect(JSON.parse(out)).toHaveProperty('error');
   });
+
+  it('activate without contractId returns a structured VALIDATION_ERROR instead of coercing "undefined" (#2362 sweep)', async () => {
+    const out = await getTool().handler({ action: 'activate' }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('contractId');
+    expect(contractService.activateContract).not.toHaveBeenCalled();
+  });
 });

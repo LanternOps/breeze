@@ -276,6 +276,25 @@ describe('manage_invoices', () => {
 
     expect(JSON.parse(out)).toHaveProperty('error');
   });
+
+  it('issue without invoiceId returns a structured VALIDATION_ERROR instead of coercing "undefined" (#2362 sweep)', async () => {
+    const out = await getTool().handler({ action: 'issue' }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('invoiceId');
+    expect(invoiceService.issueInvoice).not.toHaveBeenCalled();
+  });
+
+  it('add_catalog_line without catalogItemId/quantity returns a structured VALIDATION_ERROR (#2362 sweep)', async () => {
+    const out = await getTool().handler({ action: 'add_catalog_line', invoiceId: 'inv-1' }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('catalogItemId');
+    expect(parsed.error).toContain('quantity');
+    expect(invoiceService.addCatalogLine).not.toHaveBeenCalled();
+  });
 });
 
 describe('get_invoice / list_invoices deposit fields', () => {

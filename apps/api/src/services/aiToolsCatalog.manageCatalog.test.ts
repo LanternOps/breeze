@@ -172,4 +172,13 @@ describe('manage_catalog', () => {
 
     expect(JSON.parse(out)).toHaveProperty('error');
   });
+
+  it('update_item without catalogId returns a structured VALIDATION_ERROR instead of coercing "undefined" (#2362 sweep)', async () => {
+    const out = await getTool().handler({ action: 'update_item', item: { name: 'x' } }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('catalogId');
+    expect(catalogService.updateCatalogItem).not.toHaveBeenCalled();
+  });
 });

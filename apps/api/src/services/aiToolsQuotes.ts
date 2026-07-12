@@ -11,16 +11,30 @@
  * which already enforce org access through `assertOrg`/`getQuote`. A thrown
  * `QuoteServiceError` (e.g. ORG_DENIED, QUOTE_NOT_FOUND, NOT_A_DRAFT) is
  * converted to a JSON error string rather than propagated.
+ *
+ * Input validation (#2362): the flat `toolInputSchemas.manage_quotes` layer
+ * marks every id/payload optional because required-ness depends on the action.
+ * The handler therefore (1) presence-checks each action's required params
+ * BEFORE any `String(...)` coercion, and (2) parses the `input`/`patch`/
+ * `block`/`line` payloads with the same shared Zod schemas the HTTP routes
+ * use, so a malformed call returns a structured
+ * `{ error, code: 'VALIDATION_ERROR' }` instead of escaping as a raw 500.
  */
 
-import type {
-  CreateQuoteInput,
-  QuoteBlockInput,
-  QuoteLineInput,
-  UpdateQuoteInput,
+import { z } from 'zod';
+import {
+  createQuoteSchema,
+  updateQuoteSchema,
+  quoteBlockInputSchema,
+  quoteLineInputSchema,
+  updateQuoteLineSchema,
+  catalogQuoteLineSchema,
+  reorderBlocksSchema,
+  reorderLinesSchema,
 } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
+import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 import {
   createQuote,
   getQuote,
@@ -61,6 +75,38 @@ function serviceErrorToJson(err: unknown): string | null {
   return null;
 }
 
+/**
+ * Params each action requires. Checked before any coercion so a missing id can
+ * never become the literal string "undefined" (which used to reach the DB and
+ * die as an opaque uuid-parse 500 — #2362).
+ */
+const REQUIRED_PARAMS: Record<string, readonly string[]> = {
+  create_draft: ['input'],
+  update: ['quoteId', 'patch'],
+  delete_draft: ['quoteId'],
+  add_block: ['quoteId', 'block'],
+  update_block: ['quoteId', 'blockId', 'block'],
+  delete_block: ['quoteId', 'blockId'],
+  reorder_blocks: ['quoteId', 'blockIds'],
+  add_manual_line: ['quoteId', 'line'],
+  add_catalog_line: ['quoteId', 'catalogItemId', 'quantity'],
+  update_line: ['quoteId', 'lineId', 'patch'],
+  remove_line: ['quoteId', 'lineId'],
+  reorder_lines: ['quoteId', 'blockId', 'lineIds'],
+  send: ['quoteId'],
+  decline: ['quoteId'],
+  create_pay_link: ['quoteId'],
+};
+
+// Payload parsers wrap the value under its param name so ZodError paths are
+// self-describing ("line.sourceType: ...", "input.orgId: ..."). These are the
+// SAME schemas the HTTP quote routes validate with — one source of truth.
+const createPayload = z.object({ input: createQuoteSchema });
+const headerPatchPayload = z.object({ patch: updateQuoteSchema });
+const blockPayload = z.object({ block: quoteBlockInputSchema });
+const linePayload = z.object({ line: quoteLineInputSchema });
+const linePatchPayload = z.object({ patch: updateQuoteLineSchema });
+
 export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_quotes', {
     tier: 2 as AiToolTier,
@@ -69,7 +115,12 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
       name: 'manage_quotes',
       description:
         'Create and manage quotes/proposals for orgs the caller can access: draft header edits, blocks, lines, ' +
-        'send/decline lifecycle actions, and accepted-quote pay links. Sending a quote requires approval.',
+        'send/decline lifecycle actions, and accepted-quote pay links. Sending a quote requires approval. ' +
+        'Required params per action — create_draft: input; update: quoteId, patch; delete_draft/send/decline/' +
+        'create_pay_link: quoteId; add_block: quoteId, block; update_block: quoteId, blockId, block; delete_block: ' +
+        'quoteId, blockId; reorder_blocks: quoteId, blockIds; add_manual_line: quoteId, line; add_catalog_line: ' +
+        'quoteId, catalogItemId, quantity (blockId optional); update_line: quoteId, lineId, patch; remove_line: ' +
+        'quoteId, lineId; reorder_lines: quoteId, blockId, lineIds.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -96,11 +147,27 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           quoteId: { type: 'string', description: 'Quote UUID' },
           blockId: { type: 'string' },
           lineId: { type: 'string' },
-          catalogItemId: { type: 'string' },
-          quantity: { type: 'number' },
-          partNumber: { type: 'string' },
+          catalogItemId: {
+            type: 'string',
+            description:
+              'Catalog item UUID — REQUIRED for add_catalog_line. The item must be looked up by UUID ' +
+              '(use search_catalog); partNumber is NOT a lookup key.',
+          },
+          quantity: { type: 'number', description: 'Line quantity (> 0) — required for add_catalog_line' },
+          partNumber: {
+            type: 'string',
+            description:
+              'Optional part-number override STORED on the created line (add_catalog_line only). ' +
+              'Not a lookup key — the catalog item is always selected by catalogItemId.',
+          },
           reason: { type: 'string', description: 'Decline reason' },
-          input: { type: 'object', description: 'Full create-quote payload including orgId and siteId' },
+          input: {
+            type: 'object',
+            description:
+              'Create-quote payload (create_draft). Required: orgId (UUID). Optional: siteId (UUID), ' +
+              'title, currencyCode (3-letter, default USD), expiryDate (YYYY-MM-DD), introNotes, terms, ' +
+              'termsAndConditions.',
+          },
           patch: {
             type: 'object',
             description:
@@ -114,8 +181,24 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
               depositEligible: { type: 'boolean' },
             },
           },
-          block: { type: 'object', description: 'Quote block input fields' },
-          line: { type: 'object', description: 'Manual quote line fields' },
+          block: {
+            type: 'object',
+            description:
+              'Quote block input (add_block/update_block). Required: blockType (\'heading\'|\'rich_text\'|\'image\'|' +
+              '\'line_items\') plus a matching content object — heading: {text, level? (1-3)}; rich_text: {html}; ' +
+              'image: {imageId (quote image UUID), caption?, width?}; line_items: {label?}. update_block must ' +
+              'restate the existing blockType (the type itself cannot change).',
+          },
+          line: {
+            type: 'object',
+            description:
+              'Manual quote line fields (add_manual_line). Required: sourceType (\'manual\'|\'catalog\'|\'bundle\' — ' +
+              'use \'manual\' for a hand-entered line), quantity (> 0), unitPrice, taxable (boolean), and at least ' +
+              'one of name/description. Optional: name, description, customerVisible (default true), recurrence ' +
+              '(\'one_time\'|\'monthly\'|\'annual\', default \'one_time\'), termMonths, billingFrequency ' +
+              '(\'monthly\'|\'annual\'), unitCost, sku, partNumber, depositEligible (default false), blockId (UUID), ' +
+              'catalogItemId (UUID).',
+          },
           blockIds: { type: 'array', items: { type: 'string' }, description: 'Ordered block UUIDs' },
           lineIds: { type: 'array', items: { type: 'string' }, description: 'Ordered line UUIDs' },
         },
@@ -126,13 +209,25 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
       const actor = actorFromAuth(auth);
       const s = (k: string) => (input[k] == null ? undefined : String(input[k]));
 
+      const action = String(input.action);
+      const required = REQUIRED_PARAMS[action];
+      if (!required) {
+        return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
+      }
+      const missing = missingParamsJson(input, action, required);
+      if (missing) return missing;
+
       try {
-        switch (input.action) {
+        switch (action) {
           case 'create_draft':
-            return JSON.stringify(await createQuote(input.input as CreateQuoteInput, actor));
+            return JSON.stringify(await createQuote(
+              createPayload.parse({ input: input.input }).input,
+              actor
+            ));
           case 'update': {
             const quoteId = String(input.quoteId);
-            await updateQuote(quoteId, input.patch as UpdateQuoteInput, actor);
+            const { patch } = headerPatchPayload.parse({ patch: input.patch });
+            await updateQuote(quoteId, patch, actor);
             // Re-read rather than return updateQuote's raw row: the raw row carries
             // depositType/depositPercent/depositAmount but not the derived
             // depositDueTotal/categoryBreakdown (computed from current lines in
@@ -147,50 +242,63 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           case 'add_block':
             return JSON.stringify(await addBlock(
               String(input.quoteId),
-              input.block as QuoteBlockInput,
+              blockPayload.parse({ block: input.block }).block,
               actor
             ));
           case 'update_block':
             return JSON.stringify(await updateBlock(
               String(input.quoteId),
               String(input.blockId),
-              input.block as QuoteBlockInput,
+              blockPayload.parse({ block: input.block }).block,
               actor
             ));
           case 'delete_block':
             await deleteBlock(String(input.quoteId), String(input.blockId), actor);
             return JSON.stringify({ ok: true });
-          case 'reorder_blocks':
-            await reorderBlocks(String(input.quoteId), input.blockIds as string[], actor);
+          case 'reorder_blocks': {
+            const { blockIds } = reorderBlocksSchema.parse({ blockIds: input.blockIds });
+            await reorderBlocks(String(input.quoteId), blockIds, actor);
             return JSON.stringify({ ok: true });
+          }
           case 'add_manual_line':
             return JSON.stringify(await addManualLine(
               String(input.quoteId),
-              input.line as QuoteLineInput,
+              linePayload.parse({ line: input.line }).line,
               actor
             ));
-          case 'add_catalog_line':
+          case 'add_catalog_line': {
+            // Same schema the POST /:id/lines/catalog route validates with:
+            // guid catalogItemId + positive quantity, optional blockId/partNumber.
+            const args = catalogQuoteLineSchema.parse({
+              catalogItemId: input.catalogItemId,
+              quantity: input.quantity,
+              blockId: input.blockId ?? undefined,
+              partNumber: input.partNumber == null ? undefined : String(input.partNumber),
+            });
             return JSON.stringify(await addCatalogLine(
               String(input.quoteId),
-              String(input.catalogItemId),
-              Number(input.quantity),
-              s('blockId'),
+              args.catalogItemId,
+              args.quantity,
+              args.blockId,
               actor,
-              { partNumber: input.partNumber == null ? null : String(input.partNumber) }
+              { partNumber: args.partNumber ?? null }
             ));
+          }
           case 'update_line':
             return JSON.stringify(await updateLine(
               String(input.quoteId),
               String(input.lineId),
-              input.patch as UpdateQuoteLinePatch,
+              linePatchPayload.parse({ patch: input.patch }).patch as UpdateQuoteLinePatch,
               actor
             ));
           case 'remove_line':
             await removeLine(String(input.quoteId), String(input.lineId), actor);
             return JSON.stringify({ ok: true });
-          case 'reorder_lines':
-            await reorderLines(String(input.quoteId), String(input.blockId), input.lineIds as string[], actor);
+          case 'reorder_lines': {
+            const { lineIds } = reorderLinesSchema.parse({ lineIds: input.lineIds });
+            await reorderLines(String(input.quoteId), String(input.blockId), lineIds, actor);
             return JSON.stringify({ ok: true });
+          }
           case 'send':
             return JSON.stringify(await sendQuote(String(input.quoteId), actor));
           case 'decline':
@@ -198,10 +306,10 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           case 'create_pay_link':
             return JSON.stringify(await createQuotePayLink(String(input.quoteId), actor));
           default:
-            return JSON.stringify({ error: `Unknown action: ${s('action')}` });
+            return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
         }
       } catch (err) {
-        const json = serviceErrorToJson(err);
+        const json = serviceErrorToJson(err) ?? zodErrorToJson(err);
         if (json) return json;
         throw err;
       }
