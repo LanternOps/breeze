@@ -18,6 +18,13 @@ const (
 	dialTimeout = 10 * time.Second
 )
 
+// defaultWriteTimeout bounds each Write to the local target. Without it a
+// stalled target (full TCP send buffer, wedged VNC server) blocks the calling
+// worker forever, pinning the command payload that carried the data and
+// permanently shrinking the command worker pool (issue #2387). Tests shorten
+// the bound via the Session.writeTimeout field.
+const defaultWriteTimeout = 30 * time.Second
+
 // DataCallback is called when data is read from the TCP connection.
 type DataCallback func(tunnelID string, data []byte)
 
@@ -31,8 +38,11 @@ type Session struct {
 	TargetPort int
 	TunnelType string // "vnc" or "proxy"
 
-	conn       net.Conn
-	done       chan struct{}
+	conn net.Conn
+	// writeTimeout bounds each Write; zero means defaultWriteTimeout.
+	// Set before the session is used (tests only) — never mutated afterwards.
+	writeTimeout time.Duration
+	done         chan struct{}
 	closeOnce  sync.Once
 	onData     DataCallback
 	onClose    CloseCallback
@@ -87,8 +97,27 @@ func (s *Session) Write(data []byte) error {
 	default:
 	}
 
+	timeout := s.writeTimeout
+	if timeout <= 0 {
+		timeout = defaultWriteTimeout
+	}
+
+	// Bound the write so a stalled target cannot wedge the caller forever.
+	// Deadline errors are permanent on net.Conn (all subsequent writes fail),
+	// so the session is torn down rather than left in a poisoned state.
+	if err := s.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set write deadline for %s:%d: %w", s.TargetHost, s.TargetPort, err)
+	}
 	n, err := s.conn.Write(data)
 	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			log.Warn("tunnel write timed out, closing session",
+				"tunnelId", s.ID,
+				"target", fmt.Sprintf("%s:%d", s.TargetHost, s.TargetPort),
+				"timeout", timeout.String(),
+			)
+			s.Close()
+		}
 		return fmt.Errorf("write to %s:%d: %w", s.TargetHost, s.TargetPort, err)
 	}
 	s.bytesSent.Add(int64(n))

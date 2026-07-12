@@ -1701,7 +1701,16 @@ func (b *Broker) removeSession(session *Session) {
 
 // trackStaleHelper records a disconnected helper PID for later cleanup.
 // Called under b.mu lock.
+//
+// Windows-only: the sole drain path is KillStaleHelpers, whose callers are all
+// Windows-gated (it exists to release DXGI Desktop Duplication locks before
+// respawning a helper). On macOS/Linux nothing ever drains this map, so
+// tracking there grows unbounded for the life of the daemon (issue #2387);
+// macOS stale helpers are torn down via CloseSessionsByDesktopContext instead.
 func (b *Broker) trackStaleHelper(winSessionID string, pid int) {
+	if runtime.GOOS != "windows" {
+		return
+	}
 	b.staleHelpers[winSessionID] = append(b.staleHelpers[winSessionID], pid)
 }
 

@@ -222,6 +222,11 @@ type Heartbeat struct {
 	seenCommands   map[string]time.Time
 	seenCommandsMu sync.Mutex
 
+	// commandInFlightWarnAfter overrides the wedged-worker watchdog interval
+	// in executeCommandViaPool; zero means defaultCommandInFlightWarnAfter.
+	// Set before the heartbeat runs (tests only) — never mutated afterwards.
+	commandInFlightWarnAfter time.Duration
+
 	// Guard against concurrent cert renewals from successive heartbeats
 	certRenewing      atomic.Bool
 	tokenRotating     atomic.Bool
@@ -3528,21 +3533,51 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 		}
 	}
 
-	select {
-	case result := <-resultCh:
-		return result
-	case <-h.stopChan:
-		return tools.CommandResult{
-			Status: "failed",
-			Error:  "agent is shutting down",
-		}
-	case <-h.pool.Context().Done():
-		return tools.CommandResult{
-			Status: "failed",
-			Error:  "command execution interrupted during shutdown",
+	// Watchdog: log-only, deliberately NOT a timeout. Some handlers are
+	// long-running by design (run_script up to 1h, software installs, patch
+	// loops), so failing the command here would race legitimate work. The log
+	// flags workers wedged on an unbounded blocking call — each one pins its
+	// decoded command payload (up to maxMessageSize) for the process lifetime
+	// and permanently shrinks the pool (issue #2387).
+	warnAfter := h.commandInFlightWarnAfter
+	if warnAfter <= 0 {
+		warnAfter = defaultCommandInFlightWarnAfter
+	}
+	started := time.Now()
+	watchdog := time.NewTimer(warnAfter)
+	defer watchdog.Stop()
+
+	for {
+		select {
+		case result := <-resultCh:
+			return result
+		case <-watchdog.C:
+			log.Warn("command still in flight after watchdog interval — handler may be wedged and retaining its payload",
+				logging.KeyCommandID, cmd.ID,
+				"type", cmd.Type,
+				"elapsed", time.Since(started).Round(time.Second).String(),
+			)
+			watchdog.Reset(warnAfter)
+		case <-h.stopChan:
+			return tools.CommandResult{
+				Status: "failed",
+				Error:  "agent is shutting down",
+			}
+		case <-h.pool.Context().Done():
+			return tools.CommandResult{
+				Status: "failed",
+				Error:  "command execution interrupted during shutdown",
+			}
 		}
 	}
 }
+
+// defaultCommandInFlightWarnAfter is how long a pool-dispatched command may
+// run before the dispatch loop logs a wedged-worker warning (and again each
+// further interval). Generous on purpose: the longest legitimate handlers
+// (scripts capped at executor.MaxTimeout = 1h, patch installs) must not trip
+// it in normal operation.
+const defaultCommandInFlightWarnAfter = 2 * time.Hour
 
 func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {

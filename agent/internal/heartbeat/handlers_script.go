@@ -270,8 +270,7 @@ func (h *Heartbeat) sendCommandToUserHelper(session *sessionbroker.Session, cmd 
 		Payload:   payloadBytes,
 	}
 
-	timeout := time.Duration(timeoutSeconds)*time.Second + 5*time.Second
-	resp, err := session.SendCommand(cmd.ID, ipc.TypeCommand, ipcCmd, timeout)
+	resp, err := session.SendCommand(cmd.ID, ipc.TypeCommand, ipcCmd, helperCommandTimeout(timeoutSeconds))
 	if err != nil {
 		return nil, err
 	}
@@ -284,6 +283,22 @@ func (h *Heartbeat) sendCommandToUserHelper(session *sessionbroker.Session, cmd 
 		return nil, fmt.Errorf("unmarshal user helper result: %w", err)
 	}
 	return &result, nil
+}
+
+// helperCommandTimeout converts a server-supplied timeoutSeconds into the IPC
+// wait deadline, clamped to the same bounds the local script executor applies
+// (executor.DefaultTimeout / executor.MaxTimeout). Without the clamp a huge
+// timeoutSeconds in the command payload parks a worker-pool goroutine (and the
+// command's payload) near-indefinitely on the IPC wait (issue #2387). The +5s
+// grace lets the helper's own timeout fire first so its result wins.
+func helperCommandTimeout(timeoutSeconds int) time.Duration {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = executor.DefaultTimeout
+	}
+	if timeoutSeconds > executor.MaxTimeout {
+		timeoutSeconds = executor.MaxTimeout
+	}
+	return time.Duration(timeoutSeconds)*time.Second + 5*time.Second
 }
 
 func decodeHelperRunningScripts(result *ipc.IPCCommandResult) ([]string, error) {
