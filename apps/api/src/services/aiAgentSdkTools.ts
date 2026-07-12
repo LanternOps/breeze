@@ -160,6 +160,9 @@ export const TOOL_TIERS = {
   query_monitors: 1,
   manage_monitors: 1,           // Action-level escalation in guardrails
   get_service_monitoring_status: 1,
+  // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
+  list_organizations: 1,
+  manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
   // M365 helpdesk tools (Delegant-backed)
   m365_lookup_user: 1,
   m365_recent_signins: 1,
@@ -1750,6 +1753,32 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(500).optional(),
       },
       makeHandler('get_service_monitoring_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
+
+    tool(
+      'list_organizations',
+      'List/search the organizations the caller can access (name substring match), each with id, name, slug, status, and its sites (id + name). Use this to resolve the orgId and siteId that other tools require. Partner-scoped callers see all their orgs; organization-scoped callers see only their own. Read-only.',
+      {
+        search: z.string().max(255).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      makeHandler('list_organizations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_organizations',
+      'Create and manage organizations and sites (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (not yet supported — returns guidance). create_org, update_org, and create_site require approval.',
+      {
+        action: z.enum(['create_org', 'update_org', 'create_site', 'add_contact']),
+        orgId: uuid.optional(),
+        name: z.string().max(255).optional(),
+        status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
+        address: z.record(z.string(), z.unknown()).optional(),
+        email: z.string().email().max(255).optional(),
+      },
+      makeHandler('manage_organizations', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Action Plan tool (for action_plan and hybrid_plan modes)

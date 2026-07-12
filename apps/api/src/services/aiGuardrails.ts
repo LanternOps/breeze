@@ -99,6 +99,9 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],
+  // Org lifecycle (issue #2366) — tenant-shape mutations require approval.
+  // add_contact stays at the tool's base tier (it returns guidance only).
+  manage_organizations: ['create_org', 'update_org', 'create_site'],
 };
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
@@ -201,6 +204,13 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     send: { resource: 'quotes', action: 'send' },
     decline: { resource: 'quotes', action: 'write' },
     create_pay_link: { resource: 'quotes', action: 'write' },
+  },
+  list_organizations: { resource: 'organizations', action: 'read' },
+  manage_organizations: {
+    create_org: { resource: 'organizations', action: 'write' },
+    update_org: { resource: 'organizations', action: 'write' },
+    create_site: { resource: 'sites', action: 'write' },
+    add_contact: { resource: 'organizations', action: 'write' },
   },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {
@@ -988,6 +998,13 @@ function buildApprovalDescription(
       parts.push(`Registry ${action}: ${input.keyPath}`);
       if (input.valueName) parts.push(`\\${input.valueName}`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
+    case 'manage_organizations':
+      if (action === 'create_org') parts.push(`Create organization "${input.name}" (with a default Main Office site)`);
+      else if (action === 'update_org') parts.push(`Update organization ${(input.orgId as string)?.slice(0, 8)}...${input.status ? ` (status → ${input.status})` : ''}`);
+      else if (action === 'create_site') parts.push(`Create site "${input.name}" in organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`);
+      else parts.push(`Organizations: ${action}`);
       break;
 
     case 'manage_monitors':
