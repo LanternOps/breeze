@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { organizationUsers, organizations, partnerUsers, users } from '../db/schema';
-import { authorizeOrganizationLifecycleWrite } from './lifecycleAuthorization';
+import {
+  authorizeOrganizationLifecycleWrite,
+  authorizePartnerWideLifecycleWrite,
+} from './lifecycleAuthorization';
 
 function transactionWithRows(rows: Map<unknown, unknown[]>) {
   return {
@@ -122,5 +125,49 @@ describe('authorizeOrganizationLifecycleWrite', () => {
       partnerId: target.partnerId,
       orgId: target.id,
     }, target.id)).resolves.toEqual({ authorized: false });
+  });
+});
+
+describe('authorizePartnerWideLifecycleWrite', () => {
+  it.each([
+    ['selected', ['org-1']],
+    ['none', null],
+  ] as const)('denies a live partner membership with orgAccess=%s', async (orgAccess, orgIds) => {
+    const tx = transactionWithRows(new Map<unknown, unknown[]>([
+      [partnerUsers, [{ id: 'membership-1', orgAccess, orgIds }]],
+    ]));
+
+    await expect(authorizePartnerWideLifecycleWrite(tx, {
+      scope: 'partner',
+      userId: 'user-1',
+      partnerId: 'partner-1',
+      orgId: null,
+    })).resolves.toBe(false);
+  });
+
+  it('denies a removed partner membership', async () => {
+    const tx = transactionWithRows(new Map<unknown, unknown[]>([
+      [partnerUsers, []],
+    ]));
+
+    await expect(authorizePartnerWideLifecycleWrite(tx, {
+      scope: 'partner',
+      userId: 'user-1',
+      partnerId: 'partner-1',
+      orgId: null,
+    })).resolves.toBe(false);
+  });
+
+  it('allows only an exact live partner membership with orgAccess=all', async () => {
+    const tx = transactionWithRows(new Map<unknown, unknown[]>([
+      [partnerUsers, [{ id: 'membership-1', orgAccess: 'all', orgIds: null }]],
+    ]));
+
+    await expect(authorizePartnerWideLifecycleWrite(tx, {
+      scope: 'partner',
+      userId: 'user-1',
+      partnerId: 'partner-1',
+      orgId: null,
+    })).resolves.toBe(true);
   });
 });

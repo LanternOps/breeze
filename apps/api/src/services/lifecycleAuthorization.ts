@@ -9,6 +9,51 @@ export interface OrganizationLifecycleActor {
   orgId: string | null;
 }
 
+export type PartnerWideLifecycleActor = OrganizationLifecycleActor;
+
+/**
+ * Re-resolve authority for a partner-wide lifecycle operation under the same
+ * true system transaction that performs the privileged write. A selected
+ * organization list is never equivalent to full-partner authority, even when
+ * request RLS happens to expose every row the caller can currently see.
+ */
+export async function authorizePartnerWideLifecycleWrite(
+  tx: AuthLifecycleTransaction,
+  actor: PartnerWideLifecycleActor,
+): Promise<boolean> {
+  if (actor.scope === 'partner') {
+    if (!actor.partnerId || actor.orgId !== null) return false;
+
+    const [membership] = await tx
+      .select({ id: partnerUsers.id, orgAccess: partnerUsers.orgAccess })
+      .from(partnerUsers)
+      .where(and(
+        eq(partnerUsers.userId, actor.userId),
+        eq(partnerUsers.partnerId, actor.partnerId),
+        eq(partnerUsers.orgAccess, 'all'),
+      ))
+      .limit(1);
+
+    return membership?.orgAccess === 'all';
+  }
+
+  if (actor.scope !== 'system' || actor.partnerId !== null || actor.orgId !== null) {
+    return false;
+  }
+
+  const [platformAdmin] = await tx
+    .select({ id: users.id })
+    .from(users)
+    .where(and(
+      eq(users.id, actor.userId),
+      eq(users.isPlatformAdmin, true),
+      eq(users.status, 'active'),
+    ))
+    .limit(1);
+
+  return Boolean(platformAdmin);
+}
+
 export type OrganizationLifecycleAuthorization =
   | { authorized: false }
   | { authorized: true; targetPartnerId: string };

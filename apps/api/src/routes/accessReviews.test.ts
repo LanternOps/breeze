@@ -85,6 +85,7 @@ const lifecycleMocks = vi.hoisted(() => ({
   revokeFamilies: vi.fn(async () => 1),
   withSystemTransaction: vi.fn(),
   neutralizeOrphan: vi.fn(async () => false),
+  authorizePartnerWide: vi.fn(async () => true),
 }));
 
 vi.mock('../services/userMembershipLifecycle', () => ({
@@ -95,6 +96,10 @@ vi.mock('../services/authLifecycle', () => ({
   advanceUserSecurityState: lifecycleMocks.advance,
   revokeAllUserSessionFamilies: lifecycleMocks.revokeFamilies,
   withAuthLifecycleSystemTransaction: lifecycleMocks.withSystemTransaction,
+}));
+
+vi.mock('../services/lifecycleAuthorization', () => ({
+  authorizePartnerWideLifecycleWrite: lifecycleMocks.authorizePartnerWide,
 }));
 
 import { db } from '../db';
@@ -116,17 +121,70 @@ describe('access review routes', () => {
     );
     lifecycleMocks.neutralizeOrphan.mockReset();
     lifecycleMocks.neutralizeOrphan.mockResolvedValue(false);
+    lifecycleMocks.authorizePartnerWide.mockReset();
+    lifecycleMocks.authorizePartnerWide.mockResolvedValue(true);
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
         partnerId: 'partner-123',
         orgId: null,
+        accessibleOrgIds: null,
         user: { id: 'user-123', email: 'test@example.com' }
       });
       return next();
     });
     app = new Hono();
     app.route('/access-reviews', accessReviewRoutes);
+  });
+
+  describe('live full-partner authority', () => {
+    it.each(['selected', 'none'] as const)(
+      'rejects a partner whose live org access is %s even when request RLS is vacuous',
+      async () => {
+        lifecycleMocks.authorizePartnerWide.mockResolvedValue(false);
+
+        const res = await app.request('/access-reviews', { method: 'GET' });
+
+        expect(res.status).toBe(403);
+        expect(lifecycleMocks.authorizePartnerWide).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            scope: 'partner',
+            userId: 'user-123',
+            partnerId: 'partner-123',
+            orgId: null,
+          }),
+        );
+      },
+    );
+
+    it('allows an exact live partner membership with orgAccess=all', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({
+          leftJoin: vi.fn(() => ({
+            where: vi.fn(() => ({ orderBy: vi.fn(async () => []) })),
+          })),
+        })),
+      } as any);
+
+      const res = await app.request('/access-reviews', { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      expect(lifecycleMocks.authorizePartnerWide).toHaveBeenCalledOnce();
+    });
+
+    it('rechecks full-partner authority inside completion after membership removal', async () => {
+      lifecycleMocks.authorizePartnerWide
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false);
+
+      const res = await app.request('/access-reviews/review-1/complete', { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(lifecycleMocks.authorizePartnerWide).toHaveBeenCalledTimes(2);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(lifecycleMocks.advance).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /access-reviews', () => {
@@ -734,11 +792,13 @@ describe('access review routes', () => {
       const txSelect = vi.fn(() => ({
         from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => []) })) })),
       }));
-      lifecycleMocks.withSystemTransaction.mockImplementationOnce(async (fn) => fn({
-        select: txSelect,
-        delete: txDelete,
-        update: txUpdate,
-      } as any));
+      lifecycleMocks.withSystemTransaction
+        .mockImplementationOnce(async (fn) => fn(db as any))
+        .mockImplementationOnce(async (fn) => fn({
+          select: txSelect,
+          delete: txDelete,
+          update: txUpdate,
+        } as any));
 
       const res = await app.request('/access-reviews/review-1/complete', {
         method: 'POST',

@@ -12,8 +12,7 @@ import {
   permissions,
   rolePermissions,
   partnerUsers,
-  organizationUsers,
-  organizations
+  organizationUsers
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { clearPermissionCache, PERMISSIONS } from '../services/permissions';
@@ -27,6 +26,7 @@ import {
   revokeAllUserSessionFamilies,
   withAuthLifecycleSystemTransaction,
 } from '../services/authLifecycle';
+import { authorizePartnerWideLifecycleWrite } from '../services/lifecycleAuthorization';
 
 export const accessReviewRoutes = new Hono();
 
@@ -42,17 +42,14 @@ accessReviewRoutes.use('*', async (c, next) => {
     throw new HTTPException(403, { message: 'Partner context required' });
   }
 
-  if (!Array.isArray(auth.accessibleOrgIds)) {
-    await next();
-    return;
-  }
-  const accessibleOrgIds = auth.accessibleOrgIds;
-
-  const partnerOrgRows = await db
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(eq(organizations.partnerId, auth.partnerId));
-  const hasFullPartnerAccess = partnerOrgRows.every((org) => accessibleOrgIds.includes(org.id));
+  const hasFullPartnerAccess = await withAuthLifecycleSystemTransaction((tx) =>
+    authorizePartnerWideLifecycleWrite(tx, {
+      scope: auth.scope,
+      userId: auth.user.id,
+      partnerId: auth.partnerId,
+      orgId: auth.orgId,
+    })
+  );
 
   if (!hasFullPartnerAccess) {
     throw new HTTPException(403, { message: 'Full partner organization access required' });
@@ -422,6 +419,16 @@ accessReviewRoutes.post(
     }
 
     const result = await withAuthLifecycleSystemTransaction(async (tx) => {
+      if (scopeContext.scope === 'partner') {
+        const authorized = await authorizePartnerWideLifecycleWrite(tx, {
+          scope: auth.scope,
+          userId: auth.user.id,
+          partnerId: auth.partnerId,
+          orgId: auth.orgId,
+        });
+        if (!authorized) return { error: 'forbidden' as const };
+      }
+
       // Reassert the caller's scope after entering system context. All reads
       // that drive the completion are repeated here so a review cannot move
       // scopes or gain pending/revoked items between an app-layer check and the
@@ -513,6 +520,9 @@ accessReviewRoutes.post(
     });
 
     if ('error' in result) {
+      if (result.error === 'forbidden') {
+        return c.json({ error: 'Full partner organization access required' }, 403);
+      }
       if (result.error === 'not_found') {
         return c.json({ error: 'Access review not found' }, 404);
       }
