@@ -5,11 +5,11 @@ import {
   buildExtraTokenClaims,
   handleRevocationSuccess,
   REFRESH_TOKEN_TTL_SECONDS,
-  resolveAllowedMcpScopes,
+  resolveMcpResourceServerScope,
   resolvePartnerIdForResourceServerInfo,
 } from './provider';
 import { GRANT_REVOCATION_TTL_SECONDS } from './adapter';
-import { clearPartnerScopePolicyCache } from './partnerScopePolicy';
+import { GrantTenancyError } from './effectiveScopes';
 
 // Mock the tenant-status assertion so provider tests stay hermetic — the
 // real implementation issues `getActivePartner`/`getActiveOrgTenant` Drizzle
@@ -28,29 +28,28 @@ vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: vi.fn(async () => null),
 }));
 
-// Mock the policy module so provider tests stay hermetic — the real
-// lookup touches the DB, which isn't wired up in unit tests.
-vi.mock('./partnerScopePolicy', async () => {
-  const actual = await vi.importActual<typeof import('./partnerScopePolicy')>('./partnerScopePolicy');
-  const policyByPartner = new Map<string, { mcp_allowed_scopes?: string[] }>();
+// Mock the effective-scope module so provider tests stay hermetic and
+// focus purely on WIRING (does getResourceServerInfo's logic route grant
+// tenancy through resolveGrantContext, never the old sync/cache-only path;
+// does it propagate a tenancy failure instead of swallowing it into "all
+// scopes"). The scope-policy intersection math itself (partner policy
+// reduction, displayed-set intersection, DB cold-cache resolution) is
+// covered in effectiveScopes.test.ts.
+vi.mock('./effectiveScopes', async () => {
+  const actual = await vi.importActual<typeof import('./effectiveScopes')>('./effectiveScopes');
   return {
     ...actual,
-    getPartnerScopePolicy: vi.fn(async (partnerId: string) =>
-      policyByPartner.get(partnerId) ?? {},
-    ),
-    clearPartnerScopePolicyCache: vi.fn((partnerId?: string) => {
-      if (partnerId) policyByPartner.delete(partnerId);
-      else policyByPartner.clear();
-    }),
-    // Test-only setter so individual tests can arrange scenarios.
-    __setTestPolicy: (partnerId: string, policy: { mcp_allowed_scopes?: string[] }) => {
-      policyByPartner.set(partnerId, policy);
-    },
+    resolveGrantContext: vi.fn(),
+    computeEffectiveMcpScopes: vi.fn(),
   };
 });
 
+const effectiveScopes = await import('./effectiveScopes');
+const resolveGrantContextMock = vi.mocked(effectiveScopes.resolveGrantContext);
+const computeEffectiveMcpScopesMock = vi.mocked(effectiveScopes.computeEffectiveMcpScopes);
+
 beforeEach(() => {
-  clearPartnerScopePolicyCache();
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
@@ -197,15 +196,12 @@ describe('handleRevocationSuccess', () => {
 });
 
 describe('resolvePartnerIdForResourceServerInfo', () => {
-  it('returns partner_id from the Grant entity when present', () => {
-    const id = resolvePartnerIdForResourceServerInfo(
-      { oidc: { entities: { Grant: { jti: 'g1', breeze: { partner_id: 'partner-A', org_id: 'o1' } } } } },
-      {},
-    );
-    expect(id).toBe('partner-A');
-  });
-
-  it('falls back to client.partner_id when Grant is missing', () => {
+  // MCP-OAUTH-02: this function no longer looks at the Grant entity at all —
+  // Grant tenancy resolution moved to the async `resolveGrantContext`
+  // (effectiveScopes.ts), which `resolveMcpResourceServerScope` calls
+  // directly for grant-bearing requests. This function is now ONLY the
+  // grantless-flow (client-binding) fallback.
+  it('falls back to client.partner_id when there is no Grant', () => {
     const id = resolvePartnerIdForResourceServerInfo(
       { oidc: { entities: {} } },
       { partner_id: 'partner-B' },
@@ -213,55 +209,109 @@ describe('resolvePartnerIdForResourceServerInfo', () => {
     expect(id).toBe('partner-B');
   });
 
-  it('returns null when neither source carries a partner_id', () => {
+  it('returns null when no client partner binding is resolvable', () => {
     const id = resolvePartnerIdForResourceServerInfo(
       { oidc: { entities: {} } },
       {},
     );
     expect(id).toBeNull();
   });
+
+  it('ignores a Grant entity even if one is present (Grant path is handled elsewhere)', () => {
+    const id = resolvePartnerIdForResourceServerInfo(
+      { oidc: { entities: { Grant: { jti: 'g1', breeze: { partner_id: 'partner-A' } } } } },
+      {},
+    );
+    expect(id).toBeNull();
+  });
 });
 
-describe('resolveAllowedMcpScopes', () => {
-  it('returns all scopes when partnerId is null', async () => {
-    const { allowed, reduced } = await resolveAllowedMcpScopes(null);
-    expect(allowed).toEqual([...ALL_MCP_SCOPES]);
-    expect(reduced).toBe(false);
+describe('resolveMcpResourceServerScope', () => {
+  it('grant present: resolves tenancy via resolveGrantContext (never the old sync/cache-only path)', async () => {
+    resolveGrantContextMock.mockResolvedValue({ grantId: 'g1', partnerId: 'partner-A', orgId: 'org-1' });
+    computeEffectiveMcpScopesMock.mockResolvedValue(['mcp:read']);
+
+    const result = await resolveMcpResourceServerScope(
+      { oidc: { entities: { Grant: { jti: 'g1' } } } },
+      {},
+    );
+
+    expect(resolveGrantContextMock).toHaveBeenCalledWith('g1');
+    expect(computeEffectiveMcpScopesMock).toHaveBeenCalledWith({
+      requested: [...ALL_MCP_SCOPES],
+      partnerId: 'partner-A',
+      hasGrant: true,
+    });
+    expect(result).toEqual({ scope: 'mcp:read', partnerId: 'partner-A', reduced: true });
   });
 
-  it('returns all scopes when the partner has no policy (back-compat)', async () => {
-    const { allowed, reduced } = await resolveAllowedMcpScopes('partner-no-policy');
-    expect(allowed).toEqual([...ALL_MCP_SCOPES]);
-    expect(reduced).toBe(false);
+  it('grant present but resolveGrantContext resolves null partner: computeEffectiveMcpScopes still sees hasGrant=true (fails closed, cannot escape to all scopes)', async () => {
+    resolveGrantContextMock.mockResolvedValue(null);
+    computeEffectiveMcpScopesMock.mockImplementation(async ({ partnerId, hasGrant }) => {
+      if (partnerId === null && hasGrant) throw new GrantTenancyError('no tenancy');
+      return [];
+    });
+
+    await expect(
+      resolveMcpResourceServerScope({ oidc: { entities: { Grant: { jti: 'g2' } } } }, {}),
+    ).rejects.toThrow(GrantTenancyError);
+    expect(computeEffectiveMcpScopesMock).toHaveBeenCalledWith({
+      requested: [...ALL_MCP_SCOPES],
+      partnerId: null,
+      hasGrant: true,
+    });
   });
 
-  it('intersects the issuable set with mcp_allowed_scopes', async () => {
-    const mod = await import('./partnerScopePolicy');
-    (mod as unknown as { __setTestPolicy: (p: string, v: { mcp_allowed_scopes: string[] }) => void })
-      .__setTestPolicy('partner-readonly', { mcp_allowed_scopes: ['mcp:read'] });
+  it('grant present + resolveGrantContext itself throws GrantTenancyError: propagates (structured OAuth error, generic client message — see err_out.js)', async () => {
+    const err = new GrantTenancyError('grant g3 has no durable partner tenancy');
+    resolveGrantContextMock.mockRejectedValue(err);
 
-    const { allowed, reduced } = await resolveAllowedMcpScopes('partner-readonly');
-    expect(allowed).toEqual(['mcp:read']);
-    expect(reduced).toBe(true);
+    await expect(
+      resolveMcpResourceServerScope({ oidc: { entities: { Grant: { jti: 'g3' } } } }, {}),
+    ).rejects.toBe(err);
+    expect(computeEffectiveMcpScopesMock).not.toHaveBeenCalled();
   });
 
-  it('drops scopes the partner does not allow even if every scope is requested', async () => {
-    const mod = await import('./partnerScopePolicy');
-    (mod as unknown as { __setTestPolicy: (p: string, v: { mcp_allowed_scopes: string[] }) => void })
-      .__setTestPolicy('partner-limited', { mcp_allowed_scopes: ['mcp:read', 'mcp:execute'] });
+  it('no grant present: resolves partnerId via the client fallback and never calls resolveGrantContext', async () => {
+    computeEffectiveMcpScopesMock.mockResolvedValue([...ALL_MCP_SCOPES]);
 
-    const { allowed, reduced } = await resolveAllowedMcpScopes('partner-limited');
-    expect(allowed).toEqual(['mcp:read', 'mcp:execute']);
-    expect(reduced).toBe(true);
+    const result = await resolveMcpResourceServerScope(
+      { oidc: { entities: {} } },
+      { partner_id: 'partner-B' },
+    );
+
+    expect(resolveGrantContextMock).not.toHaveBeenCalled();
+    expect(computeEffectiveMcpScopesMock).toHaveBeenCalledWith({
+      requested: [...ALL_MCP_SCOPES],
+      partnerId: 'partner-B',
+      hasGrant: false,
+    });
+    expect(result).toEqual({ scope: ALL_MCP_SCOPES.join(' '), partnerId: 'partner-B', reduced: false });
   });
 
-  it('returns an empty list when the policy disallows every known scope', async () => {
-    const mod = await import('./partnerScopePolicy');
-    (mod as unknown as { __setTestPolicy: (p: string, v: { mcp_allowed_scopes: string[] }) => void })
-      .__setTestPolicy('partner-none', { mcp_allowed_scopes: [] });
+  it('no grant, no resolvable partner: still routes through computeEffectiveMcpScopes (documented legacy behavior lives there, not here)', async () => {
+    computeEffectiveMcpScopesMock.mockResolvedValue([...ALL_MCP_SCOPES]);
 
-    const { allowed, reduced } = await resolveAllowedMcpScopes('partner-none');
-    expect(allowed).toEqual([]);
-    expect(reduced).toBe(true);
+    const result = await resolveMcpResourceServerScope({ oidc: { entities: {} } }, {});
+
+    expect(computeEffectiveMcpScopesMock).toHaveBeenCalledWith({
+      requested: [...ALL_MCP_SCOPES],
+      partnerId: null,
+      hasGrant: false,
+    });
+    expect(result.partnerId).toBeNull();
+  });
+
+  it('marks reduced=true when computeEffectiveMcpScopes narrows the set', async () => {
+    resolveGrantContextMock.mockResolvedValue({ grantId: 'g4', partnerId: 'partner-C', orgId: null });
+    computeEffectiveMcpScopesMock.mockResolvedValue(['mcp:read']);
+
+    const result = await resolveMcpResourceServerScope(
+      { oidc: { entities: { Grant: { grantId: 'g4' } } } },
+      {},
+    );
+
+    expect(result.reduced).toBe(true);
+    expect(result.scope).toBe('mcp:read');
   });
 });

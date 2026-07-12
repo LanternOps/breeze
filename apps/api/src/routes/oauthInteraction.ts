@@ -5,6 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { getProvider } from '../oauth/provider';
 import { setGrantBreezeMeta } from '../oauth/adapter';
 import { isAcceptedResourceIndicator } from '../oauth/resourceIndicators';
+import { computeEffectiveMcpScopes } from '../oauth/effectiveScopes';
 import { authMiddleware } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, oauthClientPartnerGrants, partners, partnerUsers, users } from '../db/schema';
@@ -164,6 +165,24 @@ if (MCP_OAUTH_ENABLED) {
     const displayScopes =
       promptScopesNew.length > 0 ? promptScopesNew : requestScopes;
 
+    // MCP-OAUTH-01: attach each partner option's AUTHORITATIVE effective MCP
+    // scope set (provider-supported ∩ requested ∩ displayed ∩ that partner's
+    // `mcp_allowed_scopes` policy) so the consent UI can show what selecting
+    // a given partner will actually grant — never the raw client-requested/
+    // displayed set, which may exceed a read-only or execute-disabled
+    // partner's policy. No Grant exists yet at this point in the flow.
+    const partnersWithScopes = await Promise.all(
+      memberships.map(async (membership) => ({
+        ...membership,
+        effectiveScopes: await computeEffectiveMcpScopes({
+          requested: requestScopes,
+          displayed: displayScopes,
+          partnerId: membership.partnerId,
+          hasGrant: false,
+        }),
+      })),
+    );
+
     return c.json({
       uid: details.uid,
       client: {
@@ -172,7 +191,7 @@ if (MCP_OAUTH_ENABLED) {
       },
       scopes: displayScopes,
       resource: resource ?? null,
-      partners: memberships,
+      partners: partnersWithScopes,
     });
   });
 
@@ -323,18 +342,35 @@ if (MCP_OAUTH_ENABLED) {
     if (requestedScopes.length > 0 && grantedScopes.length === 0) {
       throw new HTTPException(400, { message: 'invalid_scope' });
     }
+    // MCP-OAUTH-01: recompute the MCP-scope intersection authoritatively
+    // against the SELECTED partner's current `mcp_allowed_scopes` policy —
+    // never trust the browser (or the earlier GET response) to have already
+    // applied it. `grantedScopes` above is already the requested∩displayed
+    // intersection, so it's the authoritative "requested" input here (no
+    // separate `displayed` arg needed). This applies on every consent path,
+    // INCLUDING the `prompt=login` single-step fallback a few lines above,
+    // where `displayedScopeSet` is seeded straight from the request's own
+    // scope param — that fallback only established H3 (displayed ⊇ granted);
+    // it says nothing about partner policy, so without this step a POST
+    // could still persist a scope the selected partner's policy forbids.
+    const effectiveMcpScopes = await computeEffectiveMcpScopes({
+      requested: grantedScopes,
+      partnerId: body.partner_id,
+      hasGrant: true,
+    });
+    const finalGrantedScopes = [
+      ...grantedScopes.filter((s) => !s.startsWith('mcp:')),
+      ...effectiveMcpScopes,
+    ];
     // Grant the intersection at BOTH the OIDC and resource level. The
     // provider's consent prompt machinery checks `missingOIDCScope` against
     // the OIDC grant set even for scopes that "logically" belong to a
     // resource indicator (because they appear in the auth request's
     // `scope` parameter). Granting them in both places means the consent
     // prompt is auto-satisfied on resume.
-    if (grantedScopes.length) grant.addOIDCScope(grantedScopes.join(' '));
-    if (resource) {
-      const resourceScopes = grantedScopes.filter((scope) => scope.startsWith('mcp:'));
-      if (!missingResourceScopes[resource] && resourceScopes.length) {
-        grant.addResourceScope(resource, resourceScopes.join(' '));
-      }
+    if (finalGrantedScopes.length) grant.addOIDCScope(finalGrantedScopes.join(' '));
+    if (resource && !missingResourceScopes[resource] && effectiveMcpScopes.length) {
+      grant.addResourceScope(resource, effectiveMcpScopes.join(' '));
     }
 
     const grantId = await grant.save();

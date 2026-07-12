@@ -91,8 +91,9 @@ async function fetchPolicyFromDb(partnerId: string): Promise<PartnerOauthScopePo
  * Hot-path lookup with a short TTL cache.
  *
  * On a DB error this FAILS CLOSED — returns `{ mcp_allowed_scopes: [] }` so
- * `resolveAllowedMcpScopes` strips every MCP scope (`requested ∩ [] = []`)
- * rather than minting an over-broad token during a transient DB hiccup.
+ * `computeEffectiveMcpScopes` (effectiveScopes.ts) strips every MCP scope
+ * (`requested ∩ [] = []`) rather than minting an over-broad token during a
+ * transient DB hiccup.
  * Returning `{}` here would fail OPEN (treated as "no cap → all scopes"). A
  * missing partner row / missing policy key is a SUCCESSFUL read of "no policy
  * configured" and still returns `{}` (see `fetchPolicyFromDb`) — only the

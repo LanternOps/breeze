@@ -30,8 +30,21 @@ const mocks = vi.hoisted(() => {
     insert: vi.fn(),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+    computeEffectiveMcpScopes: vi.fn(),
   };
 });
+
+// Mock the effective-scope resolver so route tests exercise WIRING (is it
+// called with the right requested/displayed/partnerId/hasGrant args at the
+// right call sites?) without re-testing the policy-intersection math itself
+// (covered by effectiveScopes.test.ts) or entangling with its DB-backed
+// partner-policy cache. Default behavior below approximates "no partner
+// narrowing" (mcp:* passthrough) so pre-existing assertions that predate
+// MCP-OAUTH-01 keep passing unchanged; tests that specifically exercise the
+// narrowing override with `mockResolvedValueOnce`/`mockImplementationOnce`.
+vi.mock('../oauth/effectiveScopes', () => ({
+  computeEffectiveMcpScopes: mocks.computeEffectiveMcpScopes,
+}));
 
 vi.mock('../oauth/provider', () => ({
   // The route now resolves interaction state via `provider.Interaction.find(uid)`
@@ -195,6 +208,11 @@ describe('oauthInteractionRoutes', () => {
     vi.clearAllMocks();
     mocks.Grant.instances.length = 0;
     auditMocks.writeRouteAudit.mockReset();
+    // Default: no partner-policy narrowing — pass through whatever mcp:*
+    // scopes were requested (mirrors "no policy configured" back-compat).
+    mocks.computeEffectiveMcpScopes.mockImplementation(
+      async ({ requested }: { requested: string[] }) => requested.filter((s) => s.startsWith('mcp:')),
+    );
   });
 
   afterEach(() => {
@@ -227,8 +245,39 @@ describe('oauthInteractionRoutes', () => {
       client: { client_id: 'client-1', client_name: 'Claude Desktop' },
       scopes: ['openid', 'offline_access'],
       resource: 'https://api.example/mcp/server',
-      partners: [{ partnerId: PARTNER_ID, partnerName: 'Acme MSP' }],
+      partners: [{ partnerId: PARTNER_ID, partnerName: 'Acme MSP', effectiveScopes: ['mcp:read', 'mcp:write'] }],
     });
+    // MCP-OAUTH-01: the effective scope set for this partner option must be
+    // computed authoritatively, not just echoed from the request.
+    expect(mocks.computeEffectiveMcpScopes).toHaveBeenCalledWith({
+      requested: ['openid', 'offline_access', 'mcp:read', 'mcp:write'],
+      displayed: ['openid', 'offline_access'],
+      partnerId: PARTNER_ID,
+      hasGrant: false,
+    });
+  });
+
+  it('GET attaches per-partner effective scopes computed authoritatively for EACH partner option', async () => {
+    const OTHER_PARTNER_ID = '22222222-2222-4222-8222-222222222222';
+    mocks.interactionDetails.mockResolvedValue(details());
+    queueSelect([
+      { partnerId: PARTNER_ID, partnerName: 'Acme MSP' },
+      { partnerId: OTHER_PARTNER_ID, partnerName: 'Read-Only MSP' },
+    ]);
+    queueSelect([{ metadata: { client_name: 'Claude Desktop' } }], 'limit');
+    mocks.computeEffectiveMcpScopes.mockImplementation(
+      async ({ partnerId }: { partnerId: string }) =>
+        partnerId === OTHER_PARTNER_ID ? ['mcp:read'] : ['mcp:read', 'mcp:write'],
+    );
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1');
+    const body = await res.json() as { partners: Array<{ partnerId: string; effectiveScopes: string[] }> };
+    expect(res.status).toBe(200);
+    expect(body.partners).toEqual([
+      { partnerId: PARTNER_ID, partnerName: 'Acme MSP', effectiveScopes: ['mcp:read', 'mcp:write'] },
+      { partnerId: OTHER_PARTNER_ID, partnerName: 'Read-Only MSP', effectiveScopes: ['mcp:read'] },
+    ]);
+    expect(mocks.computeEffectiveMcpScopes).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to client_id when no client_name is registered', async () => {
@@ -698,6 +747,91 @@ describe('oauthInteractionRoutes', () => {
       .toHaveBeenCalledWith('openid offline_access mcp:read mcp:write');
     expect(mocks.Grant.instances[0]?.addResourceScope)
       .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
+  });
+
+  // -------------------------------------------------------------------
+  // MCP-OAUTH-01 — consent bug (a): the POST handler must recompute the
+  // MCP-scope intersection against the SELECTED partner's authoritative
+  // policy server-side. A client that requests (and is even shown) a
+  // broader scope set than the partner's `mcp_allowed_scopes` policy
+  // permits must still only get the policy-allowed subset persisted into
+  // the grant.
+  // -------------------------------------------------------------------
+  it('MCP-OAUTH-01: consent POST persists only the partner-policy-allowed scope subset', async () => {
+    const d = details({
+      session: { accountId: 'u1' },
+      prompt: { details: { scopes: { new: ['openid', 'offline_access', 'mcp:read', 'mcp:write'] } } },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
+    queueUpdate();
+    queueInsertGrantReturning({ firstConsented: true });
+    // Selected partner's policy narrows requested+displayed mcp:read+mcp:write
+    // down to mcp:read only — simulates a read-only partner.
+    mocks.computeEffectiveMcpScopes.mockResolvedValueOnce(['mcp:read']);
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mocks.computeEffectiveMcpScopes).toHaveBeenCalledWith({
+      requested: ['openid', 'offline_access', 'mcp:read', 'mcp:write'],
+      partnerId: PARTNER_ID,
+      hasGrant: true,
+    });
+    // The policy-narrowed set IS the final addOIDCScope call. (A separate,
+    // EARLIER addOIDCScope call — pre-existing, unrelated to this fix —
+    // satisfies oidc-provider's own `missingOIDCScope` prompt bookkeeping
+    // from the unfiltered `prompt.details.scopes.new`; oidc-provider unions
+    // OIDC-scope calls rather than replacing, so that call's mcp:write is
+    // harmless dead storage here: this provider always defaults a resource
+    // indicator (`defaultResource` in provider.ts), so the actual MCP
+    // access-token scope is ALWAYS drawn from `getResourceScopeFiltered`
+    // against `addResourceScope`'s narrowed set below, never from
+    // `openid.scope`/`getOIDCScopeFiltered`.)
+    expect(mocks.Grant.instances[0]?.addOIDCScope).toHaveBeenCalledWith('openid offline_access mcp:read');
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read');
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .not.toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read mcp:write');
+  });
+
+  it('MCP-OAUTH-01: partner-policy narrowing also applies on the prompt=login single-step path', async () => {
+    // Same scenario as the H3 login-prompt-fallback test above, but the
+    // selected partner's policy only allows mcp:read. Before the fix, the
+    // login-prompt fallback seeded `displayedScopeSet` straight from
+    // `params.scope` with no partner-policy narrowing at all — this is the
+    // exact regression MCP-OAUTH-01 closes on that path.
+    const d = details({
+      session: undefined,
+      prompt: { name: 'login', details: {} },
+    } as any);
+    mocks.interactionDetails.mockResolvedValue(d);
+    queueSelect([{ partnerId: PARTNER_ID, userId: 'u1' }], 'limit');
+    queueSelect([{ partnerId: PARTNER_ID, orgId: 'org-1' }], 'limit');
+    queueSelect([{ status: 'active' }], 'limit'); // partner status check
+    queueUpdate();
+    queueInsertGrantReturning({ firstConsented: true });
+    mocks.computeEffectiveMcpScopes.mockResolvedValueOnce(['mcp:read']);
+
+    const res = await request(await loadApp(), '/api/v1/oauth/interaction/uid-1/consent', {
+      method: 'POST',
+      body: JSON.stringify({ partner_id: PARTNER_ID, approve: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mocks.computeEffectiveMcpScopes).toHaveBeenCalledWith({
+      requested: ['openid', 'offline_access', 'mcp:read', 'mcp:write'],
+      partnerId: PARTNER_ID,
+      hasGrant: true,
+    });
+    expect(mocks.Grant.instances[0]?.addOIDCScope).toHaveBeenCalledWith('openid offline_access mcp:read');
+    expect(mocks.Grant.instances[0]?.addResourceScope)
+      .toHaveBeenCalledWith('https://api.example/mcp/server', 'mcp:read');
   });
 
   it('GET /interaction/:uid: login-prompt fallback returns scopes from params', async () => {
