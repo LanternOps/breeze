@@ -26,6 +26,7 @@ const txMockState = vi.hoisted(() => ({
 const lifecycleMocks = vi.hoisted(() => ({
   advance: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
   revokeFamilies: vi.fn(async () => 1),
+  withSystemTransaction: vi.fn(),
 }));
 
 function makeTx() {
@@ -169,6 +170,7 @@ vi.mock('../../services/tokenRevocation', () => ({
 vi.mock('../../services/authLifecycle', () => ({
   advanceUserSecurityState: lifecycleMocks.advance,
   revokeAllUserSessionFamilies: lifecycleMocks.revokeFamilies,
+  withAuthLifecycleSystemTransaction: lifecycleMocks.withSystemTransaction,
 }));
 
 vi.mock('../../services/remoteSessionTeardown', () => ({
@@ -280,6 +282,10 @@ function resetState() {
   lifecycleMocks.advance.mockResolvedValue({ id: 'user', authEpoch: 2 });
   lifecycleMocks.revokeFamilies.mockReset();
   lifecycleMocks.revokeFamilies.mockResolvedValue(1);
+  lifecycleMocks.withSystemTransaction.mockReset();
+  lifecycleMocks.withSystemTransaction.mockImplementation(
+    async (fn: (tx: unknown) => Promise<unknown>) => fn(makeTx()),
+  );
 }
 
 describe('admin/abuse — auth gate', () => {

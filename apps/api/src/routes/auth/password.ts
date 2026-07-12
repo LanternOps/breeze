@@ -36,6 +36,7 @@ import {
   revokeAllUserSessionFamilies,
   type AuthLifecycleTransaction,
 } from '../../services/authLifecycle';
+import { runPostCommitCleanup } from '../../services/postCommitCleanup';
 
 const { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } = dbModule;
 
@@ -245,17 +246,14 @@ passwordRoutes.post('/reset-password', zValidator('json', resetPasswordSchema), 
   });
 
   // Invalidate all sessions — best-effort; password is already changed above.
-  await invalidateAllUserSessions(userId);
-  // Decouple the two revokes so each runs and fails independently. The OAuth
-  // revoke (more durable threat — a stolen refresh token mints access tokens
-  // for up to 14 days) must NOT be short-circuited by a JWT-revoke failure
-  // (e.g. a Redis blip), which is the exact window this revoke closes.
-  await revokeAllUserTokens(userId).catch((error) =>
-    console.error('[auth] Failed to revoke JWTs after password reset:', error),
-  );
-  await revokeAllUserOauthArtifacts(userId).catch((error) =>
-    console.error('[auth] Failed to revoke OAuth artifacts after password reset:', error),
-  );
+  const resetCleanup = await runPostCommitCleanup([
+    { name: 'sessions', run: () => invalidateAllUserSessions(userId) },
+    { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
+    { name: 'oauth', run: () => revokeAllUserOauthArtifacts(userId) },
+  ]);
+  for (const failure of resetCleanup.failures) {
+    console.error(`[auth] ${failure.name} cleanup failed after password reset:`, failure.error);
+  }
 
   // Audit log
   const auditOrgId = await resolveUserAuditOrgId(userId);
@@ -332,20 +330,15 @@ passwordRoutes.post('/change-password', authMiddleware, zValidator('json', chang
     })
   );
 
-  await invalidateAllUserSessions(auth.user.id);
-  // Decouple the revokes so each runs and fails independently. The OAuth
-  // revoke (more durable threat — a previously authorized refresh token can
-  // keep minting access tokens) must NOT be short-circuited by a JWT-revoke
-  // failure (e.g. a Redis blip), which is the exact window this revoke closes.
-  await revokeAllUserTokens(auth.user.id).catch((error) =>
-    console.error('[auth] Failed to revoke JWTs after password change:', error),
-  );
-  await revokeCurrentRefreshTokenJti(c, auth.user.id).catch((error) =>
-    console.error('[auth] Failed to revoke current refresh token after password change:', error),
-  );
-  await revokeAllUserOauthArtifacts(auth.user.id).catch((error) =>
-    console.error('[auth] Failed to revoke OAuth artifacts after password change:', error),
-  );
+  const changeCleanup = await runPostCommitCleanup([
+    { name: 'sessions', run: () => invalidateAllUserSessions(auth.user.id) },
+    { name: 'user-tokens', run: () => revokeAllUserTokens(auth.user.id) },
+    { name: 'current-refresh', run: () => revokeCurrentRefreshTokenJti(c, auth.user.id) },
+    { name: 'oauth', run: () => revokeAllUserOauthArtifacts(auth.user.id) },
+  ]);
+  for (const failure of changeCleanup.failures) {
+    console.error(`[auth] ${failure.name} cleanup failed after password change:`, failure.error);
+  }
 
   // Audit log
   const changeAuditOrgId = await resolveUserAuditOrgId(auth.user.id);

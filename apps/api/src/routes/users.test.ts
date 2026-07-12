@@ -48,6 +48,8 @@ const {
   getEmailServiceMock
   ,advanceUserSecurityStateMock
   ,revokeAllUserSessionFamiliesMock
+  ,withSystemTransactionMock
+  ,neutralizeOrphanMock
 } = vi.hoisted(() => ({
   sendInviteMock: vi.fn().mockResolvedValue(undefined),
   sendEmailChangedMock: vi.fn().mockResolvedValue(undefined),
@@ -63,7 +65,9 @@ const {
   // Default: MFA is considered satisfied. Tests override to false.
   hasSatisfiedMfaMock: vi.fn().mockReturnValue(true),
   advanceUserSecurityStateMock: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
-  revokeAllUserSessionFamiliesMock: vi.fn(async () => 1)
+  revokeAllUserSessionFamiliesMock: vi.fn(async () => 1),
+  withSystemTransactionMock: vi.fn(),
+  neutralizeOrphanMock: vi.fn(async () => false)
 }));
 
 vi.mock('../services/permissions', () => ({
@@ -181,6 +185,11 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../services/authLifecycle', () => ({
   advanceUserSecurityState: advanceUserSecurityStateMock,
   revokeAllUserSessionFamilies: revokeAllUserSessionFamiliesMock,
+  withAuthLifecycleSystemTransaction: withSystemTransactionMock,
+}));
+
+vi.mock('../services/userMembershipLifecycle', () => ({
+  neutralizeUserIfOrphaned: neutralizeOrphanMock,
 }));
 
 vi.mock('./auth/ssoPolicy', () => ({
@@ -273,6 +282,10 @@ describe('user routes', () => {
     advanceUserSecurityStateMock.mockResolvedValue({ id: 'user', authEpoch: 2 });
     revokeAllUserSessionFamiliesMock.mockReset();
     revokeAllUserSessionFamiliesMock.mockResolvedValue(1);
+    withSystemTransactionMock.mockReset();
+    withSystemTransactionMock.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(db as any));
+    neutralizeOrphanMock.mockReset();
+    neutralizeOrphanMock.mockResolvedValue(false);
     sendEmailChangedMock.mockResolvedValue(undefined);
     // Default: email service is configured. Tests override to null to exercise
     // the "not configured" warning path.

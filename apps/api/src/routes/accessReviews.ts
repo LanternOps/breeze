@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, inArray } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
-import { db, runOutsideDbContext, withDbAccessContext } from '../db';
+import { db } from '../db';
 import {
   accessReviews,
   accessReviewItems,
@@ -15,15 +15,17 @@ import {
   organizationUsers,
   organizations
 } from '../db/schema';
-import { authMiddleware, dbAccessContextFromAuth, requireMfa, requirePermission } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { clearPermissionCache, PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
 import { revokeUserAccess } from '../services/userSuspension';
+import { neutralizeUserIfOrphaned } from '../services/userMembershipLifecycle';
+import { runPostCommitCleanup } from '../services/postCommitCleanup';
 import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
-  type AuthLifecycleTransaction,
+  withAuthLifecycleSystemTransaction,
 } from '../services/authLifecycle';
 
 export const accessReviewRoutes = new Hono();
@@ -464,9 +466,7 @@ accessReviewRoutes.post(
 
     const revokedUserIds = revokedItems.map((item) => item.userId);
 
-    const result = await runOutsideDbContext(() =>
-      withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
-      const tx = db;
+    const result = await withAuthLifecycleSystemTransaction(async (tx) => {
       let deletedMemberships: Array<{ userId: string }> = [];
       // Apply revocations - remove users from the scope
       if (revokedUserIds.length > 0) {
@@ -494,10 +494,10 @@ accessReviewRoutes.post(
       }
 
       const deletedUserIds = [...new Set(deletedMemberships.map((row) => row.userId))];
-      const authTx = tx as unknown as AuthLifecycleTransaction;
       for (const userId of deletedUserIds) {
-        await advanceUserSecurityState(authTx, userId);
-        await revokeAllUserSessionFamilies(authTx, userId, 'access-review-revoked');
+        await advanceUserSecurityState(tx, userId);
+        await revokeAllUserSessionFamilies(tx, userId, 'access-review-revoked');
+        await neutralizeUserIfOrphaned(tx, userId);
       }
 
       // Mark review as completed
@@ -524,34 +524,17 @@ accessReviewRoutes.post(
         revokedCount: deletedMemberships.length,
         revokedUserIds: deletedUserIds,
       };
-      })
-    );
+    });
 
     const uniqueRevokedUserIds = result.revokedUserIds;
-    await Promise.all(uniqueRevokedUserIds.map((userId) => clearPermissionCache(userId)));
-
-    // Task 14: revoke each removed user's JWTs in Redis so their existing
-    // access token (≤15min TTL) stops granting tenant-scoped access on the
-    // next request. Best-effort per user: a Redis failure leaves the
-    // tenant-link deleted and the JWT will expire naturally; we log and
-    // continue so the review still completes successfully.
-    await Promise.all(
-      uniqueRevokedUserIds.map((userId) =>
-        revokeAllUserTokens(userId).catch((err) => {
-          console.error('[access-review] token revoke failed for user', userId, err);
-        }),
-      ),
-    );
-    // Also revoke OAuth grants/refresh tokens (e.g. MCP) for each removed user
-    // so a previously authorized refresh token can't keep minting access
-    // tokens after access is revoked. Best-effort per user, same as above.
-    await Promise.all(
-      uniqueRevokedUserIds.map((userId) =>
-        revokeUserAccess(userId).catch((err) => {
-          console.error('[access-review] oauth revoke failed for user', userId, err);
-        }),
-      ),
-    );
+    const cleanup = await runPostCommitCleanup(uniqueRevokedUserIds.flatMap((userId) => [
+      { name: `permission-cache:${userId}`, run: () => clearPermissionCache(userId) },
+      { name: `user-tokens:${userId}`, run: () => revokeAllUserTokens(userId) },
+      { name: `oauth:${userId}`, run: () => revokeUserAccess(userId) },
+    ]));
+    for (const failure of cleanup.failures) {
+      console.error('[access-review] post-commit cleanup failed', failure.name, failure.error);
+    }
 
     writeRouteAudit(c, {
       orgId: scopeContext.scope === 'organization' ? scopeContext.orgId : null,

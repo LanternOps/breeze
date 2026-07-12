@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { and, eq, inArray, ne } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
 import {
   partners,
   organizations,
@@ -24,6 +23,7 @@ import type { Database } from '../../db';
 import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
+  withAuthLifecycleSystemTransaction,
 } from '../../services/authLifecycle';
 
 export const abuseRoutes = new Hono();
@@ -109,8 +109,7 @@ abuseRoutes.post(
     const partnerId = c.req.param('id');
     const callerId = auth.user.id;
 
-    const result = await withSystemDbAccessContext(async () => {
-      return db.transaction(async (tx) => {
+    const result = await withAuthLifecycleSystemTransaction(async (tx) => {
         const [partner] = await tx
           .select({ id: partners.id, status: partners.status })
           .from(partners)
@@ -222,7 +221,6 @@ abuseRoutes.post(
           apiKeyCount,
           affectedUserIds,
         };
-      });
     });
 
     if (result.notFound) {
@@ -389,8 +387,7 @@ abuseRoutes.post(
     const { reason } = c.req.valid('json');
     const auth = c.get('auth');
 
-    const result = await withSystemDbAccessContext(async () => {
-      return db.transaction(async (tx) => {
+    const result = await withAuthLifecycleSystemTransaction(async (tx) => {
         const [partner] = await tx
           .select({
             id: partners.id,
@@ -425,7 +422,6 @@ abuseRoutes.post(
         }
 
         return { notFound: false as const, status: newStatus, userCount: reEnabled.length };
-      });
     });
 
     if (result.notFound) {

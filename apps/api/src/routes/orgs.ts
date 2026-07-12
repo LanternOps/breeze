@@ -16,7 +16,12 @@ import {
   restorePartnerTenantAccess,
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
+  invalidateOrganizationUsersInTransaction,
+  invalidatePartnerUsersInTransaction,
+  type OrganizationLifecycleSnapshot,
+  type PartnerLifecycleSnapshot,
 } from '../services/tenantLifecycle';
+import { withAuthLifecycleSystemTransaction } from '../services/authLifecycle';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
@@ -837,11 +842,32 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
   }
 
-  const [partner] = await db
-    .update(partners)
-    .set(updates)
-    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning();
+  let lifecycleSnapshot: PartnerLifecycleSnapshot | undefined;
+  const updatePartner = async (tx: typeof db) => {
+    const [before] = data.status === undefined
+      ? []
+      : await tx
+        .select({ status: partners.status })
+        .from(partners)
+        .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+        .limit(1);
+    const [updatedPartner] = await tx
+      .update(partners)
+      .set(updates)
+      .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+      .returning();
+    if (updatedPartner && data.status !== undefined && before?.status !== data.status) {
+      lifecycleSnapshot = await invalidatePartnerUsersInTransaction(
+        tx as any,
+        id,
+        'partner-status-changed',
+      );
+    }
+    return updatedPartner;
+  };
+  const partner = data.status === undefined
+    ? await updatePartner(db)
+    : await withAuthLifecycleSystemTransaction((tx) => updatePartner(tx as typeof db));
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
@@ -859,7 +885,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   // tenant cascade (getActivePartner is strict) — severing here would expire
   // enrollment keys irreversibly on a transient state.
   if ('status' in data && (data.status === 'suspended' || data.status === 'churned')) {
-    await revokePartnerTenantAccess(partner.id);
+    await revokePartnerTenantAccess(partner.id, lifecycleSnapshot);
   } else if ('status' in data && data.status === 'active') {
     // Reactivation: restore agent tokens this partner's revoke suspended.
     await restorePartnerTenantAccess(partner.id);
@@ -886,17 +912,28 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
   const auth = c.get('auth');
   const id = c.req.param('id')!;
 
-  const [partner] = await db
-    .update(partners)
-    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-    .returning();
+  let lifecycleSnapshot: PartnerLifecycleSnapshot | undefined;
+  const partner = await withAuthLifecycleSystemTransaction(async (tx) => {
+    const [updatedPartner] = await tx
+      .update(partners)
+      .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
+      .returning();
+    if (updatedPartner) {
+      lifecycleSnapshot = await invalidatePartnerUsersInTransaction(
+        tx as any,
+        id,
+        'partner-deleted',
+      );
+    }
+    return updatedPartner;
+  });
 
   if (!partner) {
     return c.json({ error: 'Partner not found' }, 404);
   }
 
-  await revokePartnerTenantAccess(partner.id);
+  await revokePartnerTenantAccess(partner.id, lifecycleSnapshot);
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
   writeAuditEvent(c, {
@@ -1304,18 +1341,40 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
 
   const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
-  const [organization] = await db
-    .update(organizations)
-    .set(updates)
-    .where(conditions)
-    .returning();
+  let lifecycleSnapshot: OrganizationLifecycleSnapshot | undefined;
+  const updateOrganization = async (tx: typeof db) => {
+    const [before] = data.status === undefined
+      ? []
+      : await tx
+        .select({ status: organizations.status })
+        .from(organizations)
+        .where(conditions)
+        .limit(1);
+    const [updatedOrganization] = await tx
+      .update(organizations)
+      .set(updates)
+      .where(conditions)
+      .returning();
+    if (updatedOrganization && data.status !== undefined && before?.status !== data.status) {
+      const userIds = await invalidateOrganizationUsersInTransaction(
+        tx as any,
+        id,
+        'organization-status-changed',
+      );
+      lifecycleSnapshot = { userIds };
+    }
+    return updatedOrganization;
+  };
+  const organization = data.status === undefined
+    ? await updateOrganization(db)
+    : await withAuthLifecycleSystemTransaction((tx) => updateOrganization(tx as typeof db));
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
   }
 
   if (data.status !== undefined && data.status !== 'active' && data.status !== 'trial') {
-    await revokeOrganizationTenantAccess(organization.id);
+    await revokeOrganizationTenantAccess(organization.id, lifecycleSnapshot);
   } else if (data.status === 'active' || data.status === 'trial') {
     // Reactivation: restore agent tokens this org's revoke suspended.
     await restoreOrganizationTenantAccess(organization.id);
@@ -1353,17 +1412,29 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
   const conditions = and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
-  const [organization] = await db
-    .update(organizations)
-    .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
-    .where(conditions)
-    .returning();
+  let lifecycleSnapshot: OrganizationLifecycleSnapshot | undefined;
+  const organization = await withAuthLifecycleSystemTransaction(async (tx) => {
+    const [updatedOrganization] = await tx
+      .update(organizations)
+      .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
+      .where(conditions)
+      .returning();
+    if (updatedOrganization) {
+      const userIds = await invalidateOrganizationUsersInTransaction(
+        tx as any,
+        id,
+        'organization-deleted',
+      );
+      lifecycleSnapshot = { userIds };
+    }
+    return updatedOrganization;
+  });
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  await revokeOrganizationTenantAccess(organization.id);
+  await revokeOrganizationTenantAccess(organization.id, lifecycleSnapshot);
 
   writeRouteAudit(c, {
     orgId: organization.id,

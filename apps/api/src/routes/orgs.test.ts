@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { orgRoutes } from './orgs';
 
+const tenantLifecycleTxMocks = vi.hoisted(() => ({
+  invalidatePartner: vi.fn(async () => ({ userIds: ['user-1'], orgIds: ['org-1'] })),
+  invalidateOrganization: vi.fn(async () => ['user-1']),
+  withSystemTransaction: vi.fn(),
+}));
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/sentry', () => ({
@@ -37,7 +43,13 @@ vi.mock('../services/tenantLifecycle', () => ({
     enrollmentKeysInvalidated: 0
   }),
   restorePartnerTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 }),
-  restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 })
+  restoreOrganizationTenantAccess: vi.fn().mockResolvedValue({ agentTokensRestored: 0 }),
+  invalidatePartnerUsersInTransaction: tenantLifecycleTxMocks.invalidatePartner,
+  invalidateOrganizationUsersInTransaction: tenantLifecycleTxMocks.invalidateOrganization,
+}));
+
+vi.mock('../services/authLifecycle', () => ({
+  withAuthLifecycleSystemTransaction: tenantLifecycleTxMocks.withSystemTransaction,
 }));
 
 vi.mock('../db', () => ({
@@ -217,6 +229,12 @@ describe('org routes', () => {
     setAuthContext();
     app = new Hono();
     app.route('/orgs', orgRoutes);
+    tenantLifecycleTxMocks.withSystemTransaction.mockReset();
+    tenantLifecycleTxMocks.withSystemTransaction.mockImplementation(
+      async (fn: (tx: unknown) => Promise<unknown>) => fn(db as any),
+    );
+    tenantLifecycleTxMocks.invalidatePartner.mockClear();
+    tenantLifecycleTxMocks.invalidateOrganization.mockClear();
   });
 
   describe('GET /orgs/partners', () => {
@@ -524,7 +542,16 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
+      expect(tenantLifecycleTxMocks.withSystemTransaction).toHaveBeenCalledTimes(1);
+      expect(tenantLifecycleTxMocks.invalidatePartner).toHaveBeenCalledWith(
+        expect.anything(),
+        'partner-1',
+        'partner-status-changed',
+      );
+      expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1', {
+        userIds: ['user-1'],
+        orgIds: ['org-1'],
+      });
       expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
     });
 
@@ -544,8 +571,30 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(tenantLifecycleTxMocks.invalidatePartner).toHaveBeenCalledWith(
+        expect.anything(),
+        'partner-1',
+        'partner-status-changed',
+      );
       expect(restorePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
       expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('rolls back a partner status transition when durable user invalidation fails', async () => {
+      tenantLifecycleTxMocks.invalidatePartner.mockRejectedValueOnce(new Error('family update failed'));
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'partner-1', status: 'suspended' }]) })) })),
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
+      expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
     });
 
     it('does not sever the fleet on a transient active->pending transition (preserves enrollment keys)', async () => {
@@ -597,6 +646,18 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    it('rolls back partner deletion when durable user invalidation fails', async () => {
+      tenantLifecycleTxMocks.invalidatePartner.mockRejectedValueOnce(new Error('family update failed'));
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'partner-1' }]) })) })),
+      } as any);
+
+      const res = await app.request('/orgs/partners/partner-1', { method: 'DELETE' });
+
+      expect(res.status).toBe(500);
+      expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
     });
 
     describe('settings.security.ipAllowlist (system scope)', () => {
@@ -965,7 +1026,15 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
-      expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1');
+      expect(tenantLifecycleTxMocks.invalidatePartner).toHaveBeenCalledWith(
+        expect.anything(),
+        'partner-1',
+        'partner-deleted',
+      );
+      expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1', {
+        userIds: ['user-1'],
+        orgIds: ['org-1'],
+      });
     });
 
     it('should return 404 when partner not found', async () => {
@@ -1357,7 +1426,14 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
+      expect(tenantLifecycleTxMocks.invalidateOrganization).toHaveBeenCalledWith(
+        expect.anything(),
+        'org-1',
+        'organization-status-changed',
+      );
+      expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1', {
+        userIds: ['user-1'],
+      });
       expect(restoreOrganizationTenantAccess).not.toHaveBeenCalled();
     });
 
@@ -1378,8 +1454,31 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(tenantLifecycleTxMocks.invalidateOrganization).toHaveBeenCalledWith(
+        expect.anything(),
+        'org-1',
+        'organization-status-changed',
+      );
       expect(restoreOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
       expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
+    });
+
+    it('rolls back an organization status transition when durable user invalidation fails', async () => {
+      setAuthContext({ scope: 'system', partnerId: null });
+      tenantLifecycleTxMocks.invalidateOrganization.mockRejectedValueOnce(new Error('family update failed'));
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'org-1', status: 'suspended' }]) })) })),
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'suspended' }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
+      expect(restoreOrganizationTenantAccess).not.toHaveBeenCalled();
     });
 
     it('restores the agent fleet when an org is moved to trial', async () => {
@@ -1420,6 +1519,19 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    it('rolls back organization deletion when durable user invalidation fails', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      tenantLifecycleTxMocks.invalidateOrganization.mockRejectedValueOnce(new Error('family update failed'));
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'org-1' }]) })) })),
+      } as any);
+
+      const res = await app.request('/orgs/organizations/org-1', { method: 'DELETE' });
+
+      expect(res.status).toBe(500);
+      expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
     });
 
     // issue #1963: the org write path feeds getOrgAgentUpdatePolicy, so a
@@ -1637,7 +1749,14 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
-      expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1');
+      expect(tenantLifecycleTxMocks.invalidateOrganization).toHaveBeenCalledWith(
+        expect.anything(),
+        'org-1',
+        'organization-deleted',
+      );
+      expect(revokeOrganizationTenantAccess).toHaveBeenCalledWith('org-1', {
+        userIds: ['user-1'],
+      });
     });
 
     it('should return 404 when organization not found', async () => {

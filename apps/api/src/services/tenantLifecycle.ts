@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, isNull, or } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../db';
 import { apiKeys, devices, enrollmentKeys, organizationUsers, organizations, partnerUsers } from '../db/schema';
 import { revokeAllOrgOauthArtifacts, revokeAllPartnerOauthArtifacts } from '../oauth/grantRevocation';
 import { AGENT_TOKEN_SUSPEND_REASON } from './agentTokenSuspension';
@@ -11,6 +11,7 @@ import {
   revokeAllUserSessionFamilies,
   type AuthLifecycleTransaction,
 } from './authLifecycle';
+import { runPostCommitCleanup } from './postCommitCleanup';
 
 export interface TenantRevocationResult {
   apiKeysRevoked: number;
@@ -23,6 +24,14 @@ export interface TenantRevocationResult {
 
 export interface TenantRestorationResult {
   agentTokensRestored: number;
+}
+
+export interface OrganizationLifecycleSnapshot {
+  userIds: string[];
+}
+
+export interface PartnerLifecycleSnapshot extends OrganizationLifecycleSnapshot {
+  orgIds: string[];
 }
 
 // Reason tag written to devices.agentTokenSuspendedReason when a tenant is
@@ -121,34 +130,85 @@ async function revokeApiKeysForOrgIds(orgIds: string[]): Promise<number> {
 
 async function revokeUsers(userIds: string[]): Promise<number> {
   const uniqueUserIds = [...new Set(userIds)];
-  for (const userId of uniqueUserIds) {
-    await revokeAllUserTokens(userId);
-    await clearPermissionCache(userId);
+  const cleanup = await runPostCommitCleanup(uniqueUserIds.flatMap((userId) => [
+    { name: `user-tokens:${userId}`, run: () => revokeAllUserTokens(userId) },
+    { name: `permission-cache:${userId}`, run: () => clearPermissionCache(userId) },
+  ]));
+  if (cleanup.failures.length > 0) {
+    throw new AggregateError(
+      cleanup.failures.map((failure) => failure.error),
+      `Tenant user cleanup failed: ${cleanup.failures.map((failure) => failure.name).join(', ')}`,
+    );
   }
   return uniqueUserIds.length;
 }
 
-async function revokeUsersDurably(userIds: string[], reason: string): Promise<string[]> {
+export type TenantLifecycleTransaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+async function revokeUsersDurably(
+  tx: TenantLifecycleTransaction,
+  userIds: string[],
+  reason: string,
+): Promise<string[]> {
   const uniqueUserIds = [...new Set(userIds)];
-  const tx = db as unknown as AuthLifecycleTransaction;
+  const authTx = tx as unknown as AuthLifecycleTransaction;
   for (const userId of uniqueUserIds) {
-    await advanceUserSecurityState(tx, userId);
-    await revokeAllUserSessionFamilies(tx, userId, reason);
+    await advanceUserSecurityState(authTx, userId);
+    await revokeAllUserSessionFamilies(authTx, userId, reason);
   }
   return uniqueUserIds;
 }
 
-export async function revokeOrganizationTenantAccess(orgId: string): Promise<TenantRevocationResult> {
-  const userIds = await runOutsideDbContext(() =>
+export async function invalidateOrganizationUsersInTransaction(
+  tx: TenantLifecycleTransaction,
+  orgId: string,
+  reason: string,
+): Promise<string[]> {
+  const memberships = await tx
+    .select({ userId: organizationUsers.userId })
+    .from(organizationUsers)
+    .where(eq(organizationUsers.orgId, orgId));
+  return revokeUsersDurably(tx, memberships.map((row) => row.userId), reason);
+}
+
+export async function invalidatePartnerUsersInTransaction(
+  tx: TenantLifecycleTransaction,
+  partnerId: string,
+  reason: string,
+): Promise<{ orgIds: string[]; userIds: string[] }> {
+  const orgRows = await tx
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.partnerId, partnerId));
+  const orgIds = orgRows.map((row) => row.id);
+  const partnerMemberships = await tx
+    .select({ userId: partnerUsers.userId })
+    .from(partnerUsers)
+    .where(eq(partnerUsers.partnerId, partnerId));
+  const orgMemberships = orgIds.length === 0
+    ? []
+    : await tx
+      .select({ userId: organizationUsers.userId })
+      .from(organizationUsers)
+      .where(inArray(organizationUsers.orgId, orgIds));
+  const userIds = await revokeUsersDurably(tx, [
+    ...partnerMemberships.map((row) => row.userId),
+    ...orgMemberships.map((row) => row.userId),
+  ], reason);
+  return { orgIds, userIds };
+}
+
+export async function revokeOrganizationTenantAccess(
+  orgId: string,
+  snapshot?: OrganizationLifecycleSnapshot,
+): Promise<TenantRevocationResult> {
+  const userIds = snapshot?.userIds ?? await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const orgUsers = await db
         .select({ userId: organizationUsers.userId })
         .from(organizationUsers)
         .where(eq(organizationUsers.orgId, orgId));
-      return revokeUsersDurably(
-        orgUsers.map((row) => row.userId),
-        'organization-suspended',
-      );
+      return [...new Set(orgUsers.map((row) => row.userId))];
     })
   );
   const [apiKeysRevoked, agentSeverance] = await runOutsideDbContext(() =>
@@ -171,8 +231,11 @@ export async function revokeOrganizationTenantAccess(orgId: string): Promise<Ten
   };
 }
 
-export async function revokePartnerTenantAccess(partnerId: string): Promise<TenantRevocationResult> {
-  const { orgIds, userIds } = await runOutsideDbContext(() =>
+export async function revokePartnerTenantAccess(
+  partnerId: string,
+  snapshot?: PartnerLifecycleSnapshot,
+): Promise<TenantRevocationResult> {
+  const { orgIds, userIds } = snapshot ?? await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const orgRows = await db
         .select({ id: organizations.id })
@@ -192,10 +255,10 @@ export async function revokePartnerTenantAccess(partnerId: string): Promise<Tena
           .from(organizationUsers)
           .where(inArray(organizationUsers.orgId, orgIds));
 
-      const userIds = await revokeUsersDurably([
+      const userIds = [...new Set([
           ...partnerMemberships.map((row) => row.userId),
           ...orgMemberships.map((row) => row.userId),
-        ], 'partner-suspended');
+        ])];
       return { orgIds, userIds };
     })
   );

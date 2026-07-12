@@ -10,6 +10,35 @@ const dbState = vi.hoisted(() => ({
   failureQueue: [] as Array<Error | null>,
 }));
 
+const contextState = vi.hoisted(() => ({
+  scope: 'actor' as 'actor' | 'none' | 'system',
+  observations: [] as string[],
+}));
+
+vi.mock('../db', () => ({
+  db: { scopeTag: 'system-transaction' },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => {
+    const previous = contextState.scope;
+    contextState.scope = 'none';
+    contextState.observations.push('outside');
+    try {
+      return fn();
+    } finally {
+      contextState.scope = previous;
+    }
+  }),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    contextState.observations.push(`system-from-${contextState.scope}`);
+    const previous = contextState.scope;
+    contextState.scope = 'system';
+    try {
+      return await fn();
+    } finally {
+      contextState.scope = previous;
+    }
+  }),
+}));
+
 vi.mock('drizzle-orm', () => ({
   and: vi.fn((...clauses: unknown[]) => ({ and: clauses })),
   eq: vi.fn((left: unknown, right: unknown) => ({ eq: [left, right] })),
@@ -45,6 +74,7 @@ import {
   revokeUserSessionFamily,
   type AuthLifecycleTransaction,
 } from './authLifecycle';
+import * as authLifecycle from './authLifecycle';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 import { users } from '../db/schema/users';
 
@@ -70,6 +100,25 @@ describe('authLifecycle transaction primitives', () => {
     dbState.returningQueue.length = 0;
     dbState.updateCalls.length = 0;
     dbState.failureQueue.length = 0;
+    contextState.scope = 'actor';
+    contextState.observations.length = 0;
+  });
+
+  it('exits an actor context before opening the effective system transaction', async () => {
+    const withSystemTransaction = (authLifecycle as Record<string, unknown>)
+      .withAuthLifecycleSystemTransaction;
+    expect(withSystemTransaction).toEqual(expect.any(Function));
+
+    const result = await (withSystemTransaction as (fn: (tx: unknown) => Promise<string>) => Promise<string>)(
+      async (tx) => {
+        expect(contextState.scope).toBe('system');
+        expect(tx).toMatchObject({ scopeTag: 'system-transaction' });
+        return 'committed';
+      },
+    );
+
+    expect(result).toBe('committed');
+    expect(contextState.observations).toEqual(['outside', 'system-from-none']);
   });
 
   it('increments requested epochs in one user update and returns the updated state', async () => {

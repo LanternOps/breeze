@@ -37,9 +37,12 @@ import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { revokeUserAccess } from '../services/userSuspension';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
 import { revokeAllUserTokens } from '../services/tokenRevocation';
+import { neutralizeUserIfOrphaned } from '../services/userMembershipLifecycle';
+import { runPostCommitCleanup } from '../services/postCommitCleanup';
 import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
+  withAuthLifecycleSystemTransaction,
   type AuthLifecycleTransaction,
 } from '../services/authLifecycle';
 
@@ -751,13 +754,14 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   // Dedicated email-change audit + security notification to the OLD address.
   // Only fires on a genuine, step-up-cleared email change (previousEmail set).
   if (previousEmail !== undefined) {
-    await clearPermissionCache(updated.id);
-    await revokeAllUserTokens(updated.id).catch((err) => {
-      console.error('[users] token revoke failed after email change:', err);
-    });
-    await revokeUserAccess(updated.id).catch((err) => {
-      console.error('[users] oauth revoke failed after email change:', err);
-    });
+    const cleanup = await runPostCommitCleanup([
+      { name: 'permission-cache', run: () => clearPermissionCache(updated.id) },
+      { name: 'user-tokens', run: () => revokeAllUserTokens(updated.id) },
+      { name: 'oauth', run: () => revokeUserAccess(updated.id) },
+    ]);
+    for (const failure of cleanup.failures) {
+      console.error(`[users] ${failure.name} cleanup failed after email change:`, failure.error);
+    }
 
     createAuditLogAsync({
       orgId: auditOrgId,
@@ -1159,9 +1163,7 @@ userRoutes.post(
 
     const normalizedEmail = data.email.toLowerCase();
 
-    const result = await runOutsideDbContext(() =>
-      withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
-      const tx = db;
+    const result = await withAuthLifecycleSystemTransaction(async (tx) => {
       const [existingUser] = await tx
         .select()
         .from(users)
@@ -1239,9 +1241,8 @@ userRoutes.post(
 
       const invalidateExistingUserForReinvite = async () => {
         if (!existingUser) return;
-        const authTx = tx as unknown as AuthLifecycleTransaction;
-        await advanceUserSecurityState(authTx, user!.id);
-        await revokeAllUserSessionFamilies(authTx, user!.id, 'user-reinvited');
+        await advanceUserSecurityState(tx, user!.id);
+        await revokeAllUserSessionFamilies(tx, user!.id, 'user-reinvited');
       };
 
       if (scopeContext.scope === 'partner') {
@@ -1298,8 +1299,7 @@ userRoutes.post(
       await invalidateExistingUserForReinvite();
 
       return { user, linkCreated: true, link };
-      })
-    );
+    });
 
     if (!result.linkCreated) {
       return c.json({ error: 'User already exists in this scope' }, 409);
@@ -1436,9 +1436,8 @@ userRoutes.patch(
     }
 
     const securityStateChanged = data.status !== undefined && data.status !== record.status;
-    const updated = await runOutsideDbContext(() =>
-      withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
-        const [result] = await db
+    const updated = await withAuthLifecycleSystemTransaction(async (tx) => {
+        const [result] = await tx
           .update(users)
           .set(updates)
           .where(eq(users.id, userId))
@@ -1452,13 +1451,11 @@ userRoutes.patch(
           throw new Error(`Failed to update user ${userId}`);
         }
         if (securityStateChanged) {
-          const tx = db as unknown as AuthLifecycleTransaction;
           await advanceUserSecurityState(tx, userId);
           await revokeAllUserSessionFamilies(tx, userId, 'status-changed');
         }
         return result;
-      })
-    );
+    });
 
     // Suspension hook: when status transitions from active → disabled we must
     // revoke every outstanding OAuth artifact (refresh tokens, grant cache
@@ -1472,39 +1469,36 @@ userRoutes.patch(
       updated.status !== 'active';
 
     let oauthRevocation: Awaited<ReturnType<typeof revokeUserAccess>> | undefined;
-    if (becameInactive) {
-      // Kill any live remote-desktop sessions immediately so a suspended /
-      // deactivated operator loses screen, input and clipboard control right
-      // away — revoking JWT/OAuth alone does not touch viewer tokens or the
-      // peer-to-peer WebRTC stream. Finding #3. The teardown is best-effort
-      // per session, but a hard enumeration/disconnect failure returns the
-      // TEARDOWN_FAILED sentinel (already reported to Sentry inside the
-      // service). Surface it the same way as the partial-revocation path
-      // below — the operator MUST know control may still be live.
-      const teardownResult = await terminateUserRemoteSessions(updated.id);
-      if (teardownResult === TEARDOWN_FAILED) {
-        return c.json(
-          { error: 'Failed to terminate active remote sessions; suspension is partial. Retry.' },
-          503
-        );
-      }
-      try {
-        oauthRevocation = await revokeUserAccess(updated.id);
-      } catch (err) {
-        // Revocation cache failure → the DB rows are still marked revoked
-        // but access JWTs would survive until natural expiry. Treat this as
-        // a hard failure so the operator knows suspension is partial.
-        return c.json(
-          { error: 'Failed to revoke active sessions; suspension is partial. Retry.' },
-          503
-        );
-      }
+    const cleanupOperations = [
+      { name: 'permission-cache', run: () => clearPermissionCache(updated.id) },
+      ...(securityStateChanged
+        ? [{ name: 'user-tokens', run: () => revokeAllUserTokens(updated.id) }]
+        : []),
+      ...(becameInactive
+        ? [
+            {
+              name: 'remote-sessions',
+              run: async () => {
+                const result = await terminateUserRemoteSessions(updated.id);
+                if (result === TEARDOWN_FAILED) throw new Error('remote session teardown failed');
+              },
+            },
+            {
+              name: 'oauth',
+              run: async () => { oauthRevocation = await revokeUserAccess(updated.id); },
+            },
+          ]
+        : []),
+    ];
+    const cleanup = await runPostCommitCleanup(cleanupOperations);
+    for (const failure of cleanup.failures) {
+      console.error(`[users] ${failure.name} cleanup failed after status change:`, failure.error);
     }
-    await clearPermissionCache(updated.id);
-    if (securityStateChanged) {
-      await revokeAllUserTokens(updated.id).catch((err) => {
-        console.error('[users] token revoke failed after status change:', err);
-      });
+    if (cleanup.failures.some((failure) => failure.name === 'remote-sessions' || failure.name === 'oauth')) {
+      return c.json(
+        { error: 'Failed to revoke all active sessions; status change is durable but cleanup is partial. Retry.' },
+        503,
+      );
     }
 
     writeUserAudit(c, auth, scopeContext, {
@@ -1550,36 +1544,6 @@ userRoutes.patch(
 // check would falsely report a still-active multi-org user as orphaned and
 // wrongly disable them. The caller is assumed to already be inside this file's
 // system-scoped removal transaction so the just-deleted membership is visible.
-async function neutralizeUserIfOrphaned(userId: string): Promise<void> {
-  const [partnerLink] = await db
-    .select({ id: partnerUsers.id })
-    .from(partnerUsers)
-    .where(eq(partnerUsers.userId, userId))
-    .limit(1);
-  if (partnerLink) return;
-
-  const [orgLink] = await db
-    .select({ id: organizationUsers.id })
-    .from(organizationUsers)
-    .where(eq(organizationUsers.userId, userId))
-    .limit(1);
-  if (orgLink) return;
-
-  await db
-    .update(users)
-    .set({
-      status: 'disabled',
-      disabledReason: 'removed',
-      passwordHash: null,
-      mfaEnabled: false,
-      mfaSecret: null,
-      mfaMethod: null,
-      mfaRecoveryCodes: null,
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, userId));
-}
-
 /**
  * Remove a user's membership in the caller's tenant and, if it was their last
  * membership anywhere, neutralize the orphaned `users` row — in one
@@ -1618,7 +1582,7 @@ async function removeMembershipForScope(
       const tx = db as unknown as AuthLifecycleTransaction;
       await advanceUserSecurityState(tx, userId);
       await revokeAllUserSessionFamilies(tx, userId, 'membership-removed');
-      await neutralizeUserIfOrphaned(userId);
+      await neutralizeUserIfOrphaned(tx, userId);
       return { deleted: true };
     })
   );
@@ -1645,20 +1609,14 @@ userRoutes.delete(
         resourceId: userId,
         details: { scope: 'partner' }
       });
-      await clearPermissionCache(userId);
-      // Task 14: revoke the removed user's JWTs so the existing access
-      // token can't keep granting partner-scoped reads/writes for up to 15
-      // minutes (access-TTL). Best-effort: a Redis failure here leaves the
-      // DB row deleted and the JWT will expire on its own — we log and
-      // continue so the remove still succeeds.
-      await revokeAllUserTokens(userId).catch((err) => {
-        console.error('[users] token revoke failed after partner-user removal:', err);
-      });
-      // Also revoke OAuth grants/refresh tokens (e.g. MCP) so a removed user's
-      // refresh token can't keep minting access tokens after they lose access.
-      await revokeUserAccess(userId).catch((err) => {
-        console.error('[users] oauth revoke failed after partner-user removal:', err);
-      });
+      const cleanup = await runPostCommitCleanup([
+        { name: 'permission-cache', run: () => clearPermissionCache(userId) },
+        { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
+        { name: 'oauth', run: () => revokeUserAccess(userId) },
+      ]);
+      for (const failure of cleanup.failures) {
+        console.error(`[users] ${failure.name} cleanup failed after partner-user removal:`, failure.error);
+      }
 
       return c.json({ success: true });
     }
@@ -1674,15 +1632,14 @@ userRoutes.delete(
       resourceId: userId,
       details: { scope: 'organization' }
     });
-    await clearPermissionCache(userId);
-    // Task 14: see comment above — same rationale for org-scope users.
-    await revokeAllUserTokens(userId).catch((err) => {
-      console.error('[users] token revoke failed after org-user removal:', err);
-    });
-    // Also revoke OAuth grants/refresh tokens (e.g. MCP) — see partner branch.
-    await revokeUserAccess(userId).catch((err) => {
-      console.error('[users] oauth revoke failed after org-user removal:', err);
-    });
+    const cleanup = await runPostCommitCleanup([
+      { name: 'permission-cache', run: () => clearPermissionCache(userId) },
+      { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
+      { name: 'oauth', run: () => revokeUserAccess(userId) },
+    ]);
+    for (const failure of cleanup.failures) {
+      console.error(`[users] ${failure.name} cleanup failed after org-user removal:`, failure.error);
+    }
 
     return c.json({ success: true });
   }
@@ -1713,20 +1670,17 @@ userRoutes.post(
     }
 
     if (scopeContext.scope === 'partner') {
-      const updated = await runOutsideDbContext(() =>
-        withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
-          const rows = await db
+      const updated = await withAuthLifecycleSystemTransaction(async (tx) => {
+          const rows = await tx
             .update(partnerUsers)
             .set({ roleId })
             .where(and(eq(partnerUsers.partnerId, scopeContext.partnerId), eq(partnerUsers.userId, userId)))
             .returning({ id: partnerUsers.id });
           if (rows.length === 0) return rows;
-          const tx = db as unknown as AuthLifecycleTransaction;
           await advanceUserSecurityState(tx, userId);
           await revokeAllUserSessionFamilies(tx, userId, 'role-changed');
           return rows;
-        })
-      );
+      });
 
       if (updated.length === 0) {
         return c.json({ error: 'User not found' }, 404);
@@ -1741,31 +1695,29 @@ userRoutes.post(
           scope: 'partner'
         }
       });
-      await clearPermissionCache(userId);
-      await revokeAllUserTokens(userId).catch((err) => {
-        console.error('[users] token revoke failed after role change:', err);
-      });
-      await revokeUserAccess(userId).catch((err) => {
-        console.error('[users] oauth revoke failed after role change:', err);
-      });
+      const cleanup = await runPostCommitCleanup([
+        { name: 'permission-cache', run: () => clearPermissionCache(userId) },
+        { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
+        { name: 'oauth', run: () => revokeUserAccess(userId) },
+      ]);
+      for (const failure of cleanup.failures) {
+        console.error(`[users] ${failure.name} cleanup failed after role change:`, failure.error);
+      }
 
       return c.json({ success: true });
     }
 
-    const updated = await runOutsideDbContext(() =>
-      withDbAccessContext(dbAccessContextFromAuth(auth), async () => {
-        const rows = await db
+    const updated = await withAuthLifecycleSystemTransaction(async (tx) => {
+        const rows = await tx
           .update(organizationUsers)
           .set({ roleId })
           .where(and(eq(organizationUsers.orgId, scopeContext.orgId), eq(organizationUsers.userId, userId)))
           .returning({ id: organizationUsers.id });
         if (rows.length === 0) return rows;
-        const tx = db as unknown as AuthLifecycleTransaction;
         await advanceUserSecurityState(tx, userId);
         await revokeAllUserSessionFamilies(tx, userId, 'role-changed');
         return rows;
-      })
-    );
+    });
 
     if (updated.length === 0) {
       return c.json({ error: 'User not found' }, 404);
@@ -1780,13 +1732,14 @@ userRoutes.post(
         scope: 'organization'
       }
     });
-    await clearPermissionCache(userId);
-    await revokeAllUserTokens(userId).catch((err) => {
-      console.error('[users] token revoke failed after role change:', err);
-    });
-    await revokeUserAccess(userId).catch((err) => {
-      console.error('[users] oauth revoke failed after role change:', err);
-    });
+    const cleanup = await runPostCommitCleanup([
+      { name: 'permission-cache', run: () => clearPermissionCache(userId) },
+      { name: 'user-tokens', run: () => revokeAllUserTokens(userId) },
+      { name: 'oauth', run: () => revokeUserAccess(userId) },
+    ]);
+    for (const failure of cleanup.failures) {
+      console.error(`[users] ${failure.name} cleanup failed after role change:`, failure.error);
+    }
 
     return c.json({ success: true });
   }

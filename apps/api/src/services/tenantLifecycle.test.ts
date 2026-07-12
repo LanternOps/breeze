@@ -20,13 +20,19 @@ vi.mock('../db/schema', () => ({
   partnerUsers: { userId: 'partnerUsers.userId', partnerId: 'partnerUsers.partnerId' },
 }));
 
-vi.mock('../oauth/grantRevocation', () => ({
+const cleanupMocks = vi.hoisted(() => ({
+  clearPermissionCache: vi.fn(async () => undefined),
+  revokeAllUserTokens: vi.fn(async () => undefined),
   revokeAllOrgOauthArtifacts: vi.fn(async () => ({ grantsRevoked: 0, refreshTokensRevoked: 0 })),
   revokeAllPartnerOauthArtifacts: vi.fn(async () => ({ grantsRevoked: 0, refreshTokensRevoked: 0 })),
 }));
+vi.mock('../oauth/grantRevocation', () => ({
+  revokeAllOrgOauthArtifacts: cleanupMocks.revokeAllOrgOauthArtifacts,
+  revokeAllPartnerOauthArtifacts: cleanupMocks.revokeAllPartnerOauthArtifacts,
+}));
 
-vi.mock('./permissions', () => ({ clearPermissionCache: vi.fn(async () => undefined) }));
-vi.mock('./tokenRevocation', () => ({ revokeAllUserTokens: vi.fn(async () => undefined) }));
+vi.mock('./permissions', () => ({ clearPermissionCache: cleanupMocks.clearPermissionCache }));
+vi.mock('./tokenRevocation', () => ({ revokeAllUserTokens: cleanupMocks.revokeAllUserTokens }));
 const lifecycleMocks = vi.hoisted(() => ({
   advance: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
   revokeFamilies: vi.fn(async () => 1),
@@ -109,9 +115,7 @@ describe('tenantLifecycle — agent fleet severance', () => {
   });
 
   it('revokeOrganizationTenantAccess suspends agent tokens (reason-tagged) and invalidates enrollment keys', async () => {
-    queueSelect([{ userId: 'u1' }]); // organizationUsers
-
-    const result = await revokeOrganizationTenantAccess('org-1');
+    const result = await revokeOrganizationTenantAccess('org-1', { userIds: ['u1'] });
 
     const tables = updateLog.map((u) => u.table);
     expect(tables).toContain(devices);
@@ -130,40 +134,36 @@ describe('tenantLifecycle — agent fleet severance', () => {
     expect(invalidateAgentTenantCache).toHaveBeenCalledWith(['org-1']);
     expect(result.agentTokensSuspended).toBe(2);
     expect(result.enrollmentKeysInvalidated).toBe(1);
-    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'u1');
-    expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
-      expect.anything(),
-      'u1',
-      'organization-suspended',
-    );
+    expect(cleanupMocks.revokeAllUserTokens).toHaveBeenCalledWith('u1');
+    expect(cleanupMocks.clearPermissionCache).toHaveBeenCalledWith('u1');
+    expect(lifecycleMocks.advance).not.toHaveBeenCalled();
+    expect(lifecycleMocks.revokeFamilies).not.toHaveBeenCalled();
   });
 
   it('revokePartnerTenantAccess severs agents across every org under the partner', async () => {
-    queueSelect([{ id: 'org-1' }, { id: 'org-2' }]); // organizations under partner
-    queueSelect([{ userId: 'pu1' }]); // partnerUsers
-    queueSelect([{ userId: 'ou1' }]); // org memberships
-
-    const result = await revokePartnerTenantAccess('partner-1');
+    const result = await revokePartnerTenantAccess('partner-1', {
+      orgIds: ['org-1', 'org-2'],
+      userIds: ['pu1', 'ou1'],
+    });
 
     const tables = updateLog.map((u) => u.table);
     expect(tables).toContain(devices);
     expect(tables).toContain(enrollmentKeys);
     expect(result.agentTokensSuspended).toBe(2);
     expect(result.enrollmentKeysInvalidated).toBe(1);
-    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'pu1');
-    expect(lifecycleMocks.advance).toHaveBeenCalledWith(expect.anything(), 'ou1');
-    expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
-      expect.anything(),
-      'pu1',
-      'partner-suspended',
-    );
+    expect(cleanupMocks.revokeAllUserTokens).toHaveBeenCalledWith('pu1');
+    expect(cleanupMocks.revokeAllUserTokens).toHaveBeenCalledWith('ou1');
+    expect(lifecycleMocks.advance).not.toHaveBeenCalled();
+    expect(lifecycleMocks.revokeFamilies).not.toHaveBeenCalled();
   });
 
-  it('propagates durable family revocation failure before Redis/OAuth cleanup', async () => {
-    queueSelect([{ userId: 'u1' }]);
-    lifecycleMocks.revokeFamilies.mockRejectedValueOnce(new Error('postgres unavailable'));
+  it('attempts cache and OAuth cleanup after token cleanup fails', async () => {
+    cleanupMocks.revokeAllUserTokens.mockRejectedValueOnce(new Error('redis unavailable'));
 
-    await expect(revokeOrganizationTenantAccess('org-1')).rejects.toThrow('postgres unavailable');
+    await expect(revokeOrganizationTenantAccess('org-1', { userIds: ['u1'] }))
+      .rejects.toThrow('user-tokens:u1');
+    expect(cleanupMocks.clearPermissionCache).toHaveBeenCalledWith('u1');
+    expect(cleanupMocks.revokeAllOrgOauthArtifacts).toHaveBeenCalledWith('org-1');
   });
 
   it('revokePartnerTenantAccess with no orgs does not touch devices or enrollment keys', async () => {

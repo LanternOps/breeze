@@ -1,4 +1,9 @@
-import type { Database } from '../db';
+import {
+  db,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+  type Database,
+} from '../db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 import { users } from '../db/schema/users';
@@ -10,6 +15,14 @@ export interface SecurityStateAdvance {
   mfa?: boolean;
   email?: boolean;
   passwordReset?: boolean;
+}
+
+export function withAuthLifecycleSystemTransaction<T>(
+  fn: (tx: AuthLifecycleTransaction) => Promise<T>,
+): Promise<T> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => fn(db as unknown as AuthLifecycleTransaction))
+  );
 }
 
 export async function advanceUserSecurityState(

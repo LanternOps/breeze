@@ -83,11 +83,18 @@ vi.mock('../services/userSuspension', () => ({
 const lifecycleMocks = vi.hoisted(() => ({
   advance: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
   revokeFamilies: vi.fn(async () => 1),
+  withSystemTransaction: vi.fn(),
+  neutralizeOrphan: vi.fn(async () => false),
+}));
+
+vi.mock('../services/userMembershipLifecycle', () => ({
+  neutralizeUserIfOrphaned: lifecycleMocks.neutralizeOrphan,
 }));
 
 vi.mock('../services/authLifecycle', () => ({
   advanceUserSecurityState: lifecycleMocks.advance,
   revokeAllUserSessionFamilies: lifecycleMocks.revokeFamilies,
+  withAuthLifecycleSystemTransaction: lifecycleMocks.withSystemTransaction,
 }));
 
 import { db } from '../db';
@@ -103,6 +110,12 @@ describe('access review routes', () => {
     vi.clearAllMocks();
     lifecycleMocks.advance.mockResolvedValue({ id: 'user', authEpoch: 2 });
     lifecycleMocks.revokeFamilies.mockResolvedValue(1);
+    lifecycleMocks.withSystemTransaction.mockReset();
+    lifecycleMocks.withSystemTransaction.mockImplementation(
+      async (fn: (tx: unknown) => Promise<unknown>) => fn(db as any),
+    );
+    lifecycleMocks.neutralizeOrphan.mockReset();
+    lifecycleMocks.neutralizeOrphan.mockResolvedValue(false);
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
         scope: 'partner',
@@ -466,6 +479,8 @@ describe('access review routes', () => {
         'user-1',
         'access-review-revoked',
       );
+      expect(lifecycleMocks.neutralizeOrphan).toHaveBeenCalledWith(expect.anything(), 'user-1');
+      expect(lifecycleMocks.neutralizeOrphan).toHaveBeenCalledWith(expect.anything(), 'user-2');
       expect(lifecycleMocks.revokeFamilies).toHaveBeenCalledWith(
         expect.anything(),
         'user-2',

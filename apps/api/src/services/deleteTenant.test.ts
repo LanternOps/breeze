@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const lifecycleMocks = vi.hoisted(() => ({
+  withSystemTransaction: vi.fn(),
+  invalidatePartner: vi.fn(async () => ({ userIds: ['user-1'], orgIds: ['org-1'] })),
+}));
+
 vi.mock('../db', () => ({
   db: { select: vi.fn(), update: vi.fn() },
 }));
@@ -30,6 +35,11 @@ vi.mock('./tenantLifecycle', () => ({
     oauthGrantsRevoked: 0,
     oauthRefreshTokensRevoked: 0,
   }),
+  invalidatePartnerUsersInTransaction: lifecycleMocks.invalidatePartner,
+}));
+
+vi.mock('./authLifecycle', () => ({
+  withAuthLifecycleSystemTransaction: lifecycleMocks.withSystemTransaction,
 }));
 
 import { runDeleteTenant } from './deleteTenant';
@@ -71,7 +81,9 @@ function mockSelectPartner(row: unknown | null): void {
 
 function mockUpdateSuccess(): ReturnType<typeof vi.fn> {
   const setFn = vi.fn().mockReturnThis();
-  const whereFn = vi.fn().mockResolvedValue(undefined);
+  const whereFn = vi.fn().mockReturnValue({
+    returning: vi.fn().mockResolvedValue([{ id: PARTNER_ID }]),
+  });
   vi.mocked(db.update).mockImplementation(
     () =>
       ({
@@ -84,6 +96,10 @@ function mockUpdateSuccess(): ReturnType<typeof vi.fn> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  lifecycleMocks.withSystemTransaction.mockImplementation(
+    async (fn: (tx: unknown) => Promise<unknown>) => fn(db as any),
+  );
+  lifecycleMocks.invalidatePartner.mockResolvedValue({ userIds: ['user-1'], orgIds: ['org-1'] });
 });
 
 describe('delete_tenant', () => {
@@ -180,7 +196,15 @@ describe('delete_tenant', () => {
     expect(setPayload.status).toBe('churned');
     expect(setPayload.deletedAt).toBeInstanceOf(Date);
     expect(setPayload.updatedAt).toBeInstanceOf(Date);
-    expect(revokePartnerTenantAccess).toHaveBeenCalledWith(PARTNER_ID);
+    expect(lifecycleMocks.invalidatePartner).toHaveBeenCalledWith(
+      expect.anything(),
+      PARTNER_ID,
+      'partner-deleted',
+    );
+    expect(revokePartnerTenantAccess).toHaveBeenCalledWith(PARTNER_ID, {
+      userIds: ['user-1'],
+      orgIds: ['org-1'],
+    });
 
     // Audit event written with api_key actor.
     expect(writeAuditEvent).toHaveBeenCalledTimes(1);

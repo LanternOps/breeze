@@ -25,7 +25,11 @@ import { partners } from '../db/schema';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
-import { revokePartnerTenantAccess } from './tenantLifecycle';
+import {
+  invalidatePartnerUsersInTransaction,
+  revokePartnerTenantAccess,
+} from './tenantLifecycle';
+import { withAuthLifecycleSystemTransaction } from './authLifecycle';
 
 interface DeleteTenantInput {
   tenant_id: string;
@@ -87,12 +91,19 @@ export async function runDeleteTenant(
   }
 
   const now = new Date();
-  await db
-    .update(partners)
-    .set({ status: 'churned', deletedAt: now, updatedAt: now })
-    .where(eq(partners.id, input.tenant_id));
+  const lifecycleSnapshot = await withAuthLifecycleSystemTransaction(async (tx) => {
+    const updated = await tx
+      .update(partners)
+      .set({ status: 'churned', deletedAt: now, updatedAt: now })
+      .where(eq(partners.id, input.tenant_id))
+      .returning({ id: partners.id });
+    if (updated.length === 0) {
+      throw new Error(`Failed to soft-delete tenant ${input.tenant_id}`);
+    }
+    return invalidatePartnerUsersInTransaction(tx as any, input.tenant_id, 'partner-deleted');
+  });
 
-  await revokePartnerTenantAccess(input.tenant_id);
+  await revokePartnerTenantAccess(input.tenant_id, lifecycleSnapshot);
 
   try {
     writeAuditEvent(requestLikeFromSnapshot({}), {
