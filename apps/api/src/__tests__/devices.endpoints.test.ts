@@ -53,6 +53,7 @@ vi.mock('../services/tenantStatus', () => ({
 // Bypass token revocation lookup (Redis-backed).
 vi.mock('../services/tokenRevocation', () => ({
   isUserTokenRevoked: vi.fn(async () => false),
+  isAccessSessionFamilyActive: async () => true,
   revokeUserTokens: vi.fn(async () => {}),
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
 }));
@@ -118,13 +119,16 @@ vi.mock('../db/schema', () => ({
 import { db } from '../db';
 
 function mockUserLookup(user = createTestUser()) {
-  vi.mocked(db.select).mockReturnValueOnce({
+  const liveRow = {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue([user])
       })
     })
-  } as any);
+  } as any;
+  vi.mocked(db.select)
+    .mockReturnValueOnce(liveRow)
+    .mockReturnValueOnce(liveRow);
 }
 
 function mockDeviceLookup(device: ReturnType<typeof createTestDevice> | null) {

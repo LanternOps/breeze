@@ -26,9 +26,20 @@ export function createMockAuth(overrides: Partial<MockAuthContext> = {}): MockAu
 export function createTestUser(overrides: Record<string, unknown> = {}) {
   return {
     id: 'test-user-id',
+    userId: 'test-user-id',
     email: 'test@example.com',
     name: 'Test User',
     status: 'active',
+    partnerId: 'test-partner-id',
+    orgId: 'test-org-id',
+    authEpoch: 1,
+    mfaEpoch: 1,
+    passwordChangedAt: null,
+    isPlatformAdmin: false,
+    // Membership aliases let the same aggregate fixture satisfy the live
+    // organization/partner membership projection used by authMiddleware.
+    orgAccess: 'all',
+    orgIds: null,
     // Default to enrolled so tests don't accidentally trip the role-level
     // force_mfa gate added in auth middleware (Task 8). Pass
     // `mfaEnabled: false` explicitly for gate-specific tests.
@@ -60,19 +71,27 @@ export interface TestTokenOptions {
   partnerId?: string | null;
   scope?: 'system' | 'partner' | 'organization';
   mfa?: boolean;
+  authEpoch?: number;
+  mfaEpoch?: number;
+  sessionId?: string;
 }
 
 export async function createTestToken(options: TestTokenOptions = {}): Promise<string> {
+  const scope = options.scope ?? 'organization';
   const payload: Omit<TokenPayload, 'type'> = {
     sub: options.userId ?? 'test-user-id',
     email: options.email ?? 'test@example.com',
     roleId: options.roleId ?? 'test-role-id',
-    orgId: options.orgId ?? 'test-org-id',
-    partnerId: options.partnerId ?? 'test-partner-id',
-    scope: options.scope ?? 'organization',
-    ae: 1,
-    me: 1,
-    sid: `test-session:${options.userId ?? 'test-user-id'}`,
+    orgId: options.orgId !== undefined
+      ? options.orgId
+      : scope === 'organization' ? 'test-org-id' : null,
+    partnerId: options.partnerId !== undefined
+      ? options.partnerId
+      : scope === 'system' ? null : 'test-partner-id',
+    scope,
+    ae: options.authEpoch ?? 1,
+    me: options.mfaEpoch ?? 1,
+    sid: options.sessionId ?? `test-session:${options.userId ?? 'test-user-id'}`,
     mfa: options.mfa ?? false
   };
   return createAccessToken(payload);

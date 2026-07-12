@@ -76,6 +76,7 @@ vi.mock('../services/tenantStatus', () => ({
 // Bypass token revocation lookup (Redis-backed).
 vi.mock('../services/tokenRevocation', () => ({
   isUserTokenRevoked: vi.fn(async () => false),
+  isAccessSessionFamilyActive: async () => true,
   revokeUserTokens: vi.fn(async () => {}),
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
 }));
@@ -279,6 +280,7 @@ describe('Authenticated API Tests (Real JWT)', () => {
     });
 
     it('should use custom token options', async () => {
+      mockUserLookup(createTestUser({ orgId: 'custom-org-123' }));
       app.use(authMiddleware);
       app.get('/check-org', (c) => {
         const auth = c.get('auth');
@@ -298,7 +300,7 @@ describe('Authenticated API Tests (Real JWT)', () => {
 
   describe('Multi-tenant Data Isolation', () => {
     it('should include orgId in auth context for filtering', async () => {
-      const testUser = createTestUser();
+      const testUser = createTestUser({ orgId: 'org-abc-123' });
       mockUserLookup(testUser);
 
       app.use(authMiddleware);
@@ -324,7 +326,7 @@ describe('Authenticated API Tests (Real JWT)', () => {
     });
 
     it('should include partnerId for partner-scoped requests', async () => {
-      const testUser = createTestUser();
+      const testUser = createTestUser({ partnerId: 'partner-xyz' });
       mockUserLookup(testUser);
 
       app.use(authMiddleware);
