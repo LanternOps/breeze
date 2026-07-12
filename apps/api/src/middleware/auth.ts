@@ -4,7 +4,7 @@ import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
-import { users, partnerUsers, organizationUsers, organizations, roles } from '../db/schema';
+import { users, partnerUsers, organizations } from '../db/schema';
 import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
