@@ -29,6 +29,20 @@ func (rt handlerRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	return recorder.Result(), nil
 }
 
+// hostRoutingTransport dispatches by request hostname so cross-host tests
+// (e.g. redirect refusal) can genuinely observe which host received traffic.
+type hostRoutingTransport struct{ handlers map[string]http.Handler }
+
+func (rt hostRoutingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	handler, ok := rt.handlers[req.URL.Hostname()]
+	if !ok {
+		return nil, fmt.Errorf("no test handler for host %q", req.URL.Hostname())
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	return recorder.Result(), nil
+}
+
 func newTestClient(t *testing.T, handler http.Handler) *Client {
 	t.Helper()
 
@@ -170,16 +184,24 @@ func TestSentinelStatusMappings(t *testing.T) {
 
 func TestRedirectToOtherHostIsRefused(t *testing.T) {
 	var attackerHits atomic.Int32
-	attackerURL, _ := newHTTPTestEndpoint(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		attackerHits.Add(1)
-	}), "attacker.test")
-
-	originURL, originClient := newHTTPTestEndpoint(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, attackerURL, http.StatusTemporaryRedirect)
-	}), "origin.test")
+	// One transport serving BOTH hosts, routed by hostname: if the redirect
+	// guard were removed, the follow-up request would genuinely reach the
+	// attacker handler and increment the counter.
+	transport := hostRoutingTransport{handlers: map[string]http.Handler{
+		"attacker.test": http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			attackerHits.Add(1)
+		}),
+		"origin.test": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "http://attacker.test/steal", http.StatusTemporaryRedirect)
+		}),
+	}}
 	token := secmem.NewSecureString("redirect-secret")
 	defer token.Zero()
-	client := NewClient(ClientConfig{ServerURL: originURL, AuthToken: token, HTTPClient: originClient})
+	client := NewClient(ClientConfig{
+		ServerURL:  "http://origin.test",
+		AuthToken:  token,
+		HTTPClient: &http.Client{Transport: transport},
+	})
 
 	_, err := client.FetchConfig(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "untrusted host") {
