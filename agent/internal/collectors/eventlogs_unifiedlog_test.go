@@ -1,7 +1,9 @@
 package collectors
 
 import (
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -125,6 +127,91 @@ func TestUnifiedLogStartFormat(t *testing.T) {
 	}
 	if got := ts.UTC().Format(unifiedLogStartFormat); got != "2026-07-12 18:00:00+0000" {
 		t.Errorf("unifiedLogStartFormat (UTC) produced %q, want %q", got, "2026-07-12 18:00:00+0000")
+	}
+}
+
+func TestRunEventLogSubCollectorsIsolatesFailingSource(t *testing.T) {
+	t.Parallel()
+
+	// Regression guard for the GAP-2 review finding on #2393: a persistently
+	// failing unified-log query must NOT freeze the watermarks of the healthy
+	// sources. With a shared watermark, the healthy sources' windows grew
+	// unboundedly from the frozen `since`, and after the maxEvents cap the
+	// oldest (already-sent) events won every pass — NEW crash/power events
+	// were silently starved out.
+	seed := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	c := NewEventLogCollector()
+	c.lastCollectTime = seed
+
+	var mu sync.Mutex
+	var healthySince []time.Time
+	var failingSince []time.Time
+
+	subs := []eventLogSubCollector{
+		{name: "unifiedlog", fn: func(since time.Time) ([]EventLogEntry, error) {
+			mu.Lock()
+			failingSince = append(failingSince, since)
+			mu.Unlock()
+			return nil, errors.New("log show timed out")
+		}},
+		{name: "power", fn: func(since time.Time) ([]EventLogEntry, error) {
+			mu.Lock()
+			healthySince = append(healthySince, since)
+			mu.Unlock()
+			return []EventLogEntry{{Category: "system", Level: "warning", EventID: "power:test"}}, nil
+		}},
+	}
+
+	pass1 := seed.Add(15 * time.Minute)
+	pass2 := seed.Add(30 * time.Minute)
+
+	events := c.runEventLogSubCollectors(subs, pass1)
+	if len(events) != 1 || events[0].Category != "system" {
+		t.Fatalf("pass 1: healthy source's events must flow despite sibling failure, got %v", events)
+	}
+	events = c.runEventLogSubCollectors(subs, pass2)
+	if len(events) != 1 {
+		t.Fatalf("pass 2: healthy source's events must keep flowing, got %v", events)
+	}
+
+	// Healthy source advanced: first window starts at the seed, second at pass1.
+	if !healthySince[0].Equal(seed) || !healthySince[1].Equal(pass1) {
+		t.Errorf("healthy source windows = %v, want [%v %v]", healthySince, seed, pass1)
+	}
+	// Failing source retries its own window from the seed both times.
+	if !failingSince[0].Equal(seed) || !failingSince[1].Equal(seed) {
+		t.Errorf("failing source windows = %v, want [%v %v]", failingSince, seed, seed)
+	}
+	// And the failing source's stall is invisible to the healthy watermark.
+	if got := c.sourceSince("power"); !got.Equal(pass2) {
+		t.Errorf("power watermark = %v, want %v", got, pass2)
+	}
+	if got := c.sourceSince("unifiedlog"); !got.Equal(seed) {
+		t.Errorf("unifiedlog watermark = %v, want seed %v", got, seed)
+	}
+}
+
+func TestSourceWatermarkFallsBackToSeed(t *testing.T) {
+	t.Parallel()
+
+	seed := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	c := NewEventLogCollector()
+	c.lastCollectTime = seed
+
+	// Before any success, every source uses the shared seed — this is what
+	// preserves the reliability collector's initial-lookback stamping.
+	if got := c.sourceSince("unifiedlog"); !got.Equal(seed) {
+		t.Errorf("sourceSince before success = %v, want seed %v", got, seed)
+	}
+
+	later := seed.Add(time.Hour)
+	c.advanceSourceWatermark("unifiedlog", later)
+	if got := c.sourceSince("unifiedlog"); !got.Equal(later) {
+		t.Errorf("sourceSince after advance = %v, want %v", got, later)
+	}
+	// Other sources are unaffected.
+	if got := c.sourceSince("power"); !got.Equal(seed) {
+		t.Errorf("sibling sourceSince = %v, want seed %v", got, seed)
 	}
 }
 

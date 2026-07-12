@@ -6,25 +6,21 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
 // Collect gathers event logs from macOS sources in parallel
 func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
-	c.mu.Lock()
-	lastCollect := c.lastCollectTime
-	c.mu.Unlock()
-
-	// Stamp the next window from the START of this pass, not the end: the
-	// sub-collectors query up to roughly this instant, so stamping after they
-	// finish would leave a gap covering the pass duration. The tiny overlap
-	// this creates can at worst duplicate an event that lands mid-pass —
-	// preferable to silently dropping it (there is no dedup downstream).
+	// Each source advances its watermark from the START of this pass, not the
+	// end: the sub-collectors query up to roughly this instant, so stamping
+	// after they finish would leave a gap covering the pass duration. The tiny
+	// overlap this creates can at worst duplicate an event that lands mid-pass
+	// — preferable to silently dropping it. Watermarks are per-source
+	// (runEventLogSubCollectors) so a failing source retries its own window
+	// next pass without freezing the windows of the sources that succeeded.
 	passStart := time.Now()
 
 	categories, minLevel, maxEvents := c.readConfig()
@@ -32,56 +28,25 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 	securityEnabled := categoryEnabled(categories, "security")
 	hardwareEnabled := categoryEnabled(categories, "hardware")
 
-	var subCollectors []func(since time.Time) ([]EventLogEntry, error)
+	var subCollectors []eventLogSubCollector
 	if securityEnabled || hardwareEnabled {
 		// security + hardware share ONE `log show` invocation (issue #2390:
 		// two parallel queries doubled seconds of CPU per pass for the same data).
-		subCollectors = append(subCollectors, func(since time.Time) ([]EventLogEntry, error) {
-			return c.collectUnifiedLogEvents(since, securityEnabled, hardwareEnabled)
+		subCollectors = append(subCollectors, eventLogSubCollector{
+			name: "unifiedlog",
+			fn: func(since time.Time) ([]EventLogEntry, error) {
+				return c.collectUnifiedLogEvents(since, securityEnabled, hardwareEnabled)
+			},
 		})
 	}
 	if categoryEnabled(categories, "application") {
-		subCollectors = append(subCollectors, c.collectCrashReports)
+		subCollectors = append(subCollectors, eventLogSubCollector{name: "crashreports", fn: c.collectCrashReports})
 	}
 	if categoryEnabled(categories, "system") {
-		subCollectors = append(subCollectors, c.collectPowerEvents)
+		subCollectors = append(subCollectors, eventLogSubCollector{name: "power", fn: c.collectPowerEvents})
 	}
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var allEvents []EventLogEntry
-	var failures int
-
-	wg.Add(len(subCollectors))
-	for _, fn := range subCollectors {
-		go func(f func(since time.Time) ([]EventLogEntry, error)) {
-			defer wg.Done()
-			events, err := f(lastCollect)
-			if err != nil {
-				slog.Warn("event log sub-collector error", "error", err.Error())
-				mu.Lock()
-				failures++
-				mu.Unlock()
-				return
-			}
-			mu.Lock()
-			allEvents = append(allEvents, events...)
-			mu.Unlock()
-		}(fn)
-	}
-	wg.Wait()
-
-	// Only advance the watermark when every sub-collector succeeded; on a
-	// transient failure (e.g. `log show` timing out under load) the next pass
-	// retries the same window instead of silently dropping it. Retry cost is
-	// bounded — the unified-log query clamps to unifiedLogMaxLookback — and
-	// re-collected events from the sub-collectors that DID succeed are absorbed
-	// server-side (event ingestion inserts with onConflictDoNothing).
-	if failures == 0 {
-		c.mu.Lock()
-		c.lastCollectTime = passStart
-		c.mu.Unlock()
-	}
+	allEvents := c.runEventLogSubCollectors(subCollectors, passStart)
 
 	// Filter by minimum level
 	allEvents = filterByLevel(allEvents, minLevel)

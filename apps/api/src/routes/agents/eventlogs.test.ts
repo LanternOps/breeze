@@ -86,7 +86,24 @@ function mockDeviceLookup() {
 }
 
 function mockInsertSuccess() {
-  const onConflictDoNothing = vi.fn().mockResolvedValue(undefined);
+  // .returning() echoes the inserted batch (no conflicts) — mirrors the route
+  // chain db.insert().values().onConflictDoNothing().returning().
+  let captured: Array<Record<string, unknown>> = [];
+  const returning = vi.fn().mockImplementation(async () =>
+    captured.map((r) => ({ source: r.source, eventId: r.eventId, timestamp: r.timestamp })));
+  const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
+  const values = vi.fn().mockImplementation((batch: Array<Record<string, unknown>>) => {
+    captured = batch;
+    return { onConflictDoNothing };
+  });
+  mocks.insert.mockReturnValue({ values });
+  return values;
+}
+
+function mockInsertAllConflicts() {
+  // Every row hits the device_event_logs_dedup_idx — .returning() is empty.
+  const returning = vi.fn().mockResolvedValue([]);
+  const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
   const values = vi.fn().mockReturnValue({ onConflictDoNothing });
   mocks.insert.mockReturnValue({ values });
   return values;
@@ -174,6 +191,22 @@ describe('agent event log routes', () => {
         ],
       })
     );
+  });
+
+  it('does not re-forward duplicate events absorbed by the dedup index (#2390 retry passes)', async () => {
+    mockDeviceLookup();
+    mockInsertAllConflicts();
+
+    const res = await app.request(`/agents/${AGENT_ID}/eventlogs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [makeEvent()] }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.count).toBe(0); // nothing actually inserted
+    expect(mocks.enqueueLogForwarding).not.toHaveBeenCalled();
   });
 });
 
