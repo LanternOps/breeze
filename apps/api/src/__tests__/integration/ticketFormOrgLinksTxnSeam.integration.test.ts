@@ -14,11 +14,17 @@
  *
  * Only partner-scoped tokens with orgAccess='all' reach this path (POST
  * partner-wide + canManagePartnerWidePolicies gate), so the ambient context is
- * always a partner context whose accessibleOrgIds covers every org under the
- * partner — which is what makes both the link WITH CHECK
- * (breeze_has_partner_access on the parent) and the org-belongs-to-partner
- * validation read (breeze_has_org_access on organizations) pass on the ambient
- * connection.
+ * always a partner context whose accessiblePartnerIds covers the owning
+ * partner — which is what makes the link WITH CHECK
+ * (breeze_has_partner_access on the parent) pass on the ambient connection.
+ *
+ * The org-belongs-to-partner validation read, by contrast, runs under a
+ * SYSTEM context (#2357): a request context's accessibleOrgIds only covers
+ * active/trial, non-soft-deleted orgs, so validating on the ambient
+ * connection made every save of a form that allowlisted a later-suspended/
+ * churned/soft-deleted org fail with a false cross-partner 400. This suite
+ * also pins the #2357 contract: owned-but-inactive and owned-but-soft-deleted
+ * orgs are accepted; unknown and cross-partner ids still 400.
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -91,6 +97,62 @@ describe('ticket_forms org-links transaction seam (POST with visibleOrgIds)', ()
       db.select().from(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.formId, formId))
     );
     expect(links.map((l) => l.orgId).sort()).toEqual([orgA.id, orgB.id].sort());
+  });
+
+  // #2357 — an org that was validly allowlisted and later became suspended (or
+  // churned/trial-expired) drops out of the caller's accessibleOrgIds
+  // (auth.ts filters status IN ('active','trial')), so the OLD ambient-context
+  // validation read couldn't see it and every subsequent save of the form
+  // 400ed. The ownership check must accept any org of the owning partner
+  // regardless of status.
+  it('accepts an owned org that is SUSPENDED and thus invisible to the caller-shaped request context (#2357)', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const suspendedOrg = await createOrganization({ partnerId: partner.id, status: 'suspended' });
+
+    // Mirror a real token: the suspended org is NOT in accessibleOrgIds.
+    const formId = await withDbAccessContext(partnerContext(partner.id, [orgA.id]), async () => {
+      const [row] = await db
+        .insert(ticketForms)
+        .values({ ...baseForm, partnerId: partner.id, orgId: null })
+        .returning();
+      if (!row) throw new Error('parent insert returned no row');
+      await syncTicketFormOrgLinks(row.id, [orgA.id, suspendedOrg.id], partner.id);
+      return row.id;
+    });
+    created.push(formId);
+
+    const links = await withDbAccessContext(systemContext(), () =>
+      db.select().from(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.formId, formId))
+    );
+    expect(links.map((l) => l.orgId).sort()).toEqual([orgA.id, suspendedOrg.id].sort());
+  });
+
+  // #2357 documented behavior: a SOFT-DELETED (deleted_at set) org of the
+  // owning partner is also accepted — the link row is inert while the org is
+  // deleted, and retaining it means a restored org rejoins the allowlist
+  // instead of silently falling off it on some unrelated form edit. Only
+  // hard-deleted (row gone) and cross-partner ids reject.
+  it('accepts an owned org that is SOFT-DELETED (#2357 — link retained, inert until restore)', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const softDeletedOrg = await createOrganization({ partnerId: partner.id, deletedAt: new Date() });
+
+    const formId = await withDbAccessContext(partnerContext(partner.id, [orgA.id]), async () => {
+      const [row] = await db
+        .insert(ticketForms)
+        .values({ ...baseForm, partnerId: partner.id, orgId: null })
+        .returning();
+      if (!row) throw new Error('parent insert returned no row');
+      await syncTicketFormOrgLinks(row.id, [orgA.id, softDeletedOrg.id], partner.id);
+      return row.id;
+    });
+    created.push(formId);
+
+    const links = await withDbAccessContext(systemContext(), () =>
+      db.select().from(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.formId, formId))
+    );
+    expect(links.map((l) => l.orgId).sort()).toEqual([orgA.id, softDeletedOrg.id].sort());
   });
 
   it('rejects a cross-partner org id and persists NOTHING (rollback contract for the route)', async () => {

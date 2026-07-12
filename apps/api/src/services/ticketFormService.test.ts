@@ -1,17 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { dbSelectMock, insertValuesMock, deleteWhereMock } = vi.hoisted(() => ({
+const { dbSelectMock, insertValuesMock, deleteWhereMock, systemContextMock } = vi.hoisted(() => ({
   dbSelectMock: vi.fn(),
   insertValuesMock: vi.fn(),
-  deleteWhereMock: vi.fn()
+  deleteWhereMock: vi.fn(),
+  systemContextMock: vi.fn()
 }));
 
 vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
-  // syncTicketFormOrgLinks runs on the ambient request transaction when one
-  // exists (the FK-seam fix); a truthy context makes it use `db` directly,
-  // which is the mocked query builder these tests assert against.
+  withSystemDbAccessContext: (fn: () => unknown) => {
+    systemContextMock();
+    return fn();
+  },
+  // syncTicketFormOrgLinks runs its WRITE on the ambient request transaction
+  // when one exists (the FK-seam fix); a truthy context makes it use `db`
+  // directly, which is the mocked query builder these tests assert against.
+  // Its org-ownership validation READ always escalates to a system context
+  // (#2357) — systemContextMock counts those escalations.
   getCurrentDbAccessContext: () => ({ scope: 'partner' }),
   db: {
     select: vi.fn(() => ({
@@ -212,6 +218,25 @@ describe('syncTicketFormOrgLinks', () => {
     expect(inserted).toHaveLength(2); // deduped
     expect(inserted.map((r) => r.orgId).sort()).toEqual(['org-a', 'org-b']);
     expect(inserted.every((r) => r.formId === 'form-1')).toBe(true);
+  });
+
+  // #2357 — the ownership validation read must escalate to a system context
+  // (a request context's breeze_has_org_access hides suspended/churned/soft-
+  // deleted orgs, which turned every save of a form allowlisting one into a
+  // false cross-partner 400), while the WRITE stays on the ambient request
+  // transaction (the FK/WITH-CHECK seam). With an ambient context present,
+  // exactly ONE system-context escalation may occur: the validation read.
+  it('non-empty array: validation read escalates to a system context exactly once; the write does not', async () => {
+    dbSelectMock.mockResolvedValueOnce([{ id: 'org-a', partnerId: 'p-1' }]);
+    await syncTicketFormOrgLinks('form-1', ['org-a'], 'p-1');
+    expect(systemContextMock).toHaveBeenCalledTimes(1);
+    expect(deleteWhereMock).toHaveBeenCalledTimes(1);
+    expect(insertValuesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('null orgIds: no validation read, so no system-context escalation at all', async () => {
+    await syncTicketFormOrgLinks('form-1', null, 'p-1');
+    expect(systemContextMock).not.toHaveBeenCalled();
   });
 
   it('throws when an org belongs to a different partner (write aborted before delete/insert)', async () => {

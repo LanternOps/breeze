@@ -145,57 +145,77 @@ export async function getTicketFormForOrg(
  * because both converge on the same persisted result. Every id in a
  * non-empty array MUST belong to `partnerId`, checked with a single select
  * before any write so a cross-partner id can never sneak in as a link.
+ *
+ * The validation read is an OWNERSHIP check only — `partner_id = partnerId`,
+ * with no org-status filter — and runs under a system context (#2357). A
+ * request context can't do this read: `breeze_has_org_access` only covers
+ * active/trial, non-soft-deleted orgs, so once an allowlisted org became
+ * suspended/churned/soft-deleted, EVERY subsequent save of the form (the web
+ * builder re-sends visibleOrgIds on each save, even a rename) 400ed with a
+ * misleading cross-partner error. Owned-but-inactive and owned-but-soft-
+ * deleted orgs are deliberately accepted: the link row is inert while the org
+ * can't sign in (listTicketFormsForOrg is reached only through org-authorized
+ * callers), and keeping it means a reactivated/restored org rejoins the
+ * allowlist instead of having silently fallen off it. Ids that don't exist or
+ * belong to another partner still 400 — and the system-context read makes
+ * that error finally accurate.
  */
 export async function syncTicketFormOrgLinks(formId: string, orgIds: string[] | null, partnerId: string): Promise<void> {
-  const sync = async () => {
-    if (orgIds === null) {
-      await db.delete(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.formId, formId));
-      return;
+  const dedupedIds = orgIds === null ? null : Array.from(new Set(orgIds));
+
+  // Ownership-only validation read, on its own short-lived system transaction
+  // (runOutsideDbContext exits the ambient store first — never nested inside
+  // the request transaction's connection). It reads committed organizations
+  // rows only, so it does not need to see the request transaction's
+  // uncommitted parent form.
+  if (dedupedIds !== null && dedupedIds.length > 0) {
+    const orgRows = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ id: organizations.id, partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(inArray(organizations.id, dedupedIds))
+          .limit(500)
+      )
+    );
+    const partnerIdById = new Map(orgRows.map((r) => [r.id, r.partnerId]));
+    const allBelongToPartner = dedupedIds.every((id) => partnerIdById.get(id) === partnerId);
+    if (!allBelongToPartner) {
+      throw new TicketFormError('visibleOrgIds must reference organizations of the owning partner', 400);
     }
-    const dedupedIds = Array.from(new Set(orgIds));
-    if (dedupedIds.length > 0) {
-      const orgRows = await db
-        .select({ id: organizations.id, partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(inArray(organizations.id, dedupedIds))
-        .limit(500);
-      const partnerIdById = new Map(orgRows.map((r) => [r.id, r.partnerId]));
-      const allBelongToPartner = dedupedIds.every((id) => partnerIdById.get(id) === partnerId);
-      if (!allBelongToPartner) {
-        throw new TicketFormError('visibleOrgIds must reference organizations of the owning partner', 400);
-      }
-    }
-    // Replace semantics: delete-all then bulk insert, in ONE transaction with
-    // the validation read above.
+  }
+
+  // Replace semantics: delete-all then bulk insert.
+  const write = async () => {
     await db.delete(ticketFormOrgLinks).where(eq(ticketFormOrgLinks.formId, formId));
-    if (dedupedIds.length > 0) {
+    if (dedupedIds !== null && dedupedIds.length > 0) {
       await db.insert(ticketFormOrgLinks).values(dedupedIds.map((orgId) => ({ formId, orgId })));
     }
   };
 
-  // The link write MUST share the caller's ambient request transaction when one
-  // exists. On POST /ticket-forms the parent ticket_forms row is inserted
-  // uncommitted on the request transaction (C1); escaping to a FRESH system
-  // transaction on another pooled connection (C2) means C2's READ COMMITTED
-  // snapshot cannot see that parent, so the link policy's WITH CHECK
-  // `EXISTS (... ticket_forms ...)` finds no parent row and the insert is
-  // rejected (42501) — the create 500s (whole-branch review Critical). Running
-  // on the ambient transaction lets the write see the same-transaction parent.
+  // The link WRITE (unlike the validation read above) MUST share the caller's
+  // ambient request transaction when one exists. On POST /ticket-forms the
+  // parent ticket_forms row is inserted uncommitted on the request transaction
+  // (C1); escaping to a FRESH system transaction on another pooled connection
+  // (C2) means C2's READ COMMITTED snapshot cannot see that parent, so the
+  // link policy's WITH CHECK `EXISTS (... ticket_forms ...)` finds no parent
+  // row and the insert is rejected (42501) — the create 500s (whole-branch
+  // review Critical). Running on the ambient transaction lets the write see
+  // the same-transaction parent.
   //
   // Only partner-scoped tokens with orgAccess='all' reach this code path (POST
   // partner-wide + PUT partner-wide, both behind canManagePartnerWidePolicies),
   // so the ambient context is a partner context whose accessiblePartnerIds
-  // covers the owning partner and whose accessibleOrgIds covers every org under
-  // it. That clears BOTH the link WITH CHECK (breeze_has_partner_access on the
-  // parent's partner_id) and the org-belongs-to-partner validation read
-  // (breeze_has_org_access on organizations) — RLS stays fully enforced, it is
-  // simply satisfied by the caller's own partner scope rather than a system
-  // escalation. When there is NO ambient context (defensive; no current caller
-  // reaches here contextless) fall back to a fresh system context.
+  // covers the owning partner — which clears the link WITH CHECK
+  // (breeze_has_partner_access on the parent's partner_id). RLS stays fully
+  // enforced on the write; it is simply satisfied by the caller's own partner
+  // scope rather than a system escalation. When there is NO ambient context
+  // (defensive; no current caller reaches here contextless) fall back to a
+  // fresh system context.
   if (getCurrentDbAccessContext()) {
-    return sync();
+    return write();
   }
-  return runOutsideDbContext(() => withSystemDbAccessContext(sync));
+  return runOutsideDbContext(() => withSystemDbAccessContext(write));
 }
 
 /**
