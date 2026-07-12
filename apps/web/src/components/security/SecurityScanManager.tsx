@@ -442,15 +442,21 @@ export default function SecurityScanManager() {
                 >
                   <div className="flex items-center justify-between text-sm font-medium">
                     <span>{scan.deviceName}</span>
-                    <span className="capitalize">{scan.scanType} scan</span>
+                    <span className="capitalize">
+                      {t("securitySecurityScanManager.scanTypeLabel", {
+                        type: scan.scanType,
+                      })}
+                    </span>
                   </div>
                   <div className="mt-2 text-xs text-muted-foreground">
-                    {t("securitySecurityScanManager.started")}
-                    {formatTimestamp(scan.startedAt)}
+                    {t("securitySecurityScanManager.started", {
+                      time: formatTimestamp(scan.startedAt),
+                    })}
                   </div>
                   <div className="mt-2 text-xs text-muted-foreground capitalize">
-                    {t("securitySecurityScanManager.status")}
-                    {scan.status}
+                    {t("securitySecurityScanManager.status", {
+                      status: scan.status,
+                    })}
                   </div>
                 </div>
               ))

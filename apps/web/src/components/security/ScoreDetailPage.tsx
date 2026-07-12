@@ -133,8 +133,7 @@ export default function ScoreDetailPage() {
       {error && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-center">
           <p className="text-sm text-amber-700">
-            {t("securityScoreDetailPage.dataMayBeOutdated")}
-            {error}
+            {t("securityScoreDetailPage.dataMayBeOutdated", { error })}
           </p>
         </div>
       )}
