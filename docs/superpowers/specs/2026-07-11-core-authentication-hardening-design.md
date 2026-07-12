@@ -1,8 +1,8 @@
 # Core Authentication Hardening Design
 
-**Date:** 2026-07-11  
-**Source review:** `internal/security-findings/2026-07-11-playbook-02-core-authentication.md`  
-**Reviewed baseline:** `origin/main` at `944bb8d1861d65c4978b5a1b7db910d43893b972`  
+**Date:** 2026-07-11
+**Source review:** `internal/security-findings/2026-07-11-playbook-02-core-authentication.md`
+**Reviewed baseline:** `origin/main` at `944bb8d1861d65c4978b5a1b7db910d43893b972`
 **Delivery:** Six dependency-ordered pull requests. Every pull request must be independently deployable and reviewed before the next is opened.
 
 ## Objective
@@ -160,7 +160,7 @@ API keys identify their principal type and principal ID. Human keys cannot be si
 
 ## Trusted client IP
 
-Caddy strips untrusted forwarding headers and overwrites one internal canonical client-IP header from its trusted-proxy-aware client IP. The API accepts that header only from configured exact proxy CIDRs. Raw `CF-Connecting-IP` is accepted only in explicit Cloudflare mode with a trusted cloudflared/Cloudflare hop; generic mode never prefers it.
+Caddy strips untrusted forwarding headers and overwrites one internal canonical client-IP header from its trusted-proxy-aware client IP. The API accepts that header only from configured exact proxy identities: explicit CIDRs or service hostnames resolved and pinned to exact peer addresses at startup. Raw `CF-Connecting-IP` is accepted only in explicit Cloudflare mode with a trusted cloudflared/Cloudflare hop; generic mode never prefers it.
 
 When a partner IP allowlist is configured but no trusted client IP can be derived, authorization fails closed. Shipped hosted and self-hosted Compose modes declare their trust mode explicitly.
 
@@ -172,6 +172,17 @@ When a partner IP allowlist is configured but no trusted client IP can be derive
 - Authentication errors remain generic publicly while server-side audit reasons remain specific.
 - Audit events never contain raw JWTs, reset/verification tokens, MFA codes, WebAuthn assertions, API keys, or credential public-key material.
 - Background email failures are observable and retryable without changing the public response shape.
+
+## Wave documentation index
+
+| Wave | Focused design | Implementation plan |
+|---|---|---|
+| 1 | `docs/superpowers/specs/2026-07-11-core-auth-wave-1-lifecycle-design.md` | `docs/superpowers/plans/2026-07-11-core-auth-wave-1-lifecycle.md` |
+| 2 | `docs/superpowers/specs/2026-07-11-core-auth-wave-2-mfa-design.md` | `docs/superpowers/plans/2026-07-11-core-auth-wave-2-mfa.md` |
+| 3 | `docs/superpowers/specs/2026-07-11-core-auth-wave-3-sso-design.md` | `docs/superpowers/plans/2026-07-11-core-auth-wave-3-sso.md` |
+| 4 | `docs/superpowers/specs/2026-07-11-core-auth-wave-4-identity-recovery-design.md` | `docs/superpowers/plans/2026-07-11-core-auth-wave-4-identity-recovery.md` |
+| 5 | `docs/superpowers/specs/2026-07-11-core-auth-wave-5-api-principals-design.md` | `docs/superpowers/plans/2026-07-11-core-auth-wave-5-api-principals.md` |
+| 6 | `docs/superpowers/specs/2026-07-11-core-auth-wave-6-client-ip-design.md` | `docs/superpowers/plans/2026-07-11-core-auth-wave-6-client-ip.md` |
 
 ## Delivery sequence
 
