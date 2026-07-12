@@ -250,7 +250,7 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
-import { createTokenPair, getRedis, rateLimiter, verifyPassword } from '../services';
+import { createTokenPair, getRedis, getUserEpochs, rateLimiter, verifyPassword } from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
 
@@ -263,6 +263,36 @@ const user = {
   mfaEnabled: true,
   mfaMethod: 'passkey',
 };
+
+// SR2-06: the pending MFA record now carries an epoch/status binding.
+// `parsePendingMfa` is STRICT — a record missing any of these fields returns
+// null and is rejected — so every `redisMock.get` fixture in this file must be
+// a full record. Defaults match the default `getUserEpochs` mock
+// ({ authEpoch: 1, mfaEpoch: 1 }) and the `user` fixture's `status: 'active'`
+// so most tests don't need to think about epochs at all; tests that DO care
+// (epoch/status mismatch) pass explicit overrides.
+function pendingMfaJson(overrides: Partial<{
+  userId: string;
+  mfaMethod: string;
+  passkeyAvailable: boolean;
+  authEpoch: number;
+  mfaEpoch: number;
+  statusExpectation: string;
+  allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
+  expiresAt: number;
+}> = {}): string {
+  return JSON.stringify({
+    userId: 'user-123',
+    mfaMethod: 'totp',
+    passkeyAvailable: false,
+    authEpoch: 1,
+    mfaEpoch: 1,
+    statusExpectation: 'active',
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    expiresAt: Date.now() + 5 * 60 * 1000,
+    ...overrides,
+  });
+}
 
 // Full row shape returned by the passkey INSERT `.returning()`. The
 // register/verify route now passes the inserted row straight to
@@ -509,11 +539,7 @@ describe('passkey MFA auth routes', () => {
   // #2153: the passkey MFA endpoints must accept a pending session whose PRIMARY
   // method is totp/sms as long as the session flags a passkey as available.
   it('returns passkey options for a TOTP-primary pending session flagged passkeyAvailable', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'totp',
-      passkeyAvailable: true,
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'totp', passkeyAvailable: true }));
     dbState.selectQueue.push([
       {
         id: 'credential-row-1',
@@ -539,11 +565,7 @@ describe('passkey MFA auth routes', () => {
   });
 
   it('verifies a passkey for a TOTP-primary pending session flagged passkeyAvailable', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'totp',
-      passkeyAvailable: true,
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'totp', passkeyAvailable: true }));
     dbState.selectQueue.push(
       [{ ...user, mfaMethod: 'totp', mfaSecret: 'enc-secret' }],
       [{
@@ -580,11 +602,7 @@ describe('passkey MFA auth routes', () => {
   // half of pendingAllowsPasskey that mints tokens — regressing it to accept
   // any session would be a bypass, so it needs its own explicit test.
   it('rejects /mfa/passkey/verify for a TOTP session with no available passkey', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'totp',
-      passkeyAvailable: false,
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'totp', passkeyAvailable: false }));
 
     const res = await app.request('/auth/mfa/passkey/verify', {
       method: 'POST',
@@ -602,10 +620,14 @@ describe('passkey MFA auth routes', () => {
     expect(redisMock.del).not.toHaveBeenCalled();
   });
 
-  // #2153 backward-compat: a legacy pre-JSON pending token (bare userId string,
-  // not valid JSON) must be treated as a TOTP session with NO passkey available,
-  // so in-flight sessions during a deploy can't reach the passkey path.
-  it('treats a legacy bare-string pending token as passkey-unavailable', async () => {
+  // SR2-06: parsePendingMfa is STRICT — a legacy pre-rollout pending token
+  // (bare userId string, not valid JSON, no epoch/status binding) now fails
+  // to parse entirely and is rejected with the generic "expired session"
+  // error, rather than falling back to a synthesized TOTP-no-passkey record.
+  // In-flight legacy sessions vanish within the 5-minute TTL; forcing a fresh
+  // login is correct — completing them with no live epoch/status re-check
+  // would be exactly the gap SR2-06 closes.
+  it('rejects a legacy bare-string pending token (pre-SR2-06 format) with a generic 401', async () => {
     redisMock.get.mockResolvedValueOnce('user-123');
 
     const res = await app.request('/auth/mfa/passkey/options', {
@@ -614,16 +636,13 @@ describe('passkey MFA auth routes', () => {
       body: JSON.stringify({ tempToken: 'temp-token' }),
     });
 
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/passkey mfa is not configured/i) });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/invalid or expired/i) });
     expect(passkeyMocks.generatePasskeyAuthenticationOptions).not.toHaveBeenCalled();
   });
 
   it('returns passkey authentication options for a pending passkey MFA login', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'passkey',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
     dbState.selectQueue.push([
       {
         id: 'credential-row-1',
@@ -655,10 +674,7 @@ describe('passkey MFA auth routes', () => {
   });
 
   it('verifies a passkey MFA challenge and mints MFA-satisfied tokens', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'passkey',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
     dbState.selectQueue.push(
       [user],
       [{
@@ -696,10 +712,7 @@ describe('passkey MFA auth routes', () => {
   });
 
   it('rejects a passkey credential that belongs to another user', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'passkey',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
     dbState.selectQueue.push(
       [user],
       [{ id: 'passkey-2', userId: 'user-456', credentialId: 'credential-2' }],
@@ -774,10 +787,7 @@ describe('passkey MFA auth routes', () => {
 
   // (a) Failed assertion must not mint a session.
   it('rejects a passkey MFA challenge that fails WebAuthn verification without minting tokens', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'passkey',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
     dbState.selectQueue.push(
       [user],
       [{
@@ -809,10 +819,7 @@ describe('passkey MFA auth routes', () => {
 
   // (b) A disabled credential owned by the user is still rejected (403).
   it('rejects a disabled passkey credential even when the userId matches', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'passkey',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
     dbState.selectQueue.push(
       [user],
       [{
@@ -840,10 +847,7 @@ describe('passkey MFA auth routes', () => {
 
   // (c) Rate limiter denial → 429, before any DB / credential work.
   it('returns 429 when the MFA rate limiter denies a passkey verify attempt', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'passkey',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
     vi.mocked(rateLimiter).mockResolvedValueOnce({
       allowed: false,
       remaining: 0,
@@ -886,10 +890,7 @@ describe('passkey MFA auth routes', () => {
 
   // (d) A suspended user cannot complete passkey MFA even with a valid assertion.
   it('rejects passkey verify when the user account is no longer active', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'passkey',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
     dbState.selectQueue.push([{ ...user, status: 'suspended' }]);
 
     const res = await app.request('/auth/mfa/passkey/verify', {
@@ -907,12 +908,36 @@ describe('passkey MFA auth routes', () => {
     expect(redisMock.del).not.toHaveBeenCalled();
   });
 
+  // SR2-06: a factor change (mfa_epoch bump) during the 5-minute MFA window
+  // must invalidate the pending passkey session — the epoch captured at login
+  // no longer matches the live user row, so the session is rejected generically
+  // and consumed (single-use) rather than allowed to mint tokens.
+  it('rejects passkey verify when the live mfaEpoch has advanced past the pending record (SR2-06)', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey', authEpoch: 1, mfaEpoch: 1 }));
+    dbState.selectQueue.push([user]);
+    vi.mocked(getUserEpochs).mockResolvedValueOnce({ authEpoch: 1, mfaEpoch: 2 });
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/invalid or expired/i) });
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(passkeyMocks.verifyPasskeyAuthentication).not.toHaveBeenCalled();
+    // Single-use: a rejected (invalidated) session must still be consumed so
+    // it can't be retried.
+    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+  });
+
   // (e) /mfa/passkey/options guards.
   it('returns 400 from passkey options when the pending session is not a passkey session', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'totp',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'totp', passkeyAvailable: false }));
 
     const res = await app.request('/auth/mfa/passkey/options', {
       method: 'POST',
@@ -926,10 +951,7 @@ describe('passkey MFA auth routes', () => {
   });
 
   it('returns 400 from passkey options when the account has no registered passkeys', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'passkey',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
     dbState.selectQueue.push([]);
 
     const res = await app.request('/auth/mfa/passkey/options', {
@@ -1040,13 +1062,14 @@ describe('passkey MFA auth routes', () => {
 
   // mfa.ts guard: a passkey pending session must be routed to passkey verification.
   it('rejects /mfa/verify (TOTP path) for a pending passkey MFA session', async () => {
-    redisMock.get.mockResolvedValueOnce(JSON.stringify({
-      userId: 'user-123',
-      mfaMethod: 'passkey',
-    }));
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
     // user lookup inside /mfa/verify happens before the passkey guard returns,
-    // so provide the user row.
-    dbState.selectQueue.push([user]);
+    // so provide the user row. SR2-06 now also hoists a
+    // resolveCurrentUserTokenContext call ahead of the passkey guard (reused
+    // for the method-allowed policy check and the eventual mint), so a
+    // partner-membership row is needed too — otherwise the membership-less
+    // user would hit NoTenantMembershipError before ever reaching the guard.
+    dbState.selectQueue.push([user], [{ partnerId: 'partner-123', roleId: 'role-123' }]);
 
     const res = await app.request('/auth/mfa/verify', {
       method: 'POST',

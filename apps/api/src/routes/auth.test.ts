@@ -16,6 +16,7 @@ vi.mock('../services', () => ({
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn().mockReturnValue('MFASECRET123'),
   verifyMFAToken: vi.fn(),
+  consumeMFAToken: vi.fn(),
   generateOTPAuthURL: vi.fn().mockReturnValue('otpauth://totp/...'),
   generateQRCode: vi.fn().mockResolvedValue('data:image/png;base64,...'),
   generateRecoveryCodes: vi.fn().mockReturnValue(['CODE-0001', 'CODE-0002']),
@@ -210,6 +211,7 @@ import {
   createTokenPair,
   verifyToken,
   verifyMFAToken,
+  consumeMFAToken,
   generateRecoveryCodes,
   invalidateAllUserSessions,
   isUserTokenRevoked,
@@ -225,6 +227,7 @@ import {
   getTrustedClientIp,
   rateLimiter,
   getRedis,
+  getUserEpochs,
   recordAccountFailure,
   clearAccountFailures,
   isAccountLocked
@@ -260,6 +263,23 @@ function stubTx(epochRow: { authEpoch: number; mfaEpoch: number; emailEpoch: num
   }));
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ update: txUpdate }));
   return capturedUpdates;
+}
+
+// login.ts unconditionally resolves the effective MFA policy (both on the
+// MFA-required early-return branch and the enrollment-check branch below it).
+// For a partner/org scope that reaches the DB, getEffectiveMfaPolicy's
+// roleForceMfa lookup chains `.from(partnerUsers).innerJoin(roles, ...)`
+// before `.where().limit()` — a bare from/where/limit chain (fine for every
+// OTHER select in this suite) doesn't expose `.innerJoin`, so any login test
+// that resolves partner/org scope needs this richer chain instead.
+function selectChainWithPolicyJoin(rows: unknown[]) {
+  const terminal = { where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) };
+  return {
+    from: vi.fn().mockReturnValue({
+      ...terminal,
+      innerJoin: vi.fn().mockReturnValue(terminal),
+    }),
+  };
 }
 
 describe('auth routes', () => {
@@ -477,26 +497,20 @@ describe('auth routes', () => {
         resetAt: new Date()
       });
       vi.mocked(verifyPassword).mockResolvedValue(true);
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'user-123',
-              email: 'test@example.com',
-              name: 'Test User',
-              passwordHash: '$argon2id$hash',
-              status: 'active',
-              mfaEnabled: false,
-              // security review #2: a provisioned user has a partner membership.
-              // The blanket mock returns this row for the partnerUsers lookup too,
-              // so resolveCurrentUserTokenContext resolves to partner scope rather
-              // than the (now-rejected) membership-less system default.
-              partnerId: 'partner-1',
-              roleId: 'role-1'
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValue(selectChainWithPolicyJoin([{
+        id: 'user-123',
+        email: 'test@example.com',
+        name: 'Test User',
+        passwordHash: '$argon2id$hash',
+        status: 'active',
+        mfaEnabled: false,
+        // security review #2: a provisioned user has a partner membership.
+        // The blanket mock returns this row for the partnerUsers lookup too,
+        // so resolveCurrentUserTokenContext resolves to partner scope rather
+        // than the (now-rejected) membership-less system default.
+        partnerId: 'partner-1',
+        roleId: 'role-1'
+      }]) as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
@@ -775,23 +789,17 @@ describe('auth routes', () => {
         resetAt: new Date()
       });
       vi.mocked(verifyPassword).mockResolvedValue(true);
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'user-123',
-              email: 'test@example.com',
-              passwordHash: '$argon2id$hash',
-              status: 'active',
-              mfaEnabled: true,
-              mfaSecret: 'secret123',
-              // security review #2: provisioned user → partner membership.
-              partnerId: 'partner-1',
-              roleId: 'role-1'
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValue(selectChainWithPolicyJoin([{
+        id: 'user-123',
+        email: 'test@example.com',
+        passwordHash: '$argon2id$hash',
+        status: 'active',
+        mfaEnabled: true,
+        mfaSecret: 'secret123',
+        // security review #2: provisioned user → partner membership.
+        partnerId: 'partner-1',
+        roleId: 'role-1'
+      }]) as any);
 
       const res = await app.request('/auth/login', {
         method: 'POST',
@@ -969,23 +977,17 @@ describe('auth routes', () => {
 
     it('Task 10: clears the failure counter on a successful login', async () => {
       vi.mocked(verifyPassword).mockResolvedValue(true);
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'user-recover',
-              email: 'recover@x.com',
-              name: 'Recover User',
-              passwordHash: '$argon2id$hash',
-              status: 'active',
-              mfaEnabled: false,
-              // security review #2: provisioned user → partner membership.
-              partnerId: 'partner-1',
-              roleId: 'role-1'
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValue(selectChainWithPolicyJoin([{
+        id: 'user-recover',
+        email: 'recover@x.com',
+        name: 'Recover User',
+        passwordHash: '$argon2id$hash',
+        status: 'active',
+        mfaEnabled: false,
+        // security review #2: provisioned user → partner membership.
+        partnerId: 'partner-1',
+        roleId: 'role-1'
+      }]) as any);
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
@@ -1035,23 +1037,17 @@ describe('auth routes', () => {
       // happen, the per-account failure counter measures *password*
       // attempts and should reset.
       vi.mocked(verifyPassword).mockResolvedValue(true);
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'user-mfa',
-              email: 'mfa@x.com',
-              passwordHash: '$argon2id$hash',
-              status: 'active',
-              mfaEnabled: true,
-              mfaSecret: 'secret',
-              // security review #2: provisioned user → partner membership.
-              partnerId: 'partner-1',
-              roleId: 'role-1'
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select).mockReturnValue(selectChainWithPolicyJoin([{
+        id: 'user-mfa',
+        email: 'mfa@x.com',
+        passwordHash: '$argon2id$hash',
+        status: 'active',
+        mfaEnabled: true,
+        mfaSecret: 'secret',
+        // security review #2: provisioned user → partner membership.
+        partnerId: 'partner-1',
+        roleId: 'role-1'
+      }]) as any);
 
       const res = await app.request('/auth/login', {
         method: 'POST',
@@ -1157,6 +1153,116 @@ describe('auth routes', () => {
         if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv;
         if (originalE2eMode !== undefined) process.env.E2E_MODE = originalE2eMode;
       }
+    });
+  });
+
+  // SR2-06: the TOTP/SMS completion path (Case 1 of /mfa/verify) must reload
+  // the live user + epochs and reject a pending session whose auth/mfa epoch
+  // no longer matches the live row, rather than minting tokens from a
+  // possibly-stale factor/status. A rejected session is consumed (single-use)
+  // so it can't be retried.
+  describe('POST /auth/mfa/verify — epoch/status-bound pending MFA (SR2-06)', () => {
+    const liveUserRow = {
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      status: 'active',
+      mfaEnabled: true,
+      mfaSecret: 'PLAINSECRET123',
+      mfaMethod: 'totp',
+      phoneNumber: null,
+      avatarUrl: null,
+      isPlatformAdmin: false,
+      // Lets resolveCurrentUserTokenContext (real, unmocked helper) resolve a
+      // partner scope instead of the membership-less system default — the
+      // mocked db.select chain below returns this SAME row for every select,
+      // regardless of which columns were requested (mirrors the pattern used
+      // by the "should require MFA when enabled" test above).
+      partnerId: 'partner-1',
+      roleId: 'role-1',
+    };
+
+    function pendingRecord(overrides: Record<string, unknown> = {}) {
+      return JSON.stringify({
+        userId: 'user-1',
+        mfaMethod: 'totp',
+        passkeyAvailable: false,
+        authEpoch: 1,
+        mfaEpoch: 1,
+        statusExpectation: 'active',
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        expiresAt: Date.now() + 5 * 60 * 1000,
+        ...overrides,
+      });
+    }
+
+    let getMock: ReturnType<typeof vi.fn>;
+    let delMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      // getEffectiveMfaPolicy's roleForceMfa lookup chains an .innerJoin(roles,
+      // ...) onto the partnerUsers select before .where().limit() — a plain
+      // from/where/limit chain (sufficient for every other select in this
+      // suite) doesn't expose that method, so build a fully chainable mock
+      // that always resolves to the same live user row regardless of path.
+      const chain: any = {
+        from: vi.fn(() => chain),
+        innerJoin: vi.fn(() => chain),
+        leftJoin: vi.fn(() => chain),
+        where: vi.fn(() => chain),
+        limit: vi.fn(() => Promise.resolve([liveUserRow])),
+      };
+      vi.mocked(db.select).mockReturnValue(chain as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
+      } as any);
+      getMock = vi.fn();
+      delMock = vi.fn();
+      vi.mocked(getRedis).mockReturnValue({ get: getMock, del: delMock, setex: vi.fn() } as any);
+      vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+      vi.mocked(consumeMFAToken).mockResolvedValue(true);
+    });
+
+    async function postMfaVerify(body: { tempToken: string; code: string }) {
+      return app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('rejects with a generic 401 and mints nothing when the live mfaEpoch has advanced past the pending record, consuming the pending key', async () => {
+      getMock.mockResolvedValue(pendingRecord({ mfaEpoch: 1 }));
+      vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 2 });
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
+
+      expect(res.status).toBe(401);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body).toMatchObject({ error: 'Invalid or expired MFA session' });
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+      // Single-use: a rejected pending session must be consumed so it can't
+      // be retried.
+      expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
+    });
+
+    it('mints tokens and consumes the pending key when the live epochs match and the code is valid', async () => {
+      getMock.mockResolvedValue(pendingRecord());
+
+      const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body).toMatchObject({ mfaRequired: false });
+      expect(consumeMFAToken).toHaveBeenCalledWith('PLAINSECRET123', '123456', 'user-1');
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ sub: 'user-1', mfa: true }),
+        expect.anything(),
+      );
+      expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
     });
   });
 

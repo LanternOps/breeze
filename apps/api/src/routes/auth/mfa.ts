@@ -23,6 +23,7 @@ import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { authMiddleware } from '../../middleware/auth';
 import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema } from './schemas';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import {
   getClientIP,
   setRefreshTokenCookie,
@@ -38,7 +39,9 @@ import {
   auditUserLoginFailure,
   auditLogin,
   userRequiresSetup,
-  requireCurrentPasswordStepUp
+  requireCurrentPasswordStepUp,
+  parsePendingMfa,
+  evaluatePendingMfa
 } from './helpers';
 
 const { db, withSystemDbAccessContext } = dbModule;
@@ -130,18 +133,15 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       return c.json({ error: 'Invalid or expired MFA session' }, 401);
     }
 
-    // Parse pending data — supports both legacy (plain userId string) and new (JSON) format
-    let pendingUserId: string;
-    let pendingMfaMethod: string;
-    try {
-      const parsed = JSON.parse(pendingRaw);
-      pendingUserId = parsed.userId;
-      pendingMfaMethod = parsed.mfaMethod || 'totp';
-    } catch {
-      // Legacy format: plain userId string
-      pendingUserId = pendingRaw;
-      pendingMfaMethod = 'totp';
+    // SR2-06: strict parse — legacy bare-userId / epoch-less records return
+    // null and must force a fresh login rather than complete with no live
+    // re-check of the account's current epoch/status.
+    const pending = parsePendingMfa(pendingRaw);
+    if (!pending) {
+      return c.json({ error: 'Invalid or expired MFA session' }, 401);
     }
+    const pendingUserId = pending.userId;
+    const pendingMfaMethod = pending.mfaMethod;
 
     // Rate limit MFA attempts
     const rateCheck = await rateLimiter(redis, `mfa:${pendingUserId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
@@ -161,6 +161,48 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
 
     if (!user) {
       return c.json({ error: 'Invalid MFA configuration' }, 400);
+    }
+
+    // SR2-06: re-check the live epoch/status before minting. A factor change
+    // (mfa_epoch), an account-wide security event (auth_epoch), or a suspend
+    // during the 5-minute MFA window must invalidate this in-flight session.
+    const liveEpochs = await getUserEpochs(user.id);
+    const verdict = liveEpochs
+      ? evaluatePendingMfa(pending, { status: user.status, authEpoch: liveEpochs.authEpoch, mfaEpoch: liveEpochs.mfaEpoch })
+      : ({ ok: false, reason: 'epoch_mismatch' } as const);
+    if (!verdict.ok) {
+      // Consume the record so a rejected session can't be retried.
+      await redis.del(`mfa:pending:${tempToken}`);
+      void auditUserLoginFailure(c, {
+        userId: user.id, email: user.email, name: user.name,
+        reason: 'mfa_pending_invalidated',
+        details: { phase: verdict.reason, method: pendingMfaMethod },
+      });
+      return c.json({ error: 'Invalid or expired MFA session' }, 401);
+    }
+
+    // Resolve the user's token context ONCE (reused for the mint below, which
+    // no longer re-resolves it further down).
+    const mfaContext = await resolveCurrentUserTokenContext(user.id);
+
+    // Method must still be allowed by current policy (a factor could have been
+    // disallowed since login). Passkey is handled by its own route; here we gate
+    // totp/sms. Use the real scope/org/partner from the resolved context so
+    // org- and partner-scoped policy resolves correctly.
+    const livePolicy = await getEffectiveMfaPolicy({
+      scope: mfaContext.scope,
+      userId: user.id,
+      orgId: mfaContext.orgId,
+      partnerId: mfaContext.partnerId,
+    });
+    if ((pendingMfaMethod === 'sms' && !livePolicy.allowedMethods.sms) ||
+        (pendingMfaMethod === 'totp' && !livePolicy.allowedMethods.totp)) {
+      await redis.del(`mfa:pending:${tempToken}`);
+      void auditUserLoginFailure(c, {
+        userId: user.id, email: user.email, name: user.name,
+        reason: 'mfa_method_not_allowed', details: { method: pendingMfaMethod },
+      });
+      return c.json({ error: 'This MFA method is no longer permitted. Please sign in again.' }, 401);
     }
 
     // Use the server-stored method only — never allow the client to override
@@ -213,8 +255,8 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     // Clear temp token
     await redis.del(`mfa:pending:${tempToken}`);
 
-    // Look up user's partner/org context
-    const mfaContext = await resolveCurrentUserTokenContext(user.id);
+    // Partner/org context was already resolved above (mfaContext) — reuse it
+    // rather than re-querying.
     const mfaRoleId = mfaContext.roleId;
     const mfaPartnerId = mfaContext.partnerId;
     const mfaOrgId = mfaContext.orgId;

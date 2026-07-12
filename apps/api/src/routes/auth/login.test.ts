@@ -148,6 +148,11 @@ vi.mock('./helpers', () => ({
   ),
   auditLogin: vi.fn(),
   userRequiresSetup: vi.fn(() => false),
+  // #2153: probed at login inside the MFA-required branch to advertise a
+  // passkey as an alternate factor. Not exercised by most tests in this file
+  // (mfaEnabled defaults to false), but must exist as a callable default so
+  // the branch doesn't throw when a test DOES enable MFA.
+  userHasUsablePasskey: vi.fn(async () => false),
 }));
 
 vi.mock('./ssoPolicy', () => ({
@@ -199,6 +204,7 @@ import {
   isTokenIssuedBeforePasswordChange,
   getUserEpochs,
   getRefreshFamily,
+  getRedis,
 } from '../../services';
 import { revokeRefreshFamilyById } from '../../services/authLifecycle';
 import { authMiddleware } from '../../middleware/auth';
@@ -590,6 +596,91 @@ describe('POST /login — MFA enrollment enforcement via effective policy (SR2-0
       expect.objectContaining({ mfa: true }),
       expect.anything()
     );
+  });
+});
+
+// SR2-06: the `mfa:pending:<tempToken>` Redis record must carry the live
+// auth/mfa epochs, account status, and effective allowed methods captured AT
+// LOGIN, so every completion path (mfa.ts TOTP/SMS, passkeys.ts) can detect a
+// factor/status change that happened during the 5-minute MFA window and
+// reject rather than mint stale assurance.
+describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    enable2faState.value = true;
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: true,
+      mfaSecret: 'secret',
+      mfaMethod: 'totp',
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    // A prior describe block ("mints aep/mep/sid") overrides getUserEpochs to
+    // resolve null in one of its tests; clearAllMocks() doesn't reset mock
+    // implementations (only call history), so restore a valid epoch pair here
+    // rather than inheriting that leaked null across files.
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 5 });
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
+  });
+
+  afterEach(() => {
+    enable2faState.value = false;
+  });
+
+  it('writes the live epochs, status, and effective allowed methods onto the pending record', async () => {
+    const setexMock = vi.fn(async (_key: string, _ttlSeconds: number, _value: string) => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.mfaRequired).toBe(true);
+
+    expect(getUserEpochs).toHaveBeenCalledWith('user-1');
+    expect(setexMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^mfa:pending:/),
+      300,
+      expect.any(String),
+    );
+    const written = JSON.parse(setexMock.mock.calls[0]?.[2] as string) as Record<string, unknown>;
+    expect(written).toMatchObject({
+      userId: 'user-1',
+      mfaMethod: 'totp',
+      authEpoch: 3,
+      mfaEpoch: 5,
+      statusExpectation: 'active',
+      allowedMethods: { totp: true, sms: false, passkey: true },
+    });
+    expect(typeof written.expiresAt).toBe('number');
+    expect(written.expiresAt as number).toBeGreaterThan(Date.now());
+  });
+
+  it('fails closed with a generic 401 and mints nothing when the epoch read returns null', async () => {
+    vi.mocked(getUserEpochs).mockResolvedValue(null);
+    const setexMock = vi.fn(async () => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ error: 'Invalid email or password' });
+    expect(setexMock).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 });
 

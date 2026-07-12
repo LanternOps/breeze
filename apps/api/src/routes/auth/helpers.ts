@@ -439,6 +439,83 @@ export function hashRecoveryCodes(codes: string[]): string[] {
 }
 
 // ============================================
+// Pending MFA session helpers (SR2-06)
+// ============================================
+
+export interface PendingMfaRecord {
+  userId: string;
+  mfaMethod: 'totp' | 'sms' | 'passkey';
+  passkeyAvailable: boolean;
+  authEpoch: number;
+  mfaEpoch: number;
+  statusExpectation: string;
+  allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
+  expiresAt: number;
+}
+
+/**
+ * Strict parse of a `mfa:pending:<tempToken>` value. Returns null for the
+ * legacy bare-userId form or any record missing the epoch/status binding
+ * (SR2-06): those predate this rollout and must force a fresh login rather than
+ * complete with no live re-check.
+ */
+export function parsePendingMfa(raw: string): PendingMfaRecord | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null; // legacy bare-userId string
+  }
+  const method = parsed.mfaMethod;
+  const am = parsed.allowedMethods as Record<string, unknown> | undefined;
+  if (
+    typeof parsed.userId !== 'string' ||
+    (method !== 'totp' && method !== 'sms' && method !== 'passkey') ||
+    typeof parsed.authEpoch !== 'number' ||
+    typeof parsed.mfaEpoch !== 'number' ||
+    typeof parsed.statusExpectation !== 'string' ||
+    typeof parsed.expiresAt !== 'number' ||
+    !am || typeof am !== 'object'
+  ) {
+    return null;
+  }
+  return {
+    userId: parsed.userId,
+    mfaMethod: method,
+    passkeyAvailable: parsed.passkeyAvailable === true,
+    authEpoch: parsed.authEpoch,
+    mfaEpoch: parsed.mfaEpoch,
+    statusExpectation: parsed.statusExpectation,
+    allowedMethods: {
+      totp: am.totp !== false,
+      sms: am.sms !== false,
+      passkey: am.passkey !== false,
+    },
+    expiresAt: parsed.expiresAt,
+  };
+}
+
+/**
+ * Compare a pending record against the live user row. MFA assurance is valid
+ * only for the current MFA config + status (invariants 6/7). Any factor change
+ * bumps mfa_epoch; any account-wide change bumps auth_epoch; a suspend flips
+ * status — all of which must invalidate an in-flight MFA session.
+ */
+export function evaluatePendingMfa(
+  record: PendingMfaRecord,
+  live: { status: string; authEpoch: number; mfaEpoch: number },
+): { ok: true } | { ok: false; reason: 'expired' | 'epoch_mismatch' | 'status_changed' } {
+  if (record.expiresAt <= Date.now()) return { ok: false, reason: 'expired' };
+  if (record.authEpoch !== live.authEpoch || record.mfaEpoch !== live.mfaEpoch) {
+    return { ok: false, reason: 'epoch_mismatch' };
+  }
+  if (live.status !== 'active' || record.statusExpectation !== live.status) {
+    return { ok: false, reason: 'status_changed' };
+  }
+  return { ok: true };
+}
+
+// ============================================
 // Invite token helpers
 // ============================================
 

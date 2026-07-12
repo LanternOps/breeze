@@ -445,15 +445,35 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     // probe error hides the alternate, it never blocks this login.
     const passkeyAvailable = await userHasUsablePasskey(user.id);
 
-    await getRedis()!.setex(`mfa:pending:${tempToken}`, 300, JSON.stringify({
+    // SR2-06: bind the pending record to the live auth/mfa epochs + status +
+    // effective allowed methods at login time, so every completion path
+    // (mfa.ts TOTP/SMS, passkeys.ts) can detect a factor/status change that
+    // happened during the 5-minute MFA window and reject rather than mint
+    // stale assurance.
+    const pendingEpochs = await getUserEpochs(user.id);
+    if (!pendingEpochs) {
+      await floorPromise;
+      return c.json(genericAuthError(), 401);
+    }
+    const pendingPolicy = await getEffectiveMfaPolicy({
+      scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
+    });
+    const PENDING_TTL_SECONDS = 300;
+    const pendingRecord = {
       userId: user.id,
       mfaMethod,
       // Server-authoritative: the passkey MFA endpoints gate on this flag, so
       // the client can't self-elevate to the passkey path without an actually
       // registered credential (and /verify still re-checks credential
       // ownership + assertion regardless).
-      passkeyAvailable
-    }));
+      passkeyAvailable,
+      authEpoch: pendingEpochs.authEpoch,
+      mfaEpoch: pendingEpochs.mfaEpoch,
+      statusExpectation: user.status,
+      allowedMethods: pendingPolicy.allowedMethods,
+      expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
+    };
+    await getRedis()!.setex(`mfa:pending:${tempToken}`, PENDING_TTL_SECONDS, JSON.stringify(pendingRecord));
 
     // Task 10: the password was verified correctly — clear the per-account
     // failure counter even though MFA still has to succeed. This keeps the

@@ -27,8 +27,11 @@ import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
+  evaluatePendingMfa,
   getClientIP,
   mfaDisabledResponse,
+  parsePendingMfa,
+  type PendingMfaRecord,
   requireCurrentPasswordStepUp,
   resolveCurrentUserTokenContext,
   setRefreshTokenCookie,
@@ -75,25 +78,13 @@ const deletePasskeySchema = z.object({
   currentPassword: z.string().min(1).max(256)
 });
 
-type PendingPasskeyMfa = {
-  userId: string;
-  mfaMethod: string;
-  // #2153: true when the account has a registered passkey usable as an
-  // alternate second factor, even if the PRIMARY mfaMethod is totp/sms.
-  // Set server-side at login (login.ts) from a system-scoped user_passkeys
-  // read. Absent on pre-#2153 pending tokens → treated as false (falls back
-  // to the old "primary method is passkey" gate, so in-flight sessions during
-  // a deploy don't regress).
-  passkeyAvailable?: boolean;
-};
-
 // A pending MFA session may use the passkey endpoints when passkey is either
 // the account's primary method OR an available alternate factor. Both /options
 // and /verify still independently re-verify that a matching, non-disabled
 // credential is owned by the user and that the WebAuthn assertion checks out,
 // so this gate only decides whether the passkey path is OFFERED — it never
 // substitutes for credential/assertion verification.
-function pendingAllowsPasskey(pending: PendingPasskeyMfa): boolean {
+function pendingAllowsPasskey(pending: PendingMfaRecord): boolean {
   return pending.mfaMethod === 'passkey' || pending.passkeyAvailable === true;
 }
 
@@ -305,6 +296,18 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
 
+  // SR2-06: re-check the live epoch/status before minting. A factor change
+  // (mfa_epoch) or account-wide security event (auth_epoch) during the
+  // 5-minute MFA window must invalidate this in-flight session.
+  const liveEpochs = await getUserEpochs(user.id);
+  const verdict = liveEpochs
+    ? evaluatePendingMfa(pending, { status: user.status, authEpoch: liveEpochs.authEpoch, mfaEpoch: liveEpochs.mfaEpoch })
+    : ({ ok: false, reason: 'epoch_mismatch' } as const);
+  if (!verdict.ok) {
+    await redis.del(`mfa:pending:${tempToken}`);
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+
   const [passkey] = await withSystemDbAccessContext(() =>
     db
       .select()
@@ -502,32 +505,12 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
   return c.json({ success: true });
 });
 
-async function readPendingPasskeyMfa(tempToken: string): Promise<PendingPasskeyMfa | null> {
+async function readPendingPasskeyMfa(tempToken: string): Promise<PendingMfaRecord | null> {
   const redis = getRedis();
-  if (!redis) {
-    return null;
-  }
-
+  if (!redis) return null;
   const raw = await redis.get(`mfa:pending:${tempToken}`);
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<PendingPasskeyMfa>;
-    if (typeof parsed.userId !== 'string') return null;
-    return {
-      userId: parsed.userId,
-      mfaMethod: parsed.mfaMethod || 'totp',
-      passkeyAvailable: parsed.passkeyAvailable === true
-    };
-  } catch {
-    return {
-      userId: raw,
-      mfaMethod: 'totp',
-      passkeyAvailable: false
-    };
-  }
+  if (!raw) return null;
+  return parsePendingMfa(raw);
 }
 
 async function listActivePasskeys(userId: string): Promise<PasskeyRow[]> {
