@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const dbMocks = vi.hoisted(() => ({
   currentContext: null as 'request' | 'system' | null,
   queryContexts: [] as Array<'request' | 'system' | null>,
+  insertContexts: [] as Array<'request' | 'system' | null>,
   selectedRows: [] as unknown[][],
   select: vi.fn(),
   from: vi.fn(),
@@ -62,6 +63,7 @@ describe('issueUserSession', () => {
     vi.clearAllMocks();
     dbMocks.currentContext = null;
     dbMocks.queryContexts.length = 0;
+    dbMocks.insertContexts.length = 0;
     dbMocks.selectedRows.length = 0;
     dbMocks.limit.mockImplementation(async () => {
       dbMocks.queryContexts.push(dbMocks.currentContext);
@@ -74,7 +76,13 @@ describe('issueUserSession', () => {
     dbMocks.from.mockReturnValue({ where: dbMocks.where });
     dbMocks.select.mockReturnValue({ from: dbMocks.from });
     dbMocks.values.mockResolvedValue(undefined);
-    dbMocks.insert.mockReturnValue({ values: dbMocks.values });
+    dbMocks.insert.mockImplementation(() => {
+      dbMocks.insertContexts.push(dbMocks.currentContext);
+      if (dbMocks.currentContext !== 'system') {
+        throw new Error(`insert ran under ${dbMocks.currentContext ?? 'no'} DB context`);
+      }
+      return { values: dbMocks.values };
+    });
     dbMocks.withSystemDbAccessContext.mockImplementation(async (fn: () => Promise<unknown>) => {
       if (dbMocks.currentContext) {
         return fn();
@@ -137,6 +145,17 @@ describe('issueUserSession', () => {
       type: 'refresh'
     });
     expect(dbMocks.rememberJtiFamily).toHaveBeenCalledWith(session.refreshJti, session.familyId);
+  });
+
+  it('escapes an active request DB context for new-family creation', async () => {
+    dbMocks.selectedRows.push([{ authEpoch: 3, mfaEpoch: 7 }]);
+
+    const session = await dbMocks.runInRequestContext(() => issueUserSession(identity));
+
+    expect(session).toMatchObject({ familyId: expect.any(String) });
+    expect(dbMocks.queryContexts).toEqual(['system']);
+    expect(dbMocks.insertContexts).toEqual(['system']);
+    expect(dbMocks.runOutsideDbContext).toHaveBeenCalledTimes(2);
   });
 
   it('rotates within an existing active family without extending its lifetime', async () => {
