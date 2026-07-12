@@ -1,5 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { z as zod } from 'zod';
+// Type-only imports — erased at compile time, so importing them here has no
+// runtime effect on module resolution/mocking order below. Used to tie the
+// classifier regression test to the REAL handler output shapes rather than
+// hand-written literals, so a future field rename fails this test instead of
+// silently degrading ledger/audit classification to 'success'.
+import type { SendDeploymentInvitesOutput } from '../modules/mcpInvites/tools/sendDeploymentInvites';
+import type { ConfigureDefaultsOutput } from '../modules/mcpInvites/tools/configureDefaults';
 
 // ---------------------------------------------------------------------------
 // Task 7 — MCP-OAUTH-11 (bootstrap RBAC) + MCP-OAUTH-12 (shared Tier 3
@@ -378,6 +385,41 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
     await callBootstrap('configure_defaults', { perms: ALL });
     expect(ledgerComplete).toHaveBeenCalledTimes(1);
     expect((ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
+  });
+
+  it('classifyBootstrapToolResult treats REAL-shaped handler output as failure (regression against field-name drift)', async () => {
+    // The tests above hand-write `{failures:[...]}` / `{errors:[...]}` object
+    // literals. That passes even if a future rename of the real handler
+    // fields (`SendDeploymentInvitesOutput.failures`,
+    // `ConfigureDefaultsOutput.errors`) silently breaks classification —
+    // the literal wouldn't be renamed along with it. Anchor the classifier
+    // to the ACTUAL exported types via `satisfies`: if either field is ever
+    // renamed, this fails to typecheck (caught at build/CI time) rather than
+    // silently degrading every partial-failure result to 'success'.
+    mockApiKey(['ai:read', 'ai:execute']);
+    mockPerms([{ resource: '*', action: '*' }]);
+    mockDb();
+    const mod = await import('./mcpServer');
+
+    const sendResult = {
+      invites_sent: 1,
+      invite_ids: ['i1'],
+      skipped_duplicates: 0,
+      failures: [{ email: 'bad@x.com', error: 'smtp down' }],
+    } satisfies SendDeploymentInvitesOutput;
+
+    const configureResult = {
+      applied: {
+        device_group: { created: true },
+        alert_policy: { created: true },
+        risk_profile: { created: true },
+        notification_channel: { created: true },
+      },
+      errors: [{ step: 'alert_policy', error: 'boom' }],
+    } satisfies ConfigureDefaultsOutput;
+
+    expect(mod.classifyBootstrapToolResult(sendResult)).toBe('failure');
+    expect(mod.classifyBootstrapToolResult(configureResult)).toBe('failure');
   });
 
   it('handler-specific business audits still fire alongside the uniform audit', async () => {

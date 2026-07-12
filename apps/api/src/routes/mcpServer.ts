@@ -1231,7 +1231,7 @@ async function finalizeTier3ToolLifecycle(
  * success — classify it explicitly so the shared ledger/audit records the true
  * outcome rather than treating every non-throw as success.
  */
-function classifyBootstrapToolResult(result: unknown): 'success' | 'failure' {
+export function classifyBootstrapToolResult(result: unknown): 'success' | 'failure' {
   if (result && typeof result === 'object') {
     const r = result as Record<string, unknown>;
     if (Array.isArray(r.failures) && r.failures.length > 0) return 'failure';

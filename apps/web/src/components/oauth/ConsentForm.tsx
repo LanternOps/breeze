@@ -5,6 +5,12 @@ import { fetchWithAuth } from '../../stores/auth';
 interface PartnerOption {
   partnerId: string;
   partnerName: string;
+  // MCP-OAUTH-01: the partner-policy-narrowed scope set for THIS partner
+  // (provider-supported ∩ requested ∩ displayed ∩ that partner's
+  // mcp_allowed_scopes), computed authoritatively by the API. Optional so
+  // older/partial responses degrade to the top-level `scopes` fallback
+  // rather than crashing.
+  effectiveScopes?: string[];
 }
 
 interface InteractionDetails {
@@ -231,6 +237,14 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
   const details = state.details;
   const submitting = state.kind === 'submitting';
 
+  // MCP-OAUTH-01 (design §1): render the SELECTED partner's authoritative
+  // effective scope set, not the raw client-requested/displayed set — a
+  // read-only or execute-disabled partner's policy may narrow it. Fall back
+  // to `details.scopes` if no partner is selected yet or the field is
+  // absent, so this never crashes on a partial/older response.
+  const selectedPartner = details.partners.find((p) => p.partnerId === partnerId);
+  const selectedPartnerScopes = selectedPartner?.effectiveScopes ?? details.scopes;
+
   const displayName = details.client.display_name?.trim() || details.client.client_id;
   const showClientIdSubtitle = displayName !== details.client.client_id;
 
@@ -259,7 +273,7 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
 
       <CallbackDestination origin={redirectOrigin} />
 
-      <ScopeList scopes={details.scopes} />
+      <ScopeList scopes={selectedPartnerScopes} />
 
       {details.partners.length > 1 && (
         <TenantPicker

@@ -17,7 +17,7 @@ const jsonResponse = (payload: unknown, status = 200): Response =>
 
 const interactionFixture = (
   overrides: Partial<{
-    partners: { partnerId: string; partnerName: string }[];
+    partners: { partnerId: string; partnerName: string; effectiveScopes?: string[] }[];
     scopes: string[];
     display_name: string;
     redirect_uri: string;
@@ -148,6 +148,55 @@ describe('ConsentForm', () => {
     const select = (await screen.findByLabelText(/Connect to which tenant/)) as HTMLSelectElement;
     expect(select.value).toBe('p1');
     expect(select.options).toHaveLength(2);
+  });
+
+  it('renders the SELECTED partner effectiveScopes, not the top-level requested scopes (design §1)', async () => {
+    // details.scopes carries the full client-requested set, but the
+    // read-only partner's policy narrows it to mcp:read only. The consent
+    // screen must reflect what will ACTUALLY be granted for the selected
+    // partner, not the raw request.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        interactionFixture({
+          scopes: ['mcp:read', 'mcp:write', 'mcp:execute'],
+          partners: [
+            { partnerId: 'p1', partnerName: 'Read-Only MSP', effectiveScopes: ['mcp:read'] },
+            {
+              partnerId: 'p2',
+              partnerName: 'Full-Access MSP',
+              effectiveScopes: ['mcp:read', 'mcp:write', 'mcp:execute'],
+            },
+          ],
+        }),
+      ),
+    );
+    render(<ConsentForm uid="uid-1" />);
+
+    // p1 (read-only) is selected by default (first partner).
+    expect(await screen.findByText(/Read your fleet data/)).toBeTruthy();
+    expect(screen.queryByText(/Make non-destructive changes/)).toBeNull();
+    expect(screen.queryByText(/Run high-risk actions on devices/)).toBeNull();
+
+    // Switching to the full-access partner reveals the full effective set.
+    const select = (await screen.findByLabelText(/Connect to which tenant/)) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'p2' } });
+
+    expect(await screen.findByText(/Make non-destructive changes/)).toBeTruthy();
+    expect(screen.getByText(/Run high-risk actions on devices/)).toBeTruthy();
+  });
+
+  it('falls back to details.scopes when the selected partner has no effectiveScopes field', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        interactionFixture({
+          scopes: ['mcp:read', 'mcp:write'],
+          partners: [{ partnerId: 'p1', partnerName: 'Acme MSP' }],
+        }),
+      ),
+    );
+    render(<ConsentForm uid="uid-1" />);
+    expect(await screen.findByText(/Read your fleet data/)).toBeTruthy();
+    expect(screen.getByText(/Make non-destructive changes/)).toBeTruthy();
   });
 
   it('navigates to /auth with next= when the API returns 401', async () => {

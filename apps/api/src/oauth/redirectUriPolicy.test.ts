@@ -39,6 +39,27 @@ describe('validateRedirectUris', () => {
     expect(validateRedirectUris(['https://user:pw@x.com/cb']).ok).toBe(false);
   });
 
+  // Regression matrix: these are all bypass tricks for the loopback/userinfo
+  // checks above. The validator already rejects each correctly — these tests
+  // lock that in against future regressions.
+  it('rejects a hostname-prefix trick masquerading as the loopback IP', () => {
+    // "127.0.0.1.evil.com" is a real DNS hostname (the loopback octets are
+    // just a label prefix), not the literal loopback IP — must not pass the
+    // http-loopback allowance.
+    expect(validateRedirectUris(['http://127.0.0.1.evil.com/cb']).ok).toBe(false);
+  });
+
+  it('rejects userinfo credentials on an otherwise-valid loopback HTTP host', () => {
+    expect(validateRedirectUris(['http://user:pw@127.0.0.1/cb']).ok).toBe(false);
+  });
+
+  it('rejects userinfo-confusion where "[::1]" is stuffed into userinfo and the real host is attacker-controlled', () => {
+    // Per WHATWG URL parsing, "[::1]" here is the username, not a host — the
+    // authoritative hostname is "evil.com". Must be rejected both for
+    // userinfo credentials and for not being an HTTPS/loopback-HTTP host.
+    expect(validateRedirectUris(['http://[::1]@evil.com/cb']).ok).toBe(false);
+  });
+
   it('rejects a URL with a fragment', () => {
     expect(validateRedirectUris(['https://x.com/cb#frag']).ok).toBe(false);
   });
