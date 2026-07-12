@@ -40,10 +40,17 @@ vi.mock('./partnerStripe', async (importOriginal) => {
   };
 });
 
-// requireOrgAccess only — the rest of invoiceService is irrelevant here and
-// pulls in unrelated schema imports, so keep the mock minimal (no-op by default).
-const { requireOrgAccessMock } = vi.hoisted(() => ({ requireOrgAccessMock: vi.fn() }));
-vi.mock('./invoiceService', () => ({ requireOrgAccess: requireOrgAccessMock }));
+// requireOrgAccess/requireSiteAccess only — the rest of invoiceService is
+// irrelevant here and pulls in unrelated schema imports, so keep the mock minimal
+// (both no-op by default; site enforcement is exercised in the siteScope suites).
+const { requireOrgAccessMock, requireSiteAccessMock } = vi.hoisted(() => ({
+  requireOrgAccessMock: vi.fn(),
+  requireSiteAccessMock: vi.fn(),
+}));
+vi.mock('./invoiceService', () => ({
+  requireOrgAccess: requireOrgAccessMock,
+  requireSiteAccess: requireSiteAccessMock,
+}));
 
 import { createInvoicePayLink } from './invoiceCheckout';
 

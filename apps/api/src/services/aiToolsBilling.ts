@@ -53,7 +53,11 @@ function actorFromAuth(auth: AuthContext): InvoiceActor {
   return {
     userId: auth.user.id,
     partnerId: auth.partnerId ?? null,
-    accessibleOrgIds: auth.accessibleOrgIds
+    accessibleOrgIds: auth.accessibleOrgIds,
+    // Thread the caller's site-axis restriction so a site-limited AI session can't
+    // read/mutate out-of-site invoices. undefined (partner/system, all-sites org
+    // users) stays unrestricted, preserving prior behavior.
+    allowedSiteIds: auth.allowedSiteIds
   };
 }
 
