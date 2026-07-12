@@ -94,8 +94,10 @@ describe('AutomationTab — deploy_software action', () => {
       expect(fetchMock).toHaveBeenCalledWith('/software/catalog?limit=100'),
     );
 
-    // Open the picker dropdown and select an entry.
-    fireEvent.click(screen.getByText('Select software...'));
+    // Open the picker dropdown and select an entry. findByText: the picker
+    // shows "Loading..." until the catalog fetch resolves — the waitFor above
+    // only proves the fetch was CALLED, not that the state update flushed.
+    fireEvent.click(await screen.findByText('Select software...'));
     fireEvent.click(await screen.findByText('Google Chrome'));
 
     // Persist and assert the emitted action shape.
