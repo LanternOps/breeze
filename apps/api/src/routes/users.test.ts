@@ -1943,7 +1943,7 @@ describe('user routes', () => {
           }),
         }),
       } as any);
-      mockPatchTx({
+      const { capturedUpdates } = mockPatchTx({
         id: '11111111-1111-1111-1111-111111111111',
         email: 'u@example.com',
         name: 'Renamed',
@@ -1958,6 +1958,12 @@ describe('user routes', () => {
 
       expect(res.status).toBe(200);
       expect(teardownMock).not.toHaveBeenCalled();
+      // A name-only edit is NOT an authentication-state change: it must not
+      // advance epochs (that would sign the user out everywhere), revoke
+      // refresh-token families, or run post-commit cleanup.
+      expect(capturedUpdates.some((v) => 'authEpoch' in v)).toBe(false);
+      expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(false);
+      expect(runPostCommitCleanup).not.toHaveBeenCalled();
     });
 
     it('does NOT tear down sessions on a reactivation (disabled→active)', async () => {

@@ -5,6 +5,7 @@ import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 import { revokeAllUserTokens } from './tokenRevocation';
 import { clearPermissionCache } from './permissions';
 import { revokeAllUserOauthArtifacts } from '../oauth/grantRevocation';
+import { captureException } from './sentry';
 
 export type Tx = Parameters<Parameters<typeof dbModule.db.transaction>[0]>[0];
 
@@ -107,6 +108,7 @@ export async function runPostCommitCleanup(userId: string): Promise<PostCommitCl
       userId,
       error: err instanceof Error ? err.message : String(err),
     });
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
   try {
@@ -117,6 +119,7 @@ export async function runPostCommitCleanup(userId: string): Promise<PostCommitCl
       userId,
       error: err instanceof Error ? err.message : String(err),
     });
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
   try {
@@ -127,6 +130,7 @@ export async function runPostCommitCleanup(userId: string): Promise<PostCommitCl
       userId,
       error: err instanceof Error ? err.message : String(err),
     });
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
   return result;

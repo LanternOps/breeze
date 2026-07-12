@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SQL } from 'drizzle-orm';
 
 vi.mock('../db', () => ({
@@ -10,6 +10,7 @@ vi.mock('./permissions', () => ({ clearPermissionCache: vi.fn(async () => undefi
 vi.mock('../oauth/grantRevocation', () => ({
   revokeAllUserOauthArtifacts: vi.fn(async () => ({ grantsRevoked: 1, refreshTokensRevoked: 2, jtisRevoked: 3 })),
 }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import {
   advanceUserEpochs,
@@ -20,6 +21,7 @@ import {
 import { revokeAllUserTokens } from './tokenRevocation';
 import { clearPermissionCache } from './permissions';
 import { revokeAllUserOauthArtifacts } from '../oauth/grantRevocation';
+import { captureException } from './sentry';
 // NOT mocked — the real pg-core table object, so captured set/where args can be
 // compared against the real column references by identity.
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
@@ -160,10 +162,15 @@ describe('revokeRefreshFamilyById', () => {
 });
 
 describe('runPostCommitCleanup', () => {
+  beforeEach(() => {
+    vi.mocked(captureException).mockClear();
+  });
+
   it('runs all three cleanups and reports success', async () => {
     const result = await runPostCommitCleanup('u1');
     expect(result).toMatchObject({ redisOk: true, permissionCacheOk: true, oauthOk: true });
     expect(result.oauthResult).toMatchObject({ grantsRevoked: 1 });
+    expect(captureException).not.toHaveBeenCalled();
   });
 
   it('a Redis failure does not short-circuit the OAuth sweep and is reported, not thrown', async () => {
@@ -173,6 +180,11 @@ describe('runPostCommitCleanup', () => {
     expect(result.oauthOk).toBe(true);
     expect(clearPermissionCache).toHaveBeenCalled();
     expect(revokeAllUserOauthArtifacts).toHaveBeenCalled();
+    // Degraded cleanup must surface to Sentry (observable/retryable), not
+    // just the console — a Redis cutoff failure leaves a live-JWT window
+    // that operators must be able to alert on.
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureException).mock.calls[0]![0]).toBeInstanceOf(Error);
   });
 
   it('resolves (never throws) even when ALL THREE cleanups fail, including a synchronous throw', async () => {
@@ -184,5 +196,6 @@ describe('runPostCommitCleanup', () => {
     const result = await runPostCommitCleanup('u1');
     expect(result).toEqual({ redisOk: false, permissionCacheOk: false, oauthOk: false });
     expect(result.oauthResult).toBeUndefined();
+    expect(captureException).toHaveBeenCalledTimes(3);
   });
 });

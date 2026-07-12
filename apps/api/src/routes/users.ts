@@ -1406,10 +1406,12 @@ userRoutes.patch(
               name: users.name,
               status: users.status
             });
-          if (row) {
-            // Any admin update to this user invalidates prior sessions:
-            // advance auth_epoch and durably revoke refresh families in the
-            // SAME transaction so a rollback undoes both together.
+          if (row && data.status !== undefined) {
+            // An admin STATUS change invalidates prior sessions: advance
+            // auth_epoch and durably revoke refresh families in the SAME
+            // transaction so a rollback undoes both together. Scoped to
+            // authentication-state changes only — a name-only edit must NOT
+            // sign the user out everywhere.
             await advanceUserEpochs(tx, userId, { auth: true });
             await revokeAllRefreshFamilies(tx, userId, `status:${row.status ?? 'changed'}`);
           }
@@ -1425,8 +1427,9 @@ userRoutes.patch(
     // Hot-path cleanup after the durable commit above: Redis token cutoff,
     // permission-cache clear, and OAuth-artifact revocation. Never throws —
     // see runPostCommitCleanup's doc comment for the partial-failure contract
-    // this PATCH relies on below.
-    const cleanup = await runPostCommitCleanup(updated.id);
+    // this PATCH relies on below. Like the in-tx revocation, it only runs on
+    // a status change — never on a name-only edit.
+    const cleanup = data.status !== undefined ? await runPostCommitCleanup(updated.id) : undefined;
 
     // Suspension hook: when status transitions from active → disabled we must
     // revoke every outstanding OAuth artifact (refresh tokens, grant cache
@@ -1455,7 +1458,9 @@ userRoutes.patch(
           503
         );
       }
-      if (!cleanup.oauthOk) {
+      // becameInactive implies data.status !== undefined, so cleanup ran;
+      // the optional chain only guards the type.
+      if (!cleanup?.oauthOk) {
         // The DB rows are still marked revoked (committed above) but access
         // JWTs would survive until natural expiry. Treat this as a hard
         // failure so the operator knows suspension is partial.
@@ -1475,7 +1480,7 @@ userRoutes.patch(
         previousStatus: record.status,
         newStatus: updated.status,
         scope: scopeContext.scope,
-        ...(becameInactive && cleanup.oauthResult
+        ...(becameInactive && cleanup?.oauthResult
           ? {
               grantsRevoked: cleanup.oauthResult.grantsRevoked,
               refreshTokensRevoked: cleanup.oauthResult.refreshTokensRevoked,
