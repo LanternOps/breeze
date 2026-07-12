@@ -20,6 +20,7 @@ import {
   completeRecoveryCodeLogin,
   RecoveryCodeInvalidError,
   RecoveryCodeUnavailableError,
+  rejectMalformedRecoveryCodeLogin,
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
@@ -181,6 +182,27 @@ async function auditMfaMutationFailure(c: any, auth: AuthContext, input: {
     userId: auth.user.id,
     email: auth.user.email,
     details: input.details,
+  });
+}
+
+async function auditRecoveryLoginFailure(
+  c: any,
+  userId: string | undefined,
+  reason: 'mfa_invalid_recovery_code' | 'mfa_malformed_recovery_code',
+) {
+  if (userId) {
+    await auditUserLoginFailure(c, {
+      userId,
+      reason,
+      details: { method: 'recovery_code' },
+    });
+    return;
+  }
+  writeAuthAudit(c, {
+    action: 'user.login.failed',
+    result: 'failure',
+    reason,
+    details: { method: 'recovery_code' },
   });
 }
 
@@ -346,6 +368,19 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
   }
   if (typeof raw === 'object' && raw !== null
     && (raw as { method?: unknown }).method === 'recovery_code') {
+    const tempToken = typeof (raw as { tempToken?: unknown }).tempToken === 'string'
+      ? (raw as { tempToken: string }).tempToken
+      : undefined;
+    let rejected;
+    try {
+      rejected = await rejectMalformedRecoveryCodeLogin(tempToken);
+    } catch (error) {
+      if (error instanceof RecoveryCodeUnavailableError) {
+        return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
+      }
+      throw error;
+    }
+    await auditRecoveryLoginFailure(c, rejected.userId, 'mfa_malformed_recovery_code');
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
 }), async (c) => {
@@ -367,6 +402,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
       });
     } catch (error) {
       if (error instanceof RecoveryCodeInvalidError) {
+        await auditRecoveryLoginFailure(c, error.userId, 'mfa_invalid_recovery_code');
         return c.json({ error: 'Invalid MFA code' }, 401);
       }
       if (error instanceof RecoveryCodeUnavailableError) {

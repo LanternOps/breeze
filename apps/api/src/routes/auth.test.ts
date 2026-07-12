@@ -72,7 +72,10 @@ vi.mock('../services', () => ({
   readPendingMfa: vi.fn(),
   issueVerifiedPendingMfaSession: vi.fn(),
   completeRecoveryCodeLogin: vi.fn(),
-  RecoveryCodeInvalidError: class RecoveryCodeInvalidError extends Error {},
+  rejectMalformedRecoveryCodeLogin: vi.fn(),
+  RecoveryCodeInvalidError: class RecoveryCodeInvalidError extends Error {
+    constructor(readonly userId?: string) { super(); }
+  },
   RecoveryCodeUnavailableError: class RecoveryCodeUnavailableError extends Error {},
   PendingMfaInvalidError: class PendingMfaInvalidError extends Error {},
   PendingMfaUnavailableError: class PendingMfaUnavailableError extends Error {},
@@ -356,6 +359,7 @@ import {
   readPendingMfa,
   issueVerifiedPendingMfaSession,
   completeRecoveryCodeLogin,
+  rejectMalformedRecoveryCodeLogin,
   RecoveryCodeInvalidError,
   PendingMfaInvalidError,
   recordAccountFailure,
@@ -525,6 +529,7 @@ describe('auth routes', () => {
       mfaEpoch: 2,
       revokedFamilyCount: 2,
     } as never);
+    vi.mocked(rejectMalformedRecoveryCodeLogin).mockResolvedValue({ userId: 'user-123' } as never);
     vi.mocked(revokeUserSessionFamilyForLogout).mockResolvedValue({ status: 'revoked' });
     sendAccountLockedMock.mockClear();
     app = new Hono();
@@ -1197,7 +1202,7 @@ describe('auth routes', () => {
 
     it('returns the same generic failure for a wrong or replayed recovery code without a token', async () => {
       vi.mocked(completeRecoveryCodeLogin)
-        .mockRejectedValueOnce(new RecoveryCodeInvalidError());
+        .mockRejectedValueOnce(new RecoveryCodeInvalidError('user-123'));
 
       const res = await app.request('/auth/mfa/verify', {
         method: 'POST',
@@ -1210,6 +1215,13 @@ describe('auth routes', () => {
       expect(res.status).toBe(401);
       await expect(res.json()).resolves.toEqual({ error: 'Invalid MFA code' });
       expect(res.headers.get('set-cookie')).toBeNull();
+      await vi.waitFor(() => expect(mfaMutationState.auditWrites).toContainEqual(
+        expect.objectContaining({
+          action: 'user.login.failed',
+          details: expect.objectContaining({ method: 'recovery_code', reason: 'mfa_invalid_recovery_code' }),
+        }),
+      ));
+      expect(JSON.stringify(mfaMutationState.auditWrites)).not.toContain('ABCD-EF12');
     });
 
     it('returns the generic MFA failure for a missing recovery code', async () => {
@@ -1221,8 +1233,50 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(401);
       await expect(res.json()).resolves.toEqual({ error: 'Invalid MFA code' });
-      expect(completeRecoveryCodeLogin).not.toHaveBeenCalled();
+      expect(rejectMalformedRecoveryCodeLogin).toHaveBeenCalledWith('v2-temp-token');
       expect(res.headers.get('set-cookie')).toBeNull();
+      await vi.waitFor(() => expect(mfaMutationState.auditWrites).toContainEqual(
+        expect.objectContaining({
+          action: 'user.login.failed',
+          details: expect.objectContaining({ method: 'recovery_code', reason: 'mfa_malformed_recovery_code' }),
+        }),
+      ));
+    });
+
+    it('issues no response token, cookie, or success audit when post-commit binding fails', async () => {
+      const auditCount = mfaMutationState.auditWrites.length;
+      const { RecoveryCodeUnavailableError } = await import('../services');
+      vi.mocked(completeRecoveryCodeLogin).mockRejectedValueOnce(new RecoveryCodeUnavailableError());
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tempToken: 'v2-temp-token', method: 'recovery_code', code: 'ABCD-EF12',
+        }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(await res.json()).not.toHaveProperty('tokens');
+      expect(mfaMutationState.auditWrites).toHaveLength(auditCount);
+    });
+
+    it('writes a redacted anonymous audit when no pending identity can be recovered', async () => {
+      vi.mocked(completeRecoveryCodeLogin).mockRejectedValueOnce(new RecoveryCodeInvalidError());
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tempToken: 'missing-token', method: 'recovery_code', code: 'NONE-CODE',
+        }),
+      });
+      expect(res.status).toBe(401);
+      await vi.waitFor(() => expect(mfaMutationState.auditWrites).toContainEqual(
+        expect.objectContaining({
+          action: 'user.login.failed',
+          details: expect.objectContaining({ method: 'recovery_code', reason: 'mfa_invalid_recovery_code' }),
+        }),
+      ));
+      expect(JSON.stringify(mfaMutationState.auditWrites)).not.toContain('NONE-CODE');
     });
 
     it.each([

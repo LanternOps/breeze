@@ -13,11 +13,13 @@ const state = vi.hoisted(() => ({
   updateRows: [{ id: 'user-1' }] as Array<{ id: string }>,
   tx: undefined as any,
   events: [] as string[],
+  pending: undefined as any,
 }));
 
 const lockMfaAssuranceState = vi.hoisted(() => vi.fn());
 const invalidateUserMfaAssurance = vi.hoisted(() => vi.fn());
 const withAuthLifecycleSystemTransaction = vi.hoisted(() => vi.fn());
+const revokeUserSessionFamily = vi.hoisted(() => vi.fn());
 const consumePendingMfa = vi.hoisted(() => vi.fn());
 const resolveEffectiveMfaPolicy = vi.hoisted(() => vi.fn());
 const issueUserSession = vi.hoisted(() => vi.fn());
@@ -27,6 +29,7 @@ vi.mock('./mfaAssuranceLocks', () => ({ lockMfaAssuranceState }));
 vi.mock('./authLifecycle', () => ({
   invalidateUserMfaAssurance,
   withAuthLifecycleSystemTransaction,
+  revokeUserSessionFamily,
 }));
 vi.mock('./mfaAssurance', () => ({
   consumePendingMfa,
@@ -43,6 +46,7 @@ import {
   consumeRecoveryCode,
   hashRecoveryCode,
   normalizeRecoveryCode,
+  rejectMalformedRecoveryCodeLogin,
 } from './recoveryCodeAuth';
 import { PendingMfaUnavailableError } from './mfaAssurance';
 
@@ -89,19 +93,20 @@ describe('recovery-code authentication', () => {
       state.events.push('transaction');
       return fn(state.tx);
     });
+    state.pending = {
+      version: 2,
+      userId: 'user-1', authEpoch: 3, mfaEpoch: 7, expectedStatus: 'active',
+      roleId: 'role-1', orgId: null, partnerId: 'partner-1', scope: 'partner',
+      policyRequired: false, policySources: [],
+      allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
+      enrolledMethods: ['totp', 'recovery_code'],
+      primaryAuthenticationMethod: 'password', configuredMfaMethod: 'totp',
+      primaryMfaMethod: 'totp', issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    };
     consumePendingMfa.mockReset().mockImplementation(async () => {
       state.events.push('pending-consumed');
-      return {
-        version: 2,
-        userId: 'user-1', authEpoch: 3, mfaEpoch: 7, expectedStatus: 'active',
-        roleId: 'role-1', orgId: null, partnerId: 'partner-1', scope: 'partner',
-        policyRequired: false, policySources: [],
-        allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
-        enrolledMethods: ['totp', 'recovery_code'],
-        primaryAuthenticationMethod: 'password', configuredMfaMethod: 'totp',
-        primaryMfaMethod: 'totp', issuedAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 300_000).toISOString(),
-      };
+      return state.pending;
     });
     resolveEffectiveMfaPolicy.mockReset().mockResolvedValue({
       required: false,
@@ -116,6 +121,7 @@ describe('recovery-code authentication', () => {
       };
     });
     bindIssuedUserSession.mockReset().mockResolvedValue(undefined);
+    revokeUserSessionFamily.mockReset().mockResolvedValue(1);
   });
 
   it('normalizes a documented code before hashing', () => {
@@ -141,6 +147,18 @@ describe('recovery-code authentication', () => {
     expect(invalidateUserMfaAssurance).toHaveBeenCalledWith(
       tx, 'user-1', 'mfa-recovery-code-used',
     );
+  });
+
+  it('validates every stored hash, scans invalid entries, and removes only one duplicate match', async () => {
+    const matching = hashRecoveryCode('ABCD-EF12');
+    state.user = {
+      ...state.user!,
+      mfaRecoveryCodes: ['not-a-valid-hash', matching, matching],
+    };
+
+    await consumeRecoveryCode('user-1', 'ABCD-EF12', fakeTx());
+
+    expect(state.setValues?.mfaRecoveryCodes).toEqual(['not-a-valid-hash', matching]);
   });
 
   it.each([
@@ -203,6 +221,37 @@ describe('recovery-code authentication', () => {
     expect(withAuthLifecycleSystemTransaction).not.toHaveBeenCalled();
   });
 
+  it('burns identifiable pending state before rejecting a malformed code', async () => {
+    await expect(rejectMalformedRecoveryCodeLogin('pending-token')).resolves.toEqual({
+      userId: 'user-1',
+    });
+    expect(consumePendingMfa).toHaveBeenCalledWith('pending-token');
+    expect(withAuthLifecycleSystemTransaction).not.toHaveBeenCalled();
+  });
+
+  it('retains the consumed identity on a wrong-code error for redacted auditing', async () => {
+    let failure: unknown;
+    try {
+      await completeRecoveryCodeLogin({ tempToken: 'pending-token', code: 'WXYZ-9999' });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(RecoveryCodeInvalidError);
+    expect((failure as RecoveryCodeInvalidError).userId).toBe('user-1');
+  });
+
+  it('returns no successful result when post-commit session binding fails', async () => {
+    bindIssuedUserSession.mockRejectedValueOnce(new Error('redis bind failed'));
+
+    await expect(completeRecoveryCodeLogin({
+      tempToken: 'pending-token', code: 'ABCD-EF12',
+    })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
+    expect(issueUserSession).toHaveBeenCalledOnce();
+    expect(revokeUserSessionFamily).toHaveBeenCalledWith(
+      state.tx, 'user-1', 'new-family', 'mfa-recovery-bind-failed',
+    );
+  });
+
   it('does no database work when atomic Redis consumption is unavailable', async () => {
     consumePendingMfa.mockRejectedValueOnce(new PendingMfaUnavailableError());
 
@@ -223,5 +272,45 @@ describe('recovery-code authentication', () => {
     })).rejects.toBeInstanceOf(RecoveryCodeInvalidError);
     expect(invalidateUserMfaAssurance).not.toHaveBeenCalled();
     expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['inactive status', () => { state.user = { ...state.user!, status: 'disabled' }; }],
+    ['auth epoch', () => { state.user = { ...state.user!, authEpoch: 4 }; }],
+    ['MFA epoch', () => { state.user = { ...state.user!, mfaEpoch: 8 }; }],
+    ['configured factor', () => { state.user = { ...state.user!, mfaMethod: 'sms', phoneVerified: true, phoneNumber: '+14155550100' }; }],
+    ['enrolled factors', () => { state.user = { ...state.user!, mfaSecret: null }; }],
+    ['primary factor snapshot', () => { state.pending = { ...state.pending, primaryMfaMethod: 'sms' }; }],
+  ])('fails closed when live %s changes', async (_name, mutate) => {
+    mutate();
+    await expect(completeRecoveryCodeLogin({
+      tempToken: 'pending-token', code: 'ABCD-EF12',
+    })).rejects.toBeInstanceOf(RecoveryCodeInvalidError);
+    expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when live membership or role authority cannot be resolved', async () => {
+    resolveEffectiveMfaPolicy.mockRejectedValueOnce(new Error('membership removed'));
+    await expect(completeRecoveryCodeLogin({
+      tempToken: 'pending-token', code: 'ABCD-EF12',
+    })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
+    expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it('permits recovery as an emergency method while retaining an allowed primary factor', async () => {
+    resolveEffectiveMfaPolicy.mockResolvedValue({
+      required: true,
+      sources: ['partner'],
+      allowedMethods: new Set(['totp', 'recovery_code']),
+    });
+    state.pending = {
+      ...state.pending,
+      policyRequired: true,
+      policySources: ['partner'],
+      allowedMethods: ['totp', 'recovery_code'],
+    };
+    await expect(completeRecoveryCodeLogin({
+      tempToken: 'pending-token', code: 'ABCD-EF12',
+    })).resolves.toMatchObject({ mfaEpoch: 8 });
   });
 });

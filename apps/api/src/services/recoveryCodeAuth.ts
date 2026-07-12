@@ -1,8 +1,9 @@
 import { eq } from 'drizzle-orm';
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { users } from '../db/schema';
 import {
   invalidateUserMfaAssurance,
+  revokeUserSessionFamily,
   withAuthLifecycleSystemTransaction,
   type AuthLifecycleTransaction,
 } from './authLifecycle';
@@ -21,7 +22,7 @@ const MFA_METHOD_ORDER = ['totp', 'sms', 'passkey', 'recovery_code'] as const;
 const MFA_POLICY_SOURCE_ORDER = ['role', 'partner', 'organization'] as const;
 
 export class RecoveryCodeInvalidError extends Error {
-  constructor() {
+  constructor(readonly userId?: string) {
     super('Invalid MFA code');
     this.name = 'RecoveryCodeInvalidError';
   }
@@ -91,8 +92,16 @@ export async function consumeRecoveryCode(
     || user.status !== 'active' || !storedCodes) {
     throw new RecoveryCodeInvalidError();
   }
-  const matchingHash = hashRecoveryCode(normalized);
-  const matchIndex = storedCodes.findIndex((stored) => stored === matchingHash);
+  const matchingHash = Buffer.from(hashRecoveryCode(normalized), 'hex');
+  let matchIndex = -1;
+  for (let index = 0; index < storedCodes.length; index += 1) {
+    const stored = storedCodes[index] ?? '';
+    const validHash = /^[a-f0-9]{64}$/i.test(stored);
+    const storedHash = validHash ? Buffer.from(stored, 'hex') : Buffer.alloc(matchingHash.length);
+    const matches = storedHash.length === matchingHash.length
+      && timingSafeEqual(storedHash, matchingHash);
+    if (matches && matchIndex === -1) matchIndex = index;
+  }
   if (matchIndex < 0) throw new RecoveryCodeInvalidError();
 
   const remainingCodes = storedCodes.slice();
@@ -203,8 +212,9 @@ export async function completeRecoveryCodeLogin(input: {
       return consumeRecoveryCode(pending!.userId, input.code, tx);
     });
   } catch (error) {
-    if (error instanceof RecoveryCodeInvalidError) throw error;
-    if (error instanceof PendingMfaInvalidError) throw new RecoveryCodeInvalidError();
+    if (error instanceof RecoveryCodeInvalidError || error instanceof PendingMfaInvalidError) {
+      throw new RecoveryCodeInvalidError(pending.userId);
+    }
     throw new RecoveryCodeUnavailableError();
   }
 
@@ -252,9 +262,37 @@ export async function completeRecoveryCodeLogin(input: {
       };
     });
   } catch (error) {
-    if (error instanceof RecoveryCodeInvalidError) throw error;
+    if (error instanceof RecoveryCodeInvalidError) throw new RecoveryCodeInvalidError(pending.userId);
     throw new RecoveryCodeUnavailableError();
   }
-  await bindIssuedUserSession(issued.tokens);
+  try {
+    await bindIssuedUserSession(issued.tokens);
+  } catch {
+    try {
+      await withAuthLifecycleSystemTransaction((tx) => revokeUserSessionFamily(
+        tx,
+        pending.userId,
+        issued.tokens.familyId,
+        'mfa-recovery-bind-failed',
+      ));
+    } catch {
+      // Preserve the fail-closed response even if compensating family
+      // revocation itself is unavailable. The family remains user-owned and
+      // absolute-expiry bounded; no token was returned to the caller.
+    }
+    throw new RecoveryCodeUnavailableError();
+  }
   return { ...issued, ...consumed };
+}
+
+/** Burn pending state for a recovery payload rejected by schema validation. */
+export async function rejectMalformedRecoveryCodeLogin(tempToken: string | undefined) {
+  if (!tempToken) return { userId: undefined };
+  try {
+    const pending = await consumePendingMfa(tempToken);
+    return { userId: pending?.userId };
+  } catch (error) {
+    if (error instanceof PendingMfaUnavailableError) throw new RecoveryCodeUnavailableError();
+    throw error;
+  }
 }
