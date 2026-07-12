@@ -66,6 +66,11 @@ vi.mock('../../services/auditService', () => ({
   createAuditLogAsync: vi.fn(),
 }));
 
+vi.mock('../../services/authLifecycle', () => ({
+  withAuthLifecycleSystemTransaction: vi.fn(async (fn: (tx: object) => Promise<unknown>) => fn({})),
+  revokeUserSessionFamily: vi.fn(async () => 1),
+}));
+
 vi.mock('../../services/anomalyMetrics', () => ({
   recordFailedLogin: vi.fn(),
 }));
@@ -80,7 +85,33 @@ vi.mock('../../services/mobileDeviceBinding', () => ({
 }));
 
 vi.mock('../../middleware/auth', () => ({
-  authMiddleware: vi.fn((_c: unknown, next: () => unknown) => next()),
+  authMiddleware: vi.fn((c: { set: (key: string, value: unknown) => void }, next: () => unknown) => {
+    c.set('auth', {
+      user: {
+        id: 'user-1',
+        email: 'admin@msp.com',
+        name: 'Admin User',
+        isPlatformAdmin: false,
+      },
+      token: {
+        sub: 'user-1',
+        email: 'admin@msp.com',
+        type: 'access',
+        sid: 'family-access',
+        ae: 4,
+        me: 7,
+        mfa: false,
+        scope: 'partner',
+        partnerId: 'partner-1',
+        orgId: null,
+        roleId: 'role-1',
+      },
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+    });
+    return next();
+  }),
 }));
 
 // NOTE: auditUserLoginFailure is NOT a bare vi.fn() here. The real helper
@@ -105,6 +136,7 @@ vi.mock('./helpers', () => ({
   genericAuthError: vi.fn(() => ({ error: 'Invalid email or password' })),
   isTokenRevokedForUser: vi.fn(async () => false),
   revokeCurrentRefreshTokenJti: vi.fn(async () => undefined),
+  cacheRefreshTokenFamilyRevocation: vi.fn(async () => undefined),
   resolveCurrentUserTokenContext: vi.fn(async () => ({
     roleId: 'role-1',
     partnerId: 'partner-1',
@@ -152,6 +184,7 @@ import {
   issueUserSession,
   verifyToken,
   isRefreshTokenJtiRevoked,
+  revokeAllUserTokens,
   revokeFamily,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
@@ -160,6 +193,11 @@ import {
   UserSessionFamilyInactiveError,
 } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
+import { createAuditLogAsync } from '../../services/auditService';
+import {
+  revokeUserSessionFamily,
+  withAuthLifecycleSystemTransaction,
+} from '../../services/authLifecycle';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import {
@@ -169,6 +207,7 @@ import {
   validateCookieCsrfRequest,
   clearRefreshTokenCookie,
   setRefreshTokenCookie,
+  cacheRefreshTokenFamilyRevocation,
 } from './helpers';
 
 function selectChain(rows: unknown[]) {
@@ -198,6 +237,124 @@ async function postLogin(body: { email: string; password: string }) {
     body: JSON.stringify(body),
   });
 }
+
+async function postLogout() {
+  return loginRoutes.request('/logout', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+describe('POST /logout — durable current-family revocation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    vi.mocked(resolveRefreshToken).mockReturnValue(null);
+    vi.mocked(verifyToken).mockResolvedValue(null);
+    vi.mocked(revokeUserSessionFamily).mockResolvedValue(1);
+    vi.mocked(cacheRefreshTokenFamilyRevocation).mockResolvedValue(undefined);
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+  });
+
+  it('falls back to the access sid when the refresh cookie is absent', async () => {
+    const res = await postLogout();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      success: true,
+      cleanupStatus: 'complete',
+      cleanupFailures: [],
+    });
+    expect(withAuthLifecycleSystemTransaction).toHaveBeenCalledTimes(1);
+    expect(revokeUserSessionFamily).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-1',
+      'family-access',
+      'logout',
+    );
+    expect(cacheRefreshTokenFamilyRevocation).toHaveBeenCalledWith('family-access');
+    expect(revokeAllUserTokens).not.toHaveBeenCalled();
+    expect(clearRefreshTokenCookie).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when the valid refresh cookie family mismatches the access sid', async () => {
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'refresh-jti',
+      fam: 'family-sibling',
+      ae: 4,
+      me: 7,
+      mfa: false,
+      scope: 'partner',
+      partnerId: 'partner-1',
+      orgId: null,
+      roleId: 'role-1',
+    });
+
+    const res = await postLogout();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid session' });
+    expect(revokeUserSessionFamily).not.toHaveBeenCalled();
+    expect(cacheRefreshTokenFamilyRevocation).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(clearRefreshTokenCookie).toHaveBeenCalledTimes(1);
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'user.logout',
+      result: 'denied',
+      details: expect.objectContaining({ reason: 'session_family_mismatch' }),
+    }));
+  });
+
+  it('returns 503, failure-audits, and clears the cookie when PostgreSQL revocation fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(withAuthLifecycleSystemTransaction).mockRejectedValueOnce(new Error('postgres unavailable'));
+
+    const res = await postLogout();
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Service temporarily unavailable' });
+    expect(cacheRefreshTokenFamilyRevocation).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(clearRefreshTokenCookie).toHaveBeenCalledTimes(1);
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'user.logout',
+      result: 'failure',
+    }));
+    expect(createAuditLogAsync).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: 'user.logout',
+      result: 'success',
+    }));
+  });
+
+  it('returns durable success with partial cleanup when the Redis family sentinel fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(cacheRefreshTokenFamilyRevocation).mockRejectedValueOnce(new Error('redis unavailable'));
+
+    const res = await postLogout();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      cleanupStatus: 'partial',
+      cleanupFailures: ['refresh-family-cache'],
+    });
+    expect(revokeUserSessionFamily).toHaveBeenCalledTimes(1);
+    expect(clearRefreshTokenCookie).toHaveBeenCalledTimes(1);
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'user.logout',
+      result: 'success',
+      details: expect.objectContaining({
+        cleanupStatus: 'partial',
+        cleanupFailures: ['refresh-family-cache'],
+      }),
+    }));
+  });
+});
 
 describe('POST /login — IP allowlist', () => {
   beforeEach(() => {

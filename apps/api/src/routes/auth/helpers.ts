@@ -496,6 +496,29 @@ export async function revokeCurrentRefreshTokenJti(c: Context, expectedUserId?: 
   await revokeRefreshTokenJti(payload.jti);
 }
 
+/**
+ * Cache the durable refresh-family revocation for hot-path checks.
+ *
+ * PostgreSQL is the source of truth. Callers must invoke this only after the
+ * family revocation transaction commits. Unlike the older combined
+ * `revokeFamily` service, this cache-only helper deliberately propagates Redis
+ * failures so committed mutations can report partial cleanup truthfully.
+ */
+export async function cacheRefreshTokenFamilyRevocation(familyId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) {
+    throw new Error('Redis unavailable while caching refresh family revocation');
+  }
+
+  // Keep the sentinel alive for the refresh-cookie lifetime plus one access
+  // token lifetime, matching tokenRevocation.ts's durable-family cache window.
+  await redis.setex(
+    `refresh-fam-revoked:${familyId}`,
+    REFRESH_COOKIE_MAX_AGE_SECONDS + (15 * 60),
+    '1',
+  );
+}
+
 // ============================================
 // User context helpers
 // ============================================

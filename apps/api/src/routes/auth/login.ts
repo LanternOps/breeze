@@ -13,7 +13,6 @@ import {
   loginLimiter,
   getRedis,
   isRefreshTokenJtiRevoked,
-  revokeAllUserTokens,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
   wasRefreshTokenJtiRecentlyRotated,
@@ -44,7 +43,7 @@ import {
   toPublicTokens,
   genericAuthError,
   isTokenRevokedForUser,
-  revokeCurrentRefreshTokenJti,
+  cacheRefreshTokenFamilyRevocation,
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   auditUserLoginFailure,
@@ -58,6 +57,11 @@ import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../servic
 import { captureException } from '../../services/sentry';
 import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
+import {
+  revokeUserSessionFamily,
+  withAuthLifecycleSystemTransaction,
+} from '../../services/authLifecycle';
+import { runPostCommitCleanup } from '../../services/postCommitCleanup';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -547,12 +551,96 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 // Logout
 loginRoutes.post('/logout', authMiddleware, async (c) => {
   const auth = c.get('auth');
+  // The browser must discard its refresh credential regardless of durable or
+  // cache availability. Set the clearing headers before any branch can return.
+  clearRefreshTokenCookie(c);
+
+  const accessFamilyId = auth.token.sid;
+  if (!accessFamilyId) {
+    createAuditLogAsync({
+      orgId: auth.orgId ?? undefined,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'user.logout',
+      resourceType: 'user',
+      resourceId: auth.user.id,
+      resourceName: auth.user.name,
+      details: { reason: 'access_session_family_missing' },
+      ipAddress: getClientIP(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'denied',
+    });
+    return c.json({ error: 'Invalid session' }, 401);
+  }
+
+  let familyId = accessFamilyId;
+  let refreshJti: string | undefined;
+  const refreshToken = resolveRefreshToken(c);
+  if (refreshToken) {
+    const refreshPayload = await verifyToken(refreshToken);
+    if (refreshPayload?.type === 'refresh' && refreshPayload.fam) {
+      // A signed cookie for another user or family must never choose which row
+      // this access session revokes. Reject the request instead of falling back
+      // and accidentally revoking either sibling.
+      if (
+        refreshPayload.sub !== auth.user.id
+        || refreshPayload.fam !== accessFamilyId
+      ) {
+        createAuditLogAsync({
+          orgId: auth.orgId ?? undefined,
+          actorId: auth.user.id,
+          actorEmail: auth.user.email,
+          action: 'user.logout',
+          resourceType: 'user',
+          resourceId: auth.user.id,
+          resourceName: auth.user.name,
+          details: { reason: 'session_family_mismatch' },
+          ipAddress: getClientIP(c),
+          userAgent: c.req.header('user-agent'),
+          result: 'denied',
+        });
+        return c.json({ error: 'Invalid session' }, 401);
+      }
+      familyId = refreshPayload.fam;
+      refreshJti = refreshPayload.jti;
+    }
+  }
 
   try {
-    await revokeAllUserTokens(auth.user.id);
-    await revokeCurrentRefreshTokenJti(c, auth.user.id);
+    await withAuthLifecycleSystemTransaction((tx) =>
+      revokeUserSessionFamily(tx, auth.user.id, familyId, 'logout')
+    );
   } catch (error) {
-    console.error('[auth] Failed to revoke tokens during logout — clearing cookie anyway:', error);
+    console.error('[auth] Durable session-family revocation failed during logout:', error);
+    createAuditLogAsync({
+      orgId: auth.orgId ?? undefined,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'user.logout',
+      resourceType: 'user',
+      resourceId: auth.user.id,
+      resourceName: auth.user.name,
+      details: { familyId, reason: 'durable_revocation_failed' },
+      ipAddress: getClientIP(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'failure',
+      errorMessage: 'Session revocation unavailable',
+    });
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const cleanup = await runPostCommitCleanup([
+    {
+      name: 'refresh-family-cache',
+      run: () => cacheRefreshTokenFamilyRevocation(familyId),
+    },
+    ...(refreshJti ? [{
+      name: 'refresh-token-jti',
+      run: () => revokeRefreshTokenJti(refreshJti),
+    }] : []),
+  ]);
+  for (const failure of cleanup.failures) {
+    console.error(`[auth] Logout cleanup failed (${failure.name}):`, failure.error);
   }
 
   createAuditLogAsync({
@@ -563,13 +651,21 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
     resourceType: 'user',
     resourceId: auth.user.id,
     resourceName: auth.user.name,
+    details: {
+      familyId,
+      cleanupStatus: cleanup.cleanupStatus,
+      cleanupFailures: cleanup.cleanupFailures,
+    },
     ipAddress: getClientIP(c),
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
 
-  clearRefreshTokenCookie(c);
-  return c.json({ success: true });
+  return c.json({
+    success: true,
+    cleanupStatus: cleanup.cleanupStatus,
+    cleanupFailures: cleanup.cleanupFailures,
+  });
 });
 
 // Refresh token

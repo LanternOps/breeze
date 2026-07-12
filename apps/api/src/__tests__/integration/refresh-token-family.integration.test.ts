@@ -20,7 +20,8 @@ import { eq } from 'drizzle-orm';
 import { generate, generateSecret } from 'otplib';
 import { authRoutes } from '../../routes/auth';
 import { encryptMfaTotpSecret } from '../../services/mfaSecretCrypto';
-import { users } from '../../db/schema';
+import { verifyToken } from '../../services/jwt';
+import { refreshTokenFamilies, users } from '../../db/schema';
 import { createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -85,6 +86,20 @@ async function refreshWithCookies(
   const setCookie = res.headers.get('set-cookie') ?? '';
   const nextCookies = res.status === 200 ? extractCookies(setCookie) : null;
   return { status: res.status, nextCookies };
+}
+
+async function logoutWithSession(
+  app: Hono,
+  accessToken: string,
+  cookies: RefreshCookies,
+): Promise<Response> {
+  return app.request('/auth/logout', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Cookie: `${cookies.refreshCookieValue}; ${cookies.csrfCookieValue}`,
+    },
+  });
 }
 
 describe('Refresh-Token Family Revocation (Task 7)', () => {
@@ -337,5 +352,78 @@ describe('Refresh-Token Rotation Leeway (#1107)', () => {
     // The critical assertion: B is still alive — the family was NOT revoked.
     const followup = await refreshWithCookies(app, cookiesB);
     expect(followup.status).toBe(200);
+  });
+});
+
+describe('Durable logout/refresh race (Task 6)', () => {
+  let app: Hono;
+  let testPartnerId: string;
+
+  beforeEach(async () => {
+    process.env.E2E_MODE = 'true';
+    app = new Hono();
+    app.route('/auth', authRoutes);
+    const partner = await createPartner();
+    testPartnerId = partner.id;
+  });
+
+  it('prevents every concurrent refresh descendant from continuing after logout commits', async () => {
+    await createUser({
+      partnerId: testPartnerId,
+      withMembership: true,
+      email: 'logout-race@example.com',
+      password: 'FamilyPass123!',
+    });
+
+    const loginRes = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'logout-race@example.com',
+        password: 'FamilyPass123!',
+      }),
+    });
+    expect(loginRes.status).toBe(200);
+    const loginBody = await loginRes.json() as { tokens: { accessToken: string } };
+    const originalCookies = extractCookies(loginRes.headers.get('set-cookie') ?? '');
+    expect(originalCookies).not.toBeNull();
+    const accessPayload = await verifyToken(loginBody.tokens.accessToken);
+    expect(accessPayload?.sid).toBeTruthy();
+
+    // A second login is a sibling family for the same user. Logout must not
+    // globally revoke it while targeting the racing family above.
+    const siblingCookies = await loginAndExtractCookies(
+      app,
+      'logout-race@example.com',
+      'FamilyPass123!',
+    );
+
+    const [refreshResult, logoutResult] = await Promise.all([
+      refreshWithCookies(app, originalCookies!),
+      logoutWithSession(app, loginBody.tokens.accessToken, originalCookies!),
+    ]);
+
+    expect(logoutResult.status).toBe(200);
+    expect([200, 401]).toContain(refreshResult.status);
+
+    const db = getTestDb();
+    const familyRows = await db.select().from(refreshTokenFamilies);
+    expect(familyRows).toHaveLength(2);
+    const currentFamily = familyRows.find((row) => row.familyId === accessPayload?.sid);
+    const siblingFamily = familyRows.find((row) => row.familyId !== accessPayload?.sid);
+    expect(currentFamily?.revokedAt).not.toBeNull();
+    expect(currentFamily?.revokedReason).toBe('logout');
+    expect(siblingFamily?.revokedAt).toBeNull();
+
+    const originalAfterCommit = await refreshWithCookies(app, originalCookies!);
+    expect(originalAfterCommit.status).toBe(401);
+
+    if (refreshResult.nextCookies) {
+      const descendantAfterCommit = await refreshWithCookies(app, refreshResult.nextCookies);
+      expect(descendantAfterCommit.status).toBe(401);
+    }
+
+    const siblingAfterCommit = await refreshWithCookies(app, siblingCookies);
+    expect(siblingAfterCommit.status).toBe(200);
   });
 });
