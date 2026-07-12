@@ -14,6 +14,8 @@ export default defineConfig({
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     exclude: [
       'src/__tests__/integration/**',
+      // Real-PostgreSQL exact request-pool role checks have a dedicated runner.
+      'src/db/requestDatabaseRole.integration.test.ts',
       // Real-driver integration test for the inbound email pipeline. It needs the
       // integration setup (real postgres pool + autoMigrate seed) and is run by
       // vitest.integration.config.ts — not the unit runner, which has no DB.

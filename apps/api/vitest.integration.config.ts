@@ -63,6 +63,9 @@ export default defineConfig({
       'src/services/warrantyAlertEvaluator.integration.test.ts',
     ],
     exclude: [
+      // Uses fresh request-pool modules and manages its own temporary role;
+      // never attach the shared integration TRUNCATE hooks.
+      'src/db/requestDatabaseRole.integration.test.ts',
       // rls.integration.test.ts is a mocked unit test in integration's
       // clothing — it stubs the postgres/drizzle layer at the module
       // level and cannot coexist with setup.ts opening a real postgres

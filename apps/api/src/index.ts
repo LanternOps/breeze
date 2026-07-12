@@ -266,7 +266,7 @@ import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
-import { autoMigrate } from './db/autoMigrate';
+import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { mountExtensions } from './extensions/loader';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
@@ -1508,19 +1508,13 @@ async function bootstrap(): Promise<void> {
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().
   const config = validateConfig();
+  await initializeDatabaseForStartup({
+    autoMigrateEnabled: process.env.AUTO_MIGRATE !== 'false',
+    production: config.NODE_ENV === 'production',
+  });
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
-  }
-
-  // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to
-  // disable). Runs BEFORE runStartupChecks because ensureAppRole() — called
-  // from autoMigrate — is what creates the unprivileged breeze_app role that
-  // DATABASE_URL_APP points at. On a fresh database the role doesn't exist
-  // until this runs, and the connectivity check (which uses the proxied
-  // `db`) would fail first.
-  if (process.env.AUTO_MIGRATE !== 'false') {
-    await autoMigrate();
   }
 
   await mountExtensions(app);
