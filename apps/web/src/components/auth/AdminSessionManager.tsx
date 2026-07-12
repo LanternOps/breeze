@@ -64,44 +64,68 @@ export default function AdminSessionManager() {
   }, [isAuthenticated]);
 
   useEffect(() => {
-    if (!isAuthenticated || !currentOrgId) {
+    if (!isAuthenticated) {
       setIdleTimeoutMs(DEFAULT_IDLE_TIMEOUT_MS);
       return;
     }
 
     let cancelled = false;
 
-    const loadOrgSessionTimeout = async () => {
+    const applyConfiguredTimeout = (configuredMinutes: number) => {
+      if (!cancelled && Number.isFinite(configuredMinutes) && configuredMinutes > 0) {
+        setIdleTimeoutMs(Math.max(1, configuredMinutes) * 60 * 1000);
+      }
+    };
+
+    const loadSessionTimeout = async () => {
       try {
-        // Use effective settings so a partner-level `security.sessionTimeout`
-        // default is honored by the idle-logout runtime, matching what the
-        // settings UI shows as effective/locked. Reading the raw org record
-        // missed partner defaults the org hadn't overridden locally (#2147).
-        const response = await fetchWithAuth(
-          `/orgs/organizations/${currentOrgId}/effective-settings`
-        );
+        if (currentOrgId) {
+          // Org selected: use that org's effective settings so a partner-level
+          // `security.sessionTimeout` default is honored by the idle-logout
+          // runtime, matching what the settings UI shows as effective/locked.
+          // Reading the raw org record missed partner defaults the org hadn't
+          // overridden locally (#2147).
+          const response = await fetchWithAuth(
+            `/orgs/organizations/${currentOrgId}/effective-settings`
+          );
+          if (!response.ok) {
+            // Surface the failure: this is the path that enforces a possibly
+            // partner-locked idle timeout, so a silent fall-back to the frontend
+            // default must at least be diagnosable (matches OrgSettingsPage).
+            console.warn(
+              '[AdminSessionManager] Failed to load effective session timeout:',
+              response.status
+            );
+            return;
+          }
+          const data = await response.json();
+          applyConfiguredTimeout(Number(data?.effective?.security?.sessionTimeout));
+          return;
+        }
+
+        // All Organizations mode intentionally sets `currentOrgId` to `null`.
+        // The idle timeout is a property of the authenticated user's partner,
+        // not of whichever org is selected for viewing data, so fall back to the
+        // partner-level security policy. Without this the timer silently reset to
+        // the 60-minute frontend default whenever no org was selected, logging a
+        // partner admin out early despite a longer configured timeout (#2347).
+        const response = await fetchWithAuth('/orgs/partners/me');
         if (!response.ok) {
-          // Surface the failure: this is the path that enforces a possibly
-          // partner-locked idle timeout, so a silent fall-back to the frontend
-          // default must at least be diagnosable (matches OrgSettingsPage).
           console.warn(
-            '[AdminSessionManager] Failed to load effective session timeout:',
+            '[AdminSessionManager] Failed to load partner session timeout:',
             response.status
           );
           return;
         }
         const data = await response.json();
-        const configuredMinutes = Number(data?.effective?.security?.sessionTimeout);
-        if (!cancelled && Number.isFinite(configuredMinutes) && configuredMinutes > 0) {
-          setIdleTimeoutMs(Math.max(1, configuredMinutes) * 60 * 1000);
-        }
+        applyConfiguredTimeout(Number(data?.settings?.security?.sessionTimeout));
       } catch (err) {
-        // Keep current timeout fallback when effective settings cannot be loaded.
-        console.warn('[AdminSessionManager] Error loading effective session timeout:', err);
+        // Keep current timeout fallback when session settings cannot be loaded.
+        console.warn('[AdminSessionManager] Error loading session timeout:', err);
       }
     };
 
-    void loadOrgSessionTimeout();
+    void loadSessionTimeout();
 
     return () => {
       cancelled = true;

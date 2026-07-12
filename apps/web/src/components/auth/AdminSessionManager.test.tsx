@@ -146,3 +146,91 @@ describe('AdminSessionManager idle timeout source', () => {
     expect(apiLogoutMock).not.toHaveBeenCalled();
   });
 });
+
+describe('AdminSessionManager All Organizations mode (#2347)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+    // All Organizations intentionally persists `currentOrgId` as null.
+    useOrgStoreMock.mockImplementation((selector: any) => selector({ currentOrgId: null }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('loads the partner-level session timeout instead of the 60-minute default when no org is selected', async () => {
+    // Partner configured a 1440-minute (24h) timeout; the idle manager must honor
+    // it even though no organization is selected for viewing.
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ settings: { security: { sessionTimeout: 1440 } } })
+    );
+
+    render(<AdminSessionManager />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // It reads the authenticated user's partner record, never an org URL.
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/partners/me');
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/effective-settings')
+    );
+
+    // A background heartbeat crossing the 60-minute frontend fallback must NOT
+    // log out while the configured partner timeout (1440 min) is far longer —
+    // this is the exact #2347 regression.
+    await act(async () => {
+      vi.advanceTimersByTime(61 * 60_000);
+      await Promise.resolve();
+    });
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+  });
+
+  it('still logs out once the configured partner timeout elapses in All Organizations mode', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ settings: { security: { sessionTimeout: 2 } } })
+    );
+
+    render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Just under 2 minutes — no logout yet.
+    await act(async () => {
+      vi.advanceTimersByTime(90_000);
+      await Promise.resolve();
+    });
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+
+    // Cross the 2-minute threshold — the heartbeat must log out.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+    });
+    expect(apiLogoutMock).toHaveBeenCalledTimes(1);
+    expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
+  });
+
+  it('keeps the default timeout when the partner record cannot be loaded', async () => {
+    // e.g. a non-partner scope gets 403 — never silently zero the timer.
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 403));
+
+    render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(5 * 60_000);
+      await Promise.resolve();
+    });
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+  });
+});
