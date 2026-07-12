@@ -57,11 +57,14 @@ import {
   reportRuns,
 } from '../db/schema/reports';
 import { devices, sites } from '../db/schema';
-import { eq, and, desc, sql, inArray, gte, lte, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, inArray, gte, lte, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
-import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
+import { siteScopeRequestAllowed } from './reportGenerationService';
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -142,6 +145,60 @@ function automationWhere(auth: AuthContext): SQL | undefined {
   return oc;
 }
 
+// ============================================
+// Site-axis helpers (app-layer authz — RLS does NOT enforce site)
+// ============================================
+
+// Minimal UserPermissions view for reused site-scope helpers that only read
+// `allowedSiteIds` (reportGenerationService.siteScopeRequestAllowed,
+// automationRuntime.checkAutomationTargetsWithinSiteScope). Undefined for
+// unrestricted callers so those helpers no-op.
+function siteScopePerms(auth: AuthContext): UserPermissions | undefined {
+  return auth.allowedSiteIds ? ({ allowedSiteIds: auth.allowedSiteIds } as UserPermissions) : undefined;
+}
+
+// Canonical alert site-scope condition (mirrors routes/alerts/alerts.ts:188-210).
+// Returns null for unrestricted callers (no narrowing / no device leftJoin
+// needed). For a restricted caller the query MUST leftJoin devices on
+// alerts.deviceId; zero-site callers then see only device-less (org-wide) alerts.
+function alertSiteCondition(auth: AuthContext): SQL | null {
+  const allowed = auth.allowedSiteIds;
+  if (!allowed) return null;
+  return allowed.length === 0
+    ? isNull(alerts.deviceId)
+    : (or(isNull(alerts.deviceId), inArray(devices.siteId, allowed)) as SQL);
+}
+
+// Whether a site-restricted caller must be denied an alert rule based on its
+// target. Rules are not RLS-site-scoped, so resolve the rule's target to
+// site(s) and fail closed: org/partner-wide ('all') rules and unresolvable
+// targets are hidden from site-restricted callers. Always allowed (false) for
+// unrestricted callers.
+async function alertRuleTargetDenied(
+  auth: AuthContext,
+  rule: { targetType: string; targetId: string },
+): Promise<boolean> {
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return false;
+  switch (rule.targetType) {
+    case 'site':
+      return deviceSiteDenied(auth, rule.targetId);
+    case 'device':
+      return deviceIdSiteDenied(auth, rule.targetId);
+    case 'group': {
+      const [group] = await db
+        .select({ siteId: deviceGroups.siteId })
+        .from(deviceGroups)
+        .where(eq(deviceGroups.id, rule.targetId))
+        .limit(1);
+      // Null-site (org-wide) or missing group → fail closed.
+      return deviceSiteDenied(auth, group?.siteId ?? null);
+    }
+    default:
+      // 'all' / org-wide / unknown target → exceeds a site-restricted caller.
+      return true;
+  }
+}
+
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
 function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
   return async (input, auth) => {
@@ -201,6 +258,19 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
+      // Deployments have no siteId column — gate site-restricted callers via
+      // their member devices (mirrors routes/deployments.ts:760-766). Control
+      // actions affect ALL member devices, so deny if the deployment includes
+      // ANY out-of-site device (fail closed). Unrestricted callers: always false.
+      const deploymentSiteDenied = async (deploymentId: string): Promise<boolean> => {
+        if (!auth.allowedSiteIds) return false;
+        const members = await db.select({ siteId: devices.siteId })
+          .from(deploymentDevices)
+          .leftJoin(devices, eq(deploymentDevices.deviceId, devices.id))
+          .where(eq(deploymentDevices.deploymentId, deploymentId));
+        return members.some((m) => deviceSiteDenied(auth, m.siteId));
+      };
+
       if (action === 'list') {
         const conditions: SQL[] = [];
         const oc = orgWhere(auth, deployments.orgId);
@@ -258,6 +328,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!dep) return JSON.stringify({ error: 'Deployment not found or access denied' });
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 50), 100);
+        // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
+        // caller may only see per-device rows for devices in their allowed sites.
+        const dsConditions: SQL[] = [eq(deploymentDevices.deploymentId, dep.id)];
+        if (auth.allowedSiteIds) {
+          if (auth.allowedSiteIds.length === 0) {
+            return JSON.stringify({ deploymentId: dep.id, devices: [], showing: 0 });
+          }
+          dsConditions.push(inArray(devices.siteId, auth.allowedSiteIds));
+        }
         const rows = await db.select({
           deviceId: deploymentDevices.deviceId,
           hostname: devices.hostname,
@@ -268,7 +347,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           completedAt: deploymentDevices.completedAt,
         }).from(deploymentDevices)
           .leftJoin(devices, eq(deploymentDevices.deviceId, devices.id))
-          .where(eq(deploymentDevices.deploymentId, dep.id))
+          .where(and(...dsConditions))
           .limit(limit);
 
         return JSON.stringify({ deploymentId: dep.id, devices: rows, showing: rows.length });
@@ -300,6 +379,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [dep] = await db.select().from(deployments).where(and(...conditions)).limit(1);
         if (!dep) return JSON.stringify({ error: 'Deployment not found or access denied' });
+        if (await deploymentSiteDenied(dep.id)) return JSON.stringify({ error: 'Deployment not found or access denied' });
         if (!['draft', 'pending'].includes(dep.status)) return JSON.stringify({ error: `Cannot start deployment in ${dep.status} status` });
 
         await db.update(deployments)
@@ -317,6 +397,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [dep] = await db.select().from(deployments).where(and(...conditions)).limit(1);
         if (!dep) return JSON.stringify({ error: 'Deployment not found or access denied' });
+        if (await deploymentSiteDenied(dep.id)) return JSON.stringify({ error: 'Deployment not found or access denied' });
         if (dep.status !== 'running') return JSON.stringify({ error: `Cannot pause deployment in ${dep.status} status` });
 
         await db.update(deployments).set({ status: 'paused' }).where(eq(deployments.id, dep.id));
@@ -331,6 +412,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [dep] = await db.select().from(deployments).where(and(...conditions)).limit(1);
         if (!dep) return JSON.stringify({ error: 'Deployment not found or access denied' });
+        if (await deploymentSiteDenied(dep.id)) return JSON.stringify({ error: 'Deployment not found or access denied' });
         if (dep.status !== 'paused') return JSON.stringify({ error: `Cannot resume deployment in ${dep.status} status` });
 
         await db.update(deployments).set({ status: 'running' }).where(eq(deployments.id, dep.id));
@@ -345,6 +427,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [dep] = await db.select().from(deployments).where(and(...conditions)).limit(1);
         if (!dep) return JSON.stringify({ error: 'Deployment not found or access denied' });
+        if (await deploymentSiteDenied(dep.id)) return JSON.stringify({ error: 'Deployment not found or access denied' });
         if (['completed', 'cancelled'].includes(dep.status)) return JSON.stringify({ error: `Cannot cancel deployment in ${dep.status} status` });
 
         await db.update(deployments).set({ status: 'cancelled', completedAt: new Date() }).where(eq(deployments.id, dep.id));
@@ -453,19 +536,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'compliance') {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
-        const latest = await db.select()
-          .from(patchComplianceSnapshots)
-          .where(eq(patchComplianceSnapshots.orgId, orgId))
-          .orderBy(desc(patchComplianceSnapshots.createdAt))
-          .limit(1);
-
-        if (latest.length === 0) return JSON.stringify({ message: 'No compliance data available yet' });
-
         // Approvals are partner-scoped: derive partner from org for the approval stats query.
         const compliancePartnerId = auth.partnerId ?? await resolvePartnerIdForOrg(orgId);
         if (!compliancePartnerId) return JSON.stringify({ error: 'Could not resolve partner for organization' });
 
-        // Also get approval stats
         const approvalStats = await db.select({
           total: sql<number>`count(*)`,
           pending: sql<number>`count(*) filter (where ${patchApprovals.status} = 'pending')`,
@@ -474,6 +548,54 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           deferred: sql<number>`count(*) filter (where ${patchApprovals.status} = 'deferred')`,
         }).from(patchApprovals)
           .where(eq(patchApprovals.partnerId, compliancePartnerId));
+
+        // Site axis (app-layer only; RLS does NOT enforce it): the precomputed
+        // snapshot aggregates EVERY site, so a site-restricted caller must not
+        // receive it. Recompute from device_patches over the caller's in-scope
+        // devices instead (mirrors routes/patches/compliance.ts:82-97, which
+        // zeroes the response for a zero-site caller).
+        if (auth.allowedSiteIds) {
+          const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+          if (!allowed || allowed.length === 0) {
+            return JSON.stringify({
+              snapshot: { totalDevices: 0, compliantDevices: 0, nonCompliantDevices: 0, pendingPatches: 0, installedPatches: 0, failedPatches: 0, missingPatches: 0, siteScoped: true },
+              approvals: approvalStats[0],
+            });
+          }
+          const [patchStats] = await db.select({
+            pending: sql<number>`count(*) filter (where ${devicePatches.status} = 'pending')`,
+            installed: sql<number>`count(*) filter (where ${devicePatches.status} = 'installed')`,
+            failed: sql<number>`count(*) filter (where ${devicePatches.status} = 'failed')`,
+            missing: sql<number>`count(*) filter (where ${devicePatches.status} = 'missing')`,
+            devicesNeedingPatches: sql<number>`count(distinct ${devicePatches.deviceId}) filter (where ${devicePatches.status} in ('pending','missing','failed'))`,
+          }).from(devicePatches)
+            .where(and(eq(devicePatches.orgId, orgId), inArray(devicePatches.deviceId, allowed)));
+
+          const totalDevices = allowed.length;
+          const nonCompliant = Number(patchStats?.devicesNeedingPatches ?? 0);
+          return JSON.stringify({
+            snapshot: {
+              totalDevices,
+              compliantDevices: totalDevices - nonCompliant,
+              nonCompliantDevices: nonCompliant,
+              pendingPatches: Number(patchStats?.pending ?? 0),
+              installedPatches: Number(patchStats?.installed ?? 0),
+              failedPatches: Number(patchStats?.failed ?? 0),
+              missingPatches: Number(patchStats?.missing ?? 0),
+              siteScoped: true,
+            },
+            approvals: approvalStats[0],
+          });
+        }
+
+        // Unrestricted caller: fast precomputed snapshot path.
+        const latest = await db.select()
+          .from(patchComplianceSnapshots)
+          .where(eq(patchComplianceSnapshots.orgId, orgId))
+          .orderBy(desc(patchComplianceSnapshots.createdAt))
+          .limit(1);
+
+        if (latest.length === 0) return JSON.stringify({ message: 'No compliance data available yet' });
 
         return JSON.stringify({ snapshot: latest[0], approvals: approvalStats[0] });
       }
@@ -742,6 +864,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (oc) conditions.push(oc);
         if (typeof input.type === 'string') conditions.push(eq(deviceGroups.type, input.type as 'static' | 'dynamic'));
         if (typeof input.siteId === 'string') conditions.push(eq(deviceGroups.siteId, input.siteId as string));
+        // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
+        // caller only sees groups scoped to a site they can access. Null-site
+        // (org-wide) groups are treated as out-of-scope (fail closed), matching
+        // deviceSiteDenied semantics used by get/update/delete below.
+        if (auth.allowedSiteIds) {
+          if (auth.allowedSiteIds.length === 0) {
+            return JSON.stringify({ groups: [], showing: 0 });
+          }
+          conditions.push(inArray(deviceGroups.siteId, auth.allowedSiteIds));
+        }
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 200);
         const rows = await db.select({
@@ -766,6 +898,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!group) return JSON.stringify({ error: 'Group not found or access denied' });
+        // Site axis (app-layer only; RLS does NOT enforce it).
+        if (deviceSiteDenied(auth, group.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
         const members = await db.select({
@@ -790,7 +924,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           const { evaluateFilterWithPreview } = await import('./filterEngine');
           const result = await evaluateFilterWithPreview(
             input.filterConditions as any,
-            { orgId, limit: Number(input.limit) || 25 },
+            // Site axis (app-layer only; RLS does NOT enforce it): narrow the
+            // preview to the caller's allowed sites. filterEngine short-circuits
+            // to empty for a zero-site restricted caller.
+            { orgId, limit: Number(input.limit) || 25, allowedSiteIds: auth.allowedSiteIds },
           );
           return JSON.stringify({ preview: result });
         } catch (err) {
@@ -812,6 +949,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!group) return JSON.stringify({ error: 'Group not found or access denied' });
+        // Site axis (app-layer only; RLS does NOT enforce it).
+        if (deviceSiteDenied(auth, group.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
         const rows = await db.select({
@@ -831,6 +970,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'create') {
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+        // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
+        // caller may only create a group scoped to a site they can access. A
+        // null/omitted siteId (org-wide group) fails closed for restricted callers.
+        if (deviceSiteDenied(auth, (input.siteId as string) ?? null)) {
+          return JSON.stringify({ error: 'Access denied: cannot create a group in a site outside your access' });
+        }
         const [group] = await db.insert(deviceGroups).values({
           orgId,
           name: input.name as string,
@@ -850,6 +995,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Group not found or access denied' });
+        // Site axis (app-layer only; RLS does NOT enforce it).
+        if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
@@ -867,6 +1014,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Group not found or access denied' });
+        // Site axis (app-layer only; RLS does NOT enforce it).
+        if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
         await db.transaction(async (tx) => {
           await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, existing.id));
@@ -1195,6 +1344,20 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
+      // Site axis (app-layer only; RLS does NOT enforce it): an automation may
+      // target devices/sites outside a restricted caller's allowlist. Reuse the
+      // runtime target-scope check the REST route wires via enforceAutomationSiteScope
+      // (routes/automations.ts:807/815). Returns a denial message or null (allow).
+      const automationSiteDenied = async (
+        auto: { orgId: string | null; partnerId: string | null; trigger: unknown; conditions: unknown; id: string },
+      ): Promise<string | null> => {
+        const check = await checkAutomationTargetsWithinSiteScope(auto as any, siteScopePerms(auth));
+        if (check.ok) return null;
+        return check.unbounded
+          ? 'Site-restricted users cannot operate on automations that target all devices in the organization'
+          : 'Access to one or more target sites denied';
+      };
+
       if (action === 'create' || action === 'update' || action === 'delete') {
         return JSON.stringify({
           error: `Action "${action}" is disabled. Automations must be managed through configuration policies. Use manage_policy_feature_link with featureType "automation" to configure automations on a policy.`,
@@ -1220,12 +1383,26 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           lastRunAt: automations.lastRunAt,
           runCount: automations.runCount,
           createdAt: automations.createdAt,
+          // Needed to resolve target site-scope below; also harmless in output.
+          orgId: automations.orgId,
+          partnerId: automations.partnerId,
+          conditions: automations.conditions,
         }).from(automations)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(automations.createdAt))
           .limit(limit);
 
-        return JSON.stringify({ automations: rows, showing: rows.length });
+        // Site axis: omit automations whose resolvable target set escapes the
+        // caller's site allowlist (only queries the DB for restricted callers).
+        let visible = rows;
+        if (auth.allowedSiteIds) {
+          const checks = await Promise.all(
+            rows.map((r) => checkAutomationTargetsWithinSiteScope(r as any, siteScopePerms(auth))),
+          );
+          visible = rows.filter((_, i) => checks[i]!.ok);
+        }
+
+        return JSON.stringify({ automations: visible, showing: visible.length });
       }
 
       if (action === 'get') {
@@ -1236,6 +1413,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [auto] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!auto) return JSON.stringify({ error: 'Automation not found or access denied' });
+
+        const getDenied = await automationSiteDenied(auto);
+        if (getDenied) return JSON.stringify({ error: getDenied });
 
         return JSON.stringify({ automation: auto });
       }
@@ -1248,6 +1428,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [auto] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!auto) return JSON.stringify({ error: 'Automation not found or access denied' });
+
+        const historyDenied = await automationSiteDenied(auto);
+        if (historyDenied) return JSON.stringify({ error: historyDenied });
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
         const runs = await db.select()
@@ -1341,6 +1524,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Modifying a partner-wide automation requires full partner org access' });
         }
 
+        const toggleDenied = await automationSiteDenied(existing);
+        if (toggleDenied) return JSON.stringify({ error: toggleDenied });
+
         const enabled = action === 'enable';
         await db.update(automations)
           .set({ enabled, updatedAt: new Date() })
@@ -1363,6 +1549,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (auto.orgId === null && !canManagePartnerWidePolicies(auth)) {
           return JSON.stringify({ error: 'Running a partner-wide automation requires full partner org access' });
         }
+
+        // Re-validate against the CURRENT resolved target set (mirrors the REST
+        // run path, routes/automations.ts:815) in case devices/sites drifted.
+        const runDenied = await automationSiteDenied(auto);
+        if (runDenied) return JSON.stringify({ error: runDenied });
 
         const [run] = await db.insert(automationRuns).values({
           automationId: auto.id,
@@ -1460,7 +1651,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(alertRules.createdAt))
           .limit(limit);
 
-        return JSON.stringify({ rules: rows, showing: rows.length });
+        // Site axis (app-layer only; RLS does NOT enforce it): omit rules whose
+        // target resolves to a site outside the caller's allowlist (only queries
+        // for restricted callers).
+        let visibleRules = rows;
+        if (auth.allowedSiteIds) {
+          const denied = await Promise.all(rows.map((r) => alertRuleTargetDenied(auth, r)));
+          visibleRules = rows.filter((_, i) => !denied[i]);
+        }
+
+        return JSON.stringify({ rules: visibleRules, showing: visibleRules.length });
       }
 
       if (action === 'get_rule') {
@@ -1471,16 +1671,28 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [rule] = await db.select().from(alertRules).where(and(...conditions)).limit(1);
         if (!rule) return JSON.stringify({ error: 'Alert rule not found or access denied' });
+        // Site axis: hide a rule whose target is outside the caller's sites.
+        if (await alertRuleTargetDenied(auth, rule)) return JSON.stringify({ error: 'Alert rule not found or access denied' });
 
-        // Get recent alerts for this rule
-        const recentAlerts = await db.select({
+        // Get recent alerts for this rule. Org condition (previously absent) plus
+        // the canonical alert site predicate (device leftJoin + isNull escape
+        // hatch, mirrors routes/alerts/alerts.ts:188-210).
+        const recentAlertConds: SQL[] = [eq(alerts.ruleId, rule.id)];
+        const recentOrg = orgWhere(auth, alerts.orgId);
+        if (recentOrg) recentAlertConds.push(recentOrg);
+        const recentSite = alertSiteCondition(auth);
+        if (recentSite) recentAlertConds.push(recentSite);
+        const recentAlertsCols = {
           id: alerts.id,
           severity: alerts.severity,
           status: alerts.status,
           title: alerts.title,
           triggeredAt: alerts.triggeredAt,
-        }).from(alerts)
-          .where(eq(alerts.ruleId, rule.id))
+        };
+        const recentAlertsBase = db.select(recentAlertsCols).from(alerts);
+        const recentAlerts = await (recentSite
+          ? recentAlertsBase.leftJoin(devices, eq(alerts.deviceId, devices.id)).where(and(...recentAlertConds))
+          : recentAlertsBase.where(and(...recentAlertConds)))
           .orderBy(desc(alerts.triggeredAt))
           .limit(5);
 
@@ -1501,13 +1713,24 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [rule] = await db.select().from(alertRules).where(and(...conditions)).limit(1);
         if (!rule) return JSON.stringify({ error: 'Alert rule not found or access denied' });
+        // Site axis: hide a rule whose target is outside the caller's sites.
+        if (await alertRuleTargetDenied(auth, rule)) return JSON.stringify({ error: 'Alert rule not found or access denied' });
 
-        // Count current matching alerts
-        const [alertCount] = await db.select({
+        // Count current matching alerts. Org condition (previously absent) plus
+        // the canonical alert site predicate (device leftJoin + isNull escape).
+        const testConds: SQL[] = [eq(alerts.ruleId, rule.id)];
+        const testOrg = orgWhere(auth, alerts.orgId);
+        if (testOrg) testConds.push(testOrg);
+        const testSite = alertSiteCondition(auth);
+        if (testSite) testConds.push(testSite);
+        const testCountCols = {
           total: sql<number>`count(*)`,
           active: sql<number>`count(*) filter (where ${alerts.status} = 'active')`,
-        }).from(alerts)
-          .where(eq(alerts.ruleId, rule.id));
+        };
+        const testCountBase = db.select(testCountCols).from(alerts);
+        const [alertCount] = await (testSite
+          ? testCountBase.leftJoin(devices, eq(alerts.deviceId, devices.id)).where(and(...testConds))
+          : testCountBase.where(and(...testConds)));
 
         return JSON.stringify({
           ruleId: rule.id,
@@ -1541,8 +1764,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const oc = orgWhere(auth, alerts.orgId);
         if (oc) conditions.push(oc);
         if (typeof input.severity === 'string') conditions.push(eq(alerts.severity, input.severity as any));
+        // Site axis: narrow the summary to alerts on in-scope devices (canonical
+        // predicate — device leftJoin + isNull escape hatch for org-wide alerts).
+        const summarySite = alertSiteCondition(auth);
+        if (summarySite) conditions.push(summarySite);
 
-        const [summary] = await db.select({
+        const summaryCols = {
           total: sql<number>`count(*)`,
           active: sql<number>`count(*) filter (where ${alerts.status} = 'active')`,
           acknowledged: sql<number>`count(*) filter (where ${alerts.status} = 'acknowledged')`,
@@ -1554,8 +1781,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           medium: sql<number>`count(*) filter (where ${alerts.severity} = 'medium' and ${alerts.status} = 'active')`,
           low: sql<number>`count(*) filter (where ${alerts.severity} = 'low' and ${alerts.status} = 'active')`,
           info: sql<number>`count(*) filter (where ${alerts.severity} = 'info' and ${alerts.status} = 'active')`,
-        }).from(alerts)
-          .where(conditions.length > 0 ? and(...conditions) : undefined);
+        };
+        const summaryBase = db.select(summaryCols).from(alerts);
+        const [summary] = await (summarySite
+          ? summaryBase.leftJoin(devices, eq(alerts.deviceId, devices.id)).where(conditions.length > 0 ? and(...conditions) : undefined)
+          : summaryBase.where(conditions.length > 0 ? and(...conditions) : undefined));
 
         return JSON.stringify({ summary });
       }
@@ -1628,6 +1858,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           if (!reportDef) return JSON.stringify({ error: 'Report not found or access denied' });
         }
 
+        // Site axis: a site-restricted caller must not enqueue a report whose
+        // config scope (siteIds / posture sites / deviceIds) exceeds their sites
+        // (mirrors routes/reports/runs.ts:59 via siteScopeRequestAllowed).
+        if (reportDef && !(await siteScopeRequestAllowed(reportDef.orgId, (reportDef.config ?? {}) as Record<string, unknown>, siteScopePerms(auth)))) {
+          return JSON.stringify({ error: 'Access to report scope denied' });
+        }
+
         // Only create a run record if we have a saved report definition
         const reportId = reportDef?.id ?? null;
         let runId: string | null = null;
@@ -1686,6 +1923,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }
 
         if (reportType === 'alert_summary') {
+          const summaryConditions: SQL[] = [eq(alerts.orgId, orgId)];
+          // Site axis: mirror device_inventory — narrow to in-scope devices.
+          if (auth.allowedSiteIds) {
+            const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+            if (!allowed || allowed.length === 0) {
+              return JSON.stringify({ reportType, data: { total: 0, active: 0, critical: 0, high: 0, resolved24h: 0 } });
+            }
+            summaryConditions.push(inArray(alerts.deviceId, allowed));
+          }
           const [summary] = await db.select({
             total: sql<number>`count(*)`,
             active: sql<number>`count(*) filter (where ${alerts.status} = 'active')`,
@@ -1693,7 +1939,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             high: sql<number>`count(*) filter (where ${alerts.severity} = 'high' and ${alerts.status} = 'active')`,
             resolved24h: sql<number>`count(*) filter (where ${alerts.status} = 'resolved' and ${alerts.resolvedAt} > now() - interval '24 hours')`,
           }).from(alerts)
-            .where(eq(alerts.orgId, orgId));
+            .where(and(...summaryConditions));
 
           return JSON.stringify({ reportType, data: summary });
         }
@@ -1704,6 +1950,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           const conditions: SQL[] = [];
           if (oc) conditions.push(oc);
 
+          // Site axis: narrow the per-device compliance rows to the caller's
+          // in-scope devices. Added to the JOIN condition (not WHERE) so policies
+          // still appear with in-scope counts rather than being dropped entirely.
+          let complianceJoin: SQL = eq(automationPolicies.id, automationPolicyCompliance.policyId);
+          if (auth.allowedSiteIds) {
+            const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+            if (!allowed || allowed.length === 0) {
+              return JSON.stringify({ reportType, data: [] });
+            }
+            complianceJoin = and(complianceJoin, inArray(automationPolicyCompliance.deviceId, allowed))!;
+          }
+
           const rows = await db.select({
             policyId: automationPolicies.id,
             policyName: automationPolicies.name,
@@ -1712,7 +1970,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             compliant: sql<number>`count(*) filter (where ${automationPolicyCompliance.status} = 'compliant')`,
             nonCompliant: sql<number>`count(*) filter (where ${automationPolicyCompliance.status} = 'non_compliant')`,
           }).from(automationPolicies)
-            .leftJoin(automationPolicyCompliance, eq(automationPolicies.id, automationPolicyCompliance.policyId))
+            .leftJoin(automationPolicyCompliance, complianceJoin)
             .where(conditions.length > 0 ? and(...conditions) : undefined)
             .groupBy(automationPolicies.id);
 
@@ -1780,6 +2038,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [report] = await db.select().from(reports).where(and(...conditions)).limit(1);
         if (!report) return JSON.stringify({ error: 'Report not found or access denied' });
+        // Site axis: deny run history for a report whose scope exceeds the
+        // caller's sites (mirrors routes/reports/runs.ts:59).
+        if (!(await siteScopeRequestAllowed(report.orgId, (report.config ?? {}) as Record<string, unknown>, siteScopePerms(auth)))) {
+          return JSON.stringify({ error: 'Access to report scope denied' });
+        }
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
         const runs = await db.select()
@@ -1807,6 +2070,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           reportName: reports.name,
           reportType: reports.type,
           reportFormat: reports.format,
+          reportOrgId: reports.orgId,
+          reportConfig: reports.config,
         }).from(reportRuns)
           .innerJoin(reports, eq(reportRuns.reportId, reports.id))
           .where(eq(reportRuns.id, input.reportRunId as string))
@@ -1822,6 +2087,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             .where(and(eq(reports.id, run.reportId), oc))
             .limit(1);
           if (!accessible) return JSON.stringify({ error: 'Report not found or access denied' });
+        }
+
+        // Site axis: deny download of a run whose report scope exceeds the
+        // caller's sites (mirrors routes/reports/runs.ts:59). The output URL /
+        // result would otherwise expose out-of-site device data.
+        if (!(await siteScopeRequestAllowed(run.reportOrgId, (run.reportConfig ?? {}) as Record<string, unknown>, siteScopePerms(auth)))) {
+          return JSON.stringify({ error: 'Access to report scope denied' });
         }
 
         if (run.status !== 'completed') {
