@@ -11,6 +11,7 @@ import {
   getActiveRefreshTokenFamily,
   mintRefreshTokenFamily,
 } from './refreshTokenFamily';
+import type { AuthLifecycleTransaction } from './authLifecycle';
 
 export type UserSessionIdentity = {
   userId: string;
@@ -36,19 +37,24 @@ type UserSecurityEpochs = {
   mfaEpoch: number;
 };
 
-async function loadUserSecurityEpochs(userId: string): Promise<UserSecurityEpochs> {
-  const rows = await dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(async () =>
-      dbModule.db
+async function loadUserSecurityEpochs(
+  userId: string,
+  tx?: AuthLifecycleTransaction,
+): Promise<UserSecurityEpochs> {
+  const query = (database: Pick<AuthLifecycleTransaction, 'select'>) =>
+    database
         .select({
           authEpoch: users.authEpoch,
           mfaEpoch: users.mfaEpoch,
         })
         .from(users)
         .where(eq(users.id, userId))
-        .limit(1)
-    )
-  );
+        .limit(1);
+  const rows = tx
+    ? await query(tx)
+    : await dbModule.runOutsideDbContext(() =>
+      dbModule.withSystemDbAccessContext(() => query(dbModule.db))
+    );
   const epochs = rows[0];
   if (!epochs) {
     throw new Error('Cannot issue session for missing user');
@@ -63,19 +69,21 @@ async function loadUserSecurityEpochs(userId: string): Promise<UserSecurityEpoch
  */
 export async function issueUserSession(
   identity: UserSessionIdentity,
-  options: { familyId?: string } = {},
+  options: { familyId?: string; tx?: AuthLifecycleTransaction } = {},
 ): Promise<TokenPair & { familyId: string }> {
-  const epochs = await loadUserSecurityEpochs(identity.userId);
+  const epochs = await loadUserSecurityEpochs(identity.userId, options.tx);
   let familyId: string;
 
   if (options.familyId) {
-    const family = await getActiveRefreshTokenFamily(options.familyId, identity.userId);
+    const family = await getActiveRefreshTokenFamily(options.familyId, identity.userId, {
+      tx: options.tx,
+    });
     if (!family) {
       throw new UserSessionFamilyInactiveError();
     }
     familyId = family.familyId;
   } else {
-    familyId = await mintRefreshTokenFamily(identity.userId);
+    familyId = await mintRefreshTokenFamily(identity.userId, { tx: options.tx });
   }
 
   const tokens = await createTokenPair({
@@ -93,6 +101,20 @@ export async function issueUserSession(
     sid: familyId,
   }, { refreshFam: familyId });
 
-  await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
-  return { ...tokens, familyId };
+  const issued = { ...tokens, familyId };
+  if (!options.tx) {
+    await bindIssuedUserSession(issued);
+  }
+  return issued;
+}
+
+/**
+ * Populate the Redis jti accelerator only after the transaction that created
+ * the durable family commits. The signed `fam` claim and PostgreSQL family row
+ * remain authoritative if this best-effort cache bind fails.
+ */
+export async function bindIssuedUserSession(
+  session: Pick<TokenPair, 'refreshJti'> & { familyId: string },
+): Promise<void> {
+  await bindRefreshJtiToFamily(session.refreshJti, session.familyId);
 }

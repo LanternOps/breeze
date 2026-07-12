@@ -200,3 +200,66 @@ PASS
 - Task 5 owns transactional `mfa_epoch` advancement and refresh-family revocation for factor/effective-policy mutations. Task 3 already compares snapshots so current policy/enrollment changes fail closed during the pending window; Task 5 closes mutation races durably for issued sessions.
 - Task 6 owns recovery-code verification, atomic database removal, recovery AMR, and cross-store recovery consumption. V2 records now preserve recovery enrollment for that work.
 - The API build retains the pre-existing tsup warning that `import.meta` is empty in CJS output from `src/db/seed.ts`; build exits successfully.
+
+## Review Fix Loop
+
+### Important findings addressed
+
+1. **Post-consume DB TOCTOU:** `withSystemDbAccessTransaction` now exposes the actual transaction owned by the RLS context; the lifecycle wrapper no longer casts the routed DB proxy. Pending issuance acquires the partner policy advisory lock, then locks the user and active passkey rows, resolves policy through that same transaction, revalidates every bound assurance field, loads epochs, inserts the refresh family, and mints the token pair before commit. Redis JTI binding is explicitly post-commit; the signed `fam` claim plus PostgreSQL family row remain authoritative.
+2. **Login decision race:** password and Cloudflare Access login no longer branch on the earlier `mfaEnabled` row. `decideAuthenticatedUserSession` owns pending-versus-direct issuance from locked live enrollment and policy. Password decisions additionally bind the already-verified password hash, `passwordChangedAt`, and `authEpoch`; any intervening credential change fails closed. Pending Redis state and direct-session Redis binding both occur only after the transaction commits.
+3. **Fallback factor drift:** the shared `selectEffectiveMfaMethod` preserves a usable configured factor, otherwise selects the first allowed+enrolled factor in canonical `totp`, `sms`, `passkey` order. V2 state now stores `configuredMfaMethod` separately from selected `primaryMfaMethod`. Post-factor issuance recomputes both and rejects selection drift.
+
+The compatibility `createPendingMfaForLogin` entry point was also moved onto the same advisory/user/passkey locking path; there is no remaining unlocked production pending-login loader.
+
+### Review RED evidence
+
+```text
+authLifecycle transaction identity
+FAIL — callback received routed proxy instead of actual system transaction
+
+userSession supplied transaction
+FAIL — tx option was ignored; epoch lookup escaped to the outer DB path
+
+MFA fallback + consolidated issuer
+FAIL — selector missing; policy/session calls omitted the transaction
+
+locked login decision
+FAIL — decideAuthenticatedUserSession did not exist
+```
+
+### Review race and fallback evidence
+
+- Unit coverage proves transaction-aware epoch lookup/family insertion and no Redis bind until the explicit post-commit step.
+- Password and Cloudflare Access route regressions prove enrollment appearing after the pre-auth lookup is honored by the locked live decision.
+- Password credential drift (`authEpoch`, with hash/change-time bindings implemented alongside it) rejects without issuance.
+- Configured TOTP with only passkey usable succeeds when the fallback remains unchanged.
+- A policy change that changes the selected fallback burns the pending record and creates no session.
+- Real PostgreSQL + Redis interleaving: a mutation transaction locked the user row and advanced `mfa_epoch`; the issuer consumed Redis and waited, then observed the committed epoch change, rejected, and left `refresh_token_families` empty for the user. The authoritative rerun passed 1/1. An earlier setup attempt hit PostgreSQL's transient `tuple concurrently updated` while two test initializers granted the app role; no test assertion ran on that attempt.
+
+### Review verification
+
+```text
+review focused auth/assurance/policy/session gate
+PASS — 8 files, 255/255 tests
+
+post-refactor mfaAssurance exact suite
+PASS — 42/42 tests
+
+Wave 1-style auth/session regression gate
+PASS — 6 files, 240/240 tests
+
+real PostgreSQL + Redis pending issuance interleaving
+PASS — 1/1
+
+TypeScript (`tsc --noEmit`)
+PASS
+
+ESLint
+PASS
+
+API build
+PASS (existing import.meta/CJS warning only)
+
+git diff --check
+PASS
+```

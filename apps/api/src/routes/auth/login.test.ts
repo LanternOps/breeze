@@ -30,6 +30,15 @@ vi.mock('../../services', () => ({
     expiresInSeconds: 900,
     familyId: 'family-id',
   })),
+  decideAuthenticatedUserSession: vi.fn(async (input: Record<string, unknown>) => {
+    const { issueUserSession } = await import('../../services');
+    const tokens = await issueUserSession({
+      ...input,
+      mfa: false,
+      amr: ['password'],
+    } as never);
+    return { kind: 'issued', tokens };
+  }),
   getActiveRefreshTokenFamily: vi.fn(async () => ({
     familyId: 'family-42',
     userId: 'user-1',

@@ -25,6 +25,7 @@ import {
   type RefreshTokenFamily,
 } from '../db/schema/refreshTokenFamilies';
 import { rememberJtiFamily } from './tokenRevocation';
+import type { AuthLifecycleTransaction } from './authLifecycle';
 
 const REFRESH_TOKEN_FAMILY_ABSOLUTE_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -42,9 +43,20 @@ const REFRESH_TOKEN_FAMILY_ABSOLUTE_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
  * outcome; the alternative is a token without a family, which is exactly
  * the bug this helper exists to prevent).
  */
-export async function mintRefreshTokenFamily(userId: string): Promise<string> {
+export async function mintRefreshTokenFamily(
+  userId: string,
+  options: { tx?: AuthLifecycleTransaction } = {},
+): Promise<string> {
   const familyId = randomUUID();
   const absoluteExpiresAt = new Date(Date.now() + REFRESH_TOKEN_FAMILY_ABSOLUTE_LIFETIME_MS);
+  if (options.tx) {
+    await options.tx.insert(refreshTokenFamilies).values({
+      familyId,
+      userId,
+      absoluteExpiresAt,
+    });
+    return familyId;
+  }
   await dbModule.runOutsideDbContext(() =>
     dbModule.withSystemDbAccessContext(async () => {
       await dbModule.db.insert(refreshTokenFamilies).values({
@@ -65,20 +77,23 @@ export async function mintRefreshTokenFamily(userId: string): Promise<string> {
  */
 export async function getActiveRefreshTokenFamily(
   familyId: string,
-  userId: string
+  userId: string,
+  options: { tx?: AuthLifecycleTransaction } = {},
 ): Promise<RefreshTokenFamily | null> {
-  const rows = await dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(async () =>
-      dbModule.db
+  const query = (database: Pick<AuthLifecycleTransaction, 'select'>) =>
+    database
         .select()
         .from(refreshTokenFamilies)
         .where(and(
           eq(refreshTokenFamilies.familyId, familyId),
           eq(refreshTokenFamilies.userId, userId)
         ))
-        .limit(1)
-    )
-  );
+        .limit(1);
+  const rows = options.tx
+    ? await query(options.tx)
+    : await dbModule.runOutsideDbContext(() =>
+      dbModule.withSystemDbAccessContext(() => query(dbModule.db))
+    );
   const family = rows[0];
   const absoluteExpiresAtMs = family?.absoluteExpiresAt instanceof Date
     ? family.absoluteExpiresAt.getTime()

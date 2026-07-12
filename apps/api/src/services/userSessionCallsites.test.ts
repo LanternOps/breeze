@@ -146,7 +146,6 @@ describe('first-party user session issuer coverage', () => {
       .sort();
 
     expect(issuers).toEqual([
-      'middleware/cfAccessLogin.ts',
       'routes/auth/cfAccessRedirectLogin.ts',
       'routes/auth/invite.ts',
       'routes/auth/login.ts',

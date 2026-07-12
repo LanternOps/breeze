@@ -14,8 +14,7 @@ import {
   verifyCfAccessJwt,
 } from '../services/cfAccessJwt';
 import {
-  createPendingMfaForLogin,
-  issueUserSession,
+  decideAuthenticatedUserSession,
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
 } from '../services';
@@ -137,54 +136,41 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     return next();
   }
 
-  // CF Access JWT cannot tell us whether the user satisfied MFA at the
-  // edge — that's an operator-level assertion via CF_ACCESS_TRUSTS_MFA.
-  // If the user has Breeze MFA enrolled and we don't trust CF Access as
-  // MFA, issue a temp token and require the user to complete TOTP, same
-  // shape the password handler uses.
   const trustsMfa = cfAccessTrustsMfa();
-  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey') && !trustsMfa) {
-    let pendingLogin;
-    try {
-      pendingLogin = await createPendingMfaForLogin({
-        userId: user.id,
-        roleId: context.roleId,
-        orgId: context.orgId,
-        partnerId: context.partnerId,
-        scope: context.scope,
-        primaryAuthenticationMethod: 'cf_access',
-      });
-    } catch (error) {
-      if (error instanceof PendingMfaUnavailableError || error instanceof PendingMfaInvalidError) {
-        console.error('[cf-access-login] cannot issue MFA V2 state; falling through');
-        return next();
-      }
-      throw error;
+  let loginDecision;
+  try {
+    loginDecision = await decideAuthenticatedUserSession({
+      userId: user.id,
+      roleId: context.roleId,
+      orgId: context.orgId,
+      partnerId: context.partnerId,
+      scope: context.scope,
+      primaryAuthenticationMethod: 'cf_access',
+      requireLocalMfa: ENABLE_2FA && !trustsMfa,
+      externallySatisfiedMfa: trustsMfa,
+      mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+    });
+  } catch (error) {
+    if (error instanceof PendingMfaUnavailableError || error instanceof PendingMfaInvalidError) {
+      console.error('[cf-access-login] cannot make live MFA session decision; falling through');
+      return next();
     }
+    throw error;
+  }
+  if (loginDecision.kind === 'pending') {
     return c.json({
       mfaRequired: true,
-      tempToken: pendingLogin.tempToken,
-      mfaMethod: pendingLogin.primaryMfaMethod,
-      passkeyAvailable: pendingLogin.passkeyAvailable,
-      phoneLast4: pendingLogin.phoneLast4,
+      tempToken: loginDecision.tempToken,
+      mfaMethod: loginDecision.primaryMfaMethod,
+      passkeyAvailable: loginDecision.passkeyAvailable,
+      phoneLast4: loginDecision.phoneLast4,
       user: null,
       tokens: null,
     });
   }
 
   const mfaSatisfied = trustsMfa;
-
-  const tokens = await issueUserSession({
-    userId: user.id,
-    email: user.email,
-    roleId: context.roleId,
-    orgId: context.orgId,
-    partnerId: context.partnerId,
-    scope: context.scope,
-    mfa: mfaSatisfied,
-    amr: ['cf_access'],
-    mobileDeviceId: readMobileDeviceId(c) ?? undefined,
-  });
+  const tokens = loginDecision.tokens;
 
   // System DB context required: no request auth context is established on this
   // pre-auth path, so a bare UPDATE silently matches 0 rows under breeze_app RLS

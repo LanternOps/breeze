@@ -105,6 +105,41 @@ vi.mock('../services', () => ({
       };
     }
   ),
+  decideAuthenticatedUserSession: vi.fn(async (input: Record<string, unknown>) => {
+    tokenState.pendingInput = input;
+    const hasLocalFactor = dbState.userRow?.mfaEnabled === true
+      && Boolean(dbState.userRow?.mfaSecret || dbState.userRow?.mfaMethod === 'sms' || dbState.userRow?.mfaMethod === 'passkey');
+    if (input.requireLocalMfa === true && hasLocalFactor) {
+      return {
+        kind: 'pending',
+        tempToken: 'v2-temp-token',
+        primaryMfaMethod: dbState.userRow?.mfaMethod ?? 'totp',
+        passkeyAvailable: dbState.userRow?.mfaMethod === 'passkey',
+        phoneLast4: null,
+      };
+    }
+    tokenState.lastIdentity = {
+      userId: input.userId,
+      email: dbState.userRow?.email,
+      roleId: input.roleId,
+      orgId: input.orgId,
+      partnerId: input.partnerId,
+      scope: input.scope,
+      mfa: input.externallySatisfiedMfa === true,
+      amr: ['cf_access'],
+      mobileDeviceId: input.mobileDeviceId,
+    };
+    return {
+      kind: 'issued',
+      tokens: {
+        accessToken: 'access-tok',
+        refreshToken: 'refresh-tok',
+        refreshJti: 'jti-new',
+        expiresInSeconds: 900,
+        familyId: 'fam-1',
+      },
+    };
+  }),
   getRedis: vi.fn(() => ({
     setex: vi.fn(async () => 'OK'),
   })),
@@ -168,6 +203,7 @@ vi.mock('../routes/auth/schemas', async () => {
 });
 
 import { cfAccessLoginMiddleware } from './cfAccessLogin';
+import { decideAuthenticatedUserSession } from '../services';
 
 function createContext(headers: Record<string, string | undefined> = {}): Context {
   const normalized = Object.fromEntries(
@@ -369,6 +405,35 @@ describe('cfAccessLoginMiddleware', () => {
     });
   });
 
+  it('honors a locked live enrollment decision even when the pre-auth user row had MFA disabled', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser, mfaEnabled: false };
+    vi.mocked(decideAuthenticatedUserSession).mockResolvedValueOnce({
+      kind: 'pending',
+      tempToken: 'live-enrollment-token',
+      primaryMfaMethod: 'passkey',
+      passkeyAvailable: true,
+      phoneLast4: null,
+    } as never);
+
+    const { next, called } = createNext();
+    const res = await cfAccessLoginMiddleware(
+      createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }),
+      next,
+    );
+
+    expect(called()).toBe(false);
+    await expect((res as Response).json()).resolves.toMatchObject({
+      mfaRequired: true,
+      tempToken: 'live-enrollment-token',
+      mfaMethod: 'passkey',
+    });
+  });
+
   it('delegates the complete identity to the high-level session issuer', async () => {
     envState.enabled = true;
     verifyState.next = {
@@ -427,14 +492,16 @@ describe('cfAccessLoginMiddleware', () => {
     expect(body.mfaMethod).toBe('totp');
     expect(body.tokens).toBeNull();
     expect(tokenState.lastIdentity).toBeNull(); // no full token mint yet
-    expect(tokenState.pendingInput).toEqual({
+    expect(tokenState.pendingInput).toEqual(expect.objectContaining({
       userId: activeUser.id,
       roleId: 'role-1',
       partnerId: 'partner-1',
       orgId: null,
       scope: 'partner',
       primaryAuthenticationMethod: 'cf_access',
-    });
+      requireLocalMfa: true,
+      externallySatisfiedMfa: false,
+    }));
   });
 
   it('issues an MFA temp token when user has passkey MFA and TRUSTS_MFA is false', async () => {

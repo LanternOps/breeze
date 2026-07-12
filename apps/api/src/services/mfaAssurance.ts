@@ -1,11 +1,14 @@
 import { nanoid } from 'nanoid';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { MfaMethod, MfaPrimaryMethod } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { userPasskeys, users } from '../db/schema';
-import { resolveEffectiveMfaPolicy } from './mfaPolicy';
+import { lockMfaPolicyPartner, resolveEffectiveMfaPolicy } from './mfaPolicy';
 import { getRedis } from './redis';
-import { issueUserSession } from './userSession';
+import { bindIssuedUserSession, issueUserSession } from './userSession';
+import {
+  withAuthLifecycleSystemTransaction,
+  type AuthLifecycleTransaction,
+} from './authLifecycle';
 
 const PENDING_MFA_TTL_SECONDS = 5 * 60;
 const PENDING_MFA_TTL_MS = PENDING_MFA_TTL_SECONDS * 1000;
@@ -40,6 +43,7 @@ export interface CreatePendingMfaInput {
   allowedMethods: ReadonlySet<MfaMethod>;
   enrolledMethods: ReadonlySet<MfaMethod>;
   primaryAuthenticationMethod: PrimaryAuthenticationMethod;
+  configuredMfaMethod?: MfaPrimaryMethod | null;
   primaryMfaMethod: MfaPrimaryMethod;
 }
 
@@ -58,6 +62,7 @@ export interface PendingMfaSessionV2 {
   allowedMethods: MfaMethod[];
   enrolledMethods: MfaMethod[];
   primaryAuthenticationMethod: PrimaryAuthenticationMethod;
+  configuredMfaMethod: MfaPrimaryMethod | null;
   primaryMfaMethod: MfaPrimaryMethod;
   issuedAt: string;
   expiresAt: string;
@@ -97,6 +102,7 @@ function hasExactKeys(value: Record<string, unknown>): boolean {
   const expected = [
     'allowedMethods',
     'authEpoch',
+    'configuredMfaMethod',
     'enrolledMethods',
     'expectedStatus',
     'expiresAt',
@@ -170,6 +176,8 @@ function parsePendingMfa(raw: string): PendingMfaSessionV2 | null {
     || !isExactOrderedSubset(value.allowedMethods, MFA_METHOD_ORDER, { nonEmpty: true })
     || !isExactOrderedSubset(value.enrolledMethods, MFA_METHOD_ORDER, { nonEmpty: true })
     || !PRIMARY_AUTHENTICATION_METHODS.includes(value.primaryAuthenticationMethod as PrimaryAuthenticationMethod)
+    || !(value.configuredMfaMethod === null
+      || MFA_PRIMARY_METHOD_ORDER.includes(value.configuredMfaMethod as MfaPrimaryMethod))
     || !MFA_PRIMARY_METHOD_ORDER.includes(value.primaryMfaMethod as MfaPrimaryMethod)
     || !isExactIsoDate(value.issuedAt)
     || !isExactIsoDate(value.expiresAt)) {
@@ -226,6 +234,7 @@ export async function createPendingMfa(input: CreatePendingMfaInput): Promise<st
     allowedMethods: canonicalSubset(input.allowedMethods, MFA_METHOD_ORDER),
     enrolledMethods: canonicalSubset(input.enrolledMethods, MFA_METHOD_ORDER),
     primaryAuthenticationMethod: input.primaryAuthenticationMethod,
+    configuredMfaMethod: input.configuredMfaMethod ?? input.primaryMfaMethod,
     primaryMfaMethod: input.primaryMfaMethod,
     issuedAt: issuedAt.toISOString(),
     expiresAt: new Date(issuedAt.getTime() + PENDING_MFA_TTL_MS).toISOString(),
@@ -288,6 +297,17 @@ export interface CreatePendingMfaForLoginInput {
   primaryAuthenticationMethod: PrimaryAuthenticationMethod;
 }
 
+export interface AuthenticatedUserSessionDecisionInput extends CreatePendingMfaForLoginInput {
+  requireLocalMfa: boolean;
+  externallySatisfiedMfa?: boolean;
+  mobileDeviceId?: string;
+  passwordCredential?: {
+    passwordHash: string;
+    passwordChangedAt: Date | null;
+    authEpoch: number;
+  };
+}
+
 function deriveEnrolledMethods(
   user: {
     mfaEnabled: boolean;
@@ -300,15 +320,14 @@ function deriveEnrolledMethods(
   activePasskeyCount: number,
 ): Set<MfaMethod> {
   const enrolled = new Set<MfaMethod>();
-  if (user.mfaEnabled && isNonEmptyString(user.mfaSecret)) enrolled.add('totp');
-  if (user.mfaEnabled
-    && user.mfaMethod === 'sms'
+  if (isNonEmptyString(user.mfaSecret)) enrolled.add('totp');
+  if (user.mfaMethod === 'sms'
     && isNonEmptyString(user.phoneNumber)
     && user.phoneVerified) {
     enrolled.add('sms');
   }
-  if (user.mfaEnabled && activePasskeyCount > 0) enrolled.add('passkey');
-  if (user.mfaEnabled && user.mfaRecoveryCodes !== null && user.mfaRecoveryCodes !== undefined) {
+  if (activePasskeyCount > 0) enrolled.add('passkey');
+  if (user.mfaRecoveryCodes !== null && user.mfaRecoveryCodes !== undefined) {
     if (!Array.isArray(user.mfaRecoveryCodes)
       || !user.mfaRecoveryCodes.every((code) => isNonEmptyString(code))) {
       throw new PendingMfaInvalidError();
@@ -325,79 +344,190 @@ function derivePrimaryMfaMethod(user: { mfaMethod: string | null }): MfaPrimaryM
     : null;
 }
 
+/** Deterministic configured-factor preservation with canonical fallback. */
+export function selectEffectiveMfaMethod(input: {
+  configuredMfaMethod: MfaPrimaryMethod | null;
+  enrolledMethods: ReadonlySet<MfaMethod>;
+  allowedMethods: ReadonlySet<MfaMethod>;
+}): MfaPrimaryMethod | null {
+  if (input.configuredMfaMethod
+    && input.enrolledMethods.has(input.configuredMfaMethod)
+    && input.allowedMethods.has(input.configuredMfaMethod)) {
+    return input.configuredMfaMethod;
+  }
+  return MFA_PRIMARY_METHOD_ORDER.find((method) => (
+    input.enrolledMethods.has(method) && input.allowedMethods.has(method)
+  )) ?? null;
+}
+
 function arraysEqual<T>(first: readonly T[], second: readonly T[]): boolean {
   return first.length === second.length && first.every((value, index) => value === second[index]);
 }
 
-async function loadPendingMfaLiveUserAndPasskeys(userId: string) {
-  const [userRows, passkeyRows] = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => Promise.all([
-      db
-        .select()
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1),
-      db
-        .select({ id: userPasskeys.id })
-        .from(userPasskeys)
-        .where(and(
-          eq(userPasskeys.userId, userId),
-          isNull(userPasskeys.disabledAt),
-        ))
-        .limit(100),
-    ]))
-  );
-  return { user: userRows[0], activePasskeyCount: passkeyRows.length };
+async function loadLockedPendingMfaAuthority(
+  tx: AuthLifecycleTransaction,
+  input: Pick<CreatePendingMfaForLoginInput, 'userId' | 'roleId' | 'orgId' | 'partnerId' | 'scope'>,
+) {
+  if (input.partnerId) {
+    await lockMfaPolicyPartner(tx, input.partnerId);
+  }
+  const userRows = await tx
+    .select()
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .for('update')
+    .limit(1);
+  const passkeyRows = await tx
+    .select({ id: userPasskeys.id })
+    .from(userPasskeys)
+    .where(and(
+      eq(userPasskeys.userId, input.userId),
+      isNull(userPasskeys.disabledAt),
+    ))
+    .for('update')
+    .limit(100);
+  const policy = await resolveEffectiveMfaPolicy({ ...input, tx });
+  return { user: userRows[0], activePasskeyCount: passkeyRows.length, policy };
 }
 
-export async function createPendingMfaForLogin(input: CreatePendingMfaForLoginInput) {
-  const [{ user, activePasskeyCount }, policy] = await Promise.all([
-    loadPendingMfaLiveUserAndPasskeys(input.userId),
-    resolveEffectiveMfaPolicy({
-      userId: input.userId,
+function datesEqual(first: Date | null, second: Date | null): boolean {
+  if (first === null || second === null) return first === second;
+  return first.getTime() === second.getTime();
+}
+
+/**
+ * Owns the post-primary-authentication pending-vs-direct decision. All live
+ * enrollment, policy and credential bindings are read under the same locks as
+ * direct family creation; Redis pending state and jti acceleration happen only
+ * after that transaction commits.
+ */
+export async function decideAuthenticatedUserSession(
+  input: AuthenticatedUserSessionDecisionInput,
+) {
+  const decision = await withAuthLifecycleSystemTransaction(async (tx) => {
+    const { user, activePasskeyCount, policy } = await loadLockedPendingMfaAuthority(tx, input);
+    if (!user || user.id !== input.userId || user.status !== 'active') {
+      throw new PendingMfaInvalidError();
+    }
+    if (input.primaryAuthenticationMethod === 'password') {
+      const credential = input.passwordCredential;
+      if (!credential
+        || user.passwordHash !== credential.passwordHash
+        || user.authEpoch !== credential.authEpoch
+        || !datesEqual(user.passwordChangedAt, credential.passwordChangedAt)) {
+        throw new PendingMfaInvalidError();
+      }
+    }
+
+    const enrolledMethods = deriveEnrolledMethods(user, activePasskeyCount);
+    const configuredMfaMethod = derivePrimaryMfaMethod(user);
+    const primaryMfaMethod = selectEffectiveMfaMethod({
+      configuredMfaMethod,
+      enrolledMethods,
+      allowedMethods: policy.allowedMethods,
+    });
+    if (input.requireLocalMfa && primaryMfaMethod) {
+      return {
+        kind: 'pending' as const,
+        user,
+        createInput: {
+          userId: user.id,
+          authEpoch: user.authEpoch,
+          mfaEpoch: user.mfaEpoch,
+          expectedStatus: 'active' as const,
+          roleId: input.roleId,
+          orgId: input.orgId,
+          partnerId: input.partnerId,
+          scope: input.scope,
+          policyRequired: policy.required,
+          policySources: policy.sources,
+          allowedMethods: policy.allowedMethods,
+          enrolledMethods,
+          primaryAuthenticationMethod: input.primaryAuthenticationMethod,
+          configuredMfaMethod,
+          primaryMfaMethod,
+        },
+        primaryMfaMethod,
+        passkeyAvailable: enrolledMethods.has('passkey') && policy.allowedMethods.has('passkey'),
+        phoneLast4: primaryMfaMethod === 'sms' ? user.phoneNumber?.slice(-4) ?? null : null,
+      };
+    }
+
+    const tokens = await issueUserSession({
+      userId: user.id,
+      email: user.email,
       roleId: input.roleId,
       orgId: input.orgId,
       partnerId: input.partnerId,
       scope: input.scope,
-    }),
-  ]);
-  if (!user || user.id !== input.userId || user.status !== 'active' || user.mfaEnabled !== true) {
-    throw new PendingMfaInvalidError();
+      mfa: input.externallySatisfiedMfa === true,
+      amr: [input.primaryAuthenticationMethod],
+      mobileDeviceId: input.mobileDeviceId,
+    }, { tx });
+    return { kind: 'issued' as const, user, tokens };
+  });
+
+  if (decision.kind === 'pending') {
+    const tempToken = await createPendingMfa(decision.createInput);
+    return {
+      kind: decision.kind,
+      user: decision.user,
+      tempToken,
+      primaryMfaMethod: decision.primaryMfaMethod,
+      passkeyAvailable: decision.passkeyAvailable,
+      phoneLast4: decision.phoneLast4,
+    };
   }
+  await bindIssuedUserSession(decision.tokens);
+  return decision;
+}
 
-  const enrolledMethods = deriveEnrolledMethods(user, activePasskeyCount);
-  const configuredPrimary = derivePrimaryMfaMethod(user);
-  const primaryMfaMethod = configuredPrimary
-    && enrolledMethods.has(configuredPrimary)
-    && policy.allowedMethods.has(configuredPrimary)
-    ? configuredPrimary
-    : MFA_PRIMARY_METHOD_ORDER.find((method) => (
-      enrolledMethods.has(method) && policy.allowedMethods.has(method)
-    ));
-  if (!primaryMfaMethod) throw new PendingMfaInvalidError();
-
-  const createInput: CreatePendingMfaInput = {
-    userId: user.id,
-    authEpoch: user.authEpoch,
-    mfaEpoch: user.mfaEpoch,
-    expectedStatus: 'active',
-    roleId: input.roleId,
-    orgId: input.orgId,
-    partnerId: input.partnerId,
-    scope: input.scope,
-    policyRequired: policy.required,
-    policySources: policy.sources,
-    allowedMethods: policy.allowedMethods,
-    enrolledMethods,
-    primaryAuthenticationMethod: input.primaryAuthenticationMethod,
-    primaryMfaMethod,
-  };
-  const tempToken = await createPendingMfa(createInput);
+export async function createPendingMfaForLogin(input: CreatePendingMfaForLoginInput) {
+  const prepared = await withAuthLifecycleSystemTransaction(async (tx) => {
+    const { user, activePasskeyCount, policy } = await loadLockedPendingMfaAuthority(tx, input);
+    if (!user || user.id !== input.userId || user.status !== 'active' || user.mfaEnabled !== true) {
+      throw new PendingMfaInvalidError();
+    }
+    const enrolledMethods = deriveEnrolledMethods(user, activePasskeyCount);
+    const configuredPrimary = derivePrimaryMfaMethod(user);
+    const primaryMfaMethod = selectEffectiveMfaMethod({
+      configuredMfaMethod: configuredPrimary,
+      enrolledMethods,
+      allowedMethods: policy.allowedMethods,
+    });
+    if (!primaryMfaMethod) throw new PendingMfaInvalidError();
+    return {
+      user,
+      enrolledMethods,
+      primaryMfaMethod,
+      createInput: {
+        userId: user.id,
+        authEpoch: user.authEpoch,
+        mfaEpoch: user.mfaEpoch,
+        expectedStatus: 'active' as const,
+        roleId: input.roleId,
+        orgId: input.orgId,
+        partnerId: input.partnerId,
+        scope: input.scope,
+        policyRequired: policy.required,
+        policySources: policy.sources,
+        allowedMethods: policy.allowedMethods,
+        enrolledMethods,
+        primaryAuthenticationMethod: input.primaryAuthenticationMethod,
+        configuredMfaMethod: configuredPrimary,
+        primaryMfaMethod,
+      },
+    };
+  });
+  const tempToken = await createPendingMfa(prepared.createInput);
   return {
     tempToken,
-    primaryMfaMethod,
-    passkeyAvailable: enrolledMethods.has('passkey') && policy.allowedMethods.has('passkey'),
-    phoneLast4: primaryMfaMethod === 'sms' ? user.phoneNumber?.slice(-4) ?? null : null,
+    primaryMfaMethod: prepared.primaryMfaMethod,
+    passkeyAvailable: prepared.enrolledMethods.has('passkey')
+      && prepared.createInput.allowedMethods.has('passkey'),
+    phoneLast4: prepared.primaryMfaMethod === 'sms'
+      ? prepared.user.phoneNumber?.slice(-4) ?? null
+      : null,
   };
 }
 
@@ -416,66 +546,72 @@ export async function issueVerifiedPendingMfaSession(
     throw new PendingMfaInvalidError();
   }
 
-  const { user, activePasskeyCount } = await loadPendingMfaLiveUserAndPasskeys(consumed.userId);
-  if (!user
-    || user.id !== consumed.userId
-    || user.status !== consumed.expectedStatus
-    || user.authEpoch !== consumed.authEpoch
-    || user.mfaEpoch !== consumed.mfaEpoch
-    || user.mfaEnabled !== true) {
-    throw new PendingMfaInvalidError();
-  }
-
-  let policy;
-  try {
-    policy = await resolveEffectiveMfaPolicy({
+  const issued = await withAuthLifecycleSystemTransaction(async (tx) => {
+    let authority;
+    try {
+      authority = await loadLockedPendingMfaAuthority(tx, {
       userId: consumed.userId,
       roleId: consumed.roleId,
       orgId: consumed.orgId,
       partnerId: consumed.partnerId,
       scope: consumed.scope,
+      });
+    } catch {
+      throw new PendingMfaInvalidError();
+    }
+    const { user, activePasskeyCount, policy } = authority;
+    if (!user
+      || user.id !== consumed.userId
+      || user.status !== consumed.expectedStatus
+      || user.authEpoch !== consumed.authEpoch
+      || user.mfaEpoch !== consumed.mfaEpoch) {
+      throw new PendingMfaInvalidError();
+    }
+
+    const enrolledMethods = deriveEnrolledMethods(user, activePasskeyCount);
+    const configuredMfaMethod = derivePrimaryMfaMethod(user);
+    const selectedMfaMethod = selectEffectiveMfaMethod({
+      configuredMfaMethod,
+      enrolledMethods,
+      allowedMethods: policy.allowedMethods,
     });
-  } catch {
-    throw new PendingMfaInvalidError();
-  }
+    const currentAllowedMethods = canonicalSubset(policy.allowedMethods, MFA_METHOD_ORDER);
+    const currentPolicySources = canonicalSubset(new Set(policy.sources), MFA_POLICY_SOURCE_ORDER);
+    const currentEnrolledMethods = canonicalSubset(enrolledMethods, MFA_METHOD_ORDER);
+    if (policy.required !== consumed.policyRequired
+      || !arraysEqual(currentPolicySources, consumed.policySources)
+      || !arraysEqual(currentAllowedMethods, consumed.allowedMethods)
+      || !arraysEqual(currentEnrolledMethods, consumed.enrolledMethods)
+      || configuredMfaMethod !== consumed.configuredMfaMethod
+      || selectedMfaMethod !== consumed.primaryMfaMethod
+      || !currentAllowedMethods.includes(input.verifiedMethod)
+      || !currentEnrolledMethods.includes(input.verifiedMethod)) {
+      throw new PendingMfaInvalidError();
+    }
 
-  const currentAllowedMethods = canonicalSubset(policy.allowedMethods, MFA_METHOD_ORDER);
-  const currentPolicySources = canonicalSubset(new Set(policy.sources), MFA_POLICY_SOURCE_ORDER);
-  const currentEnrolledMethods = canonicalSubset(
-    deriveEnrolledMethods(user, activePasskeyCount),
-    MFA_METHOD_ORDER,
-  );
-  const currentPrimaryMfaMethod = derivePrimaryMfaMethod(user);
-  if (policy.required !== consumed.policyRequired
-    || !arraysEqual(currentPolicySources, consumed.policySources)
-    || !arraysEqual(currentAllowedMethods, consumed.allowedMethods)
-    || !arraysEqual(currentEnrolledMethods, consumed.enrolledMethods)
-    || currentPrimaryMfaMethod !== consumed.primaryMfaMethod
-    || !currentAllowedMethods.includes(input.verifiedMethod)
-    || !currentEnrolledMethods.includes(input.verifiedMethod)) {
-    throw new PendingMfaInvalidError();
-  }
-
-  const tokens = await issueUserSession({
-    userId: user.id,
-    email: user.email,
-    roleId: consumed.roleId,
-    orgId: consumed.orgId,
-    partnerId: consumed.partnerId,
-    scope: consumed.scope,
-    mfa: true,
-    amr: [consumed.primaryAuthenticationMethod, input.verifiedMethod],
-    mobileDeviceId: input.mobileDeviceId,
-  });
-
-  return {
-    user,
-    tokens,
-    authority: {
+    const tokens = await issueUserSession({
+      userId: user.id,
+      email: user.email,
       roleId: consumed.roleId,
       orgId: consumed.orgId,
       partnerId: consumed.partnerId,
       scope: consumed.scope,
-    },
-  };
+      mfa: true,
+      amr: [consumed.primaryAuthenticationMethod, input.verifiedMethod],
+      mobileDeviceId: input.mobileDeviceId,
+    }, { tx });
+
+    return {
+      user,
+      tokens,
+      authority: {
+        roleId: consumed.roleId,
+        orgId: consumed.orgId,
+        partnerId: consumed.partnerId,
+        scope: consumed.scope,
+      },
+    };
+  });
+  await bindIssuedUserSession(issued.tokens);
+  return issued;
 }

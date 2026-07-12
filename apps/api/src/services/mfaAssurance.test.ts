@@ -1,6 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { redisState, redisMock, dbState, dbMock, schemaMocks, policyMock, issueUserSessionMock } = vi.hoisted(() => {
+const {
+  redisState,
+  redisMock,
+  dbState,
+  dbMock,
+  transactionMock,
+  transactionEvents,
+  transactionWrapperMock,
+  schemaMocks,
+  policyMock,
+  lockPolicyMock,
+  issueUserSessionMock,
+  bindIssuedUserSessionMock,
+} = vi.hoisted(() => {
   const store = new Map<string, string>();
   const schema = {
     users: { id: Symbol('users.id') },
@@ -14,6 +27,24 @@ const { redisState, redisMock, dbState, dbMock, schemaMocks, policyMock, issueUs
     userRows: [] as Array<Record<string, unknown>>,
     passkeyRows: [] as Array<Record<string, unknown>>,
   };
+  const select = vi.fn(() => ({
+    from: vi.fn((table: unknown) => {
+      const query: Record<string, unknown> = {};
+      query.limit = vi.fn(async () => table === schema.users ? state.userRows : state.passkeyRows);
+      query.for = vi.fn(() => query);
+      query.where = vi.fn(() => query);
+      return query;
+    }),
+  }));
+  const database = { select };
+  const transaction = { select };
+  const events: string[] = [];
+  const wrapper = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+    events.push('tx-start');
+    const result = await fn(transaction);
+    events.push('tx-commit');
+    return result;
+  });
   return {
     redisState: { available: true, store },
     redisMock: {
@@ -30,17 +61,14 @@ const { redisState, redisMock, dbState, dbMock, schemaMocks, policyMock, issueUs
     },
     dbState: state,
     schemaMocks: schema,
-    dbMock: {
-      select: vi.fn(() => ({
-        from: vi.fn((table: unknown) => ({
-          where: vi.fn(() => ({
-            limit: vi.fn(async () => table === schema.users ? state.userRows : state.passkeyRows),
-          })),
-        })),
-      })),
-    },
+    dbMock: database,
+    transactionMock: transaction,
+    transactionEvents: events,
+    transactionWrapperMock: wrapper,
     policyMock: vi.fn(),
+    lockPolicyMock: vi.fn(),
     issueUserSessionMock: vi.fn(),
+    bindIssuedUserSessionMock: vi.fn(async () => { events.push('bind'); }),
   };
 });
 
@@ -65,10 +93,16 @@ vi.mock('../db/schema', () => schemaMocks);
 
 vi.mock('./mfaPolicy', () => ({
   resolveEffectiveMfaPolicy: policyMock,
+  lockMfaPolicyPartner: lockPolicyMock,
 }));
 
 vi.mock('./userSession', () => ({
   issueUserSession: issueUserSessionMock,
+  bindIssuedUserSession: bindIssuedUserSessionMock,
+}));
+
+vi.mock('./authLifecycle', () => ({
+  withAuthLifecycleSystemTransaction: transactionWrapperMock,
 }));
 
 import {
@@ -77,9 +111,11 @@ import {
   consumePendingMfa,
   createPendingMfa,
   createPendingMfaForLogin,
+  decideAuthenticatedUserSession,
   issueVerifiedPendingMfaSession,
   pendingMfaRecordsEqual,
   readPendingMfa,
+  selectEffectiveMfaMethod,
   type CreatePendingMfaInput,
 } from './mfaAssurance';
 
@@ -100,6 +136,7 @@ function pendingInput(overrides: Partial<CreatePendingMfaInput> = {}): CreatePen
     allowedMethods: new Set(['totp', 'passkey', 'recovery_code']),
     enrolledMethods: new Set(['totp', 'passkey']),
     primaryAuthenticationMethod: 'password',
+    configuredMfaMethod: 'totp',
     primaryMfaMethod: 'totp',
     ...overrides,
   };
@@ -111,6 +148,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   redisState.available = true;
   redisState.store.clear();
+  transactionEvents.length = 0;
   dbState.userRows = [{
     id: 'user-1',
     email: 'user@example.com',
@@ -119,6 +157,8 @@ beforeEach(() => {
     authEpoch: 4,
     mfaEpoch: 7,
     mfaEnabled: true,
+    passwordHash: 'verified-password-hash',
+    passwordChangedAt: new Date('2026-07-01T00:00:00.000Z'),
     mfaMethod: 'totp',
     mfaSecret: 'encrypted-secret',
     phoneNumber: null,
@@ -137,6 +177,8 @@ beforeEach(() => {
     refreshExpiresIn: 604800,
     familyId: 'family-1',
   });
+  lockPolicyMock.mockResolvedValue(undefined);
+  bindIssuedUserSessionMock.mockImplementation(async () => { transactionEvents.push('bind'); });
 });
 
 afterEach(() => {
@@ -144,6 +186,18 @@ afterEach(() => {
 });
 
 describe('pending MFA V2 state', () => {
+  it.each([
+    ['configured TOTP falls back to passkey', 'totp', ['passkey'], ['passkey', 'recovery_code'], 'passkey'],
+    ['configured TOTP falls back to SMS before passkey', 'totp', ['sms', 'passkey'], ['sms', 'passkey'], 'sms'],
+    ['configured passkey remains passkey', 'passkey', ['totp', 'passkey'], ['totp', 'passkey'], 'passkey'],
+  ] as const)('%s', (_label, configuredMfaMethod, enrolled, allowed, expected) => {
+    expect(selectEffectiveMfaMethod({
+      configuredMfaMethod,
+      enrolledMethods: new Set(enrolled),
+      allowedMethods: new Set(allowed),
+    })).toBe(expected);
+  });
+
   it('creates login state from freshly loaded user, policy, enrollment, and authority', async () => {
     const created = await createPendingMfaForLogin({
       userId: 'user-1',
@@ -166,6 +220,7 @@ describe('pending MFA V2 state', () => {
       allowedMethods: ['totp', 'passkey', 'recovery_code'],
       enrolledMethods: ['totp', 'passkey'],
       primaryAuthenticationMethod: 'password',
+      configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
     });
     expect(created).toMatchObject({
@@ -215,6 +270,7 @@ describe('pending MFA V2 state', () => {
       allowedMethods: ['totp', 'passkey', 'recovery_code'],
       enrolledMethods: ['totp', 'passkey'],
       primaryAuthenticationMethod: 'password',
+      configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
       issuedAt: '2026-07-12T12:00:00.000Z',
       expiresAt: '2026-07-12T12:05:00.000Z',
@@ -328,7 +384,9 @@ describe('pending MFA V2 state', () => {
       orgId: 'org-1',
       partnerId: 'partner-1',
       scope: 'organization',
+      tx: transactionMock,
     });
+    expect(lockPolicyMock).toHaveBeenCalledWith(transactionMock, 'partner-1');
     expect(issueUserSessionMock).toHaveBeenCalledWith({
       userId: 'user-1',
       email: 'user@example.com',
@@ -339,10 +397,11 @@ describe('pending MFA V2 state', () => {
       mfa: true,
       amr: ['password', 'passkey'],
       mobileDeviceId: 'mobile-1',
-    });
+    }, { tx: transactionMock });
     expect(redisMock.getdel.mock.invocationCallOrder[0]!).toBeLessThan(dbMock.select.mock.invocationCallOrder[0]!);
     expect(dbMock.select.mock.invocationCallOrder.at(-1)!).toBeLessThan(issueUserSessionMock.mock.invocationCallOrder[0]!);
     expect(result.user).toMatchObject({ id: 'user-1', status: 'active' });
+    expect(transactionEvents).toEqual(['tx-start', 'tx-commit', 'bind']);
   });
 
   it('preserves a verified Cloudflare Access primary method in post-factor AMR', async () => {
@@ -360,7 +419,114 @@ describe('pending MFA V2 state', () => {
     expect(issueUserSessionMock).toHaveBeenCalledWith(expect.objectContaining({
       mfa: true,
       amr: ['cf_access', 'totp'],
+    }), { tx: transactionMock });
+  });
+
+  it('issues when a configured TOTP fallback to passkey remains unchanged', async () => {
+    dbState.userRows[0]!.mfaSecret = null;
+    dbState.userRows[0]!.mfaMethod = 'totp';
+    policyMock.mockResolvedValue({
+      required: true,
+      allowedMethods: new Set(['passkey']),
+      sources: ['partner'],
+    });
+    const token = await createPendingMfa(pendingInput({
+      policySources: ['partner'],
+      allowedMethods: new Set(['passkey']),
+      enrolledMethods: new Set(['passkey']),
+      configuredMfaMethod: 'totp',
+      primaryMfaMethod: 'passkey',
     }));
+    const expectedPending = await readPendingMfa(token);
+
+    await expect(issueVerifiedPendingMfaSession({
+      tempToken: token,
+      expectedPending: expectedPending!,
+      verifiedMethod: 'passkey',
+    })).resolves.toMatchObject({ tokens: { accessToken: 'access-token' } });
+  });
+
+  it('burns without issuance when policy drift changes the selected fallback factor', async () => {
+    dbState.userRows[0]!.mfaSecret = null;
+    dbState.userRows[0]!.mfaMethod = 'totp';
+    dbState.userRows[0]!.phoneNumber = '+15551234567';
+    dbState.userRows[0]!.phoneVerified = true;
+    const token = await createPendingMfa(pendingInput({
+      policySources: ['partner'],
+      allowedMethods: new Set(['passkey']),
+      enrolledMethods: new Set(['sms', 'passkey']),
+      configuredMfaMethod: 'totp',
+      primaryMfaMethod: 'passkey',
+    }));
+    const expectedPending = await readPendingMfa(token);
+    policyMock.mockResolvedValue({
+      required: true,
+      allowedMethods: new Set(['sms', 'passkey']),
+      sources: ['partner'],
+    });
+
+    await expect(issueVerifiedPendingMfaSession({
+      tempToken: token,
+      expectedPending: expectedPending!,
+      verifiedMethod: 'passkey',
+    })).rejects.toBeInstanceOf(PendingMfaInvalidError);
+    expect(issueUserSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('makes the password pending-vs-direct decision from locked live enrollment', async () => {
+    dbState.userRows[0]!.mfaEnabled = false;
+    dbState.userRows[0]!.mfaSecret = null;
+    dbState.userRows[0]!.mfaMethod = 'totp';
+    dbState.passkeyRows = [{ id: 'enrolled-after-password-check' }];
+    policyMock.mockResolvedValue({
+      required: false,
+      allowedMethods: new Set(['passkey']),
+      sources: [],
+    });
+
+    const decision = await decideAuthenticatedUserSession({
+      userId: 'user-1',
+      roleId: 'role-1',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      scope: 'organization',
+      primaryAuthenticationMethod: 'password',
+      requireLocalMfa: true,
+      passwordCredential: {
+        passwordHash: 'verified-password-hash',
+        passwordChangedAt: new Date('2026-07-01T00:00:00.000Z'),
+        authEpoch: 4,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      kind: 'pending',
+      primaryMfaMethod: 'passkey',
+      passkeyAvailable: true,
+    });
+    expect(issueUserSessionMock).not.toHaveBeenCalled();
+    expect(transactionEvents).toEqual(['tx-start', 'tx-commit']);
+  });
+
+  it('rejects a password credential changed before the locked login decision', async () => {
+    dbState.userRows[0]!.authEpoch = 5;
+
+    await expect(decideAuthenticatedUserSession({
+      userId: 'user-1',
+      roleId: 'role-1',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      scope: 'organization',
+      primaryAuthenticationMethod: 'password',
+      requireLocalMfa: true,
+      passwordCredential: {
+        passwordHash: 'verified-password-hash',
+        passwordChangedAt: new Date('2026-07-01T00:00:00.000Z'),
+        authEpoch: 4,
+      },
+    })).rejects.toBeInstanceOf(PendingMfaInvalidError);
+
+    expect(issueUserSessionMock).not.toHaveBeenCalled();
   });
 
   it.each([

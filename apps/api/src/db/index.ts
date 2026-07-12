@@ -38,6 +38,7 @@ const client = postgres(connectionString, {
 });
 const baseDb = drizzle(client, { schema });
 const dbContextStorage = new AsyncLocalStorage<typeof baseDb>();
+export type DatabaseTransaction = Parameters<Parameters<typeof baseDb.transaction>[0]>[0];
 // Parallel store holding the DbAccessContext METADATA (scope + allowlists) for
 // the active request transaction. Kept separate from dbContextStorage (which
 // resolves to the tx for query routing) so the tx-resolution hot path is
@@ -236,6 +237,24 @@ export async function withDbAccessContext<T>(
 
 export async function withSystemDbAccessContext<T>(fn: () => Promise<T>): Promise<T> {
   return withDbAccessContext(SYSTEM_DB_ACCESS_CONTEXT, fn);
+}
+
+/**
+ * Opens a system-scoped DB context and exposes the actual transaction owned by
+ * that context. Callers that need atomic read/lock/write behavior must use this
+ * instead of casting the routed `db` proxy, which is not the transaction
+ * object even though its queries happen to route into one.
+ */
+export async function withSystemDbAccessTransaction<T>(
+  fn: (tx: DatabaseTransaction) => Promise<T>,
+): Promise<T> {
+  return withDbAccessContext(SYSTEM_DB_ACCESS_CONTEXT, async () => {
+    const tx = dbContextStorage.getStore();
+    if (!tx) {
+      throw new Error('System DB transaction context was not established');
+    }
+    return fn(tx as unknown as DatabaseTransaction);
+  });
 }
 
 /**

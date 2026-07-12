@@ -31,7 +31,12 @@ vi.mock('./tokenRevocation', () => ({
 }));
 
 import { verifyToken } from './jwt';
-import { issueUserSession, type UserSessionIdentity } from './userSession';
+import {
+  bindIssuedUserSession,
+  issueUserSession,
+  type UserSessionIdentity,
+} from './userSession';
+import type { AuthLifecycleTransaction } from './authLifecycle';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -161,6 +166,28 @@ describe('issueUserSession', () => {
       mdid: identity.mobileDeviceId,
       type: 'refresh'
     });
+    expect(dbMocks.rememberJtiFamily).toHaveBeenCalledWith(session.refreshJti, session.familyId);
+  });
+
+  it('uses one supplied transaction for epoch load and family insert, then binds Redis post-commit', async () => {
+    const txLimit = vi.fn().mockResolvedValue([{ authEpoch: 8, mfaEpoch: 13 }]);
+    const txWhere = vi.fn(() => ({ limit: txLimit }));
+    const txFrom = vi.fn(() => ({ where: txWhere }));
+    const txSelect = vi.fn(() => ({ from: txFrom }));
+    const txValues = vi.fn().mockResolvedValue(undefined);
+    const txInsert = vi.fn(() => ({ values: txValues }));
+    const tx = { select: txSelect, insert: txInsert } as unknown as AuthLifecycleTransaction;
+
+    const session = await issueUserSession(identity, { tx });
+
+    expect(txSelect).toHaveBeenCalledOnce();
+    expect(txInsert).toHaveBeenCalledOnce();
+    expect(dbMocks.select).not.toHaveBeenCalled();
+    expect(dbMocks.insert).not.toHaveBeenCalled();
+    expect(dbMocks.rememberJtiFamily).not.toHaveBeenCalled();
+    await expect(verifyToken(session.accessToken)).resolves.toMatchObject({ ae: 8, me: 13 });
+
+    await bindIssuedUserSession(session);
     expect(dbMocks.rememberJtiFamily).toHaveBeenCalledWith(session.refreshJti, session.familyId);
   });
 

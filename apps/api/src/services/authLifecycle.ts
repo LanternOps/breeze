@@ -1,7 +1,6 @@
 import {
-  db,
   runOutsideDbContext,
-  withSystemDbAccessContext,
+  withSystemDbAccessTransaction,
   type Database,
 } from '../db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
@@ -21,7 +20,7 @@ export function withAuthLifecycleSystemTransaction<T>(
   fn: (tx: AuthLifecycleTransaction) => Promise<T>,
 ): Promise<T> {
   return runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => fn(db as unknown as AuthLifecycleTransaction))
+    withSystemDbAccessTransaction(fn)
   );
 }
 

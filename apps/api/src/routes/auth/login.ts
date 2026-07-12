@@ -25,7 +25,7 @@ import {
   clearAccountFailures,
   isAccountLocked,
   getAccountLockoutWindowSeconds,
-  createPendingMfaForLogin,
+  decideAuthenticatedUserSession,
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
 } from '../../services';
@@ -422,29 +422,39 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     return c.json(IP_NOT_ALLOWED_BODY, 403);
   }
 
-  // Check if MFA is required. This happens after the SSO-only check so an
-  // org-enforced SSO user cannot obtain an MFA temp token through password auth.
-  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
-    let pendingLogin;
-    try {
-      pendingLogin = await createPendingMfaForLogin({
-        userId: user.id,
-        roleId: context.roleId,
-        orgId: context.orgId,
-        partnerId: context.partnerId,
-        scope: context.scope,
-        primaryAuthenticationMethod: 'password',
-      });
-    } catch (error) {
-      await floorPromise;
-      if (error instanceof PendingMfaUnavailableError) {
-        return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
-      }
-      if (error instanceof PendingMfaInvalidError) {
-        return c.json(genericAuthError(), 401);
-      }
-      throw error;
+  // The locked live decision owns both outcomes. The password hash/change
+  // timestamp/auth epoch bind this decision to the credential verified above,
+  // closing enrollment and password-change races before pending or direct
+  // session issuance.
+  let loginDecision;
+  try {
+    loginDecision = await decideAuthenticatedUserSession({
+      userId: user.id,
+      roleId: context.roleId,
+      orgId: context.orgId,
+      partnerId: context.partnerId,
+      scope: context.scope,
+      primaryAuthenticationMethod: 'password',
+      requireLocalMfa: ENABLE_2FA,
+      mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      passwordCredential: {
+        passwordHash: user.passwordHash,
+        passwordChangedAt: user.passwordChangedAt ?? null,
+        authEpoch: user.authEpoch,
+      },
+    });
+  } catch (error) {
+    await floorPromise;
+    if (error instanceof PendingMfaUnavailableError) {
+      return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
     }
+    if (error instanceof PendingMfaInvalidError) {
+      return c.json(genericAuthError(), 401);
+    }
+    throw error;
+  }
+
+  if (loginDecision.kind === 'pending') {
 
     // Task 10: the password was verified correctly — clear the per-account
     // failure counter even though MFA still has to succeed. This keeps the
@@ -465,12 +475,12 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     await floorPromise;
     return c.json({
       mfaRequired: true,
-      tempToken: pendingLogin.tempToken,
-      mfaMethod: pendingLogin.primaryMfaMethod,
+      tempToken: loginDecision.tempToken,
+      mfaMethod: loginDecision.primaryMfaMethod,
       // #2153: lets the login MFA screen offer "use a passkey instead" alongside
       // the primary factor's prompt when the account has a registered passkey.
-      passkeyAvailable: pendingLogin.passkeyAvailable,
-      phoneLast4: pendingLogin.phoneLast4,
+      passkeyAvailable: loginDecision.passkeyAvailable,
+      phoneLast4: loginDecision.phoneLast4,
       user: null,
       tokens: null
     });
@@ -480,21 +490,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   const orgId = context.orgId;
   const scope = context.scope;
 
-  // Create tokens with user's context
-  const tokens = await issueUserSession({
-    userId: user.id,
-    email: user.email,
-    roleId,
-    orgId,
-    partnerId,
-    scope,
-    mfa: false,
-    amr: ['password'],
-    // SR-001: bind the token to the mobile install id when the client sends
-    // it. Web/SSO clients don't send the header → mdid stays absent → no
-    // behaviour change for them.
-    mobileDeviceId: readMobileDeviceId(c) ?? undefined
-  });
+  const tokens = loginDecision.tokens;
 
   // Update last login. MUST run inside a system DB context: /login is an
   // unauthenticated route, so no breeze.user_id/partner/org GUC is set and the

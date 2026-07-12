@@ -36,6 +36,16 @@ vi.mock('../services', () => ({
     passkeyAvailable: true,
     phoneLast4: null,
   }),
+  decideAuthenticatedUserSession: vi.fn().mockResolvedValue({
+    kind: 'issued',
+    tokens: {
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      refreshJti: 'jti-mock',
+      expiresInSeconds: 900,
+      familyId: 'family-id-mock',
+    },
+  }),
   readPendingMfa: vi.fn(),
   issueVerifiedPendingMfaSession: vi.fn(),
   PendingMfaInvalidError: class PendingMfaInvalidError extends Error {},
@@ -262,6 +272,7 @@ import {
   rateLimiter,
   getRedis,
   createPendingMfaForLogin,
+  decideAuthenticatedUserSession,
   readPendingMfa,
   issueVerifiedPendingMfaSession,
   PendingMfaInvalidError,
@@ -319,6 +330,17 @@ describe('auth routes', () => {
       passkeyAvailable: true,
       phoneLast4: null,
     });
+    vi.mocked(decideAuthenticatedUserSession).mockResolvedValue({
+      kind: 'issued',
+      user: {} as never,
+      tokens: {
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        refreshJti: 'jti-mock',
+        expiresInSeconds: 900,
+        familyId: 'family-id-mock',
+      },
+    });
     vi.mocked(readPendingMfa).mockResolvedValue({
       version: 2,
       userId: 'user-123',
@@ -334,6 +356,7 @@ describe('auth routes', () => {
       allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
       enrolledMethods: ['totp'],
       primaryAuthenticationMethod: 'password',
+      configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
       issuedAt: '2026-07-12T12:00:00.000Z',
       expiresAt: '2026-07-12T12:05:00.000Z',
@@ -580,9 +603,9 @@ describe('auth routes', () => {
       expect(body.tokens).toBeDefined();
       expect(body.user).toBeDefined();
       expect(body.mfaRequired).toBe(false);
-      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
-        mfa: false,
-        amr: ['password'],
+      expect(decideAuthenticatedUserSession).toHaveBeenCalledWith(expect.objectContaining({
+        primaryAuthenticationMethod: 'password',
+        requireLocalMfa: true,
       }));
     });
 
@@ -846,6 +869,14 @@ describe('auth routes', () => {
         resetAt: new Date()
       });
       vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(decideAuthenticatedUserSession).mockResolvedValueOnce({
+        kind: 'pending',
+        user: {} as never,
+        tempToken: 'v2-temp-token',
+        primaryMfaMethod: 'totp',
+        passkeyAvailable: true,
+        phoneLast4: null,
+      });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -880,15 +911,64 @@ describe('auth routes', () => {
       expect(body.mfaRequired).toBe(true);
       expect(body.tempToken).toBeDefined();
       expect(body.tokens).toBeNull();
-      expect(createPendingMfaForLogin).toHaveBeenCalledWith({
+      expect(decideAuthenticatedUserSession).toHaveBeenCalledWith(expect.objectContaining({
         userId: 'user-123',
         roleId: 'role-1',
         orgId: null,
         partnerId: 'partner-1',
         scope: 'partner',
         primaryAuthenticationMethod: 'password',
-      });
+        requireLocalMfa: true,
+        passwordCredential: expect.objectContaining({
+          passwordHash: '$argon2id$hash',
+          authEpoch: 1,
+        }),
+      }));
       expect(body.tempToken).toBe('v2-temp-token');
+    });
+
+    it('honors locked live enrollment added after the password user lookup', async () => {
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(decideAuthenticatedUserSession).mockResolvedValueOnce({
+        kind: 'pending',
+        user: {} as never,
+        tempToken: 'raced-enrollment-token',
+        primaryMfaMethod: 'passkey',
+        passkeyAvailable: true,
+        phoneLast4: null,
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123',
+              email: 'test@example.com',
+              passwordHash: '$argon2id$hash',
+              passwordChangedAt: null,
+              status: 'active',
+              authEpoch: 1,
+              mfaEpoch: 1,
+              mfaEnabled: false,
+              mfaSecret: null,
+              partnerId: 'partner-1',
+              roleId: 'role-1',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'test@example.com', password: 'password123' }),
+      });
+
+      await expect(res.json()).resolves.toMatchObject({
+        mfaRequired: true,
+        tempToken: 'raced-enrollment-token',
+        mfaMethod: 'passkey',
+      });
+      expect(decideAuthenticatedUserSession).toHaveBeenCalledOnce();
     });
 
     it('routes TOTP completion through the atomic consolidated issuer', async () => {
@@ -966,6 +1046,7 @@ describe('auth routes', () => {
         allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
         enrolledMethods: [method],
         primaryAuthenticationMethod: 'password',
+        configuredMfaMethod: method,
         primaryMfaMethod: method,
         issuedAt: '2026-07-12T12:00:00.000Z',
         expiresAt: '2026-07-12T12:05:00.000Z',
@@ -1026,6 +1107,7 @@ describe('auth routes', () => {
         allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
         enrolledMethods: ['sms'],
         primaryAuthenticationMethod: 'password',
+        configuredMfaMethod: 'sms',
         primaryMfaMethod: 'sms',
         issuedAt: '2026-07-12T12:00:00.000Z',
         expiresAt: '2026-07-12T12:05:00.000Z',
@@ -1284,6 +1366,14 @@ describe('auth routes', () => {
       // happen, the per-account failure counter measures *password*
       // attempts and should reset.
       vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(decideAuthenticatedUserSession).mockResolvedValueOnce({
+        kind: 'pending',
+        user: {} as never,
+        tempToken: 'v2-temp-token',
+        primaryMfaMethod: 'totp',
+        passkeyAvailable: false,
+        phoneLast4: null,
+      });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({

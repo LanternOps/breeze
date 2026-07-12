@@ -15,6 +15,7 @@ const dbState = vi.hoisted(() => ({
 const contextState = vi.hoisted(() => ({
   scope: 'actor' as 'actor' | 'none' | 'system',
   observations: [] as string[],
+  transaction: { scopeTag: 'actual-system-transaction' },
 }));
 
 vi.mock('../db', () => ({
@@ -35,6 +36,16 @@ vi.mock('../db', () => ({
     contextState.scope = 'system';
     try {
       return await fn();
+    } finally {
+      contextState.scope = previous;
+    }
+  }),
+  withSystemDbAccessTransaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+    contextState.observations.push(`system-tx-from-${contextState.scope}`);
+    const previous = contextState.scope;
+    contextState.scope = 'system';
+    try {
+      return await fn(contextState.transaction);
     } finally {
       contextState.scope = previous;
     }
@@ -127,13 +138,13 @@ describe('authLifecycle transaction primitives', () => {
     const result = await (withSystemTransaction as (fn: (tx: unknown) => Promise<string>) => Promise<string>)(
       async (tx) => {
         expect(contextState.scope).toBe('system');
-        expect(tx).toMatchObject({ scopeTag: 'system-transaction' });
+        expect(tx).toBe(contextState.transaction);
         return 'committed';
       },
     );
 
     expect(result).toBe('committed');
-    expect(contextState.observations).toEqual(['outside', 'system-from-none']);
+    expect(contextState.observations).toEqual(['outside', 'system-tx-from-none']);
   });
 
   it('increments requested epochs in one user update and returns the updated state', async () => {

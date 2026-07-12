@@ -34,6 +34,7 @@ const {
       del: vi.fn(),
     },
     passkeyMocks: {
+      decideAuthenticatedUserSession: vi.fn(),
       generatePasskeyRegistrationOptions: vi.fn(),
       verifyPasskeyRegistration: vi.fn(),
       registrationInfoToPasskeyFields: vi.fn(),
@@ -260,6 +261,7 @@ import {
   rateLimiter,
   verifyPassword,
   createPendingMfaForLogin,
+  decideAuthenticatedUserSession,
   readPendingMfa,
   issueVerifiedPendingMfaSession,
   PendingMfaInvalidError,
@@ -294,6 +296,7 @@ const pendingMfa = {
   allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'] as const,
   enrolledMethods: ['passkey'] as const,
   primaryAuthenticationMethod: 'password' as const,
+  configuredMfaMethod: 'passkey' as const,
   primaryMfaMethod: 'passkey' as const,
   issuedAt: '2026-07-12T12:00:00.000Z',
   expiresAt: '2026-07-12T12:05:00.000Z',
@@ -333,6 +336,14 @@ describe('passkey MFA auth routes', () => {
     redisMock.setex.mockReset();
     redisMock.del.mockReset();
     vi.mocked(createPendingMfaForLogin).mockResolvedValue({
+      tempToken: 'temp-token',
+      primaryMfaMethod: 'passkey',
+      passkeyAvailable: true,
+      phoneLast4: null,
+    });
+    vi.mocked(decideAuthenticatedUserSession).mockResolvedValue({
+      kind: 'pending',
+      user: user as never,
       tempToken: 'temp-token',
       primaryMfaMethod: 'passkey',
       passkeyAvailable: true,
@@ -474,7 +485,7 @@ describe('passkey MFA auth routes', () => {
       user: null,
       tokens: null,
     });
-    expect(createPendingMfaForLogin).toHaveBeenCalledWith(expect.objectContaining({
+    expect(decideAuthenticatedUserSession).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'user-123',
       primaryAuthenticationMethod: 'password',
     }));
@@ -491,7 +502,9 @@ describe('passkey MFA auth routes', () => {
       mfaMethod: 'totp',
       mfaSecret: 'enc-secret',
     };
-    vi.mocked(createPendingMfaForLogin).mockResolvedValueOnce({
+    vi.mocked(decideAuthenticatedUserSession).mockResolvedValueOnce({
+      kind: 'pending',
+      user: user as never,
       tempToken: 'temp-token',
       primaryMfaMethod: 'totp',
       passkeyAvailable: true,
@@ -517,7 +530,7 @@ describe('passkey MFA auth routes', () => {
       user: null,
       tokens: null,
     });
-    expect(createPendingMfaForLogin).toHaveBeenCalledOnce();
+    expect(decideAuthenticatedUserSession).toHaveBeenCalledOnce();
   });
 
   it('reports passkeyAvailable=false at login for a TOTP user with no passkey', async () => {
@@ -528,7 +541,9 @@ describe('passkey MFA auth routes', () => {
       mfaMethod: 'totp',
       mfaSecret: 'enc-secret',
     };
-    vi.mocked(createPendingMfaForLogin).mockResolvedValueOnce({
+    vi.mocked(decideAuthenticatedUserSession).mockResolvedValueOnce({
+      kind: 'pending',
+      user: user as never,
       tempToken: 'temp-token',
       primaryMfaMethod: 'totp',
       passkeyAvailable: false,
@@ -551,7 +566,7 @@ describe('passkey MFA auth routes', () => {
       mfaMethod: 'totp',
       passkeyAvailable: false,
     });
-    expect(createPendingMfaForLogin).toHaveBeenCalledOnce();
+    expect(decideAuthenticatedUserSession).toHaveBeenCalledOnce();
   });
 
   // #2153: the passkey MFA endpoints must accept a pending session whose PRIMARY
