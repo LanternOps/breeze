@@ -1,6 +1,24 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import NewTicketForm from '../../components/portal/NewTicketForm';
+import { withBase } from '../../lib/basePath';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+
+// #2345 — this page has no data fetch of its own, so probe the session org's
+// ticket surface server-side: a 403 from /portal/tickets/forms means ticketing
+// is disabled (portal_branding.enable_tickets) and the page must not render.
+// Session-scoped, so it also covers shared-domain portals where the
+// domain-resolved branding payload carries no flags. Any other outcome
+// (including transient errors) falls through to the form — the API gate on
+// POST /portal/tickets is the real enforcement.
+const formsResponse = await portalApi.getTicketForms(buildServerApiConfig(Astro.request));
+if (formsResponse.statusCode === 401) {
+  return Astro.redirect(withBase('/login'));
+}
+if (formsResponse.statusCode === 403) {
+  return Astro.redirect(withBase('/devices'));
+}
 ---
 
 <PortalLayout title="New Ticket">

@@ -81,6 +81,9 @@ vi.mock('../../db/schema', () => ({
   },
   organizations: {
     id: 'id', partnerId: 'partnerId'
+  },
+  portalBranding: {
+    id: 'id', orgId: 'orgId', enableTickets: 'enableTickets'
   }
 }));
 
@@ -103,7 +106,7 @@ vi.mock('./helpers', () => ({
   writePortalAudit: vi.fn()
 }));
 
-import { ticketRoutes } from './tickets';
+import { ticketRoutes, portalTicketsEnabledMiddleware } from './tickets';
 import { validatePortalCookieCsrfRequest, writePortalAudit } from './helpers';
 
 // ── Test app ──────────────────────────────────────────────────────────────────
@@ -921,5 +924,130 @@ describe('portal DELETE /tickets/:id/comments/:commentId', () => {
       headers: portalJsonHeaders,
     });
     expect(res.status).toBe(403);
+  });
+});
+
+// ── portalTicketsEnabledMiddleware — #2345 enable_tickets enforcement ─────────
+//
+// The per-org `portal_branding.enable_tickets` toggle must gate EVERY portal
+// ticket surface. The middleware is registered in routes/portal/index.ts on the
+// same `/tickets/*` prefix as portalAuthMiddleware; this suite wires the app the
+// way index.ts actually mounts it (prefix-scoped middleware + route('/')) so the
+// prefix coverage — including GET /tickets/forms — is asserted structurally.
+describe('portalTicketsEnabledMiddleware — enable_tickets gate (#2345)', () => {
+  function buildGatedApp() {
+    const app = new Hono();
+    app.use('/tickets/*', async (c, next) => {
+      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+      await next();
+    });
+    app.use('/tickets/*', portalTicketsEnabledMiddleware);
+    app.route('/', ticketRoutes);
+    return app;
+  }
+
+  /**
+   * First db.select call is the middleware's branding lookup
+   * (.from(portalBranding).where(orgId).limit(1)) → returns brandingRows.
+   * Subsequent calls resolve generically so a passing request can complete
+   * (list count/data, forms partnerId lookup, ...).
+   */
+  function setupBrandingMock(brandingRows: object[]) {
+    let callCount = 0;
+    dbSelectMock.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              limit: vi.fn(() => Promise.resolve(brandingRows))
+            }))
+          }))
+        };
+      }
+      // Generic chain: supports .from().where().limit() and the GET /tickets
+      // list shape .from().leftJoin().where().orderBy().limit().offset().
+      const terminal = Promise.resolve([]);
+      const chain: Record<string, unknown> = {};
+      for (const m of ['from', 'leftJoin', 'where', 'orderBy', 'limit']) {
+        chain[m] = vi.fn(() => chain);
+      }
+      chain.offset = vi.fn(() => terminal);
+      (chain as { then: unknown }).then = terminal.then.bind(terminal);
+      return chain;
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('enableTickets=false → 403 with a clear message on GET /tickets', async () => {
+    setupBrandingMock([{ enableTickets: false }]);
+    const app = buildGatedApp();
+    const res = await app.request('/tickets', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe('Ticketing is not enabled for this portal');
+  });
+
+  it('enableTickets=false → 403 on POST /tickets (mutations gated, createTicket never called)', async () => {
+    setupBrandingMock([{ enableTickets: false }]);
+    const app = buildGatedApp();
+    const res = await app.request('/tickets', {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ subject: 'Printer broken', description: 'It makes a loud clicking noise now', priority: 'normal' })
+    });
+    expect(res.status).toBe(403);
+    expect(createTicketMock).not.toHaveBeenCalled();
+  });
+
+  it('enableTickets=false → 403 on GET /tickets/forms (Phase 2 intake endpoint is covered by the prefix)', async () => {
+    setupBrandingMock([{ enableTickets: false }]);
+    const app = buildGatedApp();
+    const res = await app.request('/tickets/forms', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+    expect(res.status).toBe(403);
+    expect(listTicketFormsForOrgMock).not.toHaveBeenCalled();
+  });
+
+  it('enableTickets=false → 403 on GET /tickets/:id and comment mutations', async () => {
+    setupBrandingMock([{ enableTickets: false }]);
+    let app = buildGatedApp();
+    const detail = await app.request(`/tickets/${TICKET_ID}`, {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+    expect(detail.status).toBe(403);
+
+    setupBrandingMock([{ enableTickets: false }]);
+    app = buildGatedApp();
+    const comment = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'hello' })
+    });
+    expect(comment.status).toBe(403);
+  });
+
+  it('enableTickets=true → passes through (200 on GET /tickets)', async () => {
+    setupBrandingMock([{ enableTickets: true }]);
+    const app = buildGatedApp();
+    const res = await app.request('/tickets', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('NO branding row → fail-open, ticketing stays enabled (200 on GET /tickets)', async () => {
+    setupBrandingMock([]);
+    const app = buildGatedApp();
+    const res = await app.request('/tickets', {
+      headers: { Authorization: 'Bearer portal-token' }
+    });
+    expect(res.status).toBe(200);
   });
 });

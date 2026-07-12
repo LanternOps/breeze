@@ -2,6 +2,7 @@
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
 import { loadPortalBranding } from '../lib/server';
+import { buildPortalNavItems } from '../lib/navItems';
 import { stripBase, withBase } from '../lib/basePath';
 
 interface Props {
@@ -13,14 +14,10 @@ const { title } = Astro.props;
 // active-nav comparison below stays base-agnostic.
 const pathname = stripBase(Astro.url.pathname);
 const branding = await loadPortalBranding(Astro.request);
-const navItems = [
-  { label: 'Devices', href: '/devices' },
-  { label: 'Tickets', href: '/tickets' },
-  { label: 'Quotes', href: '/quotes' },
-  { label: 'Invoices', href: '/invoices' },
-  { label: 'Assets', href: '/assets' },
-  { label: 'Profile', href: '/profile' }
-];
+// #2345 — Tickets is hidden when the org's branding has enableTickets: false.
+// Fail-open when the flag is absent (shared-domain portals get no branding row);
+// the API's 403 gate on /portal/tickets/* is the real enforcement.
+const navItems = buildPortalNavItems(branding);
 
 const isActive = (href: string) => {
   if (href === '/') return pathname === '/';

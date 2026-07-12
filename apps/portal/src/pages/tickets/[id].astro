@@ -11,6 +11,13 @@ const response = await portalApi.getTicket(id!, buildServerApiConfig(Astro.reque
 if (response.statusCode === 401) {
   return Astro.redirect(withBase('/login'));
 }
+
+// #2345 — 403 here means ticketing is disabled for this org
+// (portal_branding.enable_tickets); bounce to the portal home instead of
+// rendering a dead page around the API error.
+if (response.statusCode === 403) {
+  return Astro.redirect(withBase('/devices'));
+}
 ---
 
 <PortalLayout title="Ticket Details">

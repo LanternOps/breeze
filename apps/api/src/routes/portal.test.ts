@@ -428,6 +428,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(mockSelectWhere([{ count: 1 }]) as any)
         .mockReturnValueOnce(
           mockSelectOrderLimitOffset([
@@ -475,7 +477,9 @@ describe('portal routes', () => {
           mockSelectLimit([
             portalUser
           ]) as any
-        );
+        )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
@@ -538,6 +542,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(
           mockSelectLimit([
             {
@@ -593,6 +599,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
@@ -625,6 +633,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ id: 'ticket-1' }]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
@@ -674,6 +684,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
