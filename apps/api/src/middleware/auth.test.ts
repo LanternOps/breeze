@@ -32,6 +32,16 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn()
 }));
 
+// Default: policy never requires MFA. Individual gate tests below override
+// this per-call via mockResolvedValue/mockResolvedValueOnce.
+vi.mock('../services/mfaPolicy', () => ({
+  getEffectiveMfaPolicy: vi.fn(async () => ({
+    required: false,
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false }
+  }))
+}));
+
 // Default to pass-through; the propagation test below overrides it to
 // return a deny Response the way the real guard does.
 const ipGuardMocks = vi.hoisted(() => ({
@@ -94,6 +104,7 @@ import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../servic
 import { db, withDbAccessContext } from '../db';
 import { getUserPermissions, hasPermission, canAccessOrg } from '../services/permissions';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 
 const basePayload = {
   sub: 'user-123',
@@ -398,21 +409,18 @@ describe('authMiddleware', () => {
 
   // ---- Role-level force_mfa gate (Task 8) ----
   //
-  // Builds a select chain that supports the role-lookup inner-join:
-  //   db.select({...}).from(table).innerJoin(roles, ...).where(...).limit(1)
-  function selectWithJoinLimit(rows: unknown[]) {
-    return {
-      from: vi.fn().mockReturnValue({
-        innerJoin: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue(rows)
-          })
-        })
-      })
-    };
-  }
+  const requirePolicy = {
+    required: true,
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false }
+  };
+  const noRequirePolicy = {
+    required: false,
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false }
+  };
 
-  it('returns 428 mfa_enrollment_required when a force_mfa role user has no MFA enabled', async () => {
+  it('returns 428 mfa_enrollment_required when the effective policy requires MFA and the user has none enabled', async () => {
     const app = new Hono();
     app.use(authMiddleware);
     app.get('/test', (c) => c.json({ ok: true }));
@@ -425,10 +433,11 @@ describe('authMiddleware', () => {
     });
 
     vi.mocked(db.select)
-      // 1) user lookup
-      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-      // 2) role lookup via partner_users INNER JOIN roles
-      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: true }]) as any);
+      // 1) user lookup only — the enrollment gate now delegates the
+      // required/allowed decision entirely to the mocked resolver below,
+      // so no second db.select for a role-join is issued here.
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any);
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue(requirePolicy);
 
     const res = await app.request('/api/v1/partner/me', {
       method: 'POST',
@@ -441,9 +450,15 @@ describe('authMiddleware', () => {
       error: 'mfa_enrollment_required',
       enrollUrl: '/auth/mfa/setup'
     });
+    expect(vi.mocked(getEffectiveMfaPolicy)).toHaveBeenCalledWith({
+      scope: 'partner',
+      userId: unenrolledUser.id,
+      orgId: null,
+      partnerId: basePayload.partnerId
+    });
   });
 
-  it('allows force_mfa role user to reach /auth/mfa/setup-totp while in mfa-required state', async () => {
+  it('allows an unenrolled user to reach /auth/mfa/setup-totp WITHOUT calling the resolver (exempt path checked first)', async () => {
     const app = new Hono();
     app.use(authMiddleware);
     app.post('/api/v1/auth/mfa/setup-totp', (c) => c.json({ secret: 'abc' }));
@@ -457,12 +472,8 @@ describe('authMiddleware', () => {
     vi.mocked(db.select)
       // 1) user lookup
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-      // 2) role lookup — would say "force MFA" but we never reach it
-      //    because the path is exempt before the gate runs role lookup.
-      //    Still — the gate path-checks AFTER doing the role lookup, so
-      //    we still need to return forceMfa here.
-      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: true }]) as any)
-      // 3) computeAccessibleOrgIds → partnerUsers (orgAccess only)
+      // 2) exempt path skips the resolver entirely, so the next select is
+      // computeAccessibleOrgIds → partnerUsers (orgAccess only)
       .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
 
     const res = await app.request('/api/v1/auth/mfa/setup-totp', {
@@ -472,9 +483,11 @@ describe('authMiddleware', () => {
 
     expect(res.status).not.toBe(428);
     expect(res.status).toBe(200);
+    // I4: exempt paths must not pay the resolver's extra DB cost.
+    expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
   });
 
-  it('permits force_mfa role user once MFA is enabled (skips role lookup entirely)', async () => {
+  it('permits an enrolled user without consulting the resolver at all', async () => {
     const app = new Hono();
     app.use(authMiddleware);
     app.post('/api/v1/partner/me', (c) => c.json({ ok: true }));
@@ -489,7 +502,8 @@ describe('authMiddleware', () => {
     vi.mocked(db.select)
       // 1) user lookup — mfaEnabled=true (default activeUser)
       .mockReturnValueOnce(selectWithLimit([activeUser]) as any)
-      // 2) Gate is skipped, so the next select is computeAccessibleOrgIds
+      // 2) Gate is skipped (user.mfaEnabled=true), so the next select is
+      // computeAccessibleOrgIds
       .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
 
     const res = await app.request('/api/v1/partner/me', {
@@ -498,9 +512,10 @@ describe('authMiddleware', () => {
     });
 
     expect(res.status).toBe(200);
+    expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
   });
 
-  it('does not gate users whose role does NOT have force_mfa', async () => {
+  it('does not gate an unenrolled user when the effective policy does not require MFA', async () => {
     const app = new Hono();
     app.use(authMiddleware);
     app.post('/api/v1/partner/me', (c) => c.json({ ok: true }));
@@ -513,10 +528,9 @@ describe('authMiddleware', () => {
 
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-      // forceMfa=false → gate passes
-      .mockReturnValueOnce(selectWithJoinLimit([{ forceMfa: false }]) as any)
       // computeAccessibleOrgIds
       .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue(noRequirePolicy);
 
     const res = await app.request('/api/v1/partner/me', {
       method: 'POST',
@@ -526,7 +540,7 @@ describe('authMiddleware', () => {
     expect(res.status).toBe(200);
   });
 
-  it('does not gate system-scope users (platform admin uses a user flag, not a role)', async () => {
+  it('does not gate an unenrolled system-scope user (resolver returns required=false for system scope — see mfaPolicy.test.ts)', async () => {
     const app = new Hono();
     app.use(authMiddleware);
     app.post('/api/v1/partner/me', (c) => c.json({ ok: true }));
@@ -539,10 +553,10 @@ describe('authMiddleware', () => {
     });
 
     vi.mocked(db.select)
-      // Just the user lookup — system scope skips force_mfa lookup
-      // (no partner/org membership), and computeAccessibleOrgIds returns
-      // null for system scope without a query.
+      // Just the user lookup — computeAccessibleOrgIds returns null for
+      // system scope without a query.
       .mockReturnValueOnce(selectWithLimit([{ ...unenrolledUser, isPlatformAdmin: true }]) as any);
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue(noRequirePolicy);
 
     const res = await app.request('/api/v1/partner/me', {
       method: 'POST',
@@ -550,44 +564,6 @@ describe('authMiddleware', () => {
     });
 
     expect(res.status).toBe(200);
-  });
-
-  // Kill-switch: MFA_FORCE_FOR_PARTNER_ADMIN=false disables the gate
-  // even for users in force_mfa roles, and short-circuits BEFORE the
-  // role lookup so a misconfigured DB can't fail the request either.
-  it('skips the gate entirely when MFA_FORCE_FOR_PARTNER_ADMIN=false', async () => {
-    const prev = process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
-    process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
-    try {
-      const app = new Hono();
-      app.use(authMiddleware);
-      app.post('/api/v1/partner/me', (c) => c.json({ ok: true }));
-
-      vi.mocked(verifyToken).mockResolvedValue({
-        ...basePayload,
-        scope: 'partner',
-        orgId: null
-      });
-
-      vi.mocked(db.select)
-        // Only the user lookup — the role lookup must be skipped, so we
-        // intentionally do NOT mock selectWithJoinLimit. If the middleware
-        // calls db.select a second time the mock returns undefined and the
-        // test fails with a destructuring error, proving the short-circuit.
-        .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
-        // computeAccessibleOrgIds (last select)
-        .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
-
-      const res = await app.request('/api/v1/partner/me', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(200);
-    } finally {
-      if (prev === undefined) delete process.env.MFA_FORCE_FOR_PARTNER_ADMIN;
-      else process.env.MFA_FORCE_FOR_PARTNER_ADMIN = prev;
-    }
   });
 });
 

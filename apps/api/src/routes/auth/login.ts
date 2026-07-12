@@ -62,6 +62,7 @@ import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../servic
 import { captureException } from '../../services/sentry';
 import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -488,9 +489,14 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   const orgId = context.orgId;
   const scope = context.scope;
 
-  // Create tokens with user's context
-  // MFA is vacuously satisfied when the user hasn't enrolled in MFA
-  const mfaSatisfied = !(ENABLE_2FA && user.mfaEnabled);
+  // Resolve effective policy. A user who reaches here is NOT MFA-enrolled (the
+  // enrolled branch above returns early). If policy requires MFA we must NOT
+  // grant vacuous assurance: mint mfa=false and tell the client to enroll. The
+  // middleware exempt paths (/auth/mfa/*, /users/me) still admit the enrollment
+  // flow; every other route 428s until they enroll.
+  const policy = await getEffectiveMfaPolicy({ scope, userId: user.id, orgId, partnerId });
+  const mfaEnrollmentRequired = ENABLE_2FA && !user.mfaEnabled && policy.required;
+  const mfaSatisfied = !ENABLE_2FA || (!user.mfaEnabled && !policy.required);
 
   // Task 7: mint a fresh refresh-token family for this login. The family id
   // is embedded in the refresh token's `fam` claim and tracked in
@@ -589,7 +595,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     },
     tokens: toPublicTokens(tokens),
     mfaRequired: false,
-    requiresSetup
+    requiresSetup,
+    mfaEnrollmentRequired,
+    enrollUrl: mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined
   });
 });
 
