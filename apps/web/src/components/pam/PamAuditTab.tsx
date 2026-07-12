@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { escapeCsvCell } from '@/lib/csvExport';
 import {
   type ElevationFlowType,
   type ElevationRequest,
@@ -33,9 +34,9 @@ const FLOW_OPTIONS: Array<ElevationFlowType | ''> = ['', 'uac_intercept', 'tech_
 /** Hard cap on rows fetched for CSV export (10 pages of 100). */
 const EXPORT_MAX_ROWS = 1000;
 
+/** Neutralize spreadsheet-formula injection then RFC-4180-quote an audit cell. */
 function csvEscape(value: unknown): string {
-  const s = value === null || value === undefined ? '' : String(value);
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return escapeCsvCell(value === null || value === undefined ? '' : String(value));
 }
 
 export function buildAuditCsv(rows: ElevationRequest[]): string {

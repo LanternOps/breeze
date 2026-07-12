@@ -490,13 +490,83 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // a decommission landing mid-request (between the auth fetch and this
   // write) would be silently flipped back to 'online' (#2230). Mirrors
   // TERMINAL_DEVICE_STATUSES in routes/agentWs.ts.
-  await db
+  //
+  // `.returning` reports whether the guarded write actually took effect: a
+  // terminal-status device matches 0 rows, so `updatedRows` is empty and the
+  // state-transition audit below is skipped (finding #10 — never audit a write
+  // that the guard rejected).
+  const updatedRows = await db
     .update(devices)
     .set(deviceUpdates)
     .where(and(
       eq(devices.id, device.id),
       notInArray(devices.status, ['decommissioned', 'quarantined'])
-    ));
+    ))
+    .returning({ id: devices.id });
+
+  // Durable audit of security-relevant device state transitions (finding #10).
+  // The heartbeat mutates several security-relevant fields but previously left
+  // no persisted trail — only transient Redis pub/sub. This is a high-volume
+  // endpoint, so we emit at most ONE `agent.heartbeat.state_change` event per
+  // beat, carrying only fields that GENUINELY changed. Routine/noisy fields
+  // (lastSeenAt, metrics, uptime, agentVersion, pendingReboot, lastUser) are
+  // deliberately excluded so a steady-state heartbeat produces NO audit. Gated
+  // on `updatedRows.length` so a guard-rejected (terminal-status) write never
+  // records a phantom transition.
+  if (updatedRows.length > 0) {
+    const changes: Array<{ field: string; before: unknown; after: unknown }> = [];
+
+    // offline→online (status is always written as 'online' here; audit only the
+    // transition FROM a non-online value).
+    if (device.status !== 'online') {
+      changes.push({ field: 'status', before: device.status ?? null, after: 'online' });
+    }
+    // hostname — deviceUpdates.hostname is set only when it differs (see above),
+    // so its presence already means a genuine change.
+    if (deviceUpdates.hostname !== undefined) {
+      changes.push({ field: 'hostname', before: device.hostname ?? null, after: deviceUpdates.hostname });
+    }
+    // agentServerUrl / tccPermissions / desktopAccess are written unconditionally
+    // when reported, so compare against the pre-update snapshot to avoid auditing
+    // an unchanged re-report.
+    if (deviceUpdates.agentServerUrl !== undefined && deviceUpdates.agentServerUrl !== device.agentServerUrl) {
+      changes.push({ field: 'agentServerUrl', before: device.agentServerUrl ?? null, after: deviceUpdates.agentServerUrl });
+    }
+    if (
+      deviceUpdates.tccPermissions !== undefined &&
+      JSON.stringify(deviceUpdates.tccPermissions) !== JSON.stringify(device.tccPermissions ?? null)
+    ) {
+      changes.push({ field: 'tccPermissions', before: device.tccPermissions ?? null, after: deviceUpdates.tccPermissions });
+    }
+    if (
+      deviceUpdates.desktopAccess !== undefined &&
+      JSON.stringify(deviceUpdates.desktopAccess) !== JSON.stringify(device.desktopAccess ?? null)
+    ) {
+      changes.push({ field: 'desktopAccess', before: device.desktopAccess ?? null, after: deviceUpdates.desktopAccess });
+    }
+    // mainAgentSilentSince null↔non-null transition. The main-agent branch only
+    // ever CLEARS it (recovery); the watchdog branch owns the SET side. Audit
+    // only the actual flip, reported as a boolean `mainAgentSilent`.
+    if ('mainAgentSilentSince' in deviceUpdates) {
+      const wasSet = (device.mainAgentSilentSince ?? null) !== null;
+      const nowSet = (deviceUpdates.mainAgentSilentSince ?? null) !== null;
+      if (wasSet !== nowSet) {
+        changes.push({ field: 'mainAgentSilent', before: wasSet, after: nowSet });
+      }
+    }
+
+    if (changes.length > 0) {
+      writeAuditEvent(c, {
+        orgId: device.orgId,
+        actorType: 'agent',
+        actorId: agentId,
+        action: 'agent.heartbeat.state_change',
+        resourceType: 'device',
+        resourceId: device.id,
+        details: { changes },
+      });
+    }
+  }
 
   // Publish event when agent version changes (for real-time UI updates)
   if (data.agentVersion && data.agentVersion !== device.agentVersion) {

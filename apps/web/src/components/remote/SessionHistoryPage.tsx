@@ -8,6 +8,7 @@ import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { toCsv } from '@/lib/csvExport';
 
 type SessionHistoryPageProps = {
   limit?: number;
@@ -66,10 +67,9 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
         s.bytesTransferred || ''
       ]);
 
-      const csvContent = [
-        csvHeaders.join(','),
-        ...rows.map((row: (string | number)[]) => row.map(cell => `"${cell}"`).join(','))
-      ].join('\n');
+      // Neutralize spreadsheet-formula injection from agent-supplied fields
+      // (deviceHostname/userName) before quoting.
+      const csvContent = toCsv(csvHeaders, rows);
 
       // Download CSV
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });

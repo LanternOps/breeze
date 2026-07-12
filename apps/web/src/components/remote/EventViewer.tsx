@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { toCsv } from '@/lib/csvExport';
 
 // Platform type
 export type Platform = 'windows' | 'macos' | 'linux';
@@ -200,10 +201,12 @@ function exportToCsv(events: EventLogEntry[], filename: string): void {
     e.source,
     String(e.eventId),
     e.category || '',
-    '"' + e.message.replace(/"/g, '""') + '"'
+    e.message
   ]);
-  
-  const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+
+  // Neutralize spreadsheet-formula injection from agent-supplied fields
+  // (source/category/message) before quoting.
+  const csvContent = toCsv(headers, rows);
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);

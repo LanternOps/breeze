@@ -37,7 +37,12 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 
+vi.mock('../../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+}));
+
 import { db } from '../../db';
+import { writeAuditEvent } from '../../services/auditEvents';
 import { logsRoutes } from './logs';
 
 // ---------------------------------------------------------------------------
@@ -194,6 +199,39 @@ describe('agent logs routes', () => {
           },
         }),
       ]);
+    });
+  });
+
+  describe('POST /agents/:id/logs — ingest audit (Finding #9)', () => {
+    it('writes a content-free agent.logs.submit audit event on ingest', async () => {
+      mockDeviceLookup(true);
+      mockInsertSuccess();
+
+      const logs = Array.from({ length: 3 }, () =>
+        makeLogEntry({ message: 'secret token=abc123' })
+      );
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+      const [, event] = vi.mocked(writeAuditEvent).mock.calls[0];
+      expect(event).toMatchObject({
+        orgId: ORG_ID,
+        actorType: 'agent',
+        actorId: AGENT_ID,
+        action: 'agent.logs.submit',
+        resourceType: 'device',
+        resourceId: DEVICE_ID,
+        details: { submittedCount: 3, insertedCount: 3 },
+      });
+      // Content-free: no log message contents leak into the audit details.
+      expect(JSON.stringify(event.details)).not.toContain('token=');
+      // partialFailure omitted on a fully-successful insert.
+      expect(event.details).not.toHaveProperty('partialFailure');
     });
   });
 });

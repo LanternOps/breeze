@@ -188,12 +188,28 @@ describe('buildAuditCsv', () => {
     expect(lines[1]).toContain('Allow run_script');
   });
 
-  it('emits empty provenance cells when null', () => {
-    const csv = buildAuditCsv([decided]);
+  it('emits empty (quoted) provenance cells when null', () => {
+    // Use a comma-free reason so a naive split lines up with the header.
+    const csv = buildAuditCsv([{ ...decided, reason: 'Restart spooler' }]);
     const header = csv.split('\n')[0].split(',');
     const row = csv.split('\n')[1].split(',');
     for (const col of ['decisionSource', 'matchedPolicyName', 'pamRuleName']) {
-      expect(row[header.indexOf(col)]).toBe('');
+      // Cells are RFC-4180 quoted by the shared serializer, so empty renders as "".
+      expect(row[header.indexOf(col)]).toBe('""');
     }
+  });
+
+  it('neutralizes spreadsheet-formula injection in agent-supplied fields', () => {
+    const malicious: ElevationRequest = {
+      ...decided,
+      deviceHostname: '=cmd()|/C calc',
+      subjectUsername: '+HYPERLINK("http://evil","click")',
+      reason: '@SUM(1+1)',
+    };
+    const line = buildAuditCsv([malicious]).split('\n')[1];
+    // Leading formula chars are prefixed with a single quote inside the quoted cell.
+    expect(line).toContain('"\'=cmd()|/C calc"');
+    expect(line).toContain('"\'+HYPERLINK(');
+    expect(line).toContain('"\'@SUM(1+1)"');
   });
 });

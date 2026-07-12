@@ -98,15 +98,19 @@ func (c *FailoverClient) setHeaders(req *http.Request) {
 
 // SendHeartbeat POSTs a watchdog heartbeat to the API and returns the parsed
 // response. The request body includes role, watchdogState, agentVersion,
-// journalExcerpt, mainAgentRestartCount24h, mainAgentLastRestartAt,
-// flapDetected, and timestamp fields.
-func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, journalEntries []JournalEntry, restartStats RestartStats) (*HeartbeatResponse, error) {
+// mainAgentRestartCount24h, mainAgentLastRestartAt, flapDetected, and
+// timestamp fields.
+//
+// The heartbeat intentionally does NOT send a journalExcerpt: the API
+// heartbeat schema (apps/api/src/routes/agents/schemas.ts) has no such field
+// and silently strips it, so shipping it was dead wire data. Diagnostic
+// journal entries reach the server via ShipLogs / the /logs endpoint instead.
+func (c *FailoverClient) SendHeartbeat(watchdogVersion, currentState string, restartStats RestartStats) (*HeartbeatResponse, error) {
 	body := map[string]any{
 		"role":                     "watchdog",
 		"watchdogState":            currentState,
 		"status":                   "ok",
 		"agentVersion":             watchdogVersion,
-		"journalExcerpt":           journalEntries,
 		"timestamp":                time.Now().UTC().Format(time.RFC3339),
 		"mainAgentRestartCount24h": restartStats.Count24h,
 		"flapDetected":             restartStats.FlapDetected,
@@ -209,14 +213,135 @@ func (c *FailoverClient) SubmitCommandResult(commandID, status string, result an
 	return nil
 }
 
-// ShipLogs POSTs a batch of journal entries to the agent logs endpoint.
-func (c *FailoverClient) ShipLogs(entries []JournalEntry) error {
-	data, err := json.Marshal(entries)
+// apiLogEntry mirrors the API's agent diagnostic-log ingest contract
+// (apps/api/src/routes/agents/logs.ts, agentLogEntrySchema). The endpoint
+// requires an OBJECT `{ logs: [...] }` whose entries carry timestamp/level/
+// component/message(+optional fields) — NOT the watchdog's raw JournalEntry
+// shape ({time, level, event, data}). We translate here so the watchdog
+// speaks the API's existing contract rather than loosening the API.
+type apiLogEntry struct {
+	Timestamp string         `json:"timestamp"`
+	Level     string         `json:"level"`
+	Component string         `json:"component"`
+	Message   string         `json:"message"`
+	Fields    map[string]any `json:"fields,omitempty"`
+}
+
+// apiLogBatch is the request body wrapper the /logs endpoint requires.
+type apiLogBatch struct {
+	Logs []apiLogEntry `json:"logs"`
+}
+
+const (
+	// shipLogsMaxBatchEntries matches the API's z.array(...).max(200) cap.
+	shipLogsMaxBatchEntries = 200
+	// shipLogsMaxBatchBytes keeps each POST comfortably under the API's 256KB
+	// bodyLimit (the watchdog posts uncompressed), leaving headroom for JSON
+	// framing overhead.
+	shipLogsMaxBatchBytes = 240 * 1024
+	// shipLogsMaxMessageLen matches the API's message .max(10000). Trim rather
+	// than let one long line 400 the whole batch.
+	shipLogsMaxMessageLen = 10000
+	// shipLogsMaxFieldsBytes matches the API's fields 32KB refine. Drop
+	// oversized data rather than reject the batch.
+	shipLogsMaxFieldsBytes = 32000
+)
+
+// normalizeLogLevel maps a journal level onto the API's accepted enum
+// (debug/info/warn/error). Watchdog levels (info/warn/error) already fall
+// within it; anything unexpected degrades to "info" so a stray level can't
+// reject the batch.
+func normalizeLogLevel(level string) string {
+	switch level {
+	case "debug", "info", "warn", "error":
+		return level
+	default:
+		return LevelInfo
+	}
+}
+
+// journalEntryToAPI translates a watchdog JournalEntry into the API's log
+// entry shape (time→timestamp RFC3339, event→message, fixed component, data→
+// fields), enforcing the endpoint's per-field size limits.
+func journalEntryToAPI(entry JournalEntry) apiLogEntry {
+	message := entry.Event
+	if len(message) > shipLogsMaxMessageLen {
+		message = message[:shipLogsMaxMessageLen]
+	}
+	out := apiLogEntry{
+		Timestamp: entry.Time.UTC().Format(time.RFC3339),
+		Level:     normalizeLogLevel(entry.Level),
+		Component: "watchdog",
+		Message:   message,
+	}
+	if len(entry.Data) > 0 {
+		if b, err := json.Marshal(entry.Data); err == nil && len(b) <= shipLogsMaxFieldsBytes {
+			out.Fields = entry.Data
+		}
+	}
+	return out
+}
+
+// ShipLogs translates watchdog journal entries into the API's diagnostic-log
+// ingest contract and POSTs them in batches (respecting the API's 200-entry
+// cap and 256KB body limit). It returns the number of entries successfully
+// shipped and, if any batch failed, the first error encountered. Callers use
+// the shipped count to distinguish a total failure (0 shipped) from a partial
+// one (some shipped) so the command result isn't falsely reported "completed".
+func (c *FailoverClient) ShipLogs(entries []JournalEntry) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+
+	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", c.BaseURL(), c.agentID)
+
+	shipped := 0
+	var firstErr error
+
+	batch := make([]apiLogEntry, 0, shipLogsMaxBatchEntries)
+	batchBytes := 0
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if err := c.postLogBatch(url, batch); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			shipped += len(batch)
+		}
+		batch = batch[:0]
+		batchBytes = 0
+	}
+
+	for _, entry := range entries {
+		apiEntry := journalEntryToAPI(entry)
+		// Approximate the serialized size (+1 for the joining comma) so a batch
+		// never crosses the API body limit mid-flight.
+		entryBytes := shipLogsMaxMessageLen // conservative fallback
+		if b, err := json.Marshal(apiEntry); err == nil {
+			entryBytes = len(b) + 1
+		}
+		if len(batch) > 0 && (len(batch) >= shipLogsMaxBatchEntries || batchBytes+entryBytes > shipLogsMaxBatchBytes) {
+			flush()
+		}
+		batch = append(batch, apiEntry)
+		batchBytes += entryBytes
+	}
+	flush()
+
+	return shipped, firstErr
+}
+
+// postLogBatch POSTs a single translated batch to the /logs endpoint.
+func (c *FailoverClient) postLogBatch(url string, batch []apiLogEntry) error {
+	data, err := json.Marshal(apiLogBatch{Logs: batch})
 	if err != nil {
 		return fmt.Errorf("failover: marshal logs: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", c.BaseURL(), c.agentID)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("failover: build logs request: %w", err)
@@ -230,7 +355,9 @@ func (c *FailoverClient) ShipLogs(entries []JournalEntry) error {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
+	// Accept any 2xx: the /logs endpoint returns 200 (empty batch), 201 (all
+	// inserted), or 207 (partial insert) — all mean the batch was received.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("failover: ship logs returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil

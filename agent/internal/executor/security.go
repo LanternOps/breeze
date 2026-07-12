@@ -201,8 +201,14 @@ func SanitizeOutput(output string) string {
 		{regexp.MustCompile(`(?i)(api[_-]?key|apikey|token|secret|password|passwd|pwd)\s*[=:]\s*['"]?[a-zA-Z0-9_\-]{8,}['"]?`), "$1=[REDACTED]"},
 		// AWS keys
 		{regexp.MustCompile(`(?i)AKIA[0-9A-Z]{16}`), "[AWS_KEY_REDACTED]"},
-		// Private keys
-		{regexp.MustCompile(`-----BEGIN [A-Z]+ PRIVATE KEY-----`), "[PRIVATE_KEY_REDACTED]"},
+		// Private keys — remove the ENTIRE PEM block (header + base64 body + footer),
+		// not just the header line, or the key stays fully reconstructable. The
+		// algorithm token is optional so PKCS#8 `-----BEGIN PRIVATE KEY-----`
+		// is covered alongside RSA/EC/DSA/OPENSSH/ENCRYPTED forms. `(?s)` lets `.`
+		// match newlines; the non-greedy `.*?` stops at the first END marker so two
+		// separate keys are each redacted individually. (RE2 has no backreferences,
+		// so the header/footer algorithm tokens are matched independently.)
+		{regexp.MustCompile(`(?s)-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----`), "[PRIVATE_KEY_REDACTED]"},
 		// Connection strings
 		{regexp.MustCompile(`(?i)(mongodb|mysql|postgresql|redis|amqp)://[^\s]+`), "$1://[CONNECTION_STRING_REDACTED]"},
 		// Bearer tokens
