@@ -174,6 +174,7 @@ import {
   getRefreshFamily,
 } from '../../services';
 import { revokeRefreshFamilyById } from '../../services/authLifecycle';
+import { authMiddleware } from '../../middleware/auth';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { createAuditLogAsync } from '../../services/auditService';
@@ -732,6 +733,17 @@ describe('POST /logout', () => {
     expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
     expect(revokeCurrentRefreshTokenJti).toHaveBeenCalledWith(expect.anything(), 'user-1');
 
+    // ORDER matters: the durable DB revoke must land BEFORE the best-effort
+    // Redis cleanup — reordering the blocks would reintroduce SR2-04 (Redis
+    // succeeds, DB revoke silently skipped/failed, token survives 7 days).
+    const durableOrder = vi.mocked(revokeRefreshFamilyById).mock.invocationCallOrder[0];
+    const txOrder = vi.mocked(db.transaction).mock.invocationCallOrder[0];
+    const redisOrder = vi.mocked(revokeAllUserTokens).mock.invocationCallOrder[0];
+    expect(durableOrder).toBeDefined();
+    expect(redisOrder).toBeDefined();
+    expect(txOrder).toBeLessThan(redisOrder!);
+    expect(durableOrder!).toBeLessThan(redisOrder!);
+
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
     expect(createAuditLogAsync).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'user.logout', result: 'success' }),
@@ -773,6 +785,39 @@ describe('POST /logout', () => {
     expect(res.status).toBe(200);
     expect(body).toEqual({ success: true });
     expect(revokeRefreshFamilyById).toHaveBeenCalledWith(expect.anything(), 'family-1', 'logout');
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'user.logout', result: 'success' }),
+    );
+  });
+
+  it('skips the durable revoke for a legacy sid-less token with no refresh cookie, but still runs Redis cleanup and succeeds', async () => {
+    // Legacy access token minted before the sid rollout + no refresh cookie:
+    // there is no family to resolve, so the durable block is skipped entirely
+    // (nothing to revoke ≠ a failure) while everything else behaves as before.
+    vi.mocked(authMiddleware).mockImplementationOnce(async (c: any, next: () => Promise<void>) => {
+      c.set('auth', {
+        scope: 'organization',
+        partnerId: null,
+        orgId: 'org-1',
+        user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
+        token: {}, // no sid
+      });
+      await next();
+    });
+    vi.mocked(resolveRefreshToken).mockReturnValue(null);
+
+    const res = await postLogout();
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ success: true });
+
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(revokeRefreshFamilyById).not.toHaveBeenCalled();
+
+    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
+    expect(revokeCurrentRefreshTokenJti).toHaveBeenCalledWith(expect.anything(), 'user-1');
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
     expect(createAuditLogAsync).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'user.logout', result: 'success' }),

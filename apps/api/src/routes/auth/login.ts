@@ -618,6 +618,12 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
     console.error('[auth] Logout Redis cleanup failed (durable revocation state above):', error);
   }
 
+  // Always clear the local cookie — even on durable failure the client should
+  // drop its credential; the durable revoke is retried by ops via the audit.
+  // Runs BEFORE the audit write so "cookie always cleared" holds even against
+  // a synchronous throw from the audit call.
+  clearRefreshTokenCookie(c);
+
   createAuditLogAsync({
     orgId: auth.orgId ?? undefined,
     actorId: auth.user.id,
@@ -631,10 +637,6 @@ loginRoutes.post('/logout', authMiddleware, async (c) => {
     result: durableOk ? 'success' : 'failure',
     details: durableOk ? undefined : { reason: 'durable_revocation_failed', familyId },
   });
-
-  // Always clear the local cookie — even on durable failure the client should
-  // drop its credential; the durable revoke is retried by ops via the audit.
-  clearRefreshTokenCookie(c);
 
   if (!durableOk) {
     return c.json({ error: 'Logout could not be fully completed. Please try again.' }, 500);
