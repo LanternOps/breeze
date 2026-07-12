@@ -2568,12 +2568,13 @@ func (h *Heartbeat) sendReliabilityMetrics(sentAt time.Time) {
 //
 // Production default is 90s. The watchdog times the WHOLE runHeartbeat() —
 // metrics collection, the primary POST (one 30s-capped context around the
-// retry loop), and on consecutive failures a second full backup-probe POST
-// (another 30s cap) — so a routine slow/flapping uplink legitimately takes
-// up to ~60-65s. The watchdog exists to catch indefinite broker-mutex
-// starvation (#387), which blows past any finite bound, so 90s keeps the
-// diagnostic while never firing on a merely degraded link (#2386: a 15s
-// timeout fired on every heartbeat for days on a slow macOS uplink).
+// retry loop), and once consecutive failures reach backupProbeThreshold
+// (with a backup URL configured) a second full backup-probe POST (another
+// 30s cap) — so a routine slow/flapping uplink legitimately takes up to
+// ~60-65s. The watchdog exists to catch indefinite broker-mutex starvation
+// (#387), which blows past any finite bound, so 90s keeps the diagnostic
+// while never firing on a merely degraded link (#2386: a 15s timeout fired
+// on every heartbeat for days on a slow macOS uplink).
 var heartbeatWatchdogTimeoutNs atomic.Int64
 
 // heartbeatWatchdogDumpIntervalNs rate-limits the expensive part of a
@@ -2594,10 +2595,14 @@ var (
 // heartbeatWatchdogMaxDumpBytes caps the raw goroutine dump put in the WARN
 // log's `goroutines` field. The API's log endpoint rejects any entry whose
 // stringified `fields` object exceeds 32,000 chars — and one oversized entry
-// 400s the WHOLE shipped batch (#2386). JSON escaping roughly doubles a
-// stack dump (newlines, quotes, tabs → two-char escapes), so cap the raw
-// dump well under half that ceiling.
-const heartbeatWatchdogMaxDumpBytes = 8 * 1024
+// 400s the WHOLE shipped batch (#2386). Typical dumps inflate only a few
+// percent under JSON escaping (one \n + one \t per frame line), but the cap
+// is sized for the ~2x worst case where every char escapes to two
+// (TestWatchdogDumpFitsAPIFieldsLimit models this): 12KB*2 leaves headroom
+// under the ceiling. Pathological dumps heavy in <>& (six-byte \u00XX
+// escapes) are backstopped by the shipper's capFields, which replaces
+// oversized fields with a marker rather than burning the batch.
+const heartbeatWatchdogMaxDumpBytes = 12 * 1024
 
 func init() {
 	heartbeatWatchdogTimeoutNs.Store(int64(90 * time.Second))
@@ -2638,6 +2643,11 @@ func resetHeartbeatWatchdogDumpState() {
 // heartbeatWatchdogTryAcquireDump reports whether a goroutine dump may be
 // emitted now, atomically claiming the slot if so. Safe for concurrent
 // watchdog goroutines (overlapping invocations race for one slot).
+//
+// The slot is consumed even if the resulting WARN entry is later dropped by
+// a full shipper buffer — acceptable because the dump still reaches the
+// local log via the base handler, and when the buffer is full (network
+// dead) nothing would ship anyway.
 func heartbeatWatchdogTryAcquireDump(now time.Time, interval time.Duration) bool {
 	for {
 		last := heartbeatWatchdogLastDumpNs.Load()

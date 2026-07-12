@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,13 +50,37 @@ func watchdogTestHarness(t *testing.T, timeout time.Duration) *syncBuffer {
 }
 
 // runBlockedHeartbeat runs one sendHeartbeatWithWatchdog invocation whose
-// send blocks for blockFor, then returns after the invocation completes.
-func runBlockedHeartbeat(t *testing.T, blockFor time.Duration) {
+// send blocks until the watchdog has verifiably fired (one more "exceeded
+// watchdog timeout" line in buf), then releases the send and waits for the
+// invocation to complete. Holding the send open until the fire is observed
+// makes the tests deterministic: if the send returned first, `done` and the
+// timer could both be ready and Go's select would pick randomly.
+func runBlockedHeartbeat(t *testing.T, buf *syncBuffer) {
 	t.Helper()
+	const fireMark = "heartbeat send exceeded watchdog timeout"
+	before := strings.Count(buf.String(), fireMark)
+
+	release := make(chan struct{})
 	h := &Heartbeat{
-		sendHeartbeatFn: func() { time.Sleep(blockFor) },
+		sendHeartbeatFn: func() { <-release },
 	}
-	h.sendHeartbeatWithWatchdog()
+	done := make(chan struct{})
+	go func() {
+		h.sendHeartbeatWithWatchdog()
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for strings.Count(buf.String(), fireMark) <= before {
+		if time.Now().After(deadline) {
+			close(release)
+			<-done
+			t.Fatalf("watchdog did not fire within deadline, log:\n%s", buf.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(release)
+	<-done
 }
 
 // TestSendHeartbeatWatchdogFiresWhenBlocked verifies that a sendHeartbeat
@@ -158,10 +183,8 @@ func TestSendHeartbeatWatchdogRateLimitsDumps(t *testing.T) {
 	prev := setHeartbeatWatchdogDumpInterval(time.Hour)
 	t.Cleanup(func() { setHeartbeatWatchdogDumpInterval(prev) })
 
-	runBlockedHeartbeat(t, 150*time.Millisecond)
-	runBlockedHeartbeat(t, 150*time.Millisecond)
-	// Let any late watchdog goroutine finish logging.
-	time.Sleep(100 * time.Millisecond)
+	runBlockedHeartbeat(t, buf)
+	runBlockedHeartbeat(t, buf)
 
 	output := buf.String()
 	if got := strings.Count(output, "goroutines="); got != 1 {
@@ -180,14 +203,16 @@ func TestSendHeartbeatWatchdogRateLimitsDumps(t *testing.T) {
 // fires were suppressed in between.
 func TestSendHeartbeatWatchdogDumpsAgainAfterInterval(t *testing.T) {
 	buf := watchdogTestHarness(t, 30*time.Millisecond)
-	prev := setHeartbeatWatchdogDumpInterval(300 * time.Millisecond)
+	// A generous interval so the back-to-back second fire deterministically
+	// lands inside it even on a heavily loaded runner; the elapse sleep only
+	// errs in the safe direction (longer = interval definitely over).
+	prev := setHeartbeatWatchdogDumpInterval(time.Second)
 	t.Cleanup(func() { setHeartbeatWatchdogDumpInterval(prev) })
 
-	runBlockedHeartbeat(t, 150*time.Millisecond) // dump #1
-	runBlockedHeartbeat(t, 150*time.Millisecond) // suppressed (within 300ms)
-	time.Sleep(350 * time.Millisecond)           // interval elapses
-	runBlockedHeartbeat(t, 150*time.Millisecond) // dump #2
-	time.Sleep(100 * time.Millisecond)
+	runBlockedHeartbeat(t, buf)         // dump #1
+	runBlockedHeartbeat(t, buf)         // suppressed (well within 1s)
+	time.Sleep(1200 * time.Millisecond) // interval elapses
+	runBlockedHeartbeat(t, buf)         // dump #2
 
 	output := buf.String()
 	if got := strings.Count(output, "dumping goroutine stacks"); got != 2 {
@@ -195,6 +220,67 @@ func TestSendHeartbeatWatchdogDumpsAgainAfterInterval(t *testing.T) {
 	}
 	if !strings.Contains(output, "suppressed_dumps_since_last=1") {
 		t.Fatalf("expected the second dump to report 1 suppressed fire, got:\n%s", output)
+	}
+}
+
+// TestHeartbeatWatchdogTryAcquireDumpConcurrent verifies that overlapping
+// watchdog goroutines racing for one dump slot yield exactly one winner.
+func TestHeartbeatWatchdogTryAcquireDumpConcurrent(t *testing.T) {
+	resetHeartbeatWatchdogDumpState()
+	t.Cleanup(resetHeartbeatWatchdogDumpState)
+
+	now := time.Now()
+	const n = 32
+	var winners atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if heartbeatWatchdogTryAcquireDump(now, time.Hour) {
+				winners.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := winners.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 winner among %d concurrent acquisitions, got %d", n, got)
+	}
+}
+
+// TestHeartbeatWatchdogTryAcquireDumpInterval pins the interval boundary
+// semantics with injected times (no sleeps).
+func TestHeartbeatWatchdogTryAcquireDumpInterval(t *testing.T) {
+	resetHeartbeatWatchdogDumpState()
+	t.Cleanup(resetHeartbeatWatchdogDumpState)
+
+	base := time.Now()
+	interval := 10 * time.Minute
+
+	if !heartbeatWatchdogTryAcquireDump(base, interval) {
+		t.Fatal("first acquisition must succeed")
+	}
+	if heartbeatWatchdogTryAcquireDump(base.Add(interval-time.Nanosecond), interval) {
+		t.Fatal("acquisition 1ns before the interval elapses must be suppressed")
+	}
+	if !heartbeatWatchdogTryAcquireDump(base.Add(interval), interval) {
+		t.Fatal("acquisition exactly at the interval must succeed")
+	}
+}
+
+// TestHeartbeatWatchdogProductionDefaults pins the shipped defaults: the
+// 90s timeout IS the #2386 fix (it must clear the ~60-65s legitimate
+// worst case of 30s primary POST + 30s backup probe + collection overhead).
+func TestHeartbeatWatchdogProductionDefaults(t *testing.T) {
+	if got := heartbeatWatchdogTimeout(); got != 90*time.Second {
+		t.Fatalf("default watchdog timeout = %v, want 90s (must exceed the ~60-65s legitimate worst case)", got)
+	}
+	if got := heartbeatWatchdogDumpInterval(); got != 10*time.Minute {
+		t.Fatalf("default dump interval = %v, want 10m", got)
 	}
 }
 

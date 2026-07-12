@@ -11,6 +11,8 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,27 +115,76 @@ func (s *Shipper) Stop() {
 // (apps/api/src/routes/agents/logs.ts rejects entries whose stringified
 // `fields` exceeds 32,000 chars — and a single oversized entry 400s the
 // whole batch, burning every legitimate entry shipped with it, #2386).
-// Byte length in Go is >= JSON.stringify().length for the same payload, so
-// checking bytes with a little headroom is conservative.
+// For strings, Go's marshaled byte length is >= JSON.stringify().length
+// (UTF-8 bytes >= UTF-16 units, plus Go additionally HTML-escapes <>& to
+// six-byte \u00XX forms); float formatting can differ by a few bytes per
+// field in either direction, which the 1,000-byte headroom absorbs.
+//
+// Note this guards only `fields` — the API also caps message (10,000) and
+// component (100), which nothing in the agent currently approaches.
 const maxShippedFieldsJSONBytes = 31000
 
+// maxSalvagedFieldBytes is the per-field size above which a field is dropped
+// (by name) when the entry as a whole is over the ship limit.
+const maxSalvagedFieldBytes = 1024
+
 // capFields enforces the API's per-entry `fields` size limit locally before
-// the entry is buffered, replacing oversized fields with a small marker so
-// one bloated entry cannot get the whole shipped batch rejected.
+// the entry is buffered, so one bloated or unmarshalable entry cannot get
+// the whole shipped batch rejected (the API 400s the entire batch on any
+// invalid entry, and shipBatch drops all entries on a whole-batch marshal
+// failure). Small fields are salvaged — operators need correlating scalars
+// like ids and durations — and the oversized/unmarshalable ones are dropped
+// by name in a `fields_dropped` marker.
 func capFields(fields map[string]any) map[string]any {
 	if fields == nil {
 		return nil
 	}
 	b, err := json.Marshal(fields)
-	if err != nil || len(b) <= maxShippedFieldsJSONBytes {
-		// Marshal errors keep the original fields: shipBatch already
-		// reports batch-level marshal failures, and mangling the entry
-		// here would hide which field was unmarshalable.
+	if err == nil && len(b) <= maxShippedFieldsJSONBytes {
 		return fields
 	}
-	return map[string]any{
-		"fields_dropped": fmt.Sprintf("fields JSON was %d bytes, exceeds ship limit of %d", len(b), maxShippedFieldsJSONBytes),
+	var reason string
+	if err != nil {
+		// e.g. a NaN/Inf float or a non-marshalable value smuggled into a
+		// slog attr. Left alone it would fail the whole-batch marshal in
+		// shipBatch and silently drop every co-batched entry.
+		reason = fmt.Sprintf("fields not JSON-marshalable (%v)", err)
+	} else {
+		reason = fmt.Sprintf("fields JSON was %d bytes, exceeds ship limit of %d", len(b), maxShippedFieldsJSONBytes)
 	}
+
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic salvage order
+
+	capped := make(map[string]any, len(fields)+1)
+	var dropped []string
+	// Salvage into half the ship limit so the kept fields + marker + JSON
+	// syntax overhead can never re-breach the cap.
+	const salvageBudget = maxShippedFieldsJSONBytes / 2
+	used := 0
+	for _, k := range keys {
+		vb, verr := json.Marshal(fields[k])
+		if verr != nil {
+			dropped = append(dropped, k+"(unmarshalable)")
+			continue
+		}
+		if len(vb) > maxSalvagedFieldBytes || used+len(vb)+len(k)+8 > salvageBudget {
+			dropped = append(dropped, fmt.Sprintf("%s(%dB)", k, len(vb)))
+			continue
+		}
+		capped[k] = fields[k]
+		used += len(vb) + len(k) + 8
+	}
+
+	marker := reason + "; dropped: " + strings.Join(dropped, ", ")
+	if len(marker) > 2000 {
+		marker = marker[:2000] + "..."
+	}
+	capped["fields_dropped"] = marker
+	return capped
 }
 
 // Enqueue adds a log entry to the buffer. Non-blocking; drops if buffer is full.

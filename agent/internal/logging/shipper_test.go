@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -131,23 +132,58 @@ func TestCapFields(t *testing.T) {
 		t.Fatalf("small fields must pass through unchanged, got %v", got)
 	}
 
-	// Oversized fields are replaced with a small marker, not shipped as-is
-	// (one oversized entry would 400 the whole batch at the API, #2386).
-	huge := map[string]any{"dump": string(bytes.Repeat([]byte("x"), maxShippedFieldsJSONBytes+1))}
+	// Oversized entry: the huge field is dropped by name, small correlating
+	// scalars survive, and the result fits the ship limit (one oversized
+	// entry would otherwise 400 the whole batch at the API, #2386).
+	huge := map[string]any{
+		"dump":       string(bytes.Repeat([]byte("x"), maxShippedFieldsJSONBytes+1)),
+		"device_id":  "dev-123",
+		"elapsed_ms": 456,
+	}
 	got := capFields(huge)
 	if _, stillThere := got["dump"]; stillThere {
 		t.Fatal("oversized field must be dropped")
+	}
+	if got["device_id"] != "dev-123" {
+		t.Fatalf("small correlating field must be salvaged, got %v", got)
 	}
 	marker, ok := got["fields_dropped"].(string)
 	if !ok || marker == "" {
 		t.Fatalf("expected fields_dropped marker, got %v", got)
 	}
+	if !bytes.Contains([]byte(marker), []byte("dump(")) {
+		t.Fatalf("marker must name the dropped key with its size, got %q", marker)
+	}
 	b, err := json.Marshal(got)
 	if err != nil {
-		t.Fatalf("marshal marker fields: %v", err)
+		t.Fatalf("marshal capped fields: %v", err)
 	}
 	if len(b) > maxShippedFieldsJSONBytes {
-		t.Fatalf("marker fields themselves exceed the ship limit: %d bytes", len(b))
+		t.Fatalf("capped fields themselves exceed the ship limit: %d bytes", len(b))
+	}
+}
+
+func TestCapFieldsUnmarshalable(t *testing.T) {
+	// An unmarshalable value (NaN) must not survive to shipBatch, where the
+	// whole-batch marshal would fail and drop every co-batched entry — the
+	// marshal-failure flavor of the #2386 one-bad-entry-burns-the-batch bug.
+	fields := map[string]any{
+		"cpu_pct":   math.NaN(),
+		"device_id": "dev-123",
+	}
+	got := capFields(fields)
+	if _, stillThere := got["cpu_pct"]; stillThere {
+		t.Fatal("unmarshalable field must be dropped")
+	}
+	if got["device_id"] != "dev-123" {
+		t.Fatalf("marshalable fields must be salvaged, got %v", got)
+	}
+	marker, ok := got["fields_dropped"].(string)
+	if !ok || !bytes.Contains([]byte(marker), []byte("cpu_pct(unmarshalable)")) {
+		t.Fatalf("marker must name the unmarshalable key, got %v", got)
+	}
+	if _, err := json.Marshal(got); err != nil {
+		t.Fatalf("capped fields must be marshalable, got error: %v", err)
 	}
 }
 
