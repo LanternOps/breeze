@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from 'vitest';
 import { SignJWT } from 'jose';
 import {
   createAccessToken,
@@ -272,6 +272,39 @@ describe('jwt service', () => {
       const decoded = await verifyToken(legacyToken);
       expect(decoded).not.toBeNull();
       expect(decoded?.sub).toBe(testPayload.sub);
+    });
+  });
+
+  describe('epoch + sid claims', () => {
+    beforeAll(() => {
+      process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'test-secret-at-least-32-chars-long-xxxxx';
+    });
+
+    it('carries aep/mep on both tokens and sid on the access token', async () => {
+      const pair = await createTokenPair(
+        {
+          sub: '11111111-1111-1111-1111-111111111111',
+          email: 'a@b.com',
+          roleId: null,
+          orgId: null,
+          partnerId: null,
+          scope: 'system',
+          mfa: true,
+          aep: 4,
+          mep: 2,
+        },
+        { refreshFam: '22222222-2222-2222-2222-222222222222' }
+      );
+
+      const access = await verifyToken(pair.accessToken);
+      const refresh = await verifyToken(pair.refreshToken);
+      expect(access?.aep).toBe(4);
+      expect(access?.mep).toBe(2);
+      expect(access?.sid).toBe('22222222-2222-2222-2222-222222222222');
+      expect(access?.fam).toBeUndefined();
+      expect(refresh?.aep).toBe(4);
+      expect(refresh?.mep).toBe(2);
+      expect(refresh?.fam).toBe('22222222-2222-2222-2222-222222222222');
     });
   });
 });

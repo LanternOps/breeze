@@ -198,6 +198,16 @@ export interface TokenPayload {
   // Legacy tokens minted before this rollout have no `fam` and use the
   // backwards-compat per-jti revocation path on /refresh.
   fam?: string;
+  // Durable auth-state epochs (core-auth hardening PR 1). Minted from the live
+  // user row. authMiddleware / /refresh reject a token whose aep/mep is behind
+  // the current row. Legacy tokens predating the rollout have neither and are
+  // rejected on first use (deliberate global sign-out).
+  aep?: number;
+  mep?: number;
+  // Stable session id = the refresh-token family id. Carried on ACCESS tokens
+  // (refresh tokens keep `fam`). Lets logout resolve the family from an access
+  // token and lets audit correlate a session across rotations.
+  sid?: string;
   iat?: number;
   jti?: string;
 }
@@ -273,6 +283,9 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
       mfa: payload.mfa === true,
       mdid: typeof payload.mdid === 'string' && payload.mdid.length > 0 ? payload.mdid : undefined,
       fam: typeof payload.fam === 'string' && payload.fam.length > 0 ? payload.fam : undefined,
+      aep: typeof payload.aep === 'number' ? payload.aep : undefined,
+      mep: typeof payload.mep === 'number' ? payload.mep : undefined,
+      sid: typeof payload.sid === 'string' && payload.sid.length > 0 ? payload.sid : undefined,
       iat: typeof payload.iat === 'number' ? payload.iat : undefined,
       jti: typeof payload.jti === 'string' ? payload.jti : undefined
     };
@@ -351,11 +364,14 @@ export async function createTokenPair(
   payload: Omit<TokenPayload, 'type'>,
   options: CreateTokenPairOptions = {}
 ): Promise<{ accessToken: string; refreshToken: string; refreshJti: string; expiresInSeconds: number }> {
-  // Strip `fam` from the access-token payload defensively — it should never
-  // have been propagated there in the first place, but enforce here so any
-  // future caller can't accidentally leak it.
-  const { fam: _famIgnored, ...accessPayload } = payload;
+  // Access token carries `sid` (the family id) but never `fam`; refresh token
+  // carries `fam`. `aep`/`mep` ride both. Strip `fam` from the access payload
+  // defensively and promote the family id to `sid`.
+  const { fam: _famIgnored, ...accessBase } = payload;
   void _famIgnored;
+  const accessPayload: Omit<TokenPayload, 'type'> = options.refreshFam
+    ? { ...accessBase, sid: options.refreshFam }
+    : accessBase;
   const refreshPayload: Omit<TokenPayload, 'type'> = options.refreshFam
     ? { ...payload, fam: options.refreshFam }
     : payload;
