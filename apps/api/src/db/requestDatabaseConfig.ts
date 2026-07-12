@@ -1,3 +1,5 @@
+import { canonicalizeSingleEndpointPostgresUrl } from '../lib/postgresConnectionUrl';
+
 export type RequestDatabaseConfigSource =
   | 'explicit'
   | 'derived'
@@ -13,36 +15,14 @@ type RequestDatabaseConfigLogger = Pick<Console, 'log' | 'warn'>;
 const SINGLE_ENDPOINT_GUIDANCE =
   'Configure a valid PostgreSQL URL for a single database/HA endpoint.';
 
-function connectionHostSegment(connectionUrl: string): string | null {
-  const authority = connectionUrl.match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/iu)?.[1];
-  if (authority === undefined) return null;
-  return authority.slice(authority.lastIndexOf('@') + 1);
-}
-
-function usesMultipleHosts(connectionUrl: string): boolean {
-  return /,|%2c/iu.test(connectionHostSegment(connectionUrl) ?? '');
-}
-
-function parseSingleEndpointUrl(connectionUrl: string, source: string): URL {
-  const error = new Error(`[database] ${source} is invalid. ${SINGLE_ENDPOINT_GUIDANCE}`);
-
-  if (usesMultipleHosts(connectionUrl)) throw error;
-
-  try {
-    const parsed = new URL(connectionUrl);
-    if (
-      (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:')
-      || !parsed.hostname
-      || parsed.hostname.includes(',')
-    ) {
-      throw error;
-    }
-    return parsed;
-  } catch {
-    // URL parser errors can expose the parser's credential-bearing `.input`.
-    // Always replace them with the fixed, actionable message above.
-    throw error;
-  }
+function canonicalizeRequestDatabaseUrl(
+  connectionUrl: string,
+  source: 'DATABASE_URL' | 'DATABASE_URL_APP',
+): string {
+  return canonicalizeSingleEndpointPostgresUrl(
+    connectionUrl,
+    `[database] ${source} is invalid. ${SINGLE_ENDPOINT_GUIDANCE}`,
+  );
 }
 
 export function logRequestDatabaseConfigSource(
@@ -64,10 +44,10 @@ export function deriveAppConnectionString(
   if (!appPassword) return null;
 
   try {
-    const url = parseSingleEndpointUrl(adminUrl, 'DATABASE_URL');
+    const url = new URL(canonicalizeRequestDatabaseUrl(adminUrl, 'DATABASE_URL'));
     url.username = 'breeze_app';
-    url.password = appPassword;
-    return url.toString();
+    url.password = encodeURIComponent(appPassword);
+    return canonicalizeRequestDatabaseUrl(url.toString(), 'DATABASE_URL');
   } catch {
     return null;
   }
@@ -78,19 +58,17 @@ export function resolveRequestDatabaseConfig(
 ): RequestDatabaseConfig {
   const explicit = env.DATABASE_URL_APP?.trim();
   if (explicit) {
-    parseSingleEndpointUrl(explicit, 'DATABASE_URL_APP');
-    return { url: explicit, source: 'explicit' };
+    return {
+      url: canonicalizeRequestDatabaseUrl(explicit, 'DATABASE_URL_APP'),
+      source: 'explicit',
+    };
   }
 
-  const adminUrl =
+  const rawAdminUrl =
     env.DATABASE_URL?.trim() || 'postgresql://breeze:breeze@localhost:5432/breeze';
+  const adminUrl = canonicalizeRequestDatabaseUrl(rawAdminUrl, 'DATABASE_URL');
   const password =
     env.BREEZE_APP_DB_PASSWORD?.trim() || env.POSTGRES_PASSWORD?.trim();
-  if (password && usesMultipleHosts(adminUrl)) {
-    throw new Error(
-      `[database] Cannot derive the request database URL from DATABASE_URL. ${SINGLE_ENDPOINT_GUIDANCE}`,
-    );
-  }
   const derived = deriveAppConnectionString(adminUrl, password);
   if (derived) return { url: derived, source: 'derived' };
 

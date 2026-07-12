@@ -30,13 +30,13 @@ describe('requestDatabaseConfig', () => {
     it('URL-encodes special characters in the password', () => {
       const result = deriveAppConnectionString(
         'postgresql://admin:admin-secret@db:5432/breeze',
-        'p@ss/word:with spaces',
+        'p@ss/word:with % spaces',
       );
 
       expect(result).not.toBeNull();
       const parsed = new URL(result!);
       expect(parsed.username).toBe('breeze_app');
-      expect(decodeURIComponent(parsed.password)).toBe('p@ss/word:with spaces');
+      expect(decodeURIComponent(parsed.password)).toBe('p@ss/word:with % spaces');
     });
 
     it('returns null without a password', () => {
@@ -75,6 +75,19 @@ describe('requestDatabaseConfig', () => {
         }),
       ).toEqual({
         url: 'postgresql://explicit:explicit-secret@request-db:6432/breeze?sslmode=require',
+        source: 'explicit',
+      });
+    });
+
+    it('returns the canonical explicit single-endpoint URL with query parameters', () => {
+      expect(
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL_APP:
+            'POSTGRESQL://request-user:request-password@localhost:55432/breeze?sslmode=require',
+        }),
+      ).toEqual({
+        url: 'postgresql://request-user:request-password@localhost:55432/breeze?sslmode=require',
         source: 'explicit',
       });
     });
@@ -157,6 +170,44 @@ describe('requestDatabaseConfig', () => {
         expect(message).not.toContain('request-password');
         expect(message).not.toContain('db-one');
         expect(message).not.toContain('db-two');
+      }
+    });
+
+    it.each([
+      [
+        'an encoded-comma authority before a second raw at-sign',
+        'postgresql://request-user:request-password@primary%2Cunsafe%2Cignored@safe/breeze',
+      ],
+      [
+        'a literal extra raw at-sign in the authority',
+        'postgresql://request-user:request-password@unsafe@safe/breeze',
+      ],
+      [
+        'a fragment containing encoded host material',
+        'postgresql://request-user:request-password@safe:5432/breeze#primary%2Cunsafe%2Cignored',
+      ],
+    ])('rejects explicit parser-differential payloads without leaking input: %s', (_case, url) => {
+      let caught: unknown;
+      try {
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL_APP: url,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      const message = caught instanceof Error ? caught.message : String(caught);
+      expect(message).toMatch(/DATABASE_URL_APP.*single database\/HA endpoint/i);
+      for (const secret of [
+        'request-user',
+        'request-password',
+        'primary',
+        'unsafe',
+        'safe',
+      ]) {
+        expect(message).not.toContain(secret);
       }
     });
 
@@ -243,6 +294,38 @@ describe('requestDatabaseConfig', () => {
       }
     });
 
+    it.each([
+      'postgresql://admin-user:admin-password@primary%2Cunsafe%2Cignored@safe/breeze',
+      'postgresql://admin-user:admin-password@unsafe@safe/breeze',
+      'postgresql://admin-user:admin-password@safe:5432/breeze#primary%2Cunsafe%2Cignored',
+    ])('rejects a derived parser differential without leaking input: %s', (url) => {
+      let caught: unknown;
+
+      try {
+        resolveRequestDatabaseConfig({
+          NODE_ENV: 'production',
+          DATABASE_URL: url,
+          BREEZE_APP_DB_PASSWORD: 'request-password',
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      const message = caught instanceof Error ? caught.message : String(caught);
+      expect(message).toMatch(/DATABASE_URL.*single database\/HA endpoint/i);
+      for (const secret of [
+        'admin-user',
+        'admin-password',
+        'request-password',
+        'primary',
+        'unsafe',
+        'safe',
+      ]) {
+        expect(message).not.toContain(secret);
+      }
+    });
+
     it('refuses a production request pool without an unprivileged URL or password', () => {
       expect(() =>
         resolveRequestDatabaseConfig({
@@ -259,7 +342,7 @@ describe('requestDatabaseConfig', () => {
           DATABASE_URL: 'not a url',
           BREEZE_APP_DB_PASSWORD: 'request-secret',
         }),
-      ).toThrow(/DATABASE_URL_APP.*BREEZE_APP_DB_PASSWORD.*POSTGRES_PASSWORD/);
+      ).toThrow(/DATABASE_URL.*valid PostgreSQL URL.*single database\/HA endpoint/i);
     });
 
     it('returns the warned non-production compatibility fallback', () => {
@@ -273,6 +356,35 @@ describe('requestDatabaseConfig', () => {
         source: 'development-fallback',
       });
     });
+
+    it.each(['development', 'test'])(
+      'rejects a malformed %s fallback URL with a fixed redacted error',
+      (nodeEnv) => {
+        const username = 'fallback-user';
+        const password = 'fallback-password';
+        const host = 'fallback-host';
+        let caught: unknown;
+
+        try {
+          resolveRequestDatabaseConfig({
+            NODE_ENV: nodeEnv,
+            DATABASE_URL:
+              `postgresql://${username}:${password}@${host}:not-a-port/breeze`,
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        expect(caught).toBeInstanceOf(Error);
+        const message = caught instanceof Error ? caught.message : String(caught);
+        expect(message).toBe(
+          '[database] DATABASE_URL is invalid. Configure a valid PostgreSQL URL for a single database/HA endpoint.',
+        );
+        expect(message).not.toContain(username);
+        expect(message).not.toContain(password);
+        expect(message).not.toContain(host);
+      },
+    );
   });
 
   describe('logRequestDatabaseConfigSource', () => {

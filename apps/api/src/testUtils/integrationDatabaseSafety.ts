@@ -1,3 +1,5 @@
+import { canonicalizeSingleEndpointPostgresUrl } from '../lib/postgresConnectionUrl';
+
 export interface TestDatabaseSafetyEnvironment {
   nodeEnv?: string;
   breezeTestDbUrl?: string;
@@ -20,21 +22,22 @@ export function assertTestDatabaseUrlSafe(
     nodeEnv: process.env.NODE_ENV,
     breezeTestDbUrl: process.env.BREEZE_TEST_DB_URL,
   },
-): void {
+): string {
   const failures: string[] = [];
+  let canonicalUrl: string | undefined;
   let parsed: URL | undefined;
 
   try {
-    parsed = new URL(connectionUrl);
+    canonicalUrl = canonicalizeSingleEndpointPostgresUrl(
+      connectionUrl,
+      'Integration database connection URL is invalid.',
+    );
+    parsed = new URL(canonicalUrl);
   } catch {
-    failures.push('connection URL is not parseable');
+    failures.push('connection URL is not a valid single-endpoint PostgreSQL URL');
   }
 
   if (parsed) {
-    if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
-      failures.push('connection URL must use postgres:// or postgresql://');
-    }
-
     const databaseName = parsed.pathname.replace(/^\//u, '');
     if (!ALLOWED_TEST_DB_NAME_RE.test(databaseName)) {
       failures.push('database name must match /^breeze_test(_[a-z0-9]+)?$/');
@@ -62,4 +65,6 @@ export function assertTestDatabaseUrlSafe(
       + failures.map((failure) => `  - ${failure}`).join('\n'),
     );
   }
+
+  return canonicalUrl!;
 }

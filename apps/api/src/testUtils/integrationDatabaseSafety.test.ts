@@ -6,9 +6,21 @@ const SAFE_URL =
 
 describe('assertTestDatabaseUrlSafe', () => {
   it('accepts an explicitly test-mode local database on a non-default port', () => {
-    expect(() =>
+    expect(
       assertTestDatabaseUrlSafe(SAFE_URL, 'setup', { nodeEnv: 'test' }),
-    ).not.toThrow();
+    ).toBe(SAFE_URL);
+  });
+
+  it('returns a canonical local URL while preserving query parameters', () => {
+    expect(
+      assertTestDatabaseUrlSafe(
+        'POSTGRESQL://breeze_test:breeze_test@localhost:55432/breeze_test?sslmode=require',
+        'setup',
+        { nodeEnv: 'test' },
+      ),
+    ).toBe(
+      'postgresql://breeze_test:breeze_test@localhost:55432/breeze_test?sslmode=require',
+    );
   });
 
   it('accepts an exact BREEZE_TEST_DB_URL opt-in outside test mode', () => {
@@ -76,5 +88,44 @@ describe('assertTestDatabaseUrlSafe', () => {
     expect(message).not.toContain(connectionUrl);
     expect(message).not.toContain(username);
     expect(message).not.toContain(password);
+  });
+
+  it.each([
+    [
+      'an encoded-comma host before a second raw at-sign',
+      'postgresql://guard-user:guard-password@primary%2Cunsafe%2Cignored@127.0.0.1:55432/breeze_test',
+    ],
+    [
+      'a fragment containing encoded host material',
+      'postgresql://guard-user:guard-password@127.0.0.1:55432/breeze_test#primary%2Cunsafe%2Cignored',
+    ],
+  ])('rejects local-looking parser differentials before client or DDL work: %s', (_case, url) => {
+    const clientAndDdlPath = vi.fn();
+    let caught: unknown;
+
+    try {
+      const canonicalUrl = assertTestDatabaseUrlSafe(
+        url,
+        'request database role setup',
+        { nodeEnv: 'test' },
+      );
+      clientAndDdlPath(canonicalUrl);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(clientAndDdlPath).not.toHaveBeenCalled();
+    const message = caught instanceof Error ? caught.message : String(caught);
+    expect(message).toMatch(/Integration test request database role setup refused/i);
+    for (const secret of [
+      'guard-user',
+      'guard-password',
+      'primary',
+      'unsafe',
+      '127.0.0.1',
+    ]) {
+      expect(message).not.toContain(secret);
+    }
   });
 });

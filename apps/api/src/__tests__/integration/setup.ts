@@ -95,19 +95,24 @@ export function getTestRedis() {
 export async function setupIntegrationTests() {
   // Fail loud if DATABASE_URL points at anything other than a known test DB.
   // This runs before any connection so no client is even opened on a prod/dev DB.
-  assertTestDatabaseUrlSafe(DATABASE_URL, 'setup');
+  const safeDatabaseUrl = assertTestDatabaseUrlSafe(DATABASE_URL, 'setup');
   // Same guard for DATABASE_URL_APP: code-under-test connects through the app
   // pool (see `apps/api/src/db/index.ts`), so a misconfigured DATABASE_URL_APP
   // would let `breeze_app` writes land in a dev/prod DB even if DATABASE_URL is
   // correct. Guard both so there is no way to half-configure.
-  assertTestDatabaseUrlSafe(DATABASE_URL_APP, 'setup (DATABASE_URL_APP)');
+  const safeAppDatabaseUrl = assertTestDatabaseUrlSafe(
+    DATABASE_URL_APP,
+    'setup (DATABASE_URL_APP)',
+  );
+  process.env.DATABASE_URL = safeDatabaseUrl;
+  process.env.DATABASE_URL_APP = safeAppDatabaseUrl;
 
   // Create database connection. This client connects as the superuser
   // (breeze_test) so test helpers can seed and truncate without tripping
   // RLS. Code-under-test that imports `db` from `apps/api/src/db` goes
   // through a separate pool that connects as `breeze_app` — that's the
   // pool where RLS is actually enforced.
-  testClient = postgres(DATABASE_URL, {
+  testClient = postgres(safeDatabaseUrl, {
     max: 10,
     idle_timeout: 20,
     connect_timeout: 10,
@@ -124,7 +129,7 @@ export async function setupIntegrationTests() {
   // forced RLS is enforced, but bypasses the contextless-write proxy guard
   // (#1379 A1 / #1828) so a deliberate contextless write reaches the DB layer
   // and surfaces the real RLS rejection instead of the guard's throw.
-  appClient = postgres(DATABASE_URL_APP, {
+  appClient = postgres(safeAppDatabaseUrl, {
     max: 5,
     idle_timeout: 20,
     connect_timeout: 10,

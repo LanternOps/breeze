@@ -2,12 +2,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import postgres, { type Sql } from 'postgres';
 import { assertTestDatabaseUrlSafe } from '../testUtils/integrationDatabaseSafety';
 
-const ADMIN_DATABASE_URL = process.env.DATABASE_URL;
-const APP_DATABASE_URL = process.env.DATABASE_URL_APP;
+const rawAdminDatabaseUrl = process.env.DATABASE_URL;
+const rawAppDatabaseUrl = process.env.DATABASE_URL_APP;
 const BYPASS_ROLE = 'breeze_request_bypassrls_test';
 const BYPASS_PASSWORD = 'breeze_request_bypassrls_test_password';
 
-if (!ADMIN_DATABASE_URL || !APP_DATABASE_URL) {
+if (!rawAdminDatabaseUrl || !rawAppDatabaseUrl) {
   throw new Error(
     'request database role tests require DATABASE_URL (admin) and DATABASE_URL_APP (breeze_app)',
   );
@@ -17,8 +17,14 @@ if (!ADMIN_DATABASE_URL || !APP_DATABASE_URL) {
 // construct the admin client or execute DROP/CREATE ROLE. Both URLs must stay
 // inside the same explicit local-test safety boundary as the shared integration
 // runner despite this suite not importing its hook-heavy setup module.
-assertTestDatabaseUrlSafe(ADMIN_DATABASE_URL, 'request database role admin setup');
-assertTestDatabaseUrlSafe(APP_DATABASE_URL, 'request database role app setup');
+const ADMIN_DATABASE_URL = assertTestDatabaseUrlSafe(
+  rawAdminDatabaseUrl,
+  'request database role admin setup',
+);
+const APP_DATABASE_URL = assertTestDatabaseUrlSafe(
+  rawAppDatabaseUrl,
+  'request database role app setup',
+);
 
 let adminClient: Sql;
 let closeRequestPool: (() => Promise<void>) | undefined;
@@ -81,7 +87,11 @@ describe('request database role startup enforcement', () => {
     const bypassUrl = new URL(ADMIN_DATABASE_URL);
     bypassUrl.username = BYPASS_ROLE;
     bypassUrl.password = BYPASS_PASSWORD;
-    const { assertRequestDatabaseRoleSafe } = await loadFreshRequestPool(bypassUrl.toString());
+    const safeBypassUrl = assertTestDatabaseUrlSafe(
+      bypassUrl.toString(),
+      'request database role bypass setup',
+    );
+    const { assertRequestDatabaseRoleSafe } = await loadFreshRequestPool(safeBypassUrl);
 
     await expect(assertRequestDatabaseRoleSafe()).rejects.toThrow(/BYPASSRLS/);
   });
