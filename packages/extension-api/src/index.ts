@@ -6,11 +6,36 @@ import type { MiddlewareHandler } from 'hono';
 /**
  * Route namespaces already mounted by core (apps/api/src/index.ts, /api/v1/*).
  * An extension may not shadow them. Keep in sync when core adds mounts.
+ *
+ * Regenerate the inner-mount list with:
+ *   grep -oE "api\.route\('/[a-z0-9-]+" apps/api/src/index.ts
+ * then add the outer-app mounts `oauth`, `settings`, and the shortlink
+ * prefix `s`, which are mounted directly on the outer Hono app rather than
+ * through the versioned `/api/v1` router. See src/index.test.ts for the
+ * hand-maintained ground-truth contract this set is checked against.
  */
-const RESERVED_ROUTE_NAMESPACES = new Set([
-  'auth', 'config', 'devices', 'plugins', 'ai', 'mcp', 'oauth', 'settings',
-  'organizations', 'sites', 'alerts', 'scripts', 'automations', 'users',
-  'partners', 'billing', 'tickets', 'reports', 'remote', 'desktop-ws',
+export const RESERVED_ROUTE_NAMESPACES = new Set([
+  'access-reviews', 'accounting', 'admin', 'agent-versions', 'agent-ws',
+  'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
+  'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations',
+  'backup', 'browser-security', 'c2c', 'catalog', 'changes', 'cis',
+  'client-ai', 'config', 'configuration-policies', 'contracts',
+  'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
+  'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
+  'events', 'filters', 'google', 'groups', 'helper', 'huntress',
+  'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
+  'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
+  'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
+  'pam', 'partner', 'partners', 'patch-policies', 'patches', 'pax8',
+  'peripherals', 'permissions', 'playbooks', 'plugins', 'policies',
+  'portal', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
+  'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
+  'search', 'security', 'sensitive-data', 'settings', 'snmp', 'software',
+  'software-inventory', 'software-policies', 'sso', 'system',
+  'system-tools', 'tags', 'third-party-catalog', 'ticket-categories',
+  'ticket-config', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
+  'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'viewers',
+  'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
 ]);
 
 const NAME_RE = /^[a-z][a-z0-9-]{1,31}$/;

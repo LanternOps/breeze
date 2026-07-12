@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseExtensionManifest } from './index';
+import { parseExtensionManifest, RESERVED_ROUTE_NAMESPACES } from './index';
 
 describe('parseExtensionManifest', () => {
   const valid = {
@@ -78,5 +78,46 @@ describe('parseExtensionManifest', () => {
         tenancy: { orgCascadeDeleteTables: ['memory_blocks'] },
       })
     ).not.toThrow();
+  });
+});
+
+describe('RESERVED_ROUTE_NAMESPACES', () => {
+  // Hand-maintained contract. Regenerate the inner-mount list with:
+  //   grep -oE "api\.route\('/[a-z0-9-]+" apps/api/src/index.ts
+  // That yields the 111 `/api/v1/*` mounts inside the versioned router. Add
+  // the outer-app mounts that don't go through that router: `oauth`,
+  // `settings` (both mounted directly on the outer Hono app), and the
+  // shortlink prefix `s` (`app.route('/s', publicShortLinkRoutes)`).
+  const CORE_NAMESPACES = [
+    'access-reviews', 'accounting', 'admin', 'agent-versions', 'agent-ws',
+    'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
+    'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations',
+    'backup', 'browser-security', 'c2c', 'catalog', 'changes', 'cis',
+    'client-ai', 'config', 'configuration-policies', 'contracts',
+    'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
+    'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
+    'events', 'filters', 'google', 'groups', 'helper', 'huntress',
+    'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
+    'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
+    'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',
+    'pam', 'partner', 'partners', 'patch-policies', 'patches', 'pax8',
+    'peripherals', 'permissions', 'playbooks', 'plugins', 'policies',
+    'portal', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
+    'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
+    'search', 'security', 'sensitive-data', 'settings', 'snmp', 'software',
+    'software-inventory', 'software-policies', 'sso', 'system',
+    'system-tools', 'tags', 'third-party-catalog', 'ticket-categories',
+    'ticket-config', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
+    'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'viewers',
+    'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
+  ];
+
+  it('has exactly 114 entries in the ground-truth contract', () => {
+    expect(CORE_NAMESPACES).toHaveLength(114);
+  });
+
+  it('reserves every core /api/v1 route namespace', () => {
+    const missing = CORE_NAMESPACES.filter((ns) => !RESERVED_ROUTE_NAMESPACES.has(ns));
+    expect(missing).toEqual([]);
   });
 });
