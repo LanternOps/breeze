@@ -26,8 +26,11 @@ const (
 	maxErrorBodyBytes = 64 * 1024
 	requestTimeout    = 30 * time.Second
 	batchRetryCount   = 2
-	batchRetryDelay   = time.Second
 )
+
+// batchRetryDelay is a var (not const) so tests exercising retry exhaustion
+// can shrink it instead of sleeping real seconds.
+var batchRetryDelay = time.Second
 
 var (
 	ErrModuleAbsent    = errors.New("workspace index module absent")

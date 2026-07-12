@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 type receivedBatch struct {
@@ -196,6 +197,10 @@ func TestUploaderUsesLastEntryAsCursorForEveryBatch(t *testing.T) {
 }
 
 func TestUploaderTerminalServerErrorPropagates(t *testing.T) {
+	origDelay := batchRetryDelay
+	batchRetryDelay = time.Millisecond
+	t.Cleanup(func() { batchRetryDelay = origDelay })
+
 	tests := []struct {
 		name string
 		call func(context.Context, *Uploader) error
