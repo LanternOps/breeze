@@ -1,7 +1,12 @@
 /**
  * AI Quote/Proposal Tools
  *
- * AI write tool over the quote engine:
+ * AI tools over the quote engine:
+ *  - `list_quotes`  — list quotes for the caller's accessible orgs, with
+ *    optional org/status filters, newest first (mirrors `list_contracts`).
+ *  - `get_quote`    — full view (header with derived totals + blocks + lines)
+ *    for one quote, reusing the same `getQuote` service the web UI reads
+ *    (mirrors `get_contract`).
  *  - `manage_quotes` — action multiplexer for quote draft edits, proposal
  *    blocks, lines, lifecycle send/decline, and pay links.
  *
@@ -31,13 +36,15 @@ import {
   catalogQuoteLineSchema,
   reorderBlocksSchema,
   reorderLinesSchema,
+  listQuotesQuerySchema,
 } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
-import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
+import { missingParamsJson, validationErrorJson, zodErrorToJson } from './aiToolValidation';
 import {
   createQuote,
   getQuote,
+  listQuotes,
   updateQuote,
   deleteDraftQuote,
   addBlock,
@@ -108,6 +115,77 @@ const linePayload = z.object({ line: quoteLineInputSchema });
 const linePatchPayload = z.object({ patch: updateQuoteLineSchema });
 
 export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
+  aiTools.set('list_quotes', {
+    tier: 2 as AiToolTier,
+    deviceArgs: [],
+    definition: {
+      name: 'list_quotes',
+      description:
+        'List quotes/proposals for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          orgId: { type: 'string', description: 'Filter to a single organization (UUID)' },
+          status: {
+            type: 'string',
+            enum: ['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted'],
+            description: 'Filter by quote status'
+          },
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' }
+        },
+        required: []
+      }
+    },
+    handler: async (input, auth) => {
+      try {
+        // Same schema the GET /quotes route validates with (status enum, limit
+        // bounds); an out-of-range/unknown filter returns a structured
+        // VALIDATION_ERROR via zodErrorToJson instead of throwing.
+        const query = listQuotesQuerySchema.parse({
+          orgId: input.orgId ?? undefined,
+          status: input.status ?? undefined,
+          limit: input.limit ?? 25,
+        });
+        const rows = await listQuotes(query, actorFromAuth(auth));
+        return JSON.stringify({ quotes: rows, showing: rows.length });
+      } catch (err) {
+        const json = serviceErrorToJson(err) ?? zodErrorToJson(err);
+        if (json) return json;
+        throw err;
+      }
+    }
+  });
+
+  aiTools.set('get_quote', {
+    tier: 2 as AiToolTier,
+    deviceArgs: [],
+    definition: {
+      name: 'get_quote',
+      description:
+        'Get the full view of one quote/proposal by id: header (with derived totals, deposit and category ' +
+        'breakdown), content blocks, and line items — the same view the web UI shows. Read-only.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          quoteId: { type: 'string', description: 'Quote UUID' }
+        },
+        required: ['quoteId']
+      }
+    },
+    handler: async (input, auth) => {
+      if (input.quoteId == null) {
+        return validationErrorJson('Missing required parameter: quoteId');
+      }
+      try {
+        return JSON.stringify(await getQuote(String(input.quoteId), actorFromAuth(auth)));
+      } catch (err) {
+        const json = serviceErrorToJson(err) ?? zodErrorToJson(err);
+        if (json) return json;
+        throw err;
+      }
+    }
+  });
+
   aiTools.set('manage_quotes', {
     tier: 2 as AiToolTier,
     deviceArgs: [],
@@ -116,6 +194,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
       description:
         'Create and manage quotes/proposals for orgs the caller can access: draft header edits, blocks, lines, ' +
         'send/decline lifecycle actions, and accepted-quote pay links. Sending a quote requires approval. ' +
+        'Read-only access: use list_quotes / get_quote. ' +
         'Required params per action — create_draft: input; update: quoteId, patch; delete_draft/send/decline/' +
         'create_pay_link: quoteId; add_block: quoteId, block; update_block: quoteId, blockId, block; delete_block: ' +
         'quoteId, blockId; reorder_blocks: quoteId, blockIds; add_manual_line: quoteId, line; add_catalog_line: ' +
@@ -227,12 +306,20 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           case 'update': {
             const quoteId = String(input.quoteId);
             const { patch } = headerPatchPayload.parse({ patch: input.patch });
+            // Reject an empty patch instead of running a no-field UPDATE: it
+            // used to be the only "read" workaround (#2361) and silently bumped
+            // updatedAt. Now that get_quote exists, point callers at it.
+            if (Object.values(patch).every((v) => v === undefined)) {
+              return validationErrorJson(
+                'patch is empty — nothing to update. Use get_quote to read a quote.'
+              );
+            }
             await updateQuote(quoteId, patch, actor);
             // Re-read rather than return updateQuote's raw row: the raw row carries
             // depositType/depositPercent/depositAmount but not the derived
             // depositDueTotal/categoryBreakdown (computed from current lines in
-            // getQuote) — there's no separate read tool for the AI to fetch those,
-            // so the update response has to surface them itself.
+            // getQuote) — surfacing them in the update response saves the model
+            // a follow-up get_quote call.
             const { quote } = await getQuote(quoteId, actor);
             return JSON.stringify(quote);
           }
