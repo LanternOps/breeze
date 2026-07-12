@@ -63,7 +63,7 @@ org — rewriting `org_id` on the child row alone would leave it pointing at a
 parent row in a different tenant, corrupting cross-row consistency under RLS.
 Core deletes these rows (via `getDeviceOrgMoveDeleteTables()`, which merges
 core and extension registrations) in the same transaction as the org-move,
-before the denormalized-column rewrite pass. Tables that don't have this FK
+immediately after the denormalized-column rewrite pass. Tables that don't have this FK
 shape and can simply have `org_id` rewritten in place belong in
 `deviceOrgDenormalizedTables` instead.
 
