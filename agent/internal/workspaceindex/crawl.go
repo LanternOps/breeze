@@ -77,6 +77,8 @@ func runCrawl(ctx context.Context, deps Deps, src SourceConfig, limits ConfigLim
 			cred.Zero()
 			return fail(safeErr)
 		}
+		redactionCred := *cred
+		defer redactionCred.Zero()
 		cred.Zero()
 		if fsys == nil {
 			if closer != nil {
@@ -92,7 +94,8 @@ func runCrawl(ctx context.Context, deps Deps, src SourceConfig, limits ConfigLim
 			ResumeCursor: resumeCursor,
 			Limiter:      limiter,
 		}, emit); walkErr != nil {
-			return fail(fmt.Errorf("walk SMB source: %w", walkErr))
+			safeErr := redactCredentialError(fmt.Errorf("walk SMB source: %w", walkErr), &redactionCred)
+			return fail(safeErr)
 		}
 
 	case "local_profile":

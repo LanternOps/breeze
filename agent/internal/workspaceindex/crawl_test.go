@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,13 @@ type crawlCompletion struct {
 	Stats    Stats  `json:"stats"`
 	Error    string `json:"error"`
 }
+
+type failingCrawlFS struct {
+	err error
+}
+
+func (f failingCrawlFS) ReadDir(string) ([]fs.DirEntry, error) { return nil, f.err }
+func (f failingCrawlFS) Stat(string) (fs.FileInfo, error)      { return nil, f.err }
 
 func TestRunCrawlLocalProfileUploadsBatchesAndCompletesWithStats(t *testing.T) {
 	profileDir := filepath.Join(t.TempDir(), "alice")
@@ -168,6 +176,73 @@ func TestRunCrawlSMBDialFailureCompletesWithoutBatchOrCredentialLeak(t *testing.
 	}
 }
 
+func TestRunCrawlSMBWalkFailureRedactsCredentialFromCompletionAndReturn(t *testing.T) {
+	const (
+		username = "svc-workspace"
+		password = "walk-secret-password"
+		domain   = "CORP-SECRET"
+	)
+	var (
+		completion crawlCompletion
+		dialedCred *Credential
+	)
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/workspace/agent/runs":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"runId":"run-smb-walk","cursor":""}`)
+		case "/api/v1/workspace/agent/sources/smb-walk/credential":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"username":"`+username+`","password":"`+password+`","domain":"`+domain+`"}`)
+		case "/api/v1/workspace/agent/runs/run-smb-walk/complete":
+			if err := json.NewDecoder(r.Body).Decode(&completion); err != nil {
+				t.Errorf("decode completion: %v", err)
+			}
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+
+	walkErr := errors.New("SMB access denied for " + domain + `\` + username + " using " + password)
+	err := runCrawl(context.Background(), Deps{
+		Client: client,
+		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DialSMB: func(_ context.Context, _ string, cred *Credential) (SourceFS, io.Closer, error) {
+			dialedCred = cred
+			return failingCrawlFS{err: walkErr}, nil, nil
+		},
+	}, SourceConfig{
+		ID: "smb-walk", Kind: "smb_share", RootPath: `\\server\share`, HasCredential: true,
+	}, ConfigLimits{WalkOpsPerSecond: 10_000})
+	if err == nil {
+		t.Fatal("runCrawl error = nil, want SMB walk failure")
+	}
+	if completion.Complete || completion.Error == "" {
+		t.Fatalf("completion = %+v, want failed completion with a reason", completion)
+	}
+	for _, surface := range []struct {
+		name  string
+		value string
+	}{
+		{name: "completion reason", value: completion.Error},
+		{name: "returned error", value: err.Error()},
+	} {
+		for _, secret := range []string{username, password, domain} {
+			if strings.Contains(surface.value, secret) {
+				t.Errorf("%s leaked credential value %q: %q", surface.name, secret, surface.value)
+			}
+		}
+	}
+	if dialedCred == nil {
+		t.Fatal("DialSMB did not receive a credential")
+	}
+	if dialedCred.Username != "" || dialedCred.Password != "" || dialedCred.Domain != nil {
+		t.Fatalf("credential retained after successful dial: %#v", dialedCred)
+	}
+}
+
 func TestRunCrawlLocalProfileResumeCursorUsesPrefixedCursorSpace(t *testing.T) {
 	profileDir := filepath.Join(t.TempDir(), "alice")
 	documentsDir := filepath.Join(profileDir, "Documents")
@@ -228,6 +303,121 @@ func TestRunCrawlLocalProfileResumeCursorUsesPrefixedCursorSpace(t *testing.T) {
 	want := []string{"alice/Downloads/b.txt"}
 	if !reflect.DeepEqual(uploaded, want) {
 		t.Fatalf("uploaded paths after %q = %#v, want %#v; earlier directory prefixes and entries through the cursor must be skipped", src.ActiveRun.Cursor, uploaded, want)
+	}
+}
+
+func TestRunCrawlLocalProfileOrdersUsersAndResumesAcrossMultipleRoots(t *testing.T) {
+	profilesBase := t.TempDir()
+	aliceDir := filepath.Join(profilesBase, "alice")
+	bobDir := filepath.Join(profilesBase, "bob")
+	for _, profileDir := range []string{aliceDir, bobDir} {
+		for _, crawlDir := range []string{"Documents", "Downloads"} {
+			if err := os.MkdirAll(filepath.Join(profileDir, crawlDir), 0o755); err != nil {
+				t.Fatalf("MkdirAll %s/%s: %v", profileDir, crawlDir, err)
+			}
+		}
+	}
+
+	files := map[string]string{
+		filepath.Join(aliceDir, "Documents", "01-alice-document.txt"): "alice document one",
+		filepath.Join(aliceDir, "Documents", "02-alice-document.txt"): "alice document two",
+		filepath.Join(aliceDir, "Downloads", "01-alice-download.txt"): "alice download",
+		filepath.Join(bobDir, "Documents", "01-cursor.txt"):           "bob cursor",
+		filepath.Join(bobDir, "Documents", "02-after-cursor.txt"):     "bob after cursor",
+		filepath.Join(bobDir, "Documents", "03-last-document.txt"):    "bob last document",
+		filepath.Join(bobDir, "Downloads", "01-later-folder.txt"):     "bob later folder",
+	}
+	for file, contents := range files {
+		if err := os.WriteFile(file, []byte(contents), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", file, err)
+		}
+	}
+
+	// Return profiles in the opposite order to prove crawl ordering does not
+	// depend on the platform enumerator's result order.
+	enumerate := func() []ProfileRoot {
+		return []ProfileRoot{
+			{Username: "bob", Dir: bobDir},
+			{Username: "alice", Dir: aliceDir},
+		}
+	}
+	limits := ConfigLimits{MaxBatchEntries: 2, MaxBatchBytes: 1_000_000, WalkOpsPerSecond: 10_000}
+
+	run := func(runID, cursor string) []string {
+		t.Helper()
+		var uploaded []string
+		client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/v1/workspace/agent/runs":
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"runId":"`+runID+`","cursor":"`+cursor+`"}`)
+			case "/api/v1/workspace/agent/runs/" + runID + "/batch":
+				uploaded = append(uploaded, entryRelPaths(decodeReceivedBatch(t, r).Entries)...)
+				w.WriteHeader(http.StatusAccepted)
+			case "/api/v1/workspace/agent/runs/" + runID + "/complete":
+				w.WriteHeader(http.StatusAccepted)
+			default:
+				t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		src := SourceConfig{ID: "local-multi-user", Kind: "local_profile"}
+		if cursor != "" {
+			src.ActiveRun = &ActiveRun{RunID: runID, Cursor: cursor}
+		}
+		if err := runCrawl(context.Background(), Deps{
+			Client:    client,
+			Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Enumerate: enumerate,
+		}, src, limits); err != nil {
+			t.Fatalf("runCrawl(%q, %q): %v", runID, cursor, err)
+		}
+		return uploaded
+	}
+
+	full := run("run-multi-user-full", "")
+	wantFull := []string{
+		"alice/Documents/01-alice-document.txt",
+		"alice/Documents/02-alice-document.txt",
+		"alice/Downloads/01-alice-download.txt",
+		"bob/Documents/01-cursor.txt",
+		"bob/Documents/02-after-cursor.txt",
+		"bob/Documents/03-last-document.txt",
+		"bob/Downloads/01-later-folder.txt",
+	}
+	if !reflect.DeepEqual(full, wantFull) {
+		t.Fatalf("full uploaded paths = %#v, want %#v; all alice roots must precede all bob roots", full, wantFull)
+	}
+	firstBob := -1
+	for i, relPath := range full {
+		if strings.HasPrefix(relPath, "bob/") {
+			firstBob = i
+			break
+		}
+	}
+	if firstBob < 0 {
+		t.Fatalf("full uploaded paths contain no bob entry: %#v", full)
+	}
+	for i, relPath := range full {
+		if strings.HasPrefix(relPath, "alice/") && i >= firstBob {
+			t.Fatalf("alice entry %q at index %d followed first bob entry at index %d: %#v", relPath, i, firstBob, full)
+		}
+	}
+
+	const resumeCursor = "bob/Documents/01-cursor.txt"
+	resumed := run("run-multi-user-resume", resumeCursor)
+	wantResumed := []string{
+		"bob/Documents/02-after-cursor.txt",
+		"bob/Documents/03-last-document.txt",
+		"bob/Downloads/01-later-folder.txt",
+	}
+	if !reflect.DeepEqual(resumed, wantResumed) {
+		t.Fatalf("uploaded paths after %q = %#v, want %#v; resume must continue bob/Documents mid-stream and walk bob's later root", resumeCursor, resumed, wantResumed)
+	}
+	for _, relPath := range resumed {
+		if strings.HasPrefix(relPath, "alice/") {
+			t.Fatalf("resume after %q re-emitted alice path %q: %#v", resumeCursor, relPath, resumed)
+		}
 	}
 }
 

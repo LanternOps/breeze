@@ -1,6 +1,7 @@
 package workspaceindex
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -248,6 +249,157 @@ func TestStartLoopCancelsCrawlRemovedByConfig(t *testing.T) {
 	waitLoopSignal(t, batchStarted, "crawl batch")
 	waitLoopCondition(t, func() bool { return configFetches.Load() >= 2 }, "configuration reconciliation")
 	waitLoopSignal(t, batchCancelled, "removed crawl cancellation")
+}
+
+func TestStartLoopDisabledStopsCrawlAndWatcherAndDropsSourceState(t *testing.T) {
+	profile := makeLoopTestProfile(t)
+	if err := os.WriteFile(filepath.Join(profile.Dir, "Documents", "second.txt"), []byte("second"), 0o600); err != nil {
+		t.Fatalf("write second crawl entry: %v", err)
+	}
+	var configFetches atomic.Int32
+	var sourceAStarts atomic.Int32
+	var sourceBStarts atomic.Int32
+	var reenabled atomic.Bool
+	batchStarted := make(chan struct{})
+	batchCancelled := make(chan struct{})
+	watchRequestStarted := make(chan struct{})
+	watchRequestCancelled := make(chan struct{})
+	sourceBFirstBatchEntries := make(chan int, 1)
+	var batchStartedOnce sync.Once
+	var batchCancelledOnce sync.Once
+	var watchRequestStartedOnce sync.Once
+	var watchRequestCancelledOnce sync.Once
+	var sourceBFirstBatchOnce sync.Once
+
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspace/agent/crawl-config":
+			fetch := configFetches.Add(1)
+			if fetch == 2 {
+				select {
+				case <-batchStarted:
+				case <-r.Context().Done():
+					return
+				}
+				select {
+				case <-watchRequestStarted:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			config := CrawlConfig{PollIntervalSeconds: 1}
+			switch {
+			case fetch == 1:
+				config.Enabled = true
+				config.Limits = ConfigLimits{MaxBatchEntries: 1, MaxBatchBytes: 1_000_000, WalkOpsPerSecond: 10_000}
+				config.Sources = []SourceConfig{
+					{ID: "source-a", Kind: "local_profile", CadenceMinutes: 60, Watch: true},
+					{ID: "source-b", Kind: "local_profile", CadenceMinutes: 60},
+				}
+			case reenabled.Load():
+				config.Enabled = true
+				config.Limits = ConfigLimits{MaxBatchEntries: 10, MaxBatchBytes: 1_000_000, WalkOpsPerSecond: 10_000}
+				config.Sources = []SourceConfig{{ID: "source-b", Kind: "local_profile", CadenceMinutes: 60}}
+			}
+			writeLoopConfig(t, w, config)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/runs":
+			var body struct {
+				SourceID string `json:"sourceId"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode start run: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			switch body.SourceID {
+			case "source-a":
+				sourceAStarts.Add(1)
+				_, _ = io.WriteString(w, `{"runId":"source-a-run","startedAt":"2026-07-12T12:00:00Z","cursor":""}`)
+			case "source-b":
+				sourceBStarts.Add(1)
+				_, _ = io.WriteString(w, `{"runId":"source-b-run","startedAt":"2026-07-12T12:00:00Z","cursor":""}`)
+			default:
+				t.Errorf("unexpected crawl source: %q", body.SourceID)
+				w.WriteHeader(http.StatusBadRequest)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/runs/source-a-run/batch":
+			batchStartedOnce.Do(func() { close(batchStarted) })
+			<-r.Context().Done()
+			batchCancelledOnce.Do(func() { close(batchCancelled) })
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/runs/source-b-run/batch":
+			zr, err := gzip.NewReader(r.Body)
+			if err != nil {
+				t.Errorf("open source B batch: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			defer zr.Close()
+			var batch struct {
+				Entries []Entry `json:"entries"`
+			}
+			if err := json.NewDecoder(zr).Decode(&batch); err != nil {
+				t.Errorf("decode source B batch: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			sourceBFirstBatchOnce.Do(func() { sourceBFirstBatchEntries <- len(batch.Entries) })
+			<-r.Context().Done()
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/workspace/agent/sources/source-a/events":
+			watchRequestStartedOnce.Do(func() { close(watchRequestStarted) })
+			<-r.Context().Done()
+			watchRequestCancelledOnce.Do(func() { close(watchRequestCancelled) })
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+
+	base := time.Date(2026, time.July, 12, 12, 0, 0, 0, time.UTC)
+	var nowCalls atomic.Int64
+	ctx, cancel := context.WithCancel(context.Background())
+	done := StartLoop(ctx, Deps{
+		Client:        client,
+		Log:           loopTestLogger(),
+		Enumerate:     func() []ProfileRoot { return []ProfileRoot{profile} },
+		Now:           func() time.Time { return base.Add(time.Duration(nowCalls.Add(2)) * time.Second) },
+		TickInterval:  time.Millisecond,
+		WatchDebounce: time.Millisecond,
+	})
+	defer func() {
+		cancel()
+		waitLoopSignal(t, done, "loop shutdown")
+	}()
+
+	waitLoopSignal(t, batchStarted, "initial crawl batch")
+	if err := os.WriteFile(filepath.Join(profile.Dir, "Documents", "watch-event.txt"), []byte("event"), 0o600); err != nil {
+		t.Fatalf("write watcher event: %v", err)
+	}
+	waitLoopSignal(t, watchRequestStarted, "watcher event request")
+	waitLoopSignal(t, batchCancelled, "disabled crawl cancellation")
+	waitLoopSignal(t, watchRequestCancelled, "disabled watcher cancellation")
+
+	// A fetch after the disabled reconciliation proves watcher.stop returned;
+	// stop blocks until the real fsnotify watcher goroutine has exited.
+	waitLoopCondition(t, func() bool { return configFetches.Load() >= 5 }, "entry into third post-stop disabled fetch")
+	if got := sourceAStarts.Load(); got != 1 {
+		t.Fatalf("source A crawl starts across disabled ticks = %d, want 1", got)
+	}
+	if got := sourceBStarts.Load(); got != 0 {
+		t.Fatalf("queued source B starts across disabled ticks = %d, want 0", got)
+	}
+
+	reenabled.Store(true)
+	waitLoopCondition(t, func() bool { return sourceBStarts.Load() >= 1 }, "fresh queued-source crawl after re-enabling")
+	if got := sourceBStarts.Load(); got != 1 {
+		t.Fatalf("source B crawl starts after re-enable = %d, want 1", got)
+	}
+	select {
+	case got := <-sourceBFirstBatchEntries:
+		if got <= 1 {
+			t.Fatalf("source B first batch entries = %d, want more than 1 from fresh limits", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for source B first batch")
+	}
 }
 
 func makeLoopTestProfile(t *testing.T) ProfileRoot {
