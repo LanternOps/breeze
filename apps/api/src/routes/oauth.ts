@@ -299,13 +299,15 @@ if (MCP_OAUTH_ENABLED) {
       }
       const contentType = c.req.header('content-type') ?? '';
       // #2363: normalize known resource-indicator aliases in the token
-      // request body before the oidc-provider bridge replays it. Claude
-      // Code's silent refresh sends the configured server URL (the `/sse`
-      // transport endpoint) as the RFC 8707 `resource` param while the
-      // grant stored the canonical OAUTH_RESOURCE_URL — oidc-provider's
-      // resolve_resource then throws `invalid_target`, and because the
-      // library rotates the refresh token BEFORE resolving the resource,
-      // the failed exchange also burned the RT and killed the session.
+      // request body before the oidc-provider bridge replays it. Prod logs
+      // proved Claude Code's silent refresh carries a `resource` param that
+      // differs from the RT's stored canonical OAUTH_RESOURCE_URL (the
+      // exact wrong value wasn't captured; the configured `/sse` transport
+      // URL is the overwhelmingly likely candidate, and the alias set
+      // covers all plausible variants) — oidc-provider's resolve_resource
+      // then throws `invalid_target`, and because the library rotates the
+      // refresh token BEFORE resolving the resource, the failed exchange
+      // also burned the RT and killed the session.
       // Rewriting the buffered bytes is safe: the pre-buffering above
       // drained the socket, so oidc-provider's selective_body uses the
       // `req.body` Buffer fallback (which ignores content-length; we still
