@@ -321,6 +321,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   search_catalog: z.object({
     search: z.string().optional(),
     itemType: z.enum(['hardware', 'software', 'service']).optional(),
+    isBundle: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
