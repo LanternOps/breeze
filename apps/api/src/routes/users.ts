@@ -7,7 +7,7 @@ import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations, partners, permissions, rolePermissions } from '../db/schema';
+import { users, partnerUsers, organizationUsers, roles, organizations, partners } from '../db/schema';
 import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
@@ -21,11 +21,14 @@ import {
 import {
   clearPermissionCache,
   getUserPermissions,
-  hasPermission,
-  isAssignablePermission,
-  PERMISSIONS,
-  type UserPermissions
+  PERMISSIONS
 } from '../services/permissions';
+import {
+  getScopeContext,
+  getScopedRole,
+  validateAssignableRole,
+  type ScopeContext,
+} from '../services/roleAssignment';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
@@ -122,142 +125,6 @@ const updateUserSchema = z.object({
 const assignRoleSchema = z.object({
   roleId: z.string().guid()
 });
-
-type ScopeContext =
-  | { scope: 'partner'; partnerId: string }
-  | { scope: 'organization'; orgId: string };
-
-function getScopeContext(auth: { scope: string; partnerId: string | null; orgId: string | null }): ScopeContext {
-  if (auth.scope === 'partner' && auth.partnerId) {
-    return { scope: 'partner', partnerId: auth.partnerId };
-  }
-
-  if (auth.scope === 'organization' && auth.orgId) {
-    return { scope: 'organization', orgId: auth.orgId };
-  }
-
-  throw new HTTPException(403, { message: 'Partner or organization context required' });
-}
-
-async function getScopedRole(roleId: string, scopeContext: ScopeContext) {
-  const [role] = await db
-    .select({
-      id: roles.id,
-      scope: roles.scope,
-      name: roles.name,
-      description: roles.description,
-      isSystem: roles.isSystem,
-      parentRoleId: roles.parentRoleId,
-      partnerId: roles.partnerId,
-      orgId: roles.orgId
-    })
-    .from(roles)
-    .where(eq(roles.id, roleId))
-    .limit(1);
-
-  if (!role || role.scope !== scopeContext.scope) {
-    return null;
-  }
-
-  if (role.isSystem) {
-    return role;
-  }
-
-  if (scopeContext.scope === 'partner' && role.partnerId === scopeContext.partnerId) {
-    return role;
-  }
-
-  if (scopeContext.scope === 'organization' && role.orgId === scopeContext.orgId) {
-    return role;
-  }
-
-  return null;
-}
-
-async function getEffectiveRolePermissions(
-  roleId: string,
-  visited: Set<string> = new Set()
-): Promise<Array<{ resource: string; action: string }>> {
-  if (visited.has(roleId)) return [];
-  visited.add(roleId);
-
-  const [role] = await db
-    .select({ parentRoleId: roles.parentRoleId })
-    .from(roles)
-    .where(eq(roles.id, roleId))
-    .limit(1);
-
-  const directPermissions = await db
-    .select({
-      resource: permissions.resource,
-      action: permissions.action
-    })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(eq(rolePermissions.roleId, roleId));
-
-  if (!role?.parentRoleId) {
-    return directPermissions;
-  }
-
-  const inheritedPermissions = await getEffectiveRolePermissions(role.parentRoleId, visited);
-  const result = new Map<string, { resource: string; action: string }>();
-  for (const permission of [...directPermissions, ...inheritedPermissions]) {
-    result.set(`${permission.resource}:${permission.action}`, permission);
-  }
-  return [...result.values()];
-}
-
-async function getCallerPermissions(
-  c: any,
-  auth: { user: { id: string }; partnerId: string | null; orgId: string | null }
-): Promise<UserPermissions | null> {
-  const existing = c.get('permissions') as UserPermissions | undefined;
-  if (existing) return existing;
-
-  return getUserPermissions(auth.user.id, {
-    partnerId: auth.partnerId || undefined,
-    orgId: auth.orgId || undefined
-  });
-}
-
-async function validateAssignableRole(
-  c: any,
-  auth: { user: { id: string }; partnerId: string | null; orgId: string | null },
-  role: { id: string; isSystem: boolean }
-): Promise<string | null> {
-  const rolePermissionsForAssignment = await getEffectiveRolePermissions(role.id);
-  if (rolePermissionsForAssignment.length === 0) {
-    return null;
-  }
-
-  const callerPermissions = await getCallerPermissions(c, auth);
-  if (!callerPermissions) {
-    return 'No permissions found';
-  }
-
-  for (const permission of rolePermissionsForAssignment) {
-    if (permission.resource === '*' || permission.action === '*') {
-      if (!role.isSystem) {
-        return 'Custom roles with wildcard permissions cannot be assigned';
-      }
-      if (!hasPermission(callerPermissions, permission.resource, permission.action)) {
-        return 'Cannot assign a role broader than caller permissions';
-      }
-      continue;
-    }
-
-    if (!isAssignablePermission(permission)) {
-      return `Role contains unknown permission: ${permission.resource}:${permission.action}`;
-    }
-
-    if (!hasPermission(callerPermissions, permission.resource, permission.action)) {
-      return `Cannot assign a role with permission not held by caller: ${permission.resource}:${permission.action}`;
-    }
-  }
-
-  return null;
-}
 
 async function getScopedUser(userId: string, scopeContext: ScopeContext) {
   if (scopeContext.scope === 'partner') {
