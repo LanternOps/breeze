@@ -7,7 +7,6 @@ import { users, organizations } from '../../db/schema';
 import {
   createTokenPair,
   generateMFASecret,
-  verifyMFAToken,
   consumeMFAToken,
   generateOTPAuthURL,
   generateQRCode,
@@ -342,7 +341,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   } catch {
     return c.json({ error: 'Invalid MFA setup data' }, 500);
   }
-  const valid = await verifyMFAToken(secret, code);
+  // Consuming verifier: record the accepted time step so it cannot be replayed
+  // at login within its ~90s validity window (SR2-24). Fails closed if Redis is
+  // down (consumeMFAToken returns false).
+  const valid = await consumeMFAToken(secret, code, auth.user.id);
 
   if (!valid) {
     const orgId = await resolveUserAuditOrgId(auth.user.id);
@@ -545,7 +547,10 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
     return c.json({ error: message, message }, 500);
   }
 
-  const valid = await verifyMFAToken(secret, code);
+  // Consuming verifier: record the accepted time step so it cannot be replayed
+  // at login within its ~90s validity window (SR2-24). Fails closed if Redis is
+  // down (consumeMFAToken returns false).
+  const valid = await consumeMFAToken(secret, code, auth.user.id);
   if (!valid) {
     const orgId = await resolveUserAuditOrgId(auth.user.id);
     writeAuthAudit(c, {

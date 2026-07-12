@@ -1266,6 +1266,49 @@ describe('auth routes', () => {
     });
   });
 
+  // SR2-24: setup-confirm (Case 2 of /mfa/verify, no tempToken) must verify
+  // the code with the CONSUMING verifier so the accepted time step is
+  // recorded and cannot be replayed at login within its validity window.
+  describe('POST /auth/mfa/verify — setup confirmation consumes the TOTP step (SR2-24)', () => {
+    it('confirms setup via consumeMFAToken, not the plain (non-consuming) verifyMFAToken', async () => {
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue(JSON.stringify({
+          secret: 'SETUPSECRET123',
+          recoveryCodes: ['CODE-0001', 'CODE-0002']
+        })),
+        del: vi.fn().mockResolvedValue(1),
+        setex: vi.fn(),
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(consumeMFAToken).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ code: '123456' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(consumeMFAToken).toHaveBeenCalledWith('SETUPSECRET123', '123456', 'user-123');
+      expect(verifyMFAToken).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /auth/refresh', () => {
     it('should refresh tokens successfully', async () => {
       vi.mocked(verifyToken).mockResolvedValue({
@@ -2071,7 +2114,7 @@ describe('auth routes', () => {
         del: vi.fn().mockResolvedValue(1)
       };
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
-      vi.mocked(verifyMFAToken).mockResolvedValue(true);
+      vi.mocked(consumeMFAToken).mockResolvedValue(true);
       vi.mocked(verifyPassword).mockResolvedValue(true);
       // Password-reprompt select runs first, then enable's own select
       vi.mocked(db.select)
@@ -2111,6 +2154,10 @@ describe('auth routes', () => {
       expect(body.success).toBe(true);
       expect(body.recoveryCodes).toEqual(setupRecoveryCodes);
       expect(body.message).toBe('MFA enabled successfully');
+      // SR2-24: /mfa/enable must use the consuming verifier so the accepted
+      // step is recorded and cannot be replayed at login.
+      expect(consumeMFAToken).toHaveBeenCalledWith('MFASECRET123', '123456', 'user-123');
+      expect(verifyMFAToken).not.toHaveBeenCalled();
     });
 
     it('POST /auth/mfa/enable should reject missing currentPassword (G1)', async () => {
