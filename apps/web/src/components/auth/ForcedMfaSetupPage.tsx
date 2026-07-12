@@ -13,6 +13,7 @@ import {
 import { extractApiError } from '../../lib/apiError';
 import { navigateTo } from '../../lib/navigation';
 import { normalizeEnrollmentMethods, type EnrollmentMethod } from './forcedMfaContract';
+import RecoveryCodes from './RecoveryCodes';
 
 type Step = 'password' | 'totp' | 'sms-phone' | 'sms-code' | 'done';
 
@@ -30,6 +31,7 @@ export default function ForcedMfaSetupPage() {
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>();
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>();
   const [forced, setForced] = useState(false);
+  const [signedOutRecoveryCodes, setSignedOutRecoveryCodes] = useState<readonly string[]>();
   const updateUser = useAuthStore((state) => state.updateUser);
 
   useEffect(() => {
@@ -47,8 +49,12 @@ export default function ForcedMfaSetupPage() {
     if (isAuthenticated && !tokens?.accessToken) void restoreAccessTokenFromCookie();
   }, []);
 
-  const terminalError = (err: unknown) =>
-    err instanceof AuthSessionExpiredError || err instanceof ReauthenticationRequiredError;
+  const terminalError = (err: unknown) => {
+    if (err instanceof ReauthenticationRequiredError && err.recoveryCodes?.length) {
+      setSignedOutRecoveryCodes(err.recoveryCodes);
+    }
+    return err instanceof AuthSessionExpiredError || err instanceof ReauthenticationRequiredError;
+  };
 
   const finish = (recovery?: unknown) => {
     updateUser({ mfaEnabled: true });
@@ -152,6 +158,20 @@ export default function ForcedMfaSetupPage() {
       if (!terminalError(err)) setError(err instanceof Error ? err.message : t('common.networkError'));
     } finally { setLoading(false); }
   };
+
+  if (signedOutRecoveryCodes?.length) {
+    return (
+      <div data-testid="signed-out-recovery-codes" className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Your security settings changed and you have been signed out. Save these codes before continuing.
+        </p>
+        <RecoveryCodes
+          codes={[...signedOutRecoveryCodes]}
+          onContinue={() => { window.location.href = '/login#security-settings-changed'; }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

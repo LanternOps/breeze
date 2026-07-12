@@ -27,7 +27,7 @@ import NotificationCenter from './NotificationCenter';
 import TimerWidget from '../time/TimerWidget';
 import CommandPalette from './CommandPalette';
 import SupportModal from '../support/SupportModal';
-import { useAuthStore, apiLogout, fetchWithAuth } from '../../stores/auth';
+import { useAuthStore, apiLogout, clearLocalAuthSession, fetchWithAuth } from '../../stores/auth';
 import { useAiStore } from '../../stores/aiStore';
 import { useHelpStore } from '../../stores/helpStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -227,9 +227,7 @@ export default function Header() {
     if (cfAccessEnabled) {
       // Drop in-memory state first so any racing component doesn't read
       // stale tokens before the navigation lands.
-      try { useAuthStore.getState().logout(); } catch { /* zustand always present */ }
-      try { localStorage.removeItem('breeze-auth'); } catch { /* localStorage may be unavailable */ }
-      try { localStorage.removeItem('breeze-org'); } catch { /* localStorage may be unavailable */ }
+      clearLocalAuthSession();
       window.location.assign('/api/v1/auth/cf-access-logout');
       return;
     }

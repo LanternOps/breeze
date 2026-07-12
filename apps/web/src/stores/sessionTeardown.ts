@@ -11,6 +11,11 @@ export function isCurrentWebSessionGeneration(generation: number): boolean {
   return generation === sessionGeneration;
 }
 
+export function advanceWebSessionGeneration(): number {
+  sessionGeneration += 1;
+  return sessionGeneration;
+}
+
 export class StaleWebSessionError extends Error {
   constructor() {
     super('This operation belongs to an expired web session.');
@@ -30,7 +35,7 @@ export function registerSessionTeardown(callback: SessionTeardown): () => void {
 }
 
 export function runSessionTeardown(): void {
-  sessionGeneration += 1;
+  advanceWebSessionGeneration();
   for (const callback of teardownCallbacks) {
     try {
       callback();

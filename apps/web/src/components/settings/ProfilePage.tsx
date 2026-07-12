@@ -10,6 +10,7 @@ import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
+import RecoveryCodes from '../auth/RecoveryCodes';
 import { apiCreateMfaStepUpGrant, createPasskeyCredential, fetchWithAuth, ReauthenticationRequiredError, useAuthStore } from '../../stores/auth';
 import type { MfaStepUpMethod, PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -72,6 +73,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [mfaSuccess, setMfaSuccess] = useState<string | undefined>();
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | undefined>();
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | undefined>();
+  const [signedOutRecoveryCodes, setSignedOutRecoveryCodes] = useState<readonly string[]>();
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
   const [passkeyName, setPasskeyName] = useState('');
   const [passkeyPassword, setPasskeyPassword] = useState('');
@@ -86,6 +88,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [mfaLoading, setMfaLoading] = useState(false);
+
+  const handleTerminalRecoveryCodes = (error: unknown): boolean => {
+    if (!(error instanceof ReauthenticationRequiredError)) return false;
+    if (error.recoveryCodes?.length) setSignedOutRecoveryCodes(error.recoveryCodes);
+    return true;
+  };
 
   // Avatar upload state
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
@@ -357,7 +365,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       setPasswordSuccess(t('profilePage.passwordChangedSuccessfully'));
     } catch (error) {
-      if (error instanceof ReauthenticationRequiredError) return;
+      if (handleTerminalRecoveryCodes(error)) return;
       setPasswordError(error instanceof Error ? error.message : t('profilePage.failedToChangePassword'));
     } finally {
       setIsChangingPassword(false);
@@ -418,7 +426,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setMfaSuccess(t('profilePage.multiFactorAuthenticationEnabledSuccessfully'));
       setQrCodeDataUrl(undefined);
     } catch (error) {
-      if (error instanceof ReauthenticationRequiredError) return;
+      if (handleTerminalRecoveryCodes(error)) return;
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToEnableMFA'));
     } finally {
       setMfaLoading(false);
@@ -446,7 +454,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setRecoveryCodes(undefined);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationDisabled'));
     } catch (error) {
-      if (error instanceof ReauthenticationRequiredError) return;
+      if (handleTerminalRecoveryCodes(error)) return;
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToDisableMFA'));
     } finally {
       setMfaLoading(false);
@@ -472,7 +480,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setRecoveryCodes(data.recoveryCodes);
       setMfaSuccess(t('profilePage.newRecoveryCodesGenerated'));
     } catch (error) {
-      if (error instanceof ReauthenticationRequiredError) return;
+      if (handleTerminalRecoveryCodes(error)) return;
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToGenerateRecoveryCodes'));
     } finally {
       setMfaLoading(false);
@@ -599,6 +607,20 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setMutatingPasskeyId(null);
     }
   };
+
+  if (signedOutRecoveryCodes?.length) {
+    return (
+      <div data-testid="signed-out-recovery-codes" className="mx-auto max-w-2xl space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Your security settings changed and you have been signed out. Save these codes before continuing.
+        </p>
+        <RecoveryCodes
+          codes={[...signedOutRecoveryCodes]}
+          onContinue={() => { window.location.href = '/login#security-settings-changed'; }}
+        />
+      </div>
+    );
+  }
 
   if (isLoadingUser) {
     return (

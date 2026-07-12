@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldOff, LogOut, Rocket } from 'lucide-react';
-import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { clearLocalAuthSession, fetchWithAuth } from '../../stores/auth';
 
 interface StatusInfo {
   status: string;
@@ -21,7 +21,6 @@ export default function AccountInactiveScreen() {
   const { t } = useTranslation('auth');
   const [info, setInfo] = useState<StatusInfo | null>(null);
   const [loading, setLoading] = useState(true);
-  const logout = useAuthStore((s) => s.logout);
 
   useEffect(() => {
     const defaultMessages: Record<string, string> = {
@@ -62,7 +61,7 @@ export default function AccountInactiveScreen() {
   }, [t]);
 
   const handleLogout = () => {
-    logout();
+    clearLocalAuthSession();
     window.location.href = '/login';
   };
 

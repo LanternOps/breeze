@@ -3629,8 +3629,8 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 
 ### Evidence
 
-- Closure web: 10 files / 80 tests passed; full web: 440 files / 3,403 tests passed with bounded workers.
-- Mobile: 27 files / 217 passed, 3 skipped; mobile and web typechecks passed.
+- Final-review web: 5 files / 67 tests passed; final auth generation/body suite: 48 passed; full web: 440 files / 3,414 tests passed with bounded workers.
+- Mobile: 28 files / 225 passed, 3 skipped; mobile and web typechecks passed.
 - Focused Wave 2 API: 10 files / 540 tests passed.
 - Fresh branch database: all 389 migration files matched the ledger; RLS contract: 50 passed.
 - Real recovery concurrency: 1 passed, 4 skipped; exactly one concurrent token response.
@@ -3640,6 +3640,7 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 
 - The independent re-review found and closed terminal in-memory org/AI teardown, generation-fenced mobile persistence/biometric races, and strict explicit-method selection on web/mobile. The integrated teardown test injects both callback and storage-removal failures while asserting all remaining memory, persistence, stream-cancellation, and rehydration cleanup.
 - Closure review additionally made explicit web login method arrays authoritative even when empty/malformed, fenced every org/AI async completion and stream event with a pre-cleanup web generation, caught rejected stream cancellation without an unhandled rejection, and compensates every partial mobile credential-write failure with a serialized wipe.
+- Final review fenced password login, cookie restoration, Cloudflare Access bootstrap, 401 refresh/retry, and response-body parsing against account replacement; normal and Cloudflare logout now use the complete local teardown. Terminal TOTP, SMS, and recovery-code rotation responses carry bounded recovery codes only in ephemeral error/UI state, clear authenticated state first, and require a signed-out acknowledgement before login navigation. Mobile now fails closed for every explicitly present malformed method list, rechecks its generation after success/error body reads, and prevents stale startup failures from wiping or logging out a newer account even when the old wipe is already pending.
 - The shared `breeze_test` database belongs to a newer checkout and contains five ledger entries absent from this exact branch, so migration/RLS/recovery gates were rerun against isolated local test databases migrated from this branch.
 - A full five-case recovery integration run under Node 26 and the shared Redis service was unstable (three failures, including a cleanup deadlock). The required one-winner race was rerun and passed under supported Node 22 with isolated PostgreSQL and Redis.
 - Browser/API E2E remains blocked by the exact environment gap above; no production or external state was mutated.

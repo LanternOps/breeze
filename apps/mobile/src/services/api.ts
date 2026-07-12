@@ -118,12 +118,13 @@ export interface LoginResponse {
 export type MfaMethod = 'totp' | 'sms' | 'passkey' | 'recovery_code';
 export type MfaCodeMethod = Exclude<MfaMethod, 'passkey'>;
 
-function normalizeAllowedMfaMethods(value: unknown, primary: MfaMethod): MfaMethod[] {
+function normalizeAllowedMfaMethods(value: unknown, primary: MfaMethod, present: boolean): MfaMethod[] {
+  if (!present) return [...new Set<MfaMethod>([primary, 'recovery_code'])];
   if (Array.isArray(value)) {
     return [...new Set(value.filter((method): method is MfaMethod =>
       method === 'totp' || method === 'sms' || method === 'passkey' || method === 'recovery_code'))];
   }
-  return [...new Set<MfaMethod>([primary, 'recovery_code'])];
+  return [];
 }
 
 export interface MfaChallenge {
@@ -227,7 +228,13 @@ async function requestWithPrefix<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const requestGeneration = captureSessionGeneration();
+  const assertCurrent = () => {
+    if (!isCurrentSessionGeneration(requestGeneration)) {
+      throw { message: 'This request belongs to an expired session.', code: 'session_generation_stale', statusCode: 401 } as ApiError;
+    }
+  };
   const token = await getToken();
+  assertCurrent();
   const method = (options.method ?? 'GET').toUpperCase();
 
   const headers: HeadersInit = {
@@ -248,31 +255,28 @@ async function requestWithPrefix<T>(
   // fall through silently — a missing header simply means "no row to match".
   try {
     const installationId = await getOrCreateInstallationId();
+    assertCurrent();
     if (installationId) {
       (headers as Record<string, string>)[MOBILE_DEVICE_ID_HEADER] = installationId;
     }
   } catch {
+    assertCurrent();
     // ignore
   }
 
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
+  assertCurrent();
   const url = `${baseUrl}${prefix}${endpoint}`;
   const response = await fetch(url, {
     ...options,
     headers,
     credentials: 'include',
   });
-
-  if (!isCurrentSessionGeneration(requestGeneration)) {
-    throw {
-      message: 'This request belongs to an expired session.',
-      code: 'session_generation_stale',
-      statusCode: 401,
-    } as ApiError;
-  }
+  assertCurrent();
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({} as Record<string, unknown>));
+    assertCurrent();
     const code = typeof body.code === 'string' ? body.code : undefined;
     if (code === DEVICE_BLOCKED_CODE) {
       const reason = typeof body.reason === 'string' ? body.reason : null;
@@ -291,6 +295,7 @@ async function requestWithPrefix<T>(
 
   // Handle empty responses
   const text = await response.text();
+  assertCurrent();
   if (!text) {
     return {} as T;
   }
@@ -379,7 +384,11 @@ export async function login(email: string, password: string): Promise<LoginResul
       challenge: {
         tempToken: response.tempToken,
         mfaMethod: response.mfaMethod,
-        allowedMethods: normalizeAllowedMfaMethods(response.allowedMethods, response.mfaMethod),
+        allowedMethods: normalizeAllowedMfaMethods(
+          response.allowedMethods,
+          response.mfaMethod,
+          Object.prototype.hasOwnProperty.call(response, 'allowedMethods'),
+        ),
         phoneLast4: response.phoneLast4 ?? null,
       },
     };

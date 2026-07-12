@@ -8,7 +8,10 @@ const { fetchWithAuthMock, createPasskeyCredentialMock } = vi.hoisted(() => ({
 
 vi.mock('../../stores/auth', () => ({
   AuthSessionExpiredError: class extends Error {},
-  ReauthenticationRequiredError: class extends Error {},
+  ReauthenticationRequiredError: class extends Error {
+    recoveryCodes?: readonly string[];
+    constructor(codes?: readonly string[]) { super('reauthentication required'); this.recoveryCodes = codes; }
+  },
   fetchWithAuth: fetchWithAuthMock,
   createPasskeyCredential: createPasskeyCredentialMock,
   restoreAccessTokenFromCookie: vi.fn(),
@@ -19,6 +22,7 @@ vi.mock('../../stores/auth', () => ({
 }));
 
 import ForcedMfaSetupPage from './ForcedMfaSetupPage';
+import { ReauthenticationRequiredError } from '../../stores/auth';
 
 const response = (body: unknown): Response => ({
   ok: true,
@@ -86,5 +90,57 @@ describe('ForcedMfaSetupPage policy methods', () => {
       expect.objectContaining({ body: JSON.stringify({ name: 'Passkey', credential: { id: 'credential', type: 'public-key', response: {} } }) }),
     );
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/auth/mfa/setup', expect.anything());
+  });
+
+  it('shows terminal recovery codes once before navigating to login', async () => {
+    sessionStorage.setItem('breeze-mfa-enrollment-methods', JSON.stringify(['passkey']));
+    fetchWithAuthMock
+      .mockResolvedValueOnce(response({ options: { challenge: 'challenge' } }))
+      .mockRejectedValueOnce(new ReauthenticationRequiredError(['ABCD-EF12', 'WXYZ-9876']));
+    createPasskeyCredentialMock.mockResolvedValueOnce({ id: 'credential', type: 'public-key', response: {} });
+    render(<ForcedMfaSetupPage />);
+    fireEvent.change(await screen.findByLabelText('Current password'), { target: { value: 'password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByTestId('signed-out-recovery-codes')).toBeTruthy();
+    expect(screen.getAllByText('ABCD-EF12')).toHaveLength(1);
+    expect(screen.getAllByText('WXYZ-9876')).toHaveLength(1);
+  });
+
+  it('acknowledges TOTP recovery codes after the server signs the session out', async () => {
+    sessionStorage.setItem('breeze-mfa-enrollment-methods', JSON.stringify(['totp']));
+    fetchWithAuthMock
+      .mockResolvedValueOnce(response({ qrCodeDataUrl: 'data:image/png;base64,AA==', recoveryCodes: [] }))
+      .mockRejectedValueOnce(new ReauthenticationRequiredError(['TOTP-0001', 'TOTP-0002']));
+    render(<ForcedMfaSetupPage />);
+    fireEvent.change(await screen.findByLabelText('Current password'), { target: { value: 'password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const codeInputs = await screen.findAllByRole('textbox');
+    fireEvent.change(codeInputs[0], { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and enable' }));
+
+    expect(await screen.findByTestId('signed-out-recovery-codes')).toBeTruthy();
+    expect(screen.getAllByText('TOTP-0001')).toHaveLength(1);
+    expect(screen.getAllByText('TOTP-0002')).toHaveLength(1);
+  });
+
+  it('acknowledges SMS recovery codes after the server signs the session out', async () => {
+    sessionStorage.setItem('breeze-mfa-enrollment-methods', JSON.stringify(['sms']));
+    fetchWithAuthMock
+      .mockResolvedValueOnce(response({ success: true }))
+      .mockResolvedValueOnce(response({ success: true }))
+      .mockRejectedValueOnce(new ReauthenticationRequiredError(['SMS0-0001', 'SMS0-0002']));
+    render(<ForcedMfaSetupPage />);
+    fireEvent.change(await screen.findByLabelText('Current password'), { target: { value: 'password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.change(await screen.findByLabelText('Phone number'), { target: { value: '+14155551234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send verification code' }));
+    fireEvent.change(await screen.findByLabelText('Verification code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByTestId('signed-out-recovery-codes')).toBeTruthy();
+    expect(screen.getAllByText('SMS0-0001')).toHaveLength(1);
+    expect(screen.getAllByText('SMS0-0002')).toHaveLength(1);
   });
 });

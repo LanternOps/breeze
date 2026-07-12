@@ -10,6 +10,7 @@ import {
   apiResetPassword,
   apiVerifyMFA,
   AuthSessionExpiredError,
+  bootstrapFromCfAccessRedirect,
   clearLocalAuthSession,
   ReauthenticationRequiredError,
   fetchAndApplyPreferences,
@@ -19,7 +20,7 @@ import {
   useAuthStore,
   waitForPendingRefresh
 } from './auth';
-import { registerSessionTeardown } from './sessionTeardown';
+import { registerSessionTeardown, StaleWebSessionError } from './sessionTeardown';
 
 // fetchAndApplyPreferences (auth.ts) is the only call site for these two exports
 // (verified via grep on auth.ts) — mocking the whole appearance module is safe
@@ -494,6 +495,96 @@ describe('auth store fetchWithAuth', () => {
     }
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
   });
+
+  it('discards a deferred old refresh after teardown and account B login', async () => {
+    useAuthStore.setState({ user: baseUser, tokens: null, isAuthenticated: true });
+    let resolveRefresh!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { resolveRefresh = resolve; })));
+    const oldRestore = restoreAccessTokenFromCookie();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    clearLocalAuthSession();
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    useAuthStore.getState().login(userB, tokensB);
+    resolveRefresh(makeResponse({ tokens: { accessToken: 'access-a', expiresInSeconds: 3600 } }));
+
+    await expect(oldRestore).resolves.toBe(false);
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it('discards a deferred account A login after account B installs', async () => {
+    let resolveLogin!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolveLogin = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+    const oldLogin = apiLogin('a@example.com', 'password');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    useAuthStore.getState().login(userB, tokensB);
+    resolveLogin(makeResponse({ user: baseUser, tokens: baseTokens }));
+    await expect(oldLogin).rejects.toBeInstanceOf(Error);
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it('discards a deferred account A Cloudflare bootstrap after account B installs', async () => {
+    let resolveMe!: (response: Response) => void;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ tokens: baseTokens }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveMe = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const oldBootstrap = bootstrapFromCfAccessRedirect();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    useAuthStore.getState().login(userB, tokensB);
+    resolveMe(makeResponse(baseUser));
+
+    await expect(oldBootstrap).resolves.toBe(false);
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it('discards an old 401 refresh completion after teardown and account B login', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    let resolveRefresh!: (response: Response) => void;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveRefresh = resolve; }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const oldRequest = fetchWithAuth('/devices');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    clearLocalAuthSession();
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    useAuthStore.getState().login(userB, tokensB);
+    resolveRefresh(makeResponse({ tokens: { accessToken: 'access-a-new', expiresInSeconds: 3600 } }));
+
+    await expect(oldRequest).rejects.toBeInstanceOf(StaleWebSessionError);
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it('discards a deferred old success body after teardown and account B login', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    let resolveBody!: (body: unknown) => void;
+    const json = vi.fn(() => new Promise<unknown>((resolve) => { resolveBody = resolve; }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      clone: () => ({ json }),
+    } as unknown as Response));
+
+    const oldRequest = fetchWithAuth('/auth/mfa/recovery-codes', { method: 'POST', body: '{}' });
+    await vi.waitFor(() => expect(json).toHaveBeenCalledOnce());
+    clearLocalAuthSession();
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    useAuthStore.getState().login(userB, tokensB);
+    resolveBody({ reauthenticate: true, recoveryCodes: ['ACCT-A01'] });
+
+    await expect(oldRequest).rejects.toBeInstanceOf(StaleWebSessionError);
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
 });
 
 describe('auth API helpers', () => {
@@ -661,6 +752,34 @@ describe('auth API helpers', () => {
     },
   );
 
+  it.each(['complete', 'partial'] as const)(
+    'keeps recovery codes ephemeral after terminal teardown until acknowledgement (%s cleanup)',
+    async (cleanupStatus) => {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      const codes = ['ABCD-EF12', 'WXYZ-9876'];
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+        success: true, reauthenticate: true, cleanupStatus, recoveryCodes: codes,
+      })));
+      const hrefSetter = vi.fn();
+      const originalLocation = window.location;
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: { ...originalLocation, get href() { return ''; }, set href(value: string) { hrefSetter(value); } },
+      });
+      try {
+        const error = await fetchWithAuth('/auth/mfa/recovery-codes', { method: 'POST', body: '{}' })
+          .catch((caught) => caught as ReauthenticationRequiredError);
+        expect(error).toBeInstanceOf(ReauthenticationRequiredError);
+        expect((error as ReauthenticationRequiredError).recoveryCodes).toEqual(codes);
+        expect(useAuthStore.getState().isAuthenticated).toBe(false);
+        expect(hrefSetter).not.toHaveBeenCalled();
+        expect(JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } })).not.toContain(codes[0]);
+      } finally {
+        Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+      }
+    },
+  );
+
   it('runs every teardown callback and storage removal when one removal throws', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const cleanupA = vi.fn();
@@ -687,6 +806,10 @@ describe('auth API helpers', () => {
 
   it('apiLogout clears state even when logout network call fails', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
+    localStorage.setItem('breeze-org', 'account-a-org');
+    localStorage.setItem('breeze-ai-chat', 'account-a-chat');
+    localStorage.setItem('breeze-workspace', 'account-a-workspace');
+    sessionStorage.setItem('breeze-mfa-enrollment-methods', '["totp"]');
     const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -695,6 +818,10 @@ describe('auth API helpers', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().tokens).toBeNull();
     expect(useAuthStore.getState().user).toBeNull();
+    expect(localStorage.getItem('breeze-org')).toBeNull();
+    expect(localStorage.getItem('breeze-ai-chat')).toBeNull();
+    expect(localStorage.getItem('breeze-workspace')).toBeNull();
+    expect(sessionStorage.getItem('breeze-mfa-enrollment-methods')).toBeNull();
   });
 
   it('apiPreviewInvite sends the token in a POST body, not in the URL', async () => {

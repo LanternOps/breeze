@@ -2,10 +2,14 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProfilePage from './ProfilePage';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, ReauthenticationRequiredError } from '../../stores/auth';
 import { writeDensity, writeFontPreference, writeThemePreference, writeTimeFormatPreference } from '@/lib/appearance';
 
 vi.mock('../../stores/auth', () => ({
+  ReauthenticationRequiredError: class extends Error {
+    recoveryCodes?: readonly string[];
+    constructor(codes?: readonly string[]) { super('reauthentication required'); this.recoveryCodes = codes; }
+  },
   createPasskeyCredential: vi.fn(),
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
@@ -447,5 +451,56 @@ describe('ProfilePage MFA setup', () => {
     const [, init] = setupCall!;
     expect(init?.method).toBe('POST');
     expect(JSON.parse(String(init?.body))).toEqual({ currentPassword: 'hunter2-pw' });
+  });
+
+  it('renders TOTP recovery codes once after terminal enablement teardown', async () => {
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/auth/mfa/setup') {
+        return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
+      }
+      if (String(url) === '/auth/mfa/enable') {
+        throw new ReauthenticationRequiredError(['TOTP-1001', 'TOTP-1002']);
+      }
+      return undefined as unknown as Response;
+    });
+    render(<ProfilePage initialUser={{
+      id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: false,
+    }} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+    await screen.findByText(/Confirm your password/i);
+    fireEvent.change(document.getElementById('mfa-confirm-password')!, { target: { value: 'hunter2-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText(/Set up authenticator/i);
+    const codeInputs = document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"]');
+    expect(codeInputs).toHaveLength(6);
+    fireEvent.change(codeInputs[0], { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and enable' }));
+
+    expect(await screen.findByTestId('signed-out-recovery-codes')).toBeTruthy();
+    expect(screen.getAllByText('TOTP-1001')).toHaveLength(1);
+    expect(screen.getAllByText('TOTP-1002')).toHaveLength(1);
+  });
+
+  it('renders rotated recovery codes once after terminal rotation teardown', async () => {
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/auth/mfa/recovery-codes') {
+        throw new ReauthenticationRequiredError(['ROTA-1001', 'ROTA-1002']);
+      }
+      return undefined as unknown as Response;
+    });
+    render(<ProfilePage initialUser={{
+      id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: true,
+    }} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /View codes/i }));
+    fireEvent.change(document.getElementById('mfa-recovery-password')!, { target: { value: 'hunter2-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: /Show recovery codes/i }));
+
+    expect(await screen.findByTestId('signed-out-recovery-codes')).toBeTruthy();
+    expect(screen.getAllByText('ROTA-1001')).toHaveLength(1);
+    expect(screen.getAllByText('ROTA-1002')).toHaveLength(1);
   });
 });

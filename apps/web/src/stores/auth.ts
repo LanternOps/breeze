@@ -9,7 +9,13 @@ import {
   type RegistrationResponseJSON
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
-import { runSessionTeardown } from './sessionTeardown';
+import {
+  advanceWebSessionGeneration,
+  captureWebSessionGeneration,
+  isCurrentWebSessionGeneration,
+  runSessionTeardown,
+  StaleWebSessionError,
+} from './sessionTeardown';
 import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
@@ -99,14 +105,17 @@ export const useAuthStore = create<AuthState>()(
 
       setLoading: (loading) => set({ isLoading: loading }),
 
-      login: (user, tokens) => set({
-        user,
-        tokens,
-        isAuthenticated: true,
-        isLoading: false,
-        mfaPending: false,
-        mfaTempToken: null
-      }),
+      login: (user, tokens) => {
+        advanceWebSessionGeneration();
+        set({
+          user,
+          tokens,
+          isAuthenticated: true,
+          isLoading: false,
+          mfaPending: false,
+          mfaTempToken: null
+        });
+      },
 
       logout: () => set({
         user: null,
@@ -384,18 +393,20 @@ async function requestTokenRefresh(): Promise<Tokens | null> {
   });
 }
 
-let tokenRefreshInFlight: Promise<Tokens | null> | null = null;
+let tokenRefreshInFlight: { generation: number; promise: Promise<Tokens | null> } | null = null;
 
-async function requestTokenRefreshShared(): Promise<Tokens | null> {
-  if (tokenRefreshInFlight) {
-    return tokenRefreshInFlight;
+async function requestTokenRefreshShared(generation = captureWebSessionGeneration()): Promise<Tokens | null> {
+  if (tokenRefreshInFlight?.generation === generation) {
+    return tokenRefreshInFlight.promise;
   }
 
-  tokenRefreshInFlight = requestTokenRefresh().finally(() => {
-    tokenRefreshInFlight = null;
+  const entry = { generation, promise: Promise.resolve<Tokens | null>(null) };
+  entry.promise = requestTokenRefresh().finally(() => {
+    if (tokenRefreshInFlight === entry) tokenRefreshInFlight = null;
   });
+  tokenRefreshInFlight = entry;
 
-  return tokenRefreshInFlight;
+  return entry.promise;
 }
 
 /**
@@ -417,7 +428,7 @@ async function requestTokenRefreshShared(): Promise<Tokens | null> {
 export async function waitForPendingRefresh(): Promise<void> {
   if (tokenRefreshInFlight) {
     try {
-      await tokenRefreshInFlight;
+      await tokenRefreshInFlight.promise;
     } catch {
       // Intentionally swallowed — see comment above.
     }
@@ -425,8 +436,10 @@ export async function waitForPendingRefresh(): Promise<void> {
 }
 
 export async function restoreAccessTokenFromCookie(): Promise<boolean> {
+  const generation = captureWebSessionGeneration();
   try {
-    const tokens = await requestTokenRefreshShared();
+    const tokens = await requestTokenRefreshShared(generation);
+    if (!isCurrentWebSessionGeneration(generation)) return false;
     if (!tokens) return false;
     useAuthStore.getState().setTokens(tokens);
     return true;
@@ -451,7 +464,9 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
  * caller should fall back to the regular login form).
  */
 export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
-  const tokens = await requestTokenRefreshShared();
+  const generation = captureWebSessionGeneration();
+  const tokens = await requestTokenRefreshShared(generation);
+  if (!isCurrentWebSessionGeneration(generation)) return false;
   if (!tokens?.accessToken) return false;
 
   let meResponse: Response;
@@ -464,6 +479,7 @@ export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
       },
       credentials: 'include',
     });
+    if (!isCurrentWebSessionGeneration(generation)) return false;
   } catch {
     return false;
   }
@@ -471,6 +487,7 @@ export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
   if (!meResponse.ok) return false;
 
   const user = (await meResponse.json()) as User | null;
+  if (!isCurrentWebSessionGeneration(generation)) return false;
   if (!user || !user.id) return false;
 
   useAuthStore.getState().login(user, tokens);
@@ -506,13 +523,20 @@ export class AuthSessionExpiredError extends Error {
 }
 
 export class ReauthenticationRequiredError extends Error {
-  constructor() {
+  readonly recoveryCodes?: readonly string[];
+
+  constructor(recoveryCodes?: readonly string[]) {
     super('Security settings changed; reauthentication required');
     this.name = 'ReauthenticationRequiredError';
+    this.recoveryCodes = recoveryCodes;
   }
 }
 
 export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): Promise<Response> {
+  const generation = captureWebSessionGeneration();
+  const assertCurrent = () => {
+    if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
+  };
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
   const orgId = _getOrgId?.();
@@ -521,7 +545,7 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     url = `${url}${separator}orgId=${orgId}`;
   }
 
-  const { tokens: initialTokens, isAuthenticated, logout, setTokens } = useAuthStore.getState();
+  const { tokens: initialTokens, isAuthenticated, setTokens } = useAuthStore.getState();
   let tokens = initialTokens;
   const previousAccessToken = tokens?.accessToken ?? null;
 
@@ -536,7 +560,8 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
   // in-memory access token is always gone and enrollment depends entirely on
   // this refresh succeeding here.
   if (!tokens?.accessToken && isAuthenticated) {
-    const restoredTokens = await requestTokenRefreshShared();
+    const restoredTokens = await requestTokenRefreshShared(generation);
+    assertCurrent();
     if (restoredTokens) {
       setTokens(restoredTokens);
       tokens = restoredTokens;
@@ -555,7 +580,7 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
       // does NOT weaken auth — protected endpoints (including /auth/mfa/setup)
       // still require a valid Bearer; we simply refuse to send a request we know
       // can't carry one.
-      logout();
+      clearLocalAuthSession();
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
         const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
         window.location.href = `/login?returnTo=${returnTo}`;
@@ -591,6 +616,7 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
   let response: Response;
   try {
     response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include', signal });
+    assertCurrent();
   } catch (err) {
     if (timeout) clearTimeout(timeout);
     throw err;
@@ -599,22 +625,25 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
 
   // If unauthorized, attempt cookie-backed refresh once
   if (response.status === 401) {
-    const newTokens = await requestTokenRefreshShared();
+    const newTokens = await requestTokenRefreshShared(generation);
+    assertCurrent();
     if (newTokens) {
       setTokens(newTokens);
 
       // Retry original request with new token
       headers.set('Authorization', `Bearer ${newTokens.accessToken}`);
       response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
+      assertCurrent();
     } else {
       // If another in-flight request already refreshed state, retry once with latest token.
       const latestToken = useAuthStore.getState().tokens?.accessToken;
       if (latestToken && latestToken !== previousAccessToken) {
         headers.set('Authorization', `Bearer ${latestToken}`);
         response = await fetch(buildApiUrl(url), { ...options, headers, credentials: 'include' });
+        assertCurrent();
       } else {
         // Refresh failed and no newer token exists; logout.
-        logout();
+        clearLocalAuthSession();
       }
     }
   }
@@ -625,13 +654,15 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     try {
       const cloned = response.clone();
       const body = await cloned.json();
+      assertCurrent();
       if (body?.code === 'PARTNER_INACTIVE') {
         const path = window.location.pathname;
         if (!path.startsWith('/account/') && !path.startsWith('/login')) {
           window.location.href = '/account/inactive';
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
       // Not JSON or parse failed — treat as normal 403
     }
   }
@@ -644,6 +675,7 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
     try {
       const cloned = response.clone();
       const body = await cloned.json();
+      assertCurrent();
       if (body?.error === 'mfa_enrollment_required') {
         const methods = Array.isArray(body.allowedMethods)
           ? body.allowedMethods.filter((method: unknown) => method === 'totp' || method === 'sms' || method === 'passkey')
@@ -657,7 +689,8 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
           window.location.href = '/auth/mfa/setup#required';
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
       // Not JSON or parse failed — surface as a normal 428 to caller
     }
   }
@@ -668,13 +701,22 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
   // only partial: durable credentials are already invalid and local state must
   // not remain on an authenticated screen.
   let requiresReauthentication = false;
+  let ephemeralRecoveryCodes: string[] | undefined;
   if (response.ok && typeof response.clone === 'function') {
     try {
       const body = await response.clone().json() as { reauthenticate?: unknown };
+      assertCurrent();
       if (body?.reauthenticate === true) {
         requiresReauthentication = true;
+        if (Array.isArray((body as { recoveryCodes?: unknown }).recoveryCodes)) {
+          const codes = (body as { recoveryCodes: unknown[] }).recoveryCodes
+            .filter((code): code is string => typeof code === 'string' && code.length <= 64)
+            .slice(0, 32);
+          if (codes.length > 0) ephemeralRecoveryCodes = codes;
+        }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
       // Non-JSON successful responses have no reauthentication contract.
     }
   }
@@ -682,9 +724,11 @@ export async function fetchWithAuth(rawUrl: string, options: RequestInit = {}): 
   if (requiresReauthentication) {
     clearLocalAuthSession();
     try {
-      if (typeof window !== 'undefined') window.location.href = '/login#security-settings-changed';
+      if (!ephemeralRecoveryCodes && typeof window !== 'undefined') {
+        window.location.href = '/login#security-settings-changed';
+      }
     } finally {
-      throw new ReauthenticationRequiredError();
+      throw new ReauthenticationRequiredError(ephemeralRecoveryCodes);
     }
   }
 
@@ -756,6 +800,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   requiresSetup?: boolean;
   error?: string;
 }> {
+  const generation = captureWebSessionGeneration();
   try {
     const response = await fetch(buildApiUrl('/auth/login'), {
       method: 'POST',
@@ -763,8 +808,10 @@ export async function apiLogin(email: string, password: string): Promise<{
       credentials: 'include',
       body: JSON.stringify({ email, password })
     });
+    if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
     const data = await response.json();
+    if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
     if (!response.ok) {
       return { success: false, error: extractApiError(data, 'Login failed') };
@@ -805,7 +852,8 @@ export async function apiLogin(email: string, password: string): Promise<{
       tokens: data.tokens,
       requiresSetup: !!data.requiresSetup
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof StaleWebSessionError) throw error;
     return { success: false, error: 'Network error' };
   }
 }
@@ -1016,7 +1064,8 @@ export async function apiRegisterPartner(
 }
 
 export async function apiLogout(): Promise<void> {
-  const { tokens, logout } = useAuthStore.getState();
+  const { tokens } = useAuthStore.getState();
+  clearLocalAuthSession();
 
   if (tokens?.accessToken) {
     try {
@@ -1033,16 +1082,6 @@ export async function apiLogout(): Promise<void> {
     }
   }
 
-  logout();
-
-  // Clear all persisted store data to prevent stale state on next login
-  try {
-    localStorage.removeItem('breeze-auth');
-    localStorage.removeItem('breeze-org');
-    localStorage.removeItem('breeze-ai-chat');
-  } catch {
-    // localStorage may be unavailable
-  }
 }
 
 export async function fetchAndApplyPreferences(): Promise<void> {

@@ -7,11 +7,13 @@ vi.mock('./installationId', () => ({ getOrCreateInstallationId: vi.fn().mockReso
 import {
   captureSessionGeneration,
   getAlerts,
+  onDeviceBlocked,
   isCurrentSessionGeneration,
   login,
   onReauthenticationRequired,
   verifyMfa,
 } from './api';
+import { advanceSessionGeneration } from './sessionGeneration';
 
 const response = (payload: unknown) => ({
   ok: true,
@@ -44,6 +46,9 @@ describe('mobile MFA contracts', () => {
   it.each([
     [[], []],
     [[null, 'bogus'], []],
+    [null, []],
+    [{ totp: true }, []],
+    ['totp', []],
     [['sms', 'sms', 'bogus'], ['sms']],
   ])('normalizes malformed or empty allowedMethods %#', async (allowedMethods, expected) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
@@ -55,6 +60,15 @@ describe('mobile MFA contracts', () => {
 
     const result = await login('user@example.com', 'password');
     expect(result.kind === 'mfaRequired' ? result.challenge.allowedMethods : null).toEqual(expected);
+  });
+
+  it('uses the legacy primary/recovery fallback only when allowedMethods is absent', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
+      mfaRequired: true, tempToken: 'temp-1', mfaMethod: 'totp',
+    })));
+    const result = await login('user@example.com', 'password');
+    expect(result.kind === 'mfaRequired' ? result.challenge.allowedMethods : null)
+      .toEqual(['totp', 'recovery_code']);
   });
 
   it('normalizes and submits recovery codes with a method-safe body', async () => {
@@ -110,5 +124,35 @@ describe('mobile MFA contracts', () => {
     resolveAlerts(response([]));
 
     await expect(pendingAlerts).rejects.toMatchObject({ code: 'session_generation_stale' });
+  });
+
+  it('drops a deferred error body before device-blocked notification after the session changes', async () => {
+    let resolveBody!: (body: Record<string, unknown>) => void;
+    const blocked = vi.fn();
+    const off = onDeviceBlocked(blocked);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 403,
+      json: vi.fn(() => new Promise((resolve) => { resolveBody = resolve; })),
+    }));
+    const pending = getAlerts();
+    await vi.waitFor(() => expect(resolveBody).toBeTypeOf('function'));
+    advanceSessionGeneration();
+    resolveBody({ code: 'device_blocked', reason: 'old account' });
+    await expect(pending).rejects.toMatchObject({ code: 'session_generation_stale' });
+    expect(blocked).not.toHaveBeenCalled();
+    off();
+  });
+
+  it('drops a deferred success body after logout/account transition', async () => {
+    let resolveText!: (text: string) => void;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      text: vi.fn(() => new Promise((resolve) => { resolveText = resolve; })),
+    }));
+    const pending = getAlerts();
+    await vi.waitFor(() => expect(resolveText).toBeTypeOf('function'));
+    advanceSessionGeneration();
+    resolveText('[]');
+    await expect(pending).rejects.toMatchObject({ code: 'session_generation_stale' });
   });
 });

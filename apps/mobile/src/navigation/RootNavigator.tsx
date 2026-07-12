@@ -28,6 +28,7 @@ import { Spinner } from '../components/Spinner';
 import { palette } from '../theme';
 import { runReauthenticationTeardown } from './reauthenticationTeardown';
 import { runAuthStorageExclusive } from '../services/sessionGeneration';
+import { handleHydrationFailure } from './hydrationFailure';
 
 /**
  * Clear local auth state, tolerating a partial secure-wipe failure.
@@ -138,23 +139,31 @@ export function RootNavigator() {
           // (name / email / role may have changed since last login).
           dispatch(setCredentials({ token: storedToken, user: fresh }));
         } catch (err) {
+          if (!isCurrentSessionGeneration(hydrationGeneration)) return;
           const status = (err as { statusCode?: number } | null)?.statusCode;
           if (status === 401 || status === 403) {
             // A failed secure wipe (SecureWipeError) is already reported to
             // Sentry inside clearAuthData; clearAuthDataTolerant swallows only
             // that so it can't abort the redux logout or fall through to the
             // outer catch and double-wipe. Other failures still surface.
-            await clearAuthDataTolerant();
-            dispatch(logout());
+            await handleHydrationFailure(
+              hydrationGeneration,
+              clearAuthDataTolerant,
+              () => { dispatch(logout()); },
+            );
           }
           // Other failures (network down, 5xx) intentionally leave the
           // cached credentials in place; the user can still operate
           // offline-friendly surfaces (approvals via push, cached state).
         }
       } catch (error) {
+        if (!isCurrentSessionGeneration(hydrationGeneration)) return;
         console.error('Error checking auth:', error);
-        await clearAuthDataTolerant();
-        dispatch(logout());
+        await handleHydrationFailure(
+          hydrationGeneration,
+          clearAuthDataTolerant,
+          () => { dispatch(logout()); },
+        );
       } finally {
         setIsCheckingAuth(false);
       }
