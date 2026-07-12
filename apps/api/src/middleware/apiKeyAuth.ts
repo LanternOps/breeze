@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { createHash } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { apiKeys } from '../db/schema';
+import { apiKeys, users } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -143,6 +143,23 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   const ownerTenant = await getActiveOrgTenant(apiKey.orgId);
   if (!ownerTenant) {
     throw new HTTPException(401, { message: 'API key owner is not active' });
+  }
+
+  // SR2-15 (PR 1 subset): a delegated human API key must not outlive its
+  // creator's active status. The full membership/permission-ceiling resolver
+  // and service principals land in PR 5; here we fail closed on a
+  // disabled/absent creator. (The MCP path's fail-OPEN null-perms bug is fixed
+  // in PR 5 — do not build on that behavior.)
+  const creator = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ status: users.status })
+      .from(users)
+      .where(eq(users.id, apiKey.createdBy))
+      .limit(1);
+    return row ?? null;
+  });
+  if (!creator || creator.status !== 'active') {
+    throw new HTTPException(401, { message: 'API key creator is not active' });
   }
 
   // Check rate limits (requests per hour)

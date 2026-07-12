@@ -24,6 +24,10 @@ vi.mock('../db/schema', () => ({
     status: 'status',
     createdBy: 'createdBy'
   },
+  users: {
+    id: 'id',
+    status: 'status'
+  },
   organizations: {}
 }));
 
@@ -83,6 +87,23 @@ const buildSelectMock = (result: unknown[]) =>
       })
     })
   } as any);
+
+// The middleware now issues a second `db.select` for the creator lookup
+// (SR2-15 subset). Use this when a test needs the apiKeys lookup and the
+// creator-status lookup to return different rows, in call order.
+const buildSequentialSelectMock = (results: unknown[][]) => {
+  const mock = vi.mocked(db.select);
+  for (const result of results) {
+    mock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(result)
+        })
+      })
+    } as any);
+  }
+  return mock;
+};
 
 describe('apiKeyAuth middleware', () => {
   beforeEach(() => {
@@ -288,6 +309,96 @@ describe('apiKeyAuth middleware', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('rejects when API key creator is disabled', async () => {
+    buildSequentialSelectMock([
+      [
+        {
+          id: 'key-5',
+          orgId: 'org-1',
+          name: 'Key',
+          keyPrefix: 'brz_',
+          keyHash: 'hash',
+          scopes: ['read'],
+          expiresAt: null,
+          rateLimit: 10,
+          usageCount: 0,
+          status: 'active',
+          createdBy: 'user-disabled'
+        }
+      ],
+      [{ status: 'disabled' }]
+    ]);
+
+    const c = createContext({ 'X-API-Key': 'brz_creator_disabled' });
+    const next = vi.fn();
+
+    await expect(apiKeyAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 401,
+      message: 'API key creator is not active'
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects when API key creator lookup returns no row', async () => {
+    buildSequentialSelectMock([
+      [
+        {
+          id: 'key-6',
+          orgId: 'org-1',
+          name: 'Key',
+          keyPrefix: 'brz_',
+          keyHash: 'hash',
+          scopes: ['read'],
+          expiresAt: null,
+          rateLimit: 10,
+          usageCount: 0,
+          status: 'active',
+          createdBy: 'user-missing'
+        }
+      ],
+      []
+    ]);
+
+    const c = createContext({ 'X-API-Key': 'brz_creator_missing' });
+    const next = vi.fn();
+
+    await expect(apiKeyAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 401,
+      message: 'API key creator is not active'
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('allows access when the API key creator is active', async () => {
+    buildSequentialSelectMock([
+      [
+        {
+          id: 'key-7',
+          orgId: 'org-1',
+          name: 'Key',
+          keyPrefix: 'brz_',
+          keyHash: 'hash',
+          scopes: ['read'],
+          expiresAt: null,
+          rateLimit: 10,
+          usageCount: 0,
+          status: 'active',
+          createdBy: 'user-active'
+        }
+      ],
+      [{ status: 'active' }]
+    ]);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+    } as any);
+
+    const c = createContext({ 'X-API-Key': 'brz_creator_active' });
+    const next = vi.fn();
+
+    await apiKeyAuthMiddleware(c, next);
+    expect(next).toHaveBeenCalled();
+  });
+
   it('sets context, headers, and calls next when API key is valid', async () => {
     const resetAt = new Date(Date.now() + 60_000);
     buildSelectMock([
@@ -356,30 +467,25 @@ describe('apiKeyAuth middleware', () => {
 
   it('populates accessiblePartnerIds for MCP-provisioning keys so partner-axis RLS sees the key', async () => {
     vi.mocked(getActiveOrgTenant).mockResolvedValue({ orgId: 'org-3', partnerId: 'partner-7' });
-    const fromFn = vi.fn();
-    vi.mocked(db.select)
-      .mockReturnValueOnce({
-        from: fromFn.mockReturnValueOnce({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
-              {
-                id: 'key-9',
-                orgId: 'org-3',
-                name: 'Key',
-                keyPrefix: 'brz_',
-                keyHash: 'hash',
-                scopes: ['read'],
-                expiresAt: null,
-                rateLimit: 5,
-                usageCount: 0,
-                status: 'active',
-                createdBy: 'user-3',
-                source: 'mcp_provisioning'
-              }
-            ])
-          })
-        })
-      } as any);
+    buildSequentialSelectMock([
+      [
+        {
+          id: 'key-9',
+          orgId: 'org-3',
+          name: 'Key',
+          keyPrefix: 'brz_',
+          keyHash: 'hash',
+          scopes: ['read'],
+          expiresAt: null,
+          rateLimit: 5,
+          usageCount: 0,
+          status: 'active',
+          createdBy: 'user-3',
+          source: 'mcp_provisioning'
+        }
+      ],
+      [{ status: 'active' }]
+    ]);
 
     vi.mocked(getRedis).mockReturnValue({} as any);
     vi.mocked(rateLimiter).mockResolvedValue({
@@ -409,29 +515,28 @@ describe('apiKeyAuth middleware', () => {
   });
 
   it('keeps accessiblePartnerIds empty for non-MCP keys and skips the org→partner lookup', async () => {
-    // Only one select call expected (api_keys lookup). If the partner lookup
-    // happens it'll throw because we only queue one mock.
-    const limitFn = vi.fn().mockResolvedValue([
-      {
-        id: 'key-10',
-        orgId: 'org-4',
-        name: 'Agent Key',
-        keyPrefix: 'brz_',
-        keyHash: 'hash',
-        scopes: ['agent:read'],
-        expiresAt: null,
-        rateLimit: 100,
-        usageCount: 0,
-        status: 'active',
-        createdBy: 'user-4',
-        source: 'manual'
-      }
+    // Two select calls expected: the api_keys lookup and the creator-status
+    // lookup (SR2-15 subset). Owner-tenant status is delegated to
+    // tenantStatus, so no third select happens for that.
+    buildSequentialSelectMock([
+      [
+        {
+          id: 'key-10',
+          orgId: 'org-4',
+          name: 'Agent Key',
+          keyPrefix: 'brz_',
+          keyHash: 'hash',
+          scopes: ['agent:read'],
+          expiresAt: null,
+          rateLimit: 100,
+          usageCount: 0,
+          status: 'active',
+          createdBy: 'user-4',
+          source: 'manual'
+        }
+      ],
+      [{ status: 'active' }]
     ]);
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: limitFn })
-      })
-    } as any);
 
     vi.mocked(getRedis).mockReturnValue({} as any);
     vi.mocked(rateLimiter).mockResolvedValue({
@@ -457,8 +562,9 @@ describe('apiKeyAuth middleware', () => {
       },
       expect.any(Function)
     );
-    // api_keys lookup only — owner status is delegated to tenantStatus.
-    expect(db.select).toHaveBeenCalledTimes(1);
+    // api_keys lookup + creator-status lookup — owner status is delegated to
+    // tenantStatus, so no third select happens for that.
+    expect(db.select).toHaveBeenCalledTimes(2);
   });
 });
 
