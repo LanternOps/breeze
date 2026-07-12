@@ -160,6 +160,26 @@ describe('authMiddleware epoch + live-binding gate', () => {
     expect(res.status).toBe(401);
   });
 
+  it('logs the specific rejection reason server-side while the public body stays generic', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const app = appWith({ ...epochPayload, aep: 1 }, { ...liveUser, authEpoch: 2 });
+      const res = await app.request('/t', { headers: { Authorization: 'Bearer x' } });
+      expect(res.status).toBe(401);
+      // Public body: generic, no reason leaked.
+      const body = await res.text();
+      expect(body).toBe('Invalid or expired token');
+      expect(body).not.toContain('epoch');
+      // Server-side log: specific structured reason, no token material.
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[authMiddleware] rejected access token',
+        expect.objectContaining({ reason: 'epoch_stale', userId: 'user-123' })
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('401s a token whose mep is behind the live row', async () => {
     const app = appWith({ ...epochPayload, mep: 1 }, { ...liveUser, mfaEpoch: 2 });
     const res = await app.request('/t', { headers: { Authorization: 'Bearer x' } });
@@ -208,6 +228,19 @@ describe('authMiddleware epoch + live-binding gate', () => {
       { ...epochPayload, scope: 'partner', orgId: null },
       liveUser,
       [[]] // partnerUsers select returns no membership
+    );
+    const res = await app.request('/t', { headers: { Authorization: 'Bearer x' } });
+    expect(res.status).toBe(401);
+  });
+
+  it("401s scope='partner' when the token carries no partnerId (defensive: falls through to partnerOrgAccess null)", async () => {
+    // computeAccessibleOrgIds' partner branch requires a truthy partnerId, so
+    // a null-partnerId partner token skips the partner_users lookup entirely
+    // and lands on the { orgIds: [], partnerOrgAccess: null } fallback — the
+    // membership binding must treat that exactly like a missing row.
+    const app = appWith(
+      { ...epochPayload, scope: 'partner', orgId: null, partnerId: null },
+      liveUser
     );
     const res = await app.request('/t', { headers: { Authorization: 'Bearer x' } });
     expect(res.status).toBe(401);

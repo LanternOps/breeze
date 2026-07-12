@@ -419,14 +419,31 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   // A token missing any epoch/session claim predates the rollout: reject it
   // (deliberate global sign-out). A stale aep/mep means a security-state change
   // happened after the token was minted: reject.
+  // Rejection reasons below are logged server-side only (structured, bounded
+  // fields — reason/userId/scope/epoch numbers, never token material); the
+  // public response body stays generic per the design spec.
   if (
     typeof payload.aep !== 'number' ||
     typeof payload.mep !== 'number' ||
     !payload.sid
   ) {
+    console.warn('[authMiddleware] rejected access token', {
+      reason: 'epoch_claims_missing',
+      userId: payload.sub,
+      scope: payload.scope
+    });
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
   if (payload.aep !== user.authEpoch || payload.mep !== user.mfaEpoch) {
+    console.warn('[authMiddleware] rejected access token', {
+      reason: 'epoch_stale',
+      userId: payload.sub,
+      scope: payload.scope,
+      tokenAep: payload.aep,
+      liveAep: user.authEpoch,
+      tokenMep: payload.mep,
+      liveMep: user.mfaEpoch
+    });
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 
@@ -434,6 +451,10 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   // platform admin. A demoted admin's signed scope claim must not survive an
   // out-of-band is_platform_admin=false (SR2-02).
   if (payload.scope === 'system' && user.isPlatformAdmin !== true) {
+    console.warn('[authMiddleware] rejected access token', {
+      reason: 'system_scope_demoted',
+      userId: payload.sub
+    });
     throw new HTTPException(403, { message: 'Insufficient permissions' });
   }
 
@@ -506,6 +527,11 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
   // is null for a partner-scope token ⇔ no live membership row (an existing
   // row with org_access='none' yields 'none', not null). Zero extra queries.
   if (payload.scope === 'partner' && partnerOrgAccess === null) {
+    console.warn('[authMiddleware] rejected access token', {
+      reason: 'partner_membership_missing',
+      userId: payload.sub,
+      partnerId: payload.partnerId
+    });
     throw new HTTPException(401, { message: 'Invalid or expired token' });
   }
 
