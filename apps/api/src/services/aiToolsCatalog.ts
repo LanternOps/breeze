@@ -52,50 +52,97 @@ function serviceErrorToJson(err: unknown): string | null {
 type CatalogItemRow = typeof catalogItems.$inferSelect;
 
 /**
- * Shape a catalog row for AI/MCP output.
+ * Top-level catalog columns exposed to AI/MCP output. This is an ALLOWLIST, not
+ * a blocklist: internal IDs (`partnerId`, `createdBy`) and any future column
+ * added to `catalog_items` are dropped by construction — never leaked by
+ * forgetting to strip them. `costBasis`/`markupPercent` are further redacted for
+ * org-scoped callers (see AI_ITEM_ORG_REDACTED_FIELDS).
+ */
+const AI_ITEM_FIELDS = [
+  'id',
+  'name',
+  'itemType',
+  'sku',
+  'description',
+  'billingType',
+  'billingFrequency',
+  'commitmentTermMonths',
+  'unitPrice',
+  'costBasis',
+  'markupPercent',
+  'unitOfMeasure',
+  'taxable',
+  'taxCategory',
+  'isBundle',
+  'isActive',
+  'createdAt',
+  'updatedAt',
+] as const satisfies readonly (keyof CatalogItemRow)[];
+
+/**
+ * Normalized distributor sub-fields kept from `attributes.distributor`. Also an
+ * allowlist: the verbatim `raw` provider payload — and any future/unknown
+ * distributor sub-field an importer might add — are dropped by construction.
+ * `cost` is additionally redacted for org-scoped callers.
+ */
+const AI_DISTRIBUTOR_FIELDS = [
+  'cost',
+  'msrp',
+  'warehouses',
+  'mfgPartNo',
+  'synnexSku',
+  'status',
+  'importedAt',
+] as const;
+
+/** Top-level cost/margin fields hidden from org-scoped (customer) callers. */
+const AI_ITEM_ORG_REDACTED_FIELDS = ['costBasis', 'markupPercent'] as const;
+
+function pickAllowed(src: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (key in src) out[key] = src[key];
+  }
+  return out;
+}
+
+/**
+ * Shape a catalog row for AI/MCP output using explicit allowlists.
  *
- * - Drops internal IDs (`partnerId`, `createdBy`): the MCP server instructions
- *   tell the model never to reveal internal IDs — redaction belongs server-side,
- *   not in model discipline.
- * - Strips `attributes.distributor.raw`, the verbatim provider payload kept for
- *   import traceability. It is a near-duplicate of the normalized distributor
- *   fields (cost/msrp/warehouses/…), blows the MCP output depth limiter
- *   ("[truncated: max depth reached]" noise), and roughly doubles tokens. The
- *   normalized fields (cost, msrp, warehouses, mfgPartNo, synnexSku, status,
- *   importedAt, …) are kept.
- * - Redacts cost/margin fields (`costBasis`, `markupPercent`,
- *   `attributes.distributor.cost`) for org-scoped callers. Note the catalog is
- *   partner-axis (RLS shape 3) and org-scoped tokens carry the owning org's
- *   partnerId (so they pass the partnerId gate) but get an RLS context without
- *   partner access, so the partner-scoped SELECT returns 0 rows today —
- *   effectively partner-only. This redaction is defense-in-depth so a future
- *   system-context execution path can never leak distributor cost / margin to a
- *   customer (org) token.
+ * - Top-level fields are projected via AI_ITEM_FIELDS, so internal IDs and any
+ *   future column can never leak by omission (the reason this replaced the prior
+ *   blocklist that named individual fields to strip).
+ * - `attributes` is free-form jsonb: partner-authored keys pass through, but the
+ *   `distributor` sub-object is rebuilt from AI_DISTRIBUTOR_FIELDS so the raw
+ *   import blob and any future distributor sub-field are dropped.
+ * - Cost/margin fields (`costBasis`, `markupPercent`, `distributor.cost`) are
+ *   redacted for org-scoped callers. The catalog is partner-axis (RLS shape 3)
+ *   and org-scoped tokens carry the owning org's partnerId (so they pass the
+ *   partnerId gate) but get an RLS context without partner access, so the
+ *   partner-scoped SELECT returns 0 rows today — effectively partner-only. This
+ *   redaction is defense-in-depth so a future system-context execution path can
+ *   never leak distributor cost / margin to a customer (org) token.
  */
 function sanitizeCatalogItemForAi(item: CatalogItemRow, auth: AuthContext): Record<string, unknown> {
-  const { partnerId: _partnerId, createdBy: _createdBy, ...rest } = item;
-  const out: Record<string, unknown> = { ...rest };
+  const out = pickAllowed(item as unknown as Record<string, unknown>, AI_ITEM_FIELDS);
 
   const attrs = item.attributes;
   if (attrs && typeof attrs === 'object' && !Array.isArray(attrs)) {
     const attrsCopy: Record<string, unknown> = { ...(attrs as Record<string, unknown>) };
     const dist = attrsCopy.distributor;
     if (dist && typeof dist === 'object' && !Array.isArray(dist)) {
-      const { raw: _raw, ...distRest } = dist as Record<string, unknown>;
-      attrsCopy.distributor = distRest;
+      attrsCopy.distributor = pickAllowed(dist as Record<string, unknown>, AI_DISTRIBUTOR_FIELDS);
     }
     out.attributes = attrsCopy;
   }
 
   if (auth.scope === 'organization') {
-    delete out.costBasis;
-    delete out.markupPercent;
+    for (const field of AI_ITEM_ORG_REDACTED_FIELDS) delete out[field];
     const outAttrs = out.attributes;
     if (outAttrs && typeof outAttrs === 'object' && !Array.isArray(outAttrs)) {
       const dist = (outAttrs as Record<string, unknown>).distributor;
       if (dist && typeof dist === 'object' && !Array.isArray(dist)) {
-        const { cost: _cost, ...distRest } = dist as Record<string, unknown>;
-        (outAttrs as Record<string, unknown>).distributor = distRest;
+        delete (dist as Record<string, unknown>).cost;
       }
     }
   }

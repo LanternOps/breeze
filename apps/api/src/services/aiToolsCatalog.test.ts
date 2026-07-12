@@ -247,6 +247,51 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     expect(parsed.item.markupPercent).toBe('20.00');
   });
 
+  it('drops unknown/future top-level columns and unknown distributor sub-fields by construction (allowlist)', async () => {
+    const row = {
+      id: ITEM_ID,
+      partnerId: PARTNER_ID,
+      createdBy: 'user-uuid',
+      name: 'SPL Dock',
+      isBundle: false,
+      unitPrice: '120.00',
+      // A column a future migration might add — must NOT reach MCP output because
+      // the output is an allowlist, not a blocklist of known-sensitive names.
+      supplierAccountId: 'acct-should-not-leak',
+      internalNotes: 'confidential margin strategy',
+      attributes: {
+        category: 'docks',
+        distributor: {
+          synnexSku: '14703953',
+          cost: 100,
+          msrp: 150,
+          raw: { verbatim: true },
+          // A future distributor sub-field an importer might store — must be dropped.
+          dealerCost: 42,
+          supplierToken: 'secret-token',
+        },
+      },
+    };
+    vi.mocked(db.select).mockReturnValueOnce(makeChain([row], {}) as any);
+
+    const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, partnerAuth());
+    const parsed = JSON.parse(out);
+
+    // Unknown top-level columns are dropped even for partner (full-access) scope.
+    expect(parsed.item).not.toHaveProperty('supplierAccountId');
+    expect(parsed.item).not.toHaveProperty('internalNotes');
+    // Known allowlisted fields still present.
+    expect(parsed.item.name).toBe('SPL Dock');
+    expect(parsed.item.unitPrice).toBe('120.00');
+    // Unknown distributor sub-fields (and the raw blob) are dropped; normalized survive.
+    expect(parsed.item.attributes.distributor).not.toHaveProperty('raw');
+    expect(parsed.item.attributes.distributor).not.toHaveProperty('dealerCost');
+    expect(parsed.item.attributes.distributor).not.toHaveProperty('supplierToken');
+    expect(parsed.item.attributes.distributor).toMatchObject({ synnexSku: '14703953', cost: 100, msrp: 150 });
+    // Non-distributor attribute keys still pass through.
+    expect(parsed.item.attributes.category).toBe('docks');
+  });
+
   it('redacts costBasis/markupPercent/distributor.cost for org-scoped callers (defense-in-depth)', async () => {
     const row = {
       id: ITEM_ID,
