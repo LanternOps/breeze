@@ -815,6 +815,15 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   }
 
   if (updates.settings !== undefined) {
+    // Fold the legacy `security.allowedMfaMethods` alias into the canonical
+    // `security.allowedMethods` before anything else touches settings. This
+    // is a wholesale-replace path (updatePartnerSchema uses `settings: z.any()`),
+    // so without this fold a caller sending the alias key here would persist
+    // it verbatim as a second, un-canonicalized key — the resolver only reads
+    // `security.allowedMethods`, so that would silently no-op the MFA-method
+    // change (see foldAllowedMfaMethodsAlias above).
+    updates.settings = foldAllowedMfaMethodsAlias(updates.settings);
+
     // Wholesale settings write: keep an active security.ipAllowlist unless the
     // caller explicitly clears it (see preserveIpAllowlistOnOmit).
     if (updates.settings && typeof updates.settings === 'object' && !Array.isArray(updates.settings)) {

@@ -695,6 +695,57 @@ describe('org routes', () => {
       });
     });
 
+    // SR2-05: the system-scoped wholesale settings write is a THIRD write path
+    // (alongside the org-settings write and PATCH /partners/me) that must fold
+    // the legacy `security.allowedMfaMethods` alias into the canonical
+    // `security.allowedMethods` — updatePartnerSchema's `settings: z.any()`
+    // means nothing else strips or canonicalizes the alias key before it hits
+    // the db.update(..).set(...) call.
+    describe('settings.security.allowedMfaMethods alias (system scope)', () => {
+      function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([])
+              }),
+              limit: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', settings }])
+            })
+          })
+        } as any);
+      }
+
+      function mockUpdateCapture() {
+        let captured: any;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockImplementation((data: any) => {
+            captured = data;
+            return {
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: 'partner-1', name: 'P', settings: data.settings }])
+              })
+            };
+          })
+        } as any);
+        return () => captured;
+      }
+
+      it('folds the legacy security.allowedMfaMethods alias into allowedMethods and does not persist the alias', async () => {
+        mockCurrentPartnerSelect({});
+        const getCaptured = mockUpdateCapture();
+
+        const res = await app.request('/orgs/partners/partner-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { security: { allowedMfaMethods: { sms: false } } } })
+        });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.security.allowedMethods.sms).toBe(false);
+        expect(getCaptured().settings.security.allowedMfaMethods).toBeUndefined();
+      });
+    });
+
     // aiForOfficeEnabled — operator-only entitlement flag.
     // The field must flow through updatePartnerSchema → the db.update(..).set(...)
     // call unchanged. The partner-scope /partners/me route uses a separate
