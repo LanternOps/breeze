@@ -36,6 +36,9 @@ export const refreshTokenFamilies = pgTable(
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     revokedReason: varchar('revoked_reason', { length: 64 }),
+    // Absolute wall-clock cap on the family. Rotation never extends this;
+    // /refresh rejects a family past it. Set at mint time.
+    absoluteExpiresAt: timestamp('absolute_expires_at', { withTimezone: true }).notNull(),
   },
   (t) => ({
     userIdx: index('refresh_token_families_user_idx').on(t.userId),

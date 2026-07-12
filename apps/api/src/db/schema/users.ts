@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 
 // Postgres `bytea` mapped to a Node Buffer. postgres.js returns bytea columns
@@ -60,6 +60,14 @@ export const users = pgTable('users', {
   // var at API startup, gates the cross-tenant /admin/* endpoints (e.g.
   // suspend-for-abuse). Intentionally lives outside the partner role system.
   isPlatformAdmin: boolean('is_platform_admin').notNull().default(false),
+  // Durable authentication-state epochs (core-auth hardening PR 1). Advanced by
+  // services/authLifecycle.ts inside the same transaction as the mutation that
+  // invalidates prior credentials. Access/refresh JWTs carry auth_epoch +
+  // mfa_epoch; a stale claim is rejected in authMiddleware / on /refresh.
+  authEpoch: integer('auth_epoch').notNull().default(1),
+  mfaEpoch: integer('mfa_epoch').notNull().default(1),
+  emailEpoch: integer('email_epoch').notNull().default(1),
+  passwordResetEpoch: integer('password_reset_epoch').notNull().default(1),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
