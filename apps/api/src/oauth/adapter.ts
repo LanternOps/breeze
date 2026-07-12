@@ -597,7 +597,9 @@ export class BreezeOidcAdapter {
         errorId: ERROR_IDS.OAUTH_REVOCATION_CACHE_WRITE_FAILED,
         message: 'Revocation cache write failed during destroy()',
         err,
-        context: { model: this.model, id },
+        // Never log the raw id: for a RefreshToken it IS the opaque token value.
+        // The digest is a safe, non-reversible correlator (equals id for other models).
+        context: { model: this.model, id: this.model === 'RefreshToken' ? refreshTokenStorageId(id) : id },
       });
       throw err;
     }
