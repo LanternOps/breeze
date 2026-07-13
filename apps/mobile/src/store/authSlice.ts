@@ -105,8 +105,10 @@ export const verifyMfaAsync = createAsyncThunk(
 
 export const logoutAsync = createAsyncThunk(
   'auth/logout',
-  async (_, { rejectWithValue }) => {
+  async (_, { dispatch, getState, rejectWithValue }) => {
+    const capturedBearer = (getState() as { auth: AuthState }).auth.token;
     terminateSessionGeneration();
+    dispatch(logout());
     let wipeErrorMessage: string | undefined;
     try {
       await runAuthStorageExclusive(clearAuthData);
@@ -118,7 +120,7 @@ export const logoutAsync = createAsyncThunk(
       // outcome so the user always leaves the authenticated surface.
       let apiErrorMessage: string | undefined;
       try {
-        await apiLogout();
+        await apiLogout(capturedBearer);
       } catch (error: unknown) {
         apiErrorMessage = (error as { message?: string }).message || 'Logout failed';
         Sentry.captureException(error, { tags: { area: 'auth-logout-api' } });
@@ -219,9 +221,6 @@ const authSlice = createSlice({
       })
       .addCase(logoutAsync.pending, (state) => {
         state.isLoading = true;
-        state.user = null;
-        state.token = null;
-        state.mfaChallenge = null;
       })
       .addCase(logoutAsync.fulfilled, (state) => {
         state.user = null;

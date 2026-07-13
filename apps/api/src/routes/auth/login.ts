@@ -49,12 +49,14 @@ import {
   genericAuthError,
   isTokenRevokedForUser,
   cacheRefreshTokenFamilyRevocation,
+  setCfAccessLogoutQuarantineCookie,
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   auditUserLoginFailure,
   auditLogin,
   userRequiresSetup
 } from './helpers';
+import { revokeTerminalLogoutSubjects } from '../../services/terminalLogout';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
@@ -565,20 +567,39 @@ loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
   const refreshToken = resolveRefreshToken(c);
   if (refreshToken) {
     const refreshPayload = await verifyToken(refreshToken);
-    if (refreshPayload?.type === 'refresh' && refreshPayload.sub) {
-      subjects.add(refreshPayload.sub);
-      refreshJti = refreshPayload.jti;
+    if (
+      refreshPayload?.type === 'refresh'
+      && refreshPayload.sub
+      && refreshPayload.jti
+      && refreshPayload.fam
+    ) {
+      try {
+        const [activeFamily, jtiRevoked] = await Promise.all([
+          getActiveRefreshTokenFamily(refreshPayload.fam, refreshPayload.sub),
+          isRefreshTokenJtiRevoked(refreshPayload.jti),
+        ]);
+        if (activeFamily && !jtiRevoked) {
+          subjects.add(refreshPayload.sub);
+          refreshJti = refreshPayload.jti;
+        }
+      } catch (error) {
+        console.error('[cf-access-logout] Refresh subject verification failed closed:', error);
+        return c.json({ error: 'Service temporarily unavailable' }, 503);
+      }
     }
   }
 
   try {
-    await Promise.all([...subjects].map((userId) => revokeAllUserTokens(userId)));
-    if (refreshJti) await revokeRefreshTokenJti(refreshJti);
+    await revokeTerminalLogoutSubjects({
+      subjectIds: [...subjects],
+      refreshJti,
+    });
   } catch (error) {
     console.error('[cf-access-logout] Refusing terminal logout preparation because revocation failed:', error);
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
+  setCfAccessLogoutQuarantineCookie(c);
   clearRefreshTokenCookie(c);
   return c.json({ success: true });
 });

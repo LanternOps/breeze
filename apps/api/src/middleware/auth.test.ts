@@ -415,6 +415,7 @@ describe('authMiddleware', () => {
       const app = new Hono();
       app.use(authMiddleware);
       app.post('/api/v1/auth/logout', logoutHandler);
+      app.post('/api/v1/auth/cf-access-logout/prepare', logoutHandler);
       app.get('/api/v1/protected', protectedHandler);
 
       const token = {
@@ -447,13 +448,20 @@ describe('authMiddleware', () => {
       expect(withDbAccessContext).toHaveBeenCalledOnce();
       expect(logoutHandler).toHaveBeenCalledOnce();
 
+      const terminalPrepare = await app.request('/api/v1/auth/cf-access-logout/prepare', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(terminalPrepare.status).toBe(200);
+      expect(logoutHandler).toHaveBeenCalledTimes(2);
+
       const protectedResponse = await app.request('/api/v1/protected', {
         headers: { Authorization: 'Bearer token' },
       });
 
       expect(protectedResponse.status).toBe(403);
       expect(protectedHandler).not.toHaveBeenCalled();
-      expect(withDbAccessContext).toHaveBeenCalledOnce();
+      expect(withDbAccessContext).toHaveBeenCalledTimes(2);
     },
   );
 

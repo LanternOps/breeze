@@ -152,7 +152,7 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
 
 function isLogoutAssuranceExemptPath(path: string): boolean {
   const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
-  return rel === '/auth/logout';
+  return rel === '/auth/logout' || rel === '/auth/cf-access-logout/prepare';
 }
 
 /**

@@ -31,7 +31,7 @@ vi.mock('@sentry/react-native', () => ({
   captureException: (...a: unknown[]) => sentry.captureException(...a),
 }));
 
-import authReducer, { loginAsync, logoutAsync, verifyMfaAsync } from './authSlice';
+import authReducer, { loginAsync, logoutAsync, setCredentials, verifyMfaAsync } from './authSlice';
 import { advanceSessionGeneration } from '../services/sessionGeneration';
 
 function makeStore() {
@@ -220,13 +220,37 @@ afterEach(() => vi.restoreAllMocks());
 describe('logoutAsync', () => {
   it('API ok + wipe ok → fulfilled, wipe runs exactly once', async () => {
     const store = makeStore();
+    store.dispatch(setCredentials({
+      token: 'captured-before-wipe',
+      user: { id: 'u-1', email: 'u@example.com', name: 'U', role: 'admin' },
+    }));
     const result = await store.dispatch(logoutAsync());
 
     expect(result.type).toBe('auth/logout/fulfilled');
+    expect(api.logout).toHaveBeenCalledWith('captured-before-wipe');
     expect(auth.clearAuthData).toHaveBeenCalledTimes(1);
     expect(sentry.captureException).not.toHaveBeenCalled();
     expect(store.getState().auth.token).toBeNull();
     expect(store.getState().auth.user).toBeNull();
+  });
+
+  it('wipes Redux and SecureStore immediately while a bounded server logout is still pending', async () => {
+    let release!: () => void;
+    api.logout.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    const store = makeStore();
+    store.dispatch(setCredentials({
+      token: 'captured-before-hang',
+      user: { id: 'u-1', email: 'u@example.com', name: 'U', role: 'admin' },
+    }));
+
+    const pending = store.dispatch(logoutAsync());
+
+    expect(store.getState().auth.token).toBeNull();
+    expect(store.getState().auth.user).toBeNull();
+    await vi.waitFor(() => expect(auth.clearAuthData).toHaveBeenCalledOnce());
+    expect(api.logout).toHaveBeenCalledWith('captured-before-hang');
+    release();
+    await expect(pending).resolves.toMatchObject({ type: 'auth/logout/fulfilled' });
   });
 
   it('API fails + wipe ok → rejected with the api message, still signs out', async () => {

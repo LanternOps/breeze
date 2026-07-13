@@ -15,20 +15,21 @@ import {
 } from '../../services/cfAccessJwt';
 import {
   issueUserSession,
-  revokeAllUserTokens,
-  revokeRefreshTokenJti,
   verifyToken,
 } from '../../services';
+import { revokeTerminalLogoutSubjects } from '../../services/terminalLogout';
 import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { ENABLE_2FA } from './schemas';
 import {
   auditUserLoginFailure,
+  clearCfAccessLogoutQuarantineCookie,
   clearRefreshTokenCookie,
   getClientIP,
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   resolveRefreshToken,
+  setCfAccessLogoutQuarantineCookie,
   setRefreshTokenCookie,
 } from './helpers';
 
@@ -244,6 +245,10 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
  * the cookie is cleared regardless.
  */
 cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
+  // Persist an HttpOnly issuer barrier across both Cloudflare navigation hops.
+  // Client-side storage and Web Locks disappear when the document navigates;
+  // this cookie remains visible to every Breeze refresh-cookie writer.
+  setCfAccessLogoutQuarantineCookie(c);
   // Server-side revocation, mirroring POST /logout (login.ts): identify the
   // session from the refresh cookie (no Bearer token on a top-level GET),
   // then revoke ALL of the user's tokens plus the specific refresh jti.
@@ -255,10 +260,10 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
     if (refreshToken) {
       const payload = await verifyToken(refreshToken);
       if (payload && payload.type === 'refresh' && payload.sub) {
-        await revokeAllUserTokens(payload.sub);
-        if (payload.jti) {
-          await revokeRefreshTokenJti(payload.jti);
-        }
+        await revokeTerminalLogoutSubjects({
+          subjectIds: [payload.sub],
+          refreshJti: payload.jti,
+        });
       }
     }
   } catch (error) {
@@ -271,11 +276,13 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
   clearRefreshTokenCookie(c);
 
   if (!cfAccessTrustEnabled()) {
+    clearCfAccessLogoutQuarantineCookie(c);
     return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
   }
 
   const teamDomain = cfAccessTeamDomain();
   if (!teamDomain) {
+    clearCfAccessLogoutQuarantineCookie(c);
     return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
   }
 
@@ -319,8 +326,14 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
   // The `/cdn-cgi/access/*` paths are reserved by Cloudflare and
   // intercepted at the edge, so they never hit the origin and aren't
   // affected by the `/api/*` bypass app.
-  const finalReturn = `${origin}/login?signedOut=1`;
+  const finalReturn = `${origin}/api/v1/auth/cf-access-logout/complete`;
   const teamLogout = `https://${teamDomain}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(finalReturn)}`;
   const appLogout = `${origin}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(teamLogout)}`;
   return new Response(null, { status: 302, headers: { Location: appLogout } });
+});
+
+/** Explicit post-IdP boundary: only this return clears the issuer quarantine. */
+cfAccessRedirectLoginRoutes.get('/cf-access-logout/complete', (c) => {
+  clearCfAccessLogoutQuarantineCookie(c);
+  return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
 });

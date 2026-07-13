@@ -90,6 +90,10 @@ vi.mock('../../services/authLifecycle', () => ({
   revokeUserSessionFamilyForLogout: vi.fn(async () => ({ status: 'revoked' })),
 }));
 
+vi.mock('../../services/terminalLogout', () => ({
+  revokeTerminalLogoutSubjects: vi.fn(async () => undefined),
+}));
+
 vi.mock('../../services/anomalyMetrics', () => ({
   recordFailedLogin: vi.fn(),
 }));
@@ -145,6 +149,9 @@ vi.mock('./helpers', () => ({
   getClientIP: vi.fn(() => '203.0.113.10'),
   getClientRateLimitKey: vi.fn(() => 'test-client'),
   setRefreshTokenCookie: vi.fn(),
+  setCfAccessLogoutQuarantineCookie: vi.fn((c: { header: (name: string, value: string, options: { append: boolean }) => void }) => {
+    c.header('Set-Cookie', 'breeze_cf_logout_quarantine=1; Path=/api/v1; HttpOnly; SameSite=Strict; Max-Age=600', { append: true });
+  }),
   clearRefreshTokenCookie: vi.fn((c: { header: (name: string, value: string, options: { append: boolean }) => void }) => {
     c.header('Set-Cookie', 'breeze_refresh_token=; Path=/api/v1/auth; HttpOnly; SameSite=Strict; Max-Age=0', { append: true });
     c.header('Set-Cookie', 'breeze_csrf_token=; Path=/api/v1/auth; SameSite=Strict; Max-Age=0', { append: true });
@@ -233,6 +240,7 @@ import {
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { getMfaAssuranceFailure } from '../../services/mfaPolicy';
+import { revokeTerminalLogoutSubjects } from '../../services/terminalLogout';
 import {
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
@@ -240,6 +248,7 @@ import {
   validateCookieCsrfRequest,
   clearRefreshTokenCookie,
   setRefreshTokenCookie,
+  setCfAccessLogoutQuarantineCookie,
   cacheRefreshTokenFamilyRevocation,
 } from './helpers';
 
@@ -296,11 +305,13 @@ describe('POST /cf-access-logout/prepare', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(revokeAllUserTokens).toHaveBeenCalledTimes(2);
-    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-2');
-    expect(revokeRefreshTokenJti).toHaveBeenCalledWith('jti-b');
+    expect(revokeTerminalLogoutSubjects).toHaveBeenCalledWith({
+      subjectIds: ['user-1', 'user-2'],
+      refreshJti: 'jti-b',
+    });
+    expect(setCfAccessLogoutQuarantineCookie).toHaveBeenCalledOnce();
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect(res.headers.get('set-cookie')).toContain('breeze_cf_logout_quarantine=1');
   });
 
   it('deduplicates same-user access and refresh subjects', async () => {
@@ -314,9 +325,28 @@ describe('POST /cf-access-logout/prepare', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(revokeAllUserTokens).toHaveBeenCalledOnce();
-    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-    expect(revokeRefreshTokenJti).toHaveBeenCalledWith('jti-a');
+    expect(revokeTerminalLogoutSubjects).toHaveBeenCalledWith({
+      subjectIds: ['user-1'],
+      refreshJti: 'jti-a',
+    });
+  });
+
+  it('does not let an inactive or replayed refresh credential name another subject', async () => {
+    vi.mocked(resolveRefreshToken).mockReturnValue('stale-refresh-b');
+    vi.mocked(verifyToken).mockResolvedValue({
+      type: 'refresh', sub: 'user-2', jti: 'stale-jti', fam: 'stale-family',
+    } as never);
+    vi.mocked(getActiveRefreshTokenFamily).mockResolvedValueOnce(null);
+
+    const res = await loginRoutes.request('/cf-access-logout/prepare', {
+      method: 'POST', headers: { 'x-breeze-csrf': '1' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(revokeTerminalLogoutSubjects).toHaveBeenCalledWith({
+      subjectIds: ['user-1'],
+      refreshJti: undefined,
+    });
   });
 });
 

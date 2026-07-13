@@ -227,7 +227,8 @@ async function getToken(): Promise<string | null> {
 async function requestWithPrefix<T>(
   endpoint: string,
   prefix: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  capturedBearer?: string | null,
 ): Promise<T> {
   const requestGeneration = captureSessionGeneration();
   const assertCurrent = () => {
@@ -235,7 +236,7 @@ async function requestWithPrefix<T>(
       throw { message: 'This request belongs to an expired session.', code: 'session_generation_stale', statusCode: 401 } as ApiError;
     }
   };
-  const token = await getToken();
+  const token = capturedBearer === undefined ? await getToken() : capturedBearer;
   assertCurrent();
   const method = (options.method ?? 'GET').toUpperCase();
 
@@ -443,8 +444,8 @@ export async function sendMfaSms(tempToken: string): Promise<void> {
   });
 }
 
-export async function logout(): Promise<void> {
-  await requestWithPrefix('/auth/logout', API_CORE_PREFIX, { method: 'POST' });
+export async function logout(capturedBearer?: string | null): Promise<void> {
+  await requestWithPrefix('/auth/logout', API_CORE_PREFIX, { method: 'POST' }, capturedBearer);
 }
 
 export async function refreshToken(): Promise<{ token: string }> {

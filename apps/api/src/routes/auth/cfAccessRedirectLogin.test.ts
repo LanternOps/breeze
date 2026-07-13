@@ -100,6 +100,13 @@ vi.mock('../../services', () => ({
   verifyToken: vi.fn(async () => servicesState.verifyResult),
 }));
 
+vi.mock('../../services/terminalLogout', () => ({
+  revokeTerminalLogoutSubjects: vi.fn(async (input: { subjectIds: string[]; refreshJti?: string }) => {
+    servicesState.revokeAllCalls.push(...input.subjectIds);
+    if (input.refreshJti) servicesState.revokeJtiCalls.push(input.refreshJti);
+  }),
+}));
+
 const auditState = vi.hoisted(() => ({
   audits: [] as Array<Record<string, unknown>>,
   loginFailures: [] as Array<Record<string, unknown>>,
@@ -111,7 +118,12 @@ vi.mock('../../services/auditService', () => ({
   }),
 }));
 
-const cookieState = vi.hoisted(() => ({ set: null as string | null, cleared: false }));
+const cookieState = vi.hoisted(() => ({
+  set: null as string | null,
+  cleared: false,
+  quarantineSet: false,
+  quarantineCleared: false,
+}));
 
 vi.mock('./helpers', async () => {
   const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
@@ -134,6 +146,12 @@ vi.mock('./helpers', async () => {
       void c;
       cookieState.set = null;
       cookieState.cleared = true;
+    }),
+    setCfAccessLogoutQuarantineCookie: vi.fn(() => {
+      cookieState.quarantineSet = true;
+    }),
+    clearCfAccessLogoutQuarantineCookie: vi.fn(() => {
+      cookieState.quarantineCleared = true;
     }),
     getClientIP: () => '127.0.0.1',
   };
@@ -179,6 +197,8 @@ describe('GET /cf-access-login', () => {
     auditState.loginFailures = [];
     cookieState.set = null;
     cookieState.cleared = false;
+    cookieState.quarantineSet = false;
+    cookieState.quarantineCleared = false;
     servicesState.lastSessionIdentity = null;
     servicesState.verifyResult = null;
     servicesState.revokeAllCalls = [];
@@ -377,8 +397,11 @@ describe('GET /cf-access-login', () => {
     expect(inner.startsWith(`https://${envState.teamDomain}/cdn-cgi/access/logout?returnTo=`)).toBe(true);
     // Innermost (decoded twice) is the SPA landing page.
     const finalEncoded = inner.split('returnTo=')[1] ?? '';
-    expect(decodeURIComponent(finalEncoded)).toBe('https://breeze.example.com/login?signedOut=1');
+    expect(decodeURIComponent(finalEncoded)).toBe(
+      'https://breeze.example.com/api/v1/auth/cf-access-logout/complete',
+    );
     expect(cookieState.cleared).toBe(true);
+    expect(cookieState.quarantineSet).toBe(true);
   });
 
   it('logout endpoint falls back to /login?signedOut=1 when CF Access trust disabled', async () => {
@@ -440,8 +463,8 @@ describe('GET /cf-access-login', () => {
     servicesState.verifyResult = {
       type: 'refresh', sub: 'user-1', jti: 'jti-current', ae: 1, me: 1, fam: 'family-1',
     };
-    const services = await import('../../services');
-    vi.mocked(services.revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
+    const terminalLogout = await import('../../services/terminalLogout');
+    vi.mocked(terminalLogout.revokeTerminalLogoutSubjects).mockRejectedValueOnce(new Error('redis down'));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
       method: 'GET',
@@ -469,7 +492,18 @@ describe('GET /cf-access-login', () => {
     expect(loc).not.toContain('evil.attacker.example');
     const inner = decodeURIComponent(loc.split('returnTo=')[1] ?? '');
     const finalReturn = decodeURIComponent(inner.split('returnTo=')[1] ?? '');
-    expect(finalReturn).toBe('https://breeze.example.com/login?signedOut=1');
+    expect(finalReturn).toBe('https://breeze.example.com/api/v1/auth/cf-access-logout/complete');
+  });
+
+  it('clears the quarantine only on the explicit signed-out return boundary', async () => {
+    const res = await cfAccessRedirectLoginRoutes.request(
+      'http://api.example/cf-access-logout/complete',
+      { method: 'GET' },
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('Location')).toBe('/login?signedOut=1');
+    expect(cookieState.quarantineCleared).toBe(true);
   });
 
   it('logout falls back to PUBLIC_APP_URL when DASHBOARD_URL is unset', async () => {

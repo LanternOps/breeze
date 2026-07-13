@@ -1,6 +1,53 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { createHash } from 'crypto';
-import { getAllowedOrigins, hashRecoveryCode, userRequiresSetup } from './helpers';
+import { Hono } from 'hono';
+import {
+  clearCfAccessLogoutQuarantineCookie,
+  getAllowedOrigins,
+  hashRecoveryCode,
+  setCfAccessLogoutQuarantineCookie,
+  setRefreshTokenCookie,
+  userRequiresSetup,
+} from './helpers';
+
+describe('Cloudflare logout quarantine cookie', () => {
+  it('rejects every refresh-cookie writer while terminal logout is quarantined', async () => {
+    const app = new Hono();
+    app.get('/issue', (c) => {
+      setRefreshTokenCookie(c, 'new-refresh-token');
+      return c.json({ success: true });
+    });
+
+    const response = await app.request('/issue', {
+      headers: { cookie: 'breeze_cf_logout_quarantine=1' },
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get('set-cookie') ?? '').not.toContain('new-refresh-token');
+  });
+
+  it('sets an HttpOnly bounded barrier and clears it only at the explicit return boundary', async () => {
+    const app = new Hono();
+    app.get('/set', (c) => {
+      setCfAccessLogoutQuarantineCookie(c);
+      return c.json({ success: true });
+    });
+    app.get('/clear', (c) => {
+      clearCfAccessLogoutQuarantineCookie(c);
+      return c.json({ success: true });
+    });
+
+    const setResponse = await app.request('/set');
+    expect(setResponse.headers.get('set-cookie')).toMatch(
+      /breeze_cf_logout_quarantine=1; Path=\/api\/v1; HttpOnly; .*Max-Age=600/,
+    );
+    const clearResponse = await app.request('/clear');
+    expect(clearResponse.headers.get('set-cookie')).toContain(
+      'breeze_cf_logout_quarantine=; Path=/api/v1; HttpOnly',
+    );
+    expect(clearResponse.headers.get('set-cookie')).toContain('Max-Age=0');
+  });
+});
 
 describe('getAllowedOrigins (G5 — dev-origin gating)', () => {
   const originalNodeEnv = process.env.NODE_ENV;

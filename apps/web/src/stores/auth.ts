@@ -818,22 +818,28 @@ export function normalizeRecoveryCode(value: string): string {
 }
 
 export function clearLocalAuthSession(
-  persistentStorage: Pick<Storage, 'removeItem'> = localStorage,
-  transientStorage: Pick<Storage, 'removeItem'> = sessionStorage,
+  persistentStorage?: Pick<Storage, 'removeItem'>,
+  transientStorage?: Pick<Storage, 'removeItem'>,
 ): void {
   // Advance the shared boundary before any store cleanup so completions from
   // the expired account become stale before teardown starts mutating state.
   runSessionTeardown();
   useAuthStore.getState().logout();
+  if (!persistentStorage) {
+    try { persistentStorage = localStorage; } catch { /* storage unavailable */ }
+  }
+  if (!transientStorage) {
+    try { transientStorage = sessionStorage; } catch { /* storage unavailable */ }
+  }
   for (const key of ['breeze-auth', 'breeze-org', 'breeze-ai-chat', 'breeze-workspace']) {
     try {
-      persistentStorage.removeItem(key);
+      persistentStorage?.removeItem(key);
     } catch {
       // Attempt every store even if one removal fails. The in-memory session
       // is already gone and the server has durably revoked refresh families.
     }
   }
-  try { transientStorage.removeItem('breeze-mfa-enrollment-methods'); } catch { /* terminal teardown continues */ }
+  try { transientStorage?.removeItem('breeze-mfa-enrollment-methods'); } catch { /* terminal teardown continues */ }
 }
 
 export type InstalledAuthSession = {
@@ -1184,6 +1190,8 @@ export async function apiLogout(): Promise<void> {
   await withAuthSessionTransition(async () => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (tokens?.accessToken) headers.Authorization = `Bearer ${tokens.accessToken}`;
+    const csrfToken = readCookie(CSRF_COOKIE_NAME);
+    if (csrfToken) headers[CSRF_HEADER_NAME] = csrfToken;
     try {
       // The server clears HttpOnly auth cookies before auth middleware runs, so
       // this request remains useful when the in-memory access token is absent
@@ -1215,6 +1223,8 @@ export async function apiCfAccessLogout(
   await withAuthSessionTransition(async () => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (tokens?.accessToken) headers.Authorization = `Bearer ${tokens.accessToken}`;
+    const csrfToken = readCookie(CSRF_COOKIE_NAME);
+    if (csrfToken) headers[CSRF_HEADER_NAME] = csrfToken;
     try {
       const response = await fetch(buildApiUrl('/auth/cf-access-logout/prepare'), {
         method: 'POST',

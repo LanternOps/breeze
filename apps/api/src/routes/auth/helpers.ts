@@ -1,4 +1,5 @@
 import type { Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { and, eq, isNull } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partnerUsers, organizationUsers, organizations, userPasskeys } from '../../db/schema';
@@ -457,7 +458,36 @@ export function buildClearCsrfTokenCookie(): string {
   return `${CSRF_COOKIE_NAME}=; Path=${CSRF_COOKIE_PATH}${buildCookieSecuritySuffix(sameSite)}; Max-Age=0`;
 }
 
+export const CF_ACCESS_LOGOUT_QUARANTINE_COOKIE_NAME = 'breeze_cf_logout_quarantine';
+const CF_ACCESS_LOGOUT_QUARANTINE_MAX_AGE_SECONDS = 10 * 60;
+const CF_ACCESS_LOGOUT_QUARANTINE_COOKIE_PATH = '/api/v1';
+
+export function hasCfAccessLogoutQuarantine(c: Context): boolean {
+  return getCookieValue(c.req.header('Cookie'), CF_ACCESS_LOGOUT_QUARANTINE_COOKIE_NAME) === '1';
+}
+
+export function setCfAccessLogoutQuarantineCookie(c: Context): void {
+  const sameSite = resolveAuthCookieSameSite();
+  c.header(
+    'Set-Cookie',
+    `${CF_ACCESS_LOGOUT_QUARANTINE_COOKIE_NAME}=1; Path=${CF_ACCESS_LOGOUT_QUARANTINE_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite)}; Max-Age=${CF_ACCESS_LOGOUT_QUARANTINE_MAX_AGE_SECONDS}`,
+    { append: true },
+  );
+}
+
+export function clearCfAccessLogoutQuarantineCookie(c: Context): void {
+  const sameSite = resolveAuthCookieSameSite();
+  c.header(
+    'Set-Cookie',
+    `${CF_ACCESS_LOGOUT_QUARANTINE_COOKIE_NAME}=; Path=${CF_ACCESS_LOGOUT_QUARANTINE_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite)}; Max-Age=0`,
+    { append: true },
+  );
+}
+
 export function setRefreshTokenCookie(c: Context, refreshToken: string): void {
+  if (hasCfAccessLogoutQuarantine(c)) {
+    throw new HTTPException(409, { message: 'Terminal logout is still in progress' });
+  }
   const csrfToken = randomBytes(32).toString('hex');
   c.header('Set-Cookie', buildRefreshTokenCookie(refreshToken), { append: true });
   c.header('Set-Cookie', buildCsrfTokenCookie(csrfToken), { append: true });

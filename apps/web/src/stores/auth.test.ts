@@ -942,10 +942,50 @@ describe('auth API helpers', () => {
 
     resolveLogout(makeResponse({ success: true }));
     await cfLogout;
+    const prepareCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/auth/cf-access-logout/prepare'));
+    expect(prepareCall?.[1]).toMatchObject({
+      headers: expect.objectContaining({ 'x-breeze-csrf': 'csrf-test-token' }),
+    });
     await expect(loginB).rejects.toBeInstanceOf(StaleWebSessionError);
     expect(events).toEqual(['logout-start', 'cf-navigate']);
     expect(useAuthStore.getState().user).toBeNull();
     clearCfAccessLogoutIntent();
+  });
+
+  it('fails a queued issuer at the server barrier when localStorage is unavailable across navigation', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const storage = localStorage;
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get: () => { throw new DOMException('storage disabled', 'SecurityError'); },
+    });
+    let quarantined = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/auth/cf-access-logout/prepare')) {
+        quarantined = true;
+        return makeResponse({ success: true });
+      }
+      if (url.endsWith('/auth/login')) {
+        return quarantined
+          ? makeResponse({ error: 'Terminal logout is still in progress' }, false, 409)
+          : makeResponse({ user: baseUser, tokens: baseTokens });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await apiCfAccessLogout(() => undefined);
+    } finally {
+      Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+    }
+
+    await expect(apiLogin('b@example.com', 'password-b')).resolves.toMatchObject({
+      success: false,
+      error: 'Terminal logout is still in progress',
+    });
+    expect(useAuthStore.getState().user).toBeNull();
   });
 
   it('rechecks CF logout intent only after a delayed Web Lock is acquired', async () => {
