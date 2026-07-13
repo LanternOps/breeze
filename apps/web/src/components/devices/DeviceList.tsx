@@ -301,6 +301,66 @@ const statusFullLabelKeys: Record<DeviceStatus, string> = {
   pending: "deviceList.statuses.full.pending",
 };
 
+// Row-menu action gating (#2426). Two categories, and conflating them is the
+// bug this fixes. In THIS menu the members are:
+//
+//   LIVE SESSION — Remote Terminal. Hands off a socket, so it needs an
+//   actively-connected agent. `terminalWs` (and its desktop/tunnel siblings)
+//   reject anything but `online` with "Device is not online".
+//   → gate on `status !== 'online'`.
+//
+//   QUEUED COMMAND — Run Script, Reboot. Inserted as a `device_commands` row
+//   with `status:'pending'` (no TTL) and claimed on the agent's NEXT
+//   poll/heartbeat. The only status the API refuses is `decommissioned`:
+//   `routes/devices/commands.ts` (:89, :157, :268, :437) and the shared
+//   `executeScriptOnDevices` service (`services/scriptExecution.ts:118`, which
+//   drops `status === 'decommissioned'` devices from the target set and returns
+//   `status:'queued'` for the rest). Running a script against an OFFLINE device
+//   is a working, intentional feature: it executes on reconnect. Gating a
+//   queued command on `!== 'online'` does not prevent a doomed request, it
+//   REMOVES that capability.
+//   → gate on `status === 'decommissioned'` (an agent-less machine that can
+//     never claim the command).
+//
+// Reboot is a queued command but still carries the `!== 'online'` gate below —
+// pre-existing behaviour, deliberately not loosened here. See the note in
+// DeviceActions.tsx and PR #2457.
+const notOnlineTitleKeys: Record<Exclude<DeviceStatus, "online">, string> = {
+  offline: "deviceActions.unavailable.offline",
+  maintenance: "deviceActions.unavailable.maintenance",
+  decommissioned: "deviceActions.unavailable.decommissioned",
+  quarantined: "deviceActions.unavailable.quarantined",
+  updating: "deviceActions.unavailable.updating",
+  pending: "deviceActions.unavailable.pending",
+};
+
+type DeviceTranslation = ReturnType<typeof useTranslation<"devices">>["t"];
+
+// Status-accurate tooltip for anything gated on `!== 'online'`. Says only why
+// the device isn't online — it does NOT assert which category the action is.
+function notOnlineTitle(
+  status: DeviceStatus,
+  t: DeviceTranslation,
+): string | undefined {
+  return status === "online"
+    ? undefined
+    : t(/* i18n-dynamic */ notOnlineTitleKeys[status]);
+}
+
+// A queued command is refused only for a decommissioned device.
+function isCommandQueueable(status: DeviceStatus): boolean {
+  return status !== "decommissioned";
+}
+
+function notQueueableTitle(
+  status: DeviceStatus,
+  t: DeviceTranslation,
+): string | undefined {
+  return isCommandQueueable(status)
+    ? undefined
+    : t(/* i18n-dynamic */ notOnlineTitleKeys.decommissioned);
+}
+
 // Cap visible tag chips per row; the rest collapse into a +N chip, with the
 // full comma-joined list on the cell's title attribute (same overflow trick
 // as the status pill). Keeps row height and column width bounded.
@@ -2224,9 +2284,14 @@ export default function DeviceList({
                                   }}
                                   className="z-50 w-48 rounded-md border bg-card shadow-lg"
                                 >
+                                  {/* Live session — needs a connected agent. */}
                                   <button
                                     type="button"
                                     disabled={device.status !== "online"}
+                                    title={notOnlineTitle(
+                                      device.status,
+                                      t,
+                                    )}
                                     onClick={() => {
                                       onAction?.("terminal", device);
                                       setRowMenuOpenId(null);
@@ -2236,20 +2301,37 @@ export default function DeviceList({
                                     <Terminal className="h-4 w-4" />
                                     {t("deviceList.remoteTerminal")}{" "}
                                   </button>
+                                  {/* Queued command — an offline device runs it
+                                      on reconnect, so only a decommissioned
+                                      (agent-less) device is refused. */}
                                   <button
                                     type="button"
+                                    disabled={!isCommandQueueable(device.status)}
+                                    title={notQueueableTitle(
+                                      device.status,
+                                      t,
+                                    )}
                                     onClick={() => {
                                       onAction?.("run-script", device);
                                       setRowMenuOpenId(null);
                                     }}
-                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                                   >
                                     <FileCode className="h-4 w-4" />
                                     {t("deviceList.runScript")}{" "}
                                   </button>
+                                  {/* Reboot is ALSO a queued command, so this
+                                      `!== "online"` gate is stricter than the
+                                      API requires. Left as-is deliberately —
+                                      pre-existing behaviour, and loosening it
+                                      is a maintainer call (PR #2457). */}
                                   <button
                                     type="button"
                                     disabled={device.status !== "online"}
+                                    title={notOnlineTitle(
+                                      device.status,
+                                      t,
+                                    )}
                                     onClick={() => {
                                       onAction?.("reboot", device);
                                       setRowMenuOpenId(null);
