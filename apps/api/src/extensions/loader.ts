@@ -123,15 +123,21 @@ export async function assertExtensionTenancyRls(
   ];
   if (tables.length === 0) return;
 
+  // Bind the table list as an explicit ARRAY[...] of individually-parameterised
+  // text literals. Embedding the JS array directly (`= ANY(${tables})`) makes
+  // drizzle expand it to a TUPLE — `= ANY(($1, $2, ...))` — which Postgres
+  // rejects. `relname` is `name`, not `text`, so it needs the cast to compare.
+  const tableList = sql.join(tables.map((t) => sql`${t}`), sql`, `);
   const result = (await db.execute(sql`
-    SELECT c.relname AS table_name,
+    SELECT c.relname::text AS table_name,
            c.relrowsecurity AS rls_enabled,
            c.relforcerowsecurity AS rls_forced,
            (SELECT count(*)::int FROM pg_policies p
              WHERE p.schemaname = 'public' AND p.tablename = c.relname) AS policy_count
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = ANY(${tables})
+    WHERE n.nspname = 'public' AND c.relkind = 'r'
+      AND c.relname::text = ANY(ARRAY[${tableList}]::text[])
   `)) as unknown as RlsCatalogRow[] | { rows?: RlsCatalogRow[] };
   const rows: RlsCatalogRow[] = Array.isArray(result) ? result : (result.rows ?? []);
   const byName = new Map(rows.map((r) => [r.table_name, r]));
