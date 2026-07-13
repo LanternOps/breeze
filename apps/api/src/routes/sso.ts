@@ -16,7 +16,7 @@ import {
   partnerUsers,
   roles
 } from '../db/schema';
-import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
+import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor, isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../services/ssoDomainVerification';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
   generateState,
@@ -26,12 +26,13 @@ import {
   exchangeCodeForTokens,
   getUserInfo,
   verifyIdTokenSignature,
-  assertEmailVerified,
+  readEmailVerifiedClaim,
   idpAssertedMfa,
   mapUserAttributes,
   discoverOIDCConfig,
   PROVIDER_PRESETS,
-  type OIDCConfig
+  type OIDCConfig,
+  type EmailVerifiedClaim
 } from '../services/sso';
 import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, getUserEpochs, getRefreshFamily, rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -1986,9 +1987,6 @@ ssoRoutes.get('/callback', async (c) => {
       return c.redirect('/login?error=sso_provider_unverified');
     }
     const idClaims = await verifyIdTokenSignature(tokens.id_token, config, session.nonce);
-    if (idClaims.email) {
-      assertEmailVerified(idClaims);
-    }
 
     // Get user info (display attributes). Bind it to the signed token: per OIDC
     // Core §5.3.2 the userinfo `sub` MUST equal the id_token `sub`; otherwise
@@ -2014,6 +2012,61 @@ ssoRoutes.get('/callback', async (c) => {
     // still bound to the verified subject via the `sub` check above.)
     if (idClaims.email) {
       attrs.email = String(idClaims.email).toLowerCase();
+    }
+
+    // ── SR2-12: verified identity claims ─────────────────────────────────────
+    // The `email_verified` decision must ride the SAME source that supplied the
+    // final email. Previously it was read ONLY from the id_token and ONLY when
+    // the id_token carried an email — so an IdP that omits `email` from the
+    // id_token had its userinfo email accepted with the userinfo
+    // `email_verified` NEVER read (OIDCUserInfo.email_verified had zero
+    // readers). That unverified email then drove the domain check, the
+    // auto-link, and JIT.
+    // …and it must be bound to the address we ACTUALLY use. On the userinfo path
+    // `attrs.email` comes from mapUserAttributes(userInfo, mapping) with an
+    // ADMIN-SET mapping key — which may be `upn` / `preferred_username` / … —
+    // while userinfo's `email_verified` attests userinfo.`email`. Trusting the
+    // claim across that gap would let attributeMapping.email='preferred_username'
+    // launder an unattested address behind email_verified:true. So on the
+    // userinfo path the claim only counts when it demonstrably describes the same
+    // address; otherwise it is 'absent' and falls into the domain-ownership gate.
+    const usingIdTokenEmail = Boolean(idClaims.email);
+    const userInfoRecord = userInfo as unknown as Record<string, unknown>;
+    const userInfoEmail =
+      typeof userInfoRecord.email === 'string' ? userInfoRecord.email.toLowerCase() : null;
+    const mappedKeyIsEmail = (mapping?.email ?? 'email') === 'email';
+    const claimDescribesMappedEmail =
+      mappedKeyIsEmail || (userInfoEmail !== null && userInfoEmail === attrs.email.toLowerCase());
+
+    const emailVerifiedClaim: EmailVerifiedClaim = usingIdTokenEmail
+      ? readEmailVerifiedClaim(idClaims as unknown as Record<string, unknown>)
+      : claimDescribesMappedEmail
+        ? readEmailVerifiedClaim(userInfoRecord)
+        : 'absent';
+
+    // Explicit false is ALWAYS fatal, on both axes, on every path (including an
+    // already-linked identity): the IdP is affirmatively telling us the mailbox
+    // is not proven.
+    if (emailVerifiedClaim === 'false') {
+      writeRouteAudit(c, {
+        orgId: provider.orgId,
+        action: 'sso.callback.rejected',
+        resourceType: 'sso_provider',
+        resourceId: provider.id,
+        resourceName: provider.name,
+        result: 'denied',
+        details: {
+          mode: callbackMode,
+          phase: 'email_verification',
+          reason: 'email_verified_false',
+          claimSource: idClaims.email ? 'id_token' : 'userinfo',
+          partnerId: provider.partnerId,
+        },
+      });
+      clearStateCookie();
+      return callbackMode === 'link'
+        ? c.redirect('/settings/profile?ssoLinkError=email_unverified')
+        : c.redirect('/login?error=sso_email_unverified');
     }
 
     // Check allowed domains
@@ -2154,6 +2207,51 @@ ssoRoutes.get('/callback', async (c) => {
     // below, so it doesn't consult verified org domains.
     if (!user && provider.orgId) {
       const assertedEmailDomain = attrs.email.split('@')[1]?.toLowerCase() ?? null;
+
+      // SR2-12: an ABSENT `email_verified` claim is acceptable ONLY when Breeze
+      // itself has proven the domain (DNS TXT, sso_verified_domains). This is
+      // the "documented and enforced equivalent guarantee" the design requires:
+      // we stop taking the IdP's silence on faith and substitute our own proof.
+      //
+      // Reached only when the identity is being resolved BY EMAIL (auto-link) or
+      // provisioned fresh (JIT) — an already-linked (provider, sub) identity is
+      // deliberately exempt, so enabling this never locks out an existing user.
+      //
+      // ORG AXIS ONLY. sso_verified_domains.org_id is NOT NULL: there is no
+      // partner-axis domain machinery, so applying this to the partner axis
+      // would reject EVERY partner-axis Entra login (Entra omits the claim). The
+      // partner axis is materially lower-risk — no JIT at all, and its email
+      // match already clamps to (same partner, orgId IS NULL, passwordless, no
+      // conflicting provider link). KNOWN GAP; follow-up is to make
+      // sso_verified_domains dual-axis (PARTNER-WIDE FIRST) and then gate here.
+      if (emailVerifiedClaim === 'absent') {
+        const domainProven = assertedEmailDomain
+          ? await withSystemDbAccessContext(() =>
+              isDomainVerifiedForOrg(provider.orgId!, assertedEmailDomain),
+            )
+          : false;
+        if (!domainProven) {
+          writeRouteAudit(c, {
+            orgId: provider.orgId,
+            action: 'sso.callback.rejected',
+            resourceType: 'sso_provider',
+            resourceId: provider.id,
+            resourceName: provider.name,
+            result: 'denied',
+            details: {
+              mode: callbackMode,
+              phase: 'email_verification',
+              reason: 'email_verified_absent_domain_unverified',
+              claimSource: idClaims.email ? 'id_token' : 'userinfo',
+              emailDomain: assertedEmailDomain,
+              partnerId: provider.partnerId,
+            },
+          });
+          clearStateCookie();
+          return c.redirect('/login?error=sso_email_unverified');
+        }
+      }
+
       const domainBlocked = await withSystemDbAccessContext(() =>
         isSsoProvisioningBlocked(provider.orgId!, assertedEmailDomain)
       );
@@ -2177,13 +2275,32 @@ ssoRoutes.get('/callback', async (c) => {
       // (partnerId match AND orgId IS NULL). This is what guarantees an
       // org-bound user (orgId set) can NEVER be resolved through a partner
       // provider — the row is filtered out at the DB layer, never matched.
+      // Org-axis clamp (SR2-12 / defense in depth). The org branch previously
+      // matched `eq(users.email, …)` GLOBALLY — any user in any tenant. Login
+      // was still blocked one gate deeper (the org-axis mint requires an
+      // organization_users row for provider.orgId, else no_org_access), so this
+      // was NOT exploitable — it is debt, and it is closed here.
+      //
+      // Clamp on MEMBERSHIP, not on users.org_id: a legitimate multi-org user's
+      // users.org_id may name a different org while they hold a valid membership
+      // in the provider's org, and a naive column clamp would lock them out.
+      // This subquery is exactly the population the mint gate would accept.
       const emailCondition = provider.partnerId
         ? and(
             eq(users.email, attrs.email.toLowerCase()),
             eq(users.partnerId, provider.partnerId),
             isNull(users.orgId)
           )
-        : eq(users.email, attrs.email.toLowerCase());
+        : and(
+            eq(users.email, attrs.email.toLowerCase()),
+            inArray(
+              users.id,
+              db
+                .select({ userId: organizationUsers.userId })
+                .from(organizationUsers)
+                .where(eq(organizationUsers.orgId, provider.orgId!))
+            )
+          );
       const [byEmail] = await withSystemDbAccessContext(async () =>
         db.select().from(users).where(emailCondition).limit(1)
       );

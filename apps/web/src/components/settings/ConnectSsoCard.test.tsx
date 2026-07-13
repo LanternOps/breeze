@@ -106,13 +106,43 @@ describe('ConnectSsoCard (#2183)', () => {
     expect(await screen.findByText(/already linked to a different Breeze user/i)).toBeInTheDocument();
   });
 
-  it('shows an error banner for ?ssoLinkError=user_gone', async () => {
-    setLocation('?ssoLinkError=user_gone');
+  // SR2-11: user_gone was folded into session_invalid (removing an account-state
+  // oracle), so the callback can no longer emit it.
+  it('shows an error banner for ?ssoLinkError=session_invalid', async () => {
+    setLocation('?ssoLinkError=session_invalid');
     fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
 
     render(<ConnectSsoCard />);
 
-    expect(await screen.findByText(/could not be found/i)).toBeInTheDocument();
+    expect(await screen.findByText(/session changed/i)).toBeInTheDocument();
+  });
+
+  it('shows an error banner for ?ssoLinkError=provider_inactive', async () => {
+    setLocation('?ssoLinkError=provider_inactive');
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    render(<ConnectSsoCard />);
+
+    expect(await screen.findByText(/no longer active/i)).toBeInTheDocument();
+  });
+
+  it('shows an error banner for ?ssoLinkError=config_changed', async () => {
+    setLocation('?ssoLinkError=config_changed');
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    render(<ConnectSsoCard />);
+
+    expect(await screen.findByText(/configuration changed/i)).toBeInTheDocument();
+  });
+
+  // SR2-12: the IdP did not positively verify the asserted address.
+  it('shows an error banner for ?ssoLinkError=email_unverified', async () => {
+    setLocation('?ssoLinkError=email_unverified');
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    render(<ConnectSsoCard />);
+
+    expect(await screen.findByText(/did not confirm/i)).toBeInTheDocument();
   });
 
   it('renders an inline error line (not null) when the options fetch returns a server error', async () => {

@@ -4,6 +4,7 @@ import {
   verifyIdTokenClaims,
   verifyIdTokenSignature,
   assertEmailVerified,
+  readEmailVerifiedClaim,
   idpAssertedMfa,
   discoverOIDCConfig,
   isInternalUrl,
@@ -194,6 +195,26 @@ describe('sso service', () => {
     // server-to-server userinfo call, not the id_token email, anyway.
     it('passes when email_verified is absent (does not lock out Azure AD)', () => {
       expect(() => assertEmailVerified({})).not.toThrow();
+    });
+  });
+
+  describe('readEmailVerifiedClaim (SR2-12)', () => {
+    it.each([
+      [{ email_verified: true }, 'true'],
+      [{ email_verified: 'true' }, 'true'],
+      [{ email_verified: false }, 'false'],
+      [{ email_verified: 'false' }, 'false'],
+      [{}, 'absent'],
+      [{ email_verified: null }, 'absent'],
+      [{ email_verified: 'maybe' }, 'absent'],
+      [{ email_verified: 1 }, 'absent'],
+    ])('%o -> %s', (source, expected) => {
+      expect(readEmailVerifiedClaim(source as Record<string, unknown>)).toBe(expected);
+    });
+
+    it('returns absent for null/undefined', () => {
+      expect(readEmailVerifiedClaim(null)).toBe('absent');
+      expect(readEmailVerifiedClaim(undefined)).toBe('absent');
     });
   });
 

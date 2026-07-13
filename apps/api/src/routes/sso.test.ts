@@ -33,7 +33,14 @@ vi.mock('../services/sso', () => ({
   decodeIdToken: vi.fn(),
   verifyIdTokenClaims: vi.fn(),
   verifyIdTokenSignature: vi.fn(),
-  assertEmailVerified: vi.fn(),
+  // SR2-12: real logic (not a stub) so the callback tests actually exercise the
+  // claim reader across id_token / userinfo bodies.
+  readEmailVerifiedClaim: (source: Record<string, unknown> | null | undefined) => {
+    const ev = source?.email_verified;
+    if (ev === true || ev === 'true') return 'true';
+    if (ev === false || ev === 'false') return 'false';
+    return 'absent';
+  },
   // Real logic (not a stub) so the IdP-MFA tests exercise the amr check.
   idpAssertedMfa: (claims: { amr?: unknown }) => Array.isArray(claims?.amr) && claims.amr.includes('mfa'),
   mapUserAttributes: vi.fn(),
@@ -246,6 +253,9 @@ vi.mock('../services/ssoDomainVerification', () => ({
   recordNameFor: vi.fn((domain: string) => `_breeze-verify.${domain}`),
   recordValueFor: vi.fn((token: string) => `breeze-domain-verify=${token}`),
   isSsoProvisioningBlocked: vi.fn().mockResolvedValue(false),
+  // NEW (SR2-12): the hard absent-claim gate. Default true so existing tests,
+  // which assert on isSsoProvisioningBlocked, are unaffected.
+  isDomainVerifiedForOrg: vi.fn().mockResolvedValue(true),
 }));
 
 // Partial-mock auth/helpers: keep the real cookie helpers the callback uses,
@@ -305,7 +315,7 @@ import {
   mapUserAttributes,
   verifyIdTokenSignature,
 } from '../services/sso';
-import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
+import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../services/ssoDomainVerification';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getUserPermissions } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -385,6 +395,13 @@ describe('sso routes', () => {
       remaining: 9,
       resetAt: new Date(Date.now() + 60_000)
     } as any);
+    // SR2-12: these ssoDomainVerification mocks are set with persistent
+    // implementations (mockResolvedValue) by individual tests, and clearAllMocks
+    // does NOT reset implementations — so restore their factory defaults here so
+    // a prior test's override (e.g. isSsoProvisioningBlocked=true, or the SR2-12
+    // absent-claim gate's isDomainVerifiedForOrg=false) cannot bleed forward.
+    vi.mocked(isSsoProvisioningBlocked).mockReset().mockResolvedValue(false);
+    vi.mocked(isDomainVerifiedForOrg).mockReset().mockResolvedValue(true);
     delete process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN;
     process.env.APP_ENCRYPTION_KEY = SSO_STATE_COOKIE_SECRET;
     permissionGate.deny = false;
@@ -1571,6 +1588,7 @@ describe('sso routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(sel(PROVIDER_ROW))
         .mockReturnValueOnce(sel([])) // no (provider, sub) link yet
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // SR2-12: org-members subquery for emailCondition clamp (constructed before byEmail)
         .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'Pw', passwordHash: '$argon2id$hash' }]))
         .mockReturnValueOnce(sel([])); // no other-provider link (still denied — has a password)
 
@@ -1585,6 +1603,7 @@ describe('sso routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(sel(PROVIDER_ROW))
         .mockReturnValueOnce(sel([])) // no link for THIS provider
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // SR2-12: org-members subquery for emailCondition clamp
         .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'SsoOnly', passwordHash: null }]))
         .mockReturnValueOnce(sel([{ id: 'other-provider-link' }])); // linked to another provider
 
@@ -1599,6 +1618,7 @@ describe('sso routes', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(sel(PROVIDER_ROW))
         .mockReturnValueOnce(sel([])) // no link yet
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // SR2-12: org-members subquery for emailCondition clamp
         .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'SsoOnly', passwordHash: null }]))
         .mockReturnValueOnce(sel([])) // no other-provider link → safe to link
         .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
@@ -1689,6 +1709,218 @@ describe('sso routes', () => {
       // but the gate block is inside `if (!user)` which is false here — so
       // the callback must NOT have redirected to sso_domain_unverified.
       expect(res.headers.get('location') ?? '').not.toContain('sso_domain_unverified');
+    });
+  });
+
+  describe('SSO verified identity claims (SR2-12)', () => {
+    const sel = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) })
+    } as any);
+    const selJoin = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }) })
+    } as any);
+    const ORG_PROVIDER = {
+      id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, type: 'oidc', status: 'active', configVersion: 1,
+      issuer: 'https://issuer.example.com', authorizationUrl: 'https://issuer.example.com/auth',
+      tokenUrl: 'https://issuer.example.com/token', userInfoUrl: 'https://issuer.example.com/userinfo',
+      jwksUrl: 'https://issuer.example.com/jwks', clientId: 'client-id', clientSecret: 'client-secret',
+      scopes: 'openid profile email', attributeMapping: { email: 'email', name: 'name' },
+      autoProvision: false, allowedDomains: null, defaultRoleId: null, trustsIdpMfa: false
+    };
+    const PARTNER_PROVIDER = {
+      ...ORG_PROVIDER, orgId: null, partnerId: PARTNER_UUID,
+    };
+    // Prime the session-claim delete + userinfo/exchange. Callers set
+    // verifyIdTokenSignature / getUserInfo / mapUserAttributes for the case.
+    const primeSession = () => {
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({ access_token: 'a', refresh_token: 'r', expires_in: 3600, id_token: 'h.p.s' } as any);
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-v', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/dashboard', providerVersion: 1 }]) })
+      } as any);
+    };
+    const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
+
+    // 1. id_token email_verified:false → reject before identity resolution.
+    it('rejects an id_token asserting email_verified:false', async () => {
+      primeSession();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce', email: 'test@corp.example', email_verified: false } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'test@corp.example', name: 'T' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'test@corp.example', name: 'T' } as any);
+      vi.mocked(db.select).mockReturnValueOnce(sel([ORG_PROVIDER]));
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_email_unverified');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // 2. id_token omits email; userinfo carries email_verified:false → reject.
+    //    This is the path that was NEVER read before SR2-12.
+    it('rejects when the id_token omits email and userinfo asserts email_verified:false', async () => {
+      primeSession();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 's1', nonce: 'nonce' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 's1', email: 'x@corp.example', email_verified: false, name: 'X' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'x@corp.example', name: 'X' } as any);
+      vi.mocked(db.select).mockReturnValueOnce(sel([ORG_PROVIDER]));
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_email_unverified');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // 3. Absent claim + org axis + domain NOT verified + no existing link → reject.
+    it('rejects an absent claim on the org axis when the domain is not verified', async () => {
+      primeSession();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'test@corp.example', name: 'T' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'test@corp.example', name: 'T' } as any);
+      vi.mocked(isDomainVerifiedForOrg).mockResolvedValueOnce(false);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))
+        .mockReturnValueOnce(sel([])); // no (provider, sub) link → user null → domain gate
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_email_unverified');
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // 4. Absent claim + org axis + domain VERIFIED → proceeds to the auto-link path.
+    it('allows an absent claim on the org axis when Breeze has proven the domain', async () => {
+      primeSession();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'test@corp.example', name: 'T' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'test@corp.example', name: 'T' } as any);
+      // isDomainVerifiedForOrg defaults to true (mock factory).
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                              // no (provider, sub) link
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))        // org-members subquery (emailCondition clamp)
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@corp.example', name: 'SsoOnly', passwordHash: null }])) // byEmail
+        .mockReturnValueOnce(sel([]))                             // no other-provider link → safe to link
+        .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+        .mockReturnValueOnce(sel([]));                            // existingIdentity none → insert
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      expect(createTokenPair).toHaveBeenCalled();
+    });
+
+    // 5. Absent claim + PARTNER axis → tolerated (documented gap): reaches the
+    //    partner identity resolution and, with no user, invite_required — NOT
+    //    sso_email_unverified.
+    it('tolerates an absent claim on the partner axis (documented gap)', async () => {
+      primeSession();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'tech@msp.example', name: 'Tech' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'tech@msp.example', name: 'Tech' } as any);
+      // Even if the org-domain machinery would say "no", the partner axis must
+      // never consult it — prove it by forcing false.
+      vi.mocked(isDomainVerifiedForOrg).mockResolvedValue(false);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                              // no (provider, sub) link
+        .mockReturnValueOnce(sel([]));                            // partner-axis byEmail (no members subquery) → none
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=invite_required');
+      expect(res.headers.get('location') ?? '').not.toContain('sso_email_unverified');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    // 6. Absent claim + already-linked (provider, sub) identity → allowed. The
+    //    email-driven gates never run, so enabling enforcement can't lock out an
+    //    existing SSO user (even with the domain unverified).
+    it('exempts an already-linked identity from the absent-claim gate', async () => {
+      primeSession();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'test@corp.example', name: 'T' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'test@corp.example', name: 'T' } as any);
+      vi.mocked(isDomainVerifiedForOrg).mockResolvedValue(false); // would reject if consulted
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))        // (provider, sub) link → user resolved
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@corp.example', name: 'Linked' }]))
+        .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      expect(res.headers.get('location') ?? '').not.toContain('sso_email_unverified');
+      expect(createTokenPair).toHaveBeenCalled();
+    });
+
+    // 7. Org clamp on the auto-link email match. A by-email user who is NOT a
+    //    member of the provider's org is blocked one gate deeper (no_org_access)
+    //    and never mints — the membership subquery is exactly that population.
+    it('does not mint when the by-email user is not a member of the provider org', async () => {
+      primeSession();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'test@corp.example', name: 'T' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'test@corp.example', name: 'T' } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([ORG_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                              // no (provider, sub) link
+        .mockReturnValueOnce(sel([]))                             // org-members subquery → empty (not a member)
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@corp.example', name: 'Outsider', passwordHash: null }])) // byEmail
+        .mockReturnValueOnce(sel([]))                             // no other-provider link → user = byEmail
+        .mockReturnValueOnce(selJoin([]));                        // NO org membership → no_org_access
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=no_org_access');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    // 8. Mapped-email laundering (I3). attributeMapping.email='preferred_username'
+    //    names a DIFFERENT address than userinfo.email, which is what
+    //    email_verified:true attests — so the claim must NOT count. With no
+    //    verified domain, the absent-claim gate rejects.
+    it('does not let a true claim launder a mapped address it does not attest', async () => {
+      primeSession();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'real@corp.example', email_verified: true, preferred_username: 'spoof@corp.example', name: 'X' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'spoof@corp.example', name: 'X' } as any);
+      vi.mocked(isDomainVerifiedForOrg).mockResolvedValueOnce(false);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([{ ...ORG_PROVIDER, attributeMapping: { email: 'preferred_username', name: 'name' } }]))
+        .mockReturnValueOnce(sel([])); // no link → user null → domain gate
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_email_unverified');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    // 8 (mirror). Same setup, but the org HAS the domain verified → the domain
+    //    gate carries the legitimate case forward (proving it is the domain
+    //    proof, not the laundered claim, that admits it).
+    it('admits the mapped-address case when the org has proven the domain', async () => {
+      primeSession();
+      vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'real@corp.example', email_verified: true, preferred_username: 'spoof@corp.example', name: 'X' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'spoof@corp.example', name: 'X' } as any);
+      // isDomainVerifiedForOrg defaults to true → domain proof carries it.
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([{ ...ORG_PROVIDER, attributeMapping: { email: 'preferred_username', name: 'name' } }]))
+        .mockReturnValueOnce(sel([]))                              // no link
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }]))        // org-members subquery
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'spoof@corp.example', name: 'SsoOnly', passwordHash: null }])) // byEmail
+        .mockReturnValueOnce(sel([]))                             // no other-provider link
+        .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
+        .mockReturnValueOnce(sel([]));                            // existingIdentity none
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
+      expect(createTokenPair).toHaveBeenCalled();
     });
   });
 
@@ -3429,6 +3661,7 @@ describe('sso routes', () => {
         .mockReturnValueOnce(selLimit([provider]))              // 1. provider
         .mockReturnValueOnce(selLimit([ORG_ROLE_ROW]))          // 2. pre-JIT axis check (getProviderAxisRole)
         .mockReturnValueOnce(selLimit([]))                      // 3. (provider, sub) → unlinked
+        .mockReturnValueOnce(selLimit([]))                      // 3b. SR2-12: org-members subquery for the emailCondition clamp (constructed just before the by-email select)
         .mockReturnValueOnce(selLimit([]));                     // 4. users by email → none
       for (const t of tail) vi.mocked(db.select).mockReturnValueOnce(t);
     };

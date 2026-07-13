@@ -329,19 +329,31 @@ export async function verifyIdTokenSignature(
 }
 
 /**
- * Reject an id_token whose email is EXPLICITLY marked unverified before it is
- * trusted for user provisioning or account linking. `email_verified` may arrive
- * as a boolean or string.
+ * The three possible states of an OIDC `email_verified` claim, read from EITHER
+ * an id_token claim set OR a userinfo body. `email_verified` may legitimately
+ * arrive as a boolean or as a string (SR2-12).
  *
- * Only an explicit false/"false" blocks: many IdPs (notably Azure AD / Entra)
- * omit `email_verified` entirely even for verified mailboxes, so treating an
- * ABSENT claim as unverified would lock those tenants out. Identity ultimately
- * flows from the server-to-server userinfo call, not the id_token email, so an
- * absent claim is acceptable here.
+ * 'absent' covers missing, null, and any non-boolean junk value — an IdP that
+ * says something we cannot interpret has not asserted verification.
+ */
+export type EmailVerifiedClaim = 'true' | 'false' | 'absent';
+
+export function readEmailVerifiedClaim(
+  source: Record<string, unknown> | null | undefined,
+): EmailVerifiedClaim {
+  const ev = source?.email_verified;
+  if (ev === true || ev === 'true') return 'true';
+  if (ev === false || ev === 'false') return 'false';
+  return 'absent';
+}
+
+/**
+ * @deprecated Superseded by readEmailVerifiedClaim + the callback's axis-aware
+ * gate (SR2-12). Kept because it is the documented "explicit false only"
+ * behavior and is still unit-tested; the SSO callback no longer calls it.
  */
 export function assertEmailVerified(claims: Pick<IDTokenClaims, 'email_verified'>): void {
-  const ev = (claims as { email_verified?: unknown }).email_verified;
-  if (ev === false || ev === 'false') {
+  if (readEmailVerifiedClaim(claims as Record<string, unknown>) === 'false') {
     throw new Error('ID token email is explicitly not verified (email_verified === false)');
   }
 }
