@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
 import {
@@ -53,6 +53,23 @@ const baseTokens: Tokens = {
   accessToken: 'access-old',
   expiresInSeconds: 3600
 };
+
+// This suite intentionally installs many synthetic users/tokens. Zustand's
+// persisted auth state writes through to the worker-wide localStorage, which
+// otherwise seeds the next test file with an authenticated user but no access
+// token and makes its first fetch attempt an unexpected refresh. Keep the
+// module's cross-test boundary terminal just like production logout.
+afterEach(() => {
+  localStorage.removeItem('breeze-auth');
+  useAuthStore.setState({
+    user: null,
+    tokens: null,
+    isAuthenticated: false,
+    isLoading: false,
+    mfaPending: false,
+    mfaTempToken: null,
+  });
+});
 
 describe('auth store fetchWithAuth', () => {
   beforeEach(() => {
@@ -116,6 +133,30 @@ describe('auth store fetchWithAuth', () => {
     const result = await Promise.race([
       fetchWithAuth('/events'),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('stream response was blocked')), 100)),
+    ]);
+    const reader = result.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false, value: chunk });
+    await reader.cancel();
+  });
+
+  it('returns an open attachment download without buffering the cloned body', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const chunk = new TextEncoder().encode('partial-download');
+    const response = new Response(new ReadableStream<Uint8Array>({
+      start(nextController) {
+        nextController.enqueue(chunk);
+      },
+    }), {
+      headers: {
+        'content-type': 'application/octet-stream',
+        'content-disposition': 'attachment; filename="export.bin"',
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+
+    const result = await Promise.race([
+      fetchWithAuth('/exports/download'),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('download response was blocked')), 100)),
     ]);
     const reader = result.body!.getReader();
     await expect(reader.read()).resolves.toMatchObject({ done: false, value: chunk });
@@ -741,6 +782,59 @@ describe('auth store fetchWithAuth', () => {
     }
   });
 
+  it('falls back when reading navigator.locks throws and runs the operation once', async () => {
+    const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks');
+    const operation = vi.fn().mockResolvedValue('complete');
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      get() { throw new Error('locks getter unavailable'); },
+    });
+    try {
+      await expect(withAuthSessionTransition(operation)).resolves.toBe('complete');
+      expect(operation).toHaveBeenCalledOnce();
+    } finally {
+      if (originalLocks) Object.defineProperty(navigator, 'locks', originalLocks);
+      else delete (navigator as unknown as { locks?: LockManager }).locks;
+    }
+  });
+
+  it.each([
+    ['synchronous request failure', () => { throw new Error('request unavailable'); }],
+    ['pre-callback rejection', () => Promise.reject(new Error('lock denied'))],
+  ])('falls back after %s and keeps later operations usable', async (_label, requestImpl) => {
+    const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks');
+    const request = vi.fn(requestImpl);
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: { request } });
+    const firstOperation = vi.fn().mockResolvedValue('first');
+    const secondOperation = vi.fn().mockResolvedValue('second');
+    try {
+      await expect(withAuthSessionTransition(firstOperation)).resolves.toBe('first');
+      await expect(withAuthSessionTransition(secondOperation)).resolves.toBe('second');
+      expect(firstOperation).toHaveBeenCalledOnce();
+      expect(secondOperation).toHaveBeenCalledOnce();
+    } finally {
+      if (originalLocks) Object.defineProperty(navigator, 'locks', originalLocks);
+      else delete (navigator as unknown as { locks?: LockManager }).locks;
+    }
+  });
+
+  it('does not replay an operation when the Web Lock callback itself rejects', async () => {
+    const originalLocks = Object.getOwnPropertyDescriptor(navigator, 'locks');
+    const request = vi.fn(<T>(_name: string, callback: () => Promise<T>) => callback());
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: { request } });
+    const failedOperation = vi.fn().mockRejectedValue(new Error('operation failed'));
+    const laterOperation = vi.fn().mockResolvedValue('later');
+    try {
+      await expect(withAuthSessionTransition(failedOperation)).rejects.toThrow('operation failed');
+      await expect(withAuthSessionTransition(laterOperation)).resolves.toBe('later');
+      expect(failedOperation).toHaveBeenCalledOnce();
+      expect(laterOperation).toHaveBeenCalledOnce();
+    } finally {
+      if (originalLocks) Object.defineProperty(navigator, 'locks', originalLocks);
+      else delete (navigator as unknown as { locks?: LockManager }).locks;
+    }
+  });
+
   it('holds the transition through Cloudflare refresh and identity bootstrap before newer login', async () => {
     let resolveRefresh!: (response: Response) => void;
     let resolveMe!: (response: Response) => void;
@@ -859,7 +953,8 @@ describe('auth API helpers', () => {
 
     const result = await apiVerifyMFA('123456', 'temp-1', 'totp');
 
-    expect(result).toEqual({ success: true, user: { ...baseUser, requiresSetup: false }, tokens, requiresSetup: false });
+    expect(result).toMatchObject({ success: true, user: { ...baseUser, requiresSetup: false }, tokens, requiresSetup: false });
+    expect(result.installedSession).toMatchObject({ userId: baseUser.id, accessToken: tokens.accessToken });
   });
 
   it('normalizes recovery codes and sends only the recovery-code payload', async () => {
@@ -1017,6 +1112,78 @@ describe('auth API helpers', () => {
     expect(localStorage.getItem('breeze-ai-chat')).toBeNull();
     expect(localStorage.getItem('breeze-workspace')).toBeNull();
     expect(sessionStorage.getItem('breeze-mfa-enrollment-methods')).toBeNull();
+  });
+
+  it('attempts server cookie clearing even when no access token remains', async () => {
+    useAuthStore.setState({ user: baseUser, tokens: null, isAuthenticated: true });
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ success: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await apiLogout();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/auth\/logout$/);
+    expect(new Headers(options.headers).has('Authorization')).toBe(false);
+    expect(options.credentials).toBe('include');
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+
+  it('orders an account A logout cookie clear before a newer account B login', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    let resolveLogout!: (response: Response) => void;
+    let resolveLogin!: (response: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/auth/logout')) return new Promise<Response>((resolve) => { resolveLogout = resolve; });
+      if (url.endsWith('/auth/login')) return new Promise<Response>((resolve) => { resolveLogin = resolve; });
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const logoutA = apiLogout();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    const loginB = apiLogin('b@example.com', 'password-b');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/auth\/logout$/);
+
+    resolveLogout(makeResponse({ success: true }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    resolveLogin(makeResponse({ user: userB, tokens: tokensB }));
+
+    await expect(logoutA).resolves.toBeUndefined();
+    await expect(loginB).resolves.toMatchObject({ success: true, user: userB });
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it('keeps account B queued until a failing account A logout request settles', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    let rejectLogout!: (error: Error) => void;
+    let resolveLogin!: (response: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/auth/logout')) return new Promise<Response>((_, reject) => { rejectLogout = reject; });
+      if (url.endsWith('/auth/login')) return new Promise<Response>((resolve) => { resolveLogin = resolve; });
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const logoutA = apiLogout();
+    const loginB = apiLogin('b@example.com', 'password-b');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/auth\/logout$/);
+
+    rejectLogout(new Error('offline'));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    resolveLogin(makeResponse({ user: userB, tokens: tokensB }));
+
+    await expect(logoutA).resolves.toBeUndefined();
+    await expect(loginB).resolves.toMatchObject({ success: true, user: userB });
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
   });
 
   it('apiPreviewInvite sends the token in a POST body, not in the URL', async () => {

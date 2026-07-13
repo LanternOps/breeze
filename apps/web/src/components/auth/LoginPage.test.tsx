@@ -1,10 +1,15 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { storeLoginMock, currentInstalledSessionMock } = vi.hoisted(() => ({
+  storeLoginMock: vi.fn(),
+  currentInstalledSessionMock: vi.fn(() => true),
+}));
+
 vi.mock('../../stores/auth', () => ({
   useAuthStore: Object.assign(
     (selector: (s: { login: ReturnType<typeof vi.fn> }) => unknown) =>
-      selector({ login: vi.fn() }),
+      selector({ login: storeLoginMock }),
     {},
   ),
   apiLogin: vi.fn(),
@@ -12,6 +17,8 @@ vi.mock('../../stores/auth', () => ({
   apiVerifyPasskeyMFA: vi.fn(),
   apiSendSmsMfaCode: vi.fn(),
   fetchAndApplyPreferences: vi.fn(),
+  isInstalledAuthSessionCurrent: currentInstalledSessionMock,
+  StaleWebSessionError: class StaleWebSessionError extends Error {},
   normalizeRecoveryCode: (value: string) => {
     const compact = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
     return compact.length > 4 ? `${compact.slice(0, 4)}-${compact.slice(4)}` : compact;
@@ -49,7 +56,7 @@ beforeEach(() => {
 });
 
 import LoginPage from './LoginPage';
-import { apiLogin, apiVerifyMFA } from '../../stores/auth';
+import { apiLogin, apiVerifyMFA, fetchAndApplyPreferences } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { getLoginContext } from '../../lib/loginContext';
 
@@ -58,6 +65,7 @@ const baseLoginSuccess = {
   user: { id: 'u1', email: 'jane@example.com', name: 'Jane', mfaEnabled: false },
   tokens: { accessToken: 'a', refreshToken: 'r', expiresInSeconds: 900 },
   requiresSetup: false,
+  installedSession: { generation: 1, userId: 'u1', accessToken: 'a' },
 };
 
 async function fillAndSubmit(email = 'jane@example.com', password = 'Sup3rSecure!') {
@@ -139,6 +147,44 @@ describe('LoginPage navigation after login', () => {
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
     expect(navigateTo).toHaveBeenCalledWith('/');
+  });
+
+  it('does not reinstall or navigate account A when account B supersedes its password helper result', async () => {
+    vi.mocked(apiLogin).mockResolvedValueOnce(baseLoginSuccess);
+    currentInstalledSessionMock.mockReturnValueOnce(false);
+    render(<LoginPage next="/devices" />);
+
+    await fillAndSubmit();
+
+    await waitFor(() => expect(apiLogin).toHaveBeenCalledOnce());
+    expect(storeLoginMock).not.toHaveBeenCalled();
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /sign in/i })).not.toBeDisabled();
+  });
+
+  it('rechecks the installed session after preferences before navigating', async () => {
+    vi.mocked(apiLogin).mockResolvedValueOnce(baseLoginSuccess);
+    currentInstalledSessionMock.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    vi.mocked(fetchAndApplyPreferences).mockResolvedValueOnce();
+    render(<LoginPage next="/devices" />);
+
+    await fillAndSubmit();
+
+    await waitFor(() => expect(fetchAndApplyPreferences).toHaveBeenCalledOnce());
+    await waitFor(() => expect(currentInstalledSessionMock).toHaveBeenCalledTimes(2));
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(storeLoginMock).not.toHaveBeenCalled();
+  });
+
+  it('clears loading when a stale password completion rejects', async () => {
+    const { StaleWebSessionError } = await import('../../stores/auth');
+    vi.mocked(apiLogin).mockRejectedValueOnce(new StaleWebSessionError());
+    render(<LoginPage />);
+
+    await fillAndSubmit();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /sign in/i })).not.toBeDisabled());
+    expect(navigateTo).not.toHaveBeenCalled();
   });
 });
 
@@ -343,4 +389,35 @@ describe('LoginPage navigation after MFA verify', () => {
       'recovery_code',
     ));
   });
+
+  it.each(['totp', 'recovery_code'] as const)(
+    'does not reinstall or navigate account A after superseded %s verification',
+    async (method) => {
+      render(<LoginPage next="/devices" />);
+      vi.mocked(apiLogin).mockResolvedValueOnce({
+        success: true,
+        mfaRequired: true,
+        tempToken: 'temp-a',
+        mfaMethod: 'totp',
+        allowedMethods: ['totp', 'recovery_code'],
+      });
+      await fillAndSubmit();
+      if (method === 'recovery_code') {
+        fireEvent.click(await screen.findByTestId('mfa-method-recovery_code'));
+        fireEvent.change(screen.getByTestId('mfa-recovery-code'), { target: { value: 'AB12-CD34' } });
+      } else {
+        await screen.findByTestId('mfa-digit-0');
+        for (let i = 0; i < 6; i++) {
+          fireEvent.change(screen.getByTestId(`mfa-digit-${i}`), { target: { value: String(i + 1) } });
+        }
+      }
+      vi.mocked(apiVerifyMFA).mockResolvedValueOnce(baseLoginSuccess);
+      currentInstalledSessionMock.mockReturnValueOnce(false);
+      fireEvent.click(screen.getByTestId('mfa-submit'));
+
+      await waitFor(() => expect(apiVerifyMFA).toHaveBeenCalledOnce());
+      expect(storeLoginMock).not.toHaveBeenCalled();
+      expect(navigateTo).not.toHaveBeenCalled();
+    },
+  );
 });

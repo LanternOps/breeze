@@ -1,14 +1,16 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { apiVerifyPasskeyMFAMock } = vi.hoisted(() => ({
+const { apiVerifyPasskeyMFAMock, storeLoginMock, currentInstalledSessionMock } = vi.hoisted(() => ({
   apiVerifyPasskeyMFAMock: vi.fn(),
+  storeLoginMock: vi.fn(),
+  currentInstalledSessionMock: vi.fn(() => true),
 }));
 
 vi.mock('../../stores/auth', () => ({
   useAuthStore: Object.assign(
     (selector: (s: { login: ReturnType<typeof vi.fn> }) => unknown) =>
-      selector({ login: vi.fn() }),
+      selector({ login: storeLoginMock }),
     {},
   ),
   apiLogin: vi.fn(),
@@ -16,6 +18,8 @@ vi.mock('../../stores/auth', () => ({
   apiVerifyPasskeyMFA: apiVerifyPasskeyMFAMock,
   apiSendSmsMfaCode: vi.fn(),
   fetchAndApplyPreferences: vi.fn(),
+  isInstalledAuthSessionCurrent: currentInstalledSessionMock,
+  StaleWebSessionError: class StaleWebSessionError extends Error {},
   normalizeRecoveryCode: (value: string) => value,
   // LoginForm's useRegistrationGate loads /config via fetchWithAuth.
   fetchWithAuth: vi.fn(async () => new Response('{}', { status: 200 })),
@@ -46,6 +50,7 @@ const baseLoginSuccess = {
   user: { id: 'u1', email: 'jane@example.com', name: 'Jane', mfaEnabled: true },
   tokens: { accessToken: 'a', expiresInSeconds: 900 },
   requiresSetup: false,
+  installedSession: { generation: 1, userId: 'u1', accessToken: 'a' },
 };
 
 async function fillAndSubmit(email = 'jane@example.com', password = 'Sup3rSecure!') {
@@ -126,5 +131,24 @@ describe('LoginPage passkey MFA', () => {
 
     expect(await screen.findByTestId('mfa-digit-0')).toBeTruthy();
     expect(screen.queryByTestId('mfa-passkey-alternate')).toBeNull();
+  });
+
+  it('does not reinstall or navigate account A when account B supersedes passkey verification', async () => {
+    vi.mocked(apiLogin).mockResolvedValueOnce({
+      success: true,
+      mfaRequired: true,
+      tempToken: 'temp-passkey',
+      mfaMethod: 'passkey',
+    } as any);
+    apiVerifyPasskeyMFAMock.mockResolvedValueOnce(baseLoginSuccess);
+    currentInstalledSessionMock.mockReturnValueOnce(false);
+    render(<LoginPage next="/devices" />);
+
+    await fillAndSubmit();
+    fireEvent.click(await screen.findByTestId('mfa-passkey-submit'));
+
+    await waitFor(() => expect(apiVerifyPasskeyMFAMock).toHaveBeenCalledOnce());
+    expect(storeLoginMock).not.toHaveBeenCalled();
+    expect(navigateTo).not.toHaveBeenCalled();
   });
 });

@@ -95,7 +95,7 @@ describe('AutomationTab — deploy_software action', () => {
     );
 
     // Open the picker dropdown and select an entry.
-    fireEvent.click(screen.getByText('Select software...'));
+    fireEvent.click(await screen.findByText('Select software...'));
     fireEvent.click(await screen.findByText('Google Chrome'));
 
     // Persist and assert the emitted action shape.

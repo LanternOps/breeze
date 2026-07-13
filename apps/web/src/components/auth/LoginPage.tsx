@@ -4,14 +4,15 @@ import LoginForm from './LoginForm';
 import MFAVerifyForm from './MFAVerifyForm';
 import McpUrlCard from '../shared/McpUrlCard';
 import {
-  useAuthStore,
   apiLogin,
   apiVerifyMFA,
   apiVerifyPasskeyMFA,
   apiSendSmsMfaCode,
-  fetchAndApplyPreferences
+  fetchAndApplyPreferences,
+  isInstalledAuthSessionCurrent,
+  StaleWebSessionError,
 } from '../../stores/auth';
-import type { MfaMethod } from '../../stores/auth';
+import type { InstalledAuthSession, MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
 import { getLoginContext } from '../../lib/loginContext';
@@ -132,7 +133,33 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // form that's collapsed behind it (see the enforceSSO comment below).
   const [showPasswordForm, setShowPasswordForm] = useState(false);
 
-  const login = useAuthStore((state) => state.login);
+  const finishInstalledLogin = async (
+    installedSession: InstalledAuthSession | undefined,
+    requiresSetup: boolean | undefined,
+  ): Promise<void> => {
+    if (!isInstalledAuthSessionCurrent(installedSession)) {
+      setLoading(false);
+      return;
+    }
+    try {
+      await fetchAndApplyPreferences();
+      if (!isInstalledAuthSessionCurrent(installedSession)) {
+        setLoading(false);
+        return;
+      }
+      await navigateTo(requiresSetup ? '/setup' : safeNext);
+    } catch (caught) {
+      // A superseding sign-in makes account-A preference work stale. Treat it
+      // as a terminal completion for this form, never as permission to
+      // reinstall or navigate the older account.
+      if (!(caught instanceof StaleWebSessionError)) {
+        setError(t('login.errors.sessionTransition', {
+          defaultValue: 'Sign-in could not be completed. Please try again.',
+        }));
+      }
+      setLoading(false);
+    }
+  };
 
   // Partner SSO: the (memoized) login context tells us whether this deployment
   // resolves to a single partner with an active SSO provider. Presence of
@@ -186,7 +213,18 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     setLoading(true);
     setError(undefined);
 
-    const result = await apiLogin(values.email, values.password);
+    let result: Awaited<ReturnType<typeof apiLogin>>;
+    try {
+      result = await apiLogin(values.email, values.password);
+    } catch (caught) {
+      if (!(caught instanceof StaleWebSessionError)) {
+        setError(t('login.errors.sessionTransition', {
+          defaultValue: 'Sign-in could not be completed. Please try again.',
+        }));
+      }
+      setLoading(false);
+      return;
+    }
 
     if (!result.success) {
       setError(result.error);
@@ -211,10 +249,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     }
 
     if (result.user && result.tokens) {
-      login(result.user, result.tokens);
-      fetchAndApplyPreferences();
-      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
-      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
+      await finishInstalledLogin(result.installedSession, result.requiresSetup);
       return;
     }
 
@@ -227,7 +262,18 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     setLoading(true);
     setError(undefined);
 
-    const result = await apiVerifyMFA(code, tempToken, method);
+    let result: Awaited<ReturnType<typeof apiVerifyMFA>>;
+    try {
+      result = await apiVerifyMFA(code, tempToken, method);
+    } catch (caught) {
+      if (!(caught instanceof StaleWebSessionError)) {
+        setError(t('login.errors.sessionTransition', {
+          defaultValue: 'Sign-in could not be completed. Please try again.',
+        }));
+      }
+      setLoading(false);
+      return;
+    }
 
     if (!result.success) {
       setError(result.error);
@@ -236,10 +282,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     }
 
     if (result.user && result.tokens) {
-      login(result.user, result.tokens);
-      fetchAndApplyPreferences();
-      // Setup wizard wins over `next` — user can't do anything useful before setup completes.
-      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
+      await finishInstalledLogin(result.installedSession, result.requiresSetup);
       return;
     }
 
@@ -252,7 +295,18 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     setLoading(true);
     setError(undefined);
 
-    const result = await apiVerifyPasskeyMFA(tempToken);
+    let result: Awaited<ReturnType<typeof apiVerifyPasskeyMFA>>;
+    try {
+      result = await apiVerifyPasskeyMFA(tempToken);
+    } catch (caught) {
+      if (!(caught instanceof StaleWebSessionError)) {
+        setError(t('login.errors.sessionTransition', {
+          defaultValue: 'Sign-in could not be completed. Please try again.',
+        }));
+      }
+      setLoading(false);
+      return;
+    }
 
     if (!result.success) {
       setError(result.error);
@@ -261,9 +315,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     }
 
     if (result.user && result.tokens) {
-      login(result.user, result.tokens);
-      fetchAndApplyPreferences();
-      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
+      await finishInstalledLogin(result.installedSession, result.requiresSetup);
       return;
     }
 

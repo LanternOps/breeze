@@ -102,12 +102,13 @@ describe('auth store passkey MFA helpers', () => {
 
     const result = await apiVerifyPasskeyMFA('temp-passkey');
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: true,
       user: { ...baseUser, requiresSetup: false },
       tokens: baseTokens,
       requiresSetup: false,
     });
+    expect(result.installedSession).toMatchObject({ userId: baseUser.id, accessToken: baseTokens.accessToken });
     expect(webauthnMocks.startAuthentication).toHaveBeenCalledWith({
       optionsJSON: {
         challenge: 'challenge-b64url',

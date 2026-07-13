@@ -16,6 +16,7 @@ import {
   runSessionTeardown,
   StaleWebSessionError,
 } from './sessionTeardown';
+export { StaleWebSessionError } from './sessionTeardown';
 import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
@@ -282,21 +283,7 @@ export function resolveApiOrigin(): string {
 const AUTH_SESSION_TRANSITION_LOCK_NAME = 'breeze-auth-session-transition';
 let authSessionTransitionTail: Promise<void> = Promise.resolve();
 
-/**
- * Serialize every operation that can replace the shared refresh cookie.
- * Web Locks coordinate browser tabs; the promise queue preserves invocation
- * order within browsers that do not implement that API. Queue rejection is
- * deliberately absorbed by the tail so one failed transition cannot poison
- * later sign-in attempts.
- */
-export async function withAuthSessionTransition<T>(operation: () => Promise<T>): Promise<T> {
-  const locks = typeof navigator !== 'undefined'
-    ? (navigator as Navigator & { locks?: LockManager }).locks
-    : undefined;
-  if (locks?.request) {
-    return locks.request(AUTH_SESSION_TRANSITION_LOCK_NAME, operation) as Promise<T>;
-  }
-
+async function withLocalAuthSessionTransition<T>(operation: () => Promise<T>): Promise<T> {
   const previous = authSessionTransitionTail;
   let release!: () => void;
   authSessionTransitionTail = new Promise<void>((resolve) => { release = resolve; });
@@ -306,6 +293,44 @@ export async function withAuthSessionTransition<T>(operation: () => Promise<T>):
   } finally {
     release();
   }
+}
+
+/**
+ * Serialize every operation that can replace the shared refresh cookie.
+ * Web Locks coordinate browser tabs; the promise queue preserves invocation
+ * order within browsers that do not implement that API. Queue rejection is
+ * deliberately absorbed by the tail so one failed transition cannot poison
+ * later sign-in attempts.
+ */
+export async function withAuthSessionTransition<T>(operation: () => Promise<T>): Promise<T> {
+  // Always reserve a same-tab FIFO position synchronously. Web Locks add
+  // cross-tab exclusion inside that position, but their API is optional and
+  // can itself fail before the callback starts (privacy mode, browser bugs,
+  // or a mocked/partial implementation). Only that acquisition failure falls
+  // back locally; once the callback begins, an operation failure must never be
+  // replayed because auth mutations are not idempotent.
+  return withLocalAuthSessionTransition(async () => {
+    let locks: LockManager | undefined;
+    try {
+      locks = typeof navigator !== 'undefined'
+        ? (navigator as Navigator & { locks?: LockManager }).locks
+        : undefined;
+    } catch {
+      return operation();
+    }
+    if (typeof locks?.request !== 'function') return operation();
+
+    let callbackStarted = false;
+    try {
+      return await locks.request(AUTH_SESSION_TRANSITION_LOCK_NAME, async () => {
+        callbackStarted = true;
+        return operation();
+      }) as T;
+    } catch (error) {
+      if (callbackStarted) throw error;
+      return operation();
+    }
+  });
 }
 
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
@@ -764,10 +789,34 @@ export function clearLocalAuthSession(
   try { transientStorage.removeItem('breeze-mfa-enrollment-methods'); } catch { /* terminal teardown continues */ }
 }
 
+export type InstalledAuthSession = {
+  generation: number;
+  userId: string;
+  accessToken: string;
+};
+
+export function isInstalledAuthSessionCurrent(marker: InstalledAuthSession | undefined): boolean {
+  if (!marker || !isCurrentWebSessionGeneration(marker.generation)) return false;
+  const current = useAuthStore.getState();
+  return current.isAuthenticated
+    && current.user?.id === marker.userId
+    && current.tokens?.accessToken === marker.accessToken;
+}
+
+function installAuthSession(user: User, tokens: Tokens): InstalledAuthSession {
+  useAuthStore.getState().login(user, tokens);
+  return {
+    generation: captureWebSessionGeneration(),
+    userId: user.id,
+    accessToken: tokens.accessToken,
+  };
+}
+
 type ApiAuthSuccess = {
   success: boolean;
   user?: User;
   tokens?: Tokens;
+  installedSession?: InstalledAuthSession;
   requiresSetup?: boolean;
   error?: string;
 };
@@ -799,6 +848,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   phoneLast4?: string;
   user?: User;
   tokens?: Tokens;
+  installedSession?: InstalledAuthSession;
   requiresSetup?: boolean;
   error?: string;
 }> {
@@ -846,9 +896,9 @@ export async function apiLogin(email: string, password: string): Promise<{
       }
 
       const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
-      if (user && data.tokens) useAuthStore.getState().login(user, data.tokens);
+      const installedSession = user && data.tokens ? installAuthSession(user, data.tokens) : undefined;
 
-      return { success: true, user, tokens: data.tokens, requiresSetup: !!data.requiresSetup };
+      return { success: true, user, tokens: data.tokens, installedSession, requiresSetup: !!data.requiresSetup };
     } catch (error) {
       if (error instanceof StaleWebSessionError) throw error;
       return { success: false, error: 'Network error' };
@@ -872,8 +922,8 @@ export async function apiVerifyMFA(code: string, tempToken: string, method: MfaC
       if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
       if (!response.ok) return { success: false, error: extractApiError(data, 'MFA verification failed') };
       const user = data.user ? { ...data.user, requiresSetup: !!data.requiresSetup } : data.user;
-      if (user && data.tokens) useAuthStore.getState().login(user, data.tokens);
-      return { success: true, user, tokens: data.tokens, requiresSetup: !!data.requiresSetup };
+      const installedSession = user && data.tokens ? installAuthSession(user, data.tokens) : undefined;
+      return { success: true, user, tokens: data.tokens, installedSession, requiresSetup: !!data.requiresSetup };
     } catch (error) {
       if (error instanceof StaleWebSessionError) throw error;
       return { success: false, error: 'Network error' };
@@ -965,9 +1015,9 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
       const user = verifyData.user
         ? { ...verifyData.user, requiresSetup: !!verifyData.requiresSetup }
         : verifyData.user;
-      if (user && verifyData.tokens) useAuthStore.getState().login(user, verifyData.tokens);
+      const installedSession = user && verifyData.tokens ? installAuthSession(user, verifyData.tokens) : undefined;
 
-      return { success: true, user, tokens: verifyData.tokens, requiresSetup: !!verifyData.requiresSetup };
+      return { success: true, user, tokens: verifyData.tokens, installedSession, requiresSetup: !!verifyData.requiresSetup };
     } catch (error) {
       if (error instanceof StaleWebSessionError) throw error;
       if (error instanceof Error && error.name === 'NotAllowedError') {
@@ -1064,21 +1114,25 @@ export async function apiRegisterPartner(
 export async function apiLogout(): Promise<void> {
   const { tokens } = useAuthStore.getState();
   clearLocalAuthSession();
-
-  if (tokens?.accessToken) {
+  // Reserve the cookie transition in the same synchronous turn as teardown.
+  // A newer login is therefore queued behind the server-side cookie clear and
+  // is the final writer even when the logout response is delayed.
+  await withAuthSessionTransition(async () => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (tokens?.accessToken) headers.Authorization = `Bearer ${tokens.accessToken}`;
     try {
+      // The server clears HttpOnly auth cookies before auth middleware runs, so
+      // this request remains useful when the in-memory access token is absent
+      // or expired.
       await fetch(buildApiUrl('/auth/logout'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokens.accessToken}`
-        },
+        headers,
         credentials: 'include'
       });
     } catch {
-      // Ignore errors, logout anyway
+      // Ignore errors: local terminal teardown has already completed.
     }
-  }
+  });
 
 }
 

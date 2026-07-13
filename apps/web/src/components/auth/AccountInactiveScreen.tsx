@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldOff, LogOut, Rocket } from 'lucide-react';
-import { clearLocalAuthSession, fetchWithAuth } from '../../stores/auth';
+import { apiLogout, fetchWithAuth } from '../../stores/auth';
 
 interface StatusInfo {
   status: string;
@@ -60,9 +60,15 @@ export default function AccountInactiveScreen() {
       .finally(() => setLoading(false));
   }, [t]);
 
-  const handleLogout = () => {
-    clearLocalAuthSession();
-    window.location.href = '/login';
+  const handleLogout = async () => {
+    try {
+      await apiLogout();
+    } catch {
+      // Local teardown happens before the server request. A network failure
+      // must not preserve this terminal screen or create an unhandled event.
+    } finally {
+      window.location.href = '/login';
+    }
   };
 
   if (loading) {
