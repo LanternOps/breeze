@@ -124,6 +124,7 @@ describe('warnHighSkipRatio', () => {
       entryCount: 100,
       ratio: 0.2,
       trigger: 'ratio',
+      droppedWhat: 'malformed-CVE',
     });
   });
 
@@ -141,6 +142,7 @@ describe('warnHighSkipRatio', () => {
       entryCount: 1_000_000,
       ratio: 0.005,
       trigger: 'absolute_floor',
+      droppedWhat: 'malformed-CVE',
     });
   });
 
@@ -175,6 +177,29 @@ describe('warnHighSkipRatio', () => {
       entryCount: 45,
       ratio: 40 / 45,
       trigger: 'gross_loss',
+      droppedWhat: 'malformed-CVE',
+    });
+  });
+
+  // #2470: kev_epss also drops entries for an unusable SCORE, not just a malformed
+  // id. Sentry is the loudest channel, so the default wording must be overridable —
+  // "malformed-CVE" would point an operator at the CVE-id regex during a score-field
+  // regression.
+  it('names what was dropped when the caller overrides the default', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('ExploitFeeds/epss', 200, 400, 'malformed-id/unusable-score');
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]?.[0]).toContain('High malformed-id/unusable-score skip count');
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning', {
+      tag: 'ExploitFeeds/epss',
+      skippedCount: 200,
+      entryCount: 400,
+      ratio: 0.5,
+      // 200/400 on a 400-entry feed trips the RATIO check first (evaluated before
+      // the absolute floor), even though 200 also clears the floor.
+      trigger: 'ratio',
+      droppedWhat: 'malformed-id/unusable-score',
     });
   });
 

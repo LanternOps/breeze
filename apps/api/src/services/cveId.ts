@@ -97,7 +97,18 @@ export const GROSS_LOSS_MIN_SKIPS = 5;
  * feed is huge); or the run lost at least GROSS_LOSS_RATIO of a small feed.
  * No-op when nothing was skipped.
  */
-export function warnHighSkipRatio(tag: string, skippedCount: number, entryCount: number): void {
+export function warnHighSkipRatio(
+  tag: string,
+  skippedCount: number,
+  entryCount: number,
+  /**
+   * What was dropped. Defaults to the malformed-CVE-id case every caller had when
+   * this was written. `kev_epss` also drops entries for an unusable SCORE (#2470),
+   * and Sentry is the loudest channel — naming a score-field regression
+   * "malformed-CVE" would send an operator to debug the CVE-id regex.
+   */
+  droppedWhat = 'malformed-CVE'
+): void {
   if (skippedCount <= 0 || entryCount <= 0) return;
 
   const ratio = skippedCount / entryCount;
@@ -108,11 +119,11 @@ export function warnHighSkipRatio(tag: string, skippedCount: number, entryCount:
 
   const trigger = ratioTrips ? 'ratio' : floorTrips ? 'absolute_floor' : 'gross_loss';
   const message =
-    `[${tag}] High malformed-CVE skip count: ${skippedCount} of ${entryCount} `
+    `[${tag}] High ${droppedWhat} skip count: ${skippedCount} of ${entryCount} `
     + `CVE entries (${(ratio * 100).toFixed(1)}%) were skipped this sync — `
     + 'probable upstream feed quality regression';
   console.error(message);
-  captureMessage(message, 'warning', { tag, skippedCount, entryCount, ratio, trigger });
+  captureMessage(message, 'warning', { tag, skippedCount, entryCount, ratio, trigger, droppedWhat });
 }
 
 /**
