@@ -111,6 +111,29 @@ async function waitForBlockedTransitionQueries(minimum: number): Promise<void> {
   throw new Error(`Expected ${minimum} blocked auth-browser transition queries`);
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function waitForBlockedActivationLock(tableName: 'users' | 'refresh_token_families'): Promise<void> {
+  const db = getTestDb();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS blocked_count
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND usename = 'breeze_app'
+        AND wait_event_type = 'Lock'
+        AND position(${tableName} in lower(query)) > 0
+    `) as unknown as Array<{ blocked_count: number }>;
+    if (Number(rows[0]?.blocked_count ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Activation never blocked on ${tableName}`);
+}
+
 async function queueTransitionRacers<TFirst, TSecond>(
   transitionId: string,
   first: () => Promise<TFirst>,
@@ -393,5 +416,121 @@ describe('registration and invite issuance against terminal logout', () => {
       .toBe('partner-activated');
     expect(familyRows.find((row) => row.familyId === committed.tokens.familyId)?.revokedAt)
       .toBeNull();
+  });
+
+  it('locks hosted activation users and families in UUID order against real opposing lockers', async () => {
+    const db = getTestDb();
+    const partner = await createPartner({ name: 'Hosted Lock Order Partner' });
+    await db.update(partners).set({ status: 'pending' }).where(eq(partners.id, partner.id));
+    const org = await createOrganization({ partnerId: partner.id });
+    const partnerRole = await createRole({ scope: 'partner', partnerId: partner.id });
+    const orgRole = await createRole({ scope: 'organization', partnerId: partner.id, orgId: org.id });
+    const createdUsers = [
+      await createUser({
+        partnerId: partner.id,
+        orgId: org.id,
+        email: 'hosted-lock-order-a@example.com',
+      }),
+      await createUser({
+        partnerId: partner.id,
+        orgId: org.id,
+        email: 'hosted-lock-order-b@example.com',
+      }),
+    ];
+    const [lowerUser, higherUser] = [...createdUsers].sort((left, right) =>
+      left.id.localeCompare(right.id));
+    if (!lowerUser || !higherUser) throw new Error('Failed to seed activation users');
+
+    // Insert memberships in reverse UUID order. The old implementation used
+    // discovery order and would attempt the higher user first; the real lock
+    // barrier below catches that regression rather than trusting mock chains.
+    await assignUserToPartner(higherUser.id, partner.id, partnerRole.id, 'all');
+    await assignUserToOrganization(lowerUser.id, org.id, orgRole.id);
+    const oldFamilies = await withAuthLifecycleSystemTransaction(async (tx) => [
+      await mintRefreshTokenFamily(higherUser.id, { tx }),
+      await mintRefreshTokenFamily(lowerUser.id, { tx }),
+    ]);
+    const [lowerFamily, higherFamily] = [...oldFamilies].sort();
+    if (!lowerFamily || !higherFamily) throw new Error('Failed to seed activation families');
+
+    const userLockHeld = deferred();
+    const releaseUserLock = deferred();
+    const familyLockHeld = deferred();
+    const releaseFamilyLock = deferred();
+    const userBlocker = db.transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT id FROM users WHERE id = ${lowerUser.id}::uuid FOR UPDATE
+      `);
+      userLockHeld.resolve();
+      await releaseUserLock.promise;
+    });
+    const familyBlocker = db.transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT family_id
+        FROM refresh_token_families
+        WHERE family_id = ${lowerFamily}::uuid
+        FOR UPDATE
+      `);
+      familyLockHeld.resolve();
+      await releaseFamilyLock.promise;
+    });
+    await Promise.all([userLockHeld.promise, familyLockHeld.promise]);
+
+    const binding = freshBrowserBinding();
+    const capability = await beginAuthIssuance(binding);
+    const activationPromise = finishAuthIssuance(capability, async (tx) => {
+      const activation = await activatePendingPartnerAndInvalidateSessions(tx, partner.id);
+      const tokens = await issueUserSession({
+        userId: higherUser.id,
+        email: higherUser.email,
+        roleId: partnerRole.id,
+        orgId: null,
+        partnerId: partner.id,
+        scope: 'partner',
+        mfa: false,
+        amr: ['password'],
+      }, { tx, capability });
+      return { activation, tokens };
+    });
+    void activationPromise.catch(() => undefined);
+
+    try {
+      await waitForBlockedActivationLock('users');
+      // Blocking on the lower UUID must happen before the higher user is
+      // locked, so an independent NOWAIT-style probe can still take it.
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '1s'`);
+        await tx.execute(sql`
+          SELECT id FROM users WHERE id = ${higherUser.id}::uuid FOR UPDATE
+        `);
+      });
+
+      releaseUserLock.resolve();
+      await userBlocker;
+      await waitForBlockedActivationLock('refresh_token_families');
+      // All user locks are now held, and the lower family blocks before the
+      // higher family can be taken. This proves both lock-class and UUID order.
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '1s'`);
+        await tx.execute(sql`
+          SELECT family_id
+          FROM refresh_token_families
+          WHERE family_id = ${higherFamily}::uuid
+          FOR UPDATE
+        `);
+      });
+
+      releaseFamilyLock.resolve();
+      await familyBlocker;
+      const committed = await activationPromise;
+      expect(committed.activation).toEqual({
+        activated: true,
+        userIds: [lowerUser.id, higherUser.id].sort(),
+      });
+    } finally {
+      releaseUserLock.resolve();
+      releaseFamilyLock.resolve();
+      await Promise.allSettled([userBlocker, familyBlocker, activationPromise]);
+    }
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const dbContextState = vi.hoisted(() => ({ active: false }));
+const emailMocks = vi.hoisted(() => ({ sendVerificationEmail: vi.fn() }));
 
 async function runTrackedDbContext<T>(fn: () => Promise<T>): Promise<T> {
   const previous = dbContextState.active;
@@ -101,7 +102,7 @@ vi.mock('../../services/emailVerification', () => ({
 
 vi.mock('../../services/email', () => ({
   getEmailService: vi.fn(() => ({
-    sendVerificationEmail: vi.fn(async () => undefined),
+    sendVerificationEmail: emailMocks.sendVerificationEmail,
   })),
 }));
 
@@ -232,6 +233,9 @@ describe('/register-partner durable issuance ordering', () => {
       observed.push(['verification-token', dbContextState.active]);
       return 'verify-token';
     });
+    emailMocks.sendVerificationEmail.mockImplementationOnce(async () => {
+      observed.push(['email-send', dbContextState.active]);
+    });
     vi.mocked(dispatchHook).mockImplementationOnce(async () => {
       observed.push(['webhook', dbContextState.active]);
       return null;
@@ -243,6 +247,7 @@ describe('/register-partner durable issuance ordering', () => {
     expect(observed).toEqual([
       ['hash', false],
       ['verification-token', false],
+      ['email-send', false],
       ['webhook', false],
     ]);
   });
