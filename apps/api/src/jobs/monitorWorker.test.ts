@@ -345,4 +345,60 @@ describe('recordMonitorCheckResult', () => {
     expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     expect(vi.mocked(setCooldown)).not.toHaveBeenCalled();
   });
+
+  it('redacts secrets from agent-supplied error and details before persistence (#2434)', async () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+
+    const txInsertValues = vi.fn().mockResolvedValue(undefined);
+    const txUpdateSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.transaction).mockImplementation(async (callback: any) => callback({
+      insert: vi.fn().mockReturnValue({ values: txInsertValues }),
+      update: vi.fn().mockReturnValue({ set: txUpdateSet }),
+    }));
+
+    vi.mocked(db.select)
+      // monitor lookup after the transaction
+      .mockReturnValueOnce(selectLimitResolved([{
+        id: 'monitor-1',
+        orgId: 'org-1',
+        assetId: null,
+        name: 'Edge Ping',
+        target: '8.8.8.8',
+        monitorType: 'icmp_ping',
+        consecutiveFailures: 1
+      }]) as any)
+      // no active alert rules — nothing further to evaluate
+      .mockReturnValueOnce(selectWhereResolved([]) as any);
+
+    await recordMonitorCheckResult('monitor-1', {
+      monitorId: 'monitor-1',
+      status: 'offline',
+      responseMs: 0,
+      error: `probe failed, key follows:\n${pem}`,
+      details: {
+        monitorId: 'monitor-1',
+        status: 'offline',
+        error: `probe failed, key follows:\n${pem}`,
+        nested: { hint: `still leaking:\n${pem}` },
+      },
+    });
+
+    // network_monitor_results row: error + every string inside details redacted.
+    const inserted = txInsertValues.mock.calls[0]![0] as {
+      error: string;
+      details: { error: string; nested: { hint: string } };
+    };
+    expect(inserted.error).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(inserted.details.error).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(inserted.details.nested.hint).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(JSON.stringify(inserted)).not.toContain('BEGIN RSA PRIVATE KEY');
+
+    // network_monitors state: lastError redacted too.
+    const stateSet = txUpdateSet.mock.calls[0]![0] as { lastError: string };
+    expect(stateSet.lastError).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(stateSet.lastError).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
 });

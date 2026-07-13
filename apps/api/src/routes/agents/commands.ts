@@ -30,7 +30,7 @@ import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../../services/agentCommandResultValidation';
-import { redactSecretsFromOutput } from '../../services/secretRedaction';
+import { redactSecretsFromOutput, redactAgentResultErrorFields } from '../../services/secretRedaction';
 import { isRawStdoutArtifactCommand } from '../../services/commandAudit';
 
 export const commandsRoutes = new Hono();
@@ -249,10 +249,18 @@ commandsRoutes.post(
     }
 
     const {
-      normalizedData,
+      normalizedData: rawNormalizedData,
       stdout,
       validationError,
     } = normalizeCriticalResultIfNeeded(command.type, commandId, data);
+
+    // #2434 chokepoint (REST twin of agentWs.processCommandResult): redact
+    // agent-supplied error/stderr ONCE before the device_commands write and
+    // the per-type post-processing handlers (security, CIS, sensitive-data,
+    // backup verification, restore, vault sync) so every persisted surface
+    // receives redacted text. stdout stays raw here (structured-JSON parsers
+    // + capture_pprof artifacts); persisted stdout is redacted per-site.
+    const normalizedData = redactAgentResultErrorFields(rawNormalizedData);
 
     const updated = await runOutsideDbContext(async () => {
       const query = db

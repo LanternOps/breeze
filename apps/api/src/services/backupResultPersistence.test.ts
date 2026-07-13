@@ -398,4 +398,48 @@ describe('backup result persistence', () => {
       immutableUntil: expect.any(Date),
     }));
   });
+
+  it('redacts secrets from the agent-supplied error before persisting errorLog (#2434)', async () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'failed',
+      result: {
+        error: `backup failed, key follows:\n${pem}`,
+      },
+    });
+
+    const setArg = updateChain.set.mock.calls[0][0] as { errorLog: string };
+    expect(setArg.errorLog).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(setArg.errorLog).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+
+  it('redacts secrets from the agent-supplied warning persisted to errorLog on success (#2434)', async () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+    const updateChain = chainMock([{ id: 'job-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        filesBackedUp: 4,
+        warning: `partial backup, key follows:\n${pem}`,
+      },
+    });
+
+    const setArg = updateChain.set.mock.calls[0][0] as { errorLog: string };
+    expect(setArg.errorLog).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(setArg.errorLog).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
 });
+

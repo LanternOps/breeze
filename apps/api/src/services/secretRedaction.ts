@@ -88,3 +88,60 @@ export function redactSecretsFromOutput(text: string): string {
   }
   return result;
 }
+
+/**
+ * Null/undefined-preserving variant of {@link redactSecretsFromOutput} for
+ * optional free-text columns (errorMessage, errorLog, lastError, ...): the
+ * stored shape must stay `null`/`undefined` when the agent sent nothing.
+ */
+export function redactOptionalSecretText<T extends string | null | undefined>(
+  text: T
+): T {
+  return (text != null ? redactSecretsFromOutput(text) : text) as T;
+}
+
+/**
+ * Shared chokepoint (#2434) for agent command-result ingest: returns the
+ * result with its free-text `error` and `stderr` fields redacted so EVERY
+ * downstream persistence surface (script_executions, backup/restore jobs,
+ * vault sync state, CIS results, tunnel/remote sessions, discovery jobs, ...)
+ * receives already-redacted text and new per-type handlers cannot forget to
+ * redact. `stdout` is intentionally NOT touched here: several handlers parse
+ * stdout as structured JSON, and artifact-bearing stdout (capture_pprof) must
+ * stay byte-for-byte — stdout redaction stays at the persistence sites that
+ * store it (buildStoredCommandResult / handleScriptResult), keyed by command
+ * type. Redaction is idempotent, so double-redaction downstream is harmless.
+ */
+export function redactAgentResultErrorFields<
+  T extends { error?: string | null; stderr?: string | null }
+>(result: T): T {
+  if (result.error == null && result.stderr == null) return result;
+  return {
+    ...result,
+    error: redactOptionalSecretText(result.error),
+    stderr: redactOptionalSecretText(result.stderr),
+  } as T;
+}
+
+const MAX_DEEP_REDACTION_DEPTH = 8;
+
+/**
+ * Recursively redacts every string value inside an agent-supplied JSON blob
+ * before it is persisted to a jsonb column (e.g. network monitor result
+ * `details`, service/process check `details`). Depth-bounded; non-string
+ * scalars and keys are left untouched. Cycles are cut by the depth bound.
+ */
+export function redactSecretsDeep(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return redactSecretsFromOutput(value);
+  if (value == null || typeof value !== 'object' || depth >= MAX_DEEP_REDACTION_DEPTH) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSecretsDeep(item, depth + 1));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = redactSecretsDeep(entry, depth + 1);
+  }
+  return out;
+}

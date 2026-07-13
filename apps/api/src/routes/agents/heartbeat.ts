@@ -40,6 +40,7 @@ import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { redactSecretsDeep } from '../../services/secretRedaction';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -1078,7 +1079,9 @@ heartbeatRoutes.put('/:id/monitoring-results', bodyLimit({ maxSize: 1024 * 1024,
     cpuPercent: typeof r.cpuPercent === 'number' ? r.cpuPercent : null,
     memoryMb: typeof r.memoryMb === 'number' ? r.memoryMb : null,
     pid: typeof r.pid === 'number' ? r.pid : null,
-    details: (r.details && typeof r.details === 'object') ? r.details : null,
+    // #2434: details is an agent-supplied free-form blob surfaced in the
+    // service-monitoring UI — redact secret-shaped strings before persistence.
+    details: (r.details && typeof r.details === 'object') ? redactSecretsDeep(r.details) : null,
     autoRestartAttempted: r.autoRestartAttempted === true,
     autoRestartSucceeded: typeof r.autoRestartSucceeded === 'boolean' ? r.autoRestartSucceeded : null,
   }));

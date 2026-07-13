@@ -1590,3 +1590,109 @@ describe('WS frames never claim pending commands (#2407)', () => {
     expect(ack!.commands).toEqual([]);
   });
 });
+
+// #2434 — agent-supplied error/output strings persisted OUTSIDE device_commands
+// must be redacted too (script_executions, tunnel_sessions, remote_sessions).
+describe('#2434 — secret redaction on non-device_commands persistence surfaces', () => {
+  const pem2434 =
+    '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('redacts stdout/stderr/errorMessage persisted to script_executions', async () => {
+    const preValidatedAgent = { deviceId: 'device-se', orgId: 'org-se' };
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-se', type: 'script', payload: { executionId: 'exec-1' }, deviceId: 'device-se' },
+    ]) as any);
+
+    // 1st update: device_commands terminal transition. 2nd: script_executions.
+    const scriptSetSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'exec-1', scriptId: 'script-1' }]),
+      }),
+    });
+    vi.mocked(db.update)
+      .mockReturnValueOnce(updateResult([{ id: 'cmd-se' }]) as any)
+      .mockReturnValueOnce({ set: scriptSetSpy } as any);
+
+    const handlers = createAgentWsHandlers('agent-se', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '99999999-9999-4999-8999-999999999999',
+        status: 'failed',
+        exitCode: 1,
+        stdout: `out with key:\n${pem2434}`,
+        stderr: `err with key:\n${pem2434}`,
+        error: `boom with key:\n${pem2434}`,
+      }),
+    } as any, ws as any);
+
+    expect(scriptSetSpy).toHaveBeenCalledTimes(1);
+    const stored = scriptSetSpy.mock.calls[0]![0] as {
+      stdout: string; stderr: string; errorMessage: string;
+    };
+    for (const field of ['stdout', 'stderr', 'errorMessage'] as const) {
+      expect(stored[field]).toContain('[PRIVATE_KEY_REDACTED]');
+      expect(stored[field]).not.toContain('BEGIN RSA PRIVATE KEY');
+    }
+  });
+
+  it('redacts tunnel_sessions.errorMessage on a failed tun-open result (orphaned-path chokepoint)', async () => {
+    const preValidatedAgent = { deviceId: 'device-tn', orgId: 'org-tn' };
+    const tunnelSetSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'tunnel1', deviceId: 'device-tn' }]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: tunnelSetSpy } as any);
+
+    const handlers = createAgentWsHandlers('agent-tn', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'tun-open-tunnel1',
+        status: 'failed',
+        error: `tunnel bind failed, key follows:\n${pem2434}`,
+      }),
+    } as any, ws as any);
+
+    expect(tunnelSetSpy).toHaveBeenCalledTimes(1);
+    const stored = tunnelSetSpy.mock.calls[0]![0] as { errorMessage: string };
+    expect(stored.errorMessage).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(stored.errorMessage).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+
+  it('redacts remote_sessions.errorMessage on a failed desk-start result (fast path)', async () => {
+    const preValidatedAgent = { deviceId: 'device-rs', orgId: 'org-rs' };
+    const sessionSetSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'sess1' }]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: sessionSetSpy } as any);
+
+    const handlers = createAgentWsHandlers('agent-rs', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: 'desk-start-sess1',
+        status: 'failed',
+        error: `capture init failed, key follows: ${pem2434}`,
+      }),
+    } as any, ws as any);
+
+    expect(sessionSetSpy).toHaveBeenCalledTimes(1);
+    const stored = sessionSetSpy.mock.calls[0]![0] as { errorMessage: string };
+    expect(stored.errorMessage).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(stored.errorMessage).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+});

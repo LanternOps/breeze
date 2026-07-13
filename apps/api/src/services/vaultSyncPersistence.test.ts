@@ -131,4 +131,29 @@ describe('applyVaultSyncCommandResult', () => {
     expect(updateMock).toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
   });
+
+  it('redacts secrets from agent-supplied error text before persisting lastSyncError (#2434)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{ id: VAULT_ID, orgId: ORG_ID }]));
+
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+
+    await applyVaultSyncCommandResult({
+      deviceId: DEVICE_ID,
+      command: {
+        payload: {
+          vaultId: VAULT_ID,
+          snapshotId: 'snap-ext-003',
+        },
+      },
+      resultStatus: 'failed',
+      error: `sync failed, key follows:\n${pem}`,
+    });
+
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const setArg = (updateMock.mock.results[0]!.value as { set: ReturnType<typeof vi.fn> })
+      .set.mock.calls[0]![0] as { lastSyncError: string };
+    expect(setArg.lastSyncError).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(setArg.lastSyncError).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
 });

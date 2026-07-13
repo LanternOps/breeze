@@ -29,7 +29,7 @@ import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
 import { isAgentTenantActive } from '../services/tenantStatus';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
-import { redactSecretsFromOutput } from '../services/secretRedaction';
+import { redactSecretsFromOutput, redactOptionalSecretText, redactAgentResultErrorFields } from '../services/secretRedaction';
 import { isRawStdoutArtifactCommand } from '../services/commandAudit';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
@@ -398,9 +398,12 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           status: scriptStatus,
           completedAt: new Date(),
           exitCode: result.exitCode ?? null,
-          stdout: stdout ?? null,
-          stderr: result.stderr ?? null,
-          errorMessage: result.error ?? null,
+          // #2434: script output/errors surface to scripts:read users in the
+          // web UI — redact secrets before persistence (idempotent when the
+          // ingest chokepoint already redacted error/stderr).
+          stdout: stdout != null ? redactSecretsFromOutput(stdout) : null,
+          stderr: redactOptionalSecretText(result.stderr) ?? null,
+          errorMessage: redactOptionalSecretText(result.error) ?? null,
         })
         .where(and(
           eq(scriptExecutions.id, executionId),
@@ -945,6 +948,14 @@ export async function processOrphanedCommandResult(
   authenticatedDeviceId: string,
   result: z.infer<typeof commandResultSchema>
 ): Promise<void> {
+  // #2434 chokepoint: redact agent-supplied error/stderr ONCE at ingest so
+  // every persistence branch below (discovery job errors, tunnel session
+  // errorMessage, backup job errorLog, restore metadata, vault sync state)
+  // stores redacted text. stdout is left raw — structured-JSON consumers
+  // (vault sync resolution) parse it; its persisted forms are redacted at
+  // their write sites.
+  result = redactAgentResultErrorFields(result);
+
   // Check if this is an SNMP poll result
   const snmpData = result.result as {
     deviceId?: string;
@@ -1423,6 +1434,14 @@ async function processCommandResult(
   orgId?: string
 ): Promise<void> {
   try {
+    // #2434 chokepoint — FIRST statement, so "any agent result that enters this
+    // function is redacted" is a true invariant for every exit path below
+    // (in-process awaiter, orphaned-result branch, device_commands write, and
+    // the per-type handler dispatch). Mirrors processOrphanedCommandResult,
+    // which redacts at its own top. Idempotent, so downstream re-redaction of
+    // the same text is harmless.
+    result = redactAgentResultErrorFields(result);
+
     // Resolve any in-process promise awaiting this command id (e.g. http_request
     // sent via sendCommandToAgentAwaitResult). No-op for all other result types.
     // When consumed, the result has no device_commands row and needs no further
@@ -1519,6 +1538,11 @@ async function processCommandResult(
       return;
     }
 
+    // `result` was already redacted at the top of this function (#2434), and
+    // normalizeCriticalResultIfNeeded only ever REPLACES `error` with a
+    // server-generated rejection reason — so normalizedResult.error/stderr are
+    // redacted by construction and feed both the device_commands write and the
+    // per-type handler dispatch below.
     const {
       normalizedResult,
       stdout,
@@ -2082,11 +2106,16 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               expectedSessionId && (!resultSessionId || resultSessionId === expectedSessionId)
                 ? expectedSessionId
                 : null;
-            const errorMsg = typeof failResult.error === 'string'
-              ? failResult.error.slice(0, 1024)
-              : fastError
-                ? fastError.slice(0, 1024)
-                : 'Desktop capture failed on agent';
+            // #2434: agent-supplied failure text is persisted to
+            // remote_sessions.errorMessage and shown to viewers — redact
+            // secrets first (fast path bypasses the command-result chokepoint).
+            const errorMsg = redactSecretsFromOutput(
+              typeof failResult.error === 'string'
+                ? failResult.error.slice(0, 1024)
+                : fastError
+                  ? fastError.slice(0, 1024)
+                  : 'Desktop capture failed on agent'
+            );
             if (sessionId) {
               try {
                 await runWithAgentDbAccess(async () => {

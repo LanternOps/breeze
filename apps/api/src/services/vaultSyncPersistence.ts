@@ -3,6 +3,7 @@ import { and, desc, eq, gte } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshots, localVaults, vaultSnapshotInventory } from '../db/schema';
 import { vaultSyncStructuredResultSchema } from './agentCommandResultValidation';
+import { redactSecretsFromOutput } from './secretRedaction';
 
 type VaultSyncCommandLike = {
   payload?: unknown;
@@ -169,13 +170,17 @@ export async function applyVaultSyncCommandResult(input: ApplyVaultSyncCommandRe
 
   const completedAt = new Date();
   const status = input.resultStatus === 'completed' ? 'completed' : 'failed';
+  // #2434: every fallback here is agent-supplied free text (including raw
+  // stdout) surfaced in the vault UI — redact secrets before persistence.
   const lastSyncError = status === 'completed'
     ? null
-    : (typeof structured.error === 'string' ? structured.error : undefined) ??
-      input.error ??
-      input.stderr ??
-      input.stdout ??
-      'Vault sync failed';
+    : redactSecretsFromOutput(
+        (typeof structured.error === 'string' ? structured.error : undefined) ??
+        input.error ??
+        input.stderr ??
+        input.stdout ??
+        'Vault sync failed'
+      );
 
   await db
     .update(localVaults)

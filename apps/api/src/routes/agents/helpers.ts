@@ -57,6 +57,7 @@ import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService'
 import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
+import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
@@ -651,7 +652,11 @@ export async function handleSecurityCommandResult(
           filePath: asString(threat.path) ?? asString(threat.filePath) ?? null,
           processName: asString(threat.processName) ?? null,
           detectedAt: completedAt,
-          details: threat
+          // #2434: `threat` is the raw agent/AV threat object parsed out of
+          // stdout (stdout is deliberately NOT redacted at the ingest
+          // chokepoint). AV records routinely embed the offending command line
+          // or script fragment, so redact every string in the blob.
+          details: redactSecretsDeep(threat)
         });
       }
 
@@ -827,7 +832,8 @@ export async function handleSensitiveDataCommandResult(
           ...existingSummary,
           commandId: command.id,
           commandStatus: resultData.status,
-          agentSummary: scanSummary,
+          // #2434: agent-supplied summary blob parsed from raw stdout.
+          agentSummary: redactSecretsDeep(scanSummary),
           findingsCount: dedupedFindings.length,
           findings: {
             total: dedupedFindings.length,
@@ -1210,7 +1216,16 @@ export async function handleCisCommandResult(
       .orderBy(desc(cisBaselineResults.checkedAt))
       .limit(1);
 
-    let parsed = parseCisCollectorOutput(resultData.stdout);
+    // #2434: the success path parses findings out of RAW stdout (stdout is not
+    // redacted at the ingest chokepoint), and each finding carries free-text
+    // `message` / `evidence` / `remediation` produced by the collector — a
+    // failing check's evidence can quote the very config value (connection
+    // string, service-account password) that made it fail. Redact the whole
+    // parsed blob before it reaches cis_baseline_results. The failure branch
+    // below builds its finding from error/stderr, already redacted upstream.
+    let parsed = redactSecretsDeep(
+      parseCisCollectorOutput(resultData.stdout)
+    ) as ReturnType<typeof parseCisCollectorOutput>;
     if (resultData.status !== 'completed') {
       parsed = {
         checkedAt: new Date(),
@@ -1379,15 +1394,21 @@ export async function handleCisCommandResult(
     completedAt: new Date().toISOString(),
   };
 
+  // #2434: resultDetails / beforeState / afterState / rollbackHint are all
+  // derived from RAW stdout (unredacted at the chokepoint). before/afterState
+  // hold the ACTUAL values of the registry keys or config the remediation
+  // changed — a service-account password living in a registry value would be
+  // persisted verbatim and rendered in the CIS UI. Redaction is idempotent, so
+  // the already-redacted error/stderr in updatedDetails pass through unharmed.
   await db
     .update(cisRemediationActions)
     .set({
       status: completed ? 'completed' : 'failed',
       executedAt: new Date(),
-      details: updatedDetails,
-      beforeState: beforeStateFromResult ?? action.beforeState ?? null,
-      afterState: afterStateFromResult ?? action.afterState ?? null,
-      rollbackHint: rollbackHint ?? null,
+      details: redactSecretsDeep(updatedDetails) as Record<string, unknown>,
+      beforeState: redactSecretsDeep(beforeStateFromResult ?? action.beforeState ?? null) as Record<string, unknown> | null,
+      afterState: redactSecretsDeep(afterStateFromResult ?? action.afterState ?? null) as Record<string, unknown> | null,
+      rollbackHint: redactOptionalSecretText(rollbackHint ?? null),
     })
     .where(eq(cisRemediationActions.id, action.id));
 

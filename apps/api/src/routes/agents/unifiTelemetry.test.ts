@@ -102,4 +102,28 @@ describe('agent unifi telemetry routes', () => {
     expect(res.status).toBe(403);
     expect(collectorSvc.listCollectorsForDevice).not.toHaveBeenCalled();
   });
+
+
+  it('redacts secrets from the agent-supplied poll error before enqueue (#2434)', async () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+    const body = {
+      collectorId: 'c1',
+      polledAt: '2026-06-29T00:00:00Z',
+      firmwareOk: false,
+      devices: [],
+      clients: [],
+      error: `controller rejected the poll, key follows:\n${pem}`,
+    };
+    const res = await appWithRole('agent').request(`/agents/${AGENT_ID}/unifi-telemetry`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(202);
+    // lastPollError is rendered in the collectors UI — a controller error can
+    // embed the controller API key, so it must never be enqueued verbatim.
+    const enqueued = (worker.enqueueUnifiTelemetry as any).mock.calls[0][0] as { error: string };
+    expect(enqueued.error).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(enqueued.error).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
 });

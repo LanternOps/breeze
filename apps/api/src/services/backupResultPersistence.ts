@@ -20,6 +20,7 @@ import {
   checkBackupProviderCapabilities,
 } from './backupSnapshotStorage';
 import { resolveBackupProtectionForDevice } from './featureConfigResolver';
+import { redactSecretsFromOutput } from './secretRedaction';
 
 export const IN_FLIGHT_BACKUP_JOB_STATUSES = ['pending', 'running'] as const;
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
@@ -420,11 +421,13 @@ export async function applyBackupCommandResultToJob(params: {
     updateData.totalSize = result.bytesBackedUp ?? null;
     updateData.backupType = result.backupType ?? null;
     if (result.warning) {
-      updateData.errorLog = result.warning;
+      // #2434: warning/error are agent-supplied free text surfaced in the
+      // backup UI — redact secrets before persisting to errorLog.
+      updateData.errorLog = redactSecretsFromOutput(result.warning);
     }
   } else {
     updateData.status = 'failed';
-    updateData.errorLog = result.error ?? result.warning ?? 'Unknown error';
+    updateData.errorLog = redactSecretsFromOutput(result.error ?? result.warning ?? 'Unknown error');
     if (result.backupType) {
       updateData.backupType = result.backupType;
     }

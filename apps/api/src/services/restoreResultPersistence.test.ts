@@ -96,6 +96,44 @@ describe('restore result persistence', () => {
     });
   });
 
+  it('redacts secrets from agent-supplied error/stderr/warnings before persistence (#2434)', () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      {
+        status: 'failed',
+        stderr: `restore stderr, key follows:\n${pem}`,
+        error: `restore failed, key follows:\n${pem}`,
+      },
+      {
+        status: 'failed',
+        warnings: [`warning with key:\n${pem}`, 'plain warning'],
+      }
+    );
+
+    for (const value of [metadata.error, metadata.stderr, (metadata.warnings as string[])[0]]) {
+      expect(value).toContain('[PRIVATE_KEY_REDACTED]');
+      expect(value).not.toContain('BEGIN RSA PRIVATE KEY');
+    }
+    expect((metadata.warnings as string[])[1]).toBe('plain warning');
+  });
+
+  it('redacts the agent-supplied structured error too (#2434)', () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+
+    const metadata = buildRestoreResultMetadata(
+      'backup_restore',
+      { status: 'failed' },
+      { status: 'failed', error: `structured error, key follows:\n${pem}` }
+    );
+
+    expect(metadata.error).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(metadata.error).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+
   it('updates mutable restore jobs with the persisted restore summary', async () => {
     const returning = vi.fn().mockResolvedValue([{ id: 'restore-1' }]);
     const where = vi.fn().mockReturnValue({ returning });

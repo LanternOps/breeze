@@ -24,6 +24,7 @@ import {
   withQueueMeta,
 } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretRedaction';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -399,6 +400,20 @@ export async function recordMonitorCheckResult(
   monitorId: string,
   result: MonitorCheckResult
 ): Promise<void> {
+  // #2434 chokepoint: monitor check results arrive from agents (the WS
+  // Redis-down direct path AND the BullMQ process-check-result path both
+  // funnel here). The free-text `error` and the raw `details` blob are
+  // persisted to network_monitor_results / network_monitors.lastError /
+  // alert details and surfaced in the web UI — redact secrets once at entry
+  // so every write below (results insert, monitor state, alert evaluation)
+  // is covered.
+  result = {
+    ...result,
+    error: redactOptionalSecretText(result.error),
+    details: result.details != null
+      ? redactSecretsDeep(result.details) as Record<string, unknown>
+      : result.details,
+  };
   const now = new Date();
 
   // Use a transaction to keep results table and monitor state in sync

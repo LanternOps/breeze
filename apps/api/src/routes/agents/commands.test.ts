@@ -356,4 +356,40 @@ describe('agent commands routes', () => {
     expect(res.status).toBe(403);
     expect(updateMock).not.toHaveBeenCalled();
   });
+
+  it('hands per-type post-processing handlers redacted error/stderr (#2434 chokepoint)', async () => {
+    const { processBackupVerificationResult } = await import('../backup/verificationService');
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'backup_verify',
+          status: 'sent',
+          targetRole: 'agent',
+        },
+      ])
+    );
+    updateMock.mockReturnValueOnce(chainMock([{ id: 'cmd-1' }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        status: 'failed',
+        exitCode: 1,
+        error: `verify failed ${PRIVATE_KEY_BLOCK} end`,
+        stderr: `stderr ${PRIVATE_KEY_BLOCK} end`,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(processBackupVerificationResult).toHaveBeenCalledTimes(1);
+    const handlerArg = vi.mocked(processBackupVerificationResult).mock.calls[0]![1] as {
+      error?: string;
+    };
+    expect(handlerArg.error).toBe('verify failed [PRIVATE_KEY_REDACTED] end');
+    expect(JSON.stringify(handlerArg)).not.toContain('BEGIN PRIVATE KEY');
+  });
 });

@@ -5,6 +5,7 @@ import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { db, withSystemDbAccessContext } from '../../db';
 import { listCollectorsForDevice } from '../../services/unifi/unifiCollectorService';
 import { enqueueUnifiTelemetry } from '../../jobs/unifiTelemetryWorker';
+import { redactOptionalSecretText } from '../../services/secretRedaction';
 
 /**
  * UniFi Phase 2a agent-side telemetry endpoints. Mounted under `/agents`, so the
@@ -79,6 +80,15 @@ unifiTelemetryRoutes.post('/:id/unifi-telemetry', zValidator('json', telemetrySc
   const payload = c.req.valid('json');
   // Stamp the token-resolved deviceId server-side (never trust a client value);
   // the worker enforces it matches the collector's owner before any write.
-  await enqueueUnifiTelemetry({ ...payload, deviceId: agent.deviceId });
+  //
+  // #2434: `error` is the UniFi controller's own failure text, persisted to
+  // unifi_collectors.lastPollError and rendered in the collectors UI — a
+  // controller HTTP error can embed the controller API key / bearer token, so
+  // redact at this trust boundary before it is enqueued.
+  await enqueueUnifiTelemetry({
+    ...payload,
+    error: redactOptionalSecretText(payload.error),
+    deviceId: agent.deviceId,
+  });
   return c.json({ accepted: true }, 202);
 });

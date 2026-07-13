@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { restoreJobs } from '../db/schema';
+import { redactSecretsFromOutput } from './secretRedaction';
 
 export type RestoreCommandResultLike = {
   status: 'completed' | 'failed' | 'timeout';
@@ -77,6 +78,21 @@ export function buildRestoreResultMetadata(
   }
   if (result.durationMs !== undefined && metadata.durationMs === undefined) {
     metadata.durationMs = result.durationMs;
+  }
+
+  // #2434: error/stderr/warnings are agent-supplied free text persisted into
+  // restore_jobs.targetConfig.result and surfaced in the restore UI — redact
+  // secrets before persistence (whichever source populated them above).
+  if (typeof metadata.error === 'string') {
+    metadata.error = redactSecretsFromOutput(metadata.error);
+  }
+  if (typeof metadata.stderr === 'string') {
+    metadata.stderr = redactSecretsFromOutput(metadata.stderr);
+  }
+  if (Array.isArray(metadata.warnings)) {
+    metadata.warnings = metadata.warnings.map((warning) =>
+      typeof warning === 'string' ? redactSecretsFromOutput(warning) : warning
+    );
   }
 
   return metadata;
