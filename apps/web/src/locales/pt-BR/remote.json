@@ -192,6 +192,8 @@
   "fileManager": {
     "activeCount": "{{count}} ativo(s)",
     "activity": "Atividade",
+    "cancelled": "Cancelado",
+    "cancelledUploadNote": "Envio interrompido neste navegador. Se o comando de gravação já tiver chegado ao dispositivo, o arquivo ainda poderá ser salvo lá.",
     "copyTo": "Copiar para...",
     "disk": {
       "analyze": "Analisar",
@@ -237,7 +239,8 @@
       "loadDirectory": "Falha ao carregar a pasta",
       "move": "Falha ao mover",
       "readFile": "Falha ao ler o arquivo",
-      "upload": "Falha ao enviar"
+      "upload": "Falha ao enviar",
+      "uploadTimeout": "O envio expirou após 2 minutos. O arquivo ainda pode ser gravado no dispositivo — atualize para verificar."
     },
     "freeOf": "{{free}} livres de {{total}}",
     "goUp": "Subir",

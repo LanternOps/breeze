@@ -39,4 +39,142 @@ describe('FileManager downloads', () => {
       expect(screen.getByText('Failed to download')).toBeInTheDocument();
     });
   });
+
+  it('aborts the browser request and shows a cancelled state when a download is cancelled', async () => {
+    let downloadSignal: AbortSignal | undefined;
+    mockFetchWithAuth.mockImplementation((url: string, options?: { signal?: AbortSignal }) => {
+      if (url.includes('/download?')) {
+        downloadSignal = options?.signal;
+        // Hang until aborted, like a large in-flight download.
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          data: [{ name: 'report.txt', path: '/report.txt', type: 'file', size: 12 }],
+        }),
+      });
+    });
+
+    render(
+      <FileManager
+        deviceId="device-1"
+        deviceHostname="workstation-1"
+        initialPath="/"
+      />
+    );
+
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByTitle('Download'));
+
+    const cancelButton = await screen.findByTitle('Cancel');
+    fireEvent.click(cancelButton);
+
+    expect(downloadSignal?.aborted).toBe(true);
+    await waitFor(() => {
+      expect(screen.getByText('Cancelled')).toBeInTheDocument();
+    });
+    // An intentional cancel must not render as a failure.
+    expect(screen.queryByText('Failed to download')).not.toBeInTheDocument();
+    // Cancelled rows swap the cancel button for a dismiss affordance.
+    expect(screen.getByTitle('Dismiss')).toBeInTheDocument();
+  });
+});
+
+describe('FileManager uploads', () => {
+  beforeEach(() => {
+    mockFetchWithAuth.mockReset();
+  });
+
+  it('marks a cancelled upload as cancelled with the device-side caveat instead of a failure', async () => {
+    let uploadSignal: AbortSignal | undefined;
+    mockFetchWithAuth.mockImplementation((url: string, options?: { signal?: AbortSignal }) => {
+      if (url.includes('/files/upload')) {
+        uploadSignal = options?.signal;
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ data: [] }) });
+    });
+
+    const { container } = render(
+      <FileManager
+        deviceId="device-1"
+        deviceHostname="workstation-1"
+        initialPath="/"
+      />
+    );
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['hello world'], 'notes.txt', { type: 'text/plain' });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    // Wait until the upload request is actually in flight.
+    await waitFor(() => expect(uploadSignal).toBeDefined());
+
+    fireEvent.click(screen.getByTitle('Cancel'));
+    expect(uploadSignal?.aborted).toBe(true);
+
+    await waitFor(() => {
+      expect(screen.getByText('Cancelled')).toBeInTheDocument();
+    });
+    // Honest copy: the dispatched write command may still land on the device.
+    expect(screen.getByText(/may still be saved there/)).toBeInTheDocument();
+    expect(screen.queryByText('Failed to upload')).not.toBeInTheDocument();
+  });
+
+  it('surfaces the 120s watchdog timeout as unverified, not as a user cancel', async () => {
+    // The watchdog aborts the SAME controller as user cancel — this pins the
+    // distinction so a future "if AbortError then treat as cancel" refactor
+    // cannot silently eat real timeouts.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let uploadSignal: AbortSignal | undefined;
+      mockFetchWithAuth.mockImplementation((url: string, options?: { signal?: AbortSignal }) => {
+        if (url.includes('/files/upload')) {
+          uploadSignal = options?.signal;
+          return new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => {
+              reject(new DOMException('The user aborted a request.', 'AbortError'));
+            });
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ data: [] }) });
+      });
+
+      const { container } = render(
+        <FileManager
+          deviceId="device-1"
+          deviceHostname="workstation-1"
+          initialPath="/"
+        />
+      );
+
+      const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+      const file = new File(['hello world'], 'big.bin', { type: 'application/octet-stream' });
+      fireEvent.change(input, { target: { files: [file] } });
+
+      await waitFor(() => expect(uploadSignal).toBeDefined());
+
+      // No user cancel — let the watchdog fire.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(uploadSignal?.aborted).toBe(true);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Upload timed out after 2 minutes/)).toBeInTheDocument();
+      });
+      // A timeout is not a user cancel — and not the browser's abort boilerplate.
+      expect(screen.queryByText('Cancelled')).not.toBeInTheDocument();
+      expect(screen.queryByText('The user aborted a request.')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
