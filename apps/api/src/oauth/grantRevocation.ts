@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthGrants, oauthRefreshTokens } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
@@ -67,11 +67,12 @@ async function revokeOauthArtifactsByColumn(
 
   // Grant discovery is authoritative from oauth_grants — never from refresh
   // payload grantIds. This is what makes code-only grants (no refresh row)
-  // still get a revocation marker.
+  // still get a revocation marker. Already-revoked grants are skipped so a
+  // repeat call is a no-op (matches revocationService.ts).
   const grants = await db
     .select({ id: oauthGrants.id })
     .from(oauthGrants)
-    .where(eq(grantColumn, value));
+    .where(and(eq(grantColumn, value), isNull(oauthGrants.revokedAt)));
 
   for (const grant of grants) {
     if (seenGrants.has(grant.id)) continue;
@@ -87,6 +88,16 @@ async function revokeOauthArtifactsByColumn(
       });
       throw err;
     }
+  }
+
+  // Stamp revoked_at AFTER every marker write succeeded (fail closed, same
+  // ordering as revocationService.ts): a stamped-but-unmarked grant would look
+  // revoked in the DB while its in-flight access JWTs kept working.
+  if (seenGrants.size > 0) {
+    await db
+      .update(oauthGrants)
+      .set({ revokedAt: now, revokedReason: `tenant-lifecycle:${target}` })
+      .where(inArray(oauthGrants.id, [...seenGrants]));
   }
 
   return {
@@ -112,7 +123,9 @@ function inExplicitSystemContext<T>(fn: () => Promise<T>): Promise<T> {
  *      in-flight access JWT.
  *   3. Write a grant-level marker for every Grant row discovered from the
  *      authoritative oauth_grants table, so code-only grants (auth-code access
- *      tokens with no refresh row) are also rejected.
+ *      tokens with no refresh row) are also rejected. Once every marker is
+ *      written, stamp `revoked_at` on those grant rows so revocation survives
+ *      marker expiry / Redis loss (durability parity with revocationService).
  *
  * We intentionally do NOT delete the oauth_grants / oauth_refresh_tokens rows:
  * keeping them simplifies audit trail and matches what `connectedApps.ts`

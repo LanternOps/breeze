@@ -56,7 +56,7 @@ describe('revokeAllUserOauthArtifacts', () => {
     // with no active refresh row).
     mockSelectRows([{ id: 'grant-A' }, { id: 'grant-B' }, { id: 'grant-C' }]);
 
-    mockUpdateChain();
+    const { set } = mockUpdateChain();
 
     const result = await revokeAllUserOauthArtifacts(userId);
 
@@ -72,6 +72,13 @@ describe('revokeAllUserOauthArtifacts', () => {
     expect(grantCalls.sort()).toEqual(['grant-A', 'grant-B', 'grant-C']);
 
     expect(updateMock).toHaveBeenCalledWith(oauthRefreshTokens);
+    // Durability: revoked_at is also stamped on the grant rows themselves so
+    // revocation survives Redis-marker expiry (parity with revocationService).
+    expect(updateMock).toHaveBeenCalledWith(oauthGrants);
+    expect(set).toHaveBeenCalledWith({
+      revokedAt: expect.any(Date),
+      revokedReason: 'tenant-lifecycle:user',
+    });
     expect(result).toEqual({ grantsRevoked: 3, refreshTokensRevoked: 3, jtisRevoked: 3 });
   });
 
@@ -79,13 +86,25 @@ describe('revokeAllUserOauthArtifacts', () => {
     const userId = '22222222-2222-2222-2222-222222222222';
     mockSelectRows([]); // no refresh tokens
     mockSelectRows([{ id: 'grant-X' }]);
+    mockUpdateChain();
 
     const result = await revokeAllUserOauthArtifacts(userId);
 
     expect(revokeJtiMock).not.toHaveBeenCalled();
     expect(revokeGrantMock).toHaveBeenCalledWith('grant-X', expect.any(Number));
+    expect(updateMock).toHaveBeenCalledWith(oauthGrants);
     expect(result.grantsRevoked).toBe(1);
     expect(result.refreshTokensRevoked).toBe(0);
+  });
+
+  it('does not stamp grant rows when no grants are discovered', async () => {
+    mockSelectRows([]); // no refresh tokens
+    mockSelectRows([]); // no grants
+    mockUpdateChain();
+
+    await revokeAllUserOauthArtifacts('88888888-8888-8888-8888-888888888888');
+
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('queries the correct tables', async () => {
@@ -115,12 +134,16 @@ describe('revokeAllUserOauthArtifacts', () => {
       { id: 'rt-partner', expiresAt: new Date(Date.now() + 60_000) },
     ]);
     mockSelectRows([{ id: 'grant-partner' }]);
-    mockUpdateChain();
+    const { set } = mockUpdateChain();
 
     const result = await revokeAllPartnerOauthArtifacts('66666666-6666-6666-8666-666666666666');
 
     expect(revokeJtiMock).toHaveBeenCalledWith('rt-partner', expect.any(Number));
     expect(revokeGrantMock).toHaveBeenCalledWith('grant-partner', expect.any(Number));
+    expect(set).toHaveBeenCalledWith({
+      revokedAt: expect.any(Date),
+      revokedReason: 'tenant-lifecycle:partner',
+    });
     expect(result.refreshTokensRevoked).toBe(1);
   });
 
@@ -149,12 +172,16 @@ describe('revokeAllUserOauthArtifacts', () => {
     await expect(revokeAllUserOauthArtifacts(userId)).rejects.toThrow(/redis down/);
   });
 
-  it('propagates revokeGrant cache failures', async () => {
+  it('propagates revokeGrant cache failures and does not stamp grant rows (fail closed)', async () => {
     const userId = '55555555-5555-5555-5555-555555555555';
     mockSelectRows([]);
     mockSelectRows([{ id: 'grant-X' }]);
+    mockUpdateChain();
     revokeGrantMock.mockRejectedValueOnce(new Error('redis down'));
 
     await expect(revokeAllUserOauthArtifacts(userId)).rejects.toThrow(/redis down/);
+    // A stamped-but-unmarked grant would look revoked in the DB while its
+    // in-flight access JWTs kept working — the stamp must not happen.
+    expect(updateMock).not.toHaveBeenCalledWith(oauthGrants);
   });
 });

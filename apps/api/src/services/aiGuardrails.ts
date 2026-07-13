@@ -743,9 +743,25 @@ export async function checkPermissionRequirement(
   auth: AuthContext,
   requirement: { resource: string; action: string }
 ): Promise<string | null> {
+  return checkPermissionRequirements(auth, [requirement]);
+}
+
+/**
+ * Batch variant: resolves the user's permissions ONCE and checks every
+ * requirement against that single resolution, returning the first denial.
+ * Use this when a caller has several requirements for the same auth context
+ * (e.g. a tool's base permission plus TOOL_EXTRA_PERMISSIONS) — calling the
+ * single-requirement form in a loop re-fetches getUserPermissions each time.
+ */
+export async function checkPermissionRequirements(
+  auth: AuthContext,
+  requirements: Array<{ resource: string; action: string }>
+): Promise<string | null> {
+  if (requirements.length === 0) return null;
   if (!auth.token) {
+    const described = requirements.map((r) => `${r.resource}.${r.action}`).join(', ');
     console.warn(
-      `[aiGuardrails] checkPermissionRequirement called without auth.token for ${requirement.resource}.${requirement.action}`
+      `[aiGuardrails] checkPermissionRequirements called without auth.token for ${described}`
     );
     return null;
   }
@@ -760,8 +776,10 @@ export async function checkPermissionRequirement(
     return 'Insufficient permissions: no role assigned';
   }
 
-  if (!hasPermission(userPerms, requirement.resource, requirement.action)) {
-    return `Insufficient permissions: requires ${requirement.resource}.${requirement.action}`;
+  for (const requirement of requirements) {
+    if (!hasPermission(userPerms, requirement.resource, requirement.action)) {
+      return `Insufficient permissions: requires ${requirement.resource}.${requirement.action}`;
+    }
   }
 
   return null;
@@ -811,15 +829,13 @@ export async function checkToolPermission(
     return `Missing required "action" argument for tool "${toolName}"`;
   }
 
-  const denial = await checkPermissionRequirement(auth, required);
-  if (denial) return denial;
-
-  for (const extraPermission of TOOL_EXTRA_PERMISSIONS[toolName] ?? []) {
-    const extraDenial = await checkPermissionRequirement(auth, extraPermission);
-    if (extraDenial) return extraDenial;
-  }
-
-  return null;
+  // One getUserPermissions resolution covers the base requirement and every
+  // extra permission; denials keep the same first-failure ordering as the
+  // old per-requirement loop.
+  return checkPermissionRequirements(auth, [
+    required,
+    ...(TOOL_EXTRA_PERMISSIONS[toolName] ?? []),
+  ]);
 }
 
 /**
