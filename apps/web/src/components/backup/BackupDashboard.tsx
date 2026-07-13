@@ -28,14 +28,16 @@ const SLADashboard = lazy(() => import('./SLADashboard'));
 const EncryptionKeyList = lazy(() => import('./EncryptionKeyList'));
 const RecoveryBootstrapTab = lazy(() => import('./RecoveryBootstrapTab'));
 const SnapshotBrowser = lazy(() => import('./SnapshotBrowser'));
+const BackupProfilesTab = lazy(() => import('./BackupProfilesTab'));
 
-type BackupTab = 'overview' | 'verification' | 'snapshots' | 'mssql' | 'hyperv' | 'vault' | 'sla' | 'encryption' | 'recovery-bootstrap';
+type BackupTab = 'overview' | 'verification' | 'profiles' | 'snapshots' | 'mssql' | 'hyperv' | 'vault' | 'sla' | 'encryption' | 'recovery-bootstrap';
 
-const ALL_TABS: BackupTab[] = ['overview', 'verification', 'snapshots', 'mssql', 'hyperv', 'vault', 'sla', 'encryption', 'recovery-bootstrap'];
+const ALL_TABS: BackupTab[] = ['overview', 'verification', 'profiles', 'snapshots', 'mssql', 'hyperv', 'vault', 'sla', 'encryption', 'recovery-bootstrap'];
 
 const TAB_LABELS: Record<BackupTab, string> = {
   overview: 'Overview',
   verification: 'Verification',
+  profiles: 'Profiles',
   snapshots: 'Snapshots',
   mssql: 'SQL Server',
   hyperv: 'Hyper-V',
@@ -369,7 +371,7 @@ export default function BackupDashboard() {
             )}
           >
             {TAB_LABELS[tab]}
-            {tab !== 'overview' && tab !== 'verification' && (
+            {tab !== 'overview' && tab !== 'verification' && tab !== 'profiles' && (
               <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none tracking-wider text-warning">
                 {t('backupDashboard.alpha')} </span>
             )}
@@ -424,6 +426,12 @@ export default function BackupDashboard() {
       {activeTab === 'snapshots' && (
         <Suspense fallback={<TabFallback />}>
           <SnapshotBrowser />
+        </Suspense>
+      )}
+
+      {activeTab === 'profiles' && (
+        <Suspense fallback={<TabFallback />}>
+          <BackupProfilesTab />
         </Suspense>
       )}
 

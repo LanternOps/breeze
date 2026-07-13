@@ -10,6 +10,9 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('./featureTabs/PatchTab', () => ({
   default: () => <div data-testid="patch-tab-editor">Patch editor</div>,
 }));
+vi.mock('./featureTabs/OneDriveHelperTab', () => ({
+  default: () => <div data-testid="onedrive-tab-editor">OneDrive editor</div>,
+}));
 vi.mock('./featureTabs/BackupTab', () => ({
   default: () => <div data-testid="backup-tab-editor">Backup editor</div>,
 }));
@@ -93,16 +96,29 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     );
   });
 
-  it('gates the Backup tab (org-scoped-only) with an inline hint on a partner-wide policy, instead of the editor', async () => {
+  it('gates the OneDrive Helper tab (org-scoped-only) with an inline hint on a partner-wide policy, instead of the editor', async () => {
+    mockPolicy({ orgId: null, partnerId: 'partner-1' });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    openFeatureTab('OneDrive Helper');
+
+    expect(screen.queryByTestId('onedrive-tab-editor')).not.toBeInTheDocument();
+    expect(screen.getByText(/isn't available on partner-wide policies/i)).toBeInTheDocument();
+    expect(screen.getByText(/Configure this feature on an organization-scoped policy\./i)).toBeInTheDocument();
+  });
+
+  it('renders the Backup tab as fully editable on a partner-wide policy (profiles, spec 2026-07-13)', async () => {
+    // backup left ORG_SCOPED_ONLY_FEATURE_TYPES: partner-wide policies link a
+    // dual-ownership backup profile and resolve each org's default destination.
     mockPolicy({ orgId: null, partnerId: 'partner-1' });
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
 
     await screen.findByRole('heading', { name: 'Test Policy' });
     openFeatureTab('Backup');
 
-    expect(screen.queryByTestId('backup-tab-editor')).not.toBeInTheDocument();
-    expect(screen.getByText(/isn't available on partner-wide policies/i)).toBeInTheDocument();
-    expect(screen.getByText(/Configure this feature on an organization-scoped policy\./i)).toBeInTheDocument();
+    expect(screen.getByTestId('backup-tab-editor')).toBeInTheDocument();
+    expect(screen.queryByText(/isn't available on partner-wide policies/i)).not.toBeInTheDocument();
   });
 
   it('still renders the Patches tab (partner-linkable) as fully editable on a partner-wide policy', async () => {
@@ -134,33 +150,35 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     await screen.findByRole('heading', { name: 'Test Policy' });
     fireEvent.click(screen.getByText('More'));
 
-    expect(screen.getByText('Backup').closest('button')).toHaveAttribute(
+    expect(screen.getByText('OneDrive Helper').closest('button')).toHaveAttribute(
       'title',
       expect.stringContaining('Not available on partner-wide policies')
     );
+    // Backup graduated to partner-linkable (spec 2026-07-13) — no hint tooltip.
+    expect(screen.getByText('Backup').closest('button')).not.toHaveAttribute('title');
     // Patch tab isn't gated, so it shouldn't carry the hint tooltip.
     expect(screen.getByText('Patches').closest('button')).not.toHaveAttribute('title');
   });
 
-  it('still gates the Backup tab when the partner-wide policy carries an EXISTING backup link, and offers removal', async () => {
-    // A backup link on a partner-wide policy shouldn't be creatable today, but
+  it('still gates the OneDrive Helper tab when the partner-wide policy carries an EXISTING link, and offers removal', async () => {
+    // A gated link on a partner-wide policy shouldn't be creatable today, but
     // may pre-date the restriction. The editor must NOT leak back in — and the
     // leftover link needs a removal path, or it would be permanently stuck.
     const backupLink: MockLink = {
       id: 'link-9',
-      featureType: 'backup',
-      featurePolicyId: 'cfg-1',
+      featureType: 'onedrive_helper',
+      featurePolicyId: null,
       inlineSettings: null,
     };
     mockPolicy({ orgId: null, partnerId: 'partner-1' }, [backupLink]);
     render(<ConfigPolicyDetailPage policyId="pol-1" />);
 
     await screen.findByRole('heading', { name: 'Test Policy' });
-    openFeatureTab('Backup');
+    openFeatureTab('OneDrive Helper');
 
-    expect(screen.queryByTestId('backup-tab-editor')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('onedrive-tab-editor')).not.toBeInTheDocument();
     expect(screen.getByText(/isn't available on partner-wide policies/i)).toBeInTheDocument();
-    expect(screen.getByText(/existing backup configuration/i)).toBeInTheDocument();
+    expect(screen.getByText(/existing onedrive helper configuration/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Remove configuration/i }));
 
@@ -175,7 +193,7 @@ describe('ConfigPolicyDetailPage — org-only feature gating on partner-wide pol
     );
     // Once removed, the leftover-link warning disappears (the generic hint stays).
     await waitFor(() =>
-      expect(screen.queryByText(/existing backup configuration/i)).not.toBeInTheDocument()
+      expect(screen.queryByText(/existing onedrive helper configuration/i)).not.toBeInTheDocument()
     );
     expect(screen.getByText(/isn't available on partner-wide policies/i)).toBeInTheDocument();
   });

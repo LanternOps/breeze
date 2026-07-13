@@ -22,6 +22,8 @@ export type BackupConfig = {
   name: string;
   provider: string;
   enabled: boolean;
+  /** The org's default destination (org-default sentinel + partner-wide policies resolve to this). */
+  isDefault?: boolean;
   details: Record<string, unknown>;
   encryption?: {
     enabled?: boolean;
@@ -62,6 +64,7 @@ export type ConfigFormState = {
   // API can enforce without a KMS key.
   sseAlgorithm: string | null;
   kmsKeyId: string | null;
+  isDefault: boolean;
 };
 
 export const emptyConfigForm: ConfigFormState = {
@@ -78,6 +81,7 @@ export const emptyConfigForm: ConfigFormState = {
   encryption: false,
   sseAlgorithm: null,
   kmsKeyId: null,
+  isDefault: false,
 };
 
 export type DestinationMode = "select" | "create" | "edit";
@@ -211,6 +215,13 @@ function DestinationCard({
           <span className="truncate text-sm font-medium">{config.name}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          {config.isDefault === true && (
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.backupTab.defaultBadge",
+              )}
+            </span>
+          )}
           {config.encryption?.enabled === true &&
             config.encryption?.status !== "unsupported" && (
             <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
@@ -321,6 +332,7 @@ export default function BackupDestinationSection({
   testStatus,
   testMessage,
   onTest,
+  orgDefaultCard,
 }: {
   configs: BackupConfig[];
   configsLoading: boolean;
@@ -336,6 +348,12 @@ export default function BackupDestinationSection({
   testStatus: TestStatus;
   testMessage?: string;
   onTest: () => void;
+  /** When set, renders an "Org default destination" card first in the grid. */
+  orgDefaultCard?: {
+    selected: boolean;
+    onSelect: () => void;
+    defaultName: string | null;
+  };
 }) {
   const selectedConfig = configs.find((c) => c.id === selectedConfigId);
   const showForm = mode === "create" || mode === "edit";
@@ -375,6 +393,45 @@ export default function BackupDestinationSection({
           and edit target silently desync. */}
       {configs.length > 0 && !showForm && (
         <div className="grid gap-3 sm:grid-cols-2" role="radiogroup">
+          {orgDefaultCard && (
+            <label
+              className={`relative flex cursor-pointer flex-col gap-1.5 rounded-md border p-3 transition ${
+                orgDefaultCard.selected
+                  ? "border-primary bg-primary/5 ring-1 ring-primary/40"
+                  : "border-muted hover:border-muted-foreground/30"
+              }`}
+            >
+              <input
+                type="radio"
+                name="backupDestination"
+                className="peer sr-only"
+                checked={orgDefaultCard.selected}
+                onChange={orgDefaultCard.onSelect}
+                aria-label={i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.orgDefaultCard",
+                )}
+              />
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-0 rounded-md peer-focus-visible:ring-2 peer-focus-visible:ring-ring"
+              />
+              <span className="text-sm font-medium">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.orgDefaultCard",
+                )}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {orgDefaultCard.defaultName
+                  ? i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.orgDefaultCardSet",
+                      { name: orgDefaultCard.defaultName },
+                    )
+                  : i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.orgDefaultCardUnset",
+                    )}
+              </span>
+            </label>
+          )}
           {configs.map((config) => (
             <DestinationCard
               key={config.id}
@@ -728,6 +785,17 @@ export default function BackupDestinationSection({
               onChange={(checked) => onFormChange({ encryption: checked })}
             />
           )}
+
+          <ToggleRow
+            label={i18n.t(
+              "policies:configurationPolicies.featureTabs.backupTab.setAsOrgDefault",
+            )}
+            description={i18n.t(
+              "policies:configurationPolicies.featureTabs.backupTab.setAsOrgDefaultHint",
+            )}
+            checked={form.isDefault}
+            onChange={(checked) => onFormChange({ isDefault: checked })}
+          />
         </div>
       )}
     </div>
