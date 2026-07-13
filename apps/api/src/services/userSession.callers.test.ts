@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -77,25 +77,45 @@ function normalizeFileName(fileName: string): string {
   return ts.sys.fileExists(absolute) && ts.sys.realpath ? ts.sys.realpath(absolute) : absolute;
 }
 
-const ANALYSIS_COMPILER_OPTIONS: ts.CompilerOptions = {
-  module: ts.ModuleKind.ESNext,
-  moduleResolution: ts.ModuleResolutionKind.NodeJs,
-  target: ts.ScriptTarget.ESNext,
-  noEmit: true,
-  noLib: true,
-  skipLibCheck: true,
-  types: [],
-};
+const API_TSCONFIG = join(SRC_DIR, '../tsconfig.json');
+
+function readAnalysisConfig(configFile: string): ts.ParsedCommandLine {
+  const read = ts.readConfigFile(configFile, ts.sys.readFile);
+  if (read.error) {
+    throw new Error(ts.flattenDiagnosticMessageText(read.error.messageText, '\n'));
+  }
+  const parsed = ts.parseJsonConfigFileContent(
+    read.config,
+    ts.sys,
+    dirname(configFile),
+    undefined,
+    configFile,
+  );
+  if (parsed.errors.length > 0) {
+    throw new Error(parsed.errors
+      .map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n'))
+      .join('\n'));
+  }
+  return parsed;
+}
 
 function createAnalysisProgram(
   rootNames: string[],
   virtualSources: ReadonlyMap<string, string> = new Map(),
   noResolve = false,
+  configFile = API_TSCONFIG,
+  includeConfigFiles = false,
 ): ts.Program {
   const normalizedVirtualSources = new Map(
     [...virtualSources].map(([fileName, source]) => [normalizeFileName(fileName), source]),
   );
-  const compilerOptions = { ...ANALYSIS_COMPILER_OPTIONS, noResolve };
+  const parsedConfig = readAnalysisConfig(configFile);
+  const compilerOptions: ts.CompilerOptions = {
+    ...parsedConfig.options,
+    noEmit: true,
+    skipLibCheck: true,
+    noResolve,
+  };
   const host = ts.createCompilerHost(compilerOptions, true);
   const defaultFileExists = host.fileExists.bind(host);
   const defaultReadFile = host.readFile.bind(host);
@@ -117,7 +137,10 @@ function createAnalysisProgram(
       : defaultRealpath(fileName);
   }
   return ts.createProgram({
-    rootNames: rootNames.map(normalizeFileName),
+    rootNames: [...new Set([
+      ...rootNames.map(normalizeFileName),
+      ...(includeConfigFiles ? parsedConfig.fileNames.map(normalizeFileName) : []),
+    ])],
     options: compilerOptions,
     host,
   });
@@ -157,6 +180,17 @@ function getCanonicalSymbol(
   return canonical;
 }
 
+function hasCanonicalDeclaration(symbol: ts.Symbol, canonical: ts.Symbol): boolean {
+  if (symbol === canonical) return true;
+  const canonicalDeclarations = canonical.declarations ?? [];
+  return (symbol.declarations ?? []).some((declaration) =>
+    canonicalDeclarations.some((candidate) =>
+      normalizeFileName(declaration.getSourceFile().fileName)
+        === normalizeFileName(candidate.getSourceFile().fileName)
+      && declaration.pos === candidate.pos
+      && declaration.end === candidate.end));
+}
+
 function symbolContainsCanonical(
   checker: ts.TypeChecker,
   symbol: ts.Symbol | undefined,
@@ -165,7 +199,7 @@ function symbolContainsCanonical(
 ): boolean {
   if (!symbol) return false;
   const resolved = resolveAliasedSymbol(checker, symbol);
-  if (resolved === canonical) return true;
+  if (hasCanonicalDeclaration(resolved, canonical)) return true;
   if (visiting.has(resolved)) return false;
   visiting.add(resolved);
   if ((resolved.flags & (ts.SymbolFlags.Module | ts.SymbolFlags.NamespaceModule)) !== 0) {
@@ -193,6 +227,50 @@ function isBindingDeclarationIdentifier(node: ts.Identifier): boolean {
     || (ts.isClassDeclaration(parent) && parent.name === node);
 }
 
+function resolveStaticModuleSpecifier(
+  checker: ts.TypeChecker,
+  expression: ts.Expression | undefined,
+): string | null {
+  if (!expression) return null;
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isStringLiteral(unwrapped) || ts.isNoSubstitutionTemplateLiteral(unwrapped)) {
+    return unwrapped.text;
+  }
+  if (!ts.isIdentifier(unwrapped)) return null;
+  const symbol = checker.getSymbolAtLocation(unwrapped);
+  for (const declaration of symbol?.declarations ?? []) {
+    if (
+      ts.isVariableDeclaration(declaration)
+      && declaration.initializer
+      && ts.isVariableDeclarationList(declaration.parent)
+      && (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+    ) {
+      const initializer = unwrapExpression(declaration.initializer);
+      if (ts.isStringLiteral(initializer) || ts.isNoSubstitutionTemplateLiteral(initializer)) {
+        return initializer.text;
+      }
+    }
+  }
+  return null;
+}
+
+function resolveRequiredModuleSymbol(
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  sourceFile: ts.SourceFile,
+  specifier: string,
+): ts.Symbol | undefined {
+  const resolved = ts.resolveModuleName(
+    specifier,
+    sourceFile.fileName,
+    program.getCompilerOptions(),
+    ts.sys,
+  ).resolvedModule?.resolvedFileName;
+  if (!resolved) return undefined;
+  const requiredSource = program.getSourceFile(normalizeFileName(resolved));
+  return requiredSource ? checker.getSymbolAtLocation(requiredSource) : undefined;
+}
+
 function analyzeTrackedSymbolCalls(
   program: ts.Program,
   fileName: string,
@@ -205,7 +283,7 @@ function analyzeTrackedSymbolCalls(
   const canonical = getCanonicalSymbol(program, canonicalFile, functionName);
   const protectedBindings = new Map<ts.Symbol, { exact: boolean; reExported: boolean }>();
 
-  const inspectDynamicImports = (node: ts.Node): void => {
+  const inspectModuleLoads = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node)
       && node.expression.kind === ts.SyntaxKind.ImportKeyword
@@ -214,7 +292,7 @@ function analyzeTrackedSymbolCalls(
     ) {
       const moduleSymbol = checker.getSymbolAtLocation(node.arguments[0]);
       if (!symbolContainsCanonical(checker, moduleSymbol, canonical)) {
-        ts.forEachChild(node, inspectDynamicImports);
+        ts.forEachChild(node, inspectModuleLoads);
         return;
       }
       const awaited = ts.isAwaitExpression(node.parent) ? node.parent : undefined;
@@ -242,12 +320,25 @@ function analyzeTrackedSymbolCalls(
           return !symbolContainsCanonical(checker, exported, canonical);
         });
       if (destructuresOnlyUnrelatedExports) {
-        ts.forEachChild(node, inspectDynamicImports);
+        ts.forEachChild(node, inspectModuleLoads);
         return;
       }
       throw protectedConventionError(functionName, 'dynamic imports are forbidden');
     }
-    ts.forEachChild(node, inspectDynamicImports);
+    if (
+      ts.isCallExpression(node)
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === 'require'
+    ) {
+      const specifier = resolveStaticModuleSpecifier(checker, node.arguments[0]);
+      const moduleSymbol = specifier
+        ? resolveRequiredModuleSymbol(program, checker, sourceFile, specifier)
+        : undefined;
+      if (symbolContainsCanonical(checker, moduleSymbol, canonical)) {
+        throw protectedConventionError(functionName, 'CommonJS require is forbidden');
+      }
+    }
+    ts.forEachChild(node, inspectModuleLoads);
   };
 
   for (const statement of sourceFile.statements) {
@@ -284,7 +375,9 @@ function analyzeTrackedSymbolCalls(
       }
     }
   }
-  if (sourceFile.text.includes('import(')) inspectDynamicImports(sourceFile);
+  if (sourceFile.text.includes('import(') || sourceFile.text.includes('require(')) {
+    inspectModuleLoads(sourceFile);
+  }
 
   if (protectedBindings.size === 0) return 0;
 
@@ -347,6 +440,7 @@ function countTrackedSymbolCalls(
   functionName: string,
   fileName = join(SRC_DIR, '__session_inventory_fixture.ts'),
   canonicalFile = CANONICAL_PROTECTED_FILES[functionName],
+  configFile?: string,
 ): number {
   if (!canonicalFile) throw new Error(`Unknown protected symbol: ${functionName}`);
   const normalizedFile = normalizeFileName(fileName);
@@ -359,7 +453,13 @@ function countTrackedSymbolCalls(
     // while keeping each fixture program deterministic and small.
     virtualSources.set(normalizeFileName(canonicalFile), `export function ${functionName}() {}`);
   }
-  const program = createAnalysisProgram([normalizedFile, canonicalFile], virtualSources);
+  const program = createAnalysisProgram(
+    [normalizedFile, canonicalFile],
+    virtualSources,
+    false,
+    configFile ?? API_TSCONFIG,
+    !!configFile,
+  );
   return analyzeTrackedSymbolCalls(program, normalizedFile, functionName, canonicalFile);
 }
 
@@ -370,7 +470,7 @@ function collectCallInventory(functionName: string): Map<string, number> {
   // Every API source is already a root; noResolve prevents the compiler from
   // pulling the full monorepo/node_modules graph while still binding imports
   // and re-exports between these root source files.
-  repositoryProgram ??= createAnalysisProgram(files, new Map(), true);
+  repositoryProgram ??= createAnalysisProgram(files, new Map(), true, API_TSCONFIG);
   const canonicalFile = CANONICAL_PROTECTED_FILES[functionName];
   if (!canonicalFile) throw new Error(`Unknown protected symbol: ${functionName}`);
   const inventory = new Map<string, number>();
@@ -520,6 +620,7 @@ describe('session inventory analyzer fixtures', () => {
     functionName: string,
     fileName: string,
     canonicalFile: string,
+    configFile?: string,
   ) => number;
 
   function withModuleGraph(
@@ -551,6 +652,101 @@ describe('session inventory analyzer fixtures', () => {
         consumer,
         join(root, 'services/userSession.ts'),
       )).toBe(1);
+    });
+  });
+
+  it('honors a fixture project path alias for both protected functions', () => {
+    withModuleGraph({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          baseUrl: '.',
+          paths: { '@/*': ['./src/*'] },
+          module: 'ESNext',
+          moduleResolution: 'Node',
+          target: 'ES2022',
+        },
+        include: ['**/*.ts'],
+      }),
+      'src/services/userSession.ts': 'export function issueUserSession() {}',
+      'src/routes/auth/helpers.ts': 'export function setRefreshTokenCookie() {}',
+      'src/consumer.ts': `
+        import { issueUserSession } from '@/services/userSession';
+        import { setRefreshTokenCookie } from '@/routes/auth/helpers';
+        issueUserSession();
+        setRefreshTokenCookie();
+      `,
+    }, (root) => {
+      const consumer = join(root, 'src/consumer.ts');
+      const config = join(root, 'tsconfig.json');
+      expect(analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'src/services/userSession.ts'),
+        config,
+      )).toBe(1);
+      expect(analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'setRefreshTokenCookie',
+        consumer,
+        join(root, 'src/routes/auth/helpers.ts'),
+        config,
+      )).toBe(1);
+    });
+  });
+
+  it.each([
+    [
+      'direct property access',
+      "const issueUserSession = require('../services/userSession').issueUserSession; issueUserSession();",
+    ],
+    [
+      'aliased destructuring through a barrel',
+      "const { issueUserSession: issue } = require('../services/barrel'); issue();",
+    ],
+    [
+      'computed module variable that resolves to the protected module',
+      "const moduleName = '../services/userSession'; const { issueUserSession } = require(moduleName); issueUserSession();",
+    ],
+  ])('rejects protected CommonJS require through %s', (_name, body) => {
+    withModuleGraph({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { module: 'CommonJS', moduleResolution: 'Node', target: 'ES2022' },
+        include: ['**/*.ts'],
+      }),
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'services/barrel.ts': "export * from './userSession';",
+      'routes/consumer.ts': body,
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(() => analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+        join(root, 'tsconfig.json'),
+      )).toThrow(/protected symbol convention/i);
+    });
+  });
+
+  it('ignores CommonJS require of a genuinely unrelated module', () => {
+    withModuleGraph({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { module: 'CommonJS', moduleResolution: 'Node', target: 'ES2022' },
+        include: ['**/*.ts'],
+      }),
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'unrelated.ts': 'export function issueUserSession() {}',
+      'consumer.ts': "const { issueUserSession } = require('./unrelated'); issueUserSession();",
+    }, (root) => {
+      const consumer = join(root, 'consumer.ts');
+      expect(analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+        join(root, 'tsconfig.json'),
+      )).toBe(0);
     });
   });
 
