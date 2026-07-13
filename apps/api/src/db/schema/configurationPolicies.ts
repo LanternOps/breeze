@@ -260,6 +260,17 @@ export const configPolicyBackupSettings = pgTable('config_policy_backup_settings
   paths: jsonb('paths').notNull().default([]),
   backupMode: backupModeEnum('backup_mode').notNull().default('file'),
   targets: jsonb('targets').notNull().default({}),
+  // Backup-profiles model (2026-07-13-backup-profiles.sql). When
+  // backup_profile_id is set, the profile's selections replace
+  // backup_mode/paths/targets (which remain the legacy "custom selection"
+  // path). destination_config_id points at the backup_configs destination;
+  // NULL with a profile set means "resolve the device org's default
+  // destination at job time" (required for partner-wide policies). Real FKs
+  // live in the SQL migration — no drizzle .references() here because
+  // schema/backup.ts already imports from this module and a reference back
+  // would create an import cycle.
+  backupProfileId: uuid('backup_profile_id'),
+  destinationConfigId: uuid('destination_config_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
