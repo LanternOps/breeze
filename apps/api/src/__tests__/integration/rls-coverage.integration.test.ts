@@ -65,6 +65,8 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'software_vulnerabilities', // Global software-to-vulnerability match facts. Forced RLS, no tenant policies → only system context.
   'os_vulnerabilities', // Global OS-to-vulnerability match facts. Forced RLS, no tenant policies → only system context.
   'software_product_resolutions', // Global DisplayName→product resolution cache/log (#2290). Forced RLS, system-only policy → only system context.
+  'auth_browser_transitions', // Cross-tab auth ordering authority; may correlate accounts used by one browser. Forced RLS, system-only policy.
+  'sso_token_exchange_grants', // One-time SSO session handoff grants. Forced RLS, system-only policy; tenant reads would expose auth authority.
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
 ]);

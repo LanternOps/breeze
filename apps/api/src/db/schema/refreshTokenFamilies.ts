@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, index, unique } from 'drizzle-orm/pg-core';
 import { users } from './users';
 
 /**
@@ -37,9 +37,16 @@ export const refreshTokenFamilies = pgTable(
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     revokedReason: varchar('revoked_reason', { length: 64 }),
+    // Nullable during the legacy-family rollout. New issuance and rotation
+    // dual-write the SHA-256 digest; a later fix-forward migration tightens it.
+    currentRefreshJtiDigest: varchar('current_refresh_jti_digest', { length: 64 }),
   },
   (t) => ({
     userIdx: index('refresh_token_families_user_idx').on(t.userId),
+    familyUserUnique: unique('refresh_token_families_family_user_unique').on(
+      t.familyId,
+      t.userId,
+    ),
   })
 );
 

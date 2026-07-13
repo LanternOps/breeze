@@ -1,6 +1,8 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { bigint, boolean, check, foreignKey, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { users } from './users';
+import { authBrowserTransitions } from './authBrowserTransitions';
 
 export const ssoProviderTypeEnum = pgEnum('sso_provider_type', ['oidc', 'saml']);
 export const ssoProviderStatusEnum = pgEnum('sso_provider_status', ['active', 'inactive', 'testing']);
@@ -89,25 +91,45 @@ export const userSsoIdentities = pgTable('user_sso_identities', {
 }));
 
 // SSO Login sessions (for CSRF protection)
-export const ssoSessions = pgTable('sso_sessions', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  providerId: uuid('provider_id').notNull().references(() => ssoProviders.id),
+export const ssoSessions = pgTable(
+  'sso_sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    providerId: uuid('provider_id').notNull().references(() => ssoProviders.id),
 
-  state: varchar('state', { length: 64 }).notNull().unique(),
-  nonce: varchar('nonce', { length: 64 }).notNull(),
-  codeVerifier: varchar('code_verifier', { length: 128 }), // for PKCE
-  redirectUrl: varchar('redirect_url', { length: 500 }),
+    state: varchar('state', { length: 64 }).notNull().unique(),
+    nonce: varchar('nonce', { length: 64 }).notNull(),
+    codeVerifier: varchar('code_verifier', { length: 128 }), // for PKCE
+    redirectUrl: varchar('redirect_url', { length: 500 }),
 
   // Link-mode marker (#2183 Connect SSO): when set, the callback links the
   // verified identity to this user instead of minting login tokens.
   // ON DELETE CASCADE: an abandoned link session (never completed, so never
   // deleted by the callback) must not block a hard user delete — sso_sessions
   // has no partner_id/org_id, so the tenant-cascade sweep never reaches it.
-  linkUserId: uuid('link_user_id').references(() => users.id, { onDelete: 'cascade' }),
+    linkUserId: uuid('link_user_id').references(() => users.id, { onDelete: 'cascade' }),
 
-  expiresAt: timestamp('expires_at').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull()
-});
+    // Nullable for pre-rollout SSO sessions. New login starts capture both
+    // values so the callback can recover the exact browser generation without
+    // depending on a SameSite cookie.
+    browserTransitionId: uuid('browser_transition_id'),
+    browserGeneration: bigint('browser_generation', { mode: 'number' }),
+
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    browserTransitionPairCheck: check(
+      'sso_sessions_browser_transition_pair_chk',
+      sql`(${table.browserTransitionId} IS NULL) = (${table.browserGeneration} IS NULL)`,
+    ),
+    browserTransitionGenerationFk: foreignKey({
+      columns: [table.browserTransitionId, table.browserGeneration],
+      foreignColumns: [authBrowserTransitions.id, authBrowserTransitions.generation],
+      name: 'sso_sessions_browser_transition_generation_fk',
+    }),
+  }),
+);
 
 // SSO Verified Domains — org proves DNS ownership before JIT-provisioning is
 // allowed for addresses in the domain (security review #2, H-2, Plan B).
