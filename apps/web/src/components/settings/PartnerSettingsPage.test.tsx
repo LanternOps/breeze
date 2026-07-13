@@ -149,7 +149,7 @@ describe('runPartnerSave', () => {
 });
 
 describe('PartnerSettingsPage language control', () => {
-  const renderPartner = async (language: 'en' | 'pt-BR' = 'en') => {
+  const renderPartner = async (language = 'en') => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
@@ -212,6 +212,31 @@ describe('PartnerSettingsPage language control', () => {
     expect(patchCall).toBeDefined();
     const body = JSON.parse((patchCall![1] as RequestInit).body as string);
     expect(body.settings.language).toBe('en');
+  });
+
+  it.each(['es-419', 'fr-FR', 'de-DE'] as const)(
+    'hydrates %s and preserves it when an unrelated partner setting is saved',
+    async (persistedLocale) => {
+      const user = await renderPartner(persistedLocale);
+      const languageSelect = screen.getByLabelText('Language') as HTMLSelectElement;
+      expect(languageSelect.value).toBe(persistedLocale);
+
+      await user.selectOptions(screen.getByLabelText('Timezone'), 'Europe/London');
+      await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+      const patchCall = fetchWithAuthMock.mock.calls.find(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+      );
+      expect(patchCall).toBeDefined();
+      const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+      expect(body.settings.language).toBe(persistedLocale);
+    }
+  );
+
+  it('falls back to English when the persisted locale is unsupported', async () => {
+    await renderPartner('unsupported-locale');
+
+    expect((screen.getByLabelText('Language') as HTMLSelectElement).value).toBe('en');
   });
 
   it('renders the Regional Settings surface in pt-BR', async () => {

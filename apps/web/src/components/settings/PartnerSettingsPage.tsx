@@ -52,6 +52,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
+import { normalizeLocale } from '@/lib/appearance';
 
 type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'remoteAccess' | 'ticketing';
 
@@ -273,7 +274,7 @@ export default function PartnerSettingsPage() {
       setTimezone(settings.timezone || data.timezone || 'UTC');
       setDateFormat(settings.dateFormat || 'MM/DD/YYYY');
       setTimeFormat(settings.timeFormat || '12h');
-      setLanguage((settings.language as string) === 'pt-BR' ? 'pt-BR' : 'en');
+      setLanguage(normalizeLocale(settings.language) ?? 'en');
       setBusinessHoursPreset(settings.businessHours?.preset || 'business');
       if (settings.businessHours?.custom) {
         setCustomHours({ ...DEFAULT_BUSINESS_HOURS, ...settings.businessHours.custom });
