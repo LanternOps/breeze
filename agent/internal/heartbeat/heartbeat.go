@@ -227,10 +227,25 @@ type Heartbeat struct {
 	seenCommandsMu sync.Mutex
 
 	// commandInFlightWarnAfter overrides the wedged-worker watchdog interval
-	// in executeCommandViaPool; non-positive means
+	// in executeCommandViaPool for non-ephemeral commands; non-positive means
 	// defaultCommandInFlightWarnAfter. Set before the heartbeat runs (tests
 	// only) — never mutated afterwards.
 	commandInFlightWarnAfter time.Duration
+
+	// ephemeralCommandInFlightWarnAfter is the same override for the short
+	// watchdog tier applied to ephemeral commands (isEphemeralCommand:
+	// terminal/tunnel/desktop data, which should complete in milliseconds);
+	// non-positive means defaultEphemeralCommandInFlightWarnAfter. Tests only.
+	ephemeralCommandInFlightWarnAfter time.Duration
+
+	// inFlightCommands tracks every command currently executing on the worker
+	// pool (keyed by a per-dispatch sequence number so duplicate command IDs
+	// can't clobber each other), with its start time and watchdog tier. Read
+	// by inFlightCommandStats to put wedged-worker gauges on the heartbeat
+	// (issue #2400).
+	inFlightMu       sync.Mutex
+	inFlightCommands map[uint64]inFlightCommand
+	inFlightSeq      atomic.Uint64
 
 	// Guard against concurrent cert renewals from successive heartbeats
 	certRenewing      atomic.Bool
@@ -2914,8 +2929,11 @@ func (h *Heartbeat) sendHeartbeat() {
 	// it or when the query failed — omitempty then drops the field.
 	payload.Battery = h.hardwareCol.CollectBattery()
 
-	// Agent's own runtime memory gauges (#2389).
+	// Agent's own runtime memory gauges (#2389), plus worker-pool wedge
+	// gauges (#2400) so in-flight/overdue commands are visible fleet-wide.
 	payload.AgentRuntime = collectors.CollectRuntimeStats()
+	payload.AgentRuntime.CommandsInFlight, payload.AgentRuntime.CommandsOverdue =
+		h.inFlightCommandStats(time.Now())
 
 	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
 	// Windows box — omitempty then drops the field entirely.
@@ -3647,12 +3665,13 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 	// flags workers wedged on an unbounded blocking call — each one pins its
 	// decoded command payload (up to the 64MB websocket read limit,
 	// maxMessageSize in internal/websocket) for the process lifetime and
-	// permanently shrinks the pool (issue #2387).
-	warnAfter := h.commandInFlightWarnAfter
-	if warnAfter <= 0 {
-		warnAfter = defaultCommandInFlightWarnAfter
-	}
+	// permanently shrinks the pool (issue #2387). Ephemeral commands
+	// (terminal/tunnel/desktop data) should complete in milliseconds, so they
+	// get a much shorter tier (issue #2400) — still log-only.
+	warnAfter := h.commandWarnAfter(cmd.Type)
 	started := time.Now()
+	inFlightKey := h.trackInFlight(started, warnAfter)
+	defer h.untrackInFlight(inFlightKey)
 	watchdog := time.NewTimer(warnAfter)
 	defer watchdog.Stop()
 
@@ -3665,6 +3684,7 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 				logging.KeyCommandID, cmd.ID,
 				"type", cmd.Type,
 				"elapsed", time.Since(started).Round(time.Second).String(),
+				"warnAfter", warnAfter.String(),
 			)
 			watchdog.Reset(warnAfter)
 		case <-h.stopChan:
@@ -3687,6 +3707,73 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 // (scripts capped at executor.MaxTimeout = 1h, patch installs) must not trip
 // it in normal operation.
 const defaultCommandInFlightWarnAfter = 2 * time.Hour
+
+// defaultEphemeralCommandInFlightWarnAfter is the short watchdog tier for
+// ephemeral commands (isEphemeralCommand: terminal_data, tunnel_data, desktop
+// input, ...). Those handlers hand off to an interactive session and should
+// return in milliseconds, so one stuck for a minute is a wedged interactive
+// path — worth flagging long before the 2h tier would (issue #2400). Log-only,
+// exactly like the default tier: it never fails or kills the command.
+const defaultEphemeralCommandInFlightWarnAfter = 60 * time.Second
+
+// commandWarnAfter returns the in-flight watchdog tier for a command type:
+// the short ephemeral tier for interactive-session data commands, the
+// generous default for everything else. Test overrides on the Heartbeat take
+// precedence within their tier.
+func (h *Heartbeat) commandWarnAfter(cmdType string) time.Duration {
+	if isEphemeralCommand(cmdType) {
+		if h.ephemeralCommandInFlightWarnAfter > 0 {
+			return h.ephemeralCommandInFlightWarnAfter
+		}
+		return defaultEphemeralCommandInFlightWarnAfter
+	}
+	if h.commandInFlightWarnAfter > 0 {
+		return h.commandInFlightWarnAfter
+	}
+	return defaultCommandInFlightWarnAfter
+}
+
+// inFlightCommand is one pool-dispatched command currently executing, as
+// tracked for the heartbeat wedge gauges (issue #2400).
+type inFlightCommand struct {
+	started   time.Time
+	warnAfter time.Duration
+}
+
+// trackInFlight records a command dispatch and returns the key to pass to
+// untrackInFlight when the dispatch loop exits.
+func (h *Heartbeat) trackInFlight(started time.Time, warnAfter time.Duration) uint64 {
+	key := h.inFlightSeq.Add(1)
+	h.inFlightMu.Lock()
+	defer h.inFlightMu.Unlock()
+	if h.inFlightCommands == nil {
+		h.inFlightCommands = make(map[uint64]inFlightCommand)
+	}
+	h.inFlightCommands[key] = inFlightCommand{started: started, warnAfter: warnAfter}
+	return key
+}
+
+func (h *Heartbeat) untrackInFlight(key uint64) {
+	h.inFlightMu.Lock()
+	defer h.inFlightMu.Unlock()
+	delete(h.inFlightCommands, key)
+}
+
+// inFlightCommandStats returns how many pool-dispatched commands are
+// currently executing and how many of those are overdue — running longer
+// than their watchdog tier. Reported on every heartbeat via the agentRuntime
+// gauges so wedged workers are visible fleet-wide (issue #2400).
+func (h *Heartbeat) inFlightCommandStats(now time.Time) (inFlight, overdue int) {
+	h.inFlightMu.Lock()
+	defer h.inFlightMu.Unlock()
+	inFlight = len(h.inFlightCommands)
+	for _, c := range h.inFlightCommands {
+		if now.Sub(c.started) > c.warnAfter {
+			overdue++
+		}
+	}
+	return inFlight, overdue
+}
 
 func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {

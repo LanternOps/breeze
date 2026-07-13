@@ -12,6 +12,14 @@ type RuntimeStats struct {
 	SysBytes          uint64 `json:"sysBytes"`
 	NumGC             uint32 `json:"numGc"`
 	Goroutines        int    `json:"goroutines"`
+
+	// Worker-pool wedge gauges (issue #2400). Filled in by the heartbeat —
+	// not by CollectRuntimeStats, which has no view of the pool.
+	// CommandsInFlight is how many pool-dispatched commands are currently
+	// executing; CommandsOverdue is how many of those have been running
+	// longer than their in-flight watchdog tier (wedged-worker suspects).
+	CommandsInFlight int `json:"commandsInFlight"`
+	CommandsOverdue  int `json:"commandsOverdue"`
 }
 
 // CollectRuntimeStats reads the Go runtime's memory statistics for this

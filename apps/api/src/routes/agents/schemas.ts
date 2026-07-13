@@ -209,6 +209,12 @@ export const heartbeatSchema = z.object({
     sysBytes: uint64Counter,
     numGc: z.number().int().min(0),
     goroutines: z.number().int().min(0),
+    // Worker-pool wedge gauges (#2400): commands currently executing on the
+    // pool and how many are overdue past their in-flight watchdog tier.
+    // Per-field optional + .catch so agents predating #2400 (which omit
+    // them) don't lose the whole agentRuntime object.
+    commandsInFlight: z.number().int().min(0).optional().catch(undefined),
+    commandsOverdue: z.number().int().min(0).optional().catch(undefined),
   }).optional().catch(undefined),
   role: z.enum(['agent', 'watchdog']).optional(),
   watchdogState: z.string().optional().catch(undefined),

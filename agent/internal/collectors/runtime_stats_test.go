@@ -46,6 +46,7 @@ func TestRuntimeStatsJSONShape(t *testing.T) {
 	for _, key := range []string{
 		"heapAllocBytes", "heapInuseBytes", "heapReleasedBytes",
 		"sysBytes", "numGc", "goroutines",
+		"commandsInFlight", "commandsOverdue",
 	} {
 		if _, ok := m[key]; !ok {
 			t.Errorf("expected JSON key %q missing", key)
