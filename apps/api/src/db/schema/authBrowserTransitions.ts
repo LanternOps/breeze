@@ -26,8 +26,8 @@ export const authBrowserTransitions = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     bindingDigest: varchar('binding_digest', { length: 64 }).notNull(),
-    // Null only for rows admitted before key provenance was recorded. Such
-    // tombstones are retained because their binding cannot be proven invalid.
+    // Null only for rows admitted before key provenance was recorded. This is
+    // diagnostic/future rollout metadata, never local deletion authority.
     bindingKeyId: varchar('binding_key_id', { length: 128 }),
     generation: bigint('generation', { mode: 'number' }).notNull().default(1),
     state: varchar('state', { length: 24 })

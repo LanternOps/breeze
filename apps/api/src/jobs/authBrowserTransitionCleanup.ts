@@ -49,6 +49,10 @@ export function createAuthBrowserTransitionCleanupWorker(): Worker {
 export async function scheduleAuthBrowserTransitionCleanup(
   queue: Queue = getAuthBrowserTransitionCleanupQueue(),
 ): Promise<void> {
+  const staleLegacyRepeatKeys = (await queue.getRepeatableJobs())
+    .filter((job) => job.name === JOB_NAME && job.key !== REPEAT_JOB_ID)
+    .map((job) => job.key);
+
   // BullMQ's scheduler upsert is atomic. Install/refresh the durable schedule
   // before touching legacy repeat metadata so a replica crash cannot leave a
   // remove-then-add gap across the fleet.
@@ -65,9 +69,8 @@ export async function scheduleAuthBrowserTransitionCleanup(
     },
   );
 
-  const existingJobs = await queue.getRepeatableJobs();
-  for (const job of existingJobs) {
-    if (job.name === JOB_NAME) await queue.removeRepeatableByKey(job.key);
+  for (const key of staleLegacyRepeatKeys) {
+    await queue.removeRepeatableByKey(key);
   }
 
   console.log(

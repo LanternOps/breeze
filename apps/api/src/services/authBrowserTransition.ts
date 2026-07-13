@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { and, eq, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, lte, sql } from 'drizzle-orm';
 import { authBrowserTransitions } from '../db/schema/authBrowserTransitions';
 import {
   withAuthLifecycleSystemTransaction,
@@ -20,7 +20,6 @@ const AUTH_BINDING_SUCCESSOR_DOMAIN = 'auth-browser-binding-successor:v1:';
 const AUTH_ISSUANCE_LEASE_MINUTES = 2;
 const AUTH_ISSUANCE_CAPABILITY: unique symbol = Symbol('AuthIssuanceCapability');
 
-export const AUTH_BROWSER_TRANSITION_DIAGNOSTIC_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const AUTH_BROWSER_TRANSITION_CLEANUP_BATCH_SIZE = 500;
 
 export const NATIVE_AUTH_BINDING_HEADER = 'x-breeze-native-auth-binding';
@@ -545,11 +544,12 @@ export type AuthBrowserTransitionCleanupStats = Readonly<{
 /**
  * Bound abandoned-flow recovery work so cleanup cannot hold the transition
  * table for an unbounded pass. Admission remains the correctness path: this
- * sweep retires already-expired pending rows. It deletes a retired row only
- * after the maximum 30-day diagnostic lifetime and after its recorded signing
- * key leaves the retained keyring, so a still-valid C1 tombstone is permanent.
- * The two phases use separate transactions: deletion failures cannot undo
- * authoritative expiry recovery.
+ * sweep retires already-expired pending rows. Retired binding digests are
+ * permanent security tombstones: process-local keyring state cannot prove
+ * that every replica has stopped accepting a binding key, so this worker never
+ * deletes them. `deletedRetired` remains in the result as a compatibility and
+ * observability field and is always zero until a fleet-authoritative key
+ * retirement protocol exists.
  */
 export async function cleanupAuthBrowserTransitions(
   options: Readonly<{ batchSize?: number }> = {},
@@ -595,53 +595,7 @@ export async function cleanupAuthBrowserTransitions(
     return retiredPendingCount;
   });
 
-  const retainedBindingKeyIds = getSecretDerivedKeyMaterials(
-    AUTH_BINDING_DERIVATION_DOMAIN,
-  ).retained.flatMap(({ keyId }) => keyId === null ? [] : [keyId]);
-  const retiredKeyNoLongerAccepted = retainedBindingKeyIds.length === 0
-    ? isNotNull(authBrowserTransitions.bindingKeyId)
-    : and(
-        isNotNull(authBrowserTransitions.bindingKeyId),
-        notInArray(authBrowserTransitions.bindingKeyId, retainedBindingKeyIds),
-      );
-
-  const deletedRetired = await withAuthLifecycleSystemTransaction(async (tx) => {
-    const retentionCutoff = sql`now() - ${AUTH_BROWSER_TRANSITION_DIAGNOSTIC_RETENTION_MS} * interval '1 millisecond'`;
-    const retiredCandidates = await tx
-      .select({ id: authBrowserTransitions.id })
-      .from(authBrowserTransitions)
-      .where(and(
-        eq(authBrowserTransitions.state, 'retired'),
-        isNotNull(authBrowserTransitions.retiredAt),
-        lt(authBrowserTransitions.retiredAt, retentionCutoff),
-        retiredKeyNoLongerAccepted,
-        isNull(authBrowserTransitions.activeOperationId),
-        isNull(authBrowserTransitions.activeOperationExpiresAt),
-      ))
-      .for('update', { skipLocked: true })
-      .limit(batchSize);
-
-    let deletedRetiredCount = 0;
-    if (retiredCandidates.length > 0) {
-      const deleted = await tx
-        .delete(authBrowserTransitions)
-        .where(and(
-          inArray(authBrowserTransitions.id, retiredCandidates.map(({ id }) => id)),
-          eq(authBrowserTransitions.state, 'retired'),
-          isNotNull(authBrowserTransitions.retiredAt),
-          lt(authBrowserTransitions.retiredAt, retentionCutoff),
-          retiredKeyNoLongerAccepted,
-          isNull(authBrowserTransitions.activeOperationId),
-          isNull(authBrowserTransitions.activeOperationExpiresAt),
-        ))
-        .returning({ id: authBrowserTransitions.id });
-      deletedRetiredCount = deleted.length;
-    }
-
-    return deletedRetiredCount;
-  });
-
-  return Object.freeze({ retiredPending, deletedRetired });
+  return Object.freeze({ retiredPending, deletedRetired: 0 });
 }
 
 export type StoredAuthTransitionIdentity = Readonly<{

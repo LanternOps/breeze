@@ -782,22 +782,39 @@ describe('binding rotation', () => {
 });
 
 describe('bounded transition cleanup', () => {
-  it('commits expired-pending retirement even when the later deletion phase fails', async () => {
-    const expiredPending = seedTransition(browser(), {
-      state: 'logout_pending',
-      logoutId: '20000000-0000-4000-8000-000000000099',
-      completionNonceDigest: '9'.repeat(64),
-      logoutExpiresAt: new Date(harness.now.getTime() - 1),
-    });
-    harness.failTransactionAt = 2;
-
-    await expect(cleanupAuthBrowserTransitions()).rejects.toThrow(
-      'injected cleanup deletion failure',
+  it('keeps C1 retired when cleanup and a lagging issuer disagree about retained keys', async () => {
+    process.env.APP_ENCRYPTION_KEY_ID = 'old';
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ old: OLD_BINDING_KEY });
+    const laggingMaterials = getSecretDerivedKeyMaterials('auth-browser-binding:v1');
+    const laggingService = authBrowserTransitionModule.createAuthBrowserTransitionService(
+      () => laggingMaterials,
     );
-    expect(harness.rows.get(expiredPending.id)).toMatchObject({
-      state: 'retired',
-      retiredAt: harness.now,
+    let c1!: AuthBindingSource;
+    try {
+      laggingService.resolveAuthBinding(undefined);
+    } catch (error) {
+      if (!(error instanceof AuthBindingRotationRequiredError)) throw error;
+      c1 = error.replacement;
+    }
+    const capability = await laggingService.beginAuthIssuance(c1);
+    const predecessor = harness.rows.get(capability.transitionId)!;
+    predecessor.state = 'retired';
+    predecessor.activeOperationId = null;
+    predecessor.activeOperationExpiresAt = null;
+    predecessor.retiredAt = new Date(harness.now.getTime() - 31 * 24 * 60 * 60 * 1000);
+
+    process.env.APP_ENCRYPTION_KEY_ID = 'current';
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: BINDING_KEY });
+    await expect(cleanupAuthBrowserTransitions()).resolves.toEqual({
+      retiredPending: 0,
+      deletedRetired: 0,
     });
+    await expect(laggingService.beginAuthIssuance(c1)).rejects.toMatchObject({
+      constructor: AuthBindingRotationRequiredError,
+      status: 428,
+      reason: 'retired',
+    });
+    expect(harness.rows.get(predecessor.id)?.state).toBe('retired');
   });
 
   it('keeps an old retired tombstone while its binding signing key remains accepted', async () => {
@@ -819,7 +836,7 @@ describe('bounded transition cleanup', () => {
     expect(harness.rows.get(predecessor.id)?.state).toBe('retired');
   });
 
-  it('retires only expired pending rows and deletes only retired rows older than retention', async () => {
+  it('retires only expired pending rows and preserves every retired tombstone', async () => {
     const active = seedTransition(browser(signedBinding(BINDING_KEY, '1'.repeat(32))), {
       createdAt: new Date(harness.now.getTime() - 60 * 24 * 60 * 60 * 1000),
     });
@@ -849,7 +866,7 @@ describe('bounded transition cleanup', () => {
 
     await expect(cleanupAuthBrowserTransitions()).resolves.toEqual({
       retiredPending: 1,
-      deletedRetired: 1,
+      deletedRetired: 0,
     });
 
     expect(harness.rows.get(active.id)?.state).toBe('active');
@@ -861,7 +878,7 @@ describe('bounded transition cleanup', () => {
       retiredAt: harness.now,
     });
     expect(harness.rows.has(boundaryRetired.id)).toBe(true);
-    expect(harness.rows.has(oldRetired.id)).toBe(false);
+    expect(harness.rows.has(oldRetired.id)).toBe(true);
   });
 
   it('bounds each cleanup phase to the configured batch size', async () => {
@@ -882,12 +899,12 @@ describe('bounded transition cleanup', () => {
 
     await expect(cleanupAuthBrowserTransitions({ batchSize: 2 })).resolves.toEqual({
       retiredPending: 2,
-      deletedRetired: 2,
+      deletedRetired: 0,
     });
     expect([...harness.rows.values()].filter((row) => row.state === 'logout_pending')).toHaveLength(1);
     expect([...harness.rows.values()].filter(
       (row) => row.state === 'retired' && row.retiredAt!.getTime() < harness.now.getTime(),
-    )).toHaveLength(1);
+    )).toHaveLength(3);
   });
 });
 

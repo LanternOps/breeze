@@ -86,11 +86,15 @@ describe('authBrowserTransitionCleanup worker', () => {
   it('atomically upserts the durable schedule before removing stale legacy configurations', async () => {
     getRepeatableJobsMock.mockResolvedValue([
       { name: 'auth-browser-transition-cleanup', key: 'old-key' },
+      { name: 'auth-browser-transition-cleanup', key: 'auth-browser-transition-cleanup' },
       { name: 'unrelated', key: 'unrelated-key' },
     ]);
 
     await scheduleAuthBrowserTransitionCleanup();
 
+    expect(getRepeatableJobsMock.mock.invocationCallOrder[0]).toBeLessThan(
+      upsertJobSchedulerMock.mock.invocationCallOrder[0]!,
+    );
     expect(upsertJobSchedulerMock).toHaveBeenCalledWith(
       'auth-browser-transition-cleanup',
       { pattern: '17 4 * * *' },
@@ -107,6 +111,7 @@ describe('authBrowserTransitionCleanup worker', () => {
   it('leaves the atomic scheduler installed if stale legacy cleanup fails', async () => {
     getRepeatableJobsMock.mockResolvedValue([
       { name: 'auth-browser-transition-cleanup', key: 'old-key' },
+      { name: 'auth-browser-transition-cleanup', key: 'auth-browser-transition-cleanup' },
     ]);
     removeRepeatableByKeyMock.mockRejectedValue(new Error('replica stopped after upsert'));
 

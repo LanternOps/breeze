@@ -232,7 +232,7 @@ beforeEach(() => {
 });
 
 describe('auth browser transition leases against PostgreSQL', () => {
-  it('retires only expired pending rows and deletes only old retired diagnostics', async () => {
+  it('retires only expired pending rows and preserves old tombstones with SSO children', async () => {
     const db = getTestDb();
     const fixture = await terminalFixture();
     const activeId = '41000000-0000-4000-8000-000000000001';
@@ -286,7 +286,7 @@ describe('auth browser transition leases against PostgreSQL', () => {
 
     await expect(cleanupAuthBrowserTransitions({ batchSize: 10 })).resolves.toEqual({
       retiredPending: 1,
-      deletedRetired: 1,
+      deletedRetired: 0,
     });
 
     const rows = await db.select().from(authBrowserTransitions);
@@ -300,7 +300,15 @@ describe('auth browser transition leases against PostgreSQL', () => {
       activeOperationId: null,
       activeOperationExpiresAt: null,
     });
-    expect(rows.some((row) => row.id === oldRetiredId)).toBe(false);
+    expect(rows.some((row) => row.id === oldRetiredId)).toBe(true);
+    expect(await db.select().from(ssoSessions).where(eq(ssoSessions.id, session.id)))
+      .toHaveLength(1);
+    expect(await db.select().from(ssoTokenExchangeGrants)
+      .where(eq(ssoTokenExchangeGrants.id, grant.id))).toHaveLength(1);
+
+    // The schema still guarantees safe explicit parent cleanup once a future
+    // fleet-authoritative retirement mechanism authorizes it.
+    await db.delete(authBrowserTransitions).where(eq(authBrowserTransitions.id, oldRetiredId));
     expect(await db.select().from(ssoSessions).where(eq(ssoSessions.id, session.id))).toEqual([]);
     expect(await db.select().from(ssoTokenExchangeGrants)
       .where(eq(ssoTokenExchangeGrants.id, grant.id))).toEqual([]);

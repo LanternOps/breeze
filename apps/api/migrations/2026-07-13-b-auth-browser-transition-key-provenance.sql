@@ -1,7 +1,7 @@
 -- Retired browser-binding rows are security tombstones, not merely diagnostics.
--- Record the signing-key provenance so cleanup can delete a tombstone only
--- after that key is no longer retained and the old binding is cryptographically
--- invalid. Pre-rollout NULL rows remain indefinitely (fail closed).
+-- Record signing-key provenance for diagnostics and a future coordinated
+-- fleet-authoritative retirement protocol. Process-local keyring state is not
+-- sufficient deletion authority; current cleanup retains all tombstones.
 ALTER TABLE auth_browser_transitions
   ADD COLUMN IF NOT EXISTS binding_key_id varchar(128);
 
