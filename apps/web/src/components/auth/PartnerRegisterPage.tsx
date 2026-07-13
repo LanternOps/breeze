@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import PartnerRegisterForm from './PartnerRegisterForm';
-import { useAuthStore, apiRegisterPartner } from '../../stores/auth';
+import {
+  apiRegisterPartner,
+  isInstalledAuthSessionCurrent,
+  StaleWebSessionError,
+} from '../../stores/auth';
 import { useRegistrationGate } from '../../stores/featuresStore';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
@@ -13,8 +17,6 @@ export default function PartnerRegisterPage({ next }: PartnerRegisterPageProps =
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const safeNext = getSafeNext(next);
-
-  const login = useAuthStore((state) => state.login);
 
   // Runtime registration gate (#1308). The server enforces ENABLE_REGISTRATION
   // on /auth/register-partner; this mirrors it client-side so the form isn't
@@ -37,12 +39,19 @@ export default function PartnerRegisterPage({ next }: PartnerRegisterPageProps =
     setLoading(true);
     setError(undefined);
 
-    const result = await apiRegisterPartner(
-      values.companyName,
-      values.email,
-      values.password,
-      values.name
-    );
+    let result: Awaited<ReturnType<typeof apiRegisterPartner>>;
+    try {
+      result = await apiRegisterPartner(
+        values.companyName,
+        values.email,
+        values.password,
+        values.name
+      );
+    } catch (error) {
+      if (!(error instanceof StaleWebSessionError)) setError('Registration could not be completed. Please try again.');
+      setLoading(false);
+      return;
+    }
 
     if (!result.success) {
       setError(result.error);
@@ -51,7 +60,10 @@ export default function PartnerRegisterPage({ next }: PartnerRegisterPageProps =
     }
 
     if (result.user && result.tokens) {
-      login(result.user, result.tokens);
+      if (!isInstalledAuthSessionCurrent(result.installedSession)) {
+        setLoading(false);
+        return;
+      }
       await navigateTo(result.redirectUrl ?? safeNext);
       return;
     }

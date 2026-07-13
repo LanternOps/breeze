@@ -7,6 +7,8 @@ import {
   apiLogin,
   apiLogout,
   apiPreviewInvite,
+  apiRegister,
+  apiRegisterPartner,
   apiResetPassword,
   apiVerifyMFA,
   AuthSessionExpiredError,
@@ -1184,6 +1186,70 @@ describe('auth API helpers', () => {
     await expect(logoutA).resolves.toBeUndefined();
     await expect(loginB).resolves.toMatchObject({ success: true, user: userB });
     expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it.each([
+    ['user registration', () => apiRegister('a@example.com', 'password-a', 'Account A'), '/auth/register'],
+    ['partner registration', () => apiRegisterPartner('Account A Co', 'a@example.com', 'password-a', 'Account A'), '/auth/register-partner'],
+    ['invite acceptance', () => apiAcceptInvite('invite-a', 'password-a'), '/auth/accept-invite'],
+  ] as const)('serializes %s before a newer account B password login', async (_label, issueA, endpoint) => {
+    let resolveA!: (response: Response) => void;
+    let resolveB!: (response: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith(endpoint)) return new Promise<Response>((resolve) => { resolveA = resolve; });
+      if (url.endsWith('/auth/login')) return new Promise<Response>((resolve) => { resolveB = resolve; });
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const registrationA = issueA();
+    const loginB = apiLogin('b@example.com', 'password-b');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(new RegExp(`${endpoint}$`));
+
+    const userA = { ...baseUser, id: 'user-a', email: 'a@example.com' };
+    const tokensA = { accessToken: 'access-a', expiresInSeconds: 3600 };
+    resolveA(makeResponse({ user: userA, partner: { id: 'partner-a' }, tokens: tokensA }));
+    await expect(registrationA).resolves.toMatchObject({
+      success: true,
+      installedSession: { userId: userA.id, accessToken: tokensA.accessToken },
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    resolveB(makeResponse({ user: userB, tokens: tokensB }));
+    await expect(loginB).resolves.toMatchObject({ success: true, user: userB });
+    expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
+  });
+
+  it.each([
+    ['user registration', () => apiRegister('a@example.com', 'password-a', 'Account A'), '/auth/register'],
+    ['partner registration', () => apiRegisterPartner('Account A Co', 'a@example.com', 'password-a', 'Account A'), '/auth/register-partner'],
+    ['invite acceptance', () => apiAcceptInvite('invite-a', 'password-a'), '/auth/accept-invite'],
+  ] as const)('discards an in-flight %s when a newer logout boundary wins', async (_label, issueA, endpoint) => {
+    let resolveA!: (response: Response) => void;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith(endpoint)) return new Promise<Response>((resolve) => { resolveA = resolve; });
+      if (url.endsWith('/auth/logout')) return Promise.resolve(makeResponse({ success: true }));
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const registrationA = issueA();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const logoutB = apiLogout();
+
+    resolveA(makeResponse({
+      user: { ...baseUser, id: 'user-a', email: 'a@example.com' },
+      partner: { id: 'partner-a' },
+      tokens: { accessToken: 'access-a', expiresInSeconds: 3600 },
+    }));
+    await expect(registrationA).rejects.toBeInstanceOf(StaleWebSessionError);
+    await expect(logoutB).resolves.toBeUndefined();
+    expect(useAuthStore.getState()).toMatchObject({ user: null, tokens: null, isAuthenticated: false });
   });
 
   it('apiPreviewInvite sends the token in a POST body, not in the URL', async () => {

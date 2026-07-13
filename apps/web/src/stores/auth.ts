@@ -1044,30 +1044,36 @@ export async function apiRegister(
   success: boolean;
   user?: User;
   tokens?: Tokens;
+  installedSession?: InstalledAuthSession;
   error?: string;
 }> {
-  try {
-    const response = await fetch(buildApiUrl('/auth/register'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ email, password, name })
-    });
+  return withAuthSessionTransition(async () => {
+    const generation = captureWebSessionGeneration();
+    try {
+      const response = await fetch(buildApiUrl('/auth/register'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password, name })
+      });
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
-    const data = await response.json();
+      const data = await response.json();
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
-    if (!response.ok) {
-      return { success: false, error: extractApiError(data, 'Registration failed') };
+      if (!response.ok) {
+        return { success: false, error: extractApiError(data, 'Registration failed') };
+      }
+
+      const installedSession = data.user && data.tokens
+        ? installAuthSession(data.user, data.tokens)
+        : undefined;
+      return { success: true, user: data.user, tokens: data.tokens, installedSession };
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
+      return { success: false, error: 'Network error' };
     }
-
-    return {
-      success: true,
-      user: data.user,
-      tokens: data.tokens
-    };
-  } catch {
-    return { success: false, error: 'Network error' };
-  }
+  });
 }
 
 export async function apiRegisterPartner(
@@ -1080,35 +1086,46 @@ export async function apiRegisterPartner(
   user?: User;
   partner?: Partner;
   tokens?: Tokens;
+  installedSession?: InstalledAuthSession;
   redirectUrl?: string;
   message?: string;
   error?: string;
 }> {
-  try {
-    const response = await fetch(buildApiUrl('/auth/register-partner'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ companyName, email, password, name, acceptTerms: true })
-    });
+  return withAuthSessionTransition(async () => {
+    const generation = captureWebSessionGeneration();
+    try {
+      const response = await fetch(buildApiUrl('/auth/register-partner'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ companyName, email, password, name, acceptTerms: true })
+      });
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
-    const data = await response.json();
+      const data = await response.json();
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
-    if (!response.ok) {
-      return { success: false, error: extractApiError(data, 'Registration failed') };
+      if (!response.ok) {
+        return { success: false, error: extractApiError(data, 'Registration failed') };
+      }
+
+      const installedSession = data.user && data.tokens
+        ? installAuthSession(data.user, data.tokens)
+        : undefined;
+      return {
+        success: true,
+        user: data.user,
+        partner: data.partner,
+        tokens: data.tokens,
+        installedSession,
+        redirectUrl: data.redirectUrl,
+        message: data.message,
+      };
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
+      return { success: false, error: 'Network error' };
     }
-
-    return {
-      success: true,
-      user: data.user,
-      partner: data.partner,
-      tokens: data.tokens,
-      redirectUrl: data.redirectUrl,
-      message: data.message,
-    };
-  } catch {
-    return { success: false, error: 'Network error' };
-  }
+  });
 }
 
 export async function apiLogout(): Promise<void> {
@@ -1407,26 +1424,36 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
   success: boolean;
   user?: User;
   tokens?: Tokens;
+  installedSession?: InstalledAuthSession;
   error?: string;
 }> {
-  try {
-    const response = await fetch(buildApiUrl('/auth/accept-invite'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      referrerPolicy: 'no-referrer',
-      body: JSON.stringify({ token, password })
-    });
+  return withAuthSessionTransition(async () => {
+    const generation = captureWebSessionGeneration();
+    try {
+      const response = await fetch(buildApiUrl('/auth/accept-invite'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        referrerPolicy: 'no-referrer',
+        body: JSON.stringify({ token, password })
+      });
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
-    const data = await response.json();
+      const data = await response.json();
+      if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
 
-    if (!response.ok) {
-      return { success: false, error: extractApiError(data, 'Failed to accept invite') };
+      if (!response.ok) {
+        return { success: false, error: extractApiError(data, 'Failed to accept invite') };
+      }
+
+      const installedSession = data.user && data.tokens
+        ? installAuthSession(data.user, data.tokens)
+        : undefined;
+      return { success: true, user: data.user, tokens: data.tokens, installedSession };
+    } catch (error) {
+      if (error instanceof StaleWebSessionError) throw error;
+      console.error('[apiAcceptInvite] Request failed:', error);
+      return { success: false, error: 'Network error' };
     }
-
-    return { success: true, user: data.user, tokens: data.tokens };
-  } catch (err) {
-    console.error('[apiAcceptInvite] Request failed:', err);
-    return { success: false, error: 'Network error' };
-  }
+  });
 }

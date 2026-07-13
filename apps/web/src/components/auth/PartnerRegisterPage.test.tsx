@@ -1,13 +1,13 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const authMocks = vi.hoisted(() => ({
+  currentInstalledSession: vi.fn(() => true),
+}));
+
 vi.mock('../../stores/auth', () => ({
-  useAuthStore: Object.assign(
-    (selector: (s: { login: ReturnType<typeof vi.fn> }) => unknown) =>
-      selector({ login: vi.fn() }),
-    {},
-  ),
   apiRegisterPartner: vi.fn(),
+  isInstalledAuthSessionCurrent: authMocks.currentInstalledSession,
   fetchWithAuth: vi.fn(),
 }));
 
@@ -36,6 +36,7 @@ const baseSuccess = {
   user: { id: 'u1', email: 'jane@acme.test', name: 'Jane', mfaEnabled: false },
   partner: { id: 'p1', name: 'Acme', slug: 'acme', status: 'active' },
   tokens: { accessToken: 'a', refreshToken: 'r', expiresInSeconds: 900 },
+  installedSession: { generation: 1, userId: 'u1', accessToken: 'a' },
 };
 
 async function fillAndSubmit() {
@@ -51,6 +52,7 @@ async function fillAndSubmit() {
 describe('PartnerRegisterPage navigation after signup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authMocks.currentInstalledSession.mockReturnValue(true);
     setRegistration(true);
   });
 
@@ -104,5 +106,16 @@ describe('PartnerRegisterPage navigation after signup', () => {
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
     expect(navigateTo).toHaveBeenCalledWith('/');
+  });
+
+  it('suppresses navigation when a newer session replaces the registered account', async () => {
+    vi.mocked(apiRegisterPartner).mockResolvedValueOnce(baseSuccess);
+    authMocks.currentInstalledSession.mockReturnValue(false);
+    render(<PartnerRegisterPage />);
+
+    await fillAndSubmit();
+
+    await waitFor(() => expect(apiRegisterPartner).toHaveBeenCalledOnce());
+    expect(navigateTo).not.toHaveBeenCalled();
   });
 });

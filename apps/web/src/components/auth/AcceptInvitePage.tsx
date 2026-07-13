@@ -6,7 +6,7 @@ import {
   apiAcceptInvite,
   apiPreviewInvite,
   fetchAndApplyPreferences,
-  useAuthStore,
+  isInstalledAuthSessionCurrent,
 } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { scrubQueryParamsFromCurrentUrl } from '../../lib/sensitiveUrl';
@@ -78,8 +78,9 @@ export default function AcceptInvitePage() {
       }
 
       if (result.user && result.tokens) {
-        useAuthStore.getState().login(result.user, result.tokens);
-        fetchAndApplyPreferences();
+        if (!isInstalledAuthSessionCurrent(result.installedSession)) return;
+        await fetchAndApplyPreferences();
+        if (!isInstalledAuthSessionCurrent(result.installedSession)) return;
         await navigateTo('/');
         return;
       } else {
