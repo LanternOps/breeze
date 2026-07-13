@@ -19,14 +19,18 @@ the shared instance is initialized.
 ## Adding a locale
 
 1. Create `src/locales/<tag>/` and copy every namespace file from `en/`; translate values while keeping keys identical.
-2. Add the tag to `LOCALE_OPTIONS` in `apps/web/src/lib/appearance.ts`.
-3. Add the tag to the locale allowlists in
+2. Add the tag to the shared `SupportedLocale` union in
+   `packages/shared/src/types/index.ts`.
+3. Add the tag to `LOCALE_OPTIONS` in `apps/web/src/lib/appearance.ts`.
+4. Add the tag to the locale allowlists in
    `apps/api/src/routes/users.ts` (PATCH /users/me and partner-default filtering)
    and `apps/api/src/routes/orgs.ts` (partner settings validation).
-4. Add an option to both Language controls:
+5. Add an option to both Language controls:
    `apps/web/src/components/settings/ThemingSettings.tsx` for the user preference
    and `apps/web/src/components/settings/PartnerRegionalTab.tsx` for the partner default.
-5. Locale parity tests will fail until namespace files and keys match `en/` exactly.
+6. Add the tag to `translatedLocales` and record all reviewed per-namespace
+   duplicate caps in `apps/web/src/lib/i18n/translationCoverage.test.ts`.
+7. Locale parity tests will fail until namespace files and keys match `en/` exactly.
 
 Language labels are written as self-names, while their descriptions are translated into the active UI language.
 

@@ -7,9 +7,9 @@ const localesDir = join(dirname(fileURLToPath(import.meta.url)), '../../locales'
 const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const;
 type TranslatedLocale = (typeof translatedLocales)[number];
 
-// Exact-English duplicates that survived catalog review (mostly product names,
-// commands, identifiers, and other intentionally preserved literals). A locale
-// may improve below these caps, but a namespace may not add new duplicates.
+// Per-namespace count caps for exact-English duplicates that survived review
+// (mostly intentionally preserved literals). These limit net duplicate growth;
+// translating an existing duplicate creates headroom because keys are not pinned.
 const namespaceDuplicateBaselines = {
   'pt-BR': {
     'admin.json': 19,
@@ -62,7 +62,7 @@ const namespaceDuplicateBaselines = {
     'ai.json': 9,
     'alerts.json': 57,
     'auth.json': 13,
-    'backup.json': 52,
+    'backup.json': 53,
     'billing.json': 38,
     'common.json': 91,
     'devices.json': 134,

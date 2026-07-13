@@ -102,7 +102,9 @@ const protectedNames = [
   'AdGuard Home',
   'AnyDesk',
   'Apple',
+  'AppleCare',
   'AWS OpenSearch Service',
+  'Azure AD',
   'BitLocker',
   'Breeze AI for Office',
   'Breeze Portal',
@@ -115,6 +117,7 @@ const protectedNames = [
   'Discord',
   'DNSFilter',
   'Elasticsearch',
+  'Entra ID',
   'FileVault',
   'Gatekeeper',
   'Google Chrome',
@@ -178,22 +181,8 @@ const protectedCommands = [
   'systemctl restart nginx',
 ] as const;
 
-const protectedNameAliases: Record<string, readonly string[]> = {
-  Apple: ['AppleCare'],
-};
-
 function matches(value: string, pattern: RegExp): string[] {
   return [...value.matchAll(pattern)].map((match) => match[0]);
-}
-
-function literalOccurrences(value: string, literal: string): number {
-  let count = 0;
-  let cursor = 0;
-  while ((cursor = value.indexOf(literal, cursor)) !== -1) {
-    count += 1;
-    cursor += literal.length;
-  }
-  return count;
 }
 
 function nameOccurrences(value: string, name: string): number {
@@ -203,6 +192,17 @@ function nameOccurrences(value: string, name: string): number {
   return matches(
     value,
     new RegExp(`${leadingBoundary}${escaped}${trailingBoundary}`, 'g'),
+  ).length;
+}
+
+function technicalLiteralOccurrences(value: string, literal: string): number {
+  const escaped = literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return matches(
+    value,
+    new RegExp(
+      `(?<![A-Za-z0-9_.-])${escaped}(?![A-Za-z0-9_.-])`,
+      'g',
+    ),
   ).length;
 }
 
@@ -222,12 +222,20 @@ function protectedTokens(value: string): string[] {
     'payload-literal',
     /\b(?:undefined|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b/g,
   );
+  addMatches('architecture', /\b(?:amd64|arm64|x86|x86_64|x64)\b/g);
   addMatches(
     'region',
     /\b(?:af|ap|ca|eu|me|sa|us)-(?:central|east|north|northeast|northwest|south|southeast|southwest|west)-\d\b/g,
   );
   addMatches('registry', /\b(?:HKLM|HKCU|HKEY_[A-Z_]+)\\[^\s,;)'"}]+/g);
-  addMatches('windows-path', /\b[A-Za-z]:\\[^\s,;)'"}]+/g);
+  addMatches(
+    'registry',
+    /\b(?:SOFTWARE|SYSTEM)\\+[A-Za-z0-9_.-]+(?:\\+[A-Za-z0-9_.-]+)+/g,
+  );
+  addMatches(
+    'windows-path',
+    /\b[A-Za-z]:\\+(?:(?:[^\\\r\n,;()'"}]+\\+)+(?:[^\s\\,;()'"}]+)?|[^\s\\,;()'"}]+)/g,
+  );
   addMatches(
     'unc-path',
     /(?<![A-Za-z0-9:\\])\\\\[A-Za-z0-9_.-]+\\[^\s,;)'"}]+/g,
@@ -239,7 +247,7 @@ function protectedTokens(value: string): string[] {
   );
   addMatches(
     'filename',
-    /\b[\w.-]+\.(?:conf|config|crt|deb|dll|dmg|exe|json|key|log|msi|pem|pkg|png|jpe?g|ps1|sh|svg|ya?ml|zip)\b/gi,
+    /\b[\w.-]+\.(?:conf|config|crt|db|deb|dll|dmg|exe|json|key|log|msi|pem|pkg|png|jpe?g|ps1|sh|svg|ya?ml|zip)(?![\w.-])/gi,
   );
   addMatches('template-token', /(?<!\{)\{[A-Za-z_][\w.-]*\}(?!\})/g);
   for (const name of protectedNames) {
@@ -248,7 +256,11 @@ function protectedTokens(value: string): string[] {
     }
   }
   for (const command of protectedCommands) {
-    for (let index = 0; index < literalOccurrences(value, command); index += 1) {
+    for (
+      let index = 0;
+      index < technicalLiteralOccurrences(value, command);
+      index += 1
+    ) {
       tokens.push(`command:${command}`);
     }
   }
@@ -263,19 +275,24 @@ function protectedLiteralContractErrors(
   for (const [key, english] of reference) {
     const translated = target.get(key);
     if (typeof english !== 'string' || typeof translated !== 'string') continue;
-    const expected = [...new Set(protectedTokens(english))];
-    const received = new Set(protectedTokens(translated));
-    const missing = expected.filter((token) => {
-      if (received.has(token)) return false;
-      if (!token.startsWith('name:')) return true;
-      const name = token.slice('name:'.length);
-      return !(protectedNameAliases[name] ?? []).some((alias) =>
-        translated.includes(alias),
-      );
+    const countTokens = (value: string) => {
+      const counts = new Map<string, number>();
+      for (const token of protectedTokens(value)) {
+        counts.set(token, (counts.get(token) ?? 0) + 1);
+      }
+      return counts;
+    };
+    const expectedCounts = countTokens(english);
+    const receivedCounts = countTokens(translated);
+    const mismatches = [...expectedCounts].flatMap(([token, expectedCount]) => {
+      const receivedCount = receivedCounts.get(token) ?? 0;
+      return receivedCount === expectedCount
+        ? []
+        : [`${token} expected ${expectedCount}, received ${receivedCount}`];
     });
-    if (missing.length > 0) {
+    if (mismatches.length > 0) {
       errors.push(
-        `${key}: missing protected literals (${missing.join(', ')})`,
+        `${key}: protected literal occurrence mismatch (${mismatches.join('; ')})`,
       );
     }
   }
@@ -415,16 +432,110 @@ describe('locale parity guard helpers', () => {
   it('extracts reviewed names and operational literals source-aligned', () => {
     expect(
       protectedTokens(
-        'Run `python task.py` with Python and Microsoft Teams at https://example.com using --dry-run.',
+        'Run `python task.py` with Python, AppleCare, and Microsoft Teams at https://example.com using --dry-run.',
       ),
     ).toEqual(
       expect.arrayContaining([
         'cli-flag:--dry-run',
         'inline-code:`python task.py`',
+        'name:AppleCare',
         'name:Microsoft Teams',
         'name:Python',
         'url:https://example.com',
       ]),
     );
+  });
+
+  it.each([
+    ['repeated product name', 'Python and Python', 'Python', 'name:Python', 2, 1],
+    [
+      'spaced Windows path',
+      'C:\\Program Files\\Vendor\\App\\app.exe',
+      'C:\\Program Files\\Fournisseur\\App\\app.exe',
+      'windows-path:C:\\Program Files\\Vendor\\App\\app.exe',
+      1,
+      0,
+    ],
+    [
+      'hive-less registry path',
+      'SOFTWARE\\Vendor\\App',
+      'SOFTWARE\\Fournisseur\\App',
+      'registry:SOFTWARE\\Vendor\\App',
+      1,
+      0,
+    ],
+    ['architecture casing', 'arm64', 'ARM64', 'architecture:arm64', 1, 0],
+    ['Azure AD product name', 'Azure AD', 'Azure Active Directory', 'name:Azure AD', 1, 0],
+    ['Entra ID product name', 'Entra ID', 'ID Entra', 'name:Entra ID', 1, 0],
+    ['official AppleCare product name', 'AppleCare', 'Apple Care', 'name:AppleCare', 1, 0],
+    [
+      'command',
+      'systemctl restart nginx',
+      'systemctl redémarrer nginx',
+      'command:systemctl restart nginx',
+      1,
+      0,
+    ],
+    [
+      'URL',
+      'https://api.example.com/alerts',
+      'https://api.exemple.fr/alertes',
+      'url:https://api.example.com/alerts',
+      1,
+      0,
+    ],
+    ['payload literal', 'rustdesk_id', 'id_rustdesk', 'payload-literal:rustdesk_id', 1, 0],
+    ['filename', 'Thumbs.db', 'Miniatures.db', 'filename:Thumbs.db', 1, 0],
+    [
+      'URL suffix',
+      'https://api.example.com/alerts',
+      'https://api.example.com/alerts-old',
+      'url:https://api.example.com/alerts',
+      1,
+      0,
+    ],
+    ['CLI flag suffix', '--dry-run', '--dry-runner', 'cli-flag:--dry-run', 1, 0],
+    [
+      'environment variable suffix',
+      'CLIENT_AI_ENTRA_CLIENT_ID',
+      'CLIENT_AI_ENTRA_CLIENT_ID_OLD',
+      'env:CLIENT_AI_ENTRA_CLIENT_ID',
+      1,
+      0,
+    ],
+    [
+      'command suffix',
+      'systemctl restart nginx',
+      'systemctl restart nginx-old',
+      'command:systemctl restart nginx',
+      1,
+      0,
+    ],
+    [
+      'Windows path suffix',
+      'C:\\Program Files\\Vendor\\App\\app.exe',
+      'C:\\Program Files\\Vendor\\App\\app.exe.bak',
+      'filename:app.exe',
+      1,
+      0,
+      'windows-path:C:\\Program Files\\Vendor\\App\\app.exe expected 1, received 0',
+    ],
+    [
+      'registry suffix',
+      'SOFTWARE\\Vendor\\App',
+      'SOFTWARE\\Vendor\\App_Old',
+      'registry:SOFTWARE\\Vendor\\App',
+      1,
+      0,
+    ],
+  ])('rejects a changed %s', (_label, english, translated, token, expected, received, additionalMismatch) => {
+    const errors = protectedLiteralContractErrors(
+      new Map([['example', english]]),
+      new Map([['example', translated]]),
+    );
+
+    expect(errors).toEqual([
+      `example: protected literal occurrence mismatch (${token} expected ${expected}, received ${received}${additionalMismatch ? `; ${additionalMismatch}` : ''})`,
+    ]);
   });
 });
