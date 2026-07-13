@@ -453,4 +453,38 @@ describe('heartbeatSchema — agentRuntime gauges (#2389)', () => {
     if (!result.success) return;
     expect(result.data.agentRuntime).toBeUndefined();
   });
+
+  // Worker-pool wedge gauges (#2400) ride the same agentRuntime object.
+  it('parses agentRuntime with wedge gauges (commandsInFlight/commandsOverdue)', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      agentRuntime: { ...validRuntime, commandsInFlight: 3, commandsOverdue: 1 },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentRuntime?.commandsInFlight).toBe(3);
+    expect(result.data.agentRuntime?.commandsOverdue).toBe(1);
+  });
+
+  it('agentRuntime without wedge gauges (pre-#2400 agent) still parses whole', () => {
+    const result = heartbeatSchema.safeParse({ ...minimal, agentRuntime: validRuntime });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentRuntime).toBeDefined();
+    expect(result.data.agentRuntime?.commandsInFlight).toBeUndefined();
+    expect(result.data.agentRuntime?.commandsOverdue).toBeUndefined();
+  });
+
+  it('drops only the bad wedge gauge, keeping the rest of agentRuntime', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      agentRuntime: { ...validRuntime, commandsInFlight: -2, commandsOverdue: 1 },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentRuntime).toBeDefined();
+    expect(result.data.agentRuntime?.commandsInFlight).toBeUndefined();
+    expect(result.data.agentRuntime?.commandsOverdue).toBe(1);
+    expect(result.data.agentRuntime?.goroutines).toBe(validRuntime.goroutines);
+  });
 });
