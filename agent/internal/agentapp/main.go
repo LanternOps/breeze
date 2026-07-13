@@ -399,9 +399,8 @@ type agentComponents struct {
 //
 // Every blocking stage is wrapped with a deadline so that a stuck HTTP flush
 // (common during OS shutdown when the network has already gone down) can't
-// pin the process past its shutdown budget. The workspace-index terminal flush
-// gets a longer local allowance, though the service manager may enforce a
-// shorter outer deadline.
+// pin the process past systemd's TimeoutStopSec. Total worst case is bounded
+// by the sum of per-stage timeouts; the unit file caps the outer wait at 15s.
 func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
@@ -435,12 +434,14 @@ func shutdownAgent(comps *agentComponents) {
 	}
 
 	// Cancel workspace indexing before core network teardown. A canceled crawl
-	// sends one terminal CompleteRun using a non-canceled context, so allow the
-	// client's 30-second HTTP timeout plus a small scheduling margin.
+	// attempts one terminal CompleteRun, but we do NOT wait out its 30s HTTP
+	// timeout — the whole shutdown must fit systemd's 15s TimeoutStopSec, and
+	// a missed terminal flush self-heals server-side (the stale run is marked
+	// abandoned on the next crawl start). 2s matches the sibling stages.
 	if comps.workspaceIndexCancel != nil {
 		comps.workspaceIndexCancel()
 		if comps.workspaceIndexDone != nil {
-			runWithTimeout("workspace index stop", 35*time.Second, func() {
+			runWithTimeout("workspace index stop", 2*time.Second, func() {
 				<-comps.workspaceIndexDone
 			})
 		}
