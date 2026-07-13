@@ -44,7 +44,16 @@ vi.mock('./mfaAssurance', () => ({
   PendingMfaUnavailableError: class PendingMfaUnavailableError extends Error {},
   selectEffectiveMfaMethod: vi.fn(() => 'totp'),
 }));
-vi.mock('./authBrowserTransition', () => ({ cancelAuthIssuance, finishAuthIssuance }));
+vi.mock('./authBrowserTransition', () => ({
+  cancelAuthIssuance,
+  finishAuthIssuance,
+  AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
+    replacement = { kind: 'browser' as const, value: 'b'.repeat(64) };
+  },
+  AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
+  AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
+  AuthIssuanceCapabilityError: class AuthIssuanceCapabilityError extends Error {},
+}));
 vi.mock('./mfaPolicy', () => ({ resolveEffectiveMfaPolicy }));
 vi.mock('./userSession', () => ({ issueUserSession, bindIssuedUserSession }));
 import {
@@ -57,6 +66,7 @@ import {
   rejectMalformedRecoveryCodeLogin,
 } from './recoveryCodeAuth';
 import { PendingMfaUnavailableError } from './mfaAssurance';
+import { AuthBindingRotationRequiredError } from './authBrowserTransition';
 
 const authBinding = { kind: 'browser' as const, value: 'a'.repeat(64) };
 
@@ -241,6 +251,26 @@ describe('recovery-code authentication', () => {
     expect(issueUserSession).not.toHaveBeenCalled();
     expect(bindIssuedUserSession).not.toHaveBeenCalled();
     expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+  });
+
+  it('preserves binding rotation authority without burning pending MFA or a recovery hash', async () => {
+    const rotation = new AuthBindingRotationRequiredError(
+      { kind: 'browser', value: 'b'.repeat(64) },
+      'retired',
+    );
+    const originalHashes = [...(state.user!.mfaRecoveryCodes as string[])];
+    beginPendingMfaIssuance.mockRejectedValueOnce(rotation);
+
+    await expect(completeRecovery({
+      tempToken: 'pending-token',
+      code: 'ABCD-EF12',
+    })).rejects.toBe(rotation);
+
+    expect(consumePendingMfa).not.toHaveBeenCalled();
+    expect(finishAuthIssuance).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(state.user!.mfaRecoveryCodes).toEqual(originalHashes);
+    expect(state.setValues).toBeUndefined();
   });
 
   it('burns pending state and issues no token when the durable transaction fails', async () => {

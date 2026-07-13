@@ -21,6 +21,10 @@ import { lockMfaAssuranceState } from './mfaAssuranceLocks';
 import { resolveEffectiveMfaPolicy } from './mfaPolicy';
 import { bindIssuedUserSession, issueUserSession } from './userSession';
 import {
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
   cancelAuthIssuance,
   finishAuthIssuance,
   type AuthBindingSource,
@@ -41,6 +45,13 @@ export class RecoveryCodeUnavailableError extends Error {
     super('MFA verification unavailable');
     this.name = 'RecoveryCodeUnavailableError';
   }
+}
+
+function isAuthBrowserTransitionError(error: unknown): boolean {
+  return error instanceof AuthBindingRotationRequiredError
+    || error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError;
 }
 
 export function normalizeRecoveryCode(code: string): string {
@@ -221,6 +232,7 @@ export async function completeRecoveryCodeLogin(input: {
     if (error instanceof PendingMfaInvalidError) {
       throw new RecoveryCodeInvalidError(pending.userId);
     }
+    if (isAuthBrowserTransitionError(error)) throw error;
     throw new RecoveryCodeUnavailableError();
   }
 
@@ -292,6 +304,7 @@ export async function completeRecoveryCodeLogin(input: {
     if (error instanceof RecoveryCodeInvalidError || error instanceof PendingMfaInvalidError) {
       throw new RecoveryCodeInvalidError(pending.userId);
     }
+    if (isAuthBrowserTransitionError(error)) throw error;
     throw new RecoveryCodeUnavailableError();
   }
   try {

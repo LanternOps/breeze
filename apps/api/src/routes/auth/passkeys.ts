@@ -244,7 +244,17 @@ passkeyRoutes.post('/mfa/step-up/verify', authMiddleware, zValidator('json', mfa
         valid = verification.verified;
         if (valid) {
           const fields = authenticationInfoToPasskeyUpdateFields(verification);
-          await db.update(userPasskeys).set({ ...fields, updatedAt: new Date() }).where(eq(userPasskeys.id, passkey.id));
+          const updated = await db
+            .update(userPasskeys)
+            .set({ ...fields, updatedAt: new Date() })
+            .where(and(
+              eq(userPasskeys.id, passkey.id),
+              eq(userPasskeys.userId, auth.user.id),
+              eq(userPasskeys.counter, passkey.counter),
+              isNull(userPasskeys.disabledAt),
+            ))
+            .returning({ id: userPasskeys.id });
+          valid = updated.length === 1;
         }
       } catch (error) {
         if (!(error instanceof PasskeyChallengeError)) throw error;
@@ -633,6 +643,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
           .where(and(
             eq(userPasskeys.id, passkey.id),
             eq(userPasskeys.userId, pending.userId),
+            eq(userPasskeys.counter, passkey.counter),
             isNull(userPasskeys.disabledAt),
           ))
           .returning({ id: userPasskeys.id });

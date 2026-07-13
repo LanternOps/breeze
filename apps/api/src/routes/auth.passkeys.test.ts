@@ -690,6 +690,7 @@ describe('passkey MFA auth routes', () => {
         transports: ['internal'],
         disabledAt: null,
       }]);
+      dbState.updateReturningQueue.push([{ id: 'passkey-row-1' }]);
     }
 
     const res = await app.request('/auth/mfa/step-up/verify', {
@@ -702,6 +703,40 @@ describe('passkey MFA auth routes', () => {
     const body = await res.json() as { grant: string; verifiedMethod: string };
     expect(Buffer.from(body.grant, 'base64url')).toHaveLength(32);
     expect(body.verifiedMethod).toBe(method);
+  });
+
+  it('rejects a passkey step-up when its verified counter snapshot is stale', async () => {
+    mfaLockState.user = {
+      ...mfaLockState.user,
+      mfaMethod: 'passkey',
+    };
+    mfaLockState.activePasskeyCount = 1;
+    dbState.selectQueue.push([{
+      id: 'passkey-row-1',
+      userId: 'user-123',
+      credentialId: 'existing-credential',
+      publicKey: 'AQID',
+      counter: 4,
+      transports: ['internal'],
+      disabledAt: null,
+    }]);
+    // The counter changed after verification read the credential snapshot, so
+    // the exact-counter CAS must affect zero rows and invalidate the proof.
+    dbState.updateReturningQueue.push([]);
+
+    const res = await app.request('/auth/mfa/step-up/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({
+        purpose: 'passkey.register',
+        method: 'passkey',
+        credential: { id: 'existing-credential', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid MFA proof' });
+    expect(redisMock.setex).not.toHaveBeenCalled();
   });
 
   it('never lets the candidate new passkey serve as the existing-factor proof', async () => {

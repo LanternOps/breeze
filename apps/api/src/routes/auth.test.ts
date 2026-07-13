@@ -393,6 +393,7 @@ import {
   beginPendingMfaIssuance,
   cancelAuthIssuance,
   finishAuthIssuance,
+  AuthBindingRotationRequiredError,
   AuthIssuanceCapabilityError,
   RefreshTokenCurrentnessError,
   completeRecoveryCodeLogin,
@@ -1424,6 +1425,31 @@ describe('auth routes', () => {
       expect(res.headers.get('set-cookie')).toContain('recovery-refresh-token');
       expect(JSON.stringify(mfaMutationState.auditWrites)).not.toContain(rawCode);
       expect(JSON.stringify(mfaMutationState.auditWrites)).not.toContain('ABCD-EF12');
+    });
+
+    it('returns binding_refresh with the replacement CSRF cookie for recovery login rotation', async () => {
+      vi.mocked(completeRecoveryCodeLogin).mockRejectedValueOnce(
+        new AuthBindingRotationRequiredError(
+          { kind: 'browser', value: 'b'.repeat(64) },
+          'retired',
+        ),
+      );
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tempToken: 'v2-temp-token', method: 'recovery_code', code: 'ABCD-EF12',
+        }),
+      });
+
+      expect(res.status).toBe(428);
+      await expect(res.json()).resolves.toEqual({
+        error: 'Authentication binding refresh required',
+        reason: 'binding_refresh',
+      });
+      expect(res.headers.get('set-cookie')).toContain(`breeze_csrf_token=${'b'.repeat(64)}`);
+      expect(res.headers.get('set-cookie')).not.toContain('breeze_refresh_token=');
     });
 
     it('returns the same generic failure for a wrong or replayed recovery code without a token', async () => {
