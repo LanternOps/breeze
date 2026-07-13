@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BULK_ID_LIMIT } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
@@ -96,12 +96,16 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   // SSR-safe hash adoption + hashchange subscription live in the hook (#2421).
   // When locked to an org (embedded in a hash-routed tab) the host owns the
   // hash, so parse yields undefined and the locked default always wins.
+  // An empty hash parses to undefined (not a fresh EMPTY_FILTERS object) so the
+  // no-deep-link case keeps the default reference and never refetches.
   const [filters, setFilters] = useHashState<Filters>(
     lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : EMPTY_FILTERS,
-    (h) => (lockedOrgId ? undefined : readFilters(h)),
+    (h) => (lockedOrgId || !h ? undefined : readFilters(h)),
   );
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
+  // Monotonic id of the newest in-flight list request (see loadContracts).
+  const fetchSeq = useRef(0);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -121,21 +125,29 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   }, [t]);
 
   const loadContracts = useCallback(async (f: Filters) => {
+    // Latest-request-wins. A deep-linked load (`/contracts#status=active`) fires
+    // this twice — once with the SSR-safe default filters, then again once
+    // useHashState adopts the hash (#2421) — and the unfiltered query can
+    // resolve last, painting the wrong list. Drop every response but the newest.
+    const seq = ++fetchSeq.current;
     try {
       setLoading(true);
       setError(undefined);
       setForbidden(false);
       const res = await listContracts({ orgId: f.orgId || undefined, status: f.status || undefined });
+      if (seq !== fetchSeq.current) return;
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 403) { setForbidden(true); return; }
       if (!res.ok) throw new Error(t('contracts.contractsList.errors.loadContracts'));
       const body = (await res.json().catch(() => null)) as { data: ContractSummary[] } | null;
+      if (seq !== fetchSeq.current) return;
       if (!body) throw new Error(t('contracts.contractsList.errors.loadContracts'));
       setContracts(body.data ?? []);
     } catch (err) {
+      if (seq !== fetchSeq.current) return;
       setError(err instanceof Error ? err.message : t('contracts.contractsList.errors.loadContracts'));
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, [t]);
 

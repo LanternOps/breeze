@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
@@ -100,9 +100,13 @@ export function QuotesPage() {
   // renders the access-denied state rather than the retryable error.
   const [forbidden, setForbidden] = useState(false);
   // SSR-safe hash adoption + hashchange subscription live in the hook (#2421).
-  const [filters, setFilters] = useHashState<Filters>(EMPTY_FILTERS, readFilters);
+  // An empty hash parses to undefined (not a fresh EMPTY_FILTERS object) so the
+  // no-deep-link case keeps the default reference and never refetches.
+  const [filters, setFilters] = useHashState<Filters>(EMPTY_FILTERS, (h) => (h ? readFilters(h) : undefined));
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
+  // Monotonic id of the newest in-flight list request (see loadQuotes).
+  const fetchSeq = useRef(0);
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
@@ -130,20 +134,28 @@ export function QuotesPage() {
   }, [t]);
 
   const loadQuotes = useCallback(async (f: Filters) => {
+    // Latest-request-wins. A deep-linked load (`/quotes#status=sent`) fires this
+    // twice — once with the SSR-safe default filters, then again once
+    // useHashState adopts the hash (#2421) — and the unfiltered query can
+    // resolve last, painting the wrong list. Drop every response but the newest.
+    const seq = ++fetchSeq.current;
     try {
       setLoading(true);
       setError(undefined);
       setForbidden(false);
       const res = await listQuotes({ orgId: f.orgId || undefined, status: f.status || undefined });
+      if (seq !== fetchSeq.current) return;
       if (res.status === 401) return UNAUTHORIZED();
       if (res.status === 403) { setForbidden(true); return; }
       if (!res.ok) throw new Error(t('quotes.page.errors.loadQuotes'));
       const body = (await res.json()) as { data: Quote[] };
+      if (seq !== fetchSeq.current) return;
       setQuotes(body.data ?? []);
     } catch (err) {
+      if (seq !== fetchSeq.current) return;
       setError(err instanceof Error ? err.message : t('quotes.page.errors.loadQuotes'));
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, [t]);
 
