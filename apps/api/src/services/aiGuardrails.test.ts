@@ -52,7 +52,7 @@ vi.mock('./redis', () => ({
   getRedis: vi.fn(),
 }));
 
-import { checkGuardrails, checkToolPermission, checkPermissionRequirement } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkPermissionRequirement, checkPermissionRequirements } from './aiGuardrails';
 import { getUserPermissions, hasPermission } from './permissions';
 
 // ─── Tier escalation for fleet tools ────────────────────────────────────
@@ -356,6 +356,55 @@ describe('checkToolPermission — backup restore tools', () => {
     const result = await checkToolPermission('restore_mssql_database', {}, auth);
 
     expect(result).toBeNull();
+  });
+
+  it('resolves getUserPermissions once even when extra permissions are required', async () => {
+    vi.mocked(getUserPermissions).mockClear();
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    // restore_snapshot has a base permission plus TOOL_EXTRA_PERMISSIONS —
+    // all requirements must be checked against a single role resolution.
+    const result = await checkToolPermission('restore_snapshot', {}, auth);
+
+    expect(result).toBeNull();
+    expect(getUserPermissions).toHaveBeenCalledTimes(1);
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'devices', 'execute');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'backup', 'read');
+  });
+});
+
+describe('checkPermissionRequirements — batch variant', () => {
+  const auth = {
+    user: { id: 'user-1' },
+    token: { roleId: 'operator', scope: 'organization' },
+    orgId: 'org-1',
+    partnerId: null,
+  } as any;
+
+  beforeEach(() => {
+    vi.mocked(hasPermission).mockReset();
+    vi.mocked(getUserPermissions).mockReset();
+  });
+
+  it('returns null for an empty requirement list without resolving permissions', async () => {
+    const result = await checkPermissionRequirements(auth, []);
+    expect(result).toBeNull();
+    expect(getUserPermissions).not.toHaveBeenCalled();
+  });
+
+  it('returns the first denial in requirement order', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockImplementation((_perms, resource) => resource !== 'backup');
+
+    const result = await checkPermissionRequirements(auth, [
+      { resource: 'devices', action: 'execute' },
+      { resource: 'backup', action: 'read' },
+      { resource: 'alerts', action: 'read' },
+    ]);
+
+    expect(result).toBe('Insufficient permissions: requires backup.read');
+    expect(getUserPermissions).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -69,10 +69,11 @@ if (MCP_OAUTH_ENABLED) {
     // authoritative from oauth_grants (partner scope), so code-only grants —
     // auth-code access tokens minted without a refresh token — are revoked
     // too (MCP-OAUTH-07). The service writes Redis markers BEFORE any DB
-    // mutation and throws on marker failure; we surface that as a 503 so the
-    // user sees a hard error rather than a hidden-but-partially-revoked app.
-    // Only this partner's join row is removed; other partners on the same
-    // shared client keep working.
+    // mutation and throws on ANY failure (marker write or the later DB
+    // stamping); we surface both as a 503 so the user sees a hard error
+    // rather than a hidden-but-partially-revoked app. Only this partner's
+    // join row is removed; other partners on the same shared client keep
+    // working.
     try {
       await revokeClientFamilies(clientId, { kind: 'partner', partnerId });
     } catch (err) {
@@ -82,7 +83,7 @@ if (MCP_OAUTH_ENABLED) {
         err,
         context: { clientId, partnerId },
       });
-      throw new HTTPException(503, { message: 'revocation cache unavailable' });
+      throw new HTTPException(503, { message: 'revocation failed — the app may still have access; please retry' });
     }
 
     return c.body(null, 204);
