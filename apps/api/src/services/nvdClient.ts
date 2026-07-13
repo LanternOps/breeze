@@ -63,7 +63,13 @@ function flattenNodes(configurations: unknown): JsonObject[] {
   return nodes;
 }
 
-export function parseNvd(doc: unknown): NvdRecord[] {
+export interface NvdParseResult {
+  records: NvdRecord[];
+  /** Distinct malformed CVE ids dropped at the parse boundary (#2427). */
+  skippedCveIds: ReadonlySet<string>;
+}
+
+export function parseNvd(doc: unknown): NvdParseResult {
   const root = asObject(doc);
   const records: NvdRecord[] = [];
   const malformedCveIds = new Set<string>();
@@ -122,7 +128,7 @@ export function parseNvd(doc: unknown): NvdRecord[] {
     malformedIds: malformedCveIds,
   });
   warnMalformedCveIds('NvdClient', malformedCveIds);
-  return records;
+  return { records, skippedCveIds: malformedCveIds };
 }
 
 export async function fetchNvdPage(params: FetchNvdPageParams): Promise<NvdResponse> {

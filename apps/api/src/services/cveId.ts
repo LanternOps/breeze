@@ -12,6 +12,8 @@
  * garbage into the catalog and its unique index.
  */
 
+import { captureMessage } from './sentry';
+
 /** Canonical CVE id shape per the CVE Numbering Authority: CVE-YYYY-NNNN+. */
 const CVE_ID_PATTERN = /^CVE-\d{4}-\d{4,}$/;
 
@@ -40,6 +42,35 @@ export function warnMalformedCveIds(tag: string, skippedIds: ReadonlySet<string>
   console.warn(
     `[${tag}] Skipped ${skippedIds.size} distinct malformed CVE id(s): ${sample.join(', ')}${suffix}`
   );
+}
+
+/**
+ * Skip-ratio escalation threshold (#2427): a handful of malformed ids is the
+ * occasional-garbage case the skip path exists for, but a feed where more than
+ * this fraction of entries is dropped is a probable upstream schema/quality
+ * regression that deserves more than a stdout line.
+ */
+export const SKIP_RATIO_WARN_THRESHOLD = 0.01;
+
+/**
+ * Escalate when the malformed-CVE skip ratio of a sync run exceeds
+ * SKIP_RATIO_WARN_THRESHOLD (#2427): console.error + a Sentry warning event,
+ * so a feed regression that mangles a chunk of ids (but not all of them —
+ * that's assertSomeValidCveIds' job) is visible without tailing stdout.
+ * `entryCount` is the number of distinct CVE ids considered (valid + skipped).
+ * No-op below the threshold or when nothing was skipped.
+ */
+export function warnHighSkipRatio(tag: string, skippedCount: number, entryCount: number): void {
+  if (skippedCount <= 0 || entryCount <= 0) return;
+  const ratio = skippedCount / entryCount;
+  if (ratio <= SKIP_RATIO_WARN_THRESHOLD) return;
+
+  const message =
+    `[${tag}] High malformed-CVE skip ratio: ${skippedCount} of ${entryCount} `
+    + `CVE ids (${(ratio * 100).toFixed(1)}%) were skipped this sync — `
+    + 'probable upstream feed quality regression';
+  console.error(message);
+  captureMessage(message, 'warning', { tag, skippedCount, entryCount, ratio });
 }
 
 /**

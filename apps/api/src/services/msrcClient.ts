@@ -82,7 +82,13 @@ export async function fetchCvrf(month: string): Promise<unknown> {
   return res.json();
 }
 
-export function parseCvrf(doc: unknown): MsrcRecord[] {
+export interface MsrcParseResult {
+  records: MsrcRecord[];
+  /** Distinct malformed CVE ids dropped at the parse boundary (#2427). */
+  skippedCveIds: ReadonlySet<string>;
+}
+
+export function parseCvrf(doc: unknown): MsrcParseResult {
   const cvrf = doc as CvrfDocument;
   const productNames = new Map<string, string>();
   const productCpes = new Map<string, string>();
@@ -155,7 +161,7 @@ export function parseCvrf(doc: unknown): MsrcRecord[] {
     malformedIds: malformedCveIds,
   });
   warnMalformedCveIds('MsrcClient', malformedCveIds);
-  return records;
+  return { records, skippedCveIds: malformedCveIds };
 }
 
 function asArray<T>(value: unknown): T[] {

@@ -8,7 +8,7 @@ describe('parseSofa', () => {
   });
 
   it('maps macOS lines and fixed versions to CVEs', () => {
-    const records = parseSofa(sample);
+    const { records } = parseSofa(sample);
 
     expect(records.length).toBeGreaterThan(0);
     for (const record of records) {
@@ -47,10 +47,11 @@ describe('parseSofa', () => {
       ],
     };
 
-    const records = parseSofa(doc);
+    const { records, skippedCveIds } = parseSofa(doc);
 
     expect(records).toHaveLength(1);
     expect(records[0]?.cveId).toBe('CVE-2026-1837');
+    expect(skippedCveIds).toEqual(new Set([malformedCveId]));
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain(malformedCveId);
   });

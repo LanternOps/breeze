@@ -2,7 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../db';
 import { osVulnerabilities, vulnerabilities, vulnerabilitySources } from '../db/schema';
-import { assertSomeValidCveIds, isValidCveId, warnMalformedCveIds } from './cveId';
+import { assertSomeValidCveIds, isValidCveId, warnHighSkipRatio, warnMalformedCveIds } from './cveId';
 
 const SOFA_MACOS_FEED_URL = 'https://sofafeed.macadmins.io/v2/macos_data_feed.json';
 
@@ -31,7 +31,13 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
-export function parseSofa(doc: unknown): SofaRecord[] {
+export interface SofaParseResult {
+  records: SofaRecord[];
+  /** Distinct malformed CVE ids dropped at the parse boundary (#2427). */
+  skippedCveIds: ReadonlySet<string>;
+}
+
+export function parseSofa(doc: unknown): SofaParseResult {
   const root = asObject(doc);
   const records: SofaRecord[] = [];
   const malformedCveIds = new Set<string>();
@@ -80,7 +86,7 @@ export function parseSofa(doc: unknown): SofaRecord[] {
     malformedIds: malformedCveIds,
   });
   warnMalformedCveIds('SofaClient', malformedCveIds);
-  return records;
+  return { records, skippedCveIds: malformedCveIds };
 }
 
 export async function fetchSofa(): Promise<unknown> {
@@ -113,13 +119,14 @@ function distinctCves(records: SofaRecord[]): Array<{
   }));
 }
 
-async function upsertSofaSourceSuccess(now: Date): Promise<void> {
+async function upsertSofaSourceSuccess(now: Date, skippedCount: number): Promise<void> {
   const updated = await db
     .update(vulnerabilitySources)
     .set({
       lastSuccessfulSyncAt: now,
       lastSyncStatus: 'ok',
       lastSyncError: null,
+      lastSyncSkippedCount: skippedCount,
       cursor: now.toISOString(),
       updatedAt: now,
     })
@@ -133,6 +140,7 @@ async function upsertSofaSourceSuccess(now: Date): Promise<void> {
     lastSuccessfulSyncAt: now,
     lastSyncStatus: 'ok',
     lastSyncError: null,
+    lastSyncSkippedCount: skippedCount,
     cursor: now.toISOString(),
     updatedAt: now,
   });
@@ -231,10 +239,10 @@ async function insertOsVulnerability(params: {
 
 export async function syncSofa(
   deps: SofaSyncDependencies = {}
-): Promise<{ vulns: number; osFacts: number }> {
+): Promise<{ vulns: number; osFacts: number; skipped: number }> {
   try {
     const fetchFeed = deps.fetchSofa ?? fetchSofa;
-    const recs = parseSofa(await fetchFeed());
+    const { records: recs, skippedCveIds: parseSkippedCveIds } = parseSofa(await fetchFeed());
 
     return await withSystemDbAccessContext(async () => {
       const now = new Date();
@@ -277,8 +285,13 @@ export async function syncSofa(
       }
 
       warnMalformedCveIds('SofaClient/sync', skippedCveIds);
-      await upsertSofaSourceSuccess(now);
-      return { vulns: vulnerabilityIds.size, osFacts };
+      // Total skips for the run: parse-boundary drops plus the (normally empty)
+      // defense-in-depth re-check above. Disjoint by construction — the re-check
+      // only sees ids the parse boundary already validated — but union anyway.
+      const skipped = new Set([...parseSkippedCveIds, ...skippedCveIds]).size;
+      warnHighSkipRatio('SofaClient/sync', skipped, skipped + vulnerabilityIds.size);
+      await upsertSofaSourceSuccess(now, skipped);
+      return { vulns: vulnerabilityIds.size, osFacts, skipped };
     });
   } catch (error) {
     try {

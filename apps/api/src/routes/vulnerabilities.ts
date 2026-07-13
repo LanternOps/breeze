@@ -14,7 +14,7 @@ import {
 } from '@breeze/shared';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { deviceVulnerabilities, devices, vulnerabilities } from '../db/schema';
+import { deviceVulnerabilities, devices, vulnerabilities, vulnerabilitySources } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { remediateVulnerabilities } from '../services/vulnerabilityRemediation';
@@ -1056,6 +1056,31 @@ const syncSchema = z.object({
 
 vulnerabilitySyncRoutes.use('*', platformAdminMiddleware);
 vulnerabilitySyncRoutes.use('*', requireMfa());
+
+// Per-source sync health, including the malformed-CVE skip count of the last
+// successful run (#2427) — previously stdout-only. `vulnerability_sources` is
+// a global (non-tenant) catalog table with forced RLS and no tenant policies,
+// so the read must run under a system context, outside the request's ambient
+// org/partner db context.
+vulnerabilitySyncRoutes.get('/status', async (c) => {
+  const sources = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({
+          source: vulnerabilitySources.source,
+          lastSuccessfulSyncAt: vulnerabilitySources.lastSuccessfulSyncAt,
+          lastSyncStatus: vulnerabilitySources.lastSyncStatus,
+          lastSyncError: vulnerabilitySources.lastSyncError,
+          lastSyncSkippedCount: vulnerabilitySources.lastSyncSkippedCount,
+          cursor: vulnerabilitySources.cursor,
+          updatedAt: vulnerabilitySources.updatedAt,
+        })
+        .from(vulnerabilitySources)
+        .orderBy(vulnerabilitySources.source)
+    )
+  );
+  return c.json({ sources });
+});
 
 vulnerabilitySyncRoutes.post(
   '/',

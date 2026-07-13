@@ -9,7 +9,7 @@ describe('parseNvd', () => {
   });
 
   it('extracts CVE, CVSS, and CPE version ranges', () => {
-    const recs = parseNvd(sample);
+    const { records: recs } = parseNvd(sample);
     const chrome = recs.find((record) => record.cveId === 'CVE-2024-0519');
 
     expect(chrome).toBeDefined();
@@ -33,7 +33,7 @@ describe('parseNvd', () => {
   });
 
   it('reduces a CPE criteria to its vendor:product prefix', () => {
-    const chrome = parseNvd(sample).find((record) => record.cveId === 'CVE-2024-0519');
+    const chrome = parseNvd(sample).records.find((record) => record.cveId === 'CVE-2024-0519');
     expect(chrome).toBeDefined();
     if (!chrome) throw new Error('Expected Chrome CVE fixture record');
     const cpePrefix = chrome.cpeMatches[0]?.cpePrefix;
@@ -43,7 +43,7 @@ describe('parseNvd', () => {
   });
 
   it('skips cpeMatch entries with vulnerable=false', () => {
-    const recs = parseNvd(sample);
+    const { records: recs } = parseNvd(sample);
     const prefixes = recs.flatMap((record) => record.cpeMatches.map((match) => match.cpePrefix));
 
     expect(prefixes).toContain('cpe:2.3:a:google:chrome');
@@ -61,10 +61,11 @@ describe('parseNvd', () => {
       ],
     };
 
-    const records = parseNvd(doc);
+    const { records, skippedCveIds } = parseNvd(doc);
 
     expect(records).toHaveLength(1);
     expect(records[0]?.cveId).toBe('CVE-2024-11111');
+    expect(skippedCveIds).toEqual(new Set([malformedCveId]));
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain(malformedCveId);
   });

@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { assertSomeValidCveIds, isValidCveId, warnMalformedCveIds } from './cveId';
+import {
+  assertSomeValidCveIds,
+  isValidCveId,
+  SKIP_RATIO_WARN_THRESHOLD,
+  warnHighSkipRatio,
+  warnMalformedCveIds,
+} from './cveId';
+import { captureMessage } from './sentry';
+
+vi.mock('./sentry', () => ({
+  captureMessage: vi.fn(),
+}));
 
 describe('isValidCveId', () => {
   it.each([
@@ -62,6 +73,54 @@ describe('warnMalformedCveIds', () => {
     const message = warn.mock.calls[0]?.[0] as string;
     expect(message).toContain('Skipped 15 distinct malformed CVE id(s)');
     expect(message).toContain('+5 more');
+  });
+});
+
+describe('warnHighSkipRatio', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(captureMessage).mockClear();
+  });
+
+  it('is a no-op when nothing was skipped', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 0, 1000);
+    expect(error).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when entryCount is zero', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 5, 0);
+    expect(error).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet at exactly the threshold', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 1 of 100 = exactly SKIP_RATIO_WARN_THRESHOLD (1%)
+    expect(SKIP_RATIO_WARN_THRESHOLD).toBe(0.01);
+    warnHighSkipRatio('Test', 1, 100);
+    expect(error).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('escalates above the threshold via console.error and a Sentry warning event', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 20, 100);
+
+    expect(error).toHaveBeenCalledTimes(1);
+    const message = error.mock.calls[0]?.[0] as string;
+    expect(message).toContain('[Test]');
+    expect(message).toContain('20 of 100');
+    expect(message).toContain('20.0%');
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(message, 'warning', {
+      tag: 'Test',
+      skippedCount: 20,
+      entryCount: 100,
+      ratio: 0.2,
+    });
   });
 });
 
