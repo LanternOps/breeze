@@ -152,6 +152,7 @@ describe('first-party user session issuer coverage', () => {
       'routes/auth/register.ts',
       'routes/sso.ts',
       'services/mfaAssurance.ts',
+      'services/recoveryCodeAuth.ts',
     ]);
     for (const file of issuers) {
       expect(
