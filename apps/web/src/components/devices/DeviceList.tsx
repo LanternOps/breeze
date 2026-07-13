@@ -301,6 +301,33 @@ const statusFullLabelKeys: Record<DeviceStatus, string> = {
   pending: "deviceList.statuses.full.pending",
 };
 
+// Agent commands (Remote Terminal, Run Script, Reboot) require an
+// actively-connected agent — the API rejects them for any non-online status
+// with "Device is not online" (#2078), so there is no offline queuing to
+// preserve. Tooltip keys mirror unavailableTitle in DeviceActions.tsx (#2426).
+const commandUnavailableTitleKeys: Record<
+  Exclude<DeviceStatus, "online">,
+  string
+> = {
+  offline: "deviceActions.unavailable.offline",
+  maintenance: "deviceActions.unavailable.maintenance",
+  decommissioned: "deviceActions.unavailable.decommissioned",
+  quarantined: "deviceActions.unavailable.quarantined",
+  updating: "deviceActions.unavailable.updating",
+  pending: "deviceActions.unavailable.pending",
+};
+
+type DeviceTranslation = ReturnType<typeof useTranslation<"devices">>["t"];
+
+function commandUnavailableTitle(
+  status: DeviceStatus,
+  t: DeviceTranslation,
+): string | undefined {
+  return status === "online"
+    ? undefined
+    : t(/* i18n-dynamic */ commandUnavailableTitleKeys[status]);
+}
+
 // Cap visible tag chips per row; the rest collapse into a +N chip, with the
 // full comma-joined list on the cell's title attribute (same overflow trick
 // as the status pill). Keeps row height and column width bounded.
@@ -2227,6 +2254,10 @@ export default function DeviceList({
                                   <button
                                     type="button"
                                     disabled={device.status !== "online"}
+                                    title={commandUnavailableTitle(
+                                      device.status,
+                                      t,
+                                    )}
                                     onClick={() => {
                                       onAction?.("terminal", device);
                                       setRowMenuOpenId(null);
@@ -2238,11 +2269,16 @@ export default function DeviceList({
                                   </button>
                                   <button
                                     type="button"
+                                    disabled={device.status !== "online"}
+                                    title={commandUnavailableTitle(
+                                      device.status,
+                                      t,
+                                    )}
                                     onClick={() => {
                                       onAction?.("run-script", device);
                                       setRowMenuOpenId(null);
                                     }}
-                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                                   >
                                     <FileCode className="h-4 w-4" />
                                     {t("deviceList.runScript")}{" "}
@@ -2250,6 +2286,10 @@ export default function DeviceList({
                                   <button
                                     type="button"
                                     disabled={device.status !== "online"}
+                                    title={commandUnavailableTitle(
+                                      device.status,
+                                      t,
+                                    )}
                                     onClick={() => {
                                       onAction?.("reboot", device);
                                       setRowMenuOpenId(null);

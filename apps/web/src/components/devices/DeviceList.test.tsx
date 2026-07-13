@@ -1059,3 +1059,54 @@ describe('DeviceList — vm_host guest nesting (#2308)', () => {
     expect(screen.getByLabelText('Select vm-db')).toBeInTheDocument();
   });
 });
+
+describe('DeviceList — row-menu agent commands gated on device status (#2426)', () => {
+  beforeEach(() => {
+    window.localStorage?.clear();
+  });
+
+  const openRowMenu = () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Device actions' }));
+  };
+
+  it('disables Run Script (and siblings) for an offline device with a status tooltip', () => {
+    const onAction = vi.fn();
+    const device: Device = { ...baseDevice, status: 'offline' };
+    render(<DeviceList devices={[device]} onAction={onAction} />);
+    openRowMenu();
+
+    const runScript = screen.getByRole('button', { name: /run script/i });
+    expect(runScript).toBeDisabled();
+    expect(runScript).toHaveAttribute('title', 'Device is offline');
+    fireEvent.click(runScript);
+    expect(onAction).not.toHaveBeenCalled();
+
+    expect(screen.getByRole('button', { name: /remote terminal/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^reboot$/i })).toBeDisabled();
+  });
+
+  it('disables Run Script for a decommissioned device with a decommissioned tooltip', () => {
+    const onAction = vi.fn();
+    const device: Device = { ...baseDevice, status: 'decommissioned' };
+    render(<DeviceList devices={[device]} onAction={onAction} includeDecommissioned />);
+    openRowMenu();
+
+    const runScript = screen.getByRole('button', { name: /run script/i });
+    expect(runScript).toBeDisabled();
+    expect(runScript).toHaveAttribute('title', 'Device is decommissioned');
+    fireEvent.click(runScript);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps Run Script enabled (no tooltip) for an online device and emits the action', () => {
+    const onAction = vi.fn();
+    render(<DeviceList devices={[baseDevice]} onAction={onAction} />);
+    openRowMenu();
+
+    const runScript = screen.getByRole('button', { name: /run script/i });
+    expect(runScript).toBeEnabled();
+    expect(runScript).not.toHaveAttribute('title');
+    fireEvent.click(runScript);
+    expect(onAction).toHaveBeenCalledWith('run-script', baseDevice);
+  });
+});
