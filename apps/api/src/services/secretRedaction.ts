@@ -123,19 +123,42 @@ export function redactAgentResultErrorFields<
   } as T;
 }
 
-const MAX_DEEP_REDACTION_DEPTH = 8;
+/**
+ * Recursion bound for {@link redactSecretsDeep}. Generous: agent `details` /
+ * `findings` blobs are a handful of levels deep in practice, and the payloads
+ * are already size-capped upstream (1 MB command-result cap, body limits on the
+ * REST ingests), so this only ever trips on pathological input.
+ */
+const MAX_DEEP_REDACTION_DEPTH = 32;
 
 /**
  * Recursively redacts every string value inside an agent-supplied JSON blob
  * before it is persisted to a jsonb column (e.g. network monitor result
- * `details`, service/process check `details`). Depth-bounded; non-string
- * scalars and keys are left untouched. Cycles are cut by the depth bound.
+ * `details`, service/process check `details`, CIS findings). Non-string scalars
+ * and object KEYS are left untouched — only values are rewritten, so parsers
+ * that key off field names keep working.
+ *
+ * The depth bound FAILS CLOSED. Returning an over-deep subtree as-is would hand
+ * an attacker a trivial bypass: nest the secret one level below the bound and it
+ * is persisted verbatim. Instead, at the bound we serialize the remaining
+ * subtree, run the flat redactor over that text, and reparse — so no raw string
+ * can survive at any depth, while the structure is preserved. (JSON.stringify
+ * also throws on a cycle, which the catch turns into a fully-redacted string
+ * rather than a hang.)
  */
 export function redactSecretsDeep(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') return redactSecretsFromOutput(value);
-  if (value == null || typeof value !== 'object' || depth >= MAX_DEEP_REDACTION_DEPTH) {
-    return value;
+  if (value == null || typeof value !== 'object') return value;
+
+  if (depth >= MAX_DEEP_REDACTION_DEPTH) {
+    try {
+      return JSON.parse(redactSecretsFromOutput(JSON.stringify(value)));
+    } catch {
+      // Cyclic or non-serializable: drop the subtree rather than persist it raw.
+      return '[REDACTED_UNSERIALIZABLE]';
+    }
   }
+
   if (Array.isArray(value)) {
     return value.map((item) => redactSecretsDeep(item, depth + 1));
   }

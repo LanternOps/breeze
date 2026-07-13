@@ -203,4 +203,26 @@ describe('redactSecretsDeep (#2434)', () => {
     expect(redactSecretsDeep(7)).toBe(7);
     expect(redactSecretsDeep(undefined)).toBeUndefined();
   });
+
+  it('FAILS CLOSED past the recursion bound — an over-nested secret cannot escape', () => {
+    // A hostile agent nests the key deeper than the recursion bound to dodge
+    // redaction. If the bound returned the subtree as-is, this would persist
+    // the PEM verbatim. 64 levels is double MAX_DEEP_REDACTION_DEPTH.
+    let nested: Record<string, unknown> = { key: pem };
+    for (let i = 0; i < 64; i++) nested = { deeper: nested };
+
+    const out = redactSecretsDeep(nested);
+    const serialized = JSON.stringify(out);
+    expect(serialized).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(serialized).not.toContain('BEGIN RSA PRIVATE KEY');
+    expect(serialized).not.toContain('MIIBOgIBAAJBAKe0m0h');
+  });
+
+  it('does not hang or leak on a cyclic structure', () => {
+    const cyclic: Record<string, unknown> = { note: `key: ${pem}` };
+    cyclic.self = cyclic;
+
+    const serialized = JSON.stringify(redactSecretsDeep(cyclic));
+    expect(serialized).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
 });
