@@ -31,8 +31,14 @@ import {
   setRefreshTokenCookie,
   rotateCsrfBindingCookie,
 } from './helpers';
-import { verifyTerminalLogoutTicket } from '../../services/terminalLogoutTicket';
-import { completeTerminalLogout } from '../../services/authBrowserTransition';
+import {
+  verifyTerminalLogoutTicket,
+  type VerifiedTerminalLogoutTicket,
+} from '../../services/terminalLogoutTicket';
+import {
+  completeTerminalLogout,
+  isTerminalLogoutPending,
+} from '../../services/authBrowserTransition';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -66,6 +72,39 @@ function terminalLogoutRedirect(
   c.header('Cache-Control', 'no-store');
   c.header('Referrer-Policy', 'no-referrer');
   return c.redirect(location, 303);
+}
+
+function auditTerminalLogoutCompletion(
+  c: Context,
+  ticket: VerifiedTerminalLogoutTicket,
+  outcome: 'completed' | 'replayed' | 'invalid' | 'failed',
+): void {
+  const mutatesCookies = outcome === 'completed';
+  void createAuditLogAsync({
+    actorType: 'system',
+    actorId: ticket.transitionId,
+    action: 'auth.cf_access_terminal_logout.complete',
+    resourceType: 'auth_browser_transition',
+    resourceId: ticket.transitionId,
+    details: {
+      transitionId: ticket.transitionId,
+      logoutId: ticket.logoutId,
+      result: outcome,
+      cleanupStatus: outcome === 'completed'
+        ? 'complete'
+        : outcome === 'failed'
+          ? 'failed'
+          : 'not-run',
+      refreshCookieClearCount: mutatesCookies ? 1 : 0,
+      bindingRotationCount: mutatesCookies ? 1 : 0,
+    },
+    ipAddress: getClientIP(c),
+    userAgent: c.req.header('user-agent'),
+    result: outcome === 'failed' ? 'failure' : outcome === 'invalid' ? 'denied' : 'success',
+    ...(outcome === 'failed'
+      ? { errorMessage: 'Durable terminal logout completion unavailable' }
+      : {}),
+  });
 }
 
 export const cfAccessRedirectLoginRoutes = new Hono();
@@ -241,27 +280,43 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
  * loop with no user interaction.
  *
  * Flow:
- *   1. Clear the Breeze refresh cookie.
- *   2. 302 to CF Access logout endpoint with `returnTo` pointing back at
- *      `/login?signedOut=1`. CF clears its own session and bounces the
- *      user back. `LoginPage` honours the `signedOut=1` flag and shows
- *      the password form instead of triggering the SSO redirect again.
+ *   1. Authenticate the signed capability and correlate it to the exact live
+ *      pending transition row without consuming it.
+ *   2. 303 through the application and team CF logout endpoints, carrying the
+ *      capability to the configured-origin completion endpoint.
+ *   3. Completion consumes the pending row, clears refresh/C1, installs C2,
+ *      and lands on `/login?signedOut=1`.
  *
- * If CF Access trust is disabled, falls back to a plain 302 to /login
- * after clearing the refresh cookie.
+ * If CF Access trust is disabled, the valid capability goes directly to the
+ * same completion endpoint. Missing/invalid/consumed capabilities write no
+ * cookies and return only to the local signed-out/error page.
  *
  * Not authMiddleware-gated: a top-level GET navigation cannot present a
- * Bearer token. The refresh cookie is enough to identify the session and
- * the cookie is cleared regardless.
+ * Bearer token. No cookie is treated as authority; the signed ticket and
+ * pending database row are the complete navigation authority.
  */
 cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
   const ticket = c.req.query('ticket');
+  let verified: VerifiedTerminalLogoutTicket;
   try {
     if (!ticket) throw new Error('missing ticket');
-    verifyTerminalLogoutTicket(ticket);
+    verified = verifyTerminalLogoutTicket(ticket);
   } catch {
     // A GET without an authenticated capability has no authority to clear,
     // revoke, rotate, or otherwise mutate any browser/session state.
+    return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
+  }
+
+  try {
+    const pending = await isTerminalLogoutPending({
+      transitionId: verified.transitionId,
+      logoutId: verified.logoutId,
+      generation: verified.generation,
+      nonce: verified.nonce,
+    });
+    if (!pending) return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
+  } catch {
+    console.error('[cf-access-logout] Pending navigation check failed');
     return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
   }
 
@@ -329,15 +384,23 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout/complete', async (c) => {
   } catch (error) {
     console.error('[cf-access-logout] Durable completion failed');
     void error;
+    auditTerminalLogoutCompletion(c, verified, 'failed');
     return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
   }
 
   if (completed.kind === 'invalid') {
+    auditTerminalLogoutCompletion(c, verified, 'invalid');
     return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
+  }
+
+  if (completed.kind === 'replayed') {
+    auditTerminalLogoutCompletion(c, verified, 'replayed');
+    return terminalLogoutRedirect(c, '/login?signedOut=1');
   }
 
   clearRefreshTokenCookie(c);
   rotateCsrfBindingCookie(c, completed.replacement.value);
   clearCfAccessLogoutQuarantineCookie(c);
+  auditTerminalLogoutCompletion(c, verified, 'completed');
   return terminalLogoutRedirect(c, '/login?signedOut=1');
 });

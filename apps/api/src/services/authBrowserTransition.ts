@@ -506,6 +506,11 @@ export type CompleteTerminalLogoutInput = Readonly<{
   signingKeyId: string | null;
 }>;
 
+export type TerminalLogoutCorrelation = Readonly<Omit<
+  CompleteTerminalLogoutInput,
+  'signingKeyId'
+>>;
+
 export type CompleteTerminalLogoutResult =
   | Readonly<{ kind: 'completed' | 'replayed'; replacement: AuthBindingSource }>
   | Readonly<{ kind: 'invalid' }>;
@@ -528,11 +533,26 @@ function completionNonceMatches(nonce: string, digest: string | null): boolean {
 
 function terminalTicketMatches(
   transition: LockedTransition,
-  input: CompleteTerminalLogoutInput,
+  input: TerminalLogoutCorrelation,
 ): boolean {
   return transition.generation === input.generation
     && transition.logoutId === input.logoutId
     && completionNonceMatches(input.nonce, transition.completionNonceDigest);
+}
+
+/** Validate a signed navigation ticket against the exact live pending row. */
+export function isTerminalLogoutPending(
+  input: TerminalLogoutCorrelation,
+): Promise<boolean> {
+  return withAuthLifecycleSystemTransaction(async (tx) => {
+    const transition = await lockTransitionById(tx, input.transitionId);
+    return Boolean(
+      transition
+      && transition.state === 'logout_pending'
+      && terminalTicketMatches(transition, input)
+      && isAfter(transition.logoutExpiresAt, transition.databaseNow),
+    );
+  });
 }
 
 /**

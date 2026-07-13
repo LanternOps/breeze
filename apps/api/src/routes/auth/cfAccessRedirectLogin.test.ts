@@ -44,11 +44,19 @@ vi.mock('../../services/terminalLogoutTicket', () => ({
 const completionState = vi.hoisted(() => ({
   calls: [] as Array<Record<string, unknown>>,
   results: [] as Array<Record<string, unknown>>,
+  pending: true,
+  pendingCalls: [] as Array<Record<string, unknown>>,
+  failure: null as Error | null,
 }));
 
 vi.mock('../../services/authBrowserTransition', () => ({
+  isTerminalLogoutPending: vi.fn(async (input: Record<string, unknown>) => {
+    completionState.pendingCalls.push(input);
+    return completionState.pending;
+  }),
   completeTerminalLogout: vi.fn(async (input: Record<string, unknown>) => {
     completionState.calls.push(input);
+    if (completionState.failure) throw completionState.failure;
     return completionState.results.shift() ?? {
       kind: 'completed',
       replacement: { kind: 'browser', value: 'b'.repeat(64) },
@@ -247,6 +255,9 @@ describe('GET /cf-access-login', () => {
     ticketState.calls = [];
     completionState.calls = [];
     completionState.results = [];
+    completionState.pending = true;
+    completionState.pendingCalls = [];
+    completionState.failure = null;
     servicesState.lastSessionIdentity = null;
     servicesState.verifyResult = null;
     servicesState.revokeAllCalls = [];
@@ -464,6 +475,26 @@ describe('GET /cf-access-login', () => {
     );
     expect(cookieState.cleared).toBe(false);
     expect(cookieState.quarantineSet).toBe(true);
+    expect(completionState.pendingCalls).toEqual([{
+      transitionId: verifiedTicket.transitionId,
+      logoutId: verifiedTicket.logoutId,
+      generation: verifiedTicket.generation,
+      nonce: verifiedTicket.nonce,
+    }]);
+  });
+
+  it('rejects a consumed or old-generation signed ticket before quarantine or Cloudflare navigation', async () => {
+    completionState.pending = false;
+
+    const res = await callGet('/cf-access-logout?ticket=signed-ticket', {
+      host: 'breeze.example.com',
+    });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('Location')).toBe('/login?signedOut=1&logoutError=1');
+    expect(cookieState.quarantineSet).toBe(false);
+    expect(cookieState.cleared).toBe(false);
+    expect(res.headers.get('Set-Cookie')).toBeNull();
   });
 
   it('never falls back to Host when the configured public origin is unavailable', async () => {
@@ -514,10 +545,27 @@ describe('GET /cf-access-login', () => {
     expect(cookies).toContain('breeze_refresh_token=');
     expect(cookies).toContain(`breeze_csrf_token=${'b'.repeat(64)}`);
     expect(cookies).toContain(`SameSite=${sameSite}`);
+    expect(auditState.audits.at(-1)).toMatchObject({
+      action: 'auth.cf_access_terminal_logout.complete',
+      actorType: 'system',
+      actorId: verifiedTicket.transitionId,
+      result: 'success',
+      details: {
+        transitionId: verifiedTicket.transitionId,
+        logoutId: verifiedTicket.logoutId,
+        result: 'completed',
+        cleanupStatus: 'complete',
+        refreshCookieClearCount: 1,
+        bindingRotationCount: 1,
+      },
+    });
+    const auditJson = JSON.stringify(auditState.audits.at(-1));
+    expect(auditJson).not.toContain('signed-ticket');
+    expect(auditJson).not.toContain(verifiedTicket.nonce);
     delete process.env.AUTH_COOKIE_SAME_SITE;
   });
 
-  it('returns the same C2 for concurrent completion and replay responses', async () => {
+  it('mutates cookies only once for concurrent completion and replay responses', async () => {
     completionState.results = [
       { kind: 'completed', replacement: { kind: 'browser', value: 'c'.repeat(64) } },
       { kind: 'replayed', replacement: { kind: 'browser', value: 'c'.repeat(64) } },
@@ -531,7 +579,35 @@ describe('GET /cf-access-login', () => {
     expect(first.status).toBe(303);
     expect(second.status).toBe(303);
     expect(first.headers.get('Set-Cookie')).toContain(`breeze_csrf_token=${'c'.repeat(64)}`);
-    expect(second.headers.get('Set-Cookie')).toContain(`breeze_csrf_token=${'c'.repeat(64)}`);
+    expect(second.headers.get('Set-Cookie')).toBeNull();
+  });
+
+  it('does not let a consumed ticket replay clear a newer refresh cookie or overwrite C3', async () => {
+    completionState.results = [{
+      kind: 'replayed',
+      replacement: { kind: 'browser', value: 'c'.repeat(64) },
+    }];
+
+    const res = await callGet('/cf-access-logout/complete?ticket=signed-ticket', {
+      cookie: `breeze_refresh_token=new-session; breeze_csrf_token=${'d'.repeat(64)}`,
+    });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('Location')).toBe('/login?signedOut=1');
+    expect(cookieState.cleared).toBe(false);
+    expect(cookieState.rotated).toBeNull();
+    expect(cookieState.quarantineCleared).toBe(false);
+    expect(res.headers.get('Set-Cookie')).toBeNull();
+    expect(auditState.audits.at(-1)).toMatchObject({
+      action: 'auth.cf_access_terminal_logout.complete',
+      result: 'success',
+      details: expect.objectContaining({
+        result: 'replayed',
+        cleanupStatus: 'not-run',
+        refreshCookieClearCount: 0,
+        bindingRotationCount: 0,
+      }),
+    });
   });
 
   it('does not mutate cookies for an old-generation or otherwise invalid completion', async () => {
@@ -545,6 +621,37 @@ describe('GET /cf-access-login', () => {
     expect(cookieState.rotated).toBeNull();
     expect(cookieState.quarantineCleared).toBe(false);
     expect(res.headers.get('Set-Cookie')).toBeNull();
+    expect(auditState.audits.at(-1)).toMatchObject({
+      action: 'auth.cf_access_terminal_logout.complete',
+      result: 'denied',
+      details: expect.objectContaining({ result: 'invalid', cleanupStatus: 'not-run' }),
+    });
+  });
+
+  it('audits a durable completion failure without ticket, nonce, or binding values', async () => {
+    completionState.failure = new Error('postgres unavailable');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await callGet('/cf-access-logout/complete?ticket=signed-ticket');
+
+    expect(res.status).toBe(303);
+    expect(auditState.audits.at(-1)).toMatchObject({
+      action: 'auth.cf_access_terminal_logout.complete',
+      result: 'failure',
+      details: expect.objectContaining({
+        transitionId: verifiedTicket.transitionId,
+        logoutId: verifiedTicket.logoutId,
+        result: 'failed',
+        cleanupStatus: 'failed',
+        refreshCookieClearCount: 0,
+        bindingRotationCount: 0,
+      }),
+    });
+    const auditJson = JSON.stringify(auditState.audits.at(-1));
+    expect(auditJson).not.toContain('signed-ticket');
+    expect(auditJson).not.toContain(verifiedTicket.nonce);
+    expect(auditJson).not.toContain('b'.repeat(64));
+    errorSpy.mockRestore();
   });
 
   it('rejects an unsafe next param and falls back to /', async () => {

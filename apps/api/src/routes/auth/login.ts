@@ -602,6 +602,25 @@ loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error('[cf-access-logout] Refusing terminal logout preparation because the authoritative transaction failed:', error);
+    void createAuditLogAsync({
+      orgId: auth.orgId ?? undefined,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'auth.cf_access_terminal_logout.prepare',
+      resourceType: 'auth_browser_transition',
+      details: {
+        transitionId: null,
+        logoutId: null,
+        result: 'failed',
+        cleanupStatus: 'failed',
+        advancedUserCount: 0,
+        revokedFamilyCount: 0,
+      },
+      ipAddress: getClientIP(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'failure',
+      errorMessage: 'Durable terminal logout preparation unavailable',
+    });
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
@@ -617,18 +636,60 @@ loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error('[cf-access-logout] Refusing terminal logout navigation because ticket issuance failed:', error);
+    void createAuditLogAsync({
+      orgId: auth.orgId ?? undefined,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: 'auth.cf_access_terminal_logout.prepare',
+      resourceType: 'auth_browser_transition',
+      resourceId: prepared.transitionId,
+      details: {
+        transitionId: prepared.transitionId,
+        logoutId: prepared.logoutId,
+        result: 'ticket-failed',
+        cleanupStatus: prepared.cleanupStatus,
+        advancedUserCount: prepared.advancedUserCount,
+        revokedFamilyCount: prepared.revokedFamilyCount,
+      },
+      ipAddress: getClientIP(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'failure',
+      errorMessage: 'Terminal logout ticket issuance unavailable',
+    });
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
   const navigationUrl = new URL('/api/v1/auth/cf-access-logout', publicOrigin);
   navigationUrl.searchParams.set('ticket', ticket);
 
+  const cleanupFailures = toTerminalCleanupFailureCategories(prepared.cleanupFailures);
+  void createAuditLogAsync({
+    orgId: auth.orgId ?? undefined,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    action: 'auth.cf_access_terminal_logout.prepare',
+    resourceType: 'auth_browser_transition',
+    resourceId: prepared.transitionId,
+    details: {
+      transitionId: prepared.transitionId,
+      logoutId: prepared.logoutId,
+      result: 'prepared',
+      cleanupStatus: prepared.cleanupStatus,
+      cleanupFailures,
+      advancedUserCount: prepared.advancedUserCount,
+      revokedFamilyCount: prepared.revokedFamilyCount,
+    },
+    ipAddress: getClientIP(c),
+    userAgent: c.req.header('user-agent'),
+    result: 'success',
+  });
+
   clearRefreshCookieOnly(c);
   return c.json({
     success: true,
     navigationUrl: navigationUrl.toString(),
     cleanupStatus: prepared.cleanupStatus,
-    cleanupFailures: toTerminalCleanupFailureCategories(prepared.cleanupFailures),
+    cleanupFailures,
   });
 });
 

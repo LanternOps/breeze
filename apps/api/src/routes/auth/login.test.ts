@@ -386,6 +386,22 @@ describe('POST /cf-access-logout/prepare', () => {
     });
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
     expect(res.headers.get('set-cookie')).not.toContain('breeze_csrf_token=');
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'auth.cf_access_terminal_logout.prepare',
+      resourceId: 'transition-1',
+      result: 'success',
+      details: expect.objectContaining({
+        transitionId: 'transition-1',
+        logoutId: 'logout-1',
+        result: 'prepared',
+        cleanupStatus: 'complete',
+        advancedUserCount: 1,
+        revokedFamilyCount: 1,
+      }),
+    }));
+    const auditJson = JSON.stringify(vi.mocked(createAuditLogAsync).mock.calls.at(-1)?.[0]);
+    expect(auditJson).not.toContain('signed-terminal-ticket');
+    expect(auditJson).not.toContain('n'.repeat(64));
   });
 
   it('uses strict browser CSRF and rejects the header-only compatibility path', async () => {
@@ -417,6 +433,54 @@ describe('POST /cf-access-logout/prepare', () => {
     expect(res.headers.get('set-cookie')).toBeNull();
     expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
     expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'auth.cf_access_terminal_logout.prepare',
+      result: 'failure',
+      details: expect.objectContaining({
+        transitionId: null,
+        logoutId: null,
+        result: 'failed',
+        cleanupStatus: 'failed',
+        advancedUserCount: 0,
+        revokedFamilyCount: 0,
+      }),
+    }));
+  });
+
+  it('audits ticket issuance failure without exposing the nonce or ticket', async () => {
+    vi.mocked(issueTerminalLogoutTicket).mockImplementationOnce(() => {
+      throw new Error('key unavailable');
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await loginRoutes.request('/cf-access-logout/prepare', {
+      method: 'POST',
+      headers: {
+        cookie: `breeze_csrf_token=${'a'.repeat(64)}`,
+        'x-breeze-csrf': 'a'.repeat(64),
+        origin: 'http://localhost:4321',
+        'sec-fetch-site': 'same-origin',
+      },
+    });
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'auth.cf_access_terminal_logout.prepare',
+      resourceId: 'transition-1',
+      result: 'failure',
+      details: expect.objectContaining({
+        transitionId: 'transition-1',
+        logoutId: 'logout-1',
+        result: 'ticket-failed',
+        advancedUserCount: 1,
+        revokedFamilyCount: 1,
+      }),
+    }));
+    const auditJson = JSON.stringify(vi.mocked(createAuditLogAsync).mock.calls.at(-1)?.[0]);
+    expect(auditJson).not.toContain('n'.repeat(64));
+    expect(auditJson).not.toContain('signed-terminal-ticket');
+    errorSpy.mockRestore();
   });
 
   it('rejects missing configured origin before mutating the durable transition', async () => {
@@ -470,6 +534,19 @@ describe('POST /cf-access-logout/prepare', () => {
       cleanupStatus: 'partial',
       cleanupFailures: ['user-token-cache', 'refresh-family-cache'],
     });
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'auth.cf_access_terminal_logout.prepare',
+      result: 'success',
+      details: expect.objectContaining({
+        transitionId: 'transition-1',
+        logoutId: 'logout-1',
+        result: 'prepared',
+        cleanupStatus: 'partial',
+        advancedUserCount: 1,
+        revokedFamilyCount: 2,
+        cleanupFailures: ['user-token-cache', 'refresh-family-cache'],
+      }),
+    }));
   });
 });
 

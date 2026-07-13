@@ -205,6 +205,7 @@ import {
   beginAuthIssuance,
   cancelAuthIssuance,
   completeTerminalLogout,
+  isTerminalLogoutPending,
   finishAuthIssuance,
   resolveAuthBinding,
   rotateExpiredBinding,
@@ -704,6 +705,23 @@ describe('terminal logout completion', () => {
       activeOperationExpiresAt: null,
     });
     await expect(beginAuthIssuance(result.replacement)).resolves.toMatchObject({ generation: 1 });
+  });
+
+  it('authorizes navigation only for the exact live pending row', async () => {
+    const predecessor = seedPending(3);
+    const exact = {
+      transitionId: predecessor.id,
+      logoutId,
+      generation: predecessor.generation,
+      nonce,
+    };
+
+    await expect(isTerminalLogoutPending(exact)).resolves.toBe(true);
+    await expect(isTerminalLogoutPending({ ...exact, generation: 2 })).resolves.toBe(false);
+    await expect(isTerminalLogoutPending({ ...exact, nonce: 'f2'.repeat(32) })).resolves.toBe(false);
+
+    await completeTerminalLogout({ ...exact, signingKeyId: 'current' });
+    await expect(isTerminalLogoutPending(exact)).resolves.toBe(false);
   });
 
   it('returns one deterministic C2 for concurrent completion and mutates only once', async () => {

@@ -905,23 +905,46 @@ describe('auth issuer binding bootstrap', () => {
     vi.clearAllMocks();
   });
 
-  it('accepts the binding cookie from the exact 428 response and retries once', async () => {
-    const init: RequestInit = { method: 'POST', body: '{"email":"user@example.com"}' };
+  it.each([
+    '/api/v1/auth/refresh',
+    '/api/v1/auth/login',
+    '/api/v1/auth/mfa/verify',
+    '/api/v1/auth/mfa/passkey/options',
+    '/api/v1/auth/mfa/passkey/verify',
+    '/api/v1/auth/register',
+    '/api/v1/auth/register-partner',
+    '/api/v1/auth/accept-invite',
+  ])('accepts C2 from binding_refresh and rebuilds the CSRF header before retrying %s', async (url) => {
+    const c1 = 'a'.repeat(64);
+    const c2 = 'b'.repeat(64);
+    document.cookie = `breeze_csrf_token=${c1}; path=/`;
+    const init: RequestInit = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breeze-csrf': c1 },
+      body: '{"email":"user@example.com"}',
+      credentials: 'include',
+    };
     const success = makeResponse({ user: baseUser, tokens: baseTokens });
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(makeResponse({
-        error: 'Authentication binding refresh required',
-        reason: 'binding_refresh',
-      }, false, 428))
+      .mockImplementationOnce(() => {
+        // Browsers process Set-Cookie before exposing the 428 response.
+        document.cookie = `breeze_csrf_token=${c2}; path=/`;
+        return Promise.resolve(makeResponse({
+          error: 'Authentication binding refresh required',
+          reason: 'binding_refresh',
+        }, false, 428));
+      })
       .mockResolvedValueOnce(success);
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await fetchAuthIssuerWithBindingBootstrap('/api/v1/auth/login', init);
+    const result = await fetchAuthIssuerWithBindingBootstrap(url, init);
 
     expect(result).toBe(success);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/auth/login', init);
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/auth/login', init);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, url, init);
+    const retry = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(retry[0]).toBe(url);
+    expect(new Headers(retry[1].headers).get('x-breeze-csrf')).toBe(c2);
   });
 
   it('does not retry another kind of 428 after the server callback began', async () => {

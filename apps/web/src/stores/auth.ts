@@ -383,7 +383,16 @@ export async function fetchAuthIssuerWithBindingBootstrap(
   const body = await first.clone().json().catch(() => null) as { reason?: unknown } | null;
   if (body?.reason !== 'binding_refresh') return first;
 
-  return fetch(input, init);
+  // Set-Cookie has replaced C1 with C2 before the response is exposed, but
+  // RequestInit still carries the old double-submit header. Rebuild it from
+  // the browser cookie or the retry would present Cookie=C2 + header=C1 and
+  // strict CSRF validation would destroy the recovered session.
+  const retryHeaders = new Headers(init?.headers);
+  const replacementCsrf = readCookie(CSRF_COOKIE_NAME);
+  if (replacementCsrf) retryHeaders.set(CSRF_HEADER_NAME, replacementCsrf);
+  else retryHeaders.delete(CSRF_HEADER_NAME);
+
+  return fetch(input, { ...init, headers: retryHeaders });
 }
 
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a

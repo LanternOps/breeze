@@ -22,6 +22,7 @@ import {
   completeTerminalLogout,
   createAuthBrowserTransitionService,
   finishAuthIssuance,
+  isTerminalLogoutPending,
   resolveAuthBinding,
   rotateExpiredBinding,
   type AuthBindingSource,
@@ -487,6 +488,7 @@ describe('terminal preparation against issuer finalization', () => {
       nonce: prepared.nonce,
       signingKeyId: 'current',
     };
+    await expect(isTerminalLogoutPending(input)).resolves.toBe(true);
 
     const [left, right] = await Promise.all([
       completeTerminalLogout(input),
@@ -507,6 +509,7 @@ describe('terminal preparation against issuer finalization', () => {
       state: 'active',
       generation: 1,
     });
+    await expect(isTerminalLogoutPending(input)).resolves.toBe(false);
   });
 
   it.each(['current', 'stale'] as const)(
