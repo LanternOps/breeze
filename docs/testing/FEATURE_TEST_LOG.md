@@ -3647,3 +3647,39 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 - A full five-case recovery integration run under Node 26 and the shared Redis service was unstable (three failures, including a cleanup deadlock). The required one-winner race was rerun and passed under supported Node 22 with isolated PostgreSQL and Redis.
 - Browser/API E2E remains blocked by the exact environment gap above; no production or external state was mutated.
 - The sealed-review browser cookie test is blocked by the same environment gap: all four `E2E_*` variables are absent and `docker compose ps` reports no running services. Deterministic unit tests therefore cover both coordinator implementations, cross-operation invocation order, failure recovery, and final account-B state; no external cookie or production state was mutated.
+
+## Durable browser authentication transitions — 2026-07-13
+
+**Branch:** `fix/core-mfa-policy-assurance`
+**Exact review range:** `675f66ac2..b88c19611`
+**Tested by:** Codex
+**Result:** PASS for the durable-transition scope; inherited repository-wide API failures documented below.
+
+### Final architecture
+
+- PostgreSQL is the cross-replica authority for browser/native binding generations, issuance leases, terminal-logout correlation, current refresh JTI state, and one-time SSO exchange grants.
+- Every first-party user-session issuer requires an opaque capability and one system transaction ordered transition → user → refresh family. The compiler-symbol inventory covers all guarded issuers and refresh-cookie writers.
+- Terminal logout advances the durable generation before revoking current authorities, uses a signed expiring one-time navigation ticket, completes without cookie authority after the cross-site return, and deterministically installs the successor CSRF binding.
+- Browser issuers are serialized with Web Locks plus a rejection-safe in-tab fallback. Native issuers carry a server-authenticated binding in SecureStore and fence request, binding, credential, and Redux continuations with the terminal session generation.
+- `auth_browser_transitions` and `sso_token_exchange_grants` have enabled and forced system-only RLS. The migration is additive: `current_refresh_jti_digest` and `previous_refresh_jti_digest` remain nullable for mixed-replica/legacy-family rollout compatibility.
+
+### Evidence
+
+- Clean isolated PostgreSQL/Redis transition suites: 3 files / 39 tests passed.
+- RLS: transition-specific 9/9 and catalog coverage 50/50 passed as unprivileged `breeze_app`; schema drift matched all 392 migration ledger entries.
+- Issuer/export inventory: 64/64 focused tests passed; final caller-only inventory passed 53/53; no production references remain to the old Cloudflare logout quarantine.
+- Full web: 443 files / 3,482 tests passed. Full mobile: 30 files / 251 passed / 3 documented platform skips.
+- Real Chromium browser contract: SameSite Strict/Lax/None all passed (3/3), including Strict cookie-less completion, browser-visible C2 on `/login`, ticket-free referrers, and replay with zero C2 mutation. A dedicated job installs Chromium, runs this contract, and is required by the aggregate `CI Success` gate.
+- Type/static gates: API `tsc --noEmit` passed after correcting the cleanup-result test union; Astro check reported 0 errors and 218 existing hints; mobile `tsc --noEmit` passed. API/web ESLint, API/web production builds, YAML parse, and `git diff --check` passed.
+- Exact-range independent security reviews covered lock ordering, capability bypass, stale-refresh authority, CSRF/binding fixation, terminal tickets, SSO replay/durability, native spoofing/generation races, and RLS/migration rollout. All Critical, Important, Minor, and missing-test findings were closed and re-reviewed.
+
+### Full-suite baseline classification
+
+- The repeated full API run completed 988 files with 12,830 tests passing, 42 failing, 51 skipped, and 2 inherited Node stream rejections. Deterministic failures are pre-existing stale mocks/expectations in unrelated organization/auth middleware, device, tenant-export, and SentinelOne paths; their causes predate or are independent of the durable-transition changes. Load-only compiler/inventory timeouts pass when isolated.
+- One exact-diff failure was found: the SSO tamper test changed only the final base64url character, which can preserve decoded bytes. The test now flips a middle authenticated-ciphertext character deterministically; its focused suite passes 2/2.
+
+### Rollout and remaining environment gap
+
+- Both rollout flags default false. Operators first deploy all replicas with `AUTH_BROWSER_TRANSITIONS_ENFORCED=false` and terminal preparation disabled, then enable enforcement fleet-wide, and only then enable `AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED=true` after metrics are healthy.
+- Chromium now verifies real browser cookie/referrer mechanics with two controlled origins, but no external Cloudflare Access tenant or production/staging Breeze deployment was mutated. A final staging smoke should exercise Cloudflare's two logout endpoints and configured return origin before enabling terminal preparation.
+- The nullable current-JTI rollout is intentional. After every replica has dual-written for at least the maximum 30-day family lifetime, enforce `NOT NULL` only through a separately reviewed fix-forward migration with batched/observable cleanup; do not edit the shipped additive migration.
