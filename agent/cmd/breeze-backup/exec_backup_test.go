@@ -249,3 +249,64 @@ func TestExecBMRRecoverUsesTokenDrivenRunner(t *testing.T) {
 		t.Fatalf("runner cfg = %+v", cfg)
 	}
 }
+
+func TestParseBackupRunExcludes(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    []string // nil = fall back to config excludes
+		wantErr bool
+	}{
+		{
+			name:    "empty payload returns nil (config fallback)",
+			payload: "",
+			want:    nil,
+		},
+		{
+			name:    "missing excludes field returns nil (old-server compat)",
+			payload: `{"paths":["/data"],"jobId":"j1"}`,
+			want:    nil,
+		},
+		{
+			name:    "explicit empty list disables exclusions (non-nil empty)",
+			payload: `{"paths":["/data"],"excludes":[]}`,
+			want:    []string{},
+		},
+		{
+			name:    "populated excludes decoded alongside other payload fields",
+			payload: `{"jobId":"j1","paths":["C:\\Users"],"excludes":["*.tmp","node_modules/**"],"storageEncryption":{"required":false,"mode":"disabled"}}`,
+			want:    []string{"*.tmp", "node_modules/**"},
+		},
+		{
+			name:    "malformed payload returns error",
+			payload: `{"excludes":`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseBackupRunExcludes(json.RawMessage(tt.payload))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if (got == nil) != (tt.want == nil) {
+				t.Fatalf("nil-ness mismatch: got %#v, want %#v (nil vs empty is the compat contract)", got, tt.want)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("excludes[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

@@ -50,16 +50,24 @@ func newExcludeMatcherForOS(patterns []string, caseInsensitive bool) *excludeMat
 			p = strings.ToLower(p)
 		}
 		// Validate glob syntax up front so a bad pattern is reported once per
-		// run instead of erroring on every visited file.
-		if _, err := path.Match(strings.ReplaceAll(p, "**", "*"), "probe"); err != nil {
-			log.Printf("[backup] ignoring invalid exclusion pattern %q: %v", raw, err)
-			continue
-		}
+		// run instead of silently never matching. Validation must mirror the
+		// runtime exactly: slash patterns are matched per segment, so they
+		// are validated per segment too (e.g. "a[x/y]b" is a valid glob as a
+		// full string but splits into malformed segments).
 		if strings.Contains(p, "/") {
+			segs := strings.Split(p, "/")
+			if !validGlobSegments(segs) {
+				log.Printf("[backup] ignoring invalid exclusion pattern %q", raw)
+				continue
+			}
 			// Implicit leading "**/" so patterns match at any depth
 			// (consecutive "**" segments are collapsed by matchSegments).
-			m.relPath = append(m.relPath, append([]string{"**"}, strings.Split(p, "/")...))
+			m.relPath = append(m.relPath, append([]string{"**"}, segs...))
 		} else {
+			if _, err := path.Match(p, "probe"); err != nil {
+				log.Printf("[backup] ignoring invalid exclusion pattern %q: %v", raw, err)
+				continue
+			}
 			m.baseName = append(m.baseName, p)
 		}
 	}
@@ -100,9 +108,31 @@ func (m *excludeMatcher) matches(relPath string) bool {
 	return false
 }
 
+// validGlobSegments reports whether every non-doublestar segment is a valid
+// single-segment glob. path.Match's ErrBadPattern is independent of the name
+// being matched (Go 1.16+), so probing with a fixed name is exhaustive.
+// Empty segments (from "a//b") are rejected: they could never match a real
+// path segment and indicate a malformed pattern.
+func validGlobSegments(segs []string) bool {
+	for _, s := range segs {
+		if s == "**" {
+			continue
+		}
+		if s == "" {
+			return false
+		}
+		if _, err := path.Match(s, "probe"); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // matchSegments matches glob pattern segments against path segments, where a
 // "**" pattern segment spans zero or more path segments. Non-doublestar
-// segments use path.Match single-segment glob semantics.
+// segments use path.Match single-segment glob semantics (errors from a
+// malformed segment are treated as non-match; construction-time validation
+// makes that branch defensively unreachable).
 func matchSegments(pattern, segs []string) bool {
 	for len(pattern) > 0 {
 		if pattern[0] == "**" {

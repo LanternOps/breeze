@@ -271,12 +271,14 @@ export async function resolveBackupTargets(
   switch (backupMode) {
     case 'file': {
       const t = targets as { paths?: string[]; excludes?: string[] };
-      return [
-        {
-          commandType: 'backup_run',
-          payload: { paths: t.paths ?? [], excludes: t.excludes ?? [] },
-        },
-      ];
+      // Preserve the omitted-vs-empty distinction the agent relies on: a
+      // missing excludes field means "fall back to locally-configured
+      // excludes", an explicit [] means "no exclusions for this run".
+      const payload: Record<string, unknown> = { paths: t.paths ?? [] };
+      if (t.excludes !== undefined) {
+        payload.excludes = t.excludes;
+      }
+      return [{ commandType: 'backup_run', payload }];
     }
 
     case 'system_image':

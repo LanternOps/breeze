@@ -44,6 +44,9 @@ func TestExcludeMatcher(t *testing.T) {
 		{name: "no patterns passes everything through", patterns: nil, relPath: "anything.tmp", want: false},
 		{name: "invalid pattern is dropped not fatal", patterns: []string{"[unclosed"}, relPath: "file.txt", want: false},
 		{name: "invalid pattern does not disable valid ones", patterns: []string{"[unclosed", "*.tmp"}, relPath: "file.tmp", want: true},
+		{name: "bracket class containing slash is dropped at compile", patterns: []string{"a[x/y]b"}, relPath: "a[x/y]b/file.txt", want: false},
+		{name: "bracket-slash pattern does not disable valid ones", patterns: []string{"a[x/y]b", "*.tmp"}, relPath: "file.tmp", want: true},
+		{name: "empty interior segment is invalid", patterns: []string{"a//b"}, relPath: "a/b", want: false},
 		{name: "empty and whitespace patterns ignored", patterns: []string{"", "  "}, relPath: "file.txt", want: false},
 	}
 
@@ -67,6 +70,9 @@ func TestExcludeMatcher_NilSafe(t *testing.T) {
 	}
 	if newExcludeMatcherForOS([]string{"", "[bad"}, false) != nil {
 		t.Error("only-unusable patterns should compile to a nil matcher")
+	}
+	if newExcludeMatcherForOS([]string{"a[x/y]b", "a//b"}, false) != nil {
+		t.Error("per-segment-invalid slash patterns should compile to a nil matcher")
 	}
 }
 
@@ -178,6 +184,33 @@ func TestCollectBackupFiles_Excludes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A base-name glob matches directories too: a dir whose NAME matches the
+// pattern is pruned as a whole subtree, even though the files inside it would
+// not match the glob themselves. Pins the documented "files AND directories"
+// base-name semantics end-to-end so a future file-only "fix" fails loudly.
+func TestCollectBackupFiles_BaseNameGlobExcludesDirectorySubtree(t *testing.T) {
+	root := t.TempDir()
+	tmpDir := pathpkg.Join(root, "cache.tmp")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", tmpDir, err)
+	}
+	createTempFile(t, root, "keep.txt", "keep")
+	createTempFile(t, tmpDir, "data.txt", "inside excluded dir")
+
+	mgr := NewBackupManager(BackupConfig{
+		Paths:    []string{root},
+		Excludes: []string{"*.tmp"},
+	})
+
+	files, err := mgr.collectBackupFiles(time.Time{})
+	if err != nil {
+		t.Fatalf("collectBackupFiles failed: %v", err)
+	}
+	if len(files) != 1 || files[0].snapshotPath != "path_0/keep.txt" {
+		t.Fatalf("expected only path_0/keep.txt (cache.tmp/ subtree pruned), got %+v", files)
 	}
 }
 
