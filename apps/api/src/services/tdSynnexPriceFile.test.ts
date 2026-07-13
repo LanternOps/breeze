@@ -52,6 +52,23 @@ describe('parsePriceFile — TD SYNNEX spec sample', () => {
     expect(r.currency).toBe('USD');
   });
 
+  it('pins cost to field 13 and costWithoutPromo to field 21 when the two DIFFER (guards a 13↔21 swap)', () => {
+    // The verbatim sample happens to carry 36.62 in BOTH field 13 (idx 12) and
+    // field 21 (idx 20), so the assertion above cannot actually distinguish the
+    // two offsets — reading the wrong field would stay green. Give field 21 a
+    // distinct value and prove cost still comes from field 13. This is the one
+    // offset the parser's own header comment calls out as silently mispricing
+    // every quote if swapped, so it must be pinned to non-identical values.
+    const parts = SAMPLE_DTL.split('~');
+    expect(parts[12]).toBe('36.62'); // field 13 (cost) — precondition
+    expect(parts[20]).toBe('36.62'); // field 21 (unit cost w/o promo) — precondition
+    parts[20] = '40.00';
+    const { rows } = parsePriceFile(`${SAMPLE_HDR}\n${parts.join('~')}\n`);
+    const r = rows[0]!;
+    expect(r.cost).toBe(36.62);            // field 13 — unchanged
+    expect(r.costWithoutPromo).toBe(40.0); // field 21 — now provably distinct
+  });
+
   it('reads total qty and the non-contiguous warehouse fields', () => {
     const { rows } = parsePriceFile(SAMPLE_FILE);
     const r = rows[0]!;
