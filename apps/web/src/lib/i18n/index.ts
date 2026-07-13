@@ -70,19 +70,44 @@ export function syncDocumentLocaleMetadata(
   }
 }
 
+/**
+ * Astro clears an island's `ssr` marker as soon as hydration is *dispatched* —
+ * not when React has committed it. React hydrates concurrently (inside
+ * `startTransition`), so its commit lands in a later scheduler task. Switching
+ * the shared i18next language on the marker alone therefore fires MID-hydration:
+ * the SSR DOM still holds English while the reconciling tree renders the stored
+ * locale, and React aborts hydration with "server rendered text didn't match"
+ * and re-renders every island from scratch.
+ *
+ * React schedules hydration at normal priority, so a callback queued at IDLE
+ * priority is guaranteed to run after that commit has flushed. `timeout` keeps
+ * the switch bounded on a page that never goes idle; `setTimeout` is the
+ * fallback where `requestIdleCallback` is unavailable (Safari < 17, jsdom).
+ */
+function afterHydrationCommit(task: () => void): void {
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(() => task(), { timeout: HYDRATION_COMMIT_TIMEOUT_MS });
+    return;
+  }
+  setTimeout(task, 0);
+}
+
+const HYDRATION_COMMIT_TIMEOUT_MS = 500;
+
 function scheduleAfterAstroHydration(task: () => void): void {
   const pendingSelector = 'astro-island[ssr][client="load"], astro-island[ssr][client="idle"]';
   const hasPendingIslands = () => document.querySelector(pendingSelector) !== null;
+  const runAfterCommit = () => afterHydrationCommit(task);
 
   if (!hasPendingIslands()) {
-    task();
+    runAfterCommit();
     return;
   }
 
   const observer = new MutationObserver(() => {
     if (hasPendingIslands()) return;
     observer.disconnect();
-    task();
+    runAfterCommit();
   });
   observer.observe(document.documentElement, {
     attributes: true,
@@ -93,7 +118,7 @@ function scheduleAfterAstroHydration(task: () => void): void {
   // Close the query/observe race if the final island hydrated between them.
   if (!hasPendingIslands()) {
     observer.disconnect();
-    task();
+    runAfterCommit();
   }
 }
 

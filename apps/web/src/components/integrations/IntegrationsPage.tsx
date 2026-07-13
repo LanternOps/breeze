@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import {
   Activity,
   BookOpen,
@@ -135,6 +135,11 @@ function parseHash(fallbackTab: TabId): {
   return { tab: fallbackTab };
 }
 
+// useLayoutEffect would warn during SSR (it is a no-op there); useEffect is the
+// server-safe stand-in. On the client we want the layout variant so the hash is
+// adopted before paint.
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 interface IntegrationsPageProps {
   initialTab?: TabId;
 }
@@ -145,26 +150,23 @@ export default function IntegrationsPage({
   const { t } = useTranslation("integrations");
   // Deep-link support: the URL hash selects the initial tab — and sub-tab — on
   // load, e.g. /integrations#psa or /integrations#huntress.
-  const initialFromHash = parseHash(initialTab);
-  const [activeTab, setActiveTab] = useState<TabId>(initialFromHash.tab);
-  const [securitySubTab, setSecuritySubTab] = useState<SecuritySubTab>(
-    initialFromHash.securitySub ?? "sentinelone",
-  );
-  const [identitySubTab, setIdentitySubTab] = useState<IdentitySubTab>(
-    initialFromHash.identitySub ?? "google",
-  );
-  const [distributorSubTab, setDistributorSubTab] = useState<DistributorSubTab>(
-    initialFromHash.distributorSub ?? "pax8",
-  );
-  const [accountingSubTab, setAccountingSubTab] = useState<AccountingSubTab>(
-    initialFromHash.accountingSub ?? "quickbooks",
-  );
+  //
+  // The hash is NOT available to the server (browsers never send the fragment),
+  // so state must start from the server-rendered fallback and adopt the hash
+  // after hydration — reading it during the first client render made React
+  // discard the SSR tree with a hydration mismatch on every deep link.
+  const [activeTab, setActiveTab] = useState<TabId>(initialTab);
+  const [securitySubTab, setSecuritySubTab] = useState<SecuritySubTab>("sentinelone");
+  const [identitySubTab, setIdentitySubTab] = useState<IdentitySubTab>("google");
+  const [distributorSubTab, setDistributorSubTab] = useState<DistributorSubTab>("pax8");
+  const [accountingSubTab, setAccountingSubTab] = useState<AccountingSubTab>("quickbooks");
 
-  // Keep the active tab/sub-tab in sync with the URL hash for back/forward
-  // navigation and externally-changed hashes (the click handlers below already
-  // update state directly, so this only matters for hash changes we didn't make).
-  useEffect(() => {
-    const onHashChange = () => {
+  // Adopt the hash post-commit / pre-paint (no visible flash of the fallback
+  // tab), and keep following it for back/forward and externally-changed hashes.
+  // The click handlers below set state directly, so this only handles hash
+  // changes we didn't make ourselves.
+  useIsomorphicLayoutEffect(() => {
+    const applyHash = () => {
       const parsed = parseHash(initialTab);
       setActiveTab(parsed.tab);
       if (parsed.securitySub) setSecuritySubTab(parsed.securitySub);
@@ -172,8 +174,9 @@ export default function IntegrationsPage({
       if (parsed.distributorSub) setDistributorSubTab(parsed.distributorSub);
       if (parsed.accountingSub) setAccountingSubTab(parsed.accountingSub);
     };
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
   }, [initialTab]);
 
   // Select a top-level tab and reflect it in the URL hash so the tab is

@@ -250,6 +250,43 @@ describe('i18n runtime (namespaced, lazy locales)', () => {
 
       await vi.waitFor(() => expect(i18n.language).toBe('pt-BR'));
     });
+
+    // Astro clears `ssr` when hydration is DISPATCHED, not when React commits it
+    // (React hydrates concurrently). Switching the language in the same task as
+    // the marker removal therefore lands mid-hydration and mismatches the
+    // English SSR markup. The switch must be deferred to idle priority, which
+    // runs after React's normal-priority commit.
+    it('defers the locale switch past the ssr-marker removal so it cannot land mid-hydration', async () => {
+      window.localStorage.setItem(LOCALE_STORAGE_KEY, 'pt-BR');
+
+      const idleCallbacks: Array<() => void> = [];
+      const originalRic = window.requestIdleCallback;
+      // @ts-expect-error — jsdom has no requestIdleCallback; install a controllable stub.
+      window.requestIdleCallback = (cb: () => void) => {
+        idleCallbacks.push(cb);
+        return 1;
+      };
+
+      try {
+        const island = document.createElement('astro-island');
+        island.setAttribute('ssr', '');
+        island.setAttribute('client', 'load');
+        document.body.appendChild(island);
+
+        scheduleStoredLocaleAfterHydration();
+        island.removeAttribute('ssr');
+
+        // The marker is gone, but React may still be committing: nothing yet.
+        await vi.waitFor(() => expect(idleCallbacks.length).toBe(1));
+        expect(i18n.language).toBe('en');
+
+        // Idle fires only after React's commit has flushed.
+        idleCallbacks[0]();
+        await vi.waitFor(() => expect(i18n.language).toBe('pt-BR'));
+      } finally {
+        window.requestIdleCallback = originalRic;
+      }
+    });
   });
 
   describe('cross-island propagation', () => {
