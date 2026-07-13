@@ -4,6 +4,10 @@ import { useAuthStore, apiRegisterPartner } from '../../stores/auth';
 import { useRegistrationGate } from '../../stores/featuresStore';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
+// Initializes the shared i18next singleton. This page's layout has no Sidebar
+// (which is what pulls i18n in elsewhere), so without this every t() call here
+// renders its raw key.
+import '../../lib/i18n';
 
 interface PartnerRegisterPageProps {
   next?: string;
