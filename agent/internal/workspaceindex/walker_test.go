@@ -146,10 +146,11 @@ func TestWalkDeterministicDepthFirstOrderingAndMetadata(t *testing.T) {
 		"alpha/beta/.config": {size: 3},
 		"skip-link":          {mode: fs.ModeSymlink},
 	}
+	// alpha/beta/.config is a hidden FILE: the dot-prefix exclusion applies to
+	// files as well as directories (#2425), so it must not be emitted.
 	wantPaths := []string{
 		"alpha",
 		"alpha/beta",
-		"alpha/beta/.config",
 		"alpha/beta/noext",
 		"alpha/report.TXT",
 		"zeta.txt",
@@ -186,9 +187,9 @@ func TestWalkDeterministicDepthFirstOrderingAndMetadata(t *testing.T) {
 		t.Fatalf("nested directory entry = %+v", got)
 	}
 	if got := first[2]; got.Ext != nil {
-		t.Fatalf("dotfile extension = %q, want nil", *got.Ext)
+		t.Fatalf("extensionless file extension = %q, want nil", *got.Ext)
 	}
-	if got := first[4]; got.Ext == nil || *got.Ext != "txt" || got.Size != 42 || !got.Mtime.Equal(walkerTestTime) {
+	if got := first[3]; got.Ext == nil || *got.Ext != "txt" || got.Size != 42 || !got.Mtime.Equal(walkerTestTime) {
 		t.Fatalf("file metadata = %+v", got)
 	}
 }
@@ -207,6 +208,8 @@ func TestWalkExcludesBuiltInsAndCustomGlobs(t *testing.T) {
 		"Users/me/keep.txt":                   {size: 1},
 		".hidden":                             {dir: true},
 		".hidden/secret.txt":                  {size: 1},
+		".env":                                {size: 1},
+		"Users/me/.npmrc":                     {size: 1},
 		"scratch.tmp":                         {size: 1},
 		"logs":                                {dir: true},
 		"logs/2026":                           {dir: true},

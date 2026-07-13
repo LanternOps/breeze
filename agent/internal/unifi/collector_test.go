@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -44,7 +45,7 @@ func TestRunOnceUploadsTelemetry(t *testing.T) {
 	defer api.Close()
 
 	cfg := CollectorConfig{CollectorID: "c1", ControllerURL: controller.URL, APIKey: "k"}
-	err := RunOnce(context.Background(), CollectorDeps{APIBaseURL: api.URL, AgentID: "agent-1", HTTP: api.Client()}, cfg, controller.Client())
+	err := RunOnce(context.Background(), CollectorDeps{APIBaseURL: func() string { return api.URL }, AgentID: "agent-1", HTTP: api.Client()}, cfg, controller.Client())
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestRunOnceUploadsSites(t *testing.T) {
 	defer api.Close()
 
 	cfg := CollectorConfig{CollectorID: "c1", ControllerURL: controller.URL, APIKey: "k"}
-	err := RunOnce(context.Background(), CollectorDeps{APIBaseURL: api.URL, AgentID: "agent-1", HTTP: api.Client()}, cfg, controller.Client())
+	err := RunOnce(context.Background(), CollectorDeps{APIBaseURL: func() string { return api.URL }, AgentID: "agent-1", HTTP: api.Client()}, cfg, controller.Client())
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestFetchConfigsHitsAgentScopedPath(t *testing.T) {
 	}))
 	defer api.Close()
 
-	configs, err := fetchConfigs(context.Background(), CollectorDeps{APIBaseURL: api.URL, AgentID: "agent-1", HTTP: api.Client()})
+	configs, err := fetchConfigs(context.Background(), CollectorDeps{APIBaseURL: func() string { return api.URL }, AgentID: "agent-1", HTTP: api.Client()})
 	if err != nil {
 		t.Fatalf("fetchConfigs: %v", err)
 	}
@@ -133,5 +134,53 @@ func TestFetchConfigsHitsAgentScopedPath(t *testing.T) {
 	}
 	if len(configs) != 1 || configs[0].CollectorID != "c1" {
 		t.Fatalf("unexpected configs: %+v", configs)
+	}
+}
+
+// TestFetchConfigsFollowsAPIBaseURLProviderAcrossFailover pins #2423:
+// CollectorDeps.APIBaseURL is a URL provider (heartbeat.ServerURL in
+// production), so after backup-server-URL promotion (#2323) the SAME deps
+// value must send subsequent requests to the promoted URL. A copied
+// cfg.ServerURL string kept POSTing to the dead primary for the process
+// lifetime.
+func TestFetchConfigsFollowsAPIBaseURLProviderAcrossFailover(t *testing.T) {
+	var primaryHits, backupHits atomic.Int32
+	newServer := func(hits *atomic.Int32) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/agents/agent-1/unifi-collectors" {
+				w.WriteHeader(404)
+				return
+			}
+			hits.Add(1)
+			_, _ = w.Write([]byte(`{"collectors":[]}`))
+		}))
+	}
+	primary := newServer(&primaryHits)
+	defer primary.Close()
+	backup := newServer(&backupHits)
+	defer backup.Close()
+
+	var serverURL atomic.Value
+	serverURL.Store(primary.URL)
+	deps := CollectorDeps{
+		APIBaseURL: func() string { return serverURL.Load().(string) },
+		AgentID:    "agent-1",
+		HTTP:       &http.Client{},
+	}
+
+	if _, err := fetchConfigs(context.Background(), deps); err != nil {
+		t.Fatalf("fetchConfigs via primary: %v", err)
+	}
+	// Simulate backup-server-URL promotion: the provider now returns the
+	// promoted URL and the same long-lived deps must follow it.
+	serverURL.Store(backup.URL)
+	if _, err := fetchConfigs(context.Background(), deps); err != nil {
+		t.Fatalf("fetchConfigs via promoted backup: %v", err)
+	}
+	if got := primaryHits.Load(); got != 1 {
+		t.Fatalf("primary received %d requests, want 1", got)
+	}
+	if got := backupHits.Load(); got != 1 {
+		t.Fatalf("promoted backup received %d requests, want 1 — deps still pinned to the old primary (#2423)", got)
 	}
 }

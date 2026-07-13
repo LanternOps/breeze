@@ -55,7 +55,12 @@ func (e *HTTPError) Error() string {
 
 // ClientConfig supplies the workspace-index client dependencies.
 type ClientConfig struct {
-	ServerURL    string
+	// ServerURL returns the CURRENT server base URL. It is a provider
+	// (typically heartbeat.ServerURL), not a copied string, so backup-server-URL
+	// promotion after failover (#2323) is visible to every request. A copied
+	// cfg.ServerURL kept uploading to a dead primary for the process lifetime
+	// (#2423).
+	ServerURL    func() string
 	EndpointBase string
 	AuthToken    *secmem.SecureString
 	HTTPClient   *http.Client
@@ -64,7 +69,7 @@ type ClientConfig struct {
 
 // Client calls the server's agent workspace-index endpoints.
 type Client struct {
-	serverURL    string
+	serverURL    func() string
 	endpointBase string
 	authToken    *secmem.SecureString
 	httpClient   *http.Client
@@ -89,8 +94,13 @@ func NewClient(cfg ClientConfig) *Client {
 	clientCopy.Timeout = requestTimeout
 	clientCopy.CheckRedirect = refuseUntrustedRedirect
 
+	serverURL := cfg.ServerURL
+	if serverURL == nil {
+		serverURL = func() string { return "" }
+	}
+
 	return &Client{
-		serverURL:    strings.TrimRight(cfg.ServerURL, "/"),
+		serverURL:    serverURL,
 		endpointBase: endpointBase,
 		authToken:    cfg.AuthToken,
 		httpClient:   &clientCopy,
@@ -244,7 +254,10 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, retry
 			}
 		}
 
-		req, err := http.NewRequestWithContext(ctx, method, c.serverURL+c.endpointBase+path, bytes.NewReader(body))
+		// Resolve the server URL per attempt: the provider reflects
+		// backup-server-URL promotion after failover (#2423).
+		baseURL := strings.TrimRight(c.serverURL(), "/")
+		req, err := http.NewRequestWithContext(ctx, method, baseURL+c.endpointBase+path, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("create workspace index request: %w", err)
 		}

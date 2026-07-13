@@ -2708,6 +2708,15 @@ func (h *Heartbeat) serverURL() string {
 	return h.config.ServerURL
 }
 
+// ServerURL returns the current server base URL, reflecting any
+// backup-server-URL promotion (#2323). Long-lived client loops (UniFi
+// telemetry, workspace indexing) must read the URL through this getter on
+// every request instead of copying cfg.ServerURL once at startup — a copied
+// string keeps pointing at a dead primary after failover (#2423).
+func (h *Heartbeat) ServerURL() string {
+	return h.serverURL()
+}
+
 func (h *Heartbeat) monitoringResultsURL() string {
 	return fmt.Sprintf("%s/api/v1/agents/%s/monitoring-results", h.serverURL(), h.config.AgentID)
 }

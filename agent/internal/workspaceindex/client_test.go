@@ -51,7 +51,7 @@ func newTestClient(t *testing.T, handler http.Handler) *Client {
 	t.Cleanup(token.Zero)
 
 	return NewClient(ClientConfig{
-		ServerURL:  serverURL,
+		ServerURL:  func() string { return serverURL },
 		AuthToken:  token,
 		HTTPClient: httpClient,
 	})
@@ -198,7 +198,7 @@ func TestRedirectToOtherHostIsRefused(t *testing.T) {
 	token := secmem.NewSecureString("redirect-secret")
 	defer token.Zero()
 	client := NewClient(ClientConfig{
-		ServerURL:  "http://origin.test",
+		ServerURL:  func() string { return "http://origin.test" },
 		AuthToken:  token,
 		HTTPClient: &http.Client{Transport: transport},
 	})
@@ -238,5 +238,52 @@ func TestCredentialRedactsStringAndJSONRepresentations(t *testing.T) {
 				t.Fatalf("representation leaked password: %q", got)
 			}
 		})
+	}
+}
+
+// TestClientFollowsServerURLProviderAcrossFailover pins #2423:
+// ClientConfig.ServerURL is a URL provider (heartbeat.ServerURL in
+// production), so after backup-server-URL promotion (#2323) the SAME client
+// must send subsequent requests to the promoted URL. A copied cfg.ServerURL
+// string kept POSTing batch uploads to the dead primary for the process
+// lifetime.
+func TestClientFollowsServerURLProviderAcrossFailover(t *testing.T) {
+	var primaryHits, backupHits atomic.Int32
+	const configBody = `{"enabled":false,"pollIntervalSeconds":60,"limits":{"maxBatchBytes":0,"maxBatchEntries":0,"walkOpsPerSecond":0},"sources":[]}`
+	transport := hostRoutingTransport{handlers: map[string]http.Handler{
+		"primary.test": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			primaryHits.Add(1)
+			_, _ = io.WriteString(w, configBody)
+		}),
+		"backup.test": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			backupHits.Add(1)
+			_, _ = io.WriteString(w, configBody)
+		}),
+	}}
+	token := secmem.NewSecureString("agent-secret")
+	defer token.Zero()
+
+	var serverURL atomic.Value
+	serverURL.Store("http://primary.test")
+	client := NewClient(ClientConfig{
+		ServerURL:  func() string { return serverURL.Load().(string) },
+		AuthToken:  token,
+		HTTPClient: &http.Client{Transport: transport},
+	})
+
+	if _, err := client.FetchConfig(context.Background()); err != nil {
+		t.Fatalf("FetchConfig via primary: %v", err)
+	}
+	// Simulate backup-server-URL promotion: the provider now returns the
+	// promoted URL and the same long-lived client must follow it.
+	serverURL.Store("http://backup.test")
+	if _, err := client.FetchConfig(context.Background()); err != nil {
+		t.Fatalf("FetchConfig via promoted backup: %v", err)
+	}
+	if got := primaryHits.Load(); got != 1 {
+		t.Fatalf("primary received %d requests, want 1", got)
+	}
+	if got := backupHits.Load(); got != 1 {
+		t.Fatalf("promoted backup received %d requests, want 1 — client still pinned to the old primary (#2423)", got)
 	}
 }

@@ -138,9 +138,24 @@ func runCrawl(ctx context.Context, deps Deps, src SourceConfig, limits ConfigLim
 	return nil
 }
 
+const (
+	// defaultWalkOpsPerSecond caps filesystem walk operations when the server
+	// config omits walkOpsPerSecond (the Go zero value on a partially
+	// populated crawl-config response) or sends an invalid value. A missing
+	// field must never silently remove IO throttling on a local/SMB walk
+	// (#2425).
+	defaultWalkOpsPerSecond = 200
+	// walkOpsUnlimited is the explicit server sentinel that disables walk
+	// throttling entirely. Only this exact value runs unthrottled.
+	walkOpsUnlimited = -1
+)
+
 func crawlRateLimiter(opsPerSecond int) *rate.Limiter {
-	if opsPerSecond <= 0 {
+	if opsPerSecond == walkOpsUnlimited {
 		return nil
+	}
+	if opsPerSecond <= 0 {
+		opsPerSecond = defaultWalkOpsPerSecond
 	}
 	return rate.NewLimiter(rate.Limit(opsPerSecond), opsPerSecond)
 }

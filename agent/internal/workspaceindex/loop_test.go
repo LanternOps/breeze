@@ -457,3 +457,99 @@ func waitLoopCondition(t *testing.T, condition func() bool, description string) 
 		time.Sleep(time.Millisecond)
 	}
 }
+
+type recordingAuditLogger struct {
+	mu      sync.Mutex
+	types   []string
+	details []map[string]any
+}
+
+func (r *recordingAuditLogger) Log(eventType string, _ string, details map[string]any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.types = append(r.types, eventType)
+	r.details = append(r.details, details)
+}
+
+func (r *recordingAuditLogger) snapshot() ([]string, []map[string]any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.types...), append([]map[string]any(nil), r.details...)
+}
+
+// TestStartLoopAuditsActivationTransitions pins #2425: workspace indexing is
+// enabled purely by a server-side config flip, so each off→on transition must
+// emit a device-audit event (and only transitions — not every poll).
+func TestStartLoopAuditsActivationTransitions(t *testing.T) {
+	// Far-future completion keeps every source not-due so no crawl machinery
+	// runs; activation is keyed on enabled sources, not on crawls starting.
+	farFuture := time.Now().Add(100_000 * time.Hour)
+	var reqCount atomic.Int32
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/crawl-config" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// Fetch 1-2: enabled (one activation event, no duplicate).
+		// Fetch 3: disabled (deactivation). Fetch 4+: enabled again (second event).
+		n := reqCount.Add(1)
+		config := CrawlConfig{Enabled: n != 3, PollIntervalSeconds: 1}
+		if config.Enabled {
+			config.Sources = []SourceConfig{{
+				ID:                "source-docs",
+				Kind:              "local_profile",
+				RootPath:          "/home",
+				CadenceMinutes:    60,
+				LastCompleteRunAt: &farFuture,
+			}}
+		}
+		writeLoopConfig(t, w, config)
+	}))
+
+	// Fake clock: each fetch attempt observes time advanced far past the poll
+	// interval, so every ticker tick performs a real fetch.
+	base := time.Now()
+	var step atomic.Int64
+	audit := &recordingAuditLogger{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := StartLoop(ctx, Deps{
+		Client:       client,
+		Log:          loopTestLogger(),
+		Audit:        audit,
+		Now:          func() time.Time { return base.Add(time.Duration(step.Add(1)) * time.Hour) },
+		TickInterval: 5 * time.Millisecond,
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		types, _ := audit.snapshot()
+		if len(types) >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for 2 activation audit events, got %d (%v)", len(types), types)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	types, details := audit.snapshot()
+	if len(types) != 2 {
+		t.Fatalf("audit events = %v, want exactly 2 activation transitions (no per-poll duplicates)", types)
+	}
+	for i, eventType := range types {
+		if eventType != "workspace_index_activated" {
+			t.Fatalf("audit event %d type = %q, want workspace_index_activated", i, eventType)
+		}
+	}
+	sources, ok := details[0]["sources"].([]map[string]any)
+	if !ok || len(sources) != 1 {
+		t.Fatalf("first activation details = %#v, want one source summary", details[0])
+	}
+	if sources[0]["id"] != "source-docs" || sources[0]["rootPath"] != "/home" || sources[0]["kind"] != "local_profile" {
+		t.Fatalf("source summary = %#v", sources[0])
+	}
+}

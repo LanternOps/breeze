@@ -30,8 +30,8 @@ func TestWatchPathExcludedForUnknownDeleteType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			if got := watchPathExcluded(tt.path, nil, globs); got != tt.want {
-				t.Fatalf("watchPathExcluded(%q) = %v, want %v", tt.path, got, tt.want)
+			if got := excludedWalkPath(tt.path, globs); got != tt.want {
+				t.Fatalf("excludedWalkPath(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
 	}

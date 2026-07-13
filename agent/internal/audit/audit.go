@@ -29,14 +29,20 @@ const (
 	EventAgentStart       = "agent_start"
 	EventAgentStop        = "agent_stop"
 	EventLogRotated       = "log_rotated"
+	// EventWorkspaceIndexActivated records that server configuration turned
+	// on filesystem indexing (workspaceindex module) for this device — a
+	// privacy-significant transition that must leave a local, tamper-evident
+	// trace (#2425).
+	EventWorkspaceIndexActivated = "workspace_index_activated"
 )
 
 // criticalEvents are event types that require fsync after writing.
 var criticalEvents = map[string]bool{
-	EventPrivilegedOp: true,
-	EventAgentStart:   true,
-	EventAgentStop:    true,
-	EventConfigChange: true,
+	EventPrivilegedOp:            true,
+	EventAgentStart:              true,
+	EventAgentStop:               true,
+	EventConfigChange:            true,
+	EventWorkspaceIndexActivated: true,
 }
 
 // Entry is a single audit log record.

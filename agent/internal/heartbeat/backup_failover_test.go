@@ -384,3 +384,33 @@ func TestProbeCommandResultsGoToPromotedURL(t *testing.T) {
 		t.Fatalf("server URL after probe = %q, want %q", got, backupURL)
 	}
 }
+
+// TestPromotionVisibleThroughServerURLProvider pins #2423: agentapp wires
+// hb.ServerURL as the URL provider into the long-lived UniFi telemetry and
+// workspace-index client loops. After backup-server-URL promotion the
+// provider must return the promoted URL, so those loops follow the failover
+// instead of POSTing to the dead primary for the remaining process lifetime.
+func TestPromotionVisibleThroughServerURLProvider(t *testing.T) {
+	const (
+		primaryURL = "https://primary.invalid"
+		backupURL  = "https://backup.invalid"
+	)
+
+	cfg := swapTestConfig(t, primaryURL, backupURL)
+	h := newFailoverTestHeartbeat(cfg, failoverRoundTripper(func(req *http.Request) (*http.Response, error) {
+		return failoverResponse(req, http.StatusOK, `{}`), nil
+	}))
+
+	// The provider is captured ONCE at startup, exactly like agentapp does for
+	// unifi.CollectorDeps.APIBaseURL and workspaceindex.ClientConfig.ServerURL.
+	provider := h.ServerURL
+	if got := provider(); got != primaryURL {
+		t.Fatalf("provider before promotion = %q, want %q", got, primaryURL)
+	}
+
+	h.promoteBackupServerURL(backupURL)
+
+	if got := provider(); got != backupURL {
+		t.Fatalf("provider after promotion = %q, want %q — a copied cfg.ServerURL never observes promotion (#2423)", got, backupURL)
+	}
+}

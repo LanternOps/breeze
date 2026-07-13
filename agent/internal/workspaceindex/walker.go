@@ -75,7 +75,7 @@ func Walk(
 				relPath = path.Join(parentRelPath, child.Name())
 			}
 			isDir := child.IsDir()
-			if excludedWalkPath(relPath, isDir, excludeGlobs) {
+			if excludedWalkPath(relPath, excludeGlobs) {
 				continue
 			}
 
@@ -165,12 +165,14 @@ func compareWalkPaths(left, right string) int {
 	return len(leftSegments) - len(rightSegments)
 }
 
-func excludedWalkPath(relPath string, isDir bool, globs []string) bool {
-	if isDir {
-		for _, segment := range strings.Split(relPath, "/") {
-			if strings.HasPrefix(segment, ".") {
-				return true
-			}
+// excludedWalkPath reports whether relPath is excluded from indexing. The
+// dot-prefix rule applies to every path segment — files as well as
+// directories. Indexing hidden files (.env, .npmrc, .pgpass directly inside a
+// root) while skipping hidden directories was a privacy hole (#2425).
+func excludedWalkPath(relPath string, globs []string) bool {
+	for _, segment := range strings.Split(relPath, "/") {
+		if strings.HasPrefix(segment, ".") {
+			return true
 		}
 	}
 	for _, pattern := range globs {

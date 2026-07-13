@@ -9,11 +9,18 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/audit"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/observability"
 )
 
 const moduleAbsentBackoff = 6 * time.Hour
+
+// AuditLogger records device-audit events for privacy-significant module
+// transitions. *audit.Logger satisfies it and is nil-receiver safe.
+type AuditLogger interface {
+	Log(eventType string, commandID string, details map[string]any)
+}
 
 // Deps contains orchestration dependencies and the timing seams used by tests.
 type Deps struct {
@@ -22,6 +29,12 @@ type Deps struct {
 	Enumerate func() []ProfileRoot
 	DialSMB   func(context.Context, string, *Credential) (SourceFS, io.Closer, error)
 	Now       func() time.Time
+
+	// Audit, when set, receives a device-audit event each time server
+	// configuration activates filesystem indexing on this device. Enablement
+	// is server-driven (no local opt-in), so activation must at least leave a
+	// prominent local log + tamper-evident audit trace (#2425).
+	Audit AuditLogger
 
 	TickInterval  time.Duration
 	WatchDebounce time.Duration
@@ -90,6 +103,45 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 		watchers := make(map[string]watchRegistration)
 		var running *activeCrawl
 		var nextFetch time.Time
+		// indexingActive tracks the server-driven activation state so the
+		// consent signal (prominent log + device-audit event, #2425) fires on
+		// each off→on transition rather than on every poll.
+		indexingActive := false
+
+		markIndexingInactive := func(reason string) {
+			if indexingActive {
+				deps.Log.Info("workspace indexing deactivated", "reason", reason)
+				indexingActive = false
+			}
+		}
+		markIndexingActive := func(sources map[string]SourceConfig) {
+			if indexingActive {
+				return
+			}
+			indexingActive = true
+			summaries := make([]map[string]any, 0, len(sources))
+			ids := make([]string, 0, len(sources))
+			for _, src := range sources {
+				summaries = append(summaries, map[string]any{
+					"id":             src.ID,
+					"kind":           src.Kind,
+					"rootPath":       src.RootPath,
+					"cadenceMinutes": src.CadenceMinutes,
+					"watch":          src.Watch,
+				})
+				ids = append(ids, src.ID)
+			}
+			// Enablement is a pure server-side flip with no local opt-in, so
+			// activation must be loud: Warn reaches the shipped agent logs and
+			// the audit entry leaves a local tamper-evident trace (#2425).
+			deps.Log.Warn("workspace indexing ACTIVATED by server configuration — filesystem metadata will be enumerated and uploaded",
+				"sourceCount", len(sources), "sourceIds", ids)
+			if deps.Audit != nil {
+				deps.Audit.Log(audit.EventWorkspaceIndexActivated, "", map[string]any{
+					"sources": summaries,
+				})
+			}
+		}
 
 		stopWatches := func() {
 			for id, watcher := range watchers {
@@ -133,6 +185,7 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 
 		reconcile := func(config *CrawlConfig, now time.Time) {
 			if !config.Enabled {
+				markIndexingInactive("disabled by server configuration")
 				cancelActivity()
 				return
 			}
@@ -142,6 +195,11 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 				if src.CadenceMinutes > 0 {
 					desired[src.ID] = src
 				}
+			}
+			if len(desired) > 0 {
+				markIndexingActive(desired)
+			} else {
+				markIndexingInactive("no active sources")
 			}
 
 			if running != nil {
@@ -199,6 +257,7 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 			config, err := deps.Client.FetchConfig(ctx)
 			if err != nil {
 				if errors.Is(err, ErrModuleAbsent) {
+					markIndexingInactive("workspace module absent on server")
 					cancelActivity()
 					nextFetch = now.Add(moduleAbsentBackoff)
 					return

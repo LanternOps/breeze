@@ -18,7 +18,13 @@ type CollectorConfig struct {
 }
 
 type CollectorDeps struct {
-	APIBaseURL string       // the Breeze server root (cfg.ServerURL), e.g. https://breeze.example.com — NOT including /api/v1
+	// APIBaseURL returns the CURRENT Breeze server root, e.g.
+	// https://breeze.example.com — NOT including /api/v1. It is a provider
+	// (typically heartbeat.ServerURL), not a copied string, so backup-server-URL
+	// promotion after failover (#2323) is visible to every request. A copied
+	// cfg.ServerURL kept uploading to a dead primary for the process lifetime
+	// (#2423).
+	APIBaseURL func() string
 	AgentID    string       // this agent's id; agent telemetry endpoints live under /api/v1/agents/<AgentID>/
 	HTTP       *http.Client // authed transport to the Breeze API (agent token attached)
 	Logf       func(format string, args ...any)
@@ -32,7 +38,7 @@ type CollectorDeps struct {
 // The device is resolved from the agent token server-side; the :id in the path
 // matches the existing agent routes.
 func (d CollectorDeps) agentBase() string {
-	return d.APIBaseURL + "/api/v1/agents/" + d.AgentID
+	return d.APIBaseURL() + "/api/v1/agents/" + d.AgentID
 }
 
 func (d CollectorDeps) logf(format string, args ...any) {

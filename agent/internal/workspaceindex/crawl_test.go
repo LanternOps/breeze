@@ -14,6 +14,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"golang.org/x/time/rate"
 )
 
 type crawlCompletion struct {
@@ -451,4 +453,39 @@ func TestRunCrawlZeroesCredentialWhenSMBDialPanics(t *testing.T) {
 			panic("dial panic")
 		},
 	}, SourceConfig{ID: "smb-panic", Kind: "smb_share", RootPath: `\\server\share`}, ConfigLimits{})
+}
+
+// TestCrawlRateLimiterDefaultsAndSentinel pins #2425: a zero/missing or
+// invalid walkOpsPerSecond in the server config must fall back to a local
+// throttling ceiling, never silently disable IO throttling. Only the explicit
+// sentinel runs unthrottled.
+func TestCrawlRateLimiterDefaultsAndSentinel(t *testing.T) {
+	tests := []struct {
+		name      string
+		ops       int
+		wantNil   bool
+		wantLimit rate.Limit
+	}{
+		{name: "zero value (field omitted) falls back to default ceiling", ops: 0, wantLimit: defaultWalkOpsPerSecond},
+		{name: "invalid negative falls back to default ceiling", ops: -7, wantLimit: defaultWalkOpsPerSecond},
+		{name: "explicit unlimited sentinel disables throttling", ops: walkOpsUnlimited, wantNil: true},
+		{name: "configured positive rate is honored", ops: 350, wantLimit: 350},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			limiter := crawlRateLimiter(tt.ops)
+			if tt.wantNil {
+				if limiter != nil {
+					t.Fatalf("crawlRateLimiter(%d) = %v, want nil (unlimited sentinel)", tt.ops, limiter.Limit())
+				}
+				return
+			}
+			if limiter == nil {
+				t.Fatalf("crawlRateLimiter(%d) = nil (unthrottled), want limiter at %v ops/s (#2425)", tt.ops, tt.wantLimit)
+			}
+			if got := limiter.Limit(); got != tt.wantLimit {
+				t.Fatalf("crawlRateLimiter(%d).Limit() = %v, want %v", tt.ops, got, tt.wantLimit)
+			}
+		})
+	}
 }

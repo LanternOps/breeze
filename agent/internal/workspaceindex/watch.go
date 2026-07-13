@@ -154,7 +154,7 @@ func startWatch(ctx context.Context, deps Deps, src SourceConfig) (stop func()) 
 			}
 			rootRelPath = filepath.ToSlash(rootRelPath)
 			if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
-				if watchPathExcluded(rootRelPath, nil, watchGlobs) {
+				if excludedWalkPath(rootRelPath, watchGlobs) {
 					return true
 				}
 				pending[relPath] = pendingWatchEvent{delete: true}
@@ -168,7 +168,7 @@ func startWatch(ctx context.Context, deps Deps, src SourceConfig) (stop func()) 
 			info, statErr := os.Lstat(event.Name)
 			if statErr != nil {
 				if os.IsNotExist(statErr) {
-					if !watchPathExcluded(rootRelPath, nil, watchGlobs) {
+					if !excludedWalkPath(rootRelPath, watchGlobs) {
 						pending[relPath] = pendingWatchEvent{delete: true}
 						resetTimer()
 					}
@@ -178,8 +178,7 @@ func startWatch(ctx context.Context, deps Deps, src SourceConfig) (stop func()) 
 			if info.Mode()&os.ModeSymlink != 0 {
 				return true
 			}
-			isDir := info.IsDir()
-			if watchPathExcluded(rootRelPath, &isDir, watchGlobs) {
+			if excludedWalkPath(rootRelPath, watchGlobs) {
 				return true
 			}
 			if info.IsDir() && event.Op&fsnotify.Create != 0 {
@@ -248,13 +247,6 @@ func startWatch(ctx context.Context, deps Deps, src SourceConfig) (stop func()) 
 	}
 }
 
-func watchPathExcluded(relPath string, isDir *bool, globs []string) bool {
-	if isDir != nil {
-		return excludedWalkPath(relPath, *isDir, globs)
-	}
-	return excludedWalkPath(relPath, false, globs) || excludedWalkPath(relPath, true, globs)
-}
-
 func addWatchTree(
 	ctx context.Context,
 	watcher *fsnotify.Watcher,
@@ -285,7 +277,7 @@ func addWatchTree(
 		if err != nil {
 			return err
 		}
-		if rel != "." && excludedWalkPath(filepath.ToSlash(rel), true, globs) {
+		if rel != "." && excludedWalkPath(filepath.ToSlash(rel), globs) {
 			return filepath.SkipDir
 		}
 		current = filepath.Clean(current)
