@@ -1678,7 +1678,10 @@ async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
     // path, so without the decrypt an encryption_rotate_key command would reach
     // the agent as ciphertext and fail. A command whose payload can't be
     // decrypted is dropped (not delivered as ciphertext) rather than failing
-    // the whole batch.
+    // the whole batch. Ordering note (#2399): the claim's payload budget was
+    // measured on the stored (encrypted) payload BEFORE this decrypt;
+    // ciphertext is >= plaintext size so the budget only over-counts — keep
+    // decryption after the claim so that stays true.
     return decryptCommandsForDelivery(
       commands.map(cmd => ({
         id: cmd.id,

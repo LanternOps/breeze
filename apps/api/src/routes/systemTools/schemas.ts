@@ -145,7 +145,15 @@ export const AGENT_MAX_FILE_WRITE_BASE64_CHARS =
 export const fileUploadBodySchema = z
   .object({
     path: filePathString,
-    content: z.string().min(0).max(AGENT_MAX_FILE_WRITE_BASE64_CHARS),
+    // Custom message: the char count references the invisible base64 blob,
+    // not the user's file — surface the actionable limit instead (the
+    // FileManager UI always uploads base64 and renders this message verbatim).
+    content: z
+      .string()
+      .min(0)
+      .max(AGENT_MAX_FILE_WRITE_BASE64_CHARS, {
+        message: 'File too large (max 4MB); use file transfer for larger files',
+      }),
     encoding: z.enum(['base64', 'text']).optional().default('text'),
   })
   .superRefine((body, ctx) => {

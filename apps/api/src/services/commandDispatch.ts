@@ -93,6 +93,16 @@ export async function claimPendingCommandsForDevice(
         ) {
           break;
         }
+        if (payloadBytes > options.maxTotalPayloadBytes) {
+          // First-command-always rule: a single over-budget payload is still
+          // claimed (otherwise it would block the queue forever), but if it
+          // exceeds the agent's WS read limit the frame will kill the agent's
+          // connection with no server-side signal (ErrReadLimit is agent-side
+          // only) — leave a greppable trail for that mystery reconnect.
+          console.warn(
+            `[commandDispatch] claiming single command over the WS payload budget: id=${command.id} type=${command.type} payloadBytes=${payloadBytes} budget=${options.maxTotalPayloadBytes}`,
+          );
+        }
         claimedPayloadBytes += payloadBytes;
       }
       const executedAt = new Date();
