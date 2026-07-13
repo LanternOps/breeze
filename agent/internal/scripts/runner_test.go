@@ -318,11 +318,32 @@ func TestScriptResultFieldsPopulated(t *testing.T) {
 	if result.Stderr != "err\n" {
 		t.Fatalf("stderr = %q, want %q", result.Stderr, "err\n")
 	}
-	if result.DurationMs <= 0 {
-		t.Fatal("durationMs should be > 0")
+	// DurationMs truncates to whole milliseconds, so a script this short can
+	// legitimately report 0 on a fast runner. Timing is asserted with teeth in
+	// TestScriptResultDurationTracksElapsed instead.
+	if result.DurationMs < 0 {
+		t.Fatalf("durationMs = %d, want >= 0", result.DurationMs)
 	}
 	if result.ErrorMsg != "" {
 		t.Fatalf("errorMsg should be empty for completed scripts, got %q", result.ErrorMsg)
+	}
+}
+
+func TestScriptResultDurationTracksElapsed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping bash test on Windows")
+	}
+
+	r := NewRunner()
+	result := r.Run("bash", "sleep 0.05", 10*time.Second)
+
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, want completed", result.Status)
+	}
+	// Sleeping 50ms must be reflected in the reported duration. The lower bound
+	// is loose enough to absorb sleep(1) rounding down on a coarse timer.
+	if result.DurationMs < 40 {
+		t.Fatalf("durationMs = %d, want >= 40 for a 50ms script", result.DurationMs)
 	}
 }
 
