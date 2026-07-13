@@ -40,6 +40,41 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
 
 const NAME_RE = /^[a-z][a-z0-9-]{1,31}$/;
 
+/**
+ * Tables an extension may reference that are NOT `<name>_`-prefixed, because
+ * they are deliberately shared across extensions and owned by core.
+ *
+ * Exported so the loader's boot-time tripwire can apply the same exemption when
+ * it reconciles the live catalog against the manifest — a shared table is not
+ * the extension's to declare or to own.
+ */
+export const SHARED_TABLE_ALLOWLIST: ReadonlySet<string> = new Set(['memory_blocks']);
+
+/**
+ * Columns that mark a table as tenant-scoped. Used by the loader to reject a
+ * `nonTenantTables` opt-out for a table that is plainly tenant data. Covers the
+ * tenancy hierarchy: Partner -> Organization -> Site -> Device.
+ *
+ * This is a HINT, not the contract. Column names are chosen by the policed
+ * party, so `organization_id` / `tenant_id` / `customer_id` would sail straight
+ * past a name match. The load-bearing check is the FOREIGN-KEY one in the loader
+ * (CORE_TENANT_FK_TABLES): a genuinely global lookup table has no FK into a
+ * tenant entity, whatever it calls its columns. Keep both — names catch the
+ * denormalized tables that carry no FK, keys catch the renamed ones.
+ *
+ * `user_id` is deliberately NOT here: it appears on plenty of genuinely global
+ * tables as a plain actor/author reference (shape 6, user-id-scoped, is an
+ * explicit core allowlist rather than an auto-discovered shape), so treating it
+ * as a tenancy signal would produce false boot failures. The FK check covers the
+ * cases that matter.
+ */
+export const TENANT_SCOPE_COLUMNS: readonly string[] = [
+  'org_id',
+  'partner_id',
+  'site_id',
+  'device_id',
+];
+
 const tenancySchema = z.object({
   /** org_id-bearing tables, deleted by org cascade before `organizations`. */
   orgCascadeDeleteTables: z.array(z.string()).default([]),
@@ -49,6 +84,20 @@ const tenancySchema = z.object({
   deviceOrgDenormalizedTables: z.array(z.string()).default([]),
   /** device_id tables whose rows are deleted when a device moves org. */
   deviceOrgMoveDeleteTables: z.array(z.string()).optional(),
+  /**
+   * Tables the extension creates that are deliberately NOT tenant-scoped —
+   * global lookup/catalog data carrying no org_id/partner_id/device_id.
+   *
+   * This is an explicit OPT-OUT, not a free pass. The loader reconciles the
+   * live catalog against the manifest at boot and fails on any `<name>_`-
+   * prefixed table declared nowhere; listing a table here is how an extension
+   * says "this one is global on purpose", making it a deliberate, reviewable
+   * act rather than a silent omission. The loader still verifies the claim
+   * against pg_attribute: a table listed here that actually carries a tenant
+   * column fails the boot, so this cannot be used to smuggle a tenant table
+   * past the RLS tripwire.
+   */
+  nonTenantTables: z.array(z.string()).optional(),
 });
 
 const manifestSchema = z
@@ -95,19 +144,36 @@ const manifestSchema = z
     }),
   })
   .superRefine((m, ctx) => {
-    const allTables = [
+    const tenantTables = [
       ...m.tenancy.orgCascadeDeleteTables,
       ...m.tenancy.deviceCascadeDeleteTables,
       ...m.tenancy.deviceOrgDenormalizedTables,
       ...(m.tenancy.deviceOrgMoveDeleteTables ?? []),
     ];
-    // memory_blocks is a deliberately shared cross-extension table.
-    const SHARED_TABLE_ALLOWLIST = new Set(['memory_blocks']);
-    for (const t of allTables) {
+    const nonTenantTables = m.tenancy.nonTenantTables ?? [];
+    // Every table an extension names — tenant-scoped or opted out — must carry
+    // the extension's prefix. The loader's catalog reconciliation depends on
+    // that prefix to decide which live tables an extension OWNS, so an
+    // unprefixed declaration would be a table the tripwire can never find.
+    for (const t of [...tenantTables, ...nonTenantTables]) {
       if (!SHARED_TABLE_ALLOWLIST.has(t) && !t.startsWith(`${m.name}_`)) {
         ctx.addIssue({
           code: 'custom',
           message: `table "${t}" must be prefixed "${m.name}_" (or be an allowlisted shared table)`,
+        });
+      }
+    }
+    // A table cannot be both tenant-scoped and deliberately global. Left
+    // unchecked, the loader would demand RLS on it (as a tenant table) AND
+    // demand it carry no tenant column (as a nonTenantTable) — an unsatisfiable
+    // pair that would surface as a baffling double boot failure. Reject the
+    // contradiction here, where the message can name the actual mistake.
+    const tenantSet = new Set(tenantTables);
+    for (const t of nonTenantTables) {
+      if (tenantSet.has(t)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `table "${t}" is declared in BOTH a tenancy array and tenancy.nonTenantTables — it is either tenant-scoped or it is not`,
         });
       }
     }

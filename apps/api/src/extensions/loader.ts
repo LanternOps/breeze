@@ -12,16 +12,15 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
-import { sql } from 'drizzle-orm';
 import type {
   AiToolLike,
   BreezeExtension,
   ExtensionContext,
   ExtensionDatabase,
   ExtensionManifest,
-  ExtensionTenancyDeclaration,
 } from '@breeze/extension-api';
 import { discoverExtensions } from './discovery';
+import { assertExtensionTenancyRls, assertNoUnaccountedPublicTables } from './tenancyTripwire';
 import { aiTools } from '../services/aiTools';
 import { authMiddleware } from '../middleware/auth';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
@@ -110,94 +109,6 @@ function skipIfLoaderAuthed(inner: MiddlewareHandler, kind: LoaderAuthKind): Mid
   };
 }
 
-interface RlsCatalogRow {
-  table_name: string;
-  rls_enabled: boolean;
-  rls_forced: boolean;
-  policy_count: number | string;
-}
-
-/**
- * Boot-time RLS tripwire for extension tables. The core rls-coverage contract
- * test cannot see tables that ship from a private extension repo, so this is
- * the only structural check they get: every table an extension declares in its
- * manifest tenancy arrays must exist with RLS ENABLEd + FORCEd and at least
- * one policy. Throws (failing the boot loudly) otherwise. Exported for tests.
- */
-export async function assertExtensionTenancyRls(
-  extensionName: string,
-  tenancy: ExtensionTenancyDeclaration,
-): Promise<void> {
-  const tables = [
-    ...new Set([
-      ...tenancy.orgCascadeDeleteTables,
-      ...tenancy.deviceCascadeDeleteTables,
-      ...tenancy.deviceOrgDenormalizedTables,
-      ...(tenancy.deviceOrgMoveDeleteTables ?? []),
-    ]),
-  ];
-  if (tables.length === 0) {
-    // This check verifies that DECLARED tables have RLS — it cannot verify that
-    // the extension declared all the tables it created (the policed party still
-    // writes the policy). An extension whose migrations create tenant tables but
-    // whose manifest omits them gets no check at all, so at minimum make the
-    // silence audible. Deriving the table set from the extension's own
-    // migrations and requiring every one to be declared is the real fix.
-    console.warn(
-      `[extensions] "${extensionName}" declares no tenancy tables — no RLS verification performed. `
-        + 'If this extension creates tenant-scoped tables, they MUST be listed in the manifest '
-        + 'tenancy arrays or they ship with no RLS coverage check whatsoever.',
-    );
-    return;
-  }
-
-  // Bind the table list as an explicit ARRAY[...] of individually-parameterised
-  // text literals. Embedding the JS array directly (`= ANY(${tables})`) makes
-  // drizzle expand it to a TUPLE — `= ANY(($1, $2, ...))` — which Postgres
-  // rejects. `relname` is `name`, not `text`, so it needs the cast to compare.
-  const tableList = sql.join(tables.map((t) => sql`${t}`), sql`, `);
-  const result = (await db.execute(sql`
-    SELECT c.relname::text AS table_name,
-           c.relrowsecurity AS rls_enabled,
-           c.relforcerowsecurity AS rls_forced,
-           (SELECT count(*)::int FROM pg_policies p
-             WHERE p.schemaname = 'public' AND p.tablename = c.relname) AS policy_count
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    -- 'r' = ordinary table, 'p' = partitioned table. Omitting 'p' would report
-    -- a partitioned extension table as "does not exist" and send the operator
-    -- chasing a migration bug that isn't there.
-    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
-      AND c.relname::text = ANY(ARRAY[${tableList}]::text[])
-  `)) as unknown as RlsCatalogRow[] | { rows?: RlsCatalogRow[] };
-  const rows: RlsCatalogRow[] = Array.isArray(result) ? result : (result.rows ?? []);
-  const byName = new Map(rows.map((r) => [r.table_name, r]));
-
-  const problems: string[] = [];
-  for (const table of tables) {
-    const row = byName.get(table);
-    if (!row) {
-      problems.push(`"${table}" is declared in the manifest tenancy but does not exist (did its migration run?)`);
-      continue;
-    }
-    if (!row.rls_enabled) problems.push(`"${table}" does not have ROW LEVEL SECURITY enabled`);
-    if (!row.rls_forced) problems.push(`"${table}" does not have ROW LEVEL SECURITY forced (ALTER TABLE ... FORCE ROW LEVEL SECURITY)`);
-    // Phrased as `!(n > 0)` rather than `=== 0` so a NaN/null/undefined
-    // policy_count (unexpected row shape, driver change) fails CLOSED like its
-    // two siblings. `Number(undefined) === 0` is false — which would have let a
-    // policy-less table pass silently, in the one function whose whole contract
-    // is to fail loudly.
-    if (!(Number(row.policy_count) > 0)) problems.push(`"${table}" has no RLS policies (pg_policies is empty for it)`);
-  }
-  if (problems.length > 0) {
-    throw new Error(
-      `[extensions] RLS coverage check failed for extension "${extensionName}" — refusing to boot. `
-        + 'Extension tables are invisible to the core rls-coverage contract test, so this boot-time '
-        + `assertion is their only tripwire:\n  - ${problems.join('\n  - ')}`,
-    );
-  }
-}
-
 export async function mountExtensions(app: Hono, root?: string): Promise<void> {
   if (process.env.BREEZE_EXTENSIONS_ENABLED === 'false') {
     console.log('[extensions] disabled via BREEZE_EXTENSIONS_ENABLED=false');
@@ -277,4 +188,8 @@ export async function mountExtensions(app: Hono, root?: string): Promise<void> {
         : `[extensions] registered "${d.name}" (no routes mounted — ctx.mountRoute was never called)`,
     );
   }
+
+  // Runs once, AFTER every extension is accounted for: catches an extension
+  // table that dodged its own prefix scan by simply not using the prefix.
+  await assertNoUnaccountedPublicTables(discovered.map((d) => d.manifest.tenancy));
 }

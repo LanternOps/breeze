@@ -82,6 +82,38 @@ describe('parseExtensionManifest', () => {
     }
   });
 
+  // #2466 — the opt-out that lets a genuinely global extension table exist
+  // without RLS. It must be as prefix-disciplined as any other declaration: the
+  // loader decides which live tables an extension OWNS purely from the `<name>_`
+  // prefix, so an unprefixed entry names a table the tripwire can never find.
+  it('accepts nonTenantTables and defaults it to undefined', () => {
+    const m = parseExtensionManifest({
+      ...valid,
+      tenancy: { ...valid.tenancy, nonTenantTables: ['sample_catalog'] },
+    });
+    expect(m.tenancy.nonTenantTables).toEqual(['sample_catalog']);
+    expect(parseExtensionManifest(valid).tenancy.nonTenantTables).toBeUndefined();
+  });
+
+  it('rejects unprefixed tables in nonTenantTables', () => {
+    expect(() => parseExtensionManifest({
+      ...valid,
+      tenancy: { nonTenantTables: ['some_global_table'] },
+    })).toThrow(/must be prefixed/);
+  });
+
+  it('rejects a table declared BOTH tenant-scoped and nonTenant', () => {
+    // Unsatisfiable: the loader would demand RLS on it (as a tenant table) and
+    // simultaneously demand it carry no tenant column (as a nonTenantTable).
+    expect(() => parseExtensionManifest({
+      ...valid,
+      tenancy: {
+        orgCascadeDeleteTables: ['sample_items'],
+        nonTenantTables: ['sample_items'],
+      },
+    })).toThrow(/BOTH a tenancy array and tenancy.nonTenantTables/);
+  });
+
   it('rejects table names not starting with the extension name prefix, except memory_blocks', () => {
     expect(() =>
       parseExtensionManifest({

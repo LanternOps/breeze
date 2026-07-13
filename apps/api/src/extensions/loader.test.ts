@@ -27,7 +27,16 @@ vi.mock('../services/secretCrypto', () => ({
   encryptSecret: vi.fn((value: string, options: { aad?: string }) => `encrypted:${options.aad}:${value}`),
   decryptForColumn: vi.fn((_table: string, _column: string, value: string) => value.split(':').at(-1)),
 }));
-vi.mock('../db', () => ({ db: { execute: vi.fn() } }));
+// Resolves to zero catalog rows by default: the scaffolded manifests declare no
+// tenancy tables and create none, so the tripwire finds nothing to complain
+// about. Tests that exercise the tripwire's verdicts stub rows per-case.
+//
+// These mocked verdict tests prove the BRANCHING, never the SQL — a mocked
+// db.execute will happily "return rows" for a query Postgres would reject
+// outright (that is exactly how a `= ANY(tuple)` bug once passed six green unit
+// tests). The real contract lives in
+// src/__tests__/integration/extensionTenancyRls.integration.test.ts.
+vi.mock('../db', () => ({ db: { execute: vi.fn().mockResolvedValue([]) } }));
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
 vi.mock('../services/clientIp', () => ({ getTrustedClientIp: () => 'extension-loader-test' }));
 
@@ -401,11 +410,188 @@ describe('mountExtensions', () => {
       expect(msg.match(/demo_items/g)).toHaveLength(1); // deduped across arrays
     });
 
-    it('skips the DB probe entirely when no tenancy tables are declared', async () => {
+    // Regression guard for #2466. This previously asserted the OPPOSITE — that a
+    // manifest declaring nothing skipped the DB probe entirely. That "no work to
+    // do" shortcut WAS the vulnerability: an extension whose migration created
+    // `demo_docs(org_id …)` and whose manifest simply omitted it took this exact
+    // branch and shipped with no RLS check whatsoever. The probe must always run,
+    // because the catalog — not the manifest — is what proves the table set.
+    it('still probes the catalog when the manifest declares NO tenancy tables (#2466)', async () => {
       scaffoldRuntimeExtension(root); // tenancy: {}
       const { db } = await import('../db');
       await mountExtensions(new Hono(), root);
-      expect(db.execute).not.toHaveBeenCalled();
+      // Two probes: the per-extension ownership scan, then the repo-wide
+      // unaccounted-table reconciliation. Neither may be skipped.
+      expect(db.execute).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // #2466: the manifest is a claim by the policed party. These verdicts are what
+  // reconcile it against the live catalog. (SQL validity is proven only by the
+  // real-Postgres suite — see the mock's comment at the top of this file.)
+  describe('undeclared extension tables (#2466)', () => {
+    async function mockRlsCatalog(rows: unknown[]) {
+      const { db } = await import('../db');
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(rows);
+    }
+
+    const compliant = { relkind: 'r', rls_enabled: true, rls_forced: true, policy_count: 1 };
+    const noTenantScope = { tenant_column_count: 0, tenant_fk_count: 0 };
+
+    it('fails the boot on a prefixed table that exists but is declared nowhere', async () => {
+      scaffoldRuntimeExtension(root); // declares nothing
+      await mockRlsCatalog([
+        { table_name: 'demo_docs', ...compliant, tenant_column_count: 1, tenant_fk_count: 0 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_docs" exists and is tenant-scoped.*declared in NO manifest tenancy array/s,
+      );
+    });
+
+    it('fails the boot on an undeclared table even when it happens to have RLS', async () => {
+      // RLS today is not the point — an undeclared table also gets no org-cascade
+      // and no device-move handling, and nothing stops a later migration dropping
+      // its policy with no tripwire watching.
+      scaffoldRuntimeExtension(root);
+      await mockRlsCatalog([
+        { table_name: 'demo_lookup', ...compliant, ...noTenantScope },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_lookup" exists but is declared nowhere.*nonTenantTables/s,
+      );
+    });
+
+    it('passes when the extension opts a genuinely global table out via nonTenantTables', async () => {
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_lookup'] } });
+      await mockRlsCatalog([
+        { table_name: 'demo_lookup', relkind: 'r', rls_enabled: false, rls_forced: false, policy_count: 0, ...noTenantScope },
+      ]);
+      const app = new Hono();
+      await mountExtensions(app, root);
+      expect((await app.request('/api/v1/demo/health')).status).toBe(200);
+    });
+
+    // The opt-out must be VERIFIED, not trusted — otherwise it is a hole exactly
+    // as wide as the one #2466 closes: "just call your tenant table global".
+    it('fails the boot when a nonTenantTables entry actually carries a tenant column', async () => {
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_docs'] } });
+      await mockRlsCatalog([
+        { table_name: 'demo_docs', relkind: 'r', rls_enabled: false, rls_forced: false, policy_count: 0, tenant_column_count: 1, tenant_fk_count: 0 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_docs" is declared in tenancy.nonTenantTables but carries a tenant column/,
+      );
+    });
+
+    // TENANT_SCOPE_COLUMNS matches names the POLICED PARTY chooses. An extension
+    // that calls the column `organization_id` sails straight past it — so the
+    // FOREIGN KEY into a core tenant table is the load-bearing half of the
+    // verification. Without this, the opt-out is a naming convention, not a check.
+    it('fails the boot when a nonTenantTables entry has an FK into a core tenant table despite no matching column name', async () => {
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_docs'] } });
+      await mockRlsCatalog([
+        // e.g. `organization_id uuid REFERENCES organizations(id)` — zero
+        // TENANT_SCOPE_COLUMNS hits, but unmistakably tenant data.
+        { table_name: 'demo_docs', relkind: 'r', rls_enabled: false, rls_forced: false, policy_count: 0, tenant_column_count: 0, tenant_fk_count: 1 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_docs" is declared in tenancy.nonTenantTables but has a FOREIGN KEY into a core tenant table/,
+      );
+    });
+
+    // Postgres cannot apply RLS to a materialized view AT ALL, so there is no
+    // declaration that makes one safe — a matview over tenant data is a physical
+    // cross-tenant copy no policy can reach. Reject, don't merely scan.
+    it('fails the boot on an extension-owned materialized view, even if declared', async () => {
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_all'] } });
+      await mockRlsCatalog([
+        { table_name: 'demo_all', relkind: 'm', rls_enabled: false, rls_forced: false, policy_count: 0, ...noTenantScope },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_all" is a materialized view, which Postgres cannot protect with RLS/,
+      );
+    });
+
+    // The per-extension scan infers ownership from the `<name>_` prefix, but the
+    // prefix is enforced only on manifest DECLARATIONS — never on the migration's
+    // DDL. `CREATE TABLE documents (org_id uuid)` in extension `demo` matches no
+    // prefix and is declared nowhere, reopening #2466 for the price of one word.
+    // The repo-wide reconciliation catches it by elimination.
+    it('fails the boot on an UNPREFIXED extension table that no manifest accounts for', async () => {
+      scaffoldRuntimeExtension(root); // declares nothing; prefix is `demo_`
+      await mockRlsCatalog([
+        { table_name: 'documents', ...compliant, tenant_column_count: 1, tenant_fk_count: 1 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /belong to no core schema and to no extension manifest[\s\S]*documents/,
+      );
+    });
+
+    it('fails the boot when a nonTenantTables entry does not exist', async () => {
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_lookup'] } });
+      await mockRlsCatalog([]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_lookup" is declared in tenancy.nonTenantTables but does not exist/,
+      );
+    });
+
+    // A tripwire's catastrophic failure mode is the SILENT PASS, not the crash.
+    // postgres-js returns an array and node-postgres returns `{ rows }`; a
+    // `?? []` fallback for anything else would hand this function zero rows,
+    // which every check below reads as "owns nothing, declared nothing — all
+    // clear". A driver swap could then disable the whole tripwire with no test
+    // going red. Unreadable must mean "refuse to boot", never "all clear".
+    it('fails the boot when the driver returns an unreadable result shape (never reads it as "all clear")', async () => {
+      scaffoldRuntimeExtension(root);
+      await mockRlsCatalog(undefined as unknown as unknown[]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /could not read the catalog query result/,
+      );
+    });
+
+    it('accepts the node-postgres { rows } result shape', async () => {
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_lookup'] } });
+      const { db } = await import('../db');
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [{ table_name: 'demo_lookup', relkind: 'r', rls_enabled: false, rls_forced: false, policy_count: 0, ...noTenantScope }],
+      });
+      await expect(mountExtensions(new Hono(), root)).resolves.toBeUndefined();
+    });
+
+    it('fails the boot when a nonTenantTables entry has unreadable tenant-scope counts', async () => {
+      // `Number(undefined) > 0` is false — so a bare `> 0` would silently ratify
+      // the opt-out. It must fail closed, like the policy_count check.
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_lookup'] } });
+      await mockRlsCatalog([
+        { table_name: 'demo_lookup', relkind: 'r', rls_enabled: false, rls_forced: false, policy_count: 0 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /tenant-scope counts could not be read/,
+      );
+    });
+
+    it('does not blame the extension for CORE tables that share its name prefix', async () => {
+      // An extension may legally be named `device` — and core owns device_commands,
+      // device_disks, and ~30 more. Without the core-schema subtraction this
+      // extension would brick the boot over tables it never created, and the
+      // operator's only lever is BREEZE_EXTENSIONS_ENABLED=false, which switches
+      // off every tripwire including this one.
+      const dir = join(root, 'device');
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(
+        join(dir, 'breeze-extension.json'),
+        JSON.stringify({ name: 'device', routeNamespace: 'device-ext', entry: 'src/index.ts', tenancy: {} }),
+      );
+      writeFileSync(
+        join(dir, 'src', 'index.ts'),
+        'const ext = { register() {} };\nexport default ext;',
+      );
+      await mockRlsCatalog([
+        // Real core tables, returned by the prefix scan for prefix `device_`.
+        { table_name: 'device_commands', ...compliant, tenant_column_count: 1 },
+        { table_name: 'device_disks', ...compliant, tenant_column_count: 1 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).resolves.toBeUndefined();
     });
   });
 });
