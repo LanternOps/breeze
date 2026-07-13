@@ -1,8 +1,12 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import DeviceList, { type Device } from './DeviceList';
 import { COLUMN_IDS } from './columnVisibility';
+import {
+  DECOMMISSION_BLOCKED_BULK_ACTIONS,
+  INTENTIONALLY_UNGATED_BULK_ACTIONS,
+} from './bulkActionGating';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -1177,5 +1181,92 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
     render(<DeviceList devices={[baseDevice]} />);
     openRowMenu();
     expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
+  });
+});
+
+// #2465 CONTRACT: the bulk-action status gate lives in DevicesPage, but the
+// action strings it gates are emitted from HERE. Nothing else binds the two, so
+// a gate that names an action DeviceList no longer emits — or misses one it
+// newly does — degrades silently: DECOMMISSIONED devices quietly start receiving
+// commands the API refuses outright, and every behavioural test stays green,
+// because a gate's only failure mode is doing nothing.
+//
+// (Offline devices receiving queued commands is the INTENDED behaviour, not the
+// regression — they run on reconnect. That distinction is the whole of #2465.)
+//
+// This test enumerates the REAL bulk bar and forces every action it emits into
+// exactly one of the two policy sets. Add a bulk button without classifying it
+// and this fails, with the offending string named.
+describe('DeviceList — bulk actions are all classified by the status gate (#2465)', () => {
+  // Two online devices: the link-* items only render at selectedIds.size >= 2,
+  // so a 1-device selection would hide them from the enumeration.
+  const bulkDevices = (): Device[] => [
+    { ...baseDevice, id: '71111111-1111-1111-1111-111111111111', hostname: 'bulk-a' },
+    { ...baseDevice, id: '72222222-2222-2222-2222-222222222222', hostname: 'bulk-b' },
+  ];
+
+  const openBulkMenu = () => {
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+    return screen.getByTestId('bulk-actions-menu');
+  };
+
+  /**
+   * Clicking an item closes the menu and clears the selection, so each button is
+   * driven from a fresh render and identified by index within the live menu.
+   */
+  function emittedBulkActions(): string[] {
+    const probe = render(<DeviceList devices={bulkDevices()} onBulkAction={vi.fn()} />);
+    const buttonCount = within(openBulkMenu()).getAllByRole('button').length;
+    probe.unmount();
+    expect(buttonCount).toBeGreaterThan(0); // menu must actually render items
+
+    const emitted: string[] = [];
+    for (let i = 0; i < buttonCount; i++) {
+      const onBulkAction = vi.fn();
+      const view = render(<DeviceList devices={bulkDevices()} onBulkAction={onBulkAction} />);
+      const buttons = within(openBulkMenu()).getAllByRole('button');
+      fireEvent.click(buttons[i]!);
+      expect(onBulkAction).toHaveBeenCalledTimes(1);
+      emitted.push(onBulkAction.mock.calls[0]![0] as string);
+      view.unmount();
+    }
+    return emitted;
+  }
+
+  it('classifies every emitted bulk action as either decommission-gated or explicitly exempt', () => {
+    const emitted = emittedBulkActions();
+
+    const unclassified = emitted.filter(
+      action =>
+        !DECOMMISSION_BLOCKED_BULK_ACTIONS.has(action) && !INTENTIONALLY_UNGATED_BULK_ACTIONS.has(action),
+    );
+    expect(
+      unclassified,
+      `Unclassified bulk action(s): ${unclassified.join(', ')}. Add each to DECOMMISSION_BLOCKED_BULK_ACTIONS `
+        + '(it sends an agent command, which the API refuses for decommissioned devices) or to '
+        + 'INTENTIONALLY_UNGATED_BULK_ACTIONS (with a reason) in bulkActionGating.ts.',
+    ).toEqual([]);
+
+    // Sanity: the enumeration actually saw the two actions #2465 is about, so a
+    // silently-empty menu can't make this test vacuously pass.
+    expect(emitted).toContain('reboot');
+    expect(emitted).toContain('run-script');
+  });
+
+  it('keeps wake on the ungated side of the contract', () => {
+    // The exemption that most looks like an oversight to a future reader:
+    // Wake targets devices that are not running, by design. Pinned here at the
+    // policy level, and behaviourally in DevicesPage.test.tsx.
+    expect(emittedBulkActions()).toContain('wake');
+    expect(INTENTIONALLY_UNGATED_BULK_ACTIONS.has('wake')).toBe(true);
+    expect(DECOMMISSION_BLOCKED_BULK_ACTIONS.has('wake')).toBe(false);
+  });
+
+  it('never classifies an action as both gated and exempt', () => {
+    const both = [...DECOMMISSION_BLOCKED_BULK_ACTIONS].filter(a =>
+      INTENTIONALLY_UNGATED_BULK_ACTIONS.has(a),
+    );
+    expect(both).toEqual([]);
   });
 });

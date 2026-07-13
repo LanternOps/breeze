@@ -140,7 +140,7 @@ vi.mock('./DeviceList', () => ({
       data-display-names={devices.map(d => d.displayName ?? '').join(',')}
       data-watchdog-versions={devices.map(d => d.watchdogVersion ?? '').join(',')}
     >
-      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host'].map(action => (
+      {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake'].map(action => (
         <button
           key={action}
           type="button"
@@ -893,5 +893,369 @@ describe('DevicesPage — vm_host bulk link chain (#2308)', () => {
     });
     // Modal stays open — the user can pick again or cancel.
     expect(screen.getByTestId('vm-host-modal')).toBeInTheDocument();
+  });
+});
+
+// #2465: bulk "Reboot Selected" / "Run Script" had no device-status gate, so a
+// selection containing DECOMMISSIONED devices fired agent commands the API
+// refuses outright ("Cannot send commands to a decommissioned device").
+//
+// The gate is `decommissioned`, NOT `!== 'online'`. That distinction is the
+// whole point of this suite and is easy to "fix" back into a bug: agent commands
+// are QUEUED (status 'pending', no TTL) and claimed on the device's next
+// check-in, so an OFFLINE device really does reboot when it comes back. Filtering
+// to online-only would silently discard commands the backend would have honoured.
+// The API rejects exactly one status, and these tests pin that boundary.
+describe('DevicesPage — bulk agent commands gated on decommissioned only (#2465)', () => {
+  // A status filter that INCLUDES decommissioned is what puts retired rows back
+  // in reach of a select-all (they're hidden by default, #2251) — that's how
+  // they land in a mixed batch in the first place.
+  async function renderMixedFleet(ids: string[] = [DEV_1, DEV_2, DEV_3]) {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue({
+      operator: 'AND',
+      conditions: [{ field: 'status', operator: 'in', value: ['online', 'offline', 'decommissioned'] }],
+    } as never);
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        return jsonResponse({
+          data: { totalCount: ids.length, deviceIds: ids, evaluatedAt: new Date().toISOString() },
+        });
+      }
+      return jsonResponse({ data: [] });
+    });
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe(String(ids.length)));
+    return list;
+  }
+
+  // online + offline + decommissioned: the only selection that exercises both
+  // sides of the boundary at once.
+  function boundaryFleet() {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        rawDevice(DEV_1, 'host-alpha'),
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'offline' },
+        { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
+      ],
+    } as never);
+  }
+
+  it('skips ONLY the decommissioned device and still reboots the offline one', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}, {}], failed: [], skipped: [] } as never);
+
+    boundaryFleet();
+    await renderMixedFleet();
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+
+    expect(await screen.findByTestId('confirm-decommissioned-skip')).toBeTruthy();
+    expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
+    // Assert the WHOLE sentence, not just the prefix. The tail carries {{eligible}}
+    // — the count of machines about to reboot. Wire that to skippedCount by mistake
+    // and the dialog says "Continue with the remaining 1 device(s)?" while rebooting
+    // 2; a prefix-only match would never notice.
+    expect(
+      screen.getByText(
+        /1 of 3 selected devices are decommissioned and will be skipped.*Continue with the remaining 2 device\(s\)\?/i,
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
+
+    await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
+    const [deviceIds, action] = vi.mocked(sendBulkCommand).mock.calls[0];
+    expect(action).toBe('reboot');
+    // THE load-bearing assertion. The offline device (DEV_2) MUST be targeted:
+    // its command queues and runs on reconnect. A regression to an online-only
+    // filter drops it here and this is the test that catches it.
+    expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2].sort());
+    expect(deviceIds).not.toContain(DEV_3);
+  });
+
+  it('does NOT confirm or filter when the selection is merely online + offline', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}, {}], failed: [], skipped: [] } as never);
+
+    // No decommissioned rows → nothing the API would refuse → no gate at all.
+    // An offline device is a perfectly good reboot target.
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        rawDevice(DEV_1, 'host-alpha'),
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'offline' },
+      ],
+    } as never);
+    await renderMixedFleet([DEV_1, DEV_2]);
+
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+
+    await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
+    expect([...(vi.mocked(sendBulkCommand).mock.calls[0][0] as string[])].sort()).toEqual(
+      [DEV_1, DEV_2].sort(),
+    );
+  });
+
+  it('sends nothing when the user cancels the decommissioned-skip confirm', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+
+    boundaryFleet();
+    await renderMixedFleet();
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+    await screen.findByTestId('confirm-decommissioned-skip');
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull());
+    expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
+  });
+
+  it('refuses outright when EVERY selected device is decommissioned', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+      ],
+    } as never);
+    await renderMixedFleet([DEV_1, DEV_2]);
+
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+
+    await waitFor(() => {
+      const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+      expect(messages.some(m => /all 2 selected device\(s\) are decommissioned/i.test(m))).toBe(true);
+    });
+    expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
+    expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
+  });
+
+  it('narrows bulk Run Script past the decommissioned device, keeping the offline one', async () => {
+    const { executeScript } = await import('../../services/deviceActions');
+    vi.mocked(executeScript).mockResolvedValue({
+      batchId: 'batch-1',
+      scriptId: 'script-1',
+      devicesTargeted: 2,
+      executions: [],
+      status: 'queued',
+    } as never);
+
+    boundaryFleet();
+    await renderMixedFleet();
+    fireEvent.click(screen.getByTestId('bulk-run-script'));
+
+    // Skip is disclosed BEFORE the user invests in choosing a script.
+    fireEvent.click(await screen.findByTestId('confirm-decommissioned-skip'));
+    fireEvent.click(await screen.findByTestId('pick-script'));
+    fireEvent.click(await screen.findByTestId('confirm-fleet-action'));
+
+    await waitFor(() => expect(vi.mocked(executeScript)).toHaveBeenCalledTimes(1));
+    const [, deviceIds] = vi.mocked(executeScript).mock.calls[0];
+    // Offline device still gets the script — it runs on reconnect.
+    expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2].sort());
+  });
+
+  // Every non-decommissioned status is queueable, so ALL of them must survive the
+  // gate. This is the class a future "tighten it up" change would quietly break:
+  // maintenance/updating/quarantined/pending look un-runnable, but the API takes
+  // their commands and the agent claims them on its next check-in. Mirrors the
+  // row-menu cases in DeviceList.test.tsx.
+  it.each(['maintenance', 'updating', 'quarantined', 'pending'])(
+    'keeps a %s device in the batch — its command queues like any other',
+    async (status) => {
+      const { sendBulkCommand } = await import('../../services/deviceActions');
+      vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}, {}], failed: [], skipped: [] } as never);
+
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          rawDevice(DEV_1, 'host-alpha'),
+          { ...rawDevice(DEV_2, 'host-beta'), status },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2]);
+
+      fireEvent.click(screen.getByTestId('bulk-reboot'));
+
+      // No confirm — nothing here is decommissioned, so nothing is being skipped.
+      await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
+      expect([...(vi.mocked(sendBulkCommand).mock.calls[0][0] as string[])].sort()).toEqual(
+        [DEV_1, DEV_2].sort(),
+      );
+    },
+  );
+
+  it('leaves bulk Wake UNGATED — it exists precisely to reach devices that are not running', async () => {
+    const { sendBulkWakeCommand } = await import('../../services/deviceActions');
+    vi.mocked(sendBulkWakeCommand).mockResolvedValue({ sent: [], failed: [] } as never);
+
+    boundaryFleet();
+    await renderMixedFleet();
+    fireEvent.click(screen.getByTestId('bulk-wake'));
+
+    await waitFor(() => expect(vi.mocked(sendBulkWakeCommand)).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
+    expect([...(vi.mocked(sendBulkWakeCommand).mock.calls[0][0] as string[])].sort()).toEqual(
+      [DEV_1, DEV_2, DEV_3].sort(),
+    );
+  });
+
+  it('sends exactly one bulk command when the confirm button is double-clicked', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}], failed: [], skipped: [] } as never);
+
+    boundaryFleet();
+    await renderMixedFleet();
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+    const confirm = await screen.findByTestId('confirm-decommissioned-skip');
+
+    // An impatient double-click on a bulk REBOOT must not reboot the fleet twice.
+    //
+    // What this actually fences: converting the dialog to a stay-mounted +
+    // spinner pattern (leaning on ConfirmDialog's `disabled`, or on the
+    // actionInProgress guard — which reads a stale `false` closure and cannot
+    // help) lets the second click through and fires sendBulkCommand twice.
+    // It does NOT discriminate the set-state-before-dispatch ORDER: under React
+    // 18 both updates flush together at the end of the handler, so swapping them
+    // would still pass. The unmount is the guard; the ordering is not load-bearing.
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The #1322 network-row filter and the #2465 decommissioned gate run back-to-back
+// over the same selection and had never been exercised TOGETHER. Ordering is
+// load-bearing: a network row's id is a discovered_assets.id, not a devices.id,
+// and network rows carry status 'online' — so the decommissioned gate would
+// happily wave one through into sendBulkCommand if the network filter stopped
+// running first.
+describe('DevicesPage — network filter + decommissioned gate compose (#1322 × #2465)', () => {
+  const NET_1 = '44444444-4444-4444-4444-444444444444';
+
+  async function renderFleet(count: string) {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue({
+      operator: 'AND',
+      conditions: [{ field: 'status', operator: 'in', value: ['online', 'offline', 'decommissioned'] }],
+    } as never);
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/filters/preview')) {
+        return jsonResponse({
+          data: {
+            totalCount: 3,
+            deviceIds: [DEV_1, DEV_2, DEV_3],
+            evaluatedAt: new Date().toISOString(),
+          },
+        });
+      }
+      return jsonResponse({ data: [] });
+    });
+    vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
+      data: [{
+        id: NET_1,
+        deviceClass: 'network',
+        assetType: 'printer',
+        hostname: 'Lobby Printer',
+        status: 'online', // network assets are always 'online' — and agent-less
+        lastSeenAt: new Date().toISOString(),
+        orgId: 'org-1',
+        siteId: 'site-1',
+        tags: [],
+      }],
+      total: 1,
+      pagesWalked: 1,
+    } as never);
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe(count));
+  }
+
+  it('drops the network row AND the decommissioned agent, keeping online + offline', async () => {
+    const { sendBulkCommand } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}, {}], failed: [], skipped: [] } as never);
+
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        rawDevice(DEV_1, 'host-alpha'),
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'offline' },
+        { ...rawDevice(DEV_3, 'host-gamma'), status: 'decommissioned' },
+      ],
+    } as never);
+    await renderFleet('4'); // 3 agents + 1 network row
+
+    fireEvent.click(screen.getByTestId('bulk-reboot'));
+
+    // Each drop is disclosed through its own channel: the network row via the
+    // #1322 toast, the decommissioned agent via the #2465 confirm.
+    const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
+    expect(messages.some(m => /network device.*skipped/i.test(m))).toBe(true);
+    expect(await screen.findByTestId('confirm-decommissioned-skip')).toBeTruthy();
+    // Denominator is the AGENT selection (3), not the raw 4 — the network row is
+    // already accounted for by its own toast.
+    expect(screen.getByText(/1 of 3 selected devices are decommissioned/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
+
+    await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
+    const [deviceIds] = vi.mocked(sendBulkCommand).mock.calls[0];
+    expect([...(deviceIds as string[])].sort()).toEqual([DEV_1, DEV_2].sort());
+    expect(deviceIds).not.toContain(NET_1); // a printer must never be rebooted
+  });
+});
+
+// The exemptions in INTENTIONALLY_UNGATED_BULK_ACTIONS are load-bearing: an
+// all-offline fleet is the PRIMARY use case for decommission (retiring dead
+// machines) and for maintenance flags. A future "these touch devices too, gate
+// them" sweep would break exactly this.
+describe('DevicesPage — ungated bulk actions still work on an all-offline fleet (#2465)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'offline' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'offline' },
+      ],
+    } as never);
+  });
+
+  async function renderOfflineFleet() {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('2'));
+  }
+
+  it('decommissions every offline device — no gate, no confirm', async () => {
+    const { bulkDecommissionDevices } = await import('../../services/deviceActions');
+    vi.mocked(bulkDecommissionDevices).mockResolvedValue({ decommissioned: 2, failed: [] } as never);
+
+    await renderOfflineFleet();
+    fireEvent.click(screen.getByTestId('bulk-decommission'));
+
+    await waitFor(() => expect(vi.mocked(bulkDecommissionDevices)).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
+    expect([...(vi.mocked(bulkDecommissionDevices).mock.calls[0][0] as string[])].sort()).toEqual(
+      [DEV_1, DEV_2].sort(),
+    );
+  });
+
+  it('flags every offline device into maintenance — no gate, no confirm', async () => {
+    const { toggleMaintenanceMode } = await import('../../services/deviceActions');
+    vi.mocked(toggleMaintenanceMode).mockResolvedValue({ success: true, device: {} } as never);
+
+    await renderOfflineFleet();
+    fireEvent.click(screen.getByTestId('bulk-maintenance-on'));
+
+    await waitFor(() => expect(vi.mocked(toggleMaintenanceMode)).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
+    expect(vi.mocked(toggleMaintenanceMode).mock.calls.map(c => c[0]).sort()).toEqual(
+      [DEV_1, DEV_2].sort(),
+    );
   });
 });
