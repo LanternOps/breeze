@@ -2,7 +2,11 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { sql } from 'drizzle-orm';
 import type { ExtensionTenancyDeclaration } from '@breeze/extension-api';
 import { getTestDb } from './setup';
-import { assertExtensionTenancyRls } from '../../extensions/loader';
+import {
+  assertExtensionTenancyRls,
+  assertNoUnaccountedPublicTables,
+  coreTableNames,
+} from '../../extensions/loader';
 
 /**
  * Real-DB contract test for the extension RLS tripwire (#2424).
@@ -49,10 +53,18 @@ const FIXTURES = [
   'extundeclared_docs',
   'extglobal_lookup',
   'extliar_docs',
+  // Carries a real FK into `organizations` but NO column named org_id — the
+  // rename-the-column bypass that a name-only check cannot see.
+  'extfk_docs',
 ] as const;
+
+/** Materialized views need their own DROP — `DROP TABLE` will not touch them. */
+const MATVIEW_FIXTURES = ['extmv_all'] as const;
 
 async function dropFixtures() {
   const db = getTestDb();
+  // Matviews first — they depend on the tables below.
+  await db.execute(sql.raw(`DROP MATERIALIZED VIEW IF EXISTS ${MATVIEW_FIXTURES.join(', ')} CASCADE`));
   await db.execute(sql.raw(`DROP TABLE IF EXISTS ${FIXTURES.join(', ')} CASCADE`));
 }
 
@@ -100,6 +112,22 @@ beforeAll(async () => {
   await db.execute(sql.raw(`CREATE TABLE extglobal_lookup (id uuid PRIMARY KEY, label text)`));
   // Claims to be global but carries partner_id. The opt-out must not launder it.
   await db.execute(sql.raw(`CREATE TABLE extliar_docs (id uuid PRIMARY KEY, partner_id uuid)`));
+
+  // The rename-the-column bypass: unmistakably tenant data (a real FK into
+  // `organizations`) whose column is called `organization_id`, so it scores ZERO
+  // against TENANT_SCOPE_COLUMNS. Only the FK check can see this one. Note the
+  // column is deliberately NOT `org_id` — that keeps it invisible to
+  // rls-coverage's auto-discovery, exactly as the note above requires.
+  await db.execute(sql.raw(`
+    CREATE TABLE extfk_docs (
+      id uuid PRIMARY KEY,
+      organization_id uuid REFERENCES organizations(id)
+    )
+  `));
+
+  // Postgres cannot apply RLS to a materialized view at all, so an extension-owned
+  // one is an unfixable cross-tenant copy. It must be rejected, not merely skipped.
+  await db.execute(sql.raw(`CREATE MATERIALIZED VIEW extmv_all AS SELECT id FROM extglobal_lookup`));
 });
 
 afterAll(async () => {
@@ -200,7 +228,7 @@ describe('undeclared extension tables (real Postgres, #2466)', () => {
     expect(err).toBeInstanceOf(Error);
     const msg = (err as Error).message;
     expect(msg).toContain('extundeclared_docs');
-    expect(msg).toContain('carries a tenant column');
+    expect(msg).toContain('is tenant-scoped');
     expect(msg).toContain('refusing to boot');
     // The remedy must be to declare it — never to switch the tripwire off.
     expect(msg).toContain('BREEZE_EXTENSIONS_ENABLED=false');
@@ -231,6 +259,28 @@ describe('undeclared extension tables (real Postgres, #2466)', () => {
     ).rejects.toThrow(/extliar_docs.*carries a tenant column/s);
   });
 
+  // THE bypass a name-only check cannot close. `extfk_docs` has a real FK into
+  // `organizations` but calls the column `organization_id`, so it scores zero
+  // against TENANT_SCOPE_COLUMNS. If the opt-out were verified by column names
+  // alone, this table would boot clean with no RLS and full cross-tenant reads.
+  it('rejects a nonTenantTables opt-out for a table whose tenant link is an FK with a renamed column', async () => {
+    const err = await assertExtensionTenancyRls(
+      'extfk',
+      tenancy({ nonTenantTables: ['extfk_docs'] }),
+    ).catch((e: Error) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('extfk_docs');
+    expect((err as Error).message).toContain('FOREIGN KEY into a core tenant table');
+  });
+
+  it('rejects an extension-owned materialized view outright (Postgres cannot RLS one)', async () => {
+    // Even declared, even opted out — there is no compliant matview.
+    await expect(
+      assertExtensionTenancyRls('extmv', tenancy({ nonTenantTables: ['extmv_all'] })),
+    ).rejects.toThrow(/extmv_all.*materialized view.*cannot protect with RLS/s);
+  });
+
   it('does not blame an extension for CORE tables sharing its name prefix', async () => {
     // Nothing stops an extension being named `device`, and this database holds
     // ~30 real core `device_*` tables. They must be subtracted via the core
@@ -241,5 +291,80 @@ describe('undeclared extension tables (real Postgres, #2466)', () => {
     // This runs against the LIVE catalog, so it also proves the core-schema
     // barrel actually covers the device_* tables that really exist.
     await expect(assertExtensionTenancyRls('device', tenancy())).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * The core-table subtraction is what stops an extension named `device`, `backup`
+ * or `s1` from being blamed for tables core created. It is only as good as
+ * `coreTableNames()`, which reads the Drizzle barrel — and the barrel is NOT a
+ * complete inventory: five live core tables (`backup_profiles`,
+ * `breeze_migrations`, `s1_site_mappings`, `td_synnex_*`) have no Drizzle model
+ * and are hand-listed in CORE_NON_DRIZZLE_TABLES.
+ *
+ * A silent drift there is a production boot-brick with no operator remedy, so
+ * this test reds on the PR that adds the NEXT migration-only core table, instead
+ * of an extension author discovering it at 3am.
+ */
+describe('core table inventory (guards CORE_NON_DRIZZLE_TABLES drift)', () => {
+  it('coreTableNames() covers every core public table in the live catalog', async () => {
+    const db = getTestDb();
+    const rows = (await db.execute(sql`
+      SELECT c.relname::text AS table_name
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind IN ('r', 'p', 'm', 'f')
+        AND NOT c.relispartition
+        AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid)
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          JOIN pg_extension e ON e.oid = d.refobjid
+          WHERE d.objid = c.oid AND d.deptype = 'e')
+      ORDER BY 1
+    `)) as unknown as Array<{ table_name: string }>;
+
+    // `extensions/` is empty in this repo, so every real table here is core's.
+    // The only non-core relations are this suite's own fixtures.
+    const testFixtures = new Set<string>([...FIXTURES, ...MATVIEW_FIXTURES]);
+    const uncovered = rows
+      .map((r) => r.table_name)
+      .filter((t) => !coreTableNames().has(t) && !testFixtures.has(t));
+
+    expect(uncovered).toEqual([]);
+  });
+});
+
+/**
+ * The per-extension scan infers ownership from the `<name>_` prefix — but that
+ * prefix is enforced only on manifest DECLARATIONS, never on the DDL an
+ * extension's migration actually runs. `CREATE TABLE documents (org_id uuid)` in
+ * extension `demo` matches no prefix and is declared nowhere. This reconciliation
+ * catches it by elimination: anything that is neither core's nor declared by some
+ * extension has no business existing.
+ */
+describe('assertNoUnaccountedPublicTables (real Postgres, #2466)', () => {
+  it('flags tables that belong to no core schema and to no manifest', async () => {
+    const err = await assertNoUnaccountedPublicTables([]).catch((e: Error) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    const msg = (err as Error).message;
+    // The fixtures stand in for undeclared extension tables. Crucially,
+    // `extundeclared_docs` would be invisible to a prefix scan run for any
+    // extension not literally named `extundeclared`.
+    expect(msg).toContain('extundeclared_docs');
+    expect(msg).toContain('belong to no core schema and to no extension manifest');
+    // Core tables must NOT be dragged in — that would be the boot-brick.
+    expect(msg).not.toContain('devices\n');
+    expect(msg).not.toContain('breeze_migrations');
+  });
+
+  it('passes once every extension table is declared somewhere in a manifest', async () => {
+    // Declaring them (in any array) is what makes them accounted for.
+    await expect(
+      assertNoUnaccountedPublicTables([
+        tenancy({ nonTenantTables: [...FIXTURES, ...MATVIEW_FIXTURES] }),
+      ]),
+    ).resolves.toBeUndefined();
   });
 });

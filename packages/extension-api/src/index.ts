@@ -52,14 +52,28 @@ export const SHARED_TABLE_ALLOWLIST: ReadonlySet<string> = new Set(['memory_bloc
 
 /**
  * Columns that mark a table as tenant-scoped. Used by the loader to reject a
- * `nonTenantTables` opt-out for a table that is plainly tenant data.
+ * `nonTenantTables` opt-out for a table that is plainly tenant data. Covers the
+ * tenancy hierarchy: Partner -> Organization -> Site -> Device.
+ *
+ * This is a HINT, not the contract. Column names are chosen by the policed
+ * party, so `organization_id` / `tenant_id` / `customer_id` would sail straight
+ * past a name match. The load-bearing check is the FOREIGN-KEY one in the loader
+ * (CORE_TENANT_FK_TABLES): a genuinely global lookup table has no FK into a
+ * tenant entity, whatever it calls its columns. Keep both — names catch the
+ * denormalized tables that carry no FK, keys catch the renamed ones.
  *
  * `user_id` is deliberately NOT here: it appears on plenty of genuinely global
  * tables as a plain actor/author reference (shape 6, user-id-scoped, is an
  * explicit core allowlist rather than an auto-discovered shape), so treating it
- * as a tenancy signal would produce false boot failures.
+ * as a tenancy signal would produce false boot failures. The FK check covers the
+ * cases that matter.
  */
-export const TENANT_SCOPE_COLUMNS: readonly string[] = ['org_id', 'partner_id', 'device_id'];
+export const TENANT_SCOPE_COLUMNS: readonly string[] = [
+  'org_id',
+  'partner_id',
+  'site_id',
+  'device_id',
+];
 
 const tenancySchema = z.object({
   /** org_id-bearing tables, deleted by org cascade before `organizations`. */
