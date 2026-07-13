@@ -203,6 +203,7 @@ import {
   AuthIssuanceCapabilityError,
   AuthIssuanceConflictError,
   beginAuthIssuance,
+  beginAuthIssuanceForStoredTransition,
   cancelAuthIssuance,
   completeTerminalLogout,
   isTerminalLogoutPending,
@@ -664,6 +665,68 @@ describe('binding rotation', () => {
     expect([...harness.rows.values()].some(
       (row) => row.bindingDigest === reopenedCurrentDigest,
     )).toBe(false);
+  });
+});
+
+describe('stored transition issuance admission', () => {
+  it('claims route state and reserves the exact transition generation atomically', async () => {
+    const transition = seedTransition(browser(), { generation: 4 });
+
+    const result = await beginAuthIssuanceForStoredTransition(
+      { transitionId: transition.id, generation: 4 },
+      async () => {
+        harness.authorityWrites.push('sso-state-claimed');
+        return { sessionId: 'sso-session-1' };
+      },
+    );
+
+    expect(result.claimed).toEqual({ sessionId: 'sso-session-1' });
+    expect(result.capability).toMatchObject({
+      transitionId: transition.id,
+      generation: 4,
+      operationId: expect.any(String),
+    });
+    expect(harness.rows.get(transition.id)).toMatchObject({
+      activeOperationId: result.capability.operationId,
+      activeOperationExpiresAt: new Date(harness.now.getTime() + 2 * 60 * 1000),
+    });
+    expect(harness.authorityWrites).toEqual(['sso-state-claimed']);
+  });
+
+  it('does not claim route state after logout owns the stored generation', async () => {
+    const transition = seedTransition(browser(), {
+      state: 'logout_pending',
+      generation: 5,
+      logoutId: '20000000-0000-4000-8000-000000000099',
+      completionNonceDigest: 'e'.repeat(64),
+      logoutExpiresAt: new Date(harness.now.getTime() + 60_000),
+    });
+
+    await expect(beginAuthIssuanceForStoredTransition(
+      { transitionId: transition.id, generation: 4 },
+      async () => {
+        harness.authorityWrites.push('must-not-run');
+        return null;
+      },
+    )).rejects.toBeInstanceOf(AuthBindingUnavailableError);
+
+    expect(harness.authorityWrites).toEqual([]);
+    expect(harness.rows.get(transition.id)?.activeOperationId).toBeNull();
+  });
+
+  it('does not let a replay replace a live stored-transition claim', async () => {
+    const transition = seedTransition(browser());
+    const first = await beginAuthIssuanceForStoredTransition(
+      { transitionId: transition.id, generation: 1 },
+      async () => 'first',
+    );
+
+    await expect(beginAuthIssuanceForStoredTransition(
+      { transitionId: transition.id, generation: 1 },
+      async () => 'replay',
+    )).rejects.toBeInstanceOf(AuthIssuanceConflictError);
+    expect(harness.rows.get(transition.id)?.activeOperationId)
+      .toBe(first.capability.operationId);
   });
 });
 

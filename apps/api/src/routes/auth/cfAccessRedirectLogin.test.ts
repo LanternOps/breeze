@@ -53,20 +53,56 @@ const completionState = vi.hoisted(() => ({
   failure: null as Error | null,
 }));
 
-vi.mock('../../services/authBrowserTransition', () => ({
-  isTerminalLogoutPending: vi.fn(async (input: Record<string, unknown>) => {
-    completionState.pendingCalls.push(input);
-    return completionState.pending;
-  }),
-  completeTerminalLogout: vi.fn(async (input: Record<string, unknown>) => {
-    completionState.calls.push(input);
-    if (completionState.failure) throw completionState.failure;
-    return completionState.results.shift() ?? {
-      kind: 'completed',
-      replacement: { kind: 'browser', value: 'b'.repeat(64) },
-    };
-  }),
+const issuanceState = vi.hoisted(() => ({
+  beginCalls: [] as Array<Record<string, unknown>>,
+  finishCalls: 0,
+  cancelCalls: 0,
+  beginFailure: null as Error | null,
+  capability: {
+    transitionId: '00000000-0000-4000-8000-000000000011',
+    generation: 1,
+    operationId: '00000000-0000-4000-8000-000000000012',
+    expiresAt: new Date('2026-07-13T00:05:00Z'),
+  } as Record<string, unknown>,
 }));
+
+vi.mock('../../services/authBrowserTransition', async () => {
+  const actual = await vi.importActual<typeof import('../../services/authBrowserTransition')>(
+    '../../services/authBrowserTransition'
+  );
+  return {
+    ...actual,
+    beginAuthIssuance: vi.fn(async (input: Record<string, unknown>) => {
+      issuanceState.beginCalls.push(input);
+      if (issuanceState.beginFailure) throw issuanceState.beginFailure;
+      return issuanceState.capability;
+    }),
+    finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => unknown) => {
+      issuanceState.finishCalls += 1;
+      return callback({
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+        })),
+      });
+    }),
+    cancelAuthIssuance: vi.fn(async () => {
+      issuanceState.cancelCalls += 1;
+      return true;
+    }),
+    isTerminalLogoutPending: vi.fn(async (input: Record<string, unknown>) => {
+      completionState.pendingCalls.push(input);
+      return completionState.pending;
+    }),
+    completeTerminalLogout: vi.fn(async (input: Record<string, unknown>) => {
+      completionState.calls.push(input);
+      if (completionState.failure) throw completionState.failure;
+      return completionState.results.shift() ?? {
+        kind: 'completed',
+        replacement: { kind: 'browser', value: 'b'.repeat(64) },
+      };
+    }),
+  };
+});
 
 const verifyState = vi.hoisted(() => ({
   next: undefined as
@@ -95,6 +131,7 @@ vi.mock('../../services/cfAccessJwt', async () => {
 
 const dbState = vi.hoisted(() => ({
   userRow: null as Record<string, unknown> | null,
+  updateCount: 0,
 }));
 
 vi.mock('../../db', () => {
@@ -117,7 +154,10 @@ vi.mock('../../db', () => {
       select: vi.fn(() => makeChain(dbState.userRow)),
       update: vi.fn(() => ({
         set: vi.fn(() => ({
-          where: vi.fn(() => Promise.resolve()),
+          where: vi.fn(() => {
+            dbState.updateCount += 1;
+            return Promise.resolve();
+          }),
         })),
       })),
     },
@@ -132,6 +172,19 @@ const servicesState = vi.hoisted(() => ({
 }));
 
 vi.mock('../../services', () => ({
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  issueUserSession: vi.fn(
+    async (identity: Record<string, unknown>) => {
+      servicesState.lastSessionIdentity = identity;
+      return {
+        accessToken: 'access-tok',
+        refreshToken: 'refresh-tok',
+        refreshJti: 'jti-new',
+        expiresInSeconds: 900,
+        familyId: 'fam-1',
+      };
+    }
+  ),
   issueUserSessionLegacyDuringTransition: vi.fn(
     async (identity: Record<string, unknown>) => {
       servicesState.lastSessionIdentity = identity;
@@ -248,6 +301,7 @@ describe('GET /cf-access-login', () => {
     envState.publicOrigin = 'https://breeze.example.com';
     verifyState.next = undefined;
     dbState.userRow = null;
+    dbState.updateCount = 0;
     auditState.audits = [];
     auditState.loginFailures = [];
     cookieState.set = null;
@@ -262,6 +316,10 @@ describe('GET /cf-access-login', () => {
     completionState.pending = true;
     completionState.pendingCalls = [];
     completionState.failure = null;
+    issuanceState.beginCalls = [];
+    issuanceState.finishCalls = 0;
+    issuanceState.cancelCalls = 0;
+    issuanceState.beginFailure = null;
     servicesState.lastSessionIdentity = null;
     servicesState.verifyResult = null;
     servicesState.revokeAllCalls = [];
@@ -395,6 +453,38 @@ describe('GET /cf-access-login', () => {
         cfAccessCountry: 'CA',
       }),
     });
+  });
+
+  it('does not mutate login authority when terminal logout already owns the binding', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: 'user@example.com', sub: 'cf-subject' },
+    };
+    dbState.userRow = activeUser;
+    issuanceState.beginFailure = new (
+      await import('../../services/authBrowserTransition')
+    ).AuthBindingUnavailableError('logout_pending');
+
+    const res = await callGet('/cf-access-login', {
+      'Cf-Access-Jwt-Assertion': 'tok',
+      cookie: `breeze_csrf_token=${'a'.repeat(64)}`,
+    });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('reason=unavailable');
+    expect(issuanceState.beginCalls).toEqual([{
+      kind: 'browser',
+      value: 'a'.repeat(64),
+    }]);
+    expect(issuanceState.finishCalls).toBe(0);
+    expect(servicesState.lastSessionIdentity).toBeNull();
+    expect(dbState.updateCount).toBe(0);
+    expect(cookieState.set).toBeNull();
+    expect(auditState.audits).not.toContainEqual(expect.objectContaining({
+      action: 'user.login',
+      result: 'success',
+    }));
   });
 
   it('delegates the complete identity to the high-level session issuer', async () => {

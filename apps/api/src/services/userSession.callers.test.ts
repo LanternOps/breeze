@@ -14,10 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 const SRC_DIR = join(__dirname, '..');
 
-const expectedLegacyIssuers = new Set([
-  'routes/auth/cfAccessRedirectLogin.ts',
-  'routes/sso.ts',
-]);
+const expectedLegacyIssuers = new Set<string>();
 
 const expectedCookieWriters = new Set([
   'middleware/cfAccessLogin.ts',
@@ -56,6 +53,7 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
     || ts.isTypeAssertionExpression(current)
     || ts.isNonNullExpression(current)
     || ts.isSatisfiesExpression(current)
+    || ts.isAwaitExpression(current)
   ) {
     current = current.expression;
   }
@@ -566,7 +564,7 @@ function provesAuthorizedSsoExchangeCookieFlow(source: string): boolean {
   const countCalls = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isIdentifier(unwrapExpression(node.expression))) {
       const name = (unwrapExpression(node.expression) as ts.Identifier).text;
-      if (name === 'consumeSsoTokenExchangeGrant') allConsumeCalls += 1;
+      if (name === 'consumeDurableSsoExchangeGrant') allConsumeCalls += 1;
       if (name === 'setRefreshTokenCookie') allCookieCalls += 1;
     }
     ts.forEachChild(node, countCalls);
@@ -583,7 +581,7 @@ function provesAuthorizedSsoExchangeCookieFlow(source: string): boolean {
       if (
         ts.isIdentifier(declaration.name)
         && declaration.initializer
-        && isDirectCall(unwrapExpression(declaration.initializer), 'consumeSsoTokenExchangeGrant')
+        && isDirectCall(unwrapExpression(declaration.initializer), 'consumeDurableSsoExchangeGrant')
       ) {
         if (
           (statement.declarationList.flags & ts.NodeFlags.Const) === 0
@@ -1077,7 +1075,7 @@ describe('session inventory analyzer fixtures', () => {
   it('rejects a deferred SSO grant consumption declared before the cookie write', () => {
     const source = `
       ssoRoutes.post('/exchange', async (c) => {
-        const consumeLater = () => consumeSsoTokenExchangeGrant(code);
+        const consumeLater = () => consumeDurableSsoExchangeGrant(code);
         setRefreshTokenCookie(c, grant.refreshToken);
         const grant = consumeLater();
       });
@@ -1088,7 +1086,7 @@ describe('session inventory analyzer fixtures', () => {
   it('accepts a direct consumed, authorized grant whose token is installed afterward', () => {
     const source = `
       ssoRoutes.post('/exchange', async (c) => {
-        const grant = consumeSsoTokenExchangeGrant(code);
+        const grant = await consumeDurableSsoExchangeGrant(code);
         if (!grant) {
           return c.json({ error: 'invalid' }, 400);
         }
@@ -1102,7 +1100,7 @@ describe('session inventory analyzer fixtures', () => {
   it('rejects mutation of the consumed SSO grant before cookie installation', () => {
     const source = `
       ssoRoutes.post('/exchange', async (c) => {
-        const grant = consumeSsoTokenExchangeGrant(code);
+        const grant = await consumeDurableSsoExchangeGrant(code);
         if (!grant) return c.json({ error: 'invalid' }, 400);
         grant.refreshToken = attackerToken;
         setRefreshTokenCookie(c, grant.refreshToken);
@@ -1116,7 +1114,7 @@ describe('session inventory analyzer fixtures', () => {
     [
       'an intervening statement before the grant guard',
       `
-        const grant = consumeSsoTokenExchangeGrant(code);
+        const grant = await consumeDurableSsoExchangeGrant(code);
         audit(grant);
         if (!grant) return c.json({ error: 'invalid' }, 400);
         setRefreshTokenCookie(c, grant.refreshToken);
@@ -1125,7 +1123,7 @@ describe('session inventory analyzer fixtures', () => {
     [
       'a mutable grant binding',
       `
-        let grant = consumeSsoTokenExchangeGrant(code);
+        let grant = await consumeDurableSsoExchangeGrant(code);
         if (!grant) return c.json({ error: 'invalid' }, 400);
         setRefreshTokenCookie(c, grant.refreshToken);
       `,
@@ -1133,7 +1131,7 @@ describe('session inventory analyzer fixtures', () => {
     [
       'a compound grant declaration',
       `
-        const other = value, grant = consumeSsoTokenExchangeGrant(code);
+        const other = value, grant = await consumeDurableSsoExchangeGrant(code);
         if (!grant) return c.json({ error: 'invalid' }, 400);
         setRefreshTokenCookie(c, grant.refreshToken);
       `,
@@ -1144,23 +1142,29 @@ describe('session inventory analyzer fixtures', () => {
   });
 });
 
-describe('browser-auth issuer inventory (7 guarded issuances; 2 frozen legacy issuances; 10 cookie writes)', () => {
+describe('browser-auth issuer inventory (9 guarded issuances; 0 frozen legacy issuances; 10 cookie writes)', () => {
   it('allows guarded issueUserSession only from browser-transition finalizers', () => {
     const inventory = collectCallInventory('issueUserSession');
 
     expect(Object.fromEntries([...inventory.entries()].sort())).toEqual({
+      'routes/auth/cfAccessRedirectLogin.ts': 1,
       'routes/auth/invite.ts': 1,
       'routes/auth/login.ts': 1,
       'routes/auth/register.ts': 2,
+      'routes/sso.ts': 1,
       'services/mfaAssurance.ts': 2,
       'services/recoveryCodeAuth.ts': 1,
     });
     for (const [file, count] of inventory) {
       const source = readFileSync(join(SRC_DIR, file), 'utf8');
       expect(source).toContain('finishAuthIssuance(');
-      expect(source.match(
+      const objectIdentityCalls = source.match(
         /},\s*\{(?=[\s\S]{0,500}?\btx\b)(?=[\s\S]{0,500}?\bcapability\b)[\s\S]{0,500}?\}\)/g,
-      ) ?? []).toHaveLength(count);
+      ) ?? [];
+      const namedIdentityCalls = source.match(
+        /issueUserSession\(\s*[A-Za-z_$][\w$]*\s*,\s*\{(?=[\s\S]{0,500}?\btx\b)(?=[\s\S]{0,500}?\bcapability\b)[\s\S]{0,500}?\}\)/g,
+      ) ?? [];
+      expect(objectIdentityCalls.length + namedIdentityCalls.length).toBe(count);
       expect(source).not.toContain('issueUserSessionLegacyDuringTransition');
       expect(source).not.toContain('touchFamilyLastUsed');
     }
@@ -1169,11 +1173,8 @@ describe('browser-auth issuer inventory (7 guarded issuances; 2 frozen legacy is
   it('freezes the exact remaining migration-shim callers', () => {
     const inventory = collectCallInventory('issueUserSessionLegacyDuringTransition');
     expect(new Set(inventory.keys())).toEqual(expectedLegacyIssuers);
-    expect(Object.fromEntries([...inventory.entries()].sort())).toEqual({
-      'routes/auth/cfAccessRedirectLogin.ts': 1,
-      'routes/sso.ts': 1,
-    });
-    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(2);
+    expect(Object.fromEntries([...inventory.entries()].sort())).toEqual({});
+    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(0);
   }, 15_000);
 
   it('freezes every production setRefreshTokenCookie call site', () => {
@@ -1201,5 +1202,16 @@ describe('browser-auth issuer inventory (7 guarded issuances; 2 frozen legacy is
 
   it.skip('requires a guarded capability at every production issuer');
   it.skip('allows refresh cookie installation only from an authorized session result');
-  it.skip('keeps SSO exchange inside the durable binding generation');
+  it('keeps SSO exchange inside the durable binding generation', () => {
+    const routeSource = readFileSync(join(SRC_DIR, 'routes/sso.ts'), 'utf8');
+    const serviceSource = readFileSync(join(SRC_DIR, 'services/ssoBrowserTransition.ts'), 'utf8');
+
+    expect(routeSource).toContain('await consumeDurableSsoExchangeGrant(code)');
+    expect(routeSource).not.toContain('new Map<string, SsoTokenExchangeGrant>');
+    expect(serviceSource).toContain('.from(ssoTokenExchangeGrants)');
+    expect(serviceSource).toContain("transition.state !== 'active'");
+    expect(serviceSource).toContain('transition.generation !== candidate.browserGeneration');
+    expect(serviceSource).toContain('transition.currentFamilyId !== candidate.familyId');
+    expect(serviceSource).toContain('family.revokedAt !== null');
+  });
 });

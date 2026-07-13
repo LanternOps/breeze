@@ -498,6 +498,66 @@ export function beginAuthIssuance(source: AuthBindingSource): Promise<AuthIssuan
   return defaultAuthBrowserTransitionService.beginAuthIssuance(source);
 }
 
+export type StoredAuthTransitionIdentity = Readonly<{
+  transitionId: string;
+  generation: number;
+}>;
+
+/**
+ * Reserve an issuance lease from a transition identity persisted before an
+ * external redirect. The claim callback runs under the same transition lock,
+ * allowing a route-specific state row to be locked/validated without relying
+ * on the browser binding cookie surviving the cross-site return.
+ */
+export async function beginAuthIssuanceForStoredTransition<T>(
+  expected: StoredAuthTransitionIdentity,
+  claim: (tx: AuthLifecycleTransaction) => Promise<T>,
+): Promise<Readonly<{ capability: AuthIssuanceCapability; claimed: T }>> {
+  return withAuthLifecycleSystemTransaction(async (tx) => {
+    const transition = await lockTransitionById(tx, expected.transitionId);
+    if (!transition) throw new AuthBindingUnavailableError('missing');
+    if (transition.state === 'logout_pending') {
+      throw new AuthBindingUnavailableError('logout_pending');
+    }
+    if (transition.state !== 'active' || transition.generation !== expected.generation) {
+      throw new AuthIssuanceCapabilityError();
+    }
+    if (
+      transition.activeOperationId !== null
+      && isAfter(transition.activeOperationExpiresAt, transition.databaseNow)
+    ) {
+      throw new AuthIssuanceConflictError();
+    }
+
+    const claimed = await claim(tx);
+    const operationId = randomUUID();
+    const [reserved] = await tx
+      .update(authBrowserTransitions)
+      .set({
+        activeOperationId: operationId,
+        activeOperationExpiresAt:
+          sql`now() + ${AUTH_ISSUANCE_LEASE_MINUTES} * interval '1 minute'`,
+        updatedAt: sql`now()`,
+      })
+      .where(and(
+        eq(authBrowserTransitions.id, transition.id),
+        eq(authBrowserTransitions.generation, transition.generation),
+        eq(authBrowserTransitions.state, 'active'),
+      ))
+      .returning({ expiresAt: authBrowserTransitions.activeOperationExpiresAt });
+    if (!reserved?.expiresAt) throw new AuthIssuanceCapabilityError();
+
+    const capability: AuthIssuanceCapability = Object.freeze({
+      transitionId: transition.id,
+      generation: transition.generation,
+      operationId,
+      expiresAt: new Date(reserved.expiresAt),
+      [AUTH_ISSUANCE_CAPABILITY]: true as const,
+    });
+    return Object.freeze({ capability, claimed });
+  });
+}
+
 export type CompleteTerminalLogoutInput = Readonly<{
   transitionId: string;
   logoutId: string;

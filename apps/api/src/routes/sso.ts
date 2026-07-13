@@ -3,7 +3,6 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { eq, and, gt, ne, isNull } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { nanoid } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
 import {
   ssoProviders,
@@ -33,7 +32,14 @@ import {
   PROVIDER_PRESETS,
   type OIDCConfig
 } from '../services/sso';
-import { createSession, issueUserSessionLegacyDuringTransition, rateLimiter, getRedis, type UserSessionIdentity } from '../services';
+import {
+  bindIssuedUserSession,
+  createSession,
+  issueUserSession,
+  rateLimiter,
+  getRedis,
+  type UserSessionIdentity,
+} from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -42,7 +48,29 @@ import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { envFlag } from '../utils/envFlag';
-import { setRefreshTokenCookie, getCookieValue, auditLogin } from './auth/helpers';
+import {
+  setRefreshTokenCookie,
+  getCookieValue,
+  auditLogin,
+  rotateCsrfBindingCookie,
+} from './auth/helpers';
+import { CSRF_COOKIE_NAME } from './auth/schemas';
+import {
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+  finishAuthIssuance,
+} from '../services/authBrowserTransition';
+import {
+  SsoCallbackStateUnavailableError,
+  claimSsoCallbackIssuance,
+  consumeDurableSsoExchangeGrant,
+  consumeSsoCallbackSession,
+  createDurableSsoExchangeGrant,
+} from '../services/ssoBrowserTransition';
 
 export const ssoRoutes = new Hono();
 
@@ -159,92 +187,11 @@ const tokenExchangeSchema = z.object({
 // Helper Functions
 // ============================================
 
-type SsoTokenExchangeGrant = {
-  accessToken: string;
-  refreshToken: string;
-  expiresInSeconds: number;
-  createdAtMs: number;
-  expiresAtMs: number;
-};
-
-const ssoTokenExchangeGrants = new Map<string, SsoTokenExchangeGrant>();
-const SSO_TOKEN_GRANT_TTL_MS = 2 * 60 * 1000;
-const SSO_TOKEN_GRANT_CAP = 20000;
-const SSO_TOKEN_SWEEP_INTERVAL_MS = 60 * 1000;
-
-let lastSsoTokenSweepAtMs = 0;
-
-function capMapByOldest<T>(
-  map: Map<string, T>,
-  cap: number,
-  getAgeMs: (value: T) => number
-) {
-  if (map.size <= cap) {
-    return;
+class SsoLoginFinalizationError extends Error {
+  constructor(readonly location: string) {
+    super(`SSO login finalization rejected: ${location}`);
+    this.name = 'SsoLoginFinalizationError';
   }
-
-  const overflow = map.size - cap;
-  const entries = Array.from(map.entries())
-    .sort(([, left], [, right]) => getAgeMs(left) - getAgeMs(right));
-
-  for (let i = 0; i < overflow; i++) {
-    const key = entries[i]?.[0];
-    if (key) {
-      map.delete(key);
-    }
-  }
-}
-
-function sweepSsoTokenExchangeGrants(nowMs: number = Date.now()) {
-  if (nowMs - lastSsoTokenSweepAtMs < SSO_TOKEN_SWEEP_INTERVAL_MS) {
-    return;
-  }
-
-  lastSsoTokenSweepAtMs = nowMs;
-  for (const [code, grant] of ssoTokenExchangeGrants.entries()) {
-    if (grant.expiresAtMs <= nowMs) {
-      ssoTokenExchangeGrants.delete(code);
-    }
-  }
-
-  capMapByOldest(ssoTokenExchangeGrants, SSO_TOKEN_GRANT_CAP, (grant) => grant.createdAtMs);
-}
-
-function createSsoTokenExchangeGrant(
-  accessToken: string,
-  refreshToken: string,
-  expiresInSeconds: number
-): string {
-  const nowMs = Date.now();
-  sweepSsoTokenExchangeGrants(nowMs);
-
-  const code = nanoid(48);
-  ssoTokenExchangeGrants.set(code, {
-    accessToken,
-    refreshToken,
-    expiresInSeconds,
-    createdAtMs: nowMs,
-    expiresAtMs: nowMs + SSO_TOKEN_GRANT_TTL_MS
-  });
-
-  capMapByOldest(ssoTokenExchangeGrants, SSO_TOKEN_GRANT_CAP, (grant) => grant.createdAtMs);
-  return code;
-}
-
-function consumeSsoTokenExchangeGrant(code: string): SsoTokenExchangeGrant | null {
-  sweepSsoTokenExchangeGrants();
-
-  const grant = ssoTokenExchangeGrants.get(code);
-  if (!grant) {
-    return null;
-  }
-
-  ssoTokenExchangeGrants.delete(code);
-  if (grant.expiresAtMs <= Date.now()) {
-    return null;
-  }
-
-  return grant;
 }
 
 function normalizeRedirectPath(redirectParam: string | undefined): string {
@@ -308,6 +255,39 @@ function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
 
 function getClientIP(c: any): string {
   return getTrustedClientIp(c);
+}
+
+async function captureSsoBrowserTransition(c: any): Promise<
+  | { transitionId: string; generation: number }
+  | { response: Response }
+> {
+  let capability: Awaited<ReturnType<typeof beginAuthIssuance>> | undefined;
+  try {
+    capability = await beginAuthIssuance({
+      kind: 'browser',
+      value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
+    });
+    if (!await cancelAuthIssuance(capability)) {
+      throw new AuthIssuanceCapabilityError();
+    }
+    return {
+      transitionId: capability.transitionId,
+      generation: capability.generation,
+    };
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => false);
+    if (error instanceof AuthBindingRotationRequiredError) {
+      rotateCsrfBindingCookie(c, error.replacement.value);
+      const requestUrl = new URL(c.req.url);
+      return { response: c.redirect(`${requestUrl.pathname}${requestUrl.search}`, 303) };
+    }
+    if (error instanceof AuthBindingUnavailableError
+      || error instanceof AuthIssuanceConflictError
+      || error instanceof AuthIssuanceCapabilityError) {
+      return { response: c.json({ error: 'Authentication temporarily unavailable' }, 409) };
+    }
+    throw error;
+  }
 }
 
 function resolveOrgIdForProviderRoute(
@@ -1219,6 +1199,8 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
   const pkce = generatePKCEChallenge();
   const state = generateState();
   const nonce = generateNonce();
+  const browserTransition = await captureSsoBrowserTransition(c);
+  if ('response' in browserTransition) return browserTransition.response;
 
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
   await withSystemDbAccessContext(async () =>
@@ -1228,6 +1210,8 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
       nonce,
       codeVerifier: pkce.codeVerifier,
       redirectUrl,
+      browserTransitionId: browserTransition.transitionId,
+      browserGeneration: browserTransition.generation,
       expiresAt
     })
   );
@@ -1313,6 +1297,8 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
   const pkce = generatePKCEChallenge();
   const state = generateState();
   const nonce = generateNonce();
+  const browserTransition = await captureSsoBrowserTransition(c);
+  if ('response' in browserTransition) return browserTransition.response;
 
   // Store session for callback verification
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
@@ -1323,6 +1309,8 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
       nonce,
       codeVerifier: pkce.codeVerifier,
       redirectUrl,
+      browserTransitionId: browserTransition.transitionId,
+      browserGeneration: browserTransition.generation,
       expiresAt
     })
   );
@@ -1386,25 +1374,32 @@ ssoRoutes.get('/callback', async (c) => {
     return c.redirect('/login?error=invalid_callback');
   }
 
-  // Find, validate, and CLAIM the session atomically. Deleting with RETURNING in
-  // a single statement makes the state single-use: a captured state cannot be
-  // replayed within its TTL, and a concurrent replay loses the race (only one
-  // delete returns the row). RLS: the public callback runs without a request
-  // scope, so wrap the claim in system scope like the rest of this handler.
-  const [session] = await withSystemDbAccessContext(async () =>
-    db
-      .delete(ssoSessions)
-      .where(and(
-        eq(ssoSessions.state, state),
-        gt(ssoSessions.expiresAt, new Date())
-      ))
-      .returning()
-  );
-
-  if (!session) {
+  let callbackClaim: Awaited<ReturnType<typeof claimSsoCallbackIssuance>>;
+  try {
+    callbackClaim = await claimSsoCallbackIssuance(state);
+  } catch (claimError) {
+    if (!(claimError instanceof AuthBindingUnavailableError)
+      && !(claimError instanceof AuthIssuanceConflictError)
+      && !(claimError instanceof AuthIssuanceCapabilityError)
+      && !(claimError instanceof SsoCallbackStateUnavailableError)) throw claimError;
     clearStateCookie();
     return c.redirect('/login?error=session_expired');
   }
+  if (!callbackClaim) {
+    clearStateCookie();
+    return c.redirect('/login?error=session_expired');
+  }
+  const session = callbackClaim.session;
+  let loginCapability = callbackClaim.kind === 'login'
+    ? callbackClaim.capability
+    : undefined;
+  const abandonLoginClaim = async () => {
+    if (!loginCapability) return;
+    await cancelAuthIssuance(loginCapability).catch(() => false);
+    loginCapability = undefined;
+  };
+
+  try {
 
   // Get provider. System context required: the callback is unauthenticated
   // (no request scope exists yet), so a bare `db` read here silently 0-rows
@@ -1422,8 +1417,7 @@ ssoRoutes.get('/callback', async (c) => {
   );
 
   if (!provider) {
-    clearStateCookie();
-    return c.redirect('/login?error=provider_not_found');
+    throw new SsoLoginFinalizationError('/login?error=provider_not_found');
   }
 
   // A provider is bound to exactly one axis (DB CHECK: org_id XOR partner_id):
@@ -1433,8 +1427,7 @@ ssoRoutes.get('/callback', async (c) => {
   // partner branch below keys off `provider.partnerId` instead.
   const providerOrgId = provider.orgId;
   if (!providerOrgId && !provider.partnerId) {
-    clearStateCookie();
-    return c.redirect('/login?error=provider_not_found');
+    throw new SsoLoginFinalizationError('/login?error=provider_not_found');
   }
 
   // Default-role validation is axis-aware: partner-axis providers require a
@@ -1461,14 +1454,12 @@ ssoRoutes.get('/callback', async (c) => {
     );
 
     if (!defaultRole) {
-      clearStateCookie();
-      return c.redirect('/login?error=invalid_provider_configuration');
+      throw new SsoLoginFinalizationError('/login?error=invalid_provider_configuration');
     }
 
     validatedDefaultRoleId = defaultRole.id;
   }
 
-  try {
     const config = getOIDCConfig(provider);
     const callbackUri = buildSsoCallbackUri();
 
@@ -1491,12 +1482,10 @@ ssoRoutes.get('/callback', async (c) => {
     //    We now refuse rather than accept an unverifiable token; a provider
     //    whose discovery/jwks_uri is missing must be fixed to re-enable SSO.
     if (!tokens.id_token) {
-      clearStateCookie();
-      return c.redirect('/login?error=sso_no_id_token');
+      throw new SsoLoginFinalizationError('/login?error=sso_no_id_token');
     }
     if (!config.jwksUrl) {
-      clearStateCookie();
-      return c.redirect('/login?error=sso_provider_unverified');
+      throw new SsoLoginFinalizationError('/login?error=sso_provider_unverified');
     }
     const idClaims = await verifyIdTokenSignature(tokens.id_token, config, session.nonce);
     if (idClaims.email) {
@@ -1511,8 +1500,7 @@ ssoRoutes.get('/callback', async (c) => {
     const userInfo = await getUserInfo(config, tokens.access_token);
     const userInfoSub = (userInfo as { sub?: unknown }).sub;
     if (idClaims.sub && typeof userInfoSub === 'string' && userInfoSub !== idClaims.sub) {
-      clearStateCookie();
-      return c.redirect('/login?error=sso_subject_mismatch');
+      throw new SsoLoginFinalizationError('/login?error=sso_subject_mismatch');
     }
 
     // Map attributes
@@ -1534,8 +1522,7 @@ ssoRoutes.get('/callback', async (c) => {
       const domains = provider.allowedDomains.split(',').map(d => d.trim().toLowerCase());
       const emailDomain = attrs.email.split('@')[1]?.toLowerCase();
       if (emailDomain && !domains.includes(emailDomain)) {
-        clearStateCookie();
-        return c.redirect('/login?error=domain_not_allowed');
+        throw new SsoLoginFinalizationError('/login?error=domain_not_allowed');
       }
     }
 
@@ -1548,8 +1535,7 @@ ssoRoutes.get('/callback', async (c) => {
     // system scope (RLS would otherwise deny before the request scope is set).
     const externalSub = idClaims.sub;
     if (typeof externalSub !== 'string' || externalSub.length === 0) {
-      clearStateCookie();
-      return c.redirect('/login?error=sso_no_subject');
+      throw new SsoLoginFinalizationError('/login?error=sso_no_subject');
     }
 
     // ── Link mode (#2183 Connect SSO): this round-trip belongs to an
@@ -1621,6 +1607,10 @@ ssoRoutes.get('/callback', async (c) => {
       return c.redirect('/settings/profile?ssoLinked=1');
     }
 
+    if (!loginCapability) {
+      throw new AuthIssuanceCapabilityError();
+    }
+    const finalized = await finishAuthIssuance(loginCapability, async (tx) => {
     let user = await withSystemDbAccessContext(async () => {
       const [link] = await db
         .select({ userId: userSsoIdentities.userId })
@@ -1656,8 +1646,7 @@ ssoRoutes.get('/callback', async (c) => {
         console.warn(
           `[sso/callback] domain verification blocked link/provision: org=${provider.orgId} provider=${provider.id} emailDomain=${assertedEmailDomain ?? 'none'}`
         );
-        clearStateCookie();
-        return c.redirect('/login?error=sso_domain_unverified');
+        throw new SsoLoginFinalizationError('/login?error=sso_domain_unverified');
       }
     }
 
@@ -1696,8 +1685,7 @@ ssoRoutes.get('/callback', async (c) => {
             .limit(1)
         );
         if (hasPassword || otherProviderLink) {
-          clearStateCookie();
-          return c.redirect('/login?error=sso_link_required');
+          throw new SsoLoginFinalizationError('/login?error=sso_link_required');
         }
         // Safe: an SSO-only account with no conflicting credential.
         user = byEmail;
@@ -1709,19 +1697,16 @@ ssoRoutes.get('/callback', async (c) => {
     // there is no account to log in — the tech must be invited/provisioned out
     // of band. Never auto-provision on the partner axis.
     if (!user && provider.partnerId) {
-      clearStateCookie();
-      return c.redirect('/login?error=invite_required');
+      throw new SsoLoginFinalizationError('/login?error=invite_required');
     }
 
     if (!user) {
       if (!provider.autoProvision) {
-        clearStateCookie();
-        return c.redirect('/login?error=user_not_found');
+        throw new SsoLoginFinalizationError('/login?error=user_not_found');
       }
 
       if (!validatedDefaultRoleId) {
-        clearStateCookie();
-        return c.redirect('/login?error=default_role_required');
+        throw new SsoLoginFinalizationError('/login?error=default_role_required');
       }
 
       // Reachable on the ORG axis ONLY — the partner axis returned
@@ -1770,8 +1755,7 @@ ssoRoutes.get('/callback', async (c) => {
       });
 
       if (!newUser) {
-        clearStateCookie();
-        return c.redirect('/login?error=user_creation_failed');
+        throw new SsoLoginFinalizationError('/login?error=user_creation_failed');
       }
 
       user = newUser;
@@ -1797,8 +1781,7 @@ ssoRoutes.get('/callback', async (c) => {
       // / orgId:null token if their row is org-bound. Org-bound users never
       // authenticate through a partner provider.
       if (user.orgId != null) {
-        clearStateCookie();
-        return c.redirect('/login?error=no_partner_access');
+        throw new SsoLoginFinalizationError('/login?error=no_partner_access');
       }
 
       // Partner axis (#2183): the tech's role membership lives in partner_users
@@ -1820,12 +1803,10 @@ ssoRoutes.get('/callback', async (c) => {
           .limit(1)
       );
       if (!partnerMembership) {
-        clearStateCookie();
-        return c.redirect('/login?error=no_partner_access');
+        throw new SsoLoginFinalizationError('/login?error=no_partner_access');
       }
       if (partnerMembership.roleScope !== 'partner') {
-        clearStateCookie();
-        return c.redirect('/login?error=invalid_role_scope');
+        throw new SsoLoginFinalizationError('/login?error=invalid_role_scope');
       }
       sessionIdentity = {
         userId: user.id,
@@ -1866,13 +1847,11 @@ ssoRoutes.get('/callback', async (c) => {
       );
 
       if (!orgUser) {
-        clearStateCookie();
-        return c.redirect('/login?error=no_org_access');
+        throw new SsoLoginFinalizationError('/login?error=no_org_access');
       }
 
       if (orgUser.roleScope !== 'organization') {
-        clearStateCookie();
-        return c.redirect('/login?error=invalid_role_scope');
+        throw new SsoLoginFinalizationError('/login?error=invalid_role_scope');
       }
 
       sessionIdentity = {
@@ -1982,8 +1961,7 @@ ssoRoutes.get('/callback', async (c) => {
     });
 
     if ('error' in identityOutcome) {
-      clearStateCookie();
-      return c.redirect(`/login?error=${identityOutcome.error}`);
+      throw new SsoLoginFinalizationError(`/login?error=${identityOutcome.error}`);
     }
 
     // The SSO session row was already consumed atomically up-front
@@ -1994,7 +1972,10 @@ ssoRoutes.get('/callback', async (c) => {
     const ip = getClientIP(c);
     const userAgent = c.req.header('user-agent') || 'unknown';
 
-    const { accessToken, refreshToken, expiresInSeconds } = await issueUserSessionLegacyDuringTransition(sessionIdentity);
+    const issued = await issueUserSession(sessionIdentity, {
+      tx,
+      capability: loginCapability!,
+    });
 
     await createSession({
       userId: user.id,
@@ -2002,28 +1983,48 @@ ssoRoutes.get('/callback', async (c) => {
       userAgent
     });
 
+    const tokenExchangeCode = await createDurableSsoExchangeGrant(tx, {
+      capability: loginCapability!,
+      userId: user.id,
+      familyId: issued.familyId,
+      tokens: {
+        accessToken: issued.accessToken,
+        refreshToken: issued.refreshToken,
+        expiresInSeconds: issued.expiresInSeconds,
+      },
+    });
+    await consumeSsoCallbackSession(tx, session);
+    return { user, issued, tokenExchangeCode, ip, ssoMfa };
+    });
+    loginCapability = undefined;
+    await bindIssuedUserSession(finalized.issued);
+
     // Partner-axis logins are audited as user.login with method 'sso-partner'
     // (org-axis SSO keeps its existing audit path). orgId is null on a partner
     // token, matching the audit row's tenancy.
     if (provider.partnerId) {
       auditLogin(c, {
         orgId: null,
-        userId: user.id,
-        email: user.email,
-        name: user.name,
-        mfa: ssoMfa,
+        userId: finalized.user.id,
+        email: finalized.user.email,
+        name: finalized.user.name,
+        mfa: finalized.ssoMfa,
         scope: 'partner',
-        ip,
+        ip: finalized.ip,
         method: 'sso-partner'
       });
     }
 
-    const tokenExchangeCode = createSsoTokenExchangeGrant(accessToken, refreshToken, expiresInSeconds);
     const redirectPath = normalizeRedirectPath(session.redirectUrl ?? '/');
     clearStateCookie();
-    return c.redirect(`${redirectPath}#ssoCode=${encodeURIComponent(tokenExchangeCode)}`);
+    return c.redirect(`${redirectPath}#ssoCode=${encodeURIComponent(finalized.tokenExchangeCode)}`);
 
   } catch (error: any) {
+    await abandonLoginClaim();
+    if (error instanceof SsoLoginFinalizationError) {
+      clearStateCookie();
+      return c.redirect(error.location);
+    }
     // The session was already consumed atomically, so even on a failed IdP
     // token exchange the captured state cannot be replayed. Surface the error
     // to the login page exactly as before; the user simply re-initiates.
@@ -2038,7 +2039,7 @@ ssoRoutes.get('/callback', async (c) => {
 
 ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) => {
   const { code } = c.req.valid('json');
-  const grant = consumeSsoTokenExchangeGrant(code);
+  const grant = await consumeDurableSsoExchangeGrant(code);
   if (!grant) {
     return c.json({ error: 'Invalid or expired token exchange code' }, 400);
   }

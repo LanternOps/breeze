@@ -19,6 +19,73 @@ const { permissionGate, mfaGate, recordedPermissionGuards } = vi.hoisted(() => (
   recordedPermissionGuards: [] as Array<[string, string]>
 }));
 
+const browserTransitionState = vi.hoisted(() => ({
+  capability: {
+    transitionId: '00000000-0000-4000-8000-000000000040',
+    generation: 7,
+    operationId: '00000000-0000-4000-8000-000000000041',
+    expiresAt: new Date('2026-07-13T01:00:00Z'),
+  } as Record<string, unknown>,
+}));
+
+const ssoTransitionState = vi.hoisted(() => ({
+  claimFailure: null as Error | null,
+  finishFailure: null as Error | null,
+  grantSequence: 0,
+  grants: new Map<string, {
+    accessToken: string;
+    refreshToken: string;
+    expiresInSeconds: number;
+  }>(),
+}));
+
+vi.mock('../services/ssoBrowserTransition', async () => {
+  const actual = await vi.importActual<typeof import('../services/ssoBrowserTransition')>(
+    '../services/ssoBrowserTransition'
+  );
+  return {
+    ...actual,
+    claimSsoCallbackIssuance: vi.fn(async () => {
+      if (ssoTransitionState.claimFailure) throw ssoTransitionState.claimFailure;
+      const { db: mockedDb } = await import('../db');
+      const [session] = await mockedDb.delete({} as never)
+        .where({} as never)
+        .returning() as Array<Record<string, unknown>>;
+      if (!session) return null;
+      return session.linkUserId
+        ? { kind: 'link', session }
+        : { kind: 'login', session, capability: browserTransitionState.capability };
+    }),
+    consumeSsoCallbackSession: vi.fn(async () => undefined),
+    createDurableSsoExchangeGrant: vi.fn(async (_tx, input) => {
+      const code = `durable-sso-code-${++ssoTransitionState.grantSequence}`;
+      ssoTransitionState.grants.set(code, input.tokens);
+      return code;
+    }),
+    consumeDurableSsoExchangeGrant: vi.fn(async (code: string) => {
+      const grant = ssoTransitionState.grants.get(code) ?? null;
+      ssoTransitionState.grants.delete(code);
+      return grant;
+    }),
+  };
+});
+
+vi.mock('../services/authBrowserTransition', async () => {
+  const actual = await vi.importActual<typeof import('../services/authBrowserTransition')>(
+    '../services/authBrowserTransition'
+  );
+  return {
+    ...actual,
+    beginAuthIssuance: vi.fn(async () => browserTransitionState.capability),
+    cancelAuthIssuance: vi.fn(async () => true),
+    beginAuthIssuanceForStoredTransition: vi.fn(),
+    finishAuthIssuance: vi.fn(async (_capability, callback) => {
+      if (ssoTransitionState.finishFailure) throw ssoTransitionState.finishFailure;
+      return callback({});
+    }),
+  };
+});
+
 vi.mock('../services/sso', () => ({
   generateState: vi.fn().mockReturnValue('state'),
   generateNonce: vi.fn().mockReturnValue('nonce'),
@@ -54,6 +121,7 @@ vi.mock('../services', () => ({
     expiresInSeconds: 900,
     familyId: 'sso-family-id-mock'
   }),
+  bindIssuedUserSession: vi.fn(),
   createSession: vi.fn(),
   // Partner-axis login rate limiting (#2183 spec §5) — default allowed so
   // existing tests exercising the route body are unaffected; the dedicated
@@ -216,6 +284,11 @@ import {
 import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { auditLogin } from './auth/helpers';
+import { beginAuthIssuance, cancelAuthIssuance } from '../services/authBrowserTransition';
+import {
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+} from '../services/authBrowserTransition';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
 const ORG_UUID = '00000000-0000-4000-8000-000000000010';
@@ -287,6 +360,10 @@ describe('sso routes', () => {
       resetAt: new Date(Date.now() + 60_000)
     } as any);
     delete process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN;
+    ssoTransitionState.claimFailure = null;
+    ssoTransitionState.finishFailure = null;
+    ssoTransitionState.grantSequence = 0;
+    ssoTransitionState.grants.clear();
     process.env.APP_ENCRYPTION_KEY = SSO_STATE_COOKIE_SECRET;
     permissionGate.deny = false;
     mfaGate.deny = false;
@@ -1187,6 +1264,37 @@ describe('sso routes', () => {
     };
     const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
 
+    it('performs no IdP exchange or local identity write when logout owns the stored transition', async () => {
+      primeCallback();
+      ssoTransitionState.claimFailure = new AuthBindingUnavailableError('logout_pending');
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=session_expired');
+      expect(exchangeCodeForTokens).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rolls back before every local identity write when logout wins after IdP verification', async () => {
+      primeCallback();
+      vi.mocked(db.select).mockReturnValueOnce(sel(PROVIDER_ROW));
+      ssoTransitionState.finishFailure = new AuthIssuanceCapabilityError();
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=sso_error');
+      expect(exchangeCodeForTokens).toHaveBeenCalledOnce();
+      expect(verifyIdTokenSignature).toHaveBeenCalledOnce();
+      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(cancelAuthIssuance).toHaveBeenCalledWith(browserTransitionState.capability);
+    });
+
     it('resolves the user by the (provider, sub) link regardless of the asserted email (1A)', async () => {
       primeCallback();
       vi.mocked(db.select)
@@ -1200,7 +1308,10 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
       // The session is the LINKED user — proving the email was not the lookup key.
-      expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({ userId: USER_UUID }));
+      expect(issueUserSession).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: USER_UUID }),
+        expect.objectContaining({ capability: browserTransitionState.capability, tx: expect.anything() }),
+      );
     });
 
     it('refuses to JIT-link an SSO assertion to an existing PASSWORD account (1B)', async () => {
@@ -1275,7 +1386,7 @@ describe('sso routes', () => {
         mfa: true,
         amr: ['sso'],
         partnerId: PARTNER_UUID,
-      }));
+      }), expect.objectContaining({ capability: browserTransitionState.capability, tx: expect.anything() }));
     });
 
     it('mints mfa:false when the provider trusts IdP MFA but amr does NOT attest it', async () => {
@@ -1285,7 +1396,7 @@ describe('sso routes', () => {
       expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
         mfa: false,
         amr: ['sso'],
-      }));
+      }), expect.objectContaining({ capability: browserTransitionState.capability, tx: expect.anything() }));
     });
 
     it('mints mfa:false when the provider does NOT trust IdP MFA even if amr attests it', async () => {
@@ -1295,7 +1406,7 @@ describe('sso routes', () => {
       expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
         mfa: false,
         amr: ['sso'],
-      }));
+      }), expect.objectContaining({ capability: browserTransitionState.capability, tx: expect.anything() }));
     });
 
     // ── security review #2 (H-2): SSO domain-verification gate wiring
@@ -1874,14 +1985,23 @@ describe('sso routes', () => {
       const valuesMock = vi.fn().mockResolvedValue(undefined);
       vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
 
-      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}?redirect=/dashboard`);
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}?redirect=/dashboard`, {
+        headers: { cookie: `breeze_csrf_token=${'a'.repeat(64)}` },
+      });
 
       expect(res.status).toBe(302);
       expect(res.headers.get('location')).toBe('https://idp.example.com/auth');
       expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
         providerId: PROVIDER_UUID,
-        redirectUrl: '/dashboard'
+        redirectUrl: '/dashboard',
+        browserTransitionId: browserTransitionState.capability.transitionId,
+        browserGeneration: browserTransitionState.capability.generation,
       }));
+      expect(beginAuthIssuance).toHaveBeenCalledWith({
+        kind: 'browser',
+        value: 'a'.repeat(64),
+      });
+      expect(cancelAuthIssuance).toHaveBeenCalledWith(browserTransitionState.capability);
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_sso_state=');
     });
@@ -1941,14 +2061,23 @@ describe('sso routes', () => {
       const valuesMock = vi.fn().mockResolvedValue(undefined);
       vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
 
-      const res = await app.request(`/sso/login/${ORG_UUID}?redirect=/dashboard`);
+      const res = await app.request(`/sso/login/${ORG_UUID}?redirect=/dashboard`, {
+        headers: { cookie: `breeze_csrf_token=${'b'.repeat(64)}` },
+      });
 
       expect(res.status).toBe(302);
       expect(res.headers.get('location')).toBe('https://idp.example.com/auth');
       expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
         providerId: PROVIDER_UUID,
-        redirectUrl: '/dashboard'
+        redirectUrl: '/dashboard',
+        browserTransitionId: browserTransitionState.capability.transitionId,
+        browserGeneration: browserTransitionState.capability.generation,
       }));
+      expect(beginAuthIssuance).toHaveBeenCalledWith({
+        kind: 'browser',
+        value: 'b'.repeat(64),
+      });
+      expect(cancelAuthIssuance).toHaveBeenCalledWith(browserTransitionState.capability);
       expect(res.headers.get('set-cookie') ?? '').toContain('breeze_sso_state=');
     });
 
@@ -2052,7 +2181,8 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
       expect(issueUserSession).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: USER_UUID, roleId: 'prole-1', orgId: null, partnerId: PARTNER_UUID, scope: 'partner' })
+        expect.objectContaining({ userId: USER_UUID, roleId: 'prole-1', orgId: null, partnerId: PARTNER_UUID, scope: 'partner' }),
+        expect.objectContaining({ capability: browserTransitionState.capability, tx: expect.anything() }),
       );
       expect(auditLogin).toHaveBeenCalledWith(
         expect.anything(),
@@ -2074,7 +2204,8 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
       expect(issueUserSession).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null })
+        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null }),
+        expect.objectContaining({ capability: browserTransitionState.capability, tx: expect.anything() }),
       );
     });
 
@@ -2122,7 +2253,8 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
       expect(issueUserSession).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null })
+        expect.objectContaining({ scope: 'partner', partnerId: PARTNER_UUID, orgId: null }),
+        expect.objectContaining({ capability: browserTransitionState.capability, tx: expect.anything() }),
       );
     });
 
@@ -2227,7 +2359,8 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(issueUserSession).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', mfa: true, amr: ['sso'] })
+        expect.objectContaining({ scope: 'partner', mfa: true, amr: ['sso'] }),
+        expect.objectContaining({ capability: browserTransitionState.capability, tx: expect.anything() }),
       );
     });
 
@@ -2236,7 +2369,8 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(issueUserSession).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'partner', mfa: false, amr: ['sso'] })
+        expect.objectContaining({ scope: 'partner', mfa: false, amr: ['sso'] }),
+        expect.objectContaining({ capability: browserTransitionState.capability, tx: expect.anything() }),
       );
     });
   });

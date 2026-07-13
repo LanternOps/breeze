@@ -16,27 +16,36 @@ import {
   verifyCfAccessJwt,
 } from '../../services/cfAccessJwt';
 import {
-  issueUserSessionLegacyDuringTransition,
+  bindIssuedUserSession,
+  issueUserSession,
 } from '../../services';
 import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
-import { ENABLE_2FA } from './schemas';
 import {
   auditUserLoginFailure,
   clearCfAccessLogoutQuarantineCookie,
   clearRefreshTokenCookie,
+  getCookieValue,
   getClientIP,
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   setRefreshTokenCookie,
   rotateCsrfBindingCookie,
 } from './helpers';
+import { CSRF_COOKIE_NAME, ENABLE_2FA } from './schemas';
 import {
   verifyTerminalLogoutTicket,
   type VerifiedTerminalLogoutTicket,
 } from '../../services/terminalLogoutTicket';
 import {
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
   completeTerminalLogout,
+  finishAuthIssuance,
   isTerminalLogoutPending,
 } from '../../services/authBrowserTransition';
 
@@ -216,23 +225,45 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
 
   const mfaSatisfied = trustsMfa;
 
-  const tokens = await issueUserSessionLegacyDuringTransition({
-    userId: user.id,
-    email: user.email,
-    roleId: context.roleId,
-    orgId: context.orgId,
-    partnerId: context.partnerId,
-    scope: context.scope,
-    mfa: mfaSatisfied,
-    amr: ['cf_access'],
-  });
+  let capability: Awaited<ReturnType<typeof beginAuthIssuance>> | undefined;
+  let tokens: Awaited<ReturnType<typeof issueUserSession>>;
+  try {
+    capability = await beginAuthIssuance({
+      kind: 'browser',
+      value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
+    });
+    const admission = capability;
+    tokens = await finishAuthIssuance(admission, async (tx) => {
+      const issued = await issueUserSession({
+        userId: user.id,
+        email: user.email,
+        roleId: context.roleId,
+        orgId: context.orgId,
+        partnerId: context.partnerId,
+        scope: context.scope,
+        mfa: mfaSatisfied,
+        amr: ['cf_access'],
+      }, { tx, capability: admission });
+      await tx.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+      return issued;
+    });
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => false);
+    if (error instanceof AuthBindingRotationRequiredError) {
+      rotateCsrfBindingCookie(c, error.replacement.value);
+      return loginErrorRedirect('binding-refresh');
+    }
+    if (error instanceof AuthBindingUnavailableError
+      || error instanceof AuthIssuanceConflictError
+      || error instanceof AuthIssuanceCapabilityError) {
+      return loginErrorRedirect('unavailable');
+    }
+    throw error;
+  }
 
-  // System DB context required: no request auth context is established on this
-  // pre-auth path, so a bare UPDATE silently matches 0 rows under breeze_app RLS
-  // and last_login_at never moves (#1375).
-  await withSystemDbAccessContext(() =>
-    db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
-  );
+  void bindIssuedUserSession(tokens).catch((error) => {
+    console.warn('[cf-access-redirect] post-commit session cache bind failed', error);
+  });
 
   createAuditLogAsync({
     orgId: context.orgId ?? undefined,

@@ -47,8 +47,16 @@ import {
   assignUserToOrganization,
 } from './db-utils';
 import { encryptSecret } from '../../services/secretCrypto';
-import { createAccessToken } from '../../services/jwt';
+import { issueUserSession } from '../../services/userSession';
 import { loginRoutes } from '../../routes/auth/login';
+import {
+  AuthBindingRotationRequiredError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+  finishAuthIssuance,
+  resolveAuthBinding,
+  type AuthBindingSource,
+} from '../../services/authBrowserTransition';
 
 vi.mock('../../services/sso', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/sso')>();
@@ -165,6 +173,30 @@ function extractCookiePair(setCookieHeader: string): string {
   return pair;
 }
 
+function extractNamedCookiePair(setCookieHeader: string, name: string): string {
+  const match = setCookieHeader.match(new RegExp(`(?:^|,\\s*)${name}=([^;,\\s]+)`));
+  if (!match?.[1]) throw new Error(`missing ${name} cookie: ${setCookieHeader}`);
+  return `${name}=${match[1]}`;
+}
+
+async function requestWithCsrfBootstrap(
+  app: Hono,
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const first = await app.request(path, init);
+  if (first.status !== 303 && first.status !== 428) return first;
+  const setCookie = first.headers.get('set-cookie');
+  if (!setCookie) return first;
+  const csrfCookie = extractNamedCookiePair(setCookie, 'breeze_csrf_token');
+  const headers = new Headers(init?.headers);
+  headers.set('cookie', csrfCookie);
+  const retryPath = first.status === 303
+    ? first.headers.get('location') ?? path
+    : path;
+  return app.request(retryPath, { ...init, headers });
+}
+
 function extractSsoCodeFromLocation(location: string): string {
   const match = location.match(/#ssoCode=([^&]+)/);
   if (!match || !match[1]) throw new Error(`no #ssoCode fragment in redirect location: ${location}`);
@@ -179,6 +211,16 @@ function buildTestSsoStateCookie(state: string): string {
   const secret = process.env.APP_ENCRYPTION_KEY!;
   const value = createHmac('sha256', secret).update(`sso-login-state:${state}`).digest('hex');
   return `breeze_sso_state=${encodeURIComponent(value)}`;
+}
+
+function freshBrowserBinding(): AuthBindingSource {
+  try {
+    resolveAuthBinding(undefined);
+  } catch (error) {
+    if (error instanceof AuthBindingRotationRequiredError) return error.replacement;
+    throw error;
+  }
+  throw new Error('missing binding unexpectedly resolved');
 }
 
 describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', () => {
@@ -228,7 +270,7 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
 
     // Step 1: GET /sso/login/partner/:partnerId → 302 to IdP, session row
     // created, state cookie set.
-    const loginRes = await app.request(`/sso/login/partner/${partner.id}`);
+    const loginRes = await requestWithCsrfBootstrap(app, `/sso/login/partner/${partner.id}`);
     expect(loginRes.status).toBe(302);
     const location = loginRes.headers.get('location');
     expect(location).toBeTruthy();
@@ -401,8 +443,9 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
 
     // (b) Authenticated POST /sso/link/start/:providerId as V (mfa:true in
     // the test token, since requireMfa() gates the link-start route).
-    const vToken = await createAccessToken({
-      sub: passwordUser.id,
+    const vCapability = await beginAuthIssuance(freshBrowserBinding());
+    const vSession = await finishAuthIssuance(vCapability, (tx) => issueUserSession({
+      userId: passwordUser.id,
       email: passwordUser.email,
       roleId: role.id,
       orgId: null,
@@ -410,11 +453,11 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       scope: 'partner',
       mfa: true,
       amr: ['password', 'totp'],
-    });
+    }, { tx, capability: vCapability }));
 
     const linkStartRes = await app.request(`/sso/link/start/${provider.id}`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${vToken}` },
+      headers: { Authorization: `Bearer ${vSession.accessToken}` },
     });
     expect(linkStartRes.status).toBe(200);
     const linkStartBody = await linkStartRes.json();
@@ -527,6 +570,8 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
 
     const state = generateState();
     const nonce = generateNonce();
+    const capability = await beginAuthIssuance(freshBrowserBinding());
+    await cancelAuthIssuance(capability);
     await db.insert(ssoSessions).values({
       providerId: orgProvider.id,
       state,
@@ -534,6 +579,8 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       codeVerifier: null,
       redirectUrl: '/',
       linkUserId: null,
+      browserTransitionId: capability.transitionId,
+      browserGeneration: capability.generation,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
 
@@ -562,7 +609,7 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     const payload = decodeJwt(exchangeBody.accessToken);
     expect(payload.scope).toBe('organization');
     expect(payload.orgId).toBe(org.id);
-    expect(payload.partnerId).toBeNull();
+    expect(payload.partnerId).toBe(partner.id);
     expect(payload.roleId).toBe(role.id);
     expect(payload.sub).toBe(user.id);
 
@@ -648,7 +695,7 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
     // must leave password login untouched even with enforceSSO set.
     await createPartnerAxisProvider(partner.id, { status: 'testing', enforceSSO: true });
 
-    const res = await app.request('/auth/login', {
+    const res = await requestWithCsrfBootstrap(app, '/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: user.email, password }),
@@ -825,7 +872,7 @@ async function initiateOrgLogin(app: Hono, orgId: string): Promise<{ state: stri
 }
 
 async function initiateLoginVia(app: Hono, path: string): Promise<{ state: string; nonce: string; cookiePair: string }> {
-  const loginRes = await app.request(path);
+  const loginRes = await requestWithCsrfBootstrap(app, path);
   if (loginRes.status !== 302) {
     throw new Error(`expected 302 from ${path}, got ${loginRes.status}: ${await loginRes.text()}`);
   }
