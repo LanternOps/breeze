@@ -8,3 +8,4 @@ export * from './quoteMath';
 export * from './depositMath';
 export * from './csvExport';
 export * from './reportSchedule';
+export * from './s3Region';

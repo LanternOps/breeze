@@ -6,6 +6,7 @@ import {
   ListObjectsV2Command,
   PutObjectRetentionCommand,
 } from '@aws-sdk/client-s3';
+import { deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { buildS3Client } from './recoveryMediaService';
 import { asRecord, getStringValue } from './recoveryBootstrap';
 
@@ -34,7 +35,9 @@ export type ProviderCapabilityStatus = {
 
 function buildS3StorageClient(providerConfig: Record<string, unknown>) {
   const bucket = getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName');
-  const region = getStringValue(providerConfig, 'region');
+  const region =
+    getStringValue(providerConfig, 'region')?.trim() ||
+    deriveS3RegionFromEndpoint(getStringValue(providerConfig, 'endpoint'));
   if (!bucket || !region) {
     throw new Error('S3 backup storage is misconfigured');
   }

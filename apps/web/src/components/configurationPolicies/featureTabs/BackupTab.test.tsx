@@ -52,7 +52,7 @@ const baseLink = {
   featurePolicyId: 'config-1',
   inlineSettings: {
     backupMode: 'file',
-    targets: { paths: [], excludes: [] },
+    targets: { paths: ['C:/Data'], excludes: [] },
     schedule: {
       frequency: 'daily',
       time: '03:00',
@@ -67,7 +67,7 @@ const baseLink = {
       keepYearly: 3,
       weeklyDay: 0,
     },
-    paths: [],
+    paths: ['C:/Data'],
   },
 };
 
@@ -192,5 +192,195 @@ describe('BackupTab', () => {
         }),
       }),
     );
+  });
+
+  it('blocks file-mode save with no backup paths and shows a friendly error', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={{
+          ...baseLink,
+          inlineSettings: {
+            ...baseLink.inlineSettings,
+            targets: { paths: [], excludes: [] },
+            paths: [],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3 (Amazon S3)');
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    expect(await screen.findByText(/Add at least one backup path/i)).toBeTruthy();
+    expect(saveMock).not.toHaveBeenCalled();
+  });
+
+  it('flushes a typed-but-not-added backup path on save', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={{
+          ...baseLink,
+          inlineSettings: {
+            ...baseLink.inlineSettings,
+            targets: { paths: [], excludes: [] },
+            paths: [],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3 (Amazon S3)');
+    const pathInput = screen.getByPlaceholderText(/C:\\Users/i);
+    fireEvent.change(pathInput, { target: { value: '/Users' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(saveMock).toHaveBeenCalledWith(
+      'link-1',
+      expect.objectContaining({
+        inlineSettings: expect.objectContaining({
+          paths: ['/Users'],
+          targets: expect.objectContaining({ paths: ['/Users'] }),
+        }),
+      }),
+    );
+  });
+
+  it('edits an existing storage config via PATCH with masked secrets preserved', async () => {
+    const configWithRedactedSecrets = {
+      ...baseConfig,
+      details: {
+        bucket: 'backups',
+        region: '',
+        endpoint: 's3.us-west-004.backblazeb2.com',
+        accessKey: { redacted: true, hasSecret: true, masked: '********' },
+        secretKey: { redacted: true, hasSecret: true, masked: '********' },
+      },
+    };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ data: [configWithRedactedSecrets] });
+      }
+      if (url === '/backup/configs/config-1' && method === 'PATCH') {
+        return makeJsonResponse({
+          ...configWithRedactedSecrets,
+          details: { ...configWithRedactedSecrets.details, region: 'us-west-004' },
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={baseLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3 (Amazon S3)');
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
+    expect(await screen.findByText(/Editing storage configuration/i)).toBeTruthy();
+
+    const regionInput = screen.getByPlaceholderText(/us-east-1/i);
+    fireEvent.change(regionInput, { target: { value: 'us-west-004' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/backup/configs/config-1',
+        expect.objectContaining({ method: 'PATCH' }),
+      );
+    });
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === '/backup/configs/config-1' && (init as RequestInit)?.method === 'PATCH',
+    );
+    const patchBody = JSON.parse(String((patchCall?.[1] as RequestInit).body));
+    expect(patchBody.details).toMatchObject({
+      bucket: 'backups',
+      region: 'us-west-004',
+      endpoint: 's3.us-west-004.backblazeb2.com',
+      accessKey: '********',
+      secretKey: '********',
+    });
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+  });
+
+  it('blocks s3 create when region is empty and not derivable from the endpoint', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    // With no configs the tab drops into create mode automatically
+    const nameInput = await screen.findByPlaceholderText(/Production S3 Backups/i);
+    fireEvent.change(nameInput, { target: { value: 'My B2' } });
+    fireEvent.change(screen.getByPlaceholderText(/my-backup-bucket/i), {
+      target: { value: 'bucket' },
+    });
+    // Satisfy the backup-path requirement so the region check is what fires
+    fireEvent.change(screen.getByPlaceholderText(/C:\\Users/i), {
+      target: { value: '/data' },
+    });
+    const regionInput = screen.getByPlaceholderText(/us-east-1/i);
+    fireEvent.change(regionInput, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    expect(await screen.findByText(/S3 region is required/i)).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/backup/configs',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('auto-fills the region from an S3-compatible endpoint', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByPlaceholderText(/Production S3 Backups/i);
+    const endpointInput = screen.getByPlaceholderText(/backblazeb2/i);
+    fireEvent.change(endpointInput, {
+      target: { value: 's3.us-west-004.backblazeb2.com' },
+    });
+
+    const regionInput = screen.getByPlaceholderText(/us-east-1/i) as HTMLInputElement;
+    expect(regionInput.value).toBe('us-west-004');
   });
 });
