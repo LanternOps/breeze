@@ -27,6 +27,19 @@ export async function claimPendingCommandForDelivery(
   return rows.length > 0 ? { id: commandId, executedAt } : null;
 }
 
+/**
+ * Put a claimed-but-undelivered command back to `pending`. Keyed on
+ * `(id, status='sent', executedAt=<claim ts>)` so a stale release can never
+ * clobber a newer claim or resurrect a terminal command (0-row no-op is the
+ * correct outcome in both cases).
+ *
+ * Context note: `withSystemDbAccessContext` does NOT escalate when a request
+ * context is already active — on the heartbeat paths (#2414) this UPDATE runs
+ * inside the caller's org-scoped transaction. That is safe solely because
+ * `device_commands` is intentionally RLS-free; if it ever gains a system-only
+ * write policy, this release would become a silent 0-row no-op on the hottest
+ * delivery path.
+ */
 export async function releaseClaimedCommandDelivery(
   commandId: string,
   executedAt: Date,
