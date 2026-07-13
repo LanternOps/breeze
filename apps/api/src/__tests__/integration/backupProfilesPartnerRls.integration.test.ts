@@ -331,4 +331,81 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
       });
     });
   });
+
+  // The proof above runs in a SYSTEM context (the scheduler's). Every
+  // request-path caller — manual "Back up now", the run-all endpoints, the
+  // dashboards — runs in the CALLER's context instead, and an org-scoped token
+  // never passes breeze_has_partner_access. Resolving there used to return
+  // nothing for a partner-linked device: the manual run then fell through to a
+  // legacy single-mode job and the dashboards called the device unprotected.
+  // This asserts the resolver sees partner-wide state from an ORG context.
+  it('FAN-OUT PROOF (org-scoped caller): a partner-wide policy still resolves under an ORG RLS context', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const profileId = await seedPartnerProfile(partner.id);
+    const { policy, link } = await seedPartnerPolicyWithLink(partner.id, profileId);
+
+    const { deviceId, configId } = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [config] = await db
+        .insert(backupConfigs)
+        .values({
+          orgId: org.id,
+          name: 'Org default S3',
+          type: 'file',
+          provider: 's3',
+          providerConfig: { bucket: 'b', region: 'us-east-1' },
+          isDefault: true,
+        })
+        .returning();
+      createdConfigs.push(config!.id);
+
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: link.id,
+        orgId: null,
+        partnerId: partner.id,
+        schedule: { frequency: 'daily', time: '03:00' },
+        retention: { preset: 'standard' },
+        backupProfileId: profileId,
+      });
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: policy.id,
+        level: 'partner',
+        targetId: partner.id,
+        priority: 100,
+      });
+      const [site] = await db.insert(sites).values({ orgId: org.id, name: 'HQ' }).returning();
+      createdSites.push(site!.id);
+      const [device] = await db
+        .insert(devices)
+        .values({
+          orgId: org.id,
+          siteId: site!.id,
+          agentId: `agent-${site!.id.slice(0, 18)}`,
+          hostname: 'srv-02',
+          osType: 'windows',
+          osVersion: '10.0',
+          architecture: 'x64',
+          agentVersion: '1.0.0',
+        })
+        .returning();
+      createdDevices.push(device!.id);
+      return { deviceId: device!.id, configId: config!.id };
+    });
+
+    // The org token carries NO partner access — exactly what a tech's session
+    // looks like. Before the system-context fix this resolved to [].
+    const entries = await withDbAccessContext(orgContext(org.id), () =>
+      resolveAllBackupAssignedDevices(org.id),
+    );
+
+    const entry = entries.find((e) => e.deviceId === deviceId);
+    expect(entry).toBeTruthy();
+    expect(entry!.configId).toBe(configId);
+    expect(entry!.selectionSpecs?.map((s) => s.backupMode)).toEqual([
+      'file',
+      'system_image',
+      'mssql',
+    ]);
+    expect(entry!.selectionError).toBeNull();
+  });
 });
