@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { useEffect, useState } from "react";
+import { useHashState } from "@/lib/useHashState";
 import { ShieldAlert, Activity } from "lucide-react";
 import S1ThreatList from "./S1ThreatList";
 import HuntressIncidentList from "./HuntressIncidentList";
@@ -21,19 +21,12 @@ const TABS: {
     testid: "edr-tab-huntress",
   },
 ];
-function tabFromHash(): EdrTab {
-  if (typeof window === "undefined") return "sentinelone";
-  const h = window.location.hash.replace(/^#/, "");
-  return h === "huntress" ? "huntress" : "sentinelone";
-}
 export default function EdrPage() {
   const { t } = useTranslation("security");
-  const [activeTab, setActiveTab] = useState<EdrTab>(tabFromHash);
-  useEffect(() => {
-    const onHash = () => setActiveTab(tabFromHash());
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
+  // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
+  const [activeTab, setActiveTab] = useHashState<EdrTab>("sentinelone", (h) =>
+    h === "huntress" ? "huntress" : undefined,
+  );
   const switchTab = (t: EdrTab) => {
     window.location.hash = t;
     setActiveTab(t);

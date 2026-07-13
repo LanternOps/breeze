@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { formatMinutes } from '../../lib/timeFormat';
 import { onTimerChanged } from '../../lib/timerActions';
+import { useHashState } from '@/lib/useHashState';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -72,11 +73,11 @@ function shiftWeek(weekStart: string, delta: number): string {
   return base.toISOString().slice(0, 10);
 }
 
-function parseHash(): { week: string; tech: string | null } {
-  if (typeof window === 'undefined') return { week: mondayUtc(new Date()), tech: null };
+// Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
+function parseHash(hash: string): { week: string; tech: string | null } {
   let week: string | null = null;
   let tech: string | null = null;
-  for (const part of window.location.hash.replace('#', '').split('&')) {
+  for (const part of hash.split('&')) {
     if (!part) continue;
     if (part.startsWith('week=')) {
       const v = part.slice('week='.length);
@@ -110,9 +111,10 @@ const FRIENDLY: Record<string, string> = {
 
 export default function TimesheetPage() {
   const { t } = useTranslation('common');
-  const initial = parseHash();
-  const [week, setWeek] = useState<string>(initial.week);
-  const [tech, setTech] = useState<string | null>(initial.tech);
+  // SSR-safe hash adoption lives in the hook (#2421). parseHash's week already
+  // falls back to the current Monday; tech → undefined keeps the null default.
+  const [week, setWeek] = useHashState<string>(mondayUtc(new Date()), (h) => parseHash(h).week);
+  const [tech, setTech] = useHashState<string | null>(null, (h) => parseHash(h).tech ?? undefined);
   const [sheet, setSheet] = useState<TsSheet | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [adminDenied, setAdminDenied] = useState(false);
@@ -120,6 +122,8 @@ export default function TimesheetPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({ description: '', isBillable: true, hourlyRate: '' });
   const [loading, setLoading] = useState(true);
+  // Monotonic id of the newest in-flight timesheet request (see loadSheet).
+  const fetchSeq = useRef(0);
   const [loadError, setLoadError] = useState(false);
   const friendly = useCallback((code: string): string | undefined => {
     const key = FRIENDLY[code];
@@ -137,14 +141,23 @@ export default function TimesheetPage() {
     })();
   }, []);
 
-  // Load timesheet when week or tech changes
+  // Load timesheet when week or tech changes.
+  //
+  // Latest-request-wins. A deep-linked load (`/time#week=…&tech=…`) fires this
+  // twice — once with the SSR-safe defaults (current Monday, own sheet), then
+  // again once useHashState adopts the hash (#2421). The `weekStart !== loadWeek`
+  // check below only compares a response against its OWN request, so both pass;
+  // without a sequence guard the seed response could land last and paint the
+  // current week's own hours under a header naming another week and tech.
   const loadSheet = useCallback(async (loadWeek: string, loadTech: string | null) => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
     setLoadError(false);
     try {
       const params = new URLSearchParams({ weekStart: loadWeek });
       if (loadTech) params.set('userId', loadTech);
       const res = await fetchWithAuth(`/time-entries/timesheet?${params.toString()}`);
+      if (seq !== fetchSeq.current) return;
       if (!res.ok) {
         if (res.status === 403 && loadTech) {
           // No admin access to another tech's sheet — fall back to own
@@ -158,13 +171,15 @@ export default function TimesheetPage() {
         return;
       }
       const body = await res.json().catch(() => null) as { data?: TsSheet } | null;
+      if (seq !== fetchSeq.current) return;
       if (body?.data?.weekStart && body.data.weekStart !== loadWeek) return; // stale response from rapid navigation
       setSheet(body?.data ?? null);
       setSelected(new Set()); // clear selection on new load
     } catch {
+      if (seq !== fetchSeq.current) return;
       setLoadError(true);
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, []);
 

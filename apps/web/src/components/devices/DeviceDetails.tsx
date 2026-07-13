@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useHashState } from "@/lib/useHashState";
 import {
   Monitor,
   Cpu,
@@ -176,16 +177,15 @@ const VALID_TABS: Tab[] = [
   "tickets",
 ];
 
-function getTabFromHash(): Tab {
-  if (typeof window === "undefined") return "overview";
-  const hash = window.location.hash.replace("#", "").split("/")[0] ?? "";
-  if (VALID_TABS.includes(hash as Tab)) return hash as Tab;
-  return "overview";
+// Pure hash parsers (leading `#` already stripped by useHashState) so they are
+// SSR-safe — the hash is adopted post-mount by the hook (#2421).
+function tabFromHash(hash: string): Tab | undefined {
+  const seg = hash.split("/")[0] ?? "";
+  return VALID_TABS.includes(seg as Tab) ? (seg as Tab) : undefined;
 }
 
-function getAnomalyIdFromHash(): string | undefined {
-  if (typeof window === "undefined") return undefined;
-  const [tab, anomalyId] = window.location.hash.replace("#", "").split("/");
+function anomalyIdFromHash(hash: string): string | undefined {
+  const [tab, anomalyId] = hash.split("/");
   return tab === "anomalies" && anomalyId ? anomalyId : undefined;
 }
 
@@ -196,10 +196,10 @@ export default function DeviceDetails({
   onAction,
 }: DeviceDetailsProps) {
   const { t } = useTranslation("devices");
-  const [activeTab, setActiveTab] = useState<Tab>(getTabFromHash);
-  const [focusedAnomalyId, setFocusedAnomalyId] = useState<string | undefined>(
-    getAnomalyIdFromHash,
-  );
+  const [activeTab, setActiveTab] = useHashState<Tab>("overview", tabFromHash);
+  const [focusedAnomalyId, setFocusedAnomalyId] = useHashState<
+    string | undefined
+  >(undefined, anomalyIdFromHash);
   // Whether the Overview Activity rail is collapsed to its thin vertical bar.
   // Starts collapsed so the page paints at full width during the async load and
   // never flashes a rail that then vanishes (the v0.85.0 stretch bug). Once the
@@ -227,15 +227,6 @@ export default function DeviceDetails({
     activityUserToggled.current = false;
     setActivityCollapsed(true);
   }, [device.id]);
-
-  useEffect(() => {
-    const onHashChange = () => {
-      setActiveTab(getTabFromHash());
-      setFocusedAnomalyId(getAnomalyIdFromHash());
-    };
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
 
   const switchTab = (tab: Tab) => {
     window.location.hash = tab;

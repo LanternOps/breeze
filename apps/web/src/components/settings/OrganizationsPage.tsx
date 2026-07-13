@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
+import { useHashState } from '@/lib/useHashState';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type { Organization } from './OrganizationList';
@@ -44,10 +45,9 @@ export default function OrganizationsPage() {
   const [error, setError] = useState<string>();
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
   const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
-  const [initialOrgId] = useState(() => {
-    if (typeof window === 'undefined') return null;
-    return window.location.hash.replace('#', '') || null;
-  });
+  // Deep-linked org id adopted post-mount (#2421); later hash writes are
+  // harmless because the consumer effect only fires while nothing is selected.
+  const [initialOrgId] = useHashState<string | null>(null, (h) => h || undefined);
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [draggedOrgId, setDraggedOrgId] = useState<string | null>(null);

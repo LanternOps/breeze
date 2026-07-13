@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useHashState } from '@/lib/useHashState';
 import { ArrowLeft, Globe, ExternalLink, Wifi, WifiOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
@@ -60,13 +61,6 @@ function formatTimestamp(value?: string | null): string {
 const VALID_TABS = ['overview', 'monitoring'] as const;
 type Tab = (typeof VALID_TABS)[number];
 
-function getTabFromHash(): Tab {
-  if (typeof window === 'undefined') return 'overview';
-  const hash = window.location.hash.replace('#', '').split('/')[0] ?? '';
-  if ((VALID_TABS as readonly string[]).includes(hash)) return hash as Tab;
-  return 'overview';
-}
-
 function Section({
   title,
   children,
@@ -99,15 +93,12 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const [extras, setExtras] = useState<AssetDetailExtras>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [activeTab, setActiveTab] = useState<Tab>(getTabFromHash);
-
-  // Keep the active tab in sync with the URL hash so the view is shareable and
-  // the browser back/forward buttons move between tabs (mirrors DeviceDetails).
-  useEffect(() => {
-    const onHashChange = () => setActiveTab(getTabFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  // Hash-derived tab adopted post-mount to avoid an SSR hydration mismatch
+  // (#2421); the hook also syncs back/forward via hashchange.
+  const [activeTab, setActiveTab] = useHashState<Tab>('overview', (h) => {
+    const seg = h.split('/')[0] ?? '';
+    return (VALID_TABS as readonly string[]).includes(seg) ? (seg as Tab) : undefined;
+  });
 
   const switchTab = (tab: Tab) => {
     window.location.hash = tab;

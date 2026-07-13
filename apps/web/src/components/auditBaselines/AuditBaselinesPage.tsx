@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { BarChart3, ListChecks, ShieldCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useHashTab } from '@/lib/useHashState';
 import ComplianceDashboard from './ComplianceDashboard';
 import BaselineList from './BaselineList';
 import BaselineApplyTab from './BaselineApplyTab';
@@ -15,24 +15,12 @@ const tabs = [
 
 type TabId = (typeof tabs)[number]['id'];
 
+const TAB_IDS = tabs.map((tab) => tab.id);
+
 export default function AuditBaselinesPage() {
   const { t } = useTranslation('security');
-  const [activeTab, setActiveTab] = useState<TabId>(() => {
-    if (typeof window !== 'undefined') {
-      const hash = window.location.hash.replace('#', '') as TabId;
-      if (tabs.some((t) => t.id === hash)) return hash;
-    }
-    return 'dashboard';
-  });
-
-  useEffect(() => {
-    const onHashChange = () => {
-      const hash = window.location.hash.replace('#', '') as TabId;
-      if (tabs.some((t) => t.id === hash)) setActiveTab(hash);
-    };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
+  const [activeTab, setActiveTab] = useHashTab<TabId>(TAB_IDS, 'dashboard');
 
   const handleTabChange = (id: TabId) => {
     setActiveTab(id);

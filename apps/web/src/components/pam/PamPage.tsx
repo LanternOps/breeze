@@ -1,5 +1,6 @@
 import '@/lib/i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useHashTab } from '@/lib/useHashState';
 import { Activity, Inbox, ListChecks, ScrollText, ShieldCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useEventStream } from '../../hooks/useEventStream';
@@ -22,15 +23,10 @@ const ELEVATION_EVENTS = [
   'elevation.revoked',
 ];
 
-function readTabFromHash(): Tab {
-  if (typeof window === 'undefined') return 'overview';
-  const hash = window.location.hash.replace('#', '');
-  return (VALID_TABS as readonly string[]).includes(hash) ? (hash as Tab) : 'overview';
-}
-
 export default function PamPage() {
   const { t } = useTranslation('security');
-  const [activeTab, setActiveTab] = useState<Tab>(readTabFromHash);
+  // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
+  const [activeTab, setActiveTab] = useHashTab<Tab>(VALID_TABS, 'overview');
   // Bumped on every elevation.* event (debounced); tabs refetch when it changes.
   const [liveTick, setLiveTick] = useState(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -38,13 +34,7 @@ export default function PamPage() {
   const switchTab = useCallback((tab: Tab) => {
     window.location.hash = tab;
     setActiveTab(tab);
-  }, []);
-
-  useEffect(() => {
-    const onHashChange = () => setActiveTab(readTabFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  }, [setActiveTab]);
 
   const { connected, subscribe, unsubscribe } = useEventStream({
     onEvent: (event) => {

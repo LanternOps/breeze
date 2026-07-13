@@ -31,6 +31,7 @@ import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch'
 import { useOrgStore } from '../../stores/orgStore';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
+import { useHashState } from '@/lib/useHashState';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
 import AccessDenied from '../shared/AccessDenied';
 import { asRecord, toPercent } from '@/lib/deviceUtils';
@@ -104,10 +105,9 @@ export default function DevicesPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [actionInProgress, setActionInProgress] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; label: string } | null>(null);
-  const [showAddDevice, setShowAddDevice] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    return window.location.hash === '#add-device';
-  });
+  // The three hash-seeded states below adopt the hash post-mount via
+  // useHashState so the first client render matches the SSR markup (#2421).
+  const [showAddDevice, setShowAddDevice] = useHashState<boolean>(false, (h) => (h === 'add-device' ? true : undefined));
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
   // vm_host link creation (#2308): the bulk action opens a host-picker modal
   // over the selected devices; null = closed.
@@ -118,18 +118,12 @@ export default function DevicesPage() {
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
-  const [advancedFilter, setAdvancedFilter] = useState<FilterConditionGroup | null>(() => {
-    if (typeof window === 'undefined') return null;
-    return decodeFilterFromHash(window.location.hash);
-  });
+  const [advancedFilter, setAdvancedFilter] = useHashState<FilterConditionGroup | null>(null, (h) => decodeFilterFromHash(h) ?? undefined);
   // [ All | Agent | Network ] class segment (#1424). Seeded from the hash so a
   // chosen class is shareable; a pure client-side narrowing of the merged list.
   // Only meaningful when the network arm is enabled (otherwise the list is
   // agent-only and the segment is hidden).
-  const [deviceClassFilter, setDeviceClassFilter] = useState<DeviceClassFilter>(() => {
-    if (typeof window === 'undefined') return 'all';
-    return readDeviceClassFromHash(window.location.hash);
-  });
+  const [deviceClassFilter, setDeviceClassFilter] = useHashState<DeviceClassFilter>('all', (h) => readDeviceClassFromHash(h));
   const handleDeviceClassChange = useCallback((next: DeviceClassFilter) => {
     setDeviceClassFilter(next);
     writeDeviceClassToHash(next);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useHashTab } from '@/lib/useHashState';
 import MonitoringAssetsDashboard from './MonitoringAssetsDashboard';
 import NetworkMonitorList from '../monitors/NetworkMonitorList';
 import SNMPTemplateList from '../snmp/SNMPTemplateList';
@@ -12,28 +13,13 @@ import '../../lib/i18n';
 const MONITORING_TABS = ['assets', 'checks', 'templates'] as const;
 type MonitoringTab = (typeof MONITORING_TABS)[number];
 
-function getTabFromHash(): MonitoringTab {
-  if (typeof window === 'undefined') return 'assets';
-  const hash = window.location.hash.replace('#', '');
-  if (hash && (MONITORING_TABS as readonly string[]).includes(hash)) {
-    return hash as MonitoringTab;
-  }
-  return 'assets';
-}
-
 export default function MonitoringPage() {
   const { t } = useTranslation('common');
-  const [activeTab, setActiveTab] = useState<MonitoringTab>(getTabFromHash);
+  // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
+  const [activeTab, setActiveTab] = useHashTab<MonitoringTab>(MONITORING_TABS, 'assets');
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | undefined>(undefined);
   const [templateRefreshToken, setTemplateRefreshToken] = useState(0);
   const [initialAssetId, setInitialAssetId] = useState<string | null>(null);
-
-  // Sync active tab when the hash changes (e.g. back/forward navigation).
-  useEffect(() => {
-    const onHashChange = () => setActiveTab(getTabFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -57,7 +43,7 @@ export default function MonitoringPage() {
   const navigateToTab = useCallback((tab: MonitoringTab) => {
     if (typeof window !== 'undefined') window.location.hash = tab;
     setActiveTab(tab);
-  }, []);
+  }, [setActiveTab]);
 
   return (
     <div className="space-y-6">
