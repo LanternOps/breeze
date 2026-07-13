@@ -12,6 +12,7 @@ import {
 import { storeToken, storeUser, clearAuthData } from '../services/auth';
 import {
   advanceSessionGeneration,
+  captureSessionGeneration,
   terminateSessionGeneration,
   isCurrentSessionGeneration,
   runAuthSessionTransition,
@@ -20,7 +21,12 @@ import {
   SessionGenerationStaleError,
 } from '../services/sessionGeneration';
 
-async function persistAuthenticatedSession(token: string, user: User): Promise<void> {
+async function persistAuthenticatedSession(
+  token: string,
+  user: User,
+  admittedGeneration: number,
+): Promise<void> {
+  if (!isCurrentSessionGeneration(admittedGeneration)) throw new SessionGenerationStaleError();
   const generation = advanceSessionGeneration();
   await runAuthStorageForSessionGeneration(generation, async () => {
     try {
@@ -71,13 +77,14 @@ export const loginAsync = createAsyncThunk(
   async ({ email, password }: { email: string; password: string }, { rejectWithValue }) => {
     try {
       return await runAuthSessionTransition(async () => {
+        const admittedGeneration = captureSessionGeneration();
         const result = await apiLogin(email, password);
 
         if (result.kind === 'mfaRequired') {
           return { mfa: result.challenge };
         }
 
-        await persistAuthenticatedSession(result.token, result.user);
+        await persistAuthenticatedSession(result.token, result.user, admittedGeneration);
 
         return { token: result.token, user: result.user };
       });
@@ -93,8 +100,9 @@ export const verifyMfaAsync = createAsyncThunk(
   async ({ code, tempToken, method }: { code: string; tempToken: string; method: MfaCodeMethod }, { rejectWithValue }) => {
     try {
       return await runAuthSessionTransition(async () => {
+        const admittedGeneration = captureSessionGeneration();
         const response = await apiVerifyMfa(code, tempToken, method);
-        await persistAuthenticatedSession(response.token, response.user);
+        await persistAuthenticatedSession(response.token, response.user, admittedGeneration);
         return response;
       });
     } catch (error: unknown) {

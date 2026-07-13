@@ -32,7 +32,7 @@ vi.mock('@sentry/react-native', () => ({
 }));
 
 import authReducer, { loginAsync, logoutAsync, setCredentials, verifyMfaAsync } from './authSlice';
-import { advanceSessionGeneration } from '../services/sessionGeneration';
+import { advanceSessionGeneration, terminateSessionGeneration } from '../services/sessionGeneration';
 
 function makeStore() {
   return configureStore({ reducer: { auth: authReducer } });
@@ -136,6 +136,53 @@ describe('authenticated-session persistence boundary', () => {
     await vi.waitFor(() => expect(auth.clearAuthData).toHaveBeenCalledOnce());
     await logout;
     await expect(mfaA).resolves.toMatchObject({ type: 'auth/verifyMfa/rejected' });
+    expect(store.getState().auth.user).toBeNull();
+  });
+
+  it.each([
+    ['password login', api.login, (store: ReturnType<typeof makeStore>) =>
+      store.dispatch(loginAsync({ email: userA.email, password: 'password' })),
+      { kind: 'success', token: 'token-a', user: userA }],
+    ['MFA verification', api.verifyMfa, (store: ReturnType<typeof makeStore>) =>
+      store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'temp', method: 'totp' })),
+      { token: 'token-a', user: userA }],
+  ])('does not let a resolved %s continuation adopt a generation after logout', async (
+    _label,
+    requestMock,
+    dispatchRequest,
+    success,
+  ) => {
+    let resolveRequest!: (value: typeof success) => void;
+    requestMock.mockImplementationOnce(() => new Promise((resolve) => { resolveRequest = resolve; }));
+    const store = makeStore();
+
+    const request = dispatchRequest(store);
+    await vi.waitFor(() => expect(requestMock).toHaveBeenCalledOnce());
+    resolveRequest(success);
+    const logout = store.dispatch(logoutAsync());
+
+    await request;
+    await logout;
+    await Promise.resolve();
+    expect(auth.storeToken).not.toHaveBeenCalledWith('token-a');
+    expect(auth.storeUser).not.toHaveBeenCalledWith(userA);
+    expect(store.getState().auth.user).toBeNull();
+  });
+
+  it('does not let a resolved issuer continuation adopt a generation after terminal reauthentication', async () => {
+    let resolveLogin!: (value: { kind: 'success'; token: string; user: typeof userA }) => void;
+    api.login.mockImplementationOnce(() => new Promise((resolve) => { resolveLogin = resolve; }));
+    const store = makeStore();
+
+    const request = store.dispatch(loginAsync({ email: userA.email, password: 'password' }));
+    await vi.waitFor(() => expect(api.login).toHaveBeenCalledOnce());
+    resolveLogin({ kind: 'success', token: 'token-a', user: userA });
+    terminateSessionGeneration();
+
+    await request;
+    await Promise.resolve();
+    expect(auth.storeToken).not.toHaveBeenCalledWith('token-a');
+    expect(auth.storeUser).not.toHaveBeenCalledWith(userA);
     expect(store.getState().auth.user).toBeNull();
   });
 
