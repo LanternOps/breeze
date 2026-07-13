@@ -1,19 +1,29 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partners, organizations } from '../../db/schema';
 import {
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
+  beginAuthIssuance,
+  bindIssuedUserSession,
+  cancelAuthIssuance,
+  finishAuthIssuance,
   hashPassword,
   isPasswordStrong,
   getRedis,
-  issueUserSessionLegacyDuringTransition,
+  issueUserSession,
   rateLimiter,
 } from '../../services';
-import { acceptInviteSchema, invitePreviewSchema } from './schemas';
+import { acceptInviteSchema, CSRF_COOKIE_NAME, invitePreviewSchema } from './schemas';
 import {
+  getCookieValue,
   getClientRateLimitKey,
+  rotateCsrfBindingCookie,
   resolveCurrentUserTokenContext,
   resolveUserAuditOrgId,
   writeAuthAudit,
@@ -28,10 +38,74 @@ import {
   revokeAllUserSessionFamilies,
   type AuthLifecycleTransaction,
 } from '../../services/authLifecycle';
+import type { AuthIssuanceCapability } from '../../services/authBrowserTransition';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
 export const inviteRoutes = new Hono();
+
+class InviteAlreadyAcceptedError extends Error {}
+
+export async function activateInvitedUserSession(input: {
+  tx: AuthLifecycleTransaction;
+  capability: AuthIssuanceCapability;
+  userId: string;
+  passwordHash: string;
+}) {
+  const [lockedUser] = await input.tx
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      status: users.status,
+    })
+    .from(users)
+    .where(eq(users.id, input.userId))
+    .limit(1)
+    .for('update');
+  if (!lockedUser) throw new Error(`Invited user ${input.userId} disappeared`);
+  if (lockedUser.status !== 'invited') throw new InviteAlreadyAcceptedError();
+
+  const [updated] = await input.tx
+    .update(users)
+    .set({
+      passwordHash: input.passwordHash,
+      status: 'active',
+      passwordChangedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(users.id, input.userId), eq(users.status, 'invited')))
+    .returning({ id: users.id });
+  if (!updated) throw new InviteAlreadyAcceptedError();
+
+  await advanceUserSecurityState(input.tx, input.userId);
+  await revokeAllUserSessionFamilies(input.tx, input.userId, 'invite-accepted');
+  const context = await resolveCurrentUserTokenContext(input.userId);
+  const tokens = await issueUserSession({
+    userId: lockedUser.id,
+    email: lockedUser.email,
+    roleId: context.roleId,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+    scope: context.scope,
+    mfa: false,
+    amr: ['password'],
+  }, { tx: input.tx, capability: input.capability });
+  return { user: lockedUser, tokens };
+}
+
+function inviteTransitionErrorResponse(c: Context, error: unknown) {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    rotateCsrfBindingCookie(c, error.replacement.value);
+    return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
+  }
+  if (error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError) {
+    return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+  }
+  return null;
+}
 
 function setInviteTokenNoStore(c: Context): void {
   c.header('Cache-Control', 'no-store');
@@ -144,97 +218,106 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
     return c.json({ error: 'This invite has already been accepted' }, 400);
   }
 
-  // Activate the user account
+  // Hash outside the transaction so the browser-transition row is never held
+  // across CPU-intensive password work.
+  const passwordHash = await hashPassword(password);
+  let capability: Awaited<ReturnType<typeof beginAuthIssuance>> | undefined;
+  let committed: {
+    user: { id: string; email: string; name: string | null };
+    tokens: Awaited<ReturnType<typeof issueUserSession>>;
+  };
+
   try {
-    const passwordHash = await hashPassword(password);
-
-    // Pre-auth path: RLS UPDATE policy on `users` requires partner/org
-    // /self context. Without the system-scope wrap, this silently
-    // matches zero rows and returns success — the invitee's account
-    // never gets activated. Same fix as reset-password (see password.ts).
-    await withSystemDbAccessContext(async () => {
-      const [updated] = await db
-        .update(users)
-        .set({
-          passwordHash,
-          status: 'active',
-          passwordChangedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(users.id, userId))
-        .returning({ id: users.id });
-      if (!updated) {
-        throw new Error(`Failed to activate invited user ${userId}`);
-      }
-      const tx = db as unknown as AuthLifecycleTransaction;
-      await advanceUserSecurityState(tx, userId);
-      await revokeAllUserSessionFamilies(tx, userId, 'invite-accepted');
+    const admission = await beginAuthIssuance({
+      kind: 'browser',
+      value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
     });
-
-    // Clean up invite tokens (single-use)
-    await redis.del(inviteRedisKey(tokenHash)).catch((err: unknown) => {
-      console.error('[AcceptInvite] Failed to delete invite token:', err);
-    });
-    await redis.del(inviteUserRedisKey(userId)).catch((err: unknown) => {
-      console.error('[AcceptInvite] Failed to delete invite-user key:', err);
-    });
+    capability = admission;
+    committed = await finishAuthIssuance(admission, (tx) =>
+      activateInvitedUserSession({
+        tx,
+        capability: admission,
+        userId,
+        passwordHash,
+      }));
   } catch (err) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => false);
+    const transitionResponse = inviteTransitionErrorResponse(c, err);
+    if (transitionResponse) return transitionResponse;
+    if (err instanceof InviteAlreadyAcceptedError) {
+      return c.json({ error: 'This invite has already been accepted' }, 400);
+    }
     console.error(`[AcceptInvite] Failed to activate user ${userId}:`, err);
     return c.json({ error: 'Failed to activate account. Please try again.' }, 500);
   }
 
-  // Audit logs
-  const auditOrgId = await resolveUserAuditOrgId(userId);
-  writeAuthAudit(c, {
-    orgId: auditOrgId ?? undefined,
-    action: 'user.invite.accepted',
-    result: 'success',
-    userId: user.id,
-    email: user.email,
-    name: user.name,
-  });
-  writeAuthAudit(c, {
-    orgId: auditOrgId ?? undefined,
-    action: 'user.password.set',
-    result: 'success',
-    userId: user.id,
-    email: user.email,
-    name: user.name,
-  });
-
-  // Auto-login: resolve context and create tokens
+  // Everything below is post-commit: Redis is a cache/single-use accelerator,
+  // audit delivery is non-authoritative, and cookies are response state.
+  let auditFailure: unknown;
   try {
-    const context = await resolveCurrentUserTokenContext(userId);
-
-    const tokens = await issueUserSessionLegacyDuringTransition({
-      userId: user.id,
-      email: user.email,
-      roleId: context.roleId,
-      orgId: context.orgId,
-      partnerId: context.partnerId,
-      scope: context.scope,
-      mfa: false,
-      amr: ['password'],
+    const auditOrgId = await resolveUserAuditOrgId(userId);
+    writeAuthAudit(c, {
+      orgId: auditOrgId ?? undefined,
+      action: 'user.invite.accepted',
+      result: 'success',
+      userId: committed.user.id,
+      email: committed.user.email,
+      name: committed.user.name ?? undefined,
     });
+    writeAuthAudit(c, {
+      orgId: auditOrgId ?? undefined,
+      action: 'user.password.set',
+      result: 'success',
+      userId: committed.user.id,
+      email: committed.user.email,
+      name: committed.user.name ?? undefined,
+    });
+  } catch (error) {
+    auditFailure = error;
+  }
 
-    setRefreshTokenCookie(c, tokens.refreshToken);
-
+  const postCommitResults = await Promise.allSettled([
+    bindIssuedUserSession(committed.tokens),
+    redis.del(inviteRedisKey(tokenHash)),
+    redis.del(inviteUserRedisKey(userId)),
+  ]);
+  const postCommitFailure = postCommitResults.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (auditFailure || postCommitFailure) {
+    const failure = auditFailure ?? postCommitFailure?.reason;
+    console.error(`[AcceptInvite] Account activated but post-commit session/cache delivery failed for ${userId}:`, failure);
     return c.json({
       user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
+        id: committed.user.id,
+        email: committed.user.email,
+        name: committed.user.name,
         mfaEnabled: false,
       },
-      tokens: toPublicTokens(tokens),
+      tokens: null,
+      message: 'Account activated. Please sign in manually.',
     });
-  } catch (err) {
-    console.error(`[AcceptInvite] Account activated but auto-login failed for ${userId}:`, err);
+  }
+
+  try {
+    setRefreshTokenCookie(c, committed.tokens.refreshToken);
+
     return c.json({
       user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
+        id: committed.user.id,
+        email: committed.user.email,
+        name: committed.user.name,
+        mfaEnabled: false,
+      },
+      tokens: toPublicTokens(committed.tokens),
+    });
+  } catch (err) {
+    console.error(`[AcceptInvite] Account activated but cookie delivery failed for ${userId}:`, err);
+    return c.json({
+      user: {
+        id: committed.user.id,
+        email: committed.user.email,
+        name: committed.user.name,
         mfaEnabled: false,
       },
       tokens: null,

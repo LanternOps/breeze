@@ -16,8 +16,6 @@ const SRC_DIR = join(__dirname, '..');
 
 const expectedLegacyIssuers = new Set([
   'routes/auth/cfAccessRedirectLogin.ts',
-  'routes/auth/register.ts',
-  'routes/auth/invite.ts',
   'routes/sso.ts',
 ]);
 
@@ -1146,12 +1144,14 @@ describe('session inventory analyzer fixtures', () => {
   });
 });
 
-describe('browser-auth issuer inventory (4 guarded issuances; 5 frozen legacy issuances; 10 cookie writes)', () => {
+describe('browser-auth issuer inventory (7 guarded issuances; 2 frozen legacy issuances; 10 cookie writes)', () => {
   it('allows guarded issueUserSession only from browser-transition finalizers', () => {
     const inventory = collectCallInventory('issueUserSession');
 
     expect(Object.fromEntries([...inventory.entries()].sort())).toEqual({
+      'routes/auth/invite.ts': 1,
       'routes/auth/login.ts': 1,
+      'routes/auth/register.ts': 2,
       'services/mfaAssurance.ts': 2,
       'services/recoveryCodeAuth.ts': 1,
     });
@@ -1171,11 +1171,9 @@ describe('browser-auth issuer inventory (4 guarded issuances; 5 frozen legacy is
     expect(new Set(inventory.keys())).toEqual(expectedLegacyIssuers);
     expect(Object.fromEntries([...inventory.entries()].sort())).toEqual({
       'routes/auth/cfAccessRedirectLogin.ts': 1,
-      'routes/auth/invite.ts': 1,
-      'routes/auth/register.ts': 2,
       'routes/sso.ts': 1,
     });
-    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(5);
+    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(2);
   }, 15_000);
 
   it('freezes every production setRefreshTokenCookie call site', () => {

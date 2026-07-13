@@ -4,13 +4,21 @@ import { eq, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partners, partnerUsers } from '../../db/schema';
 import {
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
+  beginAuthIssuance,
+  bindIssuedUserSession,
+  cancelAuthIssuance,
+  finishAuthIssuance,
   hashPassword,
   isPasswordStrong,
-  issueUserSessionLegacyDuringTransition,
+  issueUserSession,
   rateLimiter,
   getRedis
 } from '../../services';
-import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
+import { CSRF_COOKIE_NAME, ENABLE_REGISTRATION, registerSchema, registerPartnerSchema } from './schemas';
 import { isHosted } from '../../config/env';
 import type { PartnerStatus } from '../../db/schema/orgs';
 import { dispatchHook } from '../../services/partnerHooks';
@@ -22,19 +30,93 @@ import { generateVerificationToken } from '../../services/emailVerification';
 import { getEmailService } from '../../services/email';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
-import { withAuthLifecycleSystemTransaction } from '../../services/authLifecycle';
+import type { AuthIssuanceCapability } from '../../services/authBrowserTransition';
+import type { AuthLifecycleTransaction } from '../../services/authLifecycle';
 import {
+  getCookieValue,
   runWithSystemDbAccess,
   getClientRateLimitKey,
+  rotateCsrfBindingCookie,
   setRefreshTokenCookie,
   toPublicTokens,
-  resolveCurrentUserTokenContext,
   registrationDisabledResponse
 } from './helpers';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
 export const registerRoutes = new Hono();
+
+export async function createRegisteredPartnerSession(input: {
+  tx: AuthLifecycleTransaction;
+  capability: AuthIssuanceCapability;
+  companyName: string;
+  email: string;
+  name: string;
+  passwordHash: string;
+  status: PartnerStatus;
+}) {
+  const result = await createPartner({
+    orgName: input.companyName,
+    adminEmail: input.email,
+    adminName: input.name,
+    passwordHash: input.passwordHash,
+    origin: { mcp: false },
+    status: input.status,
+  }, { tx: input.tx });
+
+  const [newPartner] = await input.tx
+    .select({
+      id: partners.id,
+      name: partners.name,
+      slug: partners.slug,
+      plan: partners.plan,
+      status: partners.status,
+    })
+    .from(partners)
+    .where(eq(partners.id, result.partnerId))
+    .limit(1);
+  const [newUser] = await input.tx
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      mfaEnabled: users.mfaEnabled,
+    })
+    .from(users)
+    .where(eq(users.id, result.adminUserId))
+    .limit(1);
+  if (!newPartner || !newUser) {
+    throw new Error('Partner or user row missing after createPartner');
+  }
+
+  const sessionIdentity = {
+    userId: newUser.id,
+    email: newUser.email,
+    roleId: result.adminRoleId,
+    orgId: result.orgId,
+    partnerId: newPartner.id,
+    scope: 'partner',
+    mfa: false,
+    amr: ['password'],
+  } as const;
+  const tokens = await issueUserSession(
+    { ...sessionIdentity },
+    { tx: input.tx, capability: input.capability });
+  return { result, newPartner, newUser, sessionIdentity, tokens };
+}
+
+function registrationTransitionErrorResponse(c: Parameters<typeof rotateCsrfBindingCookie>[0], error: unknown) {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    rotateCsrfBindingCookie(c, error.replacement.value);
+    return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
+  }
+  if (error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError) {
+    return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+  }
+  return null;
+}
 
 // Register user (compatibility for legacy signup path)
 registerRoutes.post('/register', zValidator('json', registerSchema), async (c) => {
@@ -94,45 +176,12 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
   const rateLimitClient = getClientRateLimitKey(c);
 
   return runWithSystemDbAccess(async () => {
-
     // Self-hosted single-tenant installs need the seeded admin to finish
     // setup before strangers can create partners. SaaS deployments
     // (IS_HOSTED=true) skip the gate so the partner table can
     // bootstrap from an empty state.
-    if (isHosted()) {
-      // Awaited so a DB-write failure surfaces here with full context, rather
-      // than orphaning a context-less captureException out of the request scope.
-      // Signup still proceeds on failure — these events are low-volume and
-      // gating user signup on audit-table availability would be heavy.
-      const bypassDetails = {
-        email: email.toLowerCase(),
-        companyName,
-        reason: 'mcp-bootstrap-enabled',
-      };
-      try {
-        await createAuditLog({
-          orgId: null,
-          actorType: 'system',
-          actorId: ANONYMOUS_ACTOR_ID,
-          action: 'register-partner.setup-admin-gate-bypass',
-          resourceType: 'partner',
-          details: bypassDetails,
-          ipAddress: getTrustedClientIpOrUndefined(c),
-          userAgent: c.req.header('user-agent'),
-          result: 'success',
-        });
-      } catch (auditErr) {
-        console.error('[register-partner] bypass audit-log write failed', {
-          error: auditErr instanceof Error ? auditErr.message : String(auditErr),
-          stack: auditErr instanceof Error ? auditErr.stack : undefined,
-          ...bypassDetails,
-          ip: getTrustedClientIpOrUndefined(c),
-        });
-        captureException(auditErr, c);
-      }
-      // eslint-disable-next-line no-console
-      console.warn('[register-partner] setup-admin gate bypassed (saas mode)');
-    } else {
+    const hosted = isHosted();
+    if (!hosted) {
       const [setupAdmin] = await db
         .select({ setupCompletedAt: users.setupCompletedAt })
         .from(users)
@@ -175,76 +224,71 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     // Hash password before transaction (CPU-intensive, don't hold tx open)
     const passwordHash = await hashPassword(password);
 
-    type RegisterPhase =
-      | 'create-partner'
-      | 'post-create-fetch'
-      | 'token-creation'
-      | 'hook-dispatch'
-      | 'post-activation-token-creation'
-      | 'response-build';
-    let phase: RegisterPhase = 'create-partner';
+    type RegisterPhase = 'admission' | 'authority-transaction' | 'post-commit' | 'hook-status' | 'response-build';
+    let phase: RegisterPhase = 'admission';
     let partnerIdForLog: string | undefined;
+    let capability: Awaited<ReturnType<typeof beginAuthIssuance>> | undefined;
 
     try {
-      // Atomic creation of partner, role, user, partner-user link, org, site.
-      // Slug generation + uniqueness loop now live inside the service so the
-      // MCP bootstrap tool can reuse them.
-      const result = await createPartner({
-        orgName: companyName,
-        adminEmail: email,
-        adminName: name,
-        passwordHash,
-        origin: { mcp: false },
-        status: isHosted() ? 'pending' : 'active',
+      const admission = await beginAuthIssuance({
+        kind: 'browser',
+        value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
       });
-      partnerIdForLog = result.partnerId;
+      capability = admission;
+      phase = 'authority-transaction';
 
-      phase = 'post-create-fetch';
+      const committed = await finishAuthIssuance(admission, (tx) =>
+        createRegisteredPartnerSession({
+          tx,
+          capability: admission,
+          companyName,
+          email,
+          name,
+          passwordHash,
+          status: hosted ? 'pending' : 'active',
+        }));
+      partnerIdForLog = committed.result.partnerId;
+      let { tokens } = committed;
+      let effectiveStatus: PartnerStatus = committed.newPartner.status;
 
-      // Fetch the partner + user rows we need downstream (slug, plan, status,
-      // billingEmail, mfa state). Kept outside the service so the service's
-      // return contract stays minimal / stable across callers.
-      const [newPartner] = await db
-        .select({
-          id: partners.id,
-          name: partners.name,
-          slug: partners.slug,
-          plan: partners.plan,
-          status: partners.status,
-        })
-        .from(partners)
-        .where(eq(partners.id, result.partnerId))
-        .limit(1);
-
-      const [newUser] = await db
-        .select({
-          id: users.id,
-          email: users.email,
-          name: users.name,
-          mfaEnabled: users.mfaEnabled,
-        })
-        .from(users)
-        .where(eq(users.id, result.adminUserId))
-        .limit(1);
-
-      if (!newPartner || !newUser) {
-        throw new Error('Partner or user row missing after createPartner');
+      phase = 'post-commit';
+      try {
+        await bindIssuedUserSession(tokens);
+      } catch (cacheErr) {
+        console.warn('[register-partner] post-commit session cache binding failed', cacheErr);
+        captureException(cacheErr, c);
       }
 
-      phase = 'token-creation';
-
-      // Token creation outside tx (doesn't need rollback)
-      const sessionIdentity = {
-        userId: newUser.id,
-        email: newUser.email,
-        roleId: result.adminRoleId,
-        orgId: result.orgId,
-        partnerId: newPartner.id,
-        scope: 'partner',
-        mfa: false,
-        amr: ['password']
-      } as const;
-      let tokens = await issueUserSessionLegacyDuringTransition(sessionIdentity);
+      if (hosted) {
+        const bypassDetails = {
+          email: email.toLowerCase(),
+          companyName,
+          reason: 'mcp-bootstrap-enabled',
+        };
+        try {
+          await createAuditLog({
+            orgId: null,
+            actorType: 'system',
+            actorId: ANONYMOUS_ACTOR_ID,
+            action: 'register-partner.setup-admin-gate-bypass',
+            resourceType: 'partner',
+            details: bypassDetails,
+            ipAddress: getTrustedClientIpOrUndefined(c),
+            userAgent: c.req.header('user-agent'),
+            result: 'success',
+          });
+        } catch (auditErr) {
+          console.error('[register-partner] bypass audit-log write failed', {
+            error: auditErr instanceof Error ? auditErr.message : String(auditErr),
+            stack: auditErr instanceof Error ? auditErr.stack : undefined,
+            ...bypassDetails,
+            ip: getTrustedClientIpOrUndefined(c),
+          });
+          captureException(auditErr, c);
+        }
+        // eslint-disable-next-line no-console
+        console.warn('[register-partner] setup-admin gate bypassed (saas mode)');
+      }
 
       // Email verification — best-effort send. Failures must not fail the
       // signup, but the result needs to be surfaced to the client so the
@@ -253,9 +297,9 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       let verificationEmailSent = false;
       try {
         const rawToken = await generateVerificationToken({
-          partnerId: newPartner.id,
-          userId: newUser.id,
-          email: newUser.email,
+          partnerId: committed.newPartner.id,
+          userId: committed.newUser.id,
+          email: committed.newUser.email,
         });
         const appBaseUrl = (
           process.env.DASHBOARD_URL ||
@@ -266,8 +310,8 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         const emailService = getEmailService();
         if (emailService) {
           await emailService.sendVerificationEmail({
-            to: newUser.email,
-            name: newUser.name,
+            to: committed.newUser.email,
+            name: committed.newUser.name,
             verificationUrl,
           });
           verificationEmailSent = true;
@@ -282,57 +326,60 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         }
       } catch (verifyErr) {
         console.error('[register-partner] verification email send failed', {
-          partnerId: newPartner.id,
-          userId: newUser.id,
+          partnerId: committed.newPartner.id,
+          userId: committed.newUser.id,
           error: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
         });
         captureException(verifyErr, c);
       }
 
 
-      phase = 'hook-dispatch';
-
       // Dispatch post-registration hook (external services can override status/redirect)
-      const hookResponse = await dispatchHook('registration', newPartner.id, {
-        email: newUser.email,
-        partnerName: newPartner.name,
-        plan: newPartner.plan,
+      const hookResponse = await dispatchHook('registration', committed.newPartner.id, {
+        email: committed.newUser.email,
+        partnerName: committed.newPartner.name,
+        plan: committed.newPartner.plan,
       });
 
       // If hook overrides the partner status (e.g. to 'pending'), apply it
       const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
-      let effectiveStatus: PartnerStatus = newPartner.status;
-      let rotateSessionAfterActivation = false;
-
-      if (hookResponse?.status && hookResponse.status !== newPartner.status) {
+      if (hookResponse?.status && hookResponse.status !== committed.newPartner.status) {
         if (!VALID_STATUSES.includes(hookResponse.status as any)) {
-          console.error(`[Registration] Hook returned invalid status '${hookResponse.status}' for partner ${newPartner.id}; ignoring`);
+          console.error(`[Registration] Hook returned invalid status '${hookResponse.status}' for partner ${committed.newPartner.id}; ignoring`);
         } else {
           const isPendingActivation =
-            newPartner.status === 'pending' && hookResponse.status === 'active';
+            committed.newPartner.status === 'pending' && hookResponse.status === 'active';
+          let hookCapability: Awaited<ReturnType<typeof beginAuthIssuance>> | undefined;
           try {
-            if (isPendingActivation) {
-              const statusMetadata = {
-                ...(hookResponse.message ? { message: hookResponse.message } : {}),
-                ...(hookResponse.actionUrl ? { actionUrl: hookResponse.actionUrl } : {}),
-                ...(hookResponse.actionLabel ? { actionLabel: hookResponse.actionLabel } : {}),
-              };
-              const activation = await withAuthLifecycleSystemTransaction((tx) =>
-                activatePendingPartnerAndInvalidateSessions(
+            phase = 'hook-status';
+            const hookAdmission = await beginAuthIssuance({
+              kind: 'browser',
+              value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
+            });
+            hookCapability = hookAdmission;
+            const hookResult = await finishAuthIssuance(hookAdmission, async (tx) => {
+              if (isPendingActivation) {
+                const statusMetadata = {
+                  ...(hookResponse.message ? { message: hookResponse.message } : {}),
+                  ...(hookResponse.actionUrl ? { actionUrl: hookResponse.actionUrl } : {}),
+                  ...(hookResponse.actionLabel ? { actionLabel: hookResponse.actionLabel } : {}),
+                };
+                const activation = await activatePendingPartnerAndInvalidateSessions(
                   tx,
-                  newPartner.id,
+                  committed.newPartner.id,
                   new Date(),
                   statusMetadata,
-                )
-              );
-              if (!activation.activated) {
-                throw new Error('Pending partner activation did not update the partner row');
+                );
+                if (!activation.activated) {
+                  throw new Error('Pending partner activation did not update the partner row');
+                }
+                const replacement = await issueUserSession(
+                  { ...committed.sessionIdentity },
+                  { tx, capability: hookAdmission });
+                return { status: 'active' as PartnerStatus, replacement };
               }
-              effectiveStatus = 'active';
-              rotateSessionAfterActivation = true;
-            } else {
               const updateSet: Record<string, unknown> = {
-                status: hookResponse.status as typeof newPartner.status,
+                status: hookResponse.status as typeof committed.newPartner.status,
               };
 
               // Apply optional status message fields from hook response
@@ -343,17 +390,29 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
                 if (hookResponse.actionLabel) msgSettings.statusActionLabel = hookResponse.actionLabel;
                 updateSet.settings = sql`COALESCE(${partners.settings}, '{}'::jsonb) || ${JSON.stringify(msgSettings)}::jsonb`;
               }
-
-              await db
+              await tx
                 .update(partners)
                 .set(updateSet)
-                .where(eq(partners.id, newPartner.id));
-              effectiveStatus = hookResponse.status as PartnerStatus;
+                .where(eq(partners.id, committed.newPartner.id));
+              return { status: hookResponse.status as PartnerStatus };
+            });
+            effectiveStatus = hookResult.status;
+            if (hookResult.replacement) {
+              tokens = hookResult.replacement;
+              try {
+                await bindIssuedUserSession(tokens);
+              } catch (cacheErr) {
+                console.warn('[register-partner] post-activation cache binding failed', cacheErr);
+                captureException(cacheErr, c);
+              }
             }
           } catch (statusErr) {
+            if (hookCapability) {
+              await cancelAuthIssuance(hookCapability).catch(() => false);
+            }
             console.error('[register-partner] hook-status update failed', {
-              partnerId: newPartner.id,
-              fromStatus: newPartner.status,
+              partnerId: committed.newPartner.id,
+              fromStatus: committed.newPartner.status,
               toStatus: hookResponse.status,
               error: statusErr instanceof Error ? statusErr.message : String(statusErr),
               stack: statusErr instanceof Error ? statusErr.stack : undefined,
@@ -367,10 +426,10 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
               actorType: 'system',
               action: 'register-partner.hook-status-update-failed',
               resourceType: 'partner',
-              resourceId: newPartner.id,
-              resourceName: newPartner.name,
+              resourceId: committed.newPartner.id,
+              resourceName: committed.newPartner.name,
               details: {
-                fromStatus: newPartner.status,
+                fromStatus: committed.newPartner.status,
                 toStatus: hookResponse.status,
               },
               result: 'failure',
@@ -383,14 +442,6 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         }
       }
 
-      if (rotateSessionAfterActivation) {
-        phase = 'post-activation-token-creation';
-        // The initial pair was minted while the partner was pending and was
-        // revoked by the activation transaction. Mint only after commit so
-        // the response/cookie carry live post-activation epochs.
-        tokens = await issueUserSessionLegacyDuringTransition(sessionIdentity);
-      }
-
       phase = 'response-build';
 
       // Only allow relative redirects from hooks to prevent open redirect
@@ -400,15 +451,15 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
       return c.json({
         user: {
-          id: newUser.id,
-          email: newUser.email,
-          name: newUser.name,
+          id: committed.newUser.id,
+          email: committed.newUser.email,
+          name: committed.newUser.name,
           mfaEnabled: false
         },
         partner: {
-          id: newPartner.id,
-          name: newPartner.name,
-          slug: newPartner.slug,
+          id: committed.newPartner.id,
+          name: committed.newPartner.name,
+          slug: committed.newPartner.slug,
           status: effectiveStatus,
         },
         tokens: toPublicTokens(tokens),
@@ -417,6 +468,11 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         ...(redirectUrl ? { redirectUrl } : {}),
       });
     } catch (err) {
+      if (capability) {
+        await cancelAuthIssuance(capability).catch(() => false);
+      }
+      const transitionResponse = registrationTransitionErrorResponse(c, err);
+      if (transitionResponse) return transitionResponse;
       console.error('[register-partner] failed', {
         phase,
         partnerId: partnerIdForLog,

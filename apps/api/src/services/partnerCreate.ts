@@ -11,6 +11,7 @@ import {
 } from '../db/schema';
 import type { PartnerStatus } from '../db/schema/orgs';
 import { seedSystemTicketStatuses } from './ticketConfigService';
+import type { AuthLifecycleTransaction } from './authLifecycle';
 
 export interface CreatePartnerInput {
   orgName: string;
@@ -45,11 +46,14 @@ export interface CreatePartnerResult {
  * Behavior for the non-MCP path is a direct transplant of the inline
  * transaction that previously lived in `register.ts`.
  */
-export async function createPartner(input: CreatePartnerInput): Promise<CreatePartnerResult> {
+export async function createPartner(
+  input: CreatePartnerInput,
+  options: { tx?: AuthLifecycleTransaction } = {},
+): Promise<CreatePartnerResult> {
   const normalizedEmail = input.adminEmail.toLowerCase();
   const mcpOrigin = input.origin.mcp;
 
-  return db.transaction(async (tx) => {
+  const createInTransaction = async (tx: AuthLifecycleTransaction): Promise<CreatePartnerResult> => {
     // Signup / bootstrap is an unauthenticated, system-initiated tenant-creation
     // flow. Elevate this tx to system scope so RLS policies on partners,
     // organizations, and any other tenant-root tables in this tx pass for rows
@@ -198,7 +202,11 @@ export async function createPartner(input: CreatePartnerInput): Promise<CreatePa
       adminRoleId: adminRole.id,
       mcpOrigin,
     };
-  });
+  };
+
+  return options.tx
+    ? createInTransaction(options.tx)
+    : db.transaction(createInTransaction);
 }
 
 /**

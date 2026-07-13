@@ -19,9 +19,28 @@ vi.mock('../../db/schema', () => ({
 }));
 
 vi.mock('../../services', () => ({
+  AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
+    constructor(readonly replacement: { kind: 'browser'; value: string }) { super(); }
+  },
+  AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
+  AuthIssuanceCapabilityError: class AuthIssuanceCapabilityError extends Error {},
+  AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
+  beginAuthIssuance: vi.fn(async () => ({
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    generation: 1,
+    operationId: '22222222-2222-4222-8222-222222222222',
+    expiresAt: new Date(Date.now() + 120_000),
+  })),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: object) => Promise<unknown>) => {
+    const { db } = await import('../../db');
+    return callback(db);
+  }),
+  cancelAuthIssuance: vi.fn(async () => true),
+  bindIssuedUserSession: vi.fn(async () => undefined),
   hashPassword: vi.fn(async () => 'hashed'),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),
   issueUserSession: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', refreshJti: 'jti-mock', expiresInSeconds: 900, familyId: 'family-id-mock' })),
+  issueUserSessionLegacyDuringTransition: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', refreshJti: 'jti-mock', expiresInSeconds: 900, familyId: 'family-id-mock' })),
   rateLimiter: vi.fn(async () => ({ allowed: true })),
   getRedis: vi.fn(() => ({})),
 }));
@@ -85,6 +104,8 @@ vi.mock('./helpers', async () => {
       expiresInSeconds: t.expiresInSeconds,
     })),
     getClientRateLimitKey: vi.fn(() => 'test-client'),
+    getCookieValue: vi.fn(() => 'a'.repeat(64)),
+    rotateCsrfBindingCookie: vi.fn(),
     registrationDisabledResponse: vi.fn((c: { json: (b: unknown, s: number) => unknown }) =>
       c.json({ error: 'Registration disabled' }, 403),
     ),
@@ -107,7 +128,12 @@ import { writeAuditEvent } from '../../services/auditEvents';
 import { createAuditLog } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
 import { dispatchHook } from '../../services/partnerHooks';
-import { issueUserSession } from '../../services';
+import {
+  beginAuthIssuance,
+  finishAuthIssuance,
+  issueUserSession,
+  bindIssuedUserSession,
+} from '../../services';
 import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
 import { setRefreshTokenCookie } from './helpers';
 
@@ -137,10 +163,42 @@ const validBody = {
 async function postRegisterPartner(body: unknown) {
   return registerRoutes.request('/register-partner', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', cookie: `breeze_csrf_token=${'a'.repeat(64)}` },
     body: JSON.stringify(body),
   });
 }
+
+describe('/register-partner durable issuance ordering', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.IS_HOSTED = 'true';
+    vi.mocked(createPartner).mockResolvedValue({
+      partnerId: 'p-1',
+      orgId: 'o-1',
+      adminUserId: 'u-1',
+      adminRoleId: 'r-1',
+      siteId: 's-1',
+      mcpOrigin: false,
+    });
+    vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
+  });
+
+  it('makes no account, family, cookie, success-audit, email, or hook write when logout wins finalization', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new Error('logout pending'));
+
+    const res = await postRegisterPartner(validBody);
+
+    expect(res.status).toBe(500);
+    expect(beginAuthIssuance).toHaveBeenCalledOnce();
+    expect(finishAuthIssuance).toHaveBeenCalledOnce();
+    expect(createPartner).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).not.toHaveBeenCalled();
+    expect(setRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(createAuditLog).not.toHaveBeenCalled();
+    expect(dispatchHook).not.toHaveBeenCalled();
+  });
+});
 
 describe('/register-partner partner status by deployment mode', () => {
   beforeEach(() => {
@@ -193,6 +251,7 @@ describe('/register-partner partner status by deployment mode', () => {
     expect(res.status).toBeLessThan(400);
     expect(createPartner).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'pending' }),
+      expect.objectContaining({ tx: db }),
     );
   });
 
@@ -204,6 +263,7 @@ describe('/register-partner partner status by deployment mode', () => {
     expect(res.status).toBeLessThan(400);
     expect(createPartner).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'active' }),
+      expect.objectContaining({ tx: db }),
     );
   });
 });
@@ -265,7 +325,7 @@ describe('/register-partner hook activation session rotation', () => {
 
     expect(res.status).toBe(200);
     expect(activatePendingPartnerAndInvalidateSessions).toHaveBeenCalledWith(
-      { scope: 'system-tx' },
+      db,
       'p-1',
       expect.any(Date),
       {
@@ -276,14 +336,16 @@ describe('/register-partner hook activation session rotation', () => {
     );
     expect(db.update).not.toHaveBeenCalled();
     expect(issueUserSession).toHaveBeenCalledTimes(2);
-    expect(issueUserSession).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      mfa: false,
-      amr: ['password'],
-    }));
-    expect(issueUserSession).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      mfa: false,
-      amr: ['password'],
-    }));
+    expect(issueUserSession).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ mfa: false, amr: ['password'] }),
+      expect.objectContaining({ tx: db }),
+    );
+    expect(issueUserSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ mfa: false, amr: ['password'] }),
+      expect.objectContaining({ tx: db }),
+    );
     expect(
       vi.mocked(activatePendingPartnerAndInvalidateSessions).mock.invocationCallOrder[0],
     ).toBeLessThan(vi.mocked(issueUserSession).mock.invocationCallOrder[1]!);

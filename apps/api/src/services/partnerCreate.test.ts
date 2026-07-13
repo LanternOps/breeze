@@ -92,6 +92,7 @@ vi.mock('../db', () => {
   };
 });
 
+import { db } from '../db';
 import { createPartner } from './partnerCreate';
 
 beforeEach(() => {
@@ -99,6 +100,21 @@ beforeEach(() => {
 });
 
 describe('createPartner', () => {
+  it('uses a caller-owned guarded transaction without opening a nested transaction', async () => {
+    const marker = new Error('outer guarded transaction used');
+    const outerTx = { execute: vi.fn(async () => { throw marker; }) } as any;
+
+    await expect(createPartner({
+      orgName: 'Acme',
+      adminEmail: 'alex@acme.com',
+      adminName: 'Alex',
+      passwordHash: 'hashed',
+      origin: { mcp: false },
+    }, { tx: outerTx })).rejects.toBe(marker);
+
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
   it('inserts partner, admin user, admin role, partner-user link, default org, and default site in a single transaction', async () => {
     const result = await createPartner({
       orgName: 'Acme',
