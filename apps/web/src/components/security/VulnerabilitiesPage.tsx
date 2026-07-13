@@ -72,6 +72,8 @@ export default function VulnerabilitiesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
+  // Separate from `error`: a refetch clears the load error, not the action error.
+  const [actionError, setActionError] = useState<string>();
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   // Deep-linkable severity filter (#severity=critical), see dashboard severity rows.
@@ -139,6 +141,7 @@ export default function VulnerabilitiesPage() {
     return () => abortRef.current?.abort();
   }, [fetchData]);
   const handleBulkAction = async (action: "quarantine" | "remove") => {
+    setActionError(undefined);
     try {
       for (const id of selectedIds) {
         const res = await fetchWithAuth(`/security/threats/${id}/${action}`, {
@@ -149,7 +152,12 @@ export default function VulnerabilitiesPage() {
       setSelectedIds(new Set());
     } catch (err) {
       console.error("[VulnerabilitiesPage] bulk action error:", err);
-      setError(friendlyFetchError(err));
+      // NOT `setError`: the unconditional `fetchData` below opens with
+      // `setError(undefined)`, and React batches both writes into one render — so
+      // a failed quarantine/remove was wiped before it ever painted and the user
+      // saw NOTHING while the threat stayed listed as active. Keep action failures
+      // in their own state, which the refetch does not clear. (#2472)
+      setActionError(friendlyFetchError(err));
     }
     fetchData(pagination.page);
   };
@@ -259,6 +267,16 @@ export default function VulnerabilitiesPage() {
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
           <p className="text-sm text-destructive">{error}</p>
+        </div>
+      )}
+
+      {actionError && (
+        <div
+          className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center"
+          data-testid="vulnerabilities-action-error"
+          role="alert"
+        >
+          <p className="text-sm text-destructive">{actionError}</p>
         </div>
       )}
 

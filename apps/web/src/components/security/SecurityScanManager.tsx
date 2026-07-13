@@ -57,8 +57,10 @@ export default function SecurityScanManager() {
   }>({ completed: 0, failed: 0, total: 0, items: new Map() });
   const [error, setError] = useState<string>();
   const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
-  // Distinguishes "this fleet has no scan history" from "we could not read it".
-  const [scanHistoryFailed, setScanHistoryFailed] = useState(false);
+  // Distinguishes "this fleet has no scan history" from "we could not read it",
+  // and how much of it we could not read (partial reads are the dangerous case:
+  // the table looks complete).
+  const [scanLoad, setScanLoad] = useState({ failed: 0, total: 0 });
   const abortRef = useRef<AbortController | null>(null);
   const selectedDevices = useMemo(
     () => devices.filter((device) => selectedIds.has(device.deviceId)),
@@ -99,6 +101,7 @@ export default function SecurityScanManager() {
   const fetchData = useCallback(async () => {
     setError(undefined);
     setErrorKind("none");
+    setScanLoad({ failed: 0, total: 0 });
     setLoading(true);
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -127,19 +130,29 @@ export default function SecurityScanManager() {
             fetchScansForDevice(device.deviceId, controller.signal),
           ),
       );
-      // A rejected per-device fetch is NOT "this device has no scans". Track it so
-      // an empty history renders as "couldn't be loaded" rather than a confident
-      // "No scan history yet." When some devices did return rows we still show
-      // them; the flag only changes the *empty* copy, which is exactly the case
-      // where "no scans" would be a lie. (#2472)
-      const rejected = scanResults.filter((r) => r.status === "rejected");
+      // This run has been superseded by a newer fetchData; its per-device fetches
+      // were aborted, so everything below would be noise attributed to the wrong
+      // run. `Promise.allSettled` never rejects, so the outer AbortError guard
+      // cannot catch this for us.
+      if (controller.signal.aborted) return;
+      // A rejected per-device fetch is NOT "this device has no scans" — but an
+      // ABORTED one is not a failure either, it is just a superseded request.
+      // Count only genuine failures. (#2472)
+      const rejected = scanResults.filter(
+        (r): r is PromiseRejectedResult =>
+          r.status === "rejected" &&
+          !(r.reason instanceof DOMException && r.reason.name === "AbortError"),
+      );
       if (rejected.length > 0) {
         console.error(
           `[SecurityScanManager] ${rejected.length}/${scanResults.length} scan-history fetches failed:`,
-          (rejected[0] as PromiseRejectedResult).reason,
+          rejected[0].reason,
         );
       }
-      setScanHistoryFailed(rejected.length > 0);
+      // Surfaced whatever the row count is. Showing only the devices we could read
+      // — with no note that others were unreadable — is a scan-history table that
+      // looks complete and silently isn't.
+      setScanLoad({ failed: rejected.length, total: scanResults.length });
       const nextScans = scanResults.flatMap((result) =>
         result.status === "fulfilled" ? result.value : [],
       );
@@ -277,6 +290,7 @@ export default function SecurityScanManager() {
       </p>
     </div>
   );
+  const scanHistoryFailed = scanLoad.failed > 0;
   // The device list is the spine of this panel — without it there is nothing to
   // scan and no history to show. A 403 is terminal, so stop here rather than
   // rendering an empty device picker that implies the fleet has no devices.
@@ -296,6 +310,22 @@ export default function SecurityScanManager() {
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
           {error}
+        </div>
+      )}
+
+      {/* Partial reads are the dangerous case: the history table below renders only
+          the devices we COULD read, which looks complete and silently isn't. Say so
+          regardless of how many rows came back. (#2472) */}
+      {scanHistoryFailed && (
+        <div
+          className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+          data-testid="scan-history-partial-failure"
+          role="status"
+        >
+          {t("securitySecurityScanManager.scanHistoryPartiallyUnavailable", {
+            failed: scanLoad.failed,
+            total: scanLoad.total,
+          })}
         </div>
       )}
 

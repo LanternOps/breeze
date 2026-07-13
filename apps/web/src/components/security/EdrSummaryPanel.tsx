@@ -70,6 +70,18 @@ export default function EdrSummaryPanel() {
         getJson<HuntressStatus>("/huntress/status"),
       ]);
       if (cancelled) return;
+      // `allSettled` swallows the reasons — without this, a 500 from either
+      // provider leaves no breadcrumb at all and only the derived enum survives,
+      // making "why is EDR unavailable?" unanswerable from a support ticket.
+      if (s1Res.status === "rejected") {
+        console.error("[EdrSummaryPanel] /s1/status failed:", s1Res.reason);
+      }
+      if (huntressRes.status === "rejected") {
+        console.error(
+          "[EdrSummaryPanel] /huntress/status failed:",
+          huntressRes.reason,
+        );
+      }
       setS1(s1Res.status === "fulfilled" ? s1Res.value : null);
       setHuntress(
         huntressRes.status === "fulfilled" ? huntressRes.value : null,

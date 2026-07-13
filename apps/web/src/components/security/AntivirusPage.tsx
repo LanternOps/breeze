@@ -160,10 +160,17 @@ export default function AntivirusPage() {
       </div>
     );
   }
+  // `/security/dashboard` is tolerated separately from the device list: if it
+  // fails, the list still renders. But `dashboard` then stays null, and coercing
+  // that to 0 painted "Total 0 / Protected 0 / Coverage 0%" with no banner at all
+  // — a fabricated all-clear for a fleet we simply failed to read. Show an em
+  // dash for the unknown instead of inventing a zero. (#2472)
+  const hasDashboard = dashboard !== null;
   const total = dashboard?.totalDevices ?? 0;
   const prot = dashboard?.protectedDevices ?? 0;
   const unprot = dashboard?.unprotectedDevices ?? 0;
   const coveragePercent = total ? Math.round((prot / total) * 100) : 0;
+  const stat = (value: number) => (hasDashboard ? formatNumber(value) : "—");
   const pieData = (dashboard?.providers ?? [])
     .filter((p) => p.deviceCount > 0)
     .map((p) => ({ name: p.providerName, value: p.deviceCount }));
@@ -182,25 +189,31 @@ export default function AntivirusPage() {
         <SecurityStatCard
           icon={ShieldCheck}
           label={t("securityAntivirusPage.totalDevices")}
-          value={formatNumber(total)}
+          value={stat(total)}
         />
         <SecurityStatCard
           icon={ShieldCheck}
           label={t("securityAntivirusPage.protected")}
-          value={formatNumber(prot)}
-          variant="success"
+          value={stat(prot)}
+          variant={hasDashboard ? "success" : "default"}
         />
         <SecurityStatCard
           icon={ShieldOff}
           label={t("securityAntivirusPage.unprotected")}
-          value={formatNumber(unprot)}
-          variant="danger"
+          value={stat(unprot)}
+          variant={hasDashboard ? "danger" : "default"}
         />
         <SecurityStatCard
           icon={ShieldCheck}
           label={t("securityAntivirusPage.coverage")}
-          value={`${coveragePercent}%`}
-          variant={coveragePercent >= 90 ? "success" : "warning"}
+          value={hasDashboard ? `${coveragePercent}%` : "—"}
+          variant={
+            !hasDashboard
+              ? "default"
+              : coveragePercent >= 90
+                ? "success"
+                : "warning"
+          }
         />
       </div>
 

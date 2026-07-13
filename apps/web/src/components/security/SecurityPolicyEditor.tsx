@@ -110,10 +110,13 @@ export default function SecurityPolicyEditor({
     isPartnerScope && (allOrgs || !currentOrgId) ? "partner" : "organization",
   );
   const fetchPolicy = useCallback(async () => {
-    if (!policyId) return;
-    setLoading(true);
+    // Reset BEFORE the no-policyId bail: otherwise a policyId -> undefined
+    // transition (edit -> create) would strand a stale AccessDenied over the
+    // create form.
     setError(undefined);
     setErrorKind("none");
+    if (!policyId) return;
+    setLoading(true);
     try {
       const response = await fetchWithAuth("/security/policies");
       // HttpError (not a bare Error) so a 403 survives the throw and the render
@@ -188,10 +191,7 @@ export default function SecurityPolicyEditor({
       console.error("[SecurityPolicyEditor] save error:", err);
       // A save denial is not a page-level denial (the user could still read the
       // policy), so this stays an inline message rather than an AccessDenied panel.
-      setError(
-        friendlyFetchError(err) ||
-          t("securitySecurityPolicyEditor.failedToSavePolicy"),
-      );
+      setError(friendlyFetchError(err));
     } finally {
       setSaving(false);
     }
