@@ -578,10 +578,19 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// stops spamming the API (#401).
 	authMon := authstate.NewMonitor(3)
 
-	// Initialize log shipper for centralized diagnostics
+	// Initialize log shipper for centralized diagnostics.
+	//
+	// The shipper's URL is a provider, not a copied string: after a
+	// backup-server-URL promotion (#2323) diagnostics must follow the promoted
+	// primary instead of being shipped at the dead one for the rest of the
+	// process lifetime — precisely when those logs are most wanted (#2463).
+	// The heartbeat does not exist yet (it owns the promoted URL), so the
+	// provider is seeded with the startup value and bound to hb.ServerURL
+	// below, before the heartbeat starts.
+	shipperServerURL := newServerURLProvider(cfg.ServerURL)
 	if cfg.AgentID != "" && cfg.ServerURL != "" {
 		logging.InitShipper(logging.ShipperConfig{
-			ServerURL:    cfg.ServerURL,
+			ServerURL:    shipperServerURL.Get,
 			AgentID:      cfg.AgentID,
 			AuthToken:    secureToken,
 			AgentVersion: version,
@@ -706,6 +715,13 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 	hb.SetAuthMonitor(authMon)
+
+	// Point the log shipper at the heartbeat's promoted-URL getter (#2463).
+	// This MUST happen before hb.Start(): the heartbeat is the only thing that
+	// can promote a backup URL, so binding first means there is no window in
+	// which a promotion could land while the shipper still holds the startup
+	// value.
+	shipperServerURL.Bind(hb.ServerURL)
 
 	// Log agent start audit event (nil-safe: Log() is a no-op on nil receiver)
 	hb.AuditLog().Log(audit.EventAgentStart, "", map[string]any{
@@ -1456,14 +1472,22 @@ func runHelperProcess(name, role, context, binaryKind string) {
 		socketPath = cfg.IPCSocketPath
 	}
 
-	// Ship helper logs to the API under the same agent identity
+	// Ship helper logs to the API under the same agent identity.
+	//
+	// The helper is a SEPARATE, long-lived process with no heartbeat of its
+	// own, and nothing respawns it when the agent promotes a backup server URL
+	// (#2323) — so a copied cfg.ServerURL would keep shipping helper
+	// diagnostics at the dead primary for the rest of the logon session
+	// (#2463). The agent persists the promotion swap to agent.yaml, which is
+	// world-readable precisely so the helper can read its server URL, so the
+	// provider re-reads it there on a TTL.
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
 		cfg.AuthToken = ""
 		cfg.HelperAuthToken = ""
 		helperAuthMon := authstate.NewMonitor(3)
 		logging.InitShipper(logging.ShipperConfig{
-			ServerURL:    cfg.ServerURL,
+			ServerURL:    config.NewPersistedServerURLProvider(cfgFile, cfg.ServerURL, 0),
 			AgentID:      cfg.AgentID,
 			AuthToken:    helperToken,
 			AgentVersion: version + "-helper",

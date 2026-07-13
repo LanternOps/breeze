@@ -15,6 +15,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/httputil"
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/tunnel"
 	"github.com/breeze-rmm/agent/internal/websocket"
 	"github.com/breeze-rmm/agent/internal/workerpool"
@@ -40,11 +41,11 @@ func failoverResponse(req *http.Request, status int, body string) *http.Response
 
 func newFailoverTestHeartbeat(cfg *config.Config, transport http.RoundTripper) *Heartbeat {
 	return &Heartbeat{
-		config:          cfg,
-		client:          &http.Client{Transport: transport},
-		healthMon:       health.NewMonitor(),
-		tunnelMgr:       &tunnel.Manager{},
-		retryCfg:        httputil.RetryConfig{MaxRetries: 0},
+		config:    cfg,
+		client:    &http.Client{Transport: transport},
+		healthMon: health.NewMonitor(),
+		tunnelMgr: &tunnel.Manager{},
+		retryCfg:  httputil.RetryConfig{MaxRetries: 0},
 	}
 }
 
@@ -385,11 +386,12 @@ func TestProbeCommandResultsGoToPromotedURL(t *testing.T) {
 	}
 }
 
-// TestPromotionVisibleThroughServerURLProvider pins #2423: agentapp wires
-// hb.ServerURL as the URL provider into the long-lived UniFi telemetry and
-// workspace-index client loops. After backup-server-URL promotion the
-// provider must return the promoted URL, so those loops follow the failover
-// instead of POSTing to the dead primary for the remaining process lifetime.
+// TestPromotionVisibleThroughServerURLProvider pins #2423 and #2463: agentapp
+// wires hb.ServerURL as the URL provider into the long-lived UniFi telemetry
+// and workspace-index client loops, and into the log shipper. After
+// backup-server-URL promotion the provider must return the promoted URL, so
+// those clients follow the failover instead of POSTing to the dead primary for
+// the remaining process lifetime.
 func TestPromotionVisibleThroughServerURLProvider(t *testing.T) {
 	const (
 		primaryURL = "https://primary.invalid"
@@ -401,16 +403,34 @@ func TestPromotionVisibleThroughServerURLProvider(t *testing.T) {
 		return failoverResponse(req, http.StatusOK, `{}`), nil
 	}))
 
-	// The provider is captured ONCE at startup, exactly like agentapp does for
-	// unifi.CollectorDeps.APIBaseURL and workspaceindex.ClientConfig.ServerURL.
-	provider := h.ServerURL
-	if got := provider(); got != primaryURL {
-		t.Fatalf("provider before promotion = %q, want %q", got, primaryURL)
+	// Each provider is captured ONCE at startup, exactly like agentapp does for
+	// unifi.CollectorDeps.APIBaseURL, workspaceindex.ClientConfig.ServerURL and
+	// logging.ShipperConfig.ServerURL.
+	unifiProvider := h.ServerURL
+	workspaceIndexProvider := h.ServerURL
+	// The shipper's field is typed func() string precisely so a by-value
+	// cfg.ServerURL copy is unrepresentable at the call site (#2463); this
+	// assignment is the compile-time half of the guarantee.
+	shipperProvider := logging.ShipperConfig{ServerURL: h.ServerURL}.ServerURL
+
+	providers := map[string]func() string{
+		"unifi":          unifiProvider,
+		"workspaceindex": workspaceIndexProvider,
+		"log shipper":    shipperProvider,
+	}
+
+	for name, provider := range providers {
+		if got := provider(); got != primaryURL {
+			t.Fatalf("%s provider before promotion = %q, want %q", name, got, primaryURL)
+		}
 	}
 
 	h.promoteBackupServerURL(backupURL)
 
-	if got := provider(); got != backupURL {
-		t.Fatalf("provider after promotion = %q, want %q — a copied cfg.ServerURL never observes promotion (#2423)", got, backupURL)
+	for name, provider := range providers {
+		if got := provider(); got != backupURL {
+			t.Fatalf("%s provider after promotion = %q, want %q — a copied cfg.ServerURL never observes promotion (#2423, #2463)",
+				name, got, backupURL)
+		}
 	}
 }

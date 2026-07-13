@@ -135,7 +135,7 @@ func TestShipBatchHonorsRetryAfterOn429(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:    server.URL,
+		ServerURL:    func() string { return server.URL },
 		AgentID:      "test-agent",
 		AuthToken:    testToken("brz_secret"),
 		AgentVersion: "1.0.0",
@@ -193,7 +193,7 @@ func TestShipBatchHonorsRetryAfterOn503(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:    server.URL,
+		ServerURL:    func() string { return server.URL },
 		AgentID:      "test-agent",
 		AuthToken:    testToken("brz_secret"),
 		AgentVersion: "1.0.0",

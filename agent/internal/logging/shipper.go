@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -63,7 +64,7 @@ type LogEntry struct {
 
 // Shipper buffers log entries and ships them to the API in compressed batches.
 type Shipper struct {
-	serverURL    string
+	serverURL    func() string
 	agentID      string
 	authToken    TokenRevealer
 	agentVersion string
@@ -80,7 +81,19 @@ type Shipper struct {
 
 // ShipperConfig configures the log shipper.
 type ShipperConfig struct {
-	ServerURL    string
+	// ServerURL returns the CURRENT Breeze server root, e.g.
+	// https://breeze.example.com — NOT including /api/v1. It is a provider
+	// (heartbeat.ServerURL in the agent; a persisted-config reader in the
+	// helper processes), not a copied string, so backup-server-URL promotion
+	// after failover (#2323) is visible to every flush.
+	//
+	// The type is deliberately a func rather than a string plus an optional
+	// "and also watch this for updates" field: a by-value cfg.ServerURL copy
+	// pinned diagnostics to the DEAD primary for the whole process lifetime —
+	// exactly when those logs are most wanted — and the same mistake had
+	// already been made twice in sibling clients (#2423, #2425). Making the
+	// field a func makes it unrepresentable (#2463).
+	ServerURL    func() string
 	AgentID      string
 	AuthToken    TokenRevealer
 	AgentVersion string
@@ -106,6 +119,25 @@ func NewShipper(cfg ShipperConfig) *Shipper {
 		minLevel:     parseLevel(cfg.MinLevel),
 		authMon:      cfg.AuthMonitor,
 	}
+}
+
+// resolveServerURL returns the CURRENT server root from the provider.
+//
+// An unset provider, or one that returns an empty string, is a wiring bug
+// rather than a runtime condition: report it as a named error instead of
+// calling a nil func — which would panic the ship loop goroutine, and unlike
+// the sibling client loops the shipper carries no observability.Recoverer, so
+// the panic would take the whole agent down — or building a scheme-less
+// relative URL that fails forever as a cryptic transport error.
+func (s *Shipper) resolveServerURL() (string, error) {
+	if s.serverURL == nil {
+		return "", errors.New("log shipper: ServerURL provider not set")
+	}
+	serverURL := s.serverURL()
+	if serverURL == "" {
+		return "", errors.New("log shipper: ServerURL provider returned an empty server URL")
+	}
+	return serverURL, nil
 }
 
 // Start begins the background shipping loop.
@@ -361,7 +393,22 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 	}
 	compressedBytes := compressed.Bytes()
 
-	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", s.serverURL, s.agentID)
+	// Resolved here, on every flush, rather than captured once at init: after a
+	// backup-server-URL promotion (#2323) the next flush must go to the
+	// promoted primary. The retry attempts below deliberately keep the URL this
+	// flush started with — a promotion landing inside a single chunk's ~3s
+	// retry window is picked up by the next batch (<=60s), which is what
+	// matters; the bug being fixed was a URL frozen for the process lifetime
+	// (#2463).
+	baseURL, err := s.resolveServerURL()
+	if err != nil {
+		// Terminal for the whole batch: every remaining chunk would hit the
+		// same wiring bug, so shipBatch must not burn a request per chunk.
+		fmt.Fprintf(os.Stderr, "[log-shipper] %v — dropping %d entries\n", err, len(entries))
+		s.droppedCount.Add(int64(len(entries)))
+		return false
+	}
+	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", baseURL, s.agentID)
 
 	// nextSleepOverride, if non-zero, replaces the default fixed-jitter sleep
 	// for the next retry. Set when the server sends Retry-After on 429/503.

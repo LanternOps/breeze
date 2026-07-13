@@ -23,15 +23,15 @@ func (t testToken) Reveal() string { return string(t) }
 
 func TestNewShipperDefaults(t *testing.T) {
 	s := NewShipper(ShipperConfig{
-		ServerURL:    "http://localhost:3001",
+		ServerURL:    func() string { return "http://localhost:3001" },
 		AgentID:      "agent-1",
 		AuthToken:    testToken("tok"),
 		AgentVersion: "1.0.0",
 		MinLevel:     "warn",
 	})
 
-	if s.serverURL != "http://localhost:3001" {
-		t.Fatalf("unexpected serverURL: %s", s.serverURL)
+	if got, err := s.resolveServerURL(); err != nil || got != "http://localhost:3001" {
+		t.Fatalf("resolveServerURL() = (%q, %v), want (\"http://localhost:3001\", nil)", got, err)
 	}
 	if s.agentID != "agent-1" {
 		t.Fatalf("unexpected agentID: %s", s.agentID)
@@ -47,7 +47,7 @@ func TestNewShipperDefaults(t *testing.T) {
 func TestNewShipperCustomHTTPClient(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	s := NewShipper(ShipperConfig{
-		ServerURL:  "http://localhost:3001",
+		ServerURL:  func() string { return "http://localhost:3001" },
 		AgentID:    "a",
 		HTTPClient: client,
 	})
@@ -232,7 +232,7 @@ func TestShipBatchSendsGzipJSON(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:    server.URL,
+		ServerURL:    func() string { return server.URL },
 		AgentID:      "test-agent",
 		AuthToken:    testToken("brz_secret"),
 		AgentVersion: "1.0.0",
@@ -322,7 +322,7 @@ func TestShipperStartStopDrains(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:    server.URL,
+		ServerURL:    func() string { return server.URL },
 		AgentID:      "test-agent",
 		AuthToken:    testToken("tok"),
 		AgentVersion: "1.0.0",
@@ -427,7 +427,7 @@ func TestShipBatchChunksFullBatch(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:  server.URL,
+		ServerURL:  func() string { return server.URL },
 		AgentID:    "test-agent",
 		AuthToken:  testToken("tok"),
 		MinLevel:   "debug",
@@ -472,7 +472,7 @@ func TestShipBatchSmallBatchSingleRequest(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:  server.URL,
+		ServerURL:  func() string { return server.URL },
 		AgentID:    "test-agent",
 		AuthToken:  testToken("tok"),
 		MinLevel:   "debug",
@@ -513,7 +513,7 @@ func TestShipBatchMidChunk4xxDropsOnlyThatChunk(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:  server.URL,
+		ServerURL:  func() string { return server.URL },
 		AgentID:    "test-agent",
 		AuthToken:  testToken("tok"),
 		MinLevel:   "debug",
@@ -569,7 +569,7 @@ func TestShipBatchRetries5xxPerChunk(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:  server.URL,
+		ServerURL:  func() string { return server.URL },
 		AgentID:    "test-agent",
 		AuthToken:  testToken("tok"),
 		MinLevel:   "debug",
@@ -606,7 +606,7 @@ func TestShipBatch401AbortsRemainingChunks(t *testing.T) {
 
 	auth := &testAuthSkipper{}
 	s := NewShipper(ShipperConfig{
-		ServerURL:   server.URL,
+		ServerURL:   func() string { return server.URL },
 		AgentID:     "test-agent",
 		AuthToken:   testToken("tok"),
 		MinLevel:    "debug",
@@ -640,7 +640,7 @@ func TestShipBatchAbortsRemainingChunksOnTerminalFailure(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:  server.URL,
+		ServerURL:  func() string { return server.URL },
 		AgentID:    "test-agent",
 		AuthToken:  testToken("tok"),
 		MinLevel:   "debug",
@@ -667,7 +667,7 @@ func TestShipBatchURLFormat(t *testing.T) {
 	defer server.Close()
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:  server.URL,
+		ServerURL:  func() string { return server.URL },
 		AgentID:    "abc-123",
 		AuthToken:  testToken("tok"),
 		HTTPClient: server.Client(),

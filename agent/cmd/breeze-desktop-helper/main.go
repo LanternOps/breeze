@@ -76,13 +76,17 @@ func runDesktopHelper() {
 		socketPath = cfg.IPCSocketPath
 	}
 
+	// Like the user-helper, this is a separate long-lived process with no
+	// heartbeat, and nothing respawns it on a backup-server-URL promotion
+	// (#2323) — so its shipper reads the persisted server URL on a TTL instead
+	// of freezing the startup copy at the dead primary (#2463).
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
 		cfg.HelperAuthToken = ""
 		cfg.AuthToken = ""
 		authMon := authstate.NewMonitor(3)
 		logging.InitShipper(logging.ShipperConfig{
-			ServerURL:    cfg.ServerURL,
+			ServerURL:    config.NewPersistedServerURLProvider("", cfg.ServerURL, 0),
 			AgentID:      cfg.AgentID,
 			AuthToken:    helperToken,
 			AgentVersion: version + "-desktop-helper",

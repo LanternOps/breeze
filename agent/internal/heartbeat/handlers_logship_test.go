@@ -12,7 +12,7 @@ import (
 func initTestShipper(t *testing.T) {
 	t.Helper()
 	logging.InitShipper(logging.ShipperConfig{
-		ServerURL:    "http://localhost:3001",
+		ServerURL:    func() string { return "http://localhost:3001" },
 		AgentID:      "test-agent",
 		AuthToken:    secmem.NewSecureString("test-token"),
 		AgentVersion: "1.0.0",

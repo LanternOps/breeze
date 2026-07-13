@@ -37,7 +37,7 @@ func TestShipBatch_SkipsWhenAuthDead(t *testing.T) {
 	auth.skip.Store(true)
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:   srv.URL,
+		ServerURL:   func() string { return srv.URL },
 		AgentID:     "test-agent",
 		AuthToken:   testTokenRevealer{},
 		MinLevel:    "info",
@@ -75,7 +75,7 @@ func TestShipBatch_RecordsAuthFailureOn401(t *testing.T) {
 	auth := &testAuthSkipper{}
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:   srv.URL,
+		ServerURL:   func() string { return srv.URL },
 		AgentID:     "test-agent",
 		AuthToken:   testTokenRevealer{},
 		MinLevel:    "info",
@@ -103,7 +103,7 @@ func TestShipBatch_RecordsSuccessOn200(t *testing.T) {
 	auth := &testAuthSkipper{}
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:   srv.URL,
+		ServerURL:   func() string { return srv.URL },
 		AgentID:     "test-agent",
 		AuthToken:   testTokenRevealer{},
 		MinLevel:    "info",
@@ -130,7 +130,7 @@ func TestShipBatch_SkipDropsWhenStopping(t *testing.T) {
 	auth.skip.Store(true)
 
 	s := NewShipper(ShipperConfig{
-		ServerURL:   "http://unused", // never called
+		ServerURL:   func() string { return "http://unused" }, // never called
 		AgentID:     "test-agent",
 		AuthToken:   testTokenRevealer{},
 		MinLevel:    "info",
