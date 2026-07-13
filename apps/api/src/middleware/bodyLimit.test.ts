@@ -33,10 +33,12 @@ describe('bodyLimitForPath', () => {
     });
   });
 
-  it('carves out file-browser uploads at 50MB', () => {
+  // Sized from the agent's 4MB file_write cap (~5.6MB base64 + JSON envelope);
+  // the agent's WS read limit is derived from the same cap (issue #2399).
+  it('carves out file-browser uploads at 8MB', () => {
     expect(bodyLimitForPath('/api/v1/system-tools/devices/dev-1/files/upload')).toEqual({
-      maxSize: 50 * MB,
-      error: 'File too large (max ~37MB)',
+      maxSize: 8 * MB,
+      error: 'File too large (max 4MB); use file transfer for larger files',
     });
   });
 

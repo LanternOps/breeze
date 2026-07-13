@@ -88,6 +88,86 @@ describe('command dispatch helpers', () => {
     expect(claimed[0]?.id).toBe('cmd-1');
   });
 
+  // Regression for #2399: the agent WS path delivers the claimed batch in a
+  // single frame that must stay under the agent's 16MB read limit (exceeding
+  // it kills the connection), so the claim loop honors a cumulative payload
+  // budget — over-budget commands stay pending for a later delivery cycle.
+  it('stops claiming once the payload budget is exhausted, leaving the rest pending', async () => {
+    const bigPayload = { content: 'x'.repeat(1000) };
+    const pending = [
+      { id: 'cmd-1', deviceId: 'dev-1', status: 'pending', payload: bigPayload, createdAt: new Date('2026-03-31T00:00:00Z') },
+      { id: 'cmd-2', deviceId: 'dev-1', status: 'pending', payload: bigPayload, createdAt: new Date('2026-03-31T00:00:01Z') },
+      { id: 'cmd-3', deviceId: 'dev-1', status: 'pending', payload: bigPayload, createdAt: new Date('2026-03-31T00:00:02Z') },
+    ];
+    const returning = vi.fn().mockImplementation(async () => [pending[returning.mock.calls.length - 1]]);
+
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                for: vi.fn().mockResolvedValue(pending),
+              }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning,
+          }),
+        }),
+      }),
+    };
+
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    // Each payload serializes to a bit over 1000 bytes; a 2500-byte budget
+    // fits two commands but not three.
+    const claimed = await claimPendingCommandsForDevice('dev-1', 10, 'agent', {
+      maxTotalPayloadBytes: 2500,
+    });
+
+    expect(claimed.map((c: any) => c.id)).toEqual(['cmd-1', 'cmd-2']);
+    expect(returning).toHaveBeenCalledTimes(2);
+  });
+
+  it('always claims the first command even when it alone exceeds the payload budget', async () => {
+    const huge = { id: 'cmd-1', deviceId: 'dev-1', status: 'pending', payload: { content: 'x'.repeat(5000) }, createdAt: new Date('2026-03-31T00:00:00Z') };
+    const returning = vi.fn().mockResolvedValue([huge]);
+
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                for: vi.fn().mockResolvedValue([huge]),
+              }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning,
+          }),
+        }),
+      }),
+    };
+
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const claimed = await claimPendingCommandsForDevice('dev-1', 10, 'agent', {
+      maxTotalPayloadBytes: 100,
+    });
+
+    expect(claimed.map((c: any) => c.id)).toEqual(['cmd-1']);
+  });
+
   it('releases a claimed command back to pending state', async () => {
     const where = vi.fn().mockResolvedValue(undefined);
     vi.mocked(db.update).mockReturnValue({

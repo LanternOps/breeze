@@ -1612,6 +1612,33 @@ async function processCommandResult(
 }
 
 /**
+ * Cumulative serialized-payload budget for a pending-command batch delivered
+ * over the agent WebSocket in a single frame. The agent's WS read limit is
+ * 16MB and the largest single command payload is a file_write at ~5.6MB
+ * (base64 of the 4MB agent cap, see fileUploadBodySchema); 6MB of payloads
+ * plus JSON envelope keeps the worst-case frame comfortably under the limit.
+ * Exported for the regression test pinning this value against the agent's
+ * read limit (issue #2399).
+ */
+export const WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES = 6 * 1024 * 1024;
+
+/**
+ * Claim pending commands for delivery over the agent WebSocket. Unlike the
+ * HTTP heartbeat claim paths, the WS batch is serialized into a SINGLE frame
+ * (`connected` welcome / `heartbeat_ack`) that must stay under the agent's
+ * 16MB read limit — exceeding it kills the connection instead of rejecting
+ * the frame (agent/internal/websocket/client.go, issue #2399) — so the claim
+ * is always budgeted. Over-budget commands stay pending and are picked up by
+ * a later heartbeat/claim cycle. Exported so a unit test can pin that the WS
+ * path never claims unbudgeted.
+ */
+export function claimWsPendingCommandsBudgeted(deviceId: string) {
+  return claimPendingCommandsForDevice(deviceId, 10, 'agent', {
+    maxTotalPayloadBytes: WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES,
+  });
+}
+
+/**
  * Get pending commands for an agent
  */
 async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
@@ -1644,14 +1671,17 @@ async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
       return [];
     }
 
-    const commands = await claimPendingCommandsForDevice(device.id, 10);
+    const commands = await claimWsPendingCommandsBudgeted(device.id);
 
     // Decrypt sensitive command payloads (e.g. FileVault rotation credentials)
     // just-in-time. WS-connected agents receive pending commands through this
     // path, so without the decrypt an encryption_rotate_key command would reach
     // the agent as ciphertext and fail. A command whose payload can't be
     // decrypted is dropped (not delivered as ciphertext) rather than failing
-    // the whole batch.
+    // the whole batch. Ordering note (#2399): the claim's payload budget was
+    // measured on the stored (encrypted) payload BEFORE this decrypt;
+    // ciphertext is >= plaintext size so the budget only over-counts — keep
+    // decryption after the claim so that stays true.
     return decryptCommandsForDelivery(
       commands.map(cmd => ({
         id: cmd.id,

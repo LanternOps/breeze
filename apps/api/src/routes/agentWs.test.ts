@@ -156,6 +156,12 @@ vi.mock('../services/tenantStatus', () => ({
   isAgentTenantActive: vi.fn(async () => true),
 }));
 
+vi.mock('../services/commandDispatch', () => ({
+  claimPendingCommandForDelivery: vi.fn(),
+  releaseClaimedCommandDelivery: vi.fn(),
+  claimPendingCommandsForDevice: vi.fn(async () => []),
+}));
+
 import { db } from '../db';
 import { devices } from '../db/schema';
 import {
@@ -166,7 +172,10 @@ import {
   isAgentConnected,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
+  claimWsPendingCommandsBudgeted,
+  WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES,
 } from './agentWs';
+import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { writeAuditEvent } from '../services/auditEvents';
 import { isAgentTenantActive } from '../services/tenantStatus';
 import { enqueueDiscoveryResults } from '../jobs/discoveryWorker';
@@ -1453,5 +1462,30 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
     const stored = setSpy.mock.calls[0]![0] as { result: { stdout: string } };
     expect(stored.result.stdout).toContain('[PRIVATE_KEY_REDACTED]');
     expect(stored.result.stdout).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+});
+
+// Regression for #2399: the agent WS delivers a claimed pending-command batch
+// in a single frame that must stay under the agent's 16MB read limit —
+// exceeding it kills the connection (gorilla ErrReadLimit). These tests pin
+// that the WS claim path is always budgeted; reverting it to a bare
+// claimPendingCommandsForDevice(deviceId, 10) would silently reintroduce the
+// oversized-frame hazard.
+describe('claimWsPendingCommandsBudgeted (#2399)', () => {
+  it('claims with the serialized-payload budget set', async () => {
+    await claimWsPendingCommandsBudgeted('dev-1');
+
+    expect(claimPendingCommandsForDevice).toHaveBeenCalledWith('dev-1', 10, 'agent', {
+      maxTotalPayloadBytes: WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES,
+    });
+  });
+
+  it('keeps the budget comfortably under the agent 16MB read limit', () => {
+    const agentReadLimit = 16 * 1024 * 1024; // agent/internal/websocket/client.go maxMessageSize
+    expect(WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES).toBe(6 * 1024 * 1024);
+    // Budget + a full extra file_write payload (first-command-always rule)
+    // + generous envelope allowance must still fit under the read limit.
+    const maxSingleFileWriteChars = Math.ceil((4 * 1024 * 1024) / 3) * 4;
+    expect(WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES + maxSingleFileWriteChars + 1024 * 1024).toBeLessThan(agentReadLimit);
   });
 });
