@@ -114,6 +114,53 @@ describe('validateConfig', () => {
         expect(validateConfig().DASHBOARD_URL).toBe('https://app.example.test');
       });
     });
+
+    it.each([
+      '',
+      'https://team.cloudflareaccess.com',
+      'team.cloudflareaccess.com/path',
+      'team.cloudflareaccess.com:443',
+      'team.cloudflareaccess.com?query=1',
+      'team.cloudflareaccess.com#fragment',
+      'team\\cloudflareaccess.com',
+      ' team.cloudflareaccess.com',
+      'team.cloudflareaccess.com ',
+      'team .cloudflareaccess.com',
+      'team\n.cloudflareaccess.com',
+      'team..cloudflareaccess.com',
+      '.team.cloudflareaccess.com',
+      'team.cloudflareaccess.com.',
+      '-team.cloudflareaccess.com',
+      'team-.cloudflareaccess.com',
+      'te_am.cloudflareaccess.com',
+      `${'a'.repeat(64)}.cloudflareaccess.com`,
+      Array.from({ length: 4 }, () => 'a'.repeat(63)).join('.'),
+    ])('rejects malformed bare Cloudflare team hostname %s', (teamDomain) => {
+      withEnv({
+        ...cfAccessEnv,
+        CF_ACCESS_TEAM_DOMAIN: teamDomain,
+        DASHBOARD_URL: 'https://app.example.test',
+        PUBLIC_APP_URL: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/CF_ACCESS_TEAM_DOMAIN/);
+      });
+    });
+
+    it.each([
+      'team.cloudflareaccess.com',
+      'team-name.cloudflareaccess.com',
+      'TEAM-NAME.cloudflareaccess.com',
+      'xn--bcher-kva.cloudflareaccess.com',
+    ])('accepts valid bare Cloudflare team hostname %s', (teamDomain) => {
+      withEnv({
+        ...cfAccessEnv,
+        CF_ACCESS_TEAM_DOMAIN: teamDomain,
+        DASHBOARD_URL: 'https://app.example.test',
+        PUBLIC_APP_URL: '',
+      }, () => {
+        expect(validateConfig().CF_ACCESS_TEAM_DOMAIN).toBe(teamDomain);
+      });
+    });
   });
 
   it('accepts explicit production bootstrap admin credentials', () => {

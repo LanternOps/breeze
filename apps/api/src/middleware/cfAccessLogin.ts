@@ -7,6 +7,7 @@ import {
   cfAccessTeamDomain,
   cfAccessTrustEnabled,
   cfAccessTrustsMfa,
+  isValidCfAccessTeamDomain,
 } from '../config/env';
 import {
   CfAccessInvalidTokenError,
@@ -71,12 +72,12 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
 
   const teamDomain = cfAccessTeamDomain();
   const audience = cfAccessAud();
-  if (!teamDomain || !audience) {
+  if (!isValidCfAccessTeamDomain(teamDomain) || !audience) {
     // Trust is enabled but the deployment is misconfigured. Fail-open to
     // the password handler rather than wedge /login for everyone. Surface
     // a single warning so ops sees it.
     console.warn(
-      '[cf-access-login] CF_ACCESS_TRUST_ENABLED=true but CF_ACCESS_TEAM_DOMAIN or CF_ACCESS_AUD is empty; ignoring header.'
+      '[cf-access-login] CF_ACCESS_TRUST_ENABLED=true but CF_ACCESS_TEAM_DOMAIN is invalid or CF_ACCESS_AUD is empty; ignoring header.'
     );
     return next();
   }

@@ -8,13 +8,17 @@ const envState = vi.hoisted(() => ({
   publicOrigin: 'https://breeze.example.com' as string | null,
 }));
 
-vi.mock('../../config/env', () => ({
-  cfAccessTrustEnabled: () => envState.enabled,
-  cfAccessTeamDomain: () => envState.teamDomain,
-  cfAccessAud: () => envState.audience,
-  cfAccessTrustsMfa: () => envState.trustsMfa,
-  authBrowserPublicOrigin: () => envState.publicOrigin,
-}));
+vi.mock('../../config/env', async () => {
+  const actual = await vi.importActual<typeof import('../../config/env')>('../../config/env');
+  return {
+    ...actual,
+    cfAccessTrustEnabled: () => envState.enabled,
+    cfAccessTeamDomain: () => envState.teamDomain,
+    cfAccessAud: () => envState.audience,
+    cfAccessTrustsMfa: () => envState.trustsMfa,
+    authBrowserPublicOrigin: () => envState.publicOrigin,
+  };
+});
 
 const ticketState = vi.hoisted(() => ({
   valid: true,
@@ -511,6 +515,47 @@ describe('GET /cf-access-login', () => {
     expect(res.headers.get('Location')).toBe('/login?signedOut=1&logoutError=1');
     expect(res.headers.get('Location')).not.toContain('evil.attacker.example');
     expect(res.headers.get('Set-Cookie')).toBeNull();
+  });
+
+  it.each([
+    '',
+    'https://team.cloudflareaccess.com',
+    'team.cloudflareaccess.com/path',
+    'team.cloudflareaccess.com:443',
+    'team.cloudflareaccess.com?query=1',
+    'team.cloudflareaccess.com#fragment',
+    'team\\cloudflareaccess.com',
+    ' team.cloudflareaccess.com',
+    'team.cloudflareaccess.com ',
+    'team .cloudflareaccess.com',
+    'team\n.cloudflareaccess.com',
+    'team..cloudflareaccess.com',
+    '.team.cloudflareaccess.com',
+    'team.cloudflareaccess.com.',
+    '-team.cloudflareaccess.com',
+    'team-.cloudflareaccess.com',
+    'te_am.cloudflareaccess.com',
+    `${'a'.repeat(64)}.cloudflareaccess.com`,
+    Array.from({ length: 4 }, () => 'a'.repeat(63)).join('.'),
+  ])('fails terminal navigation locally for malformed runtime team hostname %s', async (teamDomain) => {
+    envState.enabled = true;
+    envState.teamDomain = teamDomain;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await callGet('/cf-access-logout?ticket=signed-ticket', {
+      cookie: 'breeze_refresh_token=newer-session',
+    });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('Location')).toBe('/login?signedOut=1&logoutError=1');
+    expect(completionState.pendingCalls).toEqual([]);
+    expect(completionState.calls).toEqual([]);
+    expect(cookieState.cleared).toBe(false);
+    expect(cookieState.quarantineSet).toBe(false);
+    expect(cookieState.quarantineCleared).toBe(false);
+    expect(cookieState.rotated).toBeNull();
+    expect(res.headers.get('Set-Cookie')).toBeNull();
+    errorSpy.mockRestore();
   });
 
   it('carries a valid ticket directly to completion when Cloudflare trust is disabled', async () => {

@@ -122,8 +122,25 @@ export const DELEGANT_PRINCIPAL_KID = process.env.DELEGANT_PRINCIPAL_KID ?? '';
 export function cfAccessTrustEnabled(): boolean {
   return envFlag('CF_ACCESS_TRUST_ENABLED');
 }
+
+/**
+ * Accept only an ASCII DNS hostname with no scheme, path, port, whitespace,
+ * empty labels, or DNS-invalid label boundaries. Cloudflare's team domain is
+ * interpolated into security-sensitive issuer/JWKS/logout URLs, so URL-ish
+ * operator input must never be normalized into a different authority.
+ */
+export function isValidCfAccessTeamDomain(raw: string): boolean {
+  if (!raw || raw !== raw.trim() || raw.length > 253) return false;
+  const labels = raw.split('.');
+  return labels.every((label) => (
+    label.length >= 1
+    && label.length <= 63
+    && /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label)
+  ));
+}
+
 export function cfAccessTeamDomain(): string {
-  return (process.env.CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+  return process.env.CF_ACCESS_TEAM_DOMAIN ?? '';
 }
 export function cfAccessAud(): string {
   return (process.env.CF_ACCESS_AUD ?? '').trim();

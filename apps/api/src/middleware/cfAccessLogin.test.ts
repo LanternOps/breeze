@@ -8,12 +8,16 @@ const envState = vi.hoisted(() => ({
   trustsMfa: false,
 }));
 
-vi.mock('../config/env', () => ({
-  cfAccessTrustEnabled: () => envState.enabled,
-  cfAccessTeamDomain: () => envState.teamDomain,
-  cfAccessAud: () => envState.audience,
-  cfAccessTrustsMfa: () => envState.trustsMfa,
-}));
+vi.mock('../config/env', async () => {
+  const actual = await vi.importActual<typeof import('../config/env')>('../config/env');
+  return {
+    ...actual,
+    cfAccessTrustEnabled: () => envState.enabled,
+    cfAccessTeamDomain: () => envState.teamDomain,
+    cfAccessAud: () => envState.audience,
+    cfAccessTrustsMfa: () => envState.trustsMfa,
+  };
+});
 
 const verifyState = vi.hoisted(() => ({
   next: undefined as
@@ -211,6 +215,7 @@ vi.mock('../routes/auth/schemas', async () => {
 });
 
 import { cfAccessLoginMiddleware } from './cfAccessLogin';
+import { verifyCfAccessJwt } from '../services/cfAccessJwt';
 import {
   decideAuthenticatedUserSession,
   PendingMfaInvalidError,
@@ -321,6 +326,23 @@ describe('cfAccessLoginMiddleware', () => {
       next
     );
     expect(called()).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('falls through before JWT verification when the runtime team domain is malformed', async () => {
+    envState.enabled = true;
+    envState.teamDomain = 'team..cloudflareaccess.com';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { next, called } = createNext();
+
+    await cfAccessLoginMiddleware(
+      createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }),
+      next,
+    );
+
+    expect(called()).toBe(true);
+    expect(verifyCfAccessJwt).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
   });

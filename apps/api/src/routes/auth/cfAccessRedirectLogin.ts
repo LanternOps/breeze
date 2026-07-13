@@ -8,6 +8,7 @@ import {
   cfAccessTeamDomain,
   cfAccessTrustEnabled,
   cfAccessTrustsMfa,
+  isValidCfAccessTeamDomain,
 } from '../../config/env';
 import {
   CfAccessInvalidTokenError,
@@ -141,9 +142,9 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
 
   const teamDomain = cfAccessTeamDomain();
   const audience = cfAccessAud();
-  if (!teamDomain || !audience) {
+  if (!isValidCfAccessTeamDomain(teamDomain) || !audience) {
     console.error(
-      '[cf-access-redirect] CF_ACCESS_TRUST_ENABLED=true but team domain or AUD missing'
+      '[cf-access-redirect] CF_ACCESS_TRUST_ENABLED=true but team domain is invalid or AUD is missing'
     );
     return loginErrorRedirect('misconfigured');
   }
@@ -306,6 +307,13 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
     return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
   }
 
+  const trustEnabled = cfAccessTrustEnabled();
+  const teamDomain = cfAccessTeamDomain();
+  if (trustEnabled && !isValidCfAccessTeamDomain(teamDomain)) {
+    console.error('[cf-access-logout] Refusing terminal navigation with invalid CF Access team domain');
+    return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
+  }
+
   try {
     const pending = await isTerminalLogoutPending({
       transitionId: verified.transitionId,
@@ -329,8 +337,7 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
   const completionUrl = new URL('/api/v1/auth/cf-access-logout/complete', origin);
   completionUrl.searchParams.set('ticket', ticket);
 
-  const teamDomain = cfAccessTeamDomain();
-  if (!cfAccessTrustEnabled() || !/^[a-z0-9.-]+$/i.test(teamDomain)) {
+  if (!trustEnabled) {
     return terminalLogoutRedirect(c, completionUrl.toString());
   }
 

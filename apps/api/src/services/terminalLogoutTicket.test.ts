@@ -111,6 +111,60 @@ describe('terminal logout completion ticket', () => {
     }
   });
 
+  it('verifies a pre-rotation ticket with its retained key and returns the old signing key id', () => {
+    const oldKey = Buffer.from('22'.repeat(32), 'hex');
+    const newKey = Buffer.from('33'.repeat(32), 'hex');
+    const oldService = createTerminalLogoutTicketService(() => ({
+      active: { keyId: 'old', key: oldKey },
+      retained: [{ keyId: 'old', key: oldKey }],
+    }));
+    const rotatedService = createTerminalLogoutTicketService(() => ({
+      active: { keyId: 'new', key: newKey },
+      retained: [
+        { keyId: 'new', key: newKey },
+        { keyId: 'old', key: oldKey },
+      ],
+    }));
+
+    const ticket = oldService.issue(validInput);
+
+    expect(rotatedService.verify(ticket, issuedAt).signingKeyId).toBe('old');
+  });
+
+  it('rejects a pre-rotation ticket after its signing key leaves retention', () => {
+    const oldKey = Buffer.from('22'.repeat(32), 'hex');
+    const newKey = Buffer.from('33'.repeat(32), 'hex');
+    const oldService = createTerminalLogoutTicketService(() => ({
+      active: { keyId: 'old', key: oldKey },
+      retained: [{ keyId: 'old', key: oldKey }],
+    }));
+    const afterRetention = createTerminalLogoutTicketService(() => ({
+      active: { keyId: 'new', key: newKey },
+      retained: [{ keyId: 'new', key: newKey }],
+    }));
+
+    const ticket = oldService.issue(validInput);
+
+    expect(() => afterRetention.verify(ticket, issuedAt)).toThrow(
+      TerminalLogoutTicketInvalidError,
+    );
+  });
+
+  it('rejects a ticket when multiple retained key entries authenticate it', () => {
+    const ambiguousService = createTerminalLogoutTicketService(() => ({
+      active: { keyId: 'active', key: signingKey },
+      retained: [
+        { keyId: 'first', key: signingKey },
+        { keyId: 'second', key: Buffer.from(signingKey) },
+      ],
+    }));
+    const ticket = service.issue(validInput);
+
+    expect(() => ambiguousService.verify(ticket, issuedAt)).toThrow(
+      TerminalLogoutTicketInvalidError,
+    );
+  });
+
   it('never includes the raw ticket in errors or logs', () => {
     const ticket = `${service.issue(validInput)}.attacker-controlled`;
     let error: unknown;

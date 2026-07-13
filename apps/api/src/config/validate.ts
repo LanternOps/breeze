@@ -1,6 +1,10 @@
 import { isIP } from 'net';
 import { z } from 'zod';
-import { isRecognizedSelfHostSignal, normalizeConfiguredHttpOrigin } from './env';
+import {
+  isRecognizedSelfHostSignal,
+  isValidCfAccessTeamDomain,
+  normalizeConfiguredHttpOrigin,
+} from './env';
 
 // ---------------------------------------------------------------------------
 // Insecure default detection
@@ -1122,7 +1126,7 @@ const envSchema = z
             'CF_ACCESS_TRUST_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set.',
         });
       } else {
-        const teamDomain = (data.CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+        const teamDomain = data.CF_ACCESS_TEAM_DOMAIN ?? '';
         if (!teamDomain) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -1130,12 +1134,12 @@ const envSchema = z
             message:
               'CF_ACCESS_TEAM_DOMAIN is required when CF_ACCESS_TRUST_ENABLED is true (e.g. example.cloudflareaccess.com, no scheme).',
           });
-        } else if (teamDomain.includes('://')) {
+        } else if (!isValidCfAccessTeamDomain(teamDomain)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['CF_ACCESS_TEAM_DOMAIN'],
             message:
-              'CF_ACCESS_TEAM_DOMAIN must not include a scheme. Use the bare hostname (e.g. example.cloudflareaccess.com).',
+              'CF_ACCESS_TEAM_DOMAIN must be a valid bare DNS hostname with no scheme, path, port, whitespace, or leading/trailing dot (e.g. example.cloudflareaccess.com).',
           });
         }
         const aud = (data.CF_ACCESS_AUD ?? '').trim();
