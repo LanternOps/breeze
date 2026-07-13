@@ -908,7 +908,12 @@
     "thisDevice": "(este dispositivo)",
     "fillSuccess": "fill-success",
     "fillMutedForeground": "fill-muted-foreground",
-    "online": "En línea"
+    "online": "En línea",
+    "confirmDissolve": {
+      "title": "¿Quitar este vínculo?",
+      "message": "Esto desagrupa los {{count}} dispositivos vinculados. Cada uno sigue siendo un endpoint totalmente gestionado, con su propio inventario e historial; solo se quita la agrupación. Puedes volver a vincularlos más adelante desde la lista de dispositivos.",
+      "confirm": "Quitar vínculo"
+    }
   },
   "deviceList": {
     "tableColumns": {
@@ -1722,14 +1727,19 @@
       "selectTwoForMultiboot": "Seleccione dos para arranque múltiple",
       "unknownAction": "Acción desconocida",
       "unknownBulkAction": "Acción masiva desconocida",
-      "wakeSentWatching": "Despertar enviado mirando",
-      "wakeTimeout": "Tiempo de espera para despertar"
+      "wakeSentWatching": "Comando de encendido enviado; supervisando",
+      "wakeTimeout": "Tiempo de espera para despertar",
+      "bulkAllDecommissioned": "Los {{total}} dispositivo(s) seleccionados están dados de baja: ya no tienen un agente que ejecute esto."
     },
     "tryAgain": "Intentar otra vez",
     "unknownDevice": "Desconocido",
     "unknownOrg": "Organización desconocida",
     "unknownSite": "Sitio desconocido",
-    "viewInstallationGuide": "Ver guía de instalación"
+    "viewInstallationGuide": "Ver guía de instalación",
+    "confirmDecommissionedSkip": {
+      "message": "{{skipped}} de {{total}} dispositivos seleccionados están dados de baja y se omitirán: ya no tienen agente. ¿Continuar con los {{eligible}} dispositivo(s) restantes? Los que estén sin conexión lo ejecutarán en su próximo registro.",
+      "title": "Algunos dispositivos seleccionados están dados de baja"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Agregar filtro",

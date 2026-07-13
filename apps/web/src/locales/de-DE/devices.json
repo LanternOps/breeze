@@ -908,7 +908,12 @@
     "thisDevice": "(dieses Gerät)",
     "fillSuccess": "fill-success",
     "fillMutedForeground": "fill-muted-foreground",
-    "online": "Online"
+    "online": "Online",
+    "confirmDissolve": {
+      "title": "Diese Verknüpfung entfernen?",
+      "message": "Dadurch wird die Gruppierung aller {{count}} verknüpften Geräte aufgehoben. Jedes bleibt ein vollständig verwalteter Endpunkt mit eigenem Bestand und Verlauf – nur die Gruppierung wird entfernt. Sie können sie später über die Geräteliste erneut verknüpfen.",
+      "confirm": "Verknüpfung entfernen"
+    }
   },
   "deviceList": {
     "tableColumns": {
@@ -1723,13 +1728,18 @@
       "unknownAction": "Unbekannte Aktion",
       "unknownBulkAction": "Unbekannte Massenaktion",
       "wakeSentWatching": "Aufweckbefehl gesendet; Status wird überwacht",
-      "wakeTimeout": "Zeitüberschreitung beim Aufwecken"
+      "wakeTimeout": "Zeitüberschreitung beim Aufwecken",
+      "bulkAllDecommissioned": "Alle {{total}} ausgewählten Gerät(e) sind stillgelegt – sie haben keinen Agenten mehr, der dies ausführt."
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
     "unknownOrg": "Unbekannte Org",
     "unknownSite": "Unbekannte Standort",
-    "viewInstallationGuide": "Installationsanleitung ansehen"
+    "viewInstallationGuide": "Installationsanleitung ansehen",
+    "confirmDecommissionedSkip": {
+      "message": "{{skipped}} von {{total}} ausgewählten Geräten sind stillgelegt und werden übersprungen – sie haben keinen Agenten mehr. Mit den verbleibenden {{eligible}} Gerät(en) fortfahren? Geräte, die offline sind, führen dies bei der nächsten Anmeldung aus.",
+      "title": "Einige ausgewählte Geräte sind stillgelegt"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Filter hinzufügen",

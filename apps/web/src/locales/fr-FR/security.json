@@ -490,7 +490,9 @@
     "updated": "Mise à jour {{time}}",
     "viewDetails": "Voir les détails",
     "vulnerabilities": "Vulnérabilités",
-    "weakAdmins": "Administrateurs faibles"
+    "weakAdmins": "Administrateurs faibles",
+    "accessDeniedMessage": "Vous n'avez pas l'autorisation de consulter les données de sécurité de cette organisation.",
+    "someSecurityDataPermissionDenied": "Certaines données de sécurité ne vous sont pas visibles. Demandez à un administrateur si vous avez besoin d'un accès."
   },
   "securitySecurityPageHeader": {
     "refresh": "Actualiser",
@@ -576,7 +578,9 @@
     "started": "Démarré à {{time}}",
     "status": "Statut : {{status}}",
     "status2": "Statut",
-    "type": "Type"
+    "type": "Type",
+    "scanHistoryPartiallyUnavailable": "L'historique des analyses de {{failed}} des {{total}} appareils n'a pas pu être chargé — cette liste est incomplète.",
+    "scanHistoryUnavailable": "Impossible de charger l'historique des analyses."
   },
   "securityThreatDetail": {
     "analystReview": "Revue des analystes",
@@ -1327,7 +1331,7 @@
       "umbrella": {
         "label": "Cisco Umbrella",
         "helpText": "API clé + secret du Reportage Umbrella API ; OrganizationId depuis votre tableau de bord Umbrella URL.",
-        "apiKeyPlaceholder": "Clé API-rapport",
+        "apiKeyPlaceholder": "reporting-api-key",
         "apiSecretPlaceholder": "reporting-api-secret",
         "organizationIdPlaceholder": "1234567"
       },

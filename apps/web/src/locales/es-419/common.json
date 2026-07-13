@@ -874,9 +874,9 @@
         },
         "keepExisting": "(déjelo en blanco para seguir existiendo)",
         "placeholders": {
-          "apiToken": "token de API",
+          "apiToken": "api-token",
           "clientId": "oauth-client-id",
-          "clientSecret": "secreto del cliente",
+          "clientSecret": "client-secret",
           "connectionName": "por ejemplo, producción de Jira",
           "defaultQueue": "por ejemplo, IT Soporte",
           "existingCredential": "********",

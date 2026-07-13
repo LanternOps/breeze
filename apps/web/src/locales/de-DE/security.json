@@ -490,7 +490,9 @@
     "updated": "Aktualisiert {{time}}",
     "viewDetails": "Details anzeigen",
     "vulnerabilities": "Schwachstellen",
-    "weakAdmins": "Schwache Admins"
+    "weakAdmins": "Schwache Admins",
+    "accessDeniedMessage": "Sie haben keine Berechtigung, die Sicherheitsdaten dieser Organisation anzuzeigen.",
+    "someSecurityDataPermissionDenied": "Einige Sicherheitsdaten sind für Sie nicht sichtbar. Wenden Sie sich an einen Administrator, wenn Sie Zugriff benötigen."
   },
   "securitySecurityPageHeader": {
     "refresh": "Aktualisieren",
@@ -576,7 +578,9 @@
     "started": "Begonnen {{time}}",
     "status": "Status: {{status}}",
     "status2": "Status",
-    "type": "Typ"
+    "type": "Typ",
+    "scanHistoryPartiallyUnavailable": "Der Scanverlauf für {{failed}} von {{total}} Geräten konnte nicht geladen werden – diese Liste ist unvollständig.",
+    "scanHistoryUnavailable": "Der Scanverlauf konnte nicht geladen werden."
   },
   "securityThreatDetail": {
     "analystReview": "Analystenbewertung",

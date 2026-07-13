@@ -490,7 +490,9 @@
     "updated": "Actualizado {{time}}",
     "viewDetails": "Ver detalles",
     "vulnerabilities": "Vulnerabilidades",
-    "weakAdmins": "Administradores débiles"
+    "weakAdmins": "Administradores débiles",
+    "accessDeniedMessage": "No tienes permiso para ver los datos de seguridad de esta organización.",
+    "someSecurityDataPermissionDenied": "Algunos datos de seguridad no son visibles para ti. Consulta a un administrador si necesitas acceso."
   },
   "securitySecurityPageHeader": {
     "refresh": "Actualizar",
@@ -576,7 +578,9 @@
     "started": "Iniciado {{time}}",
     "status": "Estado: {{status}}",
     "status2": "Estado",
-    "type": "Tipo"
+    "type": "Tipo",
+    "scanHistoryPartiallyUnavailable": "No se pudo cargar el historial de escaneos de {{failed}} de {{total}} dispositivos: esta lista está incompleta.",
+    "scanHistoryUnavailable": "No se pudo cargar el historial de escaneos."
   },
   "securityThreatDetail": {
     "analystReview": "Revisión del analista",

@@ -906,9 +906,14 @@
     "agent": "Agent",
     "lastSeen": "Dernière apparition",
     "thisDevice": "(cet appareil)",
-    "fillSuccess": "Succès de remplacement",
-    "fillMutedForeground": "remplissage-étouffé-premier",
-    "online": "En ligne"
+    "fillSuccess": "fill-success",
+    "fillMutedForeground": "fill-muted-foreground",
+    "online": "En ligne",
+    "confirmDissolve": {
+      "title": "Supprimer ce lien ?",
+      "message": "Cela dégroupe les {{count}} appareils liés. Chacun reste un endpoint entièrement géré, avec son propre inventaire et son historique — seul le regroupement est supprimé. Vous pourrez les relier ultérieurement depuis la liste des appareils.",
+      "confirm": "Supprimer le lien"
+    }
   },
   "deviceList": {
     "tableColumns": {
@@ -1722,14 +1727,19 @@
       "selectTwoForMultiboot": "Sélectionner deux pour le multiboot",
       "unknownAction": "Action inconnue",
       "unknownBulkAction": "Action en vrac inconnue",
-      "wakeSentWatching": "Wake a envoyé Observation",
-      "wakeTimeout": "Temps d’arrêt du réveil"
+      "wakeSentWatching": "Commande de réveil envoyée ; surveillance en cours",
+      "wakeTimeout": "Temps d’arrêt du réveil",
+      "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont désaffectés — ils n'ont plus d'agent pour exécuter cette action."
     },
     "tryAgain": "Réessayer",
     "unknownDevice": "Inconnu",
     "unknownOrg": "Organisation inconnue",
     "unknownSite": "Site inconnu",
-    "viewInstallationGuide": "Voir le guide d’installation"
+    "viewInstallationGuide": "Voir le guide d’installation",
+    "confirmDecommissionedSkip": {
+      "message": "{{skipped}} des {{total}} appareils sélectionnés sont désaffectés et seront ignorés — ils n'ont plus d'agent. Continuer avec les {{eligible}} appareil(s) restants ? Ceux qui sont hors ligne l'exécuteront à leur prochaine connexion.",
+      "title": "Certains appareils sélectionnés sont désaffectés"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Ajouter un filtre",

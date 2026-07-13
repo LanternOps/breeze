@@ -704,7 +704,7 @@
     "userOrGroupKey": "Clé utilisateur ou de groupe",
     "value30CharUserGroupKeyBlankUses": "Clé utilisateur/groupe de 30 personnages. Le vide utilise le partenaire par défaut.",
     "deviceOptional": "Appareil (optionnel)",
-    "iphoneBdunn": "iPhone-BDunn",
+    "iphoneBdunn": "iphone-bdunn",
     "priority": "Priorité",
     "lowestNoNotificationUi": "Le plus bas (aucune notification d’utilisateur)",
     "lowSilent": "Grave (silencieux)",

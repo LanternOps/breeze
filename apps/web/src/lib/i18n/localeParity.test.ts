@@ -389,6 +389,10 @@ describe('locale parity', () => {
     // pt-BR predates the reviewed literal baseline introduced with these three
     // catalogs; extend this check there after its next native/literal audit.
     if (locale !== 'pt-BR') {
+      // This check brute-forces ~70 protected-name regexes over every leaf in
+      // every namespace (~1.3s locally); a loaded CI runner can push it past
+      // Vitest's 5s default and time out. Give it explicit headroom — the
+      // assertion is unchanged, it just needs more wall-clock.
       it(`${locale} preserves source-aligned technical literals and names`, () => {
         const targetValues = readNamespaceValues(locale);
         const errors: string[] = [];
@@ -401,7 +405,7 @@ describe('locale parity', () => {
           );
         }
         expect(errors, errors.join('\n')).toEqual([]);
-      });
+      }, 30000);
     }
   }
 });

@@ -1838,7 +1838,7 @@
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
     "theOpenIDConnectDiscoveryURLWithoutWellKnownOpenidConfig": "La découverte OpenID Connect URL (sans .well-known/openid-configuration)",
     "clientID": "ID client",
-    "yourClientId": "Votre-Client-ID",
+    "yourClientId": "your-client-id",
     "clientSecret": "Secret client",
     "leaveBlankToKeepExisting": "(laisser vide pour continuer à exister)",
     "scopes": "Champs d’action",
@@ -2472,7 +2472,7 @@
     },
     "placeholders": {
       "name": "Acme Corp",
-      "slug": "ACME-Corp"
+      "slug": "acme-corp"
     },
     "type": {
       "customer": "Client",
