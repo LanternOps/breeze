@@ -900,6 +900,11 @@
     "profiles": "profiles",
     "unlinkThisDevice": "Unlink this device",
     "removeLink": "Remove link",
+    "confirmDissolve": {
+      "title": "Remove this link?",
+      "message": "This ungroups all {{count}} linked devices. Each stays a fully managed endpoint with its own inventory and history — only the grouping is removed. You can re-link them later from the device list.",
+      "confirm": "Remove link"
+    },
     "profile": "Profile",
     "os": "OS",
     "status": "Status",

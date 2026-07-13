@@ -26,6 +26,8 @@ import {
 } from "recharts";
 import { cn, formatNumber, widthPercentClass } from "@/lib/utils";
 import { fetchWithAuth } from "@/stores/auth";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 import { ENABLE_EDR_INTEGRATIONS } from "../../lib/featureFlags";
 import EdrSummaryPanel from "./EdrSummaryPanel";
 type Priority = "critical" | "high" | "medium" | "low";
@@ -477,9 +479,9 @@ const normalizeVulnerabilities = (raw: unknown): VulnerabilitySummary => {
 };
 const fetchJson = async (url: string) => {
   const response = await fetchWithAuth(url);
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
-  }
+  // HttpError (not bare Error) so a 403 survives the throw and the caller can
+  // tell "you may not see this" from "this broke, try again" (#2429).
+  throwIfNotOk(response);
   const text = await response.text();
   if (!text) return null;
   try {
@@ -499,14 +501,21 @@ export default function SecurityDashboard({
   const [vulnerabilities, setVulnerabilities] =
     useState<VulnerabilitySummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadFailures, setLoadFailures] = useState({
-    overview: false,
-    vulnerabilities: false,
+  // Per-axis load outcome. Was a pair of booleans, which collapsed a 403 into
+  // the same "failed" bit as a 500 and offered a Retry that could never
+  // succeed (#2429).
+  const [loadFailures, setLoadFailures] = useState<{
+    overview: LoadErrorKind;
+    vulnerabilities: LoadErrorKind;
+  }>({
+    overview: "none",
+    vulnerabilities: "none",
   });
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const fetchSecurityData = useCallback(async () => {
     setLoading(true);
-    const failures = { overview: false, vulnerabilities: false };
+    const failures: { overview: LoadErrorKind; vulnerabilities: LoadErrorKind } =
+      { overview: "none", vulnerabilities: "none" };
     await Promise.all([
       (async () => {
         try {
@@ -515,7 +524,7 @@ export default function SecurityDashboard({
         } catch (err) {
           // Keep any previously loaded data on refresh failure rather than
           // clobbering the dashboard with fabricated zeros.
-          failures.overview = true;
+          failures.overview = errorKindOf(err);
         }
       })(),
       (async () => {
@@ -523,7 +532,7 @@ export default function SecurityDashboard({
           const vulnerabilityData = await fetchJson("/security/threats");
           setVulnerabilities(normalizeVulnerabilities(vulnerabilityData));
         } catch (err) {
-          failures.vulnerabilities = true;
+          failures.vulnerabilities = errorKindOf(err);
         }
       })(),
     ]);
@@ -570,7 +579,22 @@ export default function SecurityDashboard({
     [ovData.recommendations],
   );
   const isInitialLoading = loading && !lastUpdated;
-  const anyLoadFailed = loadFailures.overview || loadFailures.vulnerabilities;
+  // NB: these are LoadErrorKind strings now, so they must be compared against
+  // 'none' — a bare truthiness check would treat "none" as a failure.
+  const anyLoadFailed =
+    loadFailures.overview !== "none" || loadFailures.vulnerabilities !== "none";
+  const bothDenied =
+    loadFailures.overview === "denied" &&
+    loadFailures.vulnerabilities === "denied";
+  const anyDenied =
+    loadFailures.overview === "denied" ||
+    loadFailures.vulnerabilities === "denied";
+  // Retry is only offered when something retryable actually failed. A 403 is
+  // terminal for this user, so a Retry beside it would loop forever.
+  const anyTransient =
+    loadFailures.overview === "other" || loadFailures.vulnerabilities === "other";
+  const bothFailed =
+    loadFailures.overview !== "none" && loadFailures.vulnerabilities !== "none";
   // A tenant with no devices reporting gets a real empty state, never a
   // fabricated 0/100 "High risk" screen.
   const isEmptyTenant =
@@ -643,22 +667,42 @@ export default function SecurityDashboard({
         </div>
       </div>
 
-      {anyLoadFailed && (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
-          <p className="text-sm text-destructive">
-            {loadFailures.overview && loadFailures.vulnerabilities
-              ? t("securitySecurityDashboard.securityDataCouldNotBeLoaded")
-              : t("securitySecurityDashboard.someSecurityDataCouldNotBeLoaded")}
-          </p>
-          <button
-            type="button"
-            onClick={fetchSecurityData}
-            className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
+      {bothDenied ? (
+        // Nothing on this dashboard is readable by this user. A retry would
+        // 403 again, so offer an explanation instead of a dead button.
+        <AccessDenied
+          testId="security-dashboard-denied"
+          message={t("securitySecurityDashboard.accessDeniedMessage")}
+        />
+      ) : (
+        anyLoadFailed && (
+          <div
+            className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center"
+            data-testid="security-dashboard-load-error"
+            role="alert"
           >
-            <RefreshCw className="h-3 w-3" />
-            {t("securitySecurityDashboard.retry")}
-          </button>
-        </div>
+            <p className="text-sm text-destructive">
+              {anyDenied
+                ? t("securitySecurityDashboard.someSecurityDataPermissionDenied")
+                : bothFailed
+                  ? t("securitySecurityDashboard.securityDataCouldNotBeLoaded")
+                  : t(
+                      "securitySecurityDashboard.someSecurityDataCouldNotBeLoaded",
+                    )}
+            </p>
+            {anyTransient && (
+              <button
+                type="button"
+                onClick={fetchSecurityData}
+                data-testid="security-dashboard-retry"
+                className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
+              >
+                <RefreshCw className="h-3 w-3" />
+                {t("securitySecurityDashboard.retry")}
+              </button>
+            )}
+          </div>
+        )
       )}
 
       {ENABLE_EDR_INTEGRATIONS && <EdrSummaryPanel />}

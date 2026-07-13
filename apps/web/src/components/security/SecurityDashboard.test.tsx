@@ -166,4 +166,90 @@ describe('SecurityDashboard', () => {
     expect(screen.queryByText('High risk')).toBeNull();
     expect(screen.queryByText('Security Score')).toBeNull();
   });
+
+  describe('403 is a permissions state, not a retryable error (#2429)', () => {
+    /** A permission denial: resolves (not rejects) with a non-ok 403 Response. */
+    const forbidden = () =>
+      ({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () => ''
+      }) as Response;
+
+    /** Route each security endpoint to a Response, or reject for a transport error. */
+    function route(
+      overview: unknown | Error | Response,
+      threats: unknown | Error | Response
+    ) {
+      const settle = (v: unknown | Error | Response) => {
+        if (v instanceof Error) return Promise.reject(v);
+        if (v && typeof v === 'object' && 'ok' in (v as Response)) {
+          return Promise.resolve(v as Response);
+        }
+        return Promise.resolve(ok(v));
+      };
+      fetchWithAuth.mockImplementation((url: string) => {
+        if (url === '/security/dashboard') return settle(overview);
+        if (url === '/security/threats') return settle(threats);
+        return Promise.resolve(ok({}));
+      });
+    }
+
+    it('shows an access-denied panel with no Retry when both loads are forbidden', async () => {
+      route(forbidden(), forbidden());
+      render(<SecurityDashboard />);
+
+      expect(
+        await screen.findByTestId('security-dashboard-denied')
+      ).toBeInTheDocument();
+
+      // The bug: a 403 got the generic "couldn't be loaded — Retry" banner, and
+      // that Retry could only ever 403 again.
+      expect(screen.queryByTestId('security-dashboard-retry')).toBeNull();
+      expect(
+        screen.queryByText(
+          "Security data couldn't be loaded. Check your connection and retry."
+        )
+      ).toBeNull();
+    });
+
+    it('explains the denial without a Retry when only one axis is forbidden', async () => {
+      route(overviewPayload, forbidden());
+      render(<SecurityDashboard />);
+
+      expect(
+        await screen.findByText(
+          "Some security data isn't visible to you. Ask an administrator if you need access."
+        )
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId('security-dashboard-retry')).toBeNull();
+      // The readable axis still renders.
+      expect(screen.getByText('62')).toBeInTheDocument();
+    });
+
+    it('still offers Retry when a transient failure accompanies the denial', async () => {
+      route(new Error('network'), forbidden());
+      render(<SecurityDashboard />);
+
+      // One axis is genuinely retryable, so the button stays — it can fix that one.
+      expect(
+        await screen.findByTestId('security-dashboard-retry')
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId('security-dashboard-denied')).toBeNull();
+    });
+
+    it('keeps the plain retryable banner for a non-403 failure', async () => {
+      route(new Error('network'), new Error('network'));
+      render(<SecurityDashboard />);
+
+      expect(
+        await screen.findByText(
+          "Security data couldn't be loaded. Check your connection and retry."
+        )
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('security-dashboard-retry')).toBeInTheDocument();
+      expect(screen.queryByTestId('security-dashboard-denied')).toBeNull();
+    });
+  });
 });

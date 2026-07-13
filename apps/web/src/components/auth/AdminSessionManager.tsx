@@ -34,6 +34,12 @@ export default function AdminSessionManager() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const currentOrgId = useOrgStore((state) => state.currentOrgId);
   const [idleTimeoutMs, setIdleTimeoutMs] = useState(DEFAULT_IDLE_TIMEOUT_MS);
+  // False while the effective timeout for the CURRENT scope is still in flight.
+  // Scope switches (All Orgs ↔ org) refetch asynchronously, and until that lands
+  // `idleTimeoutMs` still holds the PREVIOUS scope's budget — enforcing it would
+  // let a 5-minute org timeout idle-log-out a partner admin who just switched to
+  // All Orgs. The heartbeat therefore skips idle logout until this resolves.
+  const [idleTimeoutResolved, setIdleTimeoutResolved] = useState(false);
   const lastActivityAtRef = useRef<number>(Date.now());
   const lastRefreshAtRef = useRef<number>(0);
   const refreshInFlightRef = useRef(false);
@@ -66,15 +72,31 @@ export default function AdminSessionManager() {
   useEffect(() => {
     if (!isAuthenticated) {
       setIdleTimeoutMs(DEFAULT_IDLE_TIMEOUT_MS);
+      setIdleTimeoutResolved(false);
       return;
     }
 
     let cancelled = false;
 
-    const applyConfiguredTimeout = (configuredMinutes: number) => {
-      if (!cancelled && Number.isFinite(configuredMinutes) && configuredMinutes > 0) {
+    // The scope just changed (or we just mounted), so whatever is in state
+    // belongs to the previous scope. Park enforcement and drop back to the
+    // frontend default until the new scope's budget lands, so a stale — possibly
+    // much shorter — budget can never be applied to the new scope (#2429).
+    setIdleTimeoutResolved(false);
+    setIdleTimeoutMs(DEFAULT_IDLE_TIMEOUT_MS);
+
+    /**
+     * Settle the timeout for this scope. `configuredMinutes` is null when the
+     * lookup failed, which keeps the frontend default. EVERY path must call
+     * this: leaving `idleTimeoutResolved` false would park idle logout forever
+     * and turn a failed settings fetch into a session that never times out.
+     */
+    const settleTimeout = (configuredMinutes: number | null) => {
+      if (cancelled) return;
+      if (configuredMinutes !== null && Number.isFinite(configuredMinutes) && configuredMinutes > 0) {
         setIdleTimeoutMs(Math.max(1, configuredMinutes) * 60 * 1000);
       }
+      setIdleTimeoutResolved(true);
     };
 
     const loadSessionTimeout = async () => {
@@ -96,10 +118,11 @@ export default function AdminSessionManager() {
               '[AdminSessionManager] Failed to load effective session timeout:',
               response.status
             );
+            settleTimeout(null);
             return;
           }
           const data = await response.json();
-          applyConfiguredTimeout(Number(data?.effective?.security?.sessionTimeout));
+          settleTimeout(Number(data?.effective?.security?.sessionTimeout));
           return;
         }
 
@@ -115,13 +138,16 @@ export default function AdminSessionManager() {
             '[AdminSessionManager] Failed to load partner session timeout:',
             response.status
           );
+          settleTimeout(null);
           return;
         }
         const data = await response.json();
-        applyConfiguredTimeout(Number(data?.settings?.security?.sessionTimeout));
+        settleTimeout(Number(data?.settings?.security?.sessionTimeout));
       } catch (err) {
-        // Keep current timeout fallback when session settings cannot be loaded.
+        // Fall back to the frontend default — NOT to the previous scope's
+        // budget, which is what `idleTimeoutMs` would otherwise still hold.
         console.warn('[AdminSessionManager] Error loading session timeout:', err);
+        settleTimeout(null);
       }
     };
 
@@ -143,7 +169,9 @@ export default function AdminSessionManager() {
       const now = Date.now();
       const idleMs = now - lastActivityAtRef.current;
 
-      if (idleMs >= idleTimeoutMs) {
+      // Never idle-log-out against a budget we haven't confirmed for the current
+      // scope — mid-switch that value belongs to the scope we just left (#2429).
+      if (idleTimeoutResolved && idleMs >= idleTimeoutMs) {
         idleLogoutInFlightRef.current = true;
         await apiLogout();
         if (!cancelled) {
@@ -184,7 +212,7 @@ export default function AdminSessionManager() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [isAuthenticated, idleTimeoutMs]);
+  }, [isAuthenticated, idleTimeoutMs, idleTimeoutResolved]);
 
   return null;
 }

@@ -99,7 +99,7 @@ describe('DeviceLinkedProfilesTab', () => {
     expect(JSON.parse((patchCall[1] as RequestInit).body as string)).toEqual({ removeDeviceIds: ['dev-1'] });
   });
 
-  it('remove-link DELETEs the group and reloads the panel', async () => {
+  describe('remove-link confirmation (#2429)', () => {
     const groupPayload = {
       group: { id: 'g1', name: null },
       members: [
@@ -107,20 +107,44 @@ describe('DeviceLinkedProfilesTab', () => {
         { deviceId: 'dev-2', hostname: 'b', displayName: null, osType: 'linux', osVersion: '22', agentVersion: '1', status: 'offline', lastSeenAt: null },
       ],
     };
-    fetchWithAuthMock
-      .mockResolvedValueOnce(jsonResponse(groupPayload)) // initial load
-      .mockResolvedValueOnce(jsonResponse({ success: true })) // DELETE
-      .mockResolvedValueOnce(jsonResponse({ group: null, members: [] })); // reload
 
-    render(<DeviceLinkedProfilesTab deviceId="dev-1" />);
-    await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+    it('does NOT dissolve the group on the first click — it asks first', async () => {
+      fetchWithAuthMock.mockResolvedValue(jsonResponse(groupPayload));
 
-    fireEvent.click(screen.getByTestId('linked-profiles-dissolve'));
+      render(<DeviceLinkedProfilesTab deviceId="dev-1" />);
+      await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(1); // initial load only
 
-    await waitFor(() => expect(screen.getByTestId('linked-profiles-empty')).toBeInTheDocument());
-    const deleteCall = fetchWithAuthMock.mock.calls[1]!;
-    expect(deleteCall[0]).toBe('/devices/link-groups/g1');
-    expect(deleteCall[1]).toMatchObject({ method: 'DELETE' });
+      fireEvent.click(screen.getByTestId('linked-profiles-dissolve'));
+
+      // The confirm step is up and nothing has been destroyed yet.
+      await waitFor(() =>
+        expect(screen.getByTestId('linked-profiles-dissolve-confirm')).toBeInTheDocument(),
+      );
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith(
+        '/devices/link-groups/g1',
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
+
+    it('DELETEs the group and reloads the panel once confirmed', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(jsonResponse(groupPayload)) // initial load
+        .mockResolvedValueOnce(jsonResponse({ success: true })) // DELETE
+        .mockResolvedValueOnce(jsonResponse({ group: null, members: [] })); // reload
+
+      render(<DeviceLinkedProfilesTab deviceId="dev-1" />);
+      await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('linked-profiles-dissolve'));
+      fireEvent.click(await screen.findByTestId('linked-profiles-dissolve-confirm'));
+
+      await waitFor(() => expect(screen.getByTestId('linked-profiles-empty')).toBeInTheDocument());
+      const deleteCall = fetchWithAuthMock.mock.calls[1]!;
+      expect(deleteCall[0]).toBe('/devices/link-groups/g1');
+      expect(deleteCall[1]).toMatchObject({ method: 'DELETE' });
+    });
   });
 
   describe('vm_host groups (#2308)', () => {

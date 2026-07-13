@@ -11,6 +11,12 @@ import {
   XCircle,
 } from "lucide-react";
 import { runAction, handleActionError } from "../../lib/runAction";
+import {
+  errorKindOf,
+  HttpError,
+  type LoadErrorKind,
+} from "../../lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 import { fetchWithAuth } from "../../stores/auth";
 import { useMlFeatureFlags } from "../../hooks/useMlFeatureFlags";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -116,7 +122,9 @@ export default function UserRiskPage() {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailErrorKind, setDetailErrorKind] = useState<LoadErrorKind>("none");
   const [detailReloadKey, setDetailReloadKey] = useState(0);
   const [labeling, setLabeling] = useState<
     "true_positive" | "false_positive" | null
@@ -129,17 +137,30 @@ export default function UserRiskPage() {
     }
     setLoading(true);
     setError(null);
+    setErrorKind("none");
     try {
       const [scoresResponse, evaluationResponse] = await Promise.all([
         fetchWithAuth("/user-risk/scores?limit=25&minScore=50"),
         fetchWithAuth("/user-risk/evaluation?days=30"),
       ]);
-      if (!scoresResponse.ok)
+      // A 403 must survive the throw as an HttpError so the render can show a
+      // permissions message instead of a Retry that can never succeed (#2429).
+      // Every other status keeps its existing user-facing copy.
+      if (!scoresResponse.ok) {
+        if (scoresResponse.status === 403)
+          throw new HttpError(scoresResponse.status, scoresResponse.statusText);
         throw new Error(t("securityUserRiskPage.failedToLoadUserRiskScores"));
-      if (!evaluationResponse.ok)
+      }
+      if (!evaluationResponse.ok) {
+        if (evaluationResponse.status === 403)
+          throw new HttpError(
+            evaluationResponse.status,
+            evaluationResponse.statusText,
+          );
         throw new Error(
           t("securityUserRiskPage.failedToLoadUserRiskEvaluation"),
         );
+      }
       const scoresJson = await scoresResponse.json();
       const evaluationJson = await evaluationResponse.json();
       const rows = Array.isArray(scoresJson?.data)
@@ -149,11 +170,15 @@ export default function UserRiskPage() {
       setEvaluation(evaluationJson?.data ?? null);
       setSelected((current) => current ?? rows[0] ?? null);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : t("securityUserRiskPage.failedToLoadUserRisk"),
-      );
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      // 'denied' renders AccessDenied, which supplies its own copy.
+      if (kind === "other")
+        setError(
+          err instanceof Error
+            ? err.message
+            : t("securityUserRiskPage.failedToLoadUserRisk"),
+        );
     } finally {
       setLoading(false);
     }
@@ -166,6 +191,7 @@ export default function UserRiskPage() {
       setSelected(null);
       setDetail(null);
       setError(null);
+      setErrorKind("none");
       setLoading(false);
       return;
     }
@@ -175,31 +201,44 @@ export default function UserRiskPage() {
     if (userRiskDisabled) {
       setDetail(null);
       setDetailError(null);
+      setDetailErrorKind("none");
       return;
     }
     if (!selected) {
       setDetail(null);
       setDetailError(null);
+      setDetailErrorKind("none");
       return;
     }
     let active = true;
     setDetailLoading(true);
     setDetailError(null);
+    setDetailErrorKind("none");
     fetchWithAuth(`/user-risk/users/${selected.userId}?orgId=${selected.orgId}`)
       .then(async (response) => {
-        if (!response.ok)
+        if (!response.ok) {
+          // A 403 must survive the throw as an HttpError so the render can show
+          // a permissions message instead of a Retry that can never succeed
+          // (#2429). Every other status keeps its existing copy.
+          if (response.status === 403)
+            throw new HttpError(response.status, response.statusText);
           throw new Error(t("securityUserRiskPage.failedToLoadUserRiskDetail"));
+        }
         const json = await response.json();
         if (active) setDetail(json?.data ?? null);
       })
       .catch((err) => {
         if (active) {
           setDetail(null);
-          setDetailError(
-            err instanceof Error
-              ? err.message
-              : t("securityUserRiskPage.failedToLoadUserRiskDetail"),
-          );
+          const kind = errorKindOf(err);
+          setDetailErrorKind(kind);
+          // 'denied' renders AccessDenied, which supplies its own copy.
+          if (kind === "other")
+            setDetailError(
+              err instanceof Error
+                ? err.message
+                : t("securityUserRiskPage.failedToLoadUserRiskDetail"),
+            );
         }
       })
       .finally(() => {
@@ -288,6 +327,12 @@ export default function UserRiskPage() {
         </section>
       </div>
     );
+  }
+  // A 403 is terminal for this user — the permission gate will deny a retry too,
+  // so show the access-denied panel (no Retry button) instead of the transient
+  // failure banner below (#2429).
+  if (errorKind === "denied") {
+    return <AccessDenied testId="user-risk-denied" />;
   }
   if (error) {
     return (
@@ -421,7 +466,11 @@ export default function UserRiskPage() {
                 </span>
               </div>
 
-              {detailError && (
+              {/* A 403 on the detail fetch is terminal — reloading it would 403
+                  again, so no Retry is offered on that path (#2429). */}
+              {detailErrorKind === "denied" ? (
+                <AccessDenied testId="user-risk-detail-denied" />
+              ) : detailError ? (
                 <div
                   className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
                   data-testid="user-risk-detail-error"
@@ -439,7 +488,7 @@ export default function UserRiskPage() {
                     {t("securityUserRiskPage.retry")}
                   </button>
                 </div>
-              )}
+              ) : null}
 
               <div className="flex flex-wrap gap-2">
                 <button

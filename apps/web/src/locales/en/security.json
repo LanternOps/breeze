@@ -483,6 +483,8 @@
     "securityScore": "Security Score",
     "securityScoreTrend": "Security Score Trend",
     "someSecurityDataCouldNotBeLoaded": "Some security data couldn't be loaded. Values shown may be incomplete.",
+    "accessDeniedMessage": "You don't have permission to view security data for this organization.",
+    "someSecurityDataPermissionDenied": "Some security data isn't visible to you. Ask an administrator if you need access.",
     "strong": "Strong",
     "trackProtectionCoverageVulnerabilitiesAndPolicyCompliance": "Track protection coverage, vulnerabilities, and policy compliance.",
     "trendInsights": "Trend insights",
