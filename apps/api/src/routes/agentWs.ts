@@ -1676,8 +1676,9 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       // deliberately NOT claimed here (#2407): no agent version has ever
       // parsed `pendingCommands` out of the welcome frame
       // (handleConnectedMessage negotiates capabilities only), so claiming
-      // them marked rows 'sent' that were never delivered — and with no
-      // stale-'sent' reclaim, they were lost permanently. Queued commands
+      // them marked rows 'sent' that were never delivered or executed —
+      // they sat falsely 'sent' until the stale-command reaper flipped them
+      // to 'failed' with a misleading agent-timeout error. Queued commands
       // stay 'pending' and reach the agent through the working paths: the
       // HTTP heartbeat claim (the agent heartbeats immediately on startup)
       // and executeCommand's direct per-command push while the socket is

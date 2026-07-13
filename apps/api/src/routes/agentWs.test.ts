@@ -1406,6 +1406,31 @@ describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
 
     expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
   });
+
+  it('severs the socket on a heartbeat when the device was decommissioned after connect', async () => {
+    const preValidatedAgent = { deviceId: 'device-d', orgId: 'org-d' };
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any); // onOpen: register only
+
+    const handlers = createAgentWsHandlers('agent-d', preValidatedAgent);
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    vi.mocked(ws.close).mockClear();
+    vi.mocked(db.update).mockClear();
+
+    vi.mocked(db.select).mockReturnValue(
+      selectAgentDevice([{ id: 'device-d', status: 'decommissioned', agentTokenSuspendedAt: null }]) as any
+    );
+
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'heartbeat', timestamp: 123 }),
+    } as any, ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+    // Severed BEFORE the status write — a contained device must not be
+    // flipped back online by its own heartbeat.
+    expect(db.update).not.toHaveBeenCalled();
+  });
 });
 
 // Finding #8 — WS command results emit the same append-only audit as REST.
@@ -1512,8 +1537,9 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
 // frames. No agent version has ever parsed `pendingCommands` out of the
 // `connected` welcome frame or `commands` out of `heartbeat_ack` (the agent's
 // readPump skips ID-less frames), so a WS-side claim marked rows 'sent' that
-// were never delivered — and with no stale-'sent' reclaim, they were lost
-// permanently. Commands must stay 'pending' for the HTTP heartbeat claim and
+// were never delivered or executed — they sat falsely 'sent' until the stale
+// command reaper flipped them to 'failed' with a misleading agent-timeout
+// error. Commands must stay 'pending' for the HTTP heartbeat claim and
 // executeCommand's direct per-command push.
 describe('WS frames never claim pending commands (#2407)', () => {
   beforeEach(() => {
