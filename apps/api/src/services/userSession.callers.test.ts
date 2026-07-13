@@ -67,6 +67,19 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
   return current;
 }
 
+const PROTECTED_IMPORT_SOURCES: Record<string, ReadonlySet<string>> = {
+  issueUserSession: new Set(['./userSession', '../services', '../../services']),
+  setRefreshTokenCookie: new Set([
+    './helpers',
+    './auth/helpers',
+    '../routes/auth/helpers',
+  ]),
+};
+
+function protectedConventionError(functionName: string, detail: string): Error {
+  return new Error(`Protected symbol convention violation for ${functionName}: ${detail}`);
+}
+
 function countTrackedSymbolCalls(source: string, functionName: string): number {
   const sourceFile = ts.createSourceFile(
     'session-inventory.ts',
@@ -75,98 +88,88 @@ function countTrackedSymbolCalls(source: string, functionName: string): number {
     true,
     ts.ScriptKind.TS,
   );
-  const importedBindings = new Set<string>();
-  const namespaceBindings = new Set<string>();
+  const approvedSources = PROTECTED_IMPORT_SOURCES[functionName];
+  if (!approvedSources) throw new Error(`Unknown protected symbol: ${functionName}`);
+  let hasProtectedImport = false;
 
-  const collectImports = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) && node.importClause?.namedBindings) {
+  const inspectImports = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node)
+      && node.expression.kind === ts.SyntaxKind.ImportKeyword
+      && node.arguments[0]
+      && ts.isStringLiteral(node.arguments[0])
+      && approvedSources.has(node.arguments[0].text)
+    ) {
+      const awaited = ts.isAwaitExpression(node.parent) ? node.parent : undefined;
+      const declaration = awaited && ts.isVariableDeclaration(awaited.parent)
+        ? awaited.parent
+        : undefined;
+      const elements = declaration && ts.isObjectBindingPattern(declaration.name)
+        ? declaration.name.elements
+        : undefined;
+      const isExistingGetRedisImport = functionName === 'issueUserSession'
+        && node.arguments[0].text === '../services'
+        && elements?.length === 1
+        && !elements[0]?.dotDotDotToken
+        && !elements[0]?.propertyName
+        && ts.isIdentifier(elements[0]?.name)
+        && elements[0].name.text === 'getRedis';
+      if (isExistingGetRedisImport) {
+        // Three existing enrollment-key paths dynamically load only getRedis.
+        // Keep that exact unrelated barrel import outside this symbol contract.
+        ts.forEachChild(node, inspectImports);
+        return;
+      }
+      throw protectedConventionError(functionName, 'dynamic imports are forbidden');
+    }
+    if (
+      ts.isImportDeclaration(node)
+      && ts.isStringLiteral(node.moduleSpecifier)
+      && approvedSources.has(node.moduleSpecifier.text)
+      && node.importClause
+    ) {
+      if (node.importClause.name) {
+        throw protectedConventionError(functionName, 'default imports are forbidden');
+      }
       const bindings = node.importClause.namedBindings;
-      if (ts.isNamespaceImport(bindings)) {
-        namespaceBindings.add(bindings.name.text);
-      } else {
+      if (bindings && ts.isNamespaceImport(bindings)) {
+        throw protectedConventionError(functionName, 'namespace imports are forbidden');
+      }
+      if (bindings && ts.isNamedImports(bindings)) {
         for (const element of bindings.elements) {
           const importedName = element.propertyName?.text ?? element.name.text;
-          if (importedName === functionName) importedBindings.add(element.name.text);
+          if (importedName !== functionName) continue;
+          if (element.name.text !== functionName || element.propertyName) {
+            throw protectedConventionError(functionName, 'named import aliases are forbidden');
+          }
+          hasProtectedImport = true;
         }
       }
     }
-    ts.forEachChild(node, collectImports);
+    ts.forEachChild(node, inspectImports);
   };
-  collectImports(sourceFile);
+  inspectImports(sourceFile);
 
-  const isTrackedCallable = (rawExpression: ts.Expression): boolean => {
-    const expression = unwrapExpression(rawExpression);
-    if (ts.isIdentifier(expression)) return importedBindings.has(expression.text);
-    if (ts.isPropertyAccessExpression(expression)) {
-      const receiver = unwrapExpression(expression.expression);
-      return ts.isIdentifier(receiver)
-        && namespaceBindings.has(receiver.text)
-        && expression.name.text === functionName;
-    }
-    if (ts.isElementAccessExpression(expression)) {
-      const receiver = unwrapExpression(expression.expression);
-      const argument = expression.argumentExpression && unwrapExpression(expression.argumentExpression);
-      return ts.isIdentifier(receiver)
-        && namespaceBindings.has(receiver.text)
-        && !!argument
-        && ts.isStringLiteral(argument)
-        && argument.text === functionName;
-    }
-    return false;
-  };
-
-  // Resolve local aliases to a fixed point so alias chains are also fail-closed.
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const collectAliases = (node: ts.Node): void => {
-      if (
-        ts.isVariableDeclaration(node)
-        && ts.isIdentifier(node.name)
-        && node.initializer
-        && isTrackedCallable(node.initializer)
-        && !importedBindings.has(node.name.text)
-      ) {
-        importedBindings.add(node.name.text);
-        changed = true;
-      }
-      if (
-        ts.isBinaryExpression(node)
-        && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        && ts.isIdentifier(node.left)
-        && isTrackedCallable(node.right)
-        && !importedBindings.has(node.left.text)
-      ) {
-        importedBindings.add(node.left.text);
-        changed = true;
-      }
-      ts.forEachChild(node, collectAliases);
-    };
-    collectAliases(sourceFile);
-  }
+  // Same-named exports from unrelated modules are outside this contract.
+  if (!hasProtectedImport) return 0;
 
   let count = 0;
-  const visitCalls = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node)
-      && (
-        isTrackedCallable(node.expression)
-        || (
-          ts.isPropertyAccessExpression(unwrapExpression(node.expression))
-          && ['call', 'apply'].includes(
-            (unwrapExpression(node.expression) as ts.PropertyAccessExpression).name.text,
-          )
-          && isTrackedCallable(
-            (unwrapExpression(node.expression) as ts.PropertyAccessExpression).expression,
-          )
-        )
-      )
-    ) {
-      count += 1;
+  const inspectReferences = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && node.text === functionName) {
+      if (ts.isImportSpecifier(node.parent)) return;
+      if (ts.isTypeQueryNode(node.parent) && node.parent.exprName === node) return;
+      if (ts.isCallExpression(node.parent) && node.parent.expression === node) {
+        count += 1;
+        return;
+      }
+      throw protectedConventionError(
+        functionName,
+        'only a direct CallExpression identifier may reference the imported symbol',
+      );
     }
-    ts.forEachChild(node, visitCalls);
+    ts.forEachChild(node, inspectReferences);
   };
-  visitCalls(sourceFile);
+  inspectReferences(sourceFile);
   return count;
 }
 
@@ -218,7 +221,7 @@ function isDirectCall(expression: ts.Expression, functionName: string): expressi
 }
 
 function isFalsyGuard(statement: ts.Statement, variableName: string): boolean {
-  if (!ts.isIfStatement(statement)) return false;
+  if (!ts.isIfStatement(statement) || statement.elseStatement) return false;
   const condition = unwrapExpression(statement.expression);
   if (
     !ts.isPrefixUnaryExpression(condition)
@@ -230,7 +233,8 @@ function isFalsyGuard(statement: ts.Statement, variableName: string): boolean {
   }
   return ts.isReturnStatement(statement.thenStatement)
     || (ts.isBlock(statement.thenStatement)
-      && statement.thenStatement.statements.some(ts.isReturnStatement));
+      && statement.thenStatement.statements.length === 1
+      && ts.isReturnStatement(statement.thenStatement.statements[0]));
 }
 
 function cookieUsesGrantRefreshToken(
@@ -240,8 +244,13 @@ function cookieUsesGrantRefreshToken(
   if (!ts.isExpressionStatement(statement)) return false;
   const expression = unwrapExpression(statement.expression);
   if (!isDirectCall(expression, 'setRefreshTokenCookie')) return false;
+  const context = expression.arguments[0] && unwrapExpression(expression.arguments[0]);
   const token = expression.arguments[1] && unwrapExpression(expression.arguments[1]);
-  return !!token
+  return expression.arguments.length === 2
+    && !!context
+    && ts.isIdentifier(context)
+    && context.text === 'c'
+    && !!token
     && ts.isPropertyAccessExpression(token)
     && ts.isIdentifier(unwrapExpression(token.expression))
     && (unwrapExpression(token.expression) as ts.Identifier).text === grantName
@@ -276,6 +285,12 @@ function provesAuthorizedSsoExchangeCookieFlow(source: string): boolean {
         && declaration.initializer
         && isDirectCall(unwrapExpression(declaration.initializer), 'consumeSsoTokenExchangeGrant')
       ) {
+        if (
+          (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+          || statement.declarationList.declarations.length !== 1
+        ) {
+          return false;
+        }
         grantName = declaration.name.text;
         consumeIndex = index;
       }
@@ -288,9 +303,9 @@ function provesAuthorizedSsoExchangeCookieFlow(source: string): boolean {
   const cookieIndex = statements.findIndex((statement, index) =>
     index > consumeIndex && cookieUsesGrantRefreshToken(statement, grantName!));
 
-  // Requiring adjacency after the rejection guard prevents an intervening
-  // statement from replacing or mutating the authorized grant/token source.
-  return guardIndex > consumeIndex && cookieIndex === guardIndex + 1;
+  // Exact statement adjacency prevents deferred work or an intervening
+  // statement from replacing/mutating the authorized grant/token source.
+  return guardIndex === consumeIndex + 1 && cookieIndex === guardIndex + 1;
 }
 
 describe('session inventory analyzer fixtures', () => {
@@ -298,50 +313,105 @@ describe('session inventory analyzer fixtures', () => {
     [
       'named import alias',
       "import { issueUserSession as issue } from './userSession'; issue({} as never);",
-      1,
     ],
     [
       'namespace property call',
       "import * as sessions from './userSession'; sessions.issueUserSession({} as never);",
-      1,
     ],
     [
       'local alias',
       "import { issueUserSession } from './userSession'; const issue = issueUserSession; issue({} as never);",
-      1,
     ],
     [
       'call/apply forms',
       "import { issueUserSession } from './userSession'; issueUserSession.call(null, {}); issueUserSession.apply(null, [{}]);",
-      2,
     ],
-  ])('resolves issueUserSession through %s', (_name, source, expected) => {
-    expect(countTrackedSymbolCalls(source, 'issueUserSession')).toBe(expected);
+  ])('rejects issueUserSession through %s', (_name, source) => {
+    expect(() => countTrackedSymbolCalls(source, 'issueUserSession')).toThrow(
+      /protected symbol convention/i,
+    );
   });
 
   it.each([
     [
       'named import alias',
       "import { setRefreshTokenCookie as install } from './auth/helpers'; install(c, token);",
-      1,
     ],
     [
       'namespace property call',
       "import * as helpers from './auth/helpers'; helpers.setRefreshTokenCookie(c, token);",
-      1,
     ],
     [
       'local alias',
       "import { setRefreshTokenCookie } from './auth/helpers'; const install = setRefreshTokenCookie; install(c, token);",
-      1,
     ],
     [
       'call/apply forms',
       "import { setRefreshTokenCookie } from './auth/helpers'; setRefreshTokenCookie.call(null, c, token); setRefreshTokenCookie.apply(null, [c, token]);",
-      2,
     ],
-  ])('resolves setRefreshTokenCookie through %s', (_name, source, expected) => {
-    expect(countTrackedSymbolCalls(source, 'setRefreshTokenCookie')).toBe(expected);
+  ])('rejects setRefreshTokenCookie through %s', (_name, source) => {
+    expect(() => countTrackedSymbolCalls(source, 'setRefreshTokenCookie')).toThrow(
+      /protected symbol convention/i,
+    );
+  });
+
+  it.each([
+    [
+      'dynamic import destructuring',
+      "async function f() { const { issueUserSession } = await import('./userSession'); await issueUserSession({}); }",
+    ],
+    [
+      'bind',
+      "import { issueUserSession } from './userSession'; const issue = issueUserSession.bind(null); issue({});",
+    ],
+    [
+      'shadowing',
+      "import { issueUserSession } from './userSession'; function f(issueUserSession: () => void) { issueUserSession(); }",
+    ],
+    [
+      'namespace destructuring',
+      "import * as sessions from './userSession'; const { issueUserSession } = sessions; issueUserSession({});",
+    ],
+    [
+      'object alias',
+      "import { issueUserSession } from './userSession'; const issuers = { issueUserSession }; issuers.issueUserSession({});",
+    ],
+  ])('rejects issueUserSession %s', (_name, source) => {
+    expect(() => countTrackedSymbolCalls(source, 'issueUserSession')).toThrow(
+      /protected symbol convention/i,
+    );
+  });
+
+  it.each([
+    [
+      'dynamic import destructuring',
+      "async function f() { const { setRefreshTokenCookie } = await import('./auth/helpers'); setRefreshTokenCookie(c, token); }",
+    ],
+    [
+      'bind',
+      "import { setRefreshTokenCookie } from './auth/helpers'; const install = setRefreshTokenCookie.bind(null); install(c, token);",
+    ],
+    [
+      'shadowing',
+      "import { setRefreshTokenCookie } from './auth/helpers'; function f(setRefreshTokenCookie: () => void) { setRefreshTokenCookie(); }",
+    ],
+  ])('rejects setRefreshTokenCookie %s', (_name, source) => {
+    expect(() => countTrackedSymbolCalls(source, 'setRefreshTokenCookie')).toThrow(
+      /protected symbol convention/i,
+    );
+  });
+
+  it.each([
+    [
+      'issueUserSession',
+      "import { issueUserSession } from './unrelated'; issueUserSession({});",
+    ],
+    [
+      'setRefreshTokenCookie',
+      "import { setRefreshTokenCookie } from './unrelated'; setRefreshTokenCookie(c, token);",
+    ],
+  ])('does not count %s imported from an unrelated source', (symbol, source) => {
+    expect(countTrackedSymbolCalls(source, symbol)).toBe(0);
   });
 
   it('ignores comments, strings, and unrelated local declarations', () => {
@@ -396,6 +466,50 @@ describe('session inventory analyzer fixtures', () => {
     `;
 
     expect(provesAuthorizedSsoExchangeCookieFlow(source)).toBe(true);
+  });
+
+  it('rejects mutation of the consumed SSO grant before cookie installation', () => {
+    const source = `
+      ssoRoutes.post('/exchange', async (c) => {
+        const grant = consumeSsoTokenExchangeGrant(code);
+        if (!grant) return c.json({ error: 'invalid' }, 400);
+        grant.refreshToken = attackerToken;
+        setRefreshTokenCookie(c, grant.refreshToken);
+      });
+    `;
+
+    expect(provesAuthorizedSsoExchangeCookieFlow(source)).toBe(false);
+  });
+
+  it.each([
+    [
+      'an intervening statement before the grant guard',
+      `
+        const grant = consumeSsoTokenExchangeGrant(code);
+        audit(grant);
+        if (!grant) return c.json({ error: 'invalid' }, 400);
+        setRefreshTokenCookie(c, grant.refreshToken);
+      `,
+    ],
+    [
+      'a mutable grant binding',
+      `
+        let grant = consumeSsoTokenExchangeGrant(code);
+        if (!grant) return c.json({ error: 'invalid' }, 400);
+        setRefreshTokenCookie(c, grant.refreshToken);
+      `,
+    ],
+    [
+      'a compound grant declaration',
+      `
+        const other = value, grant = consumeSsoTokenExchangeGrant(code);
+        if (!grant) return c.json({ error: 'invalid' }, 400);
+        setRefreshTokenCookie(c, grant.refreshToken);
+      `,
+    ],
+  ])('rejects SSO exchange with %s', (_name, body) => {
+    const source = `ssoRoutes.post('/exchange', async (c) => { ${body} });`;
+    expect(provesAuthorizedSsoExchangeCookieFlow(source)).toBe(false);
   });
 });
 
