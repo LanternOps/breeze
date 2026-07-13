@@ -169,6 +169,22 @@ describe('apns — buildApnsRequest', () => {
     });
   });
 
+  it('never lets a caller-supplied aps key in data clobber the notification payload', async () => {
+    mockConfig(CONFIGURED);
+    const { buildApnsRequest } = await import('./apns');
+
+    const req = buildApnsRequest(
+      'tok',
+      { title: 'T', body: 'B', data: { aps: { alert: 'spoofed' }, type: 'approval' } },
+      'JWT',
+    );
+
+    expect(JSON.parse(req.body)).toEqual({
+      aps: { alert: { title: 'T', body: 'B' }, sound: 'default' },
+      type: 'approval',
+    });
+  });
+
   it('emits apns-expiration 0 when ttl is 0 (deliver-now-or-discard)', async () => {
     mockConfig(CONFIGURED);
     const { buildApnsRequest } = await import('./apns');

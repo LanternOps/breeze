@@ -170,12 +170,14 @@ export function buildApnsRequest(deviceToken: string, payload: ApnsPayload, jwt:
     headers['apns-collapse-id'] = payload.collapseId;
   }
 
+  // Spread custom data first so a caller-supplied `aps` key can never clobber
+  // the notification payload (aps is a reserved APNs key).
   const body = JSON.stringify({
+    ...(payload.data ?? {}),
     aps: {
       alert: { title: payload.title, body: payload.body },
       sound: 'default',
     },
-    ...(payload.data ?? {}),
   });
 
   return { path, headers, body };

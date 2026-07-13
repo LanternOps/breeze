@@ -1,5 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import type { EventSubscription } from 'expo-notifications';
 
@@ -42,11 +43,21 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
 
   let token: string | null = null;
   try {
-    // Native device push token: raw APNs token on iOS, FCM token on Android.
-    // Uses getDevicePushTokenAsync — needs NO Expo projectId/account — so push
-    // works with a plain Xcode/Apple build (not the Expo push relay).
-    const tokenData = await Notifications.getDevicePushTokenAsync();
-    token = String(tokenData.data);
+    if (Platform.OS === 'ios') {
+      // Native device push token: raw APNs token. Uses getDevicePushTokenAsync
+      // — needs NO Expo projectId/account — so push works with a plain
+      // Xcode/Apple build (not the Expo push relay).
+      const tokenData = await Notifications.getDevicePushTokenAsync();
+      token = String(tokenData.data);
+    } else {
+      // Android stays on the Expo push relay: the API's approval dispatcher
+      // does not send to raw FCM tokens yet (deliberately skipped server-side),
+      // so a native device token here would silently drop approval pushes.
+      const projectId = Constants.expoConfig?.extra?.eas?.projectId;
+      if (!projectId) throw new Error('EAS projectId missing — run `eas init`');
+      const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
+      token = tokenData.data;
+    }
 
     const platform = Platform.OS as 'ios' | 'android';
     await apiRegisterPushToken(token, platform);
