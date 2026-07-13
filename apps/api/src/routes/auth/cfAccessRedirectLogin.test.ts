@@ -5,6 +5,7 @@ const envState = vi.hoisted(() => ({
   teamDomain: 'your-team.cloudflareaccess.com',
   audience: 'aud-app-1234567890abcdef',
   trustsMfa: false,
+  publicOrigin: 'https://breeze.example.com' as string | null,
 }));
 
 vi.mock('../../config/env', () => ({
@@ -12,6 +13,47 @@ vi.mock('../../config/env', () => ({
   cfAccessTeamDomain: () => envState.teamDomain,
   cfAccessAud: () => envState.audience,
   cfAccessTrustsMfa: () => envState.trustsMfa,
+  authBrowserPublicOrigin: () => envState.publicOrigin,
+}));
+
+const ticketState = vi.hoisted(() => ({
+  valid: true,
+  calls: [] as string[],
+}));
+
+const verifiedTicket = {
+  version: 1 as const,
+  audience: 'terminal-logout-completion' as const,
+  transitionId: '00000000-0000-4000-8000-000000000001',
+  logoutId: '00000000-0000-4000-8000-000000000002',
+  generation: 2,
+  nonce: 'a'.repeat(64),
+  issuedAt: Date.parse('2026-07-13T00:00:00Z'),
+  expiresAt: Date.parse('2026-07-13T00:10:00Z'),
+  signingKeyId: 'key-1',
+};
+
+vi.mock('../../services/terminalLogoutTicket', () => ({
+  verifyTerminalLogoutTicket: vi.fn((ticket: string) => {
+    ticketState.calls.push(ticket);
+    if (!ticketState.valid || ticket !== 'signed-ticket') throw new Error('invalid ticket');
+    return verifiedTicket;
+  }),
+}));
+
+const completionState = vi.hoisted(() => ({
+  calls: [] as Array<Record<string, unknown>>,
+  results: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock('../../services/authBrowserTransition', () => ({
+  completeTerminalLogout: vi.fn(async (input: Record<string, unknown>) => {
+    completionState.calls.push(input);
+    return completionState.results.shift() ?? {
+      kind: 'completed',
+      replacement: { kind: 'browser', value: 'b'.repeat(64) },
+    };
+  }),
 }));
 
 const verifyState = vi.hoisted(() => ({
@@ -116,6 +158,7 @@ const cookieState = vi.hoisted(() => ({
   cleared: false,
   quarantineSet: false,
   quarantineCleared: false,
+  rotated: null as string | null,
 }));
 
 vi.mock('./helpers', async () => {
@@ -136,15 +179,21 @@ vi.mock('./helpers', async () => {
       cookieState.set = refreshToken;
     }),
     clearRefreshTokenCookie: vi.fn((c: unknown) => {
-      void c;
       cookieState.set = null;
       cookieState.cleared = true;
+      actual.clearRefreshTokenCookie(c as never);
     }),
-    setCfAccessLogoutQuarantineCookie: vi.fn(() => {
+    setCfAccessLogoutQuarantineCookie: vi.fn((c: unknown) => {
       cookieState.quarantineSet = true;
+      actual.setCfAccessLogoutQuarantineCookie(c as never);
     }),
-    clearCfAccessLogoutQuarantineCookie: vi.fn(() => {
+    clearCfAccessLogoutQuarantineCookie: vi.fn((c: unknown) => {
       cookieState.quarantineCleared = true;
+      actual.clearCfAccessLogoutQuarantineCookie(c as never);
+    }),
+    rotateCsrfBindingCookie: vi.fn((c: unknown, value: string) => {
+      cookieState.rotated = value;
+      actual.rotateCsrfBindingCookie(c as never, value);
     }),
     getClientIP: () => '127.0.0.1',
   };
@@ -184,6 +233,7 @@ describe('GET /cf-access-login', () => {
     envState.teamDomain = 'your-team.cloudflareaccess.com';
     envState.audience = 'aud-app-1234567890abcdef';
     envState.trustsMfa = false;
+    envState.publicOrigin = 'https://breeze.example.com';
     verifyState.next = undefined;
     dbState.userRow = null;
     auditState.audits = [];
@@ -192,6 +242,11 @@ describe('GET /cf-access-login', () => {
     cookieState.cleared = false;
     cookieState.quarantineSet = false;
     cookieState.quarantineCleared = false;
+    cookieState.rotated = null;
+    ticketState.valid = true;
+    ticketState.calls = [];
+    completionState.calls = [];
+    completionState.results = [];
     servicesState.lastSessionIdentity = null;
     servicesState.verifyResult = null;
     servicesState.revokeAllCalls = [];
@@ -374,133 +429,122 @@ describe('GET /cf-access-login', () => {
     expect(res.headers.get('Location')).toMatch(/^\/devices\?cf-access-login=success$/);
   });
 
-  it('logout endpoint chains app-domain + team-domain CF logouts ending at /login?signedOut=1', async () => {
+  it.each([undefined, 'invalid-ticket'])('grants no authority to a missing or invalid ticket', async (ticket) => {
     envState.enabled = true;
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
-      method: 'GET',
-      headers: { host: 'breeze.example.com' },
-    });
-    expect(res.status).toBe(302);
-    const loc = res.headers.get('Location') ?? '';
-    // Outer hop is the app-domain logout.
-    expect(loc.startsWith('https://breeze.example.com/cdn-cgi/access/logout?returnTo=')).toBe(true);
-    // Inner hop (decoded once) is the team-domain logout.
-    const innerEncoded = loc.split('returnTo=')[1] ?? '';
-    const inner = decodeURIComponent(innerEncoded);
-    expect(inner.startsWith(`https://${envState.teamDomain}/cdn-cgi/access/logout?returnTo=`)).toBe(true);
-    // Innermost (decoded twice) is the SPA landing page.
-    const finalEncoded = inner.split('returnTo=')[1] ?? '';
-    expect(decodeURIComponent(finalEncoded)).toBe(
-      'https://breeze.example.com/api/v1/auth/cf-access-logout/complete',
+    if (ticket) ticketState.valid = false;
+    const query = ticket ? `?ticket=${ticket}` : '';
+    const res = await cfAccessRedirectLoginRoutes.request(
+      `http://api.example/cf-access-logout${query}`,
+      { method: 'GET', headers: { host: 'evil.attacker.example', cookie: 'breeze_refresh_token=stale' } },
     );
-    expect(cookieState.cleared).toBe(true);
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('Location')).toBe('/login?signedOut=1&logoutError=1');
+    expect(completionState.calls).toEqual([]);
+    expect(cookieState.cleared).toBe(false);
+    expect(cookieState.quarantineSet).toBe(false);
+    expect(res.headers.get('Set-Cookie')).toBeNull();
+  });
+
+  it('chains configured-origin Cloudflare logouts and carries the exact ticket to completion', async () => {
+    envState.enabled = true;
+    const res = await cfAccessRedirectLoginRoutes.request(
+      'http://api.example/cf-access-logout?ticket=signed-ticket',
+      { method: 'GET', headers: { host: 'evil.attacker.example' } },
+    );
+
+    expect(res.status).toBe(303);
+    const location = res.headers.get('Location') ?? '';
+    expect(location).toMatch(/^https:\/\/breeze\.example\.com\/cdn-cgi\/access\/logout\?returnTo=/);
+    expect(location).not.toContain('evil.attacker.example');
+    const teamLogout = decodeURIComponent(location.split('returnTo=')[1] ?? '');
+    const finalReturn = decodeURIComponent(teamLogout.split('returnTo=')[1] ?? '');
+    expect(finalReturn).toBe(
+      'https://breeze.example.com/api/v1/auth/cf-access-logout/complete?ticket=signed-ticket',
+    );
+    expect(cookieState.cleared).toBe(false);
     expect(cookieState.quarantineSet).toBe(true);
   });
 
-  it('logout endpoint falls back to /login?signedOut=1 when CF Access trust disabled', async () => {
-    envState.enabled = false;
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', { method: 'GET' });
-    expect(res.status).toBe(302);
-    expect(res.headers.get('Location')).toBe('/login?signedOut=1');
-    expect(cookieState.cleared).toBe(true);
-  });
-
-  it('top-level GET never lets a refresh cookie select a global revocation subject', async () => {
+  it('never falls back to Host when the configured public origin is unavailable', async () => {
     envState.enabled = true;
-    servicesState.verifyResult = {
-      type: 'refresh', sub: 'user-1', jti: 'jti-current', ae: 1, me: 1, fam: 'family-1',
-    };
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
-      method: 'GET',
-      headers: {
-        host: 'breeze.example.com',
-        cookie: 'breeze_refresh_token=refresh-cookie-tok',
-      },
-    });
-    expect(res.status).toBe(302);
-    expect(servicesState.revokeAllCalls).toEqual([]);
-    expect(servicesState.revokeJtiCalls).toEqual([]);
-    const services = await import('../../services');
-    expect(services.verifyToken).not.toHaveBeenCalled();
-    expect(cookieState.cleared).toBe(true);
-  });
+    envState.publicOrigin = null;
 
-  it('logout with no refresh cookie still clears + 302s without calling revocation', async () => {
-    envState.enabled = true;
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
-      method: 'GET',
-      headers: { host: 'breeze.example.com' },
-    });
-    expect(res.status).toBe(302);
-    expect(servicesState.revokeAllCalls).toEqual([]);
-    expect(servicesState.revokeJtiCalls).toEqual([]);
-    expect(cookieState.cleared).toBe(true);
-  });
-
-  it('logout with an invalid refresh cookie still clears + 302s (no 500)', async () => {
-    envState.enabled = true;
-    servicesState.verifyResult = null; // verifyToken rejects the cookie
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
-      method: 'GET',
-      headers: {
-        host: 'breeze.example.com',
-        cookie: 'breeze_refresh_token=garbage',
-      },
-    });
-    expect(res.status).toBe(302);
-    expect(servicesState.revokeAllCalls).toEqual([]);
-    expect(servicesState.revokeJtiCalls).toEqual([]);
-    expect(cookieState.cleared).toBe(true);
-  });
-
-  it('logout builds the redirect origin from DASHBOARD_URL, ignoring a spoofed Host header', async () => {
-    envState.enabled = true;
-    process.env.DASHBOARD_URL = 'https://breeze.example.com';
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
-      method: 'GET',
-      headers: { host: 'evil.attacker.example' },
-    });
-    expect(res.status).toBe(302);
-    const loc = res.headers.get('Location') ?? '';
-    expect(loc.startsWith('https://breeze.example.com/cdn-cgi/access/logout?returnTo=')).toBe(true);
-    expect(loc).not.toContain('evil.attacker.example');
-    const inner = decodeURIComponent(loc.split('returnTo=')[1] ?? '');
-    const finalReturn = decodeURIComponent(inner.split('returnTo=')[1] ?? '');
-    expect(finalReturn).toBe('https://breeze.example.com/api/v1/auth/cf-access-logout/complete');
-  });
-
-  it('clears the quarantine only on the explicit signed-out return boundary', async () => {
     const res = await cfAccessRedirectLoginRoutes.request(
-      'http://api.example/cf-access-logout/complete',
-      { method: 'GET' },
+      'http://api.example/cf-access-logout?ticket=signed-ticket',
+      { method: 'GET', headers: { host: 'evil.attacker.example' } },
     );
 
-    expect(res.status).toBe(302);
+    expect(res.status).toBe(303);
+    expect(res.headers.get('Location')).toBe('/login?signedOut=1&logoutError=1');
+    expect(res.headers.get('Location')).not.toContain('evil.attacker.example');
+    expect(res.headers.get('Set-Cookie')).toBeNull();
+  });
+
+  it('carries a valid ticket directly to completion when Cloudflare trust is disabled', async () => {
+    envState.enabled = false;
+    const res = await callGet('/cf-access-logout?ticket=signed-ticket');
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('Location')).toBe(
+      'https://breeze.example.com/api/v1/auth/cf-access-logout/complete?ticket=signed-ticket',
+    );
+  });
+
+  it.each(['Strict', 'Lax', 'None'])('completes cookie-less return with SameSite=%s cookies and rotates C1 to C2', async (sameSite) => {
+    process.env.AUTH_COOKIE_SAME_SITE = sameSite;
+
+    const res = await callGet('/cf-access-logout/complete?ticket=signed-ticket');
+
+    expect(res.status).toBe(303);
     expect(res.headers.get('Location')).toBe('/login?signedOut=1');
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(res.headers.get('Referrer-Policy')).toBe('no-referrer');
+    expect(completionState.calls).toEqual([{
+      transitionId: verifiedTicket.transitionId,
+      logoutId: verifiedTicket.logoutId,
+      generation: verifiedTicket.generation,
+      nonce: verifiedTicket.nonce,
+      signingKeyId: verifiedTicket.signingKeyId,
+    }]);
+    expect(cookieState.cleared).toBe(true);
+    expect(cookieState.rotated).toBe('b'.repeat(64));
     expect(cookieState.quarantineCleared).toBe(true);
+    const cookies = res.headers.get('Set-Cookie') ?? '';
+    expect(cookies).toContain('breeze_refresh_token=');
+    expect(cookies).toContain(`breeze_csrf_token=${'b'.repeat(64)}`);
+    expect(cookies).toContain(`SameSite=${sameSite}`);
+    delete process.env.AUTH_COOKIE_SAME_SITE;
   });
 
-  it('logout falls back to PUBLIC_APP_URL when DASHBOARD_URL is unset', async () => {
-    envState.enabled = true;
-    process.env.PUBLIC_APP_URL = 'https://app.example.net/';
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
-      method: 'GET',
-      headers: { host: 'evil.attacker.example' },
-    });
-    const loc = res.headers.get('Location') ?? '';
-    expect(loc.startsWith('https://app.example.net/cdn-cgi/access/logout?returnTo=')).toBe(true);
-    expect(loc).not.toContain('evil.attacker.example');
+  it('returns the same C2 for concurrent completion and replay responses', async () => {
+    completionState.results = [
+      { kind: 'completed', replacement: { kind: 'browser', value: 'c'.repeat(64) } },
+      { kind: 'replayed', replacement: { kind: 'browser', value: 'c'.repeat(64) } },
+    ];
+
+    const [first, second] = await Promise.all([
+      callGet('/cf-access-logout/complete?ticket=signed-ticket'),
+      callGet('/cf-access-logout/complete?ticket=signed-ticket'),
+    ]);
+
+    expect(first.status).toBe(303);
+    expect(second.status).toBe(303);
+    expect(first.headers.get('Set-Cookie')).toContain(`breeze_csrf_token=${'c'.repeat(64)}`);
+    expect(second.headers.get('Set-Cookie')).toContain(`breeze_csrf_token=${'c'.repeat(64)}`);
   });
 
-  it('logout falls back to https + Host only when neither env is set', async () => {
-    envState.enabled = true;
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
-      method: 'GET',
-      headers: { host: 'breeze.example.com', 'x-forwarded-proto': 'http' },
-    });
-    const loc = res.headers.get('Location') ?? '';
-    // Scheme is pinned to https even when the request claims otherwise.
-    expect(loc.startsWith('https://breeze.example.com/cdn-cgi/access/logout?returnTo=')).toBe(true);
+  it('does not mutate cookies for an old-generation or otherwise invalid completion', async () => {
+    completionState.results = [{ kind: 'invalid' }];
+
+    const res = await callGet('/cf-access-logout/complete?ticket=signed-ticket');
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('Location')).toBe('/login?signedOut=1&logoutError=1');
+    expect(cookieState.cleared).toBe(false);
+    expect(cookieState.rotated).toBeNull();
+    expect(cookieState.quarantineCleared).toBe(false);
+    expect(res.headers.get('Set-Cookie')).toBeNull();
   });
 
   it('rejects an unsafe next param and falls back to /', async () => {

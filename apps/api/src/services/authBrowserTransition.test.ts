@@ -204,6 +204,7 @@ import {
   AuthIssuanceConflictError,
   beginAuthIssuance,
   cancelAuthIssuance,
+  completeTerminalLogout,
   finishAuthIssuance,
   resolveAuthBinding,
   rotateExpiredBinding,
@@ -662,5 +663,94 @@ describe('binding rotation', () => {
     expect([...harness.rows.values()].some(
       (row) => row.bindingDigest === reopenedCurrentDigest,
     )).toBe(false);
+  });
+});
+
+describe('terminal logout completion', () => {
+  const logoutId = '20000000-0000-4000-8000-000000000005';
+  const nonce = 'f1'.repeat(32);
+
+  function seedPending(generation = 2): TransitionRow {
+    return seedTransition(browser(), {
+      state: 'logout_pending',
+      generation,
+      logoutId,
+      completionNonceDigest: createHash('sha256').update(nonce).digest('hex'),
+      logoutExpiresAt: new Date(harness.now.getTime() + 60_000),
+    });
+  }
+
+  it('consumes the exact pending nonce, retires C1, and creates active C2 atomically', async () => {
+    const predecessor = seedPending();
+
+    const result = await completeTerminalLogout({
+      transitionId: predecessor.id,
+      logoutId,
+      generation: predecessor.generation,
+      nonce,
+      signingKeyId: 'current',
+    });
+
+    expect(result).toMatchObject({
+      kind: 'completed',
+      replacement: { kind: 'browser', value: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
+    if (result.kind === 'invalid') throw new Error('Expected completion to succeed');
+    expect(result.replacement.value).not.toBe(C1);
+    expect(harness.rows.get(predecessor.id)).toMatchObject({
+      state: 'retired',
+      retiredAt: harness.now,
+      activeOperationId: null,
+      activeOperationExpiresAt: null,
+    });
+    await expect(beginAuthIssuance(result.replacement)).resolves.toMatchObject({ generation: 1 });
+  });
+
+  it('returns one deterministic C2 for concurrent completion and mutates only once', async () => {
+    const predecessor = seedPending();
+
+    const [left, right] = await Promise.all([leftCompletion(), leftCompletion()]);
+
+    function leftCompletion() {
+      return completeTerminalLogout({
+        transitionId: predecessor.id,
+        logoutId,
+        generation: predecessor.generation,
+        nonce,
+        signingKeyId: 'current',
+      });
+    }
+
+    expect(new Set([left.kind, right.kind])).toEqual(new Set(['completed', 'replayed']));
+    if (left.kind === 'invalid' || right.kind === 'invalid') {
+      throw new Error('Expected concurrent completion and replay to succeed');
+    }
+    expect(left.replacement).toEqual(right.replacement);
+    expect([...harness.rows.values()].filter((row) => row.state === 'active')).toHaveLength(1);
+    expect(harness.rows).toHaveLength(2);
+  });
+
+  it.each([
+    ['old generation', { generation: 1 }],
+    ['wrong logout id', { logoutId: '30000000-0000-4000-8000-000000000001' }],
+    ['wrong nonce', { nonce: 'f2'.repeat(32) }],
+  ])('does not mutate for %s', async (_label, override) => {
+    const predecessor = seedPending(3);
+
+    await expect(completeTerminalLogout({
+      transitionId: predecessor.id,
+      logoutId,
+      generation: predecessor.generation,
+      nonce,
+      signingKeyId: 'current',
+      ...override,
+    })).resolves.toEqual({ kind: 'invalid' });
+
+    expect(harness.rows.get(predecessor.id)).toMatchObject({
+      state: 'logout_pending',
+      generation: 3,
+      logoutId,
+    });
+    expect(harness.rows).toHaveLength(1);
   });
 });

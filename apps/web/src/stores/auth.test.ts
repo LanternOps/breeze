@@ -18,6 +18,7 @@ import {
   clearCfAccessLogoutIntent,
   ReauthenticationRequiredError,
   fetchAndApplyPreferences,
+  fetchAuthIssuerWithBindingBootstrap,
   fetchWithAuth,
   resolveApiOrigin,
   restoreAccessTokenFromCookie,
@@ -899,6 +900,58 @@ describe('auth store fetchWithAuth', () => {
   });
 });
 
+describe('auth issuer binding bootstrap', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('accepts the binding cookie from the exact 428 response and retries once', async () => {
+    const init: RequestInit = { method: 'POST', body: '{"email":"user@example.com"}' };
+    const success = makeResponse({ user: baseUser, tokens: baseTokens });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({
+        error: 'Authentication binding refresh required',
+        reason: 'binding_refresh',
+      }, false, 428))
+      .mockResolvedValueOnce(success);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchAuthIssuerWithBindingBootstrap('/api/v1/auth/login', init);
+
+    expect(result).toBe(success);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/auth/login', init);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/auth/login', init);
+  });
+
+  it('does not retry another kind of 428 after the server callback began', async () => {
+    const enrollment = makeResponse({
+      error: 'mfa_enrollment_required',
+      allowedMethods: ['totp'],
+    }, false, 428);
+    const fetchMock = vi.fn().mockResolvedValue(enrollment);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchAuthIssuerWithBindingBootstrap('/api/v1/auth/login', { method: 'POST' });
+
+    expect(result).toBe(enrollment);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('bounds binding bootstrap to exactly one retry', async () => {
+    const bindingRefresh = () => makeResponse({ reason: 'binding_refresh' }, false, 428);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(bindingRefresh())
+      .mockResolvedValueOnce(bindingRefresh());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchAuthIssuerWithBindingBootstrap('/api/v1/auth/login', { method: 'POST' });
+
+    expect(result.status).toBe(428);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('auth API helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -922,7 +975,7 @@ describe('auth API helpers', () => {
     const events: string[] = [];
     const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
     const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/auth/cf-access-logout/prepare')) {
         events.push('logout-start');
@@ -936,18 +989,19 @@ describe('auth API helpers', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const cfLogout = apiCfAccessLogout(() => { events.push('cf-navigate'); });
+    const navigationUrl = `${window.location.origin}/api/v1/auth/cf-access-logout?ticket=signed-ticket`;
+    const cfLogout = apiCfAccessLogout((url) => { events.push(`cf-navigate:${url}`); });
     const loginB = apiLogin('b@example.com', 'password-b');
     await vi.waitFor(() => expect(events).toEqual(['logout-start']));
 
-    resolveLogout(makeResponse({ success: true }));
+    resolveLogout(makeResponse({ success: true, navigationUrl }));
     await cfLogout;
     const prepareCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/auth/cf-access-logout/prepare'));
     expect(prepareCall?.[1]).toMatchObject({
       headers: expect.objectContaining({ 'x-breeze-csrf': 'csrf-test-token' }),
     });
     await expect(loginB).rejects.toBeInstanceOf(StaleWebSessionError);
-    expect(events).toEqual(['logout-start', 'cf-navigate']);
+    expect(events).toEqual(['logout-start', `cf-navigate:${navigationUrl}`]);
     expect(useAuthStore.getState().user).toBeNull();
     clearCfAccessLogoutIntent();
   });
@@ -964,7 +1018,10 @@ describe('auth API helpers', () => {
       const url = String(input);
       if (url.endsWith('/auth/cf-access-logout/prepare')) {
         quarantined = true;
-        return makeResponse({ success: true });
+        return makeResponse({
+          success: true,
+          navigationUrl: `${window.location.origin}/api/v1/auth/cf-access-logout?ticket=signed-ticket`,
+        });
       }
       if (url.endsWith('/auth/login')) {
         return quarantined
@@ -986,6 +1043,36 @@ describe('auth API helpers', () => {
       error: 'Terminal logout is still in progress',
     });
     expect(useAuthStore.getState().user).toBeNull();
+  });
+
+  it('uses only the server-provided ticket URL after successful preparation', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const navigationUrl = `${window.location.origin}/api/v1/auth/cf-access-logout?ticket=signed-ticket`;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ success: true, navigationUrl })));
+    const navigate = vi.fn();
+
+    await apiCfAccessLogout(navigate);
+
+    expect(navigate).toHaveBeenCalledOnce();
+    expect(navigate).toHaveBeenCalledWith(navigationUrl);
+  });
+
+  it.each([
+    makeResponse({ error: 'unavailable' }, false, 503),
+    makeResponse({ success: true }),
+    makeResponse({ success: true, navigationUrl: 'https://evil.example/cf-access-logout?ticket=x' }),
+  ])('keeps the server binding retryable and navigates locally when preparation fails', async (prepareResponse) => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(prepareResponse);
+    vi.stubGlobal('fetch', fetchMock);
+    const navigate = vi.fn();
+
+    await apiCfAccessLogout(navigate);
+
+    expect(navigate).toHaveBeenCalledWith('/login?signedOut=1&logoutError=1');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/auth/cf-access-logout'))).toBe(false);
+    expect(localStorage.getItem('breeze-cf-access-logout-pending')).toBeNull();
   });
 
   it('rechecks CF logout intent only after a delayed Web Lock is acquired', async () => {

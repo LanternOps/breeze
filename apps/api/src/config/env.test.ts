@@ -14,6 +14,8 @@ const OAUTH_ENV_KEYS = [
   'OAUTH_COOKIE_SECRET',
   'NODE_ENV',
   'MFA_FORCE_FOR_PARTNER_ADMIN',
+  'DASHBOARD_URL',
+  'PUBLIC_APP_URL',
 ] as const;
 
 const clearOauthEnv = () => {
@@ -115,6 +117,45 @@ describe('config env', () => {
     process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'true';
     const mod = await loadEnv();
     expect(mod.mfaForcePartnerAdmin()).toBe(true);
+  });
+
+  describe('authBrowserPublicOrigin', () => {
+    it('prefers DASHBOARD_URL and returns only its canonical origin', async () => {
+      process.env.DASHBOARD_URL = ' https://app.example.test/some/path/ ';
+      process.env.PUBLIC_APP_URL = 'https://fallback.example.test';
+
+      const mod = await loadEnv();
+
+      expect(mod.authBrowserPublicOrigin()).toBe('https://app.example.test');
+    });
+
+    it('falls back to PUBLIC_APP_URL', async () => {
+      process.env.PUBLIC_APP_URL = 'http://localhost:4321/dashboard';
+
+      const mod = await loadEnv();
+
+      expect(mod.authBrowserPublicOrigin()).toBe('http://localhost:4321');
+    });
+
+    it.each([
+      'javascript:alert(1)',
+      'ftp://app.example.test',
+      'https://user:password@app.example.test',
+      'https://',
+      'not a url',
+    ])('rejects unsafe or malformed configured origin %s', async (configured) => {
+      process.env.DASHBOARD_URL = configured;
+
+      const mod = await loadEnv();
+
+      expect(mod.authBrowserPublicOrigin()).toBeNull();
+    });
+
+    it('returns null rather than deriving an origin from a request host', async () => {
+      const mod = await loadEnv();
+
+      expect(mod.authBrowserPublicOrigin()).toBeNull();
+    });
   });
 
   // Fail-closed self-host gate for private-network fetching (on-prem PSAs, DNS

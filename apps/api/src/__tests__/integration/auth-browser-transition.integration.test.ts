@@ -19,6 +19,7 @@ import {
   AuthBindingRotationRequiredError,
   AuthIssuanceConflictError,
   beginAuthIssuance,
+  completeTerminalLogout,
   createAuthBrowserTransitionService,
   finishAuthIssuance,
   resolveAuthBinding,
@@ -467,6 +468,47 @@ describe('auth browser transition leases against PostgreSQL', () => {
 });
 
 describe('terminal preparation against issuer finalization', () => {
+  it('serializes concurrent signed completion into one C1 retirement and one deterministic C2', async () => {
+    const fixture = await terminalFixture();
+    const prepared = await prepareTerminalLogout({
+      binding: fixture.bindingC,
+      access: {
+        userId: fixture.userA.id,
+        familyId: fixture.accessPayload.sid!,
+        authEpoch: fixture.accessPayload.ae,
+        mfaEpoch: fixture.accessPayload.me,
+      },
+      refreshToken: fixture.sessionA.tokens.refreshToken,
+    });
+    const input = {
+      transitionId: prepared.transitionId,
+      logoutId: prepared.logoutId,
+      generation: prepared.generation,
+      nonce: prepared.nonce,
+      signingKeyId: 'current',
+    };
+
+    const [left, right] = await Promise.all([
+      completeTerminalLogout(input),
+      completeTerminalLogout(input),
+    ]);
+
+    expect([left.kind, right.kind].sort()).toEqual(['completed', 'replayed']);
+    if (left.kind === 'invalid' || right.kind === 'invalid') {
+      throw new Error('Concurrent terminal completion unexpectedly rejected');
+    }
+    expect(left.replacement).toEqual(right.replacement);
+
+    const rows = await getTestDb().select().from(authBrowserTransitions);
+    expect(rows.find((row) => row.id === prepared.transitionId)?.state).toBe('retired');
+    const replacementDigest = resolveAuthBinding(left.replacement).bindingDigest;
+    expect(rows.filter((row) => row.bindingDigest === replacementDigest)).toHaveLength(1);
+    expect(rows.find((row) => row.bindingDigest === replacementDigest)).toMatchObject({
+      state: 'active',
+      generation: 1,
+    });
+  });
+
   it.each(['current', 'stale'] as const)(
     'locks real A/B/C users and families in UUID order and composes %s B authority correctly',
     async (refreshKind) => {

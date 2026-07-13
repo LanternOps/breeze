@@ -70,6 +70,52 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('Cloudflare Access terminal-logout origin', () => {
+    const cfAccessEnv = {
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      CF_ACCESS_TRUST_ENABLED: 'true',
+      CF_ACCESS_TEAM_DOMAIN: 'team.cloudflareaccess.com',
+      CF_ACCESS_AUD: 'audience-tag',
+    };
+
+    it('requires a configured public application origin when CF Access trust is enabled', () => {
+      withEnv({
+        ...cfAccessEnv,
+        DASHBOARD_URL: '',
+        PUBLIC_APP_URL: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/DASHBOARD_URL|PUBLIC_APP_URL/);
+      });
+    });
+
+    it.each([
+      'ftp://app.example.test',
+      'https://user:password@app.example.test',
+      'not a url',
+    ])('rejects unsafe configured application origin %s', (configured) => {
+      withEnv({
+        ...cfAccessEnv,
+        DASHBOARD_URL: configured,
+        PUBLIC_APP_URL: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/DASHBOARD_URL|PUBLIC_APP_URL/);
+      });
+    });
+
+    it('accepts a valid HTTPS public application origin', () => {
+      withEnv({
+        ...cfAccessEnv,
+        DASHBOARD_URL: 'https://app.example.test',
+        PUBLIC_APP_URL: '',
+      }, () => {
+        expect(validateConfig().DASHBOARD_URL).toBe('https://app.example.test');
+      });
+    });
+  });
+
   it('accepts explicit production bootstrap admin credentials', () => {
     withEnv({
       ...validEnv,

@@ -1,6 +1,6 @@
 import { isIP } from 'net';
 import { z } from 'zod';
-import { isRecognizedSelfHostSignal } from './env';
+import { isRecognizedSelfHostSignal, normalizeConfiguredHttpOrigin } from './env';
 
 // ---------------------------------------------------------------------------
 // Insecure default detection
@@ -505,6 +505,8 @@ const envSchema = z
     CF_ACCESS_TEAM_DOMAIN: z.string().optional(),
     CF_ACCESS_AUD: z.string().optional(),
     CF_ACCESS_TRUSTS_MFA: z.string().optional(),
+    DASHBOARD_URL: z.string().optional(),
+    PUBLIC_APP_URL: z.string().optional(),
 
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
@@ -1145,6 +1147,15 @@ const envSchema = z
               'CF_ACCESS_AUD is required when CF_ACCESS_TRUST_ENABLED is true. Get the application AUD tag from the Cloudflare Zero Trust dashboard.',
           });
         }
+        const publicUrl = data.DASHBOARD_URL?.trim() || data.PUBLIC_APP_URL?.trim();
+        if (!publicUrl || !normalizeConfiguredHttpOrigin(publicUrl)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['DASHBOARD_URL'],
+            message:
+              'DASHBOARD_URL or PUBLIC_APP_URL must be a valid HTTP(S) application URL without credentials when CF_ACCESS_TRUST_ENABLED is true.',
+          });
+        }
         const trustsMfaRaw = (data.CF_ACCESS_TRUSTS_MFA ?? '').trim().toLowerCase();
         const cfBoolValues = new Set(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off']);
         if (trustsMfaRaw && !cfBoolValues.has(trustsMfaRaw)) {
@@ -1352,6 +1363,8 @@ export function validateConfig(): AppConfig {
     CF_ACCESS_TEAM_DOMAIN: env.CF_ACCESS_TEAM_DOMAIN,
     CF_ACCESS_AUD: env.CF_ACCESS_AUD,
     CF_ACCESS_TRUSTS_MFA: env.CF_ACCESS_TRUSTS_MFA,
+    DASHBOARD_URL: env.DASHBOARD_URL,
+    PUBLIC_APP_URL: env.PUBLIC_APP_URL,
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     REDIS_HOST: env.REDIS_HOST,

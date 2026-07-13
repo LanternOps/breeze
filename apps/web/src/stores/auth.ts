@@ -366,6 +366,26 @@ export async function withAuthSessionTransition<T>(
   });
 }
 
+/**
+ * Bootstrap a missing/stale browser binding exactly once. The API only emits
+ * `reason=binding_refresh` when admission failed before the issuer callback
+ * began; the replacement C2 arrives through Set-Cookie and is accepted by the
+ * browser before the original request is replayed. Every other response,
+ * including other 428s produced after application work, is returned untouched.
+ */
+export async function fetchAuthIssuerWithBindingBootstrap(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const first = await fetch(input, init);
+  if (first.status !== 428) return first;
+
+  const body = await first.clone().json().catch(() => null) as { reason?: unknown } | null;
+  if (body?.reason !== 'binding_refresh') return first;
+
+  return fetch(input, init);
+}
+
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
 // discriminated result so the caller can tell three cases apart:
 //   - raced:     a benign concurrent race (server reason 'refresh_raced',
@@ -393,7 +413,7 @@ async function refreshFetchOnce(): Promise<{ session: RefreshedAuthSession | nul
 
   let refreshResponse: Response;
   try {
-    refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
+    refreshResponse = await fetchAuthIssuerWithBindingBootstrap(buildApiUrl('/auth/refresh'), {
       method: 'POST',
       headers,
       credentials: 'include',
@@ -908,7 +928,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   return withAuthSessionTransition(async () => {
     const generation = captureWebSessionGeneration();
     try {
-      const response = await fetch(buildApiUrl('/auth/login'), {
+      const response = await fetchAuthIssuerWithBindingBootstrap(buildApiUrl('/auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -966,7 +986,7 @@ export async function apiVerifyMFA(code: string, tempToken: string, method: MfaC
       const payload = method === 'recovery_code'
         ? { code: normalizeRecoveryCode(code), tempToken, method }
         : { code, tempToken, method };
-      const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
+      const response = await fetchAuthIssuerWithBindingBootstrap(buildApiUrl('/auth/mfa/verify'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify(payload)
       });
@@ -1033,7 +1053,7 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
       if (!isCurrentWebSessionGeneration(generation)) throw new StaleWebSessionError();
     };
     try {
-      const optionsResponse = await fetch(buildApiUrl('/auth/mfa/passkey/options'), {
+      const optionsResponse = await fetchAuthIssuerWithBindingBootstrap(buildApiUrl('/auth/mfa/passkey/options'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -1051,7 +1071,7 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
       const credential = await getPasskeyCredential(optionsJSON);
       assertCurrent();
 
-      const verifyResponse = await fetch(buildApiUrl('/auth/mfa/passkey/verify'), {
+      const verifyResponse = await fetchAuthIssuerWithBindingBootstrap(buildApiUrl('/auth/mfa/passkey/verify'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -1103,7 +1123,7 @@ export async function apiRegister(
   return withAuthSessionTransition(async () => {
     const generation = captureWebSessionGeneration();
     try {
-      const response = await fetch(buildApiUrl('/auth/register'), {
+      const response = await fetchAuthIssuerWithBindingBootstrap(buildApiUrl('/auth/register'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -1147,7 +1167,7 @@ export async function apiRegisterPartner(
   return withAuthSessionTransition(async () => {
     const generation = captureWebSessionGeneration();
     try {
-      const response = await fetch(buildApiUrl('/auth/register-partner'), {
+      const response = await fetchAuthIssuerWithBindingBootstrap(buildApiUrl('/auth/register-partner'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -1215,7 +1235,7 @@ export async function apiLogout(): Promise<void> {
  * another tab could otherwise mint a Breeze cookie before Header redirects.
  */
 export async function apiCfAccessLogout(
-  navigate: () => void = () => window.location.assign('/api/v1/auth/cf-access-logout'),
+  navigate: (url: string) => void = (url) => window.location.assign(url),
 ): Promise<void> {
   const { tokens } = useAuthStore.getState();
   try { localStorage.setItem(CF_ACCESS_LOGOUT_INTENT_KEY, String(Date.now())); } catch { /* Web Lock still orders this tab */ }
@@ -1225,6 +1245,7 @@ export async function apiCfAccessLogout(
     if (tokens?.accessToken) headers.Authorization = `Bearer ${tokens.accessToken}`;
     const csrfToken = readCookie(CSRF_COOKIE_NAME);
     if (csrfToken) headers[CSRF_HEADER_NAME] = csrfToken;
+    let navigationUrl: string | null = null;
     try {
       const response = await fetch(buildApiUrl('/auth/cf-access-logout/prepare'), {
         method: 'POST',
@@ -1232,15 +1253,27 @@ export async function apiCfAccessLogout(
         credentials: 'include',
       });
       if (!response.ok) throw new Error('CF logout preparation failed');
+      const body = await response.json().catch(() => null) as { navigationUrl?: unknown } | null;
+      if (typeof body?.navigationUrl !== 'string') throw new Error('CF logout navigation missing');
+      const parsed = new URL(body.navigationUrl, window.location.origin);
+      if (
+        parsed.origin !== window.location.origin
+        || parsed.pathname !== '/api/v1/auth/cf-access-logout'
+        || !parsed.searchParams.get('ticket')
+      ) {
+        throw new Error('CF logout navigation invalid');
+      }
+      navigationUrl = parsed.toString();
     } catch {
-      // The redirect endpoint repeats the cookie clear and remains the
-      // authoritative fallback when this best-effort preflight is offline.
-    } finally {
-      // The CF endpoint repeats the Breeze cookie clear before redirecting to
-      // the IdP, so network failure here still lands on a deterministic
-      // server-side cookie boundary.
-      navigate();
+      // Preparation never cleared C1 on failure, so remove the UX-only intent
+      // barrier and keep the durable browser binding available for a retry.
+      // A bare ticketless GET has no authority and is never used as fallback.
+      clearCfAccessLogoutIntent();
+      navigate('/login?signedOut=1&logoutError=1');
+      return;
     }
+
+    navigate(navigationUrl);
   }, { allowDuringCfLogout: true });
 }
 
@@ -1521,7 +1554,7 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
   return withAuthSessionTransition(async () => {
     const generation = captureWebSessionGeneration();
     try {
-      const response = await fetch(buildApiUrl('/auth/accept-invite'), {
+      const response = await fetchAuthIssuerWithBindingBootstrap(buildApiUrl('/auth/accept-invite'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

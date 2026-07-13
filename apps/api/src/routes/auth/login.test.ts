@@ -121,6 +121,10 @@ vi.mock('../../services/terminalLogout', async (importOriginal) => ({
   })),
 }));
 
+vi.mock('../../services/terminalLogoutTicket', () => ({
+  issueTerminalLogoutTicket: vi.fn(() => 'signed-terminal-ticket'),
+}));
+
 vi.mock('../../services/anomalyMetrics', () => ({
   recordFailedLogin: vi.fn(),
 }));
@@ -285,6 +289,7 @@ import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { getMfaAssuranceFailure } from '../../services/mfaPolicy';
 import { prepareTerminalLogout } from '../../services/terminalLogout';
+import { issueTerminalLogoutTicket } from '../../services/terminalLogoutTicket';
 import {
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
@@ -339,6 +344,8 @@ describe('POST /cf-access-logout/prepare', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(validateTerminalCookieCsrfRequest).mockReturnValue(null);
+    process.env.DASHBOARD_URL = 'https://breeze.example.com';
+    delete process.env.PUBLIC_APP_URL;
   });
 
   it('prepares against the durable binding and clears only the refresh cookie after commit', async () => {
@@ -364,6 +371,19 @@ describe('POST /cf-access-logout/prepare', () => {
     expect(clearRefreshCookieOnly).toHaveBeenCalledOnce();
     expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
     expect(setCfAccessLogoutQuarantineCookie).not.toHaveBeenCalled();
+    expect(issueTerminalLogoutTicket).toHaveBeenCalledWith({
+      transitionId: 'transition-1',
+      logoutId: 'logout-1',
+      generation: 2,
+      nonce: 'n'.repeat(64),
+      issuedAt: expect.any(Date),
+      expiresAt: new Date('2026-07-13T00:10:00Z'),
+    });
+    expect(await res.json()).toMatchObject({
+      success: true,
+      navigationUrl:
+        'https://breeze.example.com/api/v1/auth/cf-access-logout?ticket=signed-terminal-ticket',
+    });
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
     expect(res.headers.get('set-cookie')).not.toContain('breeze_csrf_token=');
   });
@@ -399,6 +419,26 @@ describe('POST /cf-access-logout/prepare', () => {
     expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
   });
 
+  it('rejects missing configured origin before mutating the durable transition', async () => {
+    delete process.env.DASHBOARD_URL;
+    delete process.env.PUBLIC_APP_URL;
+
+    const res = await loginRoutes.request('/cf-access-logout/prepare', {
+      method: 'POST',
+      headers: {
+        cookie: `breeze_csrf_token=${'a'.repeat(64)}`,
+        'x-breeze-csrf': 'a'.repeat(64),
+        origin: 'http://localhost:4321',
+        'sec-fetch-site': 'same-origin',
+      },
+    });
+
+    expect(res.status).toBe(503);
+    expect(prepareTerminalLogout).not.toHaveBeenCalled();
+    expect(issueTerminalLogoutTicket).not.toHaveBeenCalled();
+    expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
+  });
+
   it('never exposes cleanup subject or family identifiers at the route boundary', async () => {
     vi.mocked(prepareTerminalLogout).mockResolvedValueOnce({
       transitionId: 'transition-1', logoutId: 'logout-1', generation: 2,
@@ -425,6 +465,8 @@ describe('POST /cf-access-logout/prepare', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       success: true,
+      navigationUrl:
+        'https://breeze.example.com/api/v1/auth/cf-access-logout?ticket=signed-terminal-ticket',
       cleanupStatus: 'partial',
       cleanupFailures: ['user-token-cache', 'refresh-family-cache'],
     });

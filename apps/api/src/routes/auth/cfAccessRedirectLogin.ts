@@ -1,9 +1,10 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users } from '../../db/schema';
 import {
   cfAccessAud,
+  authBrowserPublicOrigin,
   cfAccessTeamDomain,
   cfAccessTrustEnabled,
   cfAccessTrustsMfa,
@@ -28,7 +29,10 @@ import {
   NoTenantMembershipError,
   setCfAccessLogoutQuarantineCookie,
   setRefreshTokenCookie,
+  rotateCsrfBindingCookie,
 } from './helpers';
+import { verifyTerminalLogoutTicket } from '../../services/terminalLogoutTicket';
+import { completeTerminalLogout } from '../../services/authBrowserTransition';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -53,6 +57,15 @@ function loginErrorRedirect(reason: string): Response {
     status: 302,
     headers: { Location: `/login?${params.toString()}` },
   });
+}
+
+function terminalLogoutRedirect(
+  c: Context,
+  location: string,
+): Response {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  return c.redirect(location, 303);
 }
 
 export const cfAccessRedirectLoginRoutes = new Hono();
@@ -242,49 +255,34 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
  * the cookie is cleared regardless.
  */
 cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
-  // Persist an HttpOnly issuer barrier across both Cloudflare navigation hops.
-  // Client-side storage and Web Locks disappear when the document navigates;
-  // this cookie remains visible to every Breeze refresh-cookie writer.
-  setCfAccessLogoutQuarantineCookie(c);
-  // This unauthenticated navigation endpoint cannot choose a global subject.
-  // Durable revocation belongs exclusively to strict-CSRF POST preparation;
-  // a stale refresh cookie here is ignored as authority.
-  clearRefreshTokenCookie(c);
-
-  if (!cfAccessTrustEnabled()) {
-    clearCfAccessLogoutQuarantineCookie(c);
-    return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
+  const ticket = c.req.query('ticket');
+  try {
+    if (!ticket) throw new Error('missing ticket');
+    verifyTerminalLogoutTicket(ticket);
+  } catch {
+    // A GET without an authenticated capability has no authority to clear,
+    // revoke, rotate, or otherwise mutate any browser/session state.
+    return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
   }
+
+  // Only an operator-configured origin may enter a redirect Location. Never
+  // derive an authentication return target from Host or forwarding headers.
+  const origin = authBrowserPublicOrigin();
+  if (!origin) {
+    return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
+  }
+
+  const completionUrl = new URL('/api/v1/auth/cf-access-logout/complete', origin);
+  completionUrl.searchParams.set('ticket', ticket);
+
+  // Persist an issuer barrier across both Cloudflare navigation hops. C1 is
+  // deliberately kept until signed durable completion can atomically retire
+  // it and establish C2, including when the browser returns without cookies.
+  setCfAccessLogoutQuarantineCookie(c);
 
   const teamDomain = cfAccessTeamDomain();
-  if (!teamDomain) {
-    clearCfAccessLogoutQuarantineCookie(c);
-    return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
-  }
-
-  // Resolve the public origin from configuration, NOT the request. The Host
-  // header is attacker-controllable, and the origin ends up in a Location
-  // header — deriving it from the request is an open redirect (a crafted
-  // Host would bounce the user's browser to an attacker domain after CF
-  // logout). DASHBOARD_URL / PUBLIC_APP_URL is the established pattern for
-  // building user-facing absolute URLs (see login.ts, password.ts).
-  const configuredBase = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || '')
-    .trim()
-    .replace(/\/$/, '');
-  let origin = '';
-  if (configuredBase) {
-    try {
-      origin = new URL(configuredBase).origin;
-    } catch {
-      origin = '';
-    }
-  }
-  if (!origin) {
-    // Last-resort fallback for deployments without DASHBOARD_URL /
-    // PUBLIC_APP_URL. Scheme is pinned to https — never trust the request
-    // to pick the scheme either.
-    const host = c.req.header('host') ?? '';
-    origin = host ? `https://${host}` : '';
+  if (!cfAccessTrustEnabled() || !/^[a-z0-9.-]+$/i.test(teamDomain)) {
+    return terminalLogoutRedirect(c, completionUrl.toString());
   }
 
   // CF Access stores TWO `CF_Authorization` cookies per session:
@@ -302,14 +300,44 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
   // The `/cdn-cgi/access/*` paths are reserved by Cloudflare and
   // intercepted at the edge, so they never hit the origin and aren't
   // affected by the `/api/*` bypass app.
-  const finalReturn = `${origin}/api/v1/auth/cf-access-logout/complete`;
+  const finalReturn = completionUrl.toString();
   const teamLogout = `https://${teamDomain}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(finalReturn)}`;
   const appLogout = `${origin}/cdn-cgi/access/logout?returnTo=${encodeURIComponent(teamLogout)}`;
-  return new Response(null, { status: 302, headers: { Location: appLogout } });
+  return terminalLogoutRedirect(c, appLogout);
 });
 
-/** Explicit post-IdP boundary: only this return clears the issuer quarantine. */
-cfAccessRedirectLoginRoutes.get('/cf-access-logout/complete', (c) => {
+/** Signed post-IdP boundary: atomically consume C1 and establish C2. */
+cfAccessRedirectLoginRoutes.get('/cf-access-logout/complete', async (c) => {
+  const ticket = c.req.query('ticket');
+  let verified;
+  try {
+    if (!ticket) throw new Error('missing ticket');
+    verified = verifyTerminalLogoutTicket(ticket);
+  } catch {
+    return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
+  }
+
+  let completed;
+  try {
+    completed = await completeTerminalLogout({
+      transitionId: verified.transitionId,
+      logoutId: verified.logoutId,
+      generation: verified.generation,
+      nonce: verified.nonce,
+      signingKeyId: verified.signingKeyId,
+    });
+  } catch (error) {
+    console.error('[cf-access-logout] Durable completion failed');
+    void error;
+    return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
+  }
+
+  if (completed.kind === 'invalid') {
+    return terminalLogoutRedirect(c, '/login?signedOut=1&logoutError=1');
+  }
+
+  clearRefreshTokenCookie(c);
+  rotateCsrfBindingCookie(c, completed.replacement.value);
   clearCfAccessLogoutQuarantineCookie(c);
-  return new Response(null, { status: 302, headers: { Location: '/login?signedOut=1' } });
+  return terminalLogoutRedirect(c, '/login?signedOut=1');
 });

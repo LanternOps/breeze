@@ -132,6 +132,31 @@ export function cfAccessTrustsMfa(): boolean {
   return envFlag('CF_ACCESS_TRUSTS_MFA');
 }
 
+/**
+ * Parse an operator-controlled public application URL into a canonical origin.
+ * Authentication redirects must never infer this value from a request Host
+ * header because an attacker can control that header on some proxy paths.
+ */
+export function normalizeConfiguredHttpOrigin(raw: string | undefined): string | null {
+  const configured = raw?.trim();
+  if (!configured) return null;
+
+  try {
+    const parsed = new URL(configured);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+    if (parsed.username || parsed.password) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+export function authBrowserPublicOrigin(): string | null {
+  return normalizeConfiguredHttpOrigin(
+    process.env.DASHBOARD_URL?.trim() || process.env.PUBLIC_APP_URL?.trim(),
+  );
+}
+
 // Emergency kill switches for ML/AI producers. These are intentionally read at
 // call time so ops can flip process/runtime env and workers can stop writing
 // outputs without a redeploy.

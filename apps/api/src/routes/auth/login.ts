@@ -83,6 +83,8 @@ import {
   withAuthLifecycleSystemTransaction,
 } from '../../services/authLifecycle';
 import { runPostCommitCleanup } from '../../services/postCommitCleanup';
+import { issueTerminalLogoutTicket } from '../../services/terminalLogoutTicket';
+import { authBrowserPublicOrigin } from '../../config/env';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -573,6 +575,12 @@ loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
   const csrfError = validateTerminalCookieCsrfRequest(c);
   if (csrfError) return c.json({ error: csrfError }, 403);
 
+  const publicOrigin = authBrowserPublicOrigin();
+  if (!publicOrigin) {
+    console.error('[cf-access-logout] Refusing terminal logout preparation without a configured public application origin');
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
   const auth = c.get('auth');
   const bindingValue = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
   if (!bindingValue || !auth.token.sid) {
@@ -597,9 +605,28 @@ loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
+  let ticket: string;
+  try {
+    ticket = issueTerminalLogoutTicket({
+      transitionId: prepared.transitionId,
+      logoutId: prepared.logoutId,
+      generation: prepared.generation,
+      nonce: prepared.nonce,
+      issuedAt: new Date(),
+      expiresAt: prepared.expiresAt,
+    });
+  } catch (error) {
+    console.error('[cf-access-logout] Refusing terminal logout navigation because ticket issuance failed:', error);
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const navigationUrl = new URL('/api/v1/auth/cf-access-logout', publicOrigin);
+  navigationUrl.searchParams.set('ticket', ticket);
+
   clearRefreshCookieOnly(c);
   return c.json({
     success: true,
+    navigationUrl: navigationUrl.toString(),
     cleanupStatus: prepared.cleanupStatus,
     cleanupFailures: toTerminalCleanupFailureCategories(prepared.cleanupFailures),
   });

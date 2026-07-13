@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { authBrowserTransitions } from '../db/schema/authBrowserTransitions';
 import {
@@ -175,6 +175,8 @@ const lockedTransitionFields = {
   activeOperationId: authBrowserTransitions.activeOperationId,
   activeOperationExpiresAt: authBrowserTransitions.activeOperationExpiresAt,
   logoutExpiresAt: authBrowserTransitions.logoutExpiresAt,
+  logoutId: authBrowserTransitions.logoutId,
+  completionNonceDigest: authBrowserTransitions.completionNonceDigest,
   databaseNow: sql<Date>`now()`,
 };
 
@@ -186,6 +188,8 @@ type LockedTransition = {
   activeOperationId: string | null;
   activeOperationExpiresAt: Date | null;
   logoutExpiresAt: Date | null;
+  logoutId: string | null;
+  completionNonceDigest: string | null;
   databaseNow: Date | string;
 };
 
@@ -492,6 +496,110 @@ export function rotateExpiredBinding(source: AuthBindingSource): Promise<AuthBin
 /** Reserve one short database-time lease without spanning verification or network work. */
 export function beginAuthIssuance(source: AuthBindingSource): Promise<AuthIssuanceCapability> {
   return defaultAuthBrowserTransitionService.beginAuthIssuance(source);
+}
+
+export type CompleteTerminalLogoutInput = Readonly<{
+  transitionId: string;
+  logoutId: string;
+  generation: number;
+  nonce: string;
+  signingKeyId: string | null;
+}>;
+
+export type CompleteTerminalLogoutResult =
+  | Readonly<{ kind: 'completed' | 'replayed'; replacement: AuthBindingSource }>
+  | Readonly<{ kind: 'invalid' }>;
+
+function completionSigningKey(
+  keyMaterials: SecretDerivedKeyMaterials,
+  signingKeyId: string | null,
+): SecretDerivedKeyMaterial | null {
+  const matches = keyMaterials.retained.filter((material) => material.keyId === signingKeyId);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function completionNonceMatches(nonce: string, digest: string | null): boolean {
+  if (!AUTH_BINDING_PATTERN.test(nonce) || !digest || !AUTH_BINDING_PATTERN.test(digest)) {
+    return false;
+  }
+  const actual = createHash('sha256').update(nonce, 'utf8').digest();
+  return timingSafeEqual(actual, Buffer.from(digest, 'hex'));
+}
+
+function terminalTicketMatches(
+  transition: LockedTransition,
+  input: CompleteTerminalLogoutInput,
+): boolean {
+  return transition.generation === input.generation
+    && transition.logoutId === input.logoutId
+    && completionNonceMatches(input.nonce, transition.completionNonceDigest);
+}
+
+/**
+ * Consume a verified completion ticket under the transition row lock. The
+ * replacement is deterministic under the ticket's retained key ID so racing
+ * and replay responses cannot overwrite C2 with different browser values.
+ */
+export async function completeTerminalLogout(
+  input: CompleteTerminalLogoutInput,
+): Promise<CompleteTerminalLogoutResult> {
+  const keyMaterials = getSecretDerivedKeyMaterials(AUTH_BINDING_DERIVATION_DOMAIN);
+  const matchedKey = completionSigningKey(keyMaterials, input.signingKeyId);
+  if (!matchedKey) return { kind: 'invalid' };
+
+  return withAuthLifecycleSystemTransaction(async (tx) => {
+    const transition = await lockTransitionById(tx, input.transitionId);
+    if (!transition || !terminalTicketMatches(transition, input)) return { kind: 'invalid' };
+
+    if (transition.state === 'retired') {
+      const replacement = deterministicSuccessorBinding('browser', transition, matchedKey);
+      const existing = await lockTransitionForResolution(
+        tx,
+        bindingResolution(replacement, keyMaterials),
+      );
+      if (!existing || existing.transition.id === transition.id) return { kind: 'invalid' };
+      return { kind: 'replayed', replacement };
+    }
+    if (
+      transition.state !== 'logout_pending'
+      || transition.logoutExpiresAt === null
+      || !isAfter(transition.logoutExpiresAt, transition.databaseNow)
+    ) return { kind: 'invalid' };
+    const completionNonceDigest = transition.completionNonceDigest;
+    if (!completionNonceDigest) return { kind: 'invalid' };
+
+    const replacement = await ensureSuccessorTransition(
+      tx,
+      'browser',
+      transition,
+      matchedKey,
+      keyMaterials,
+    );
+    const retired = await tx
+      .update(authBrowserTransitions)
+      .set({
+        state: 'retired',
+        activeOperationId: null,
+        activeOperationExpiresAt: null,
+        retiredAt: sql`now()`,
+        updatedAt: sql`now()`,
+      })
+      .where(and(
+        eq(authBrowserTransitions.id, transition.id),
+        eq(authBrowserTransitions.generation, input.generation),
+        eq(authBrowserTransitions.state, 'logout_pending'),
+        eq(authBrowserTransitions.logoutId, input.logoutId),
+        eq(authBrowserTransitions.completionNonceDigest, completionNonceDigest),
+      ))
+      .returning({ id: authBrowserTransitions.id });
+    if (retired.length === 1) return { kind: 'completed', replacement };
+
+    const current = await lockTransitionById(tx, input.transitionId);
+    if (current?.state === 'retired' && terminalTicketMatches(current, input)) {
+      return { kind: 'replayed', replacement };
+    }
+    return { kind: 'invalid' };
+  });
 }
 
 function assertCapabilityBrand(
