@@ -21,9 +21,11 @@ the shared instance is initialized.
 1. Create `src/locales/<tag>/` and copy every namespace file from `en/`; translate values while keeping keys identical.
 2. Add the tag to `LOCALE_OPTIONS` in `apps/web/src/lib/appearance.ts`.
 3. Add the tag to the locale allowlists in
-   `apps/api/src/routes/users.ts` (PATCH /users/me).
-4. Add an option to the user and partner Language controls in
-   `apps/web/src/components/settings/ThemingSettings.tsx`.
+   `apps/api/src/routes/users.ts` (PATCH /users/me and partner-default filtering)
+   and `apps/api/src/routes/orgs.ts` (partner settings validation).
+4. Add an option to both Language controls:
+   `apps/web/src/components/settings/ThemingSettings.tsx` for the user preference
+   and `apps/web/src/components/settings/PartnerRegionalTab.tsx` for the partner default.
 5. Locale parity tests will fail until namespace files and keys match `en/` exactly.
 
 Language labels are written as self-names, while their descriptions are translated into the active UI language.

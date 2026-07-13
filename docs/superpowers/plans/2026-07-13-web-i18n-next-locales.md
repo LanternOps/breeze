@@ -284,8 +284,8 @@ Add the same self-name labels and these Portuguese descriptions to `pt-BR/settin
 Run the Step 3 commands, then:
 
 ```bash
-pnpm --filter @breeze/web typecheck
-pnpm --filter @breeze/api typecheck
+pnpm --filter @breeze/web exec astro check --minimumSeverity error
+pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 ```
 
 Expected: all focused tests pass and both type-checks exit 0.
@@ -624,7 +624,7 @@ git commit -m "feat(i18n): add Germany German catalog"
 **Interfaces:**
 
 - Consumes: the three catalog commits and the shared five-locale contract.
-- Produces: enforced presence, parity, interpolation safety, and a gross untranslated-copy threshold for every shipped non-English catalog.
+- Produces: enforced presence, key and string-leaf parity, interpolation/rich-text-tag safety, source-aligned technical literal protection for the three new catalogs, and both global and per-namespace untranslated-copy caps.
 
 - [ ] **Step 1: Integrate the three independent catalog commits**
 
@@ -653,9 +653,9 @@ it('contains every supported locale catalog', () => {
 });
 ```
 
-- [ ] **Step 3: Add the untranslated-copy guard**
+- [ ] **Step 3: Add untranslated-copy guards**
 
-Create `translationCoverage.test.ts` with a recursive string flattener keyed by JSON path. For each of `pt-BR`, `es-419`, `fr-FR`, and `de-DE`, compare values with the corresponding English key and assert the overall exact-duplicate ratio is below 20%:
+Create `translationCoverage.test.ts` with a recursive string flattener keyed by JSON path. For each of `pt-BR`, `es-419`, `fr-FR`, and `de-DE`, compare values with the corresponding English key and assert the overall exact-duplicate ratio is below 20%. Check in reviewed per-locale/per-namespace exact-English duplicate baselines as caps so one namespace cannot regress wholesale while the global ratio still passes:
 
 ```ts
 import { describe, expect, it } from 'vitest';
@@ -717,7 +717,7 @@ NODE_OPTIONS=--no-experimental-webstorage pnpm --filter @breeze/web exec vitest 
   src/lib/i18n/keyUsage.test.ts
 ```
 
-Expected: all required catalogs exist, all namespace/key/interpolation checks pass, and every non-English duplicate ratio is below 20%.
+Expected: all required catalogs exist; namespace/key/string-leaf/interpolation/rich-text/protected-literal checks pass; every non-English duplicate ratio is below 20%; and no namespace exceeds its reviewed exact-English duplicate baseline.
 
 - [ ] **Step 6: Review high-risk operational namespaces**
 
@@ -735,7 +735,8 @@ settings.json
 Search exact English duplicates and review every hit rather than automatically translating product names or commands:
 
 ```bash
-node apps/web/src/lib/i18n/translationCoverage.test.ts
+NODE_OPTIONS=--no-experimental-webstorage pnpm --filter @breeze/web exec vitest run \
+  src/lib/i18n/translationCoverage.test.ts
 ```
 
 Use the Vitest failure diagnostic if the threshold fails. For a passing catalog, run this read-only residue report and inspect every printed value before accepting it:
@@ -804,8 +805,8 @@ Expected: both route suites pass, including new locale persistence and rejection
 - [ ] **Step 3: Run type-checks**
 
 ```bash
-pnpm --filter @breeze/web typecheck
-pnpm --filter @breeze/api typecheck
+pnpm --filter @breeze/web exec astro check --minimumSeverity error
+pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 ```
 
 Expected: both commands exit 0.
