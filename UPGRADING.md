@@ -1,5 +1,45 @@
 # Upgrading Breeze
 
+## Action required: reconnect Microsoft 365 ticket mailboxes
+
+This release strengthens Microsoft 365 ticket mailbox consent by verifying the Microsoft tenant and consenting administrator identity and binding the tenant to its Breeze partner. During the upgrade, every non-disabled Microsoft 365 ticket mailbox connection becomes `reauth_required`. Disabled rows that still hold a legacy tenant or delta cursor also become `reauth_required` and have that state cleared. Already-disabled rows with neither value remain disabled and are not reactivated.
+
+### Deploy order
+
+1. Deploy the database migration and API together. Do not run the new API against a database that has not completed its migration.
+2. Deploy the web UI after the API and migration are healthy.
+
+Inbound Microsoft polling and outbound Microsoft Graph replies remain disabled for each affected connection until consent is completed again. When no verified Graph mailbox resolves, SMTP fallback for outbound customer mail remains active.
+
+### Administrator action
+
+For each Microsoft 365 ticket mailbox connection:
+
+1. Sign in to Breeze as a full-partner mailbox administrator with MFA completed.
+2. Open **Settings → Partner → Ticketing**.
+3. Select **Reconnect Microsoft 365** and complete the Microsoft consent flow with an eligible Microsoft 365 administrator.
+4. Confirm that the connection returns to `connected`.
+
+### Post-deploy verification
+
+Run this query as a database administrator. It must return zero rows; any result is a connection marked `connected` without a matching verified `(tenant_id, partner_id)` ownership row.
+
+```sql
+SELECT c.id, c.partner_id, c.tenant_id, c.mailbox_address
+FROM ticket_mailbox_connections AS c
+LEFT JOIN ticket_mailbox_tenant_ownerships AS o
+  ON o.tenant_id = c.tenant_id
+ AND o.partner_id = c.partner_id
+WHERE c.status = 'connected'
+  AND o.tenant_id IS NULL;
+```
+
+Also confirm that expected active or legacy-state connections are `reauth_required` until their administrators finish consent again, while clean rows that were already disabled remain `disabled`.
+
+### Rollback warning
+
+If the application deployment must be rolled back, keep the ownership tables, the composite tenant/partner foreign key, and the connected-row ownership check. Keep legacy connections disabled until they complete verified consent again. Do not restore unsigned callback behavior. These database protections are forward-compatible and must remain in place while application services are rolled back.
+
 > ## TL;DR — Upgrading to the SR-001..SR-024 security-hardening release
 >
 > 1. **Run the FORCE-RLS ownership pre-check** (one SQL query — section below) before deploying.

@@ -562,6 +562,7 @@
   "m365Mailbox": {
     "connected": "Caixa de correio conectada",
     "consentGranted": "Consentimento concedido — restrinja a caixa de correio com a Política de Acesso ao Aplicativo abaixo e teste novamente",
+    "consentAttention": "O consentimento da caixa de correio requer atenção do administrador.",
     "connectionFailed": "Falha na conexão do M365",
     "consentFailed": "Não foi possível iniciar o consentimento do M365.",
     "retestFailed": "Falha no novo teste.",
@@ -577,7 +578,9 @@
       "disabled": "Desativada"
     },
     "scopeMailbox": "Restringir esta caixa de correio (Política de Acesso ao Aplicativo)",
+    "reauthRequired": "É necessário novo consentimento do administrador antes que a consulta e as respostas do Microsoft 365 sejam retomadas.",
     "retest": "Testar novamente",
+    "reconnect": "Reconectar",
     "disconnect": "Desconectar",
     "empty": "Nenhuma caixa de correio conectada.",
     "address": "Endereço da caixa de correio",

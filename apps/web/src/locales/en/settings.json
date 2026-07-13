@@ -562,6 +562,7 @@
   "m365Mailbox": {
     "connected": "Mailbox connected",
     "consentGranted": "Consent granted — scope the mailbox with the Application Access Policy below, then Re-test",
+    "consentAttention": "Mailbox consent requires administrator attention.",
     "connectionFailed": "M365 connection failed",
     "consentFailed": "Could not start M365 consent.",
     "retestFailed": "Re-test failed.",
@@ -577,7 +578,9 @@
       "disabled": "Disabled"
     },
     "scopeMailbox": "Scope this mailbox (Application Access Policy)",
+    "reauthRequired": "Administrator re-consent is required before Microsoft 365 polling and replies resume.",
     "retest": "Re-test",
+    "reconnect": "Reconnect",
     "disconnect": "Disconnect",
     "empty": "No mailbox connected yet.",
     "address": "Mailbox address",

@@ -76,14 +76,14 @@ describe('inboundEmailWorker', () => {
 
     const email = makeEmail();
     // Call the REAL exported handler (not the mocks directly)
-    await workerModule.handleInboundEmail({ data: email } as any);
+    await workerModule.handleInboundEmail({ data: { email } } as any);
 
     // (a) runOutsideDbContext was called
     expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
     // (b) withSystemDbAccessContext was called INSIDE runOutsideDbContext
     expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
     // (c) processInboundEmail received job.data
-    expect(processInboundEmailMock).toHaveBeenCalledWith(email);
+    expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
     // Ordering assertion: runOutsideDbContext must come before withSystemDbAccessContext
     expect(callOrder.indexOf('runOutsideDbContext')).toBeLessThan(callOrder.indexOf('withSystemDbAccessContext'));
     expect(callOrder.indexOf('withSystemDbAccessContext')).toBeLessThan(callOrder.indexOf('processInboundEmail'));
@@ -91,8 +91,30 @@ describe('inboundEmailWorker', () => {
 
   it('real handleInboundEmail: resolves without throwing when processInboundEmail succeeds', async () => {
     const email = makeEmail({ providerMessageId: 'mg-xyz-999' });
-    await expect(workerModule.handleInboundEmail({ data: email } as any)).resolves.toBeUndefined();
-    expect(processInboundEmailMock).toHaveBeenCalledWith(email);
+    await expect(workerModule.handleInboundEmail({ data: { email } } as any)).resolves.toBeUndefined();
+    expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
+  });
+
+  it('passes an exact M365 mailbox generation to the transactional ingestion service', async () => {
+    const email = makeEmail({ providerMessageId: 'graph-1' });
+    const mailboxGeneration = {
+      connectionId: '44444444-4444-4444-8444-444444444444',
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      tenantId: '11111111-1111-4111-8111-111111111111',
+      consentAttemptId: '66666666-6666-4666-8666-666666666666',
+    };
+
+    await workerModule.handleInboundEmail({ data: { email, mailboxGeneration } } as any);
+
+    expect(processInboundEmailMock).toHaveBeenCalledWith(email, mailboxGeneration);
+  });
+
+  it('continues to consume legacy raw-email jobs queued before the contract rollout', async () => {
+    const email = makeEmail({ providerMessageId: 'legacy-raw' });
+
+    await workerModule.handleInboundEmail({ data: email } as any);
+
+    expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
   });
 });
 

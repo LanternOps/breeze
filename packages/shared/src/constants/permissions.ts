@@ -42,6 +42,10 @@ export const PERMISSION_GRANTS = {
   TICKETS_WRITE: { resource: 'tickets', action: 'write' },
   TICKETS_MANAGE: { resource: 'tickets', action: 'manage' },
 
+  // Microsoft 365 partner-global ticket mailbox administration
+  TICKET_MAILBOX_READ: { resource: 'ticket_mailbox', action: 'read' },
+  TICKET_MAILBOX_ADMIN: { resource: 'ticket_mailbox', action: 'admin' },
+
   // Catalog (billing/invoicing program)
   CATALOG_READ: { resource: 'catalog', action: 'read' },
   CATALOG_WRITE: { resource: 'catalog', action: 'write' },

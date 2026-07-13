@@ -89,7 +89,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
-  it('falls back to EmailService for a public reply when the partner has no connected mailbox', async () => {
+  it('falls back to EmailService when no verified outbound mailbox resolves', async () => {
     selectMock
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1', subject: 'Printer', submitterEmail: 'cust@x.com' }])
       .mockResolvedValueOnce([{ slug: 'acme', settings: {} }]);
@@ -101,6 +101,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
     });
 
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(resolveMailboxMock).toHaveBeenCalledWith('t-1', 'p-1');
     expect(sendThreadedMock).not.toHaveBeenCalled();
     expect(sendNewMock).not.toHaveBeenCalled();
   });
