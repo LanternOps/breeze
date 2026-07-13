@@ -1617,8 +1617,26 @@ async function processCommandResult(
  * 16MB and the largest single command payload is a file_write at ~5.6MB
  * (base64 of the 4MB agent cap, see fileUploadBodySchema); 6MB of payloads
  * plus JSON envelope keeps the worst-case frame comfortably under the limit.
+ * Exported for the regression test pinning this value against the agent's
+ * read limit (issue #2399).
  */
-const WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES = 6 * 1024 * 1024;
+export const WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES = 6 * 1024 * 1024;
+
+/**
+ * Claim pending commands for delivery over the agent WebSocket. Unlike the
+ * HTTP heartbeat claim paths, the WS batch is serialized into a SINGLE frame
+ * (`connected` welcome / `heartbeat_ack`) that must stay under the agent's
+ * 16MB read limit — exceeding it kills the connection instead of rejecting
+ * the frame (agent/internal/websocket/client.go, issue #2399) — so the claim
+ * is always budgeted. Over-budget commands stay pending and are picked up by
+ * a later heartbeat/claim cycle. Exported so a unit test can pin that the WS
+ * path never claims unbudgeted.
+ */
+export function claimWsPendingCommandsBudgeted(deviceId: string) {
+  return claimPendingCommandsForDevice(deviceId, 10, 'agent', {
+    maxTotalPayloadBytes: WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES,
+  });
+}
 
 /**
  * Get pending commands for an agent
@@ -1653,15 +1671,7 @@ async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
       return [];
     }
 
-    // The claimed batch is delivered to the agent in a single WS frame
-    // (`connected` welcome / `heartbeat_ack`), which must stay under the
-    // agent's 16MB read limit — exceeding it kills the connection instead of
-    // rejecting the frame (agent/internal/websocket/client.go, issue #2399).
-    // Budget the batch's cumulative payload size; commands over budget stay
-    // pending and are picked up by a later heartbeat/claim cycle.
-    const commands = await claimPendingCommandsForDevice(device.id, 10, 'agent', {
-      maxTotalPayloadBytes: WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES,
-    });
+    const commands = await claimWsPendingCommandsBudgeted(device.id);
 
     // Decrypt sensitive command payloads (e.g. FileVault rotation credentials)
     // just-in-time. WS-connected agents receive pending commands through this

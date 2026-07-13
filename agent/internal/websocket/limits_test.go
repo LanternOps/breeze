@@ -19,6 +19,13 @@ import (
 // apps/api/src/routes/systemTools/schemas.ts and the pending-command payload
 // budget in apps/api/src/routes/agentWs.ts).
 func TestMaxMessageSizeCoversLargestLegitimateFrame(t *testing.T) {
+	// Numeric pin mirroring the API-side pin (schemas.test.ts): the 4MB cap is
+	// a cross-language contract — the API validates uploads against it and the
+	// WS pending-batch budget assumes it. Changing it in Go alone must fail here.
+	if tools.MaxFileWriteSize != 4*1024*1024 {
+		t.Fatalf("MaxFileWriteSize = %d, want %d; it is mirrored by AGENT_MAX_FILE_WRITE_BYTES in apps/api/src/routes/systemTools/schemas.ts — change both sides together", tools.MaxFileWriteSize, 4*1024*1024)
+	}
+
 	encodedFileWrite := base64.StdEncoding.EncodedLen(tools.MaxFileWriteSize)
 
 	if maxMessageSize < 2*encodedFileWrite {
