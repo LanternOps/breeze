@@ -95,12 +95,35 @@ describe("useHashTab", () => {
     expect(screen.getByTestId("tab").textContent).toBe("policies");
   });
 
-  it("removes the hashchange listener on unmount", () => {
-    const { Probe } = makeProbe();
-    const { unmount } = render(createElement(Probe));
-    unmount();
-    // Must not throw (setState on unmounted component would warn/leak).
-    expect(() => fireHashChange("#policies")).not.toThrow();
+  it("honors updated validTabs/default on later hashchanges (latest-ref)", () => {
+    function Probe({
+      tabs,
+      def,
+    }: {
+      tabs: readonly string[];
+      def: string;
+    }) {
+      const [tab] = useHashTab(tabs, def);
+      return createElement("div", { "data-testid": "tab" }, tab);
+    }
+    const { rerender } = render(
+      createElement(Probe, { tabs: ["inventory"], def: "inventory" }),
+    );
+    // Widen the valid set after mount (e.g. tabs derived from feature flags).
+    rerender(
+      createElement(Probe, { tabs: ["inventory", "beta"], def: "inventory" }),
+    );
+    fireHashChange("#beta");
+    // A mount-once closure over the ORIGINAL tabs would fall back to the
+    // default here — the latest-ref must see the widened set.
+    expect(screen.getByTestId("tab").textContent).toBe("beta");
+
+    // The updated default must also be honored on a later invalid hash.
+    rerender(
+      createElement(Probe, { tabs: ["inventory", "beta"], def: "beta" }),
+    );
+    fireHashChange("#garbage");
+    expect(screen.getByTestId("tab").textContent).toBe("beta");
   });
 });
 
@@ -129,5 +152,24 @@ describe("useHashState", () => {
 
     fireHashChange("#garbage");
     expect(screen.getByTestId("page").textContent).toBe("1");
+  });
+
+  it("stops parsing hash changes after unmount (listener removed)", () => {
+    // setState on an unmounted component is a silent no-op in React 18+, so
+    // "doesn't throw" would be vacuous — count parser invocations instead.
+    let parseCalls = 0;
+    function Probe() {
+      const [v] = useHashState<string>("default", (hash) => {
+        parseCalls += 1;
+        return hash === "" ? undefined : hash;
+      });
+      return createElement("div", null, v);
+    }
+    const { unmount } = render(createElement(Probe));
+    const callsWhileMounted = parseCalls;
+    expect(callsWhileMounted).toBeGreaterThan(0); // mount adoption ran
+    unmount();
+    fireHashChange("#after-unmount");
+    expect(parseCalls).toBe(callsWhileMounted);
   });
 });

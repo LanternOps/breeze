@@ -148,7 +148,7 @@ export default function ConfigPolicyDetailPage({
   // The hash is not available during SSR, so the tab starts at the
   // server-rendered default and adopts the hash post-mount (pre-paint) —
   // reading it in the useState initializer caused a hydration mismatch on
-  // every deep link (#2421).
+  // deep links to a non-default tab (#2421).
   const [activeTab, setActiveTab] = useHashTab<Tab>(VALID_TABS, "overview");
 
   // Reflect the active tab in the URL hash so tabs are deep-linkable and the

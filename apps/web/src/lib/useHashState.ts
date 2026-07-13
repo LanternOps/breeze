@@ -4,8 +4,8 @@
  * The URL fragment is never sent to the server, so any state derived from
  * `window.location.hash` inside a `useState` initializer renders differently
  * on the server and on the first client render — React discards the SSR tree
- * with a hydration-mismatch error on every deep link (the #2383 regression
- * class, first fixed for IntegrationsPage in #2416).
+ * with a hydration-mismatch error on every deep link to a non-default tab
+ * (the #2383 regression class, first fixed for IntegrationsPage in #2416).
  *
  * These hooks encode the #2416 fix pattern:
  *   1. State starts from the SSR-safe default, so the first client render
