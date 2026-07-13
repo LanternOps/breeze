@@ -254,7 +254,11 @@ export const configPolicySensitiveDataSettings = pgTable('config_policy_sensitiv
 export const configPolicyBackupSettings = pgTable('config_policy_backup_settings', {
   id: uuid('id').primaryKey().defaultRandom(),
   featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  // Dual-axis mirror of the parent policy's ownership (org XOR partner) so
+  // RLS never needs an EXISTS join to the parent. Partner-wide policies
+  // write partner_id with org_id NULL (2026-07-13-backup-profiles.sql).
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   schedule: jsonb('schedule').notNull().default({}),
   retention: jsonb('retention').notNull().default({}),
   paths: jsonb('paths').notNull().default([]),

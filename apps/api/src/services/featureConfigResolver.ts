@@ -9,6 +9,8 @@ import {
   configPolicyPatchSettings,
   configPolicyMaintenanceSettings,
   configPolicyBackupSettings,
+  backupProfiles,
+  backupConfigs,
   devices,
   organizations,
   partners,
@@ -519,7 +521,9 @@ export async function resolveBackupConfigForDevice(
 ): Promise<{
   settings: typeof configPolicyBackupSettings.$inferSelect | null;
   featureLinkId: string;
+  /** Resolved storage destination — see BackupAssignedDevice.configId. */
   configId: string | null;
+  selectionSpecs: BackupSelectionSpec[] | null;
   inlineSettings: Record<string, unknown> | null;
   resolvedTimezone: string;
 } | null> {
@@ -533,8 +537,9 @@ export async function resolveBackupConfigForDevice(
     .select({
       backupSettings: configPolicyBackupSettings,
       featureLinkId: configPolicyFeatureLinks.id,
-      configId: configPolicyFeatureLinks.featurePolicyId,
+      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
       inlineSettings: configPolicyFeatureLinks.inlineSettings,
+      profileSelections: backupProfiles.selections,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
@@ -560,6 +565,10 @@ export async function resolveBackupConfigForDevice(
       configPolicyBackupSettings,
       eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
     )
+    .leftJoin(
+      backupProfiles,
+      eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId)
+    )
     .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
     .orderBy(
       configPolicyAssignments.level,
@@ -571,10 +580,23 @@ export async function resolveBackupConfigForDevice(
 
   const sorted = sortByHierarchy(rows);
   const winner = sorted[0]!;
+  const selectionSpecs = winner.backupSettings?.backupProfileId
+    ? backupSelectionSpecs(winner.profileSelections)
+    : null;
+  // Destination chain: explicit link destination → legacy featurePolicyId
+  // (pre-profile links stored the destination there) → org default.
+  const legacyDestination = winner.backupSettings?.backupProfileId
+    ? null
+    : winner.featurePolicyId;
+  const configId =
+    winner.backupSettings?.destinationConfigId ??
+    legacyDestination ??
+    (await resolveOrgDefaultBackupConfigId(hierarchy.orgId));
   return {
     settings: winner.backupSettings,
     featureLinkId: winner.featureLinkId,
-    configId: winner.configId,
+    configId,
+    selectionSpecs,
     inlineSettings: winner.inlineSettings as Record<string, unknown> | null,
     resolvedTimezone: await resolveDeviceTimezone(deviceId),
   };
@@ -1170,9 +1192,100 @@ export async function scanDueComplianceChecks(): Promise<ComplianceRuleWithTarge
 export interface BackupAssignedDevice {
   deviceId: string;
   featureLinkId: string;
+  /** Resolved storage destination (backup_configs id): explicit link
+   *  destination → legacy featurePolicyId destination → org default. NULL
+   *  when none resolves (job creation must fail loudly, never skip silently). */
   configId: string | null;
   settings: typeof configPolicyBackupSettings.$inferSelect | null;
+  /** One spec per enabled profile selection; null for legacy custom links
+   *  (dispatch falls back to the settings row's backupMode/targets). */
+  selectionSpecs: BackupSelectionSpec[] | null;
   resolvedTimezone: string;
+}
+
+// ── Backup profile fan-out (spec 2026-07-13) ─────────────────────────────────
+
+export type BackupSelectionSpec = {
+  backupMode: 'file' | 'hyperv' | 'mssql' | 'system_image';
+  targets: Record<string, unknown>;
+};
+
+/**
+ * Maps a backup profile's `selections` jsonb to per-mode job specs, in
+ * fan-out order. Returns null when nothing is enabled (treat as legacy).
+ * Keys match backup_mode_enum by design (see backupProfileSelectionsSchema).
+ */
+export function backupSelectionSpecs(
+  selections: unknown
+): BackupSelectionSpec[] | null {
+  if (!selections || typeof selections !== 'object' || Array.isArray(selections)) return null;
+  const s = selections as Record<string, Record<string, unknown> | undefined>;
+  const specs: BackupSelectionSpec[] = [];
+  if (s.file?.enabled === true) {
+    specs.push({
+      backupMode: 'file',
+      targets: {
+        paths: Array.isArray(s.file.paths) ? s.file.paths : [],
+        excludes: Array.isArray(s.file.excludes) ? s.file.excludes : [],
+      },
+    });
+  }
+  if (s.system_image?.enabled === true) {
+    specs.push({
+      backupMode: 'system_image',
+      targets: { includeSystemState: s.system_image.includeSystemState !== false },
+    });
+  }
+  if (s.mssql?.enabled === true) {
+    specs.push({
+      backupMode: 'mssql',
+      targets: {
+        backupType: typeof s.mssql.backupType === 'string' ? s.mssql.backupType : 'full',
+        excludeDatabases: Array.isArray(s.mssql.excludeDatabases) ? s.mssql.excludeDatabases : [],
+      },
+    });
+  }
+  if (s.hyperv?.enabled === true) {
+    specs.push({
+      backupMode: 'hyperv',
+      targets: {
+        consistencyType:
+          typeof s.hyperv.consistencyType === 'string' ? s.hyperv.consistencyType : 'application',
+        excludeVms: Array.isArray(s.hyperv.excludeVms) ? s.hyperv.excludeVms : [],
+      },
+    });
+  }
+  return specs.length > 0 ? specs : null;
+}
+
+/**
+ * Effective backup modes for a resolved entry — a profile's enabled
+ * selections, or the legacy settings row's single backupMode. Mode-filtered
+ * readers (Hyper-V / SQL views, SLA, readiness) must use this instead of
+ * `settings.backupMode === X`, which is blind to profiles.
+ */
+export function effectiveBackupModes(entry: {
+  selectionSpecs: BackupSelectionSpec[] | null;
+  settings: { backupMode: string } | null;
+}): string[] {
+  if (entry.selectionSpecs) return entry.selectionSpecs.map((spec) => spec.backupMode);
+  return entry.settings ? [entry.settings.backupMode] : [];
+}
+
+/** The org's default backup destination (active), or null. */
+export async function resolveOrgDefaultBackupConfigId(orgId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ id: backupConfigs.id })
+    .from(backupConfigs)
+    .where(
+      and(
+        eq(backupConfigs.orgId, orgId),
+        eq(backupConfigs.isDefault, true),
+        eq(backupConfigs.isActive, true)
+      )
+    )
+    .limit(1);
+  return row?.id ?? null;
 }
 
 export type ResolvedBackupProtection = {
@@ -1220,6 +1333,19 @@ function getRetentionImmutableDays(retention: Record<string, unknown> | null): n
 export async function resolveAllBackupAssignedDevices(
   orgId: string
 ): Promise<BackupAssignedDevice[]> {
+  // Partner-wide policies (org_id NULL) cover this org when owned by its
+  // partner — never filter on org equality alone (that silently no-ops on
+  // partner-wide rows; see the partner-wide-first playbook).
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  const orgPartnerId = org?.partnerId ?? null;
+  const ownershipCondition = orgPartnerId
+    ? sql`(${configurationPolicies.orgId} = ${orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${orgPartnerId}))`
+    : sql`${configurationPolicies.orgId} = ${orgId}`;
+
   // 1. Load all active backup feature links + settings + assignments for this org
   // LEFT JOIN backup settings so devices are still found even when the
   // normalized settings row is missing (e.g. feature link predates migration).
@@ -1227,7 +1353,8 @@ export async function resolveAllBackupAssignedDevices(
     .select({
       backupSettings: configPolicyBackupSettings,
       featureLinkId: configPolicyFeatureLinks.id,
-      configId: configPolicyFeatureLinks.featurePolicyId,
+      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+      profileSelections: backupProfiles.selections,
       assignmentLevel: configPolicyAssignments.level,
       assignmentTargetId: configPolicyAssignments.targetId,
       assignmentPriority: configPolicyAssignments.priority,
@@ -1239,7 +1366,7 @@ export async function resolveAllBackupAssignedDevices(
       and(
         eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configurationPolicies.status, 'active'),
-        eq(configurationPolicies.orgId, orgId)
+        ownershipCondition
       )
     )
     .innerJoin(
@@ -1250,9 +1377,17 @@ export async function resolveAllBackupAssignedDevices(
       configPolicyBackupSettings,
       eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
     )
+    .leftJoin(
+      backupProfiles,
+      eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId)
+    )
     .where(eq(configPolicyFeatureLinks.featureType, 'backup'));
 
   if (rows.length === 0) return [];
+
+  // Org default destination, resolved once per call (used by profile links
+  // without an explicit destination and by partner-wide links).
+  const orgDefaultConfigId = await resolveOrgDefaultBackupConfigId(orgId);
 
   // Sort by hierarchy priority (device > group > site > org > partner)
   const sorted = sortByHierarchy(rows);
@@ -1312,13 +1447,22 @@ export async function resolveAllBackupAssignedDevices(
     }
 
     // First assignment wins per device (sorted is already highest-priority-first)
+    const selectionSpecs = row.backupSettings?.backupProfileId
+      ? backupSelectionSpecs(row.profileSelections)
+      : null;
+    const legacyDestination = row.backupSettings?.backupProfileId
+      ? null
+      : row.featurePolicyId;
+    const configId =
+      row.backupSettings?.destinationConfigId ?? legacyDestination ?? orgDefaultConfigId;
     for (const deviceId of deviceIds) {
       if (!seen.has(deviceId)) {
         seen.set(deviceId, {
           deviceId,
           featureLinkId: row.featureLinkId,
-          configId: row.configId,
+          configId,
           settings: row.backupSettings,
+          selectionSpecs,
           resolvedTimezone: 'UTC',
         });
       }

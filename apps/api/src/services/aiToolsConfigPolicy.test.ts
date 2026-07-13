@@ -256,7 +256,9 @@ describe('configuration policy AI tools', () => {
   // partner-wide policies with a 400; the AI path must mirror that rule from
   // the same shared constant (ORG_SCOPED_ONLY_FEATURE_TYPES, #2101) since
   // addFeatureLink itself doesn't know the policy's owner.
-  it('rejects adding an org-scoped-only feature (backup) to a partner-wide policy via manage_policy_feature_link', async () => {
+  it('rejects adding an org-scoped-only feature (onedrive_helper) to a partner-wide policy via manage_policy_feature_link', async () => {
+    // backup left ORG_SCOPED_ONLY_FEATURE_TYPES with the profiles model
+    // (spec 2026-07-13); onedrive_helper remains the org-locked exemplar.
     vi.mocked(getConfigPolicy).mockResolvedValue({
       id: POLICY_ID,
       orgId: null,
@@ -270,8 +272,8 @@ describe('configuration policy AI tools', () => {
     const output = await tools.get('manage_policy_feature_link')!.handler({
       action: 'add',
       configPolicyId: POLICY_ID,
-      featureType: 'backup',
-      inlineSettings: { scheduleFrequency: 'daily' },
+      featureType: 'onedrive_helper',
+      inlineSettings: { silentAccountConfig: true },
     }, makeAuth());
 
     expect(JSON.parse(output).error).toContain('not supported on partner-wide policies');

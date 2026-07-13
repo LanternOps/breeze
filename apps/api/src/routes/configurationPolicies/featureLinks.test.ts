@@ -10,6 +10,7 @@ const {
   removeFeatureLinkMock,
   listFeatureLinksMock,
   validateFeaturePolicyExistsMock,
+  isBackupProfileReferenceMock,
 } = vi.hoisted(() => ({
   getConfigPolicyMock: vi.fn(),
   addFeatureLinkMock: vi.fn(),
@@ -17,6 +18,7 @@ const {
   removeFeatureLinkMock: vi.fn(),
   listFeatureLinksMock: vi.fn(),
   validateFeaturePolicyExistsMock: vi.fn(),
+  isBackupProfileReferenceMock: vi.fn(),
 }));
 
 vi.mock('../../services/configurationPolicy', async (importOriginal) => {
@@ -29,6 +31,7 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     removeFeatureLink: removeFeatureLinkMock,
     listFeatureLinks: listFeatureLinksMock,
     validateFeaturePolicyExists: validateFeaturePolicyExistsMock,
+    isBackupProfileReference: isBackupProfileReferenceMock,
   };
 });
 
@@ -106,6 +109,7 @@ describe('featureLinks routes', () => {
     beforeEach(() => {
       getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
       validateFeaturePolicyExistsMock.mockResolvedValue({ valid: true });
+      isBackupProfileReferenceMock.mockResolvedValue(false);
       addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'pam' });
     });
 
@@ -372,23 +376,25 @@ describe('featureLinks routes', () => {
       expect(removeFeatureLinkMock).not.toHaveBeenCalled();
     });
 
-    // onedrive_helper is also in ORG_SCOPED_ONLY_FEATURES and (as of this
-    // branch) IS accepted by addFeatureLinkSchema's enum, so it's covered by
-    // its own test below. patch is deliberately NOT rejected: rings are
+    // onedrive_helper is in ORG_SCOPED_ONLY_FEATURES and is covered by its
+    // own test below. patch is deliberately NOT rejected: rings are
     // partner-axis and the scheduler groups by device org (#1724 follow-up).
-    it('rejects the backup feature on a partner-owned policy → 400 (no insert)', async () => {
+    it('accepts the backup feature on a partner-owned policy (profiles, spec 2026-07-13)', async () => {
+      // backup left ORG_SCOPED_ONLY_FEATURE_TYPES with the profiles model:
+      // settings are dual-axis and partner-wide links resolve each device
+      // org's default destination at job time.
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'backup' });
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Valid body (passes the schema refine) so we exercise the
-        // partner-wide guard, not the generic validator.
-        body: JSON.stringify({ featureType: 'backup', inlineSettings: { enabled: true } }),
+        body: JSON.stringify({
+          featureType: 'backup',
+          inlineSettings: { backupMode: 'file', targets: { paths: ['C:\\Data'] } },
+        }),
       });
 
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(String(body.error)).toContain('partner-wide');
-      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalled();
     });
 
     it('rejects the onedrive_helper feature on a partner-owned policy → 400 via ORG_SCOPED_ONLY_FEATURES (no insert)', async () => {
@@ -486,24 +492,25 @@ describe('featureLinks routes', () => {
       );
     });
 
-    it('still rejects linking an org-scoped feature policy (backup) on a partner-owned policy → 400', async () => {
-      // backup is the deliberate org-locked exception (org-owned storage
-      // credentials; #2132 tracks its template/binding design). compliance
-      // graduated to PARTNER_LINKABLE in #2129, sensitive_data / peripheral /
-      // maintenance in #2131 — backup is the last org-only linked type.
+    it('allows linking a partner-wide backup profile on a partner-owned policy (spec 2026-07-13)', async () => {
+      // backup graduated to PARTNER_LINKABLE with the profiles model —
+      // featurePolicyId references a dual-ownership backup_profiles row and
+      // validateFeaturePolicyExists enforces the ownership axes.
+      isBackupProfileReferenceMock.mockResolvedValue(true);
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'backup' });
       const res = await app.request(`/${POLICY_ID}/features`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           featureType: 'backup',
           featurePolicyId: '44444444-4444-4444-4444-444444444444',
+          inlineSettings: { schedule: { frequency: 'daily', time: '03:00' } },
         }),
       });
 
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(String(body.error)).toContain('not supported on partner-wide policies');
-      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+      expect(validateFeaturePolicyExistsMock).toHaveBeenCalled();
     });
 
     it('still allows an org-derived feature (security) on a partner-owned policy', async () => {

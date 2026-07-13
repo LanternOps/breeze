@@ -97,6 +97,18 @@ vi.mock('../db/schema', () => ({
   configPolicyBackupSettings: {
     featureLinkId: 'configPolicyBackupSettings.featureLinkId',
     schedule: 'configPolicyBackupSettings.schedule',
+    backupProfileId: 'configPolicyBackupSettings.backupProfileId',
+    destinationConfigId: 'configPolicyBackupSettings.destinationConfigId',
+  },
+  backupProfiles: {
+    id: 'backupProfiles.id',
+    selections: 'backupProfiles.selections',
+  },
+  backupConfigs: {
+    id: 'backupConfigs.id',
+    orgId: 'backupConfigs.orgId',
+    isDefault: 'backupConfigs.isDefault',
+    isActive: 'backupConfigs.isActive',
   },
   devices: {
     id: 'devices.id',
@@ -159,12 +171,16 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
     const partnerId = 'partner-1';
 
     selectMock
+      // 1. org → partnerId lookup (partner-wide policy coverage)
+      .mockReturnValueOnce(makeSelectChain([{ partnerId }]))
+      // 2. feature links + settings + assignments
       .mockReturnValueOnce(
         makeSelectChain([
           {
             backupSettings: { schedule: { frequency: 'daily', time: '01:00' } },
             featureLinkId: 'feature-1',
-            configId: 'config-1',
+            featurePolicyId: 'config-1',
+            profileSelections: null,
             assignmentLevel: 'partner',
             assignmentTargetId: partnerId,
             assignmentPriority: 1,
@@ -172,6 +188,8 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
           },
         ])
       )
+      // 3. org default destination lookup (none configured)
+      .mockReturnValueOnce(makeSelectChain([]))
       .mockReturnValueOnce(
         makeSelectChain((condition: unknown) => {
           const resolvedPartnerId = findEqValue(condition, 'organizations.partnerId');

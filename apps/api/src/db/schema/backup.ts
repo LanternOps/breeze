@@ -17,7 +17,7 @@ import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { devices, deviceCommands } from './devices';
 import { users } from './users';
-import { configPolicyFeatureLinks } from './configurationPolicies';
+import { configPolicyFeatureLinks, backupModeEnum } from './configurationPolicies';
 import { storageEncryptionKeys } from './storageEncryption';
 
 export const backupProviderEnum = pgEnum('backup_provider', [
@@ -177,6 +177,12 @@ export const backupJobs = pgTable(
       .references(() => devices.id),
     status: backupStatusEnum('status').notNull().default('pending'),
     type: backupJobTypeEnum('type').notNull().default('scheduled'),
+    // Profile fan-out (spec 2026-07-13): a profile with N enabled selections
+    // creates N jobs per occurrence, each carrying its own mode + targets so
+    // dispatch doesn't depend on the (mutable) settings row. NULL = legacy
+    // job; dispatch falls back to reading the feature link's settings.
+    backupMode: backupModeEnum('backup_mode'),
+    modeTargets: jsonb('mode_targets'),
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
     totalSize: bigint('total_size', { mode: 'number' }),

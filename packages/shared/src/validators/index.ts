@@ -823,6 +823,7 @@ export {
   backupRetentionSchema,
   backupRetentionUpdateSchema,
   backupInlineSettingsSchema,
+  backupProfileLinkedInlineSettingsSchema,
   backupProfileSelectionsSchema,
   enabledBackupSelections,
   createBackupProfileSchema,

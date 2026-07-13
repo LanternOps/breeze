@@ -24,6 +24,7 @@ import {
   patchPolicies,
   alertRules,
   backupConfigs,
+  backupProfiles,
   securityPolicies,
   automationPolicies,
   maintenanceWindows,
@@ -609,29 +610,77 @@ async function decomposeInlineSettings(
     }
 
     case 'backup': {
-      // Look up orgId via feature link → policy join
+      // Settings mirror the parent policy's ownership axis (org XOR partner —
+      // spec 2026-07-13; partner-wide backup links are supported since
+      // profiles + org-default destinations replaced the old #1724 rejection).
       const [policyRow] = await tx
-        .select({ orgId: configurationPolicies.orgId })
+        .select({
+          orgId: configurationPolicies.orgId,
+          partnerId: configurationPolicies.partnerId,
+          featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+        })
         .from(configPolicyFeatureLinks)
         .innerJoin(configurationPolicies, eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id))
         .where(eq(configPolicyFeatureLinks.id, linkId))
         .limit(1);
-      if (!policyRow) throw new Error(`Cannot resolve orgId for feature link ${linkId}`);
-      // Backup settings carry a concrete org_id FK (per-org backup target). A
-      // partner-wide policy (org_id NULL) has no single owning org, so backup is
-      // not supported on partner-owned policies (#1724 — deferred; would need a
-      // per-device org-resolved backup design). Reject rather than write NULL.
-      if (!policyRow.orgId) {
-        throw new Error('Backup settings are not supported on partner-wide configuration policies');
+      if (!policyRow) throw new Error(`Cannot resolve ownership for feature link ${linkId}`);
+      if (!policyRow.orgId && !policyRow.partnerId) {
+        throw new Error('Configuration policy has no owning organization or partner');
       }
+
+      // featurePolicyId is a backup_profiles id (preferred) or, on legacy
+      // links, the org's backup_configs (destination) id.
+      let backupProfileId: string | null = null;
+      let legacyDestinationId: string | null = null;
+      if (policyRow.featurePolicyId) {
+        const [profile] = await tx
+          .select({ id: backupProfiles.id })
+          .from(backupProfiles)
+          .where(eq(backupProfiles.id, policyRow.featurePolicyId))
+          .limit(1);
+        if (profile) {
+          backupProfileId = profile.id;
+        } else {
+          legacyDestinationId = policyRow.featurePolicyId;
+        }
+      }
+
+      const requestedDestination =
+        typeof s.destinationConfigId === 'string' && s.destinationConfigId
+          ? s.destinationConfigId
+          : null;
+      const destinationConfigId = requestedDestination ?? legacyDestinationId;
+      if (destinationConfigId) {
+        // NULL means "resolve the device org's default destination at job
+        // time" — the only valid choice for partner-wide policies, whose
+        // devices span orgs.
+        if (!policyRow.orgId) {
+          throw new Error('Partner-wide backup links resolve each organization\'s default destination; do not set a destination config');
+        }
+        // Destination must belong to the policy's own org: the FK proves
+        // existence but not tenancy, and job dispatch writes to whatever
+        // destination this row names.
+        const [destination] = await tx
+          .select({ id: backupConfigs.id })
+          .from(backupConfigs)
+          .where(and(eq(backupConfigs.id, destinationConfigId), eq(backupConfigs.orgId, policyRow.orgId)))
+          .limit(1);
+        if (!destination) {
+          throw new Error('Backup destination not found in this organization');
+        }
+      }
+
       await tx.insert(configPolicyBackupSettings).values({
         featureLinkId: linkId,
         orgId: policyRow.orgId,
+        partnerId: policyRow.orgId ? null : policyRow.partnerId,
         schedule: (s.schedule ?? {}) as Record<string, unknown>,
         retention: (s.retention ?? {}) as Record<string, unknown>,
         paths: (Array.isArray(s.paths) ? s.paths : []) as unknown[],
         backupMode: (s.backupMode ?? 'file') as 'file' | 'hyperv' | 'mssql' | 'system_image',
         targets: (s.targets ?? {}) as Record<string, unknown>,
+        backupProfileId,
+        destinationConfigId,
       });
       break;
     }
@@ -1027,6 +1076,8 @@ async function assembleInlineSettings(
         paths: row.paths,
         backupMode: row.backupMode,
         targets: row.targets,
+        ...(row.backupProfileId ? { backupProfileId: row.backupProfileId } : {}),
+        ...(row.destinationConfigId ? { destinationConfigId: row.destinationConfigId } : {}),
       };
     }
 
@@ -1849,14 +1900,13 @@ export async function previewEffectiveConfig(
 // ============================================
 
 const FEATURE_TABLE_MAP: Partial<Record<ConfigFeatureType, { table: any; orgIdCol: any }>> = {
-  // Every other linked feature type is handled separately in
-  // validateFeaturePolicyExists: rings are pure partner-axis, and software /
+  // Every linked feature type is handled separately in
+  // validateFeaturePolicyExists: rings are pure partner-axis; software /
   // security / alert-rule / compliance / sensitive-data / peripheral /
   // maintenance are dual-ownership (org XOR partner,
-  // #2126/#2127/#2128/#2129/#2131). backup stays org-only deliberately —
-  // backup configs carry org-owned storage credentials (see the
-  // partner-wide-first rule in CLAUDE.md; #2132 tracks its template design).
-  backup: { table: backupConfigs, orgIdCol: backupConfigs.orgId },
+  // #2126/#2127/#2128/#2129/#2131); backup links a dual-ownership
+  // backup_profiles selection profile (spec 2026-07-13), with a legacy
+  // fallback accepting an org-owned backup_configs id from pre-profile links.
 };
 
 /**
@@ -1875,7 +1925,28 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'sensitive_data',
   'peripheral_control',
   'maintenance',
+  // backup (spec 2026-07-13): links a dual-ownership backup_profiles
+  // selection profile; partner-wide links resolve each device org's DEFAULT
+  // destination at job time (backup_configs stays org-owned — credentials).
+  'backup',
 ]);
+
+/**
+ * True when featurePolicyId references a backup_profiles row (vs a legacy
+ * backup_configs destination id). Routes use this to pick the right inline
+ * settings schema for backup links.
+ */
+export async function isBackupProfileReference(
+  featurePolicyId: string | null | undefined
+): Promise<boolean> {
+  if (!featurePolicyId) return false;
+  const [row] = await db
+    .select({ id: backupProfiles.id })
+    .from(backupProfiles)
+    .where(eq(backupProfiles.id, featurePolicyId))
+    .limit(1);
+  return !!row;
+}
 
 export async function validateFeaturePolicyExists(
   featureType: ConfigFeatureType,
@@ -1912,6 +1983,52 @@ export async function validateFeaturePolicyExists(
     }
 
     return { valid: true };
+  }
+
+  if (featureType === 'backup') {
+    if (!featurePolicyId) {
+      return { valid: true };
+    }
+    // Preferred reference: a dual-ownership backup_profiles selection profile
+    // (org-owned in the config policy's own org, or partner-wide under its
+    // partner). Legacy fallback: pre-profile links stored the org's
+    // backup_configs (storage destination) id in featurePolicyId — still
+    // accepted for org-owned config policies so existing links keep saving.
+    const partnerId =
+      owner.partnerId ?? (owner.orgId ? await resolvePartnerIdForOrg(owner.orgId) : null);
+    const profileConditions: SQL[] = [];
+    if (owner.orgId) {
+      profileConditions.push(eq(backupProfiles.orgId, owner.orgId));
+    }
+    if (partnerId) {
+      profileConditions.push(
+        sql`(${backupProfiles.orgId} IS NULL AND ${backupProfiles.partnerId} = ${partnerId})`
+      );
+    }
+    if (profileConditions.length > 0) {
+      const [profile] = await db
+        .select({ id: backupProfiles.id })
+        .from(backupProfiles)
+        .where(and(eq(backupProfiles.id, featurePolicyId), or(...profileConditions)))
+        .limit(1);
+      if (profile) {
+        return { valid: true };
+      }
+    }
+    if (owner.orgId) {
+      const [config] = await db
+        .select({ id: backupConfigs.id })
+        .from(backupConfigs)
+        .where(and(eq(backupConfigs.id, featurePolicyId), eq(backupConfigs.orgId, owner.orgId)))
+        .limit(1);
+      if (config) {
+        return { valid: true };
+      }
+    }
+    return {
+      valid: false,
+      error: `Backup profile "${featurePolicyId}" not found for this organization or partner`,
+    };
   }
 
   if (

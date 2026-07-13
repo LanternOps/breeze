@@ -8,12 +8,18 @@ type Row = typeof backupJobs.$inferSelect;
 /** Drizzle transaction handle — extracted from db.transaction callback parameter. */
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+type BackupModeValue = 'file' | 'hyperv' | 'mssql' | 'system_image';
+
 type CreateManualBackupJobInput = {
   orgId: string;
   configId: string;
   featureLinkId: string | null;
   deviceId: string;
   createdAt?: Date;
+  /** Profile fan-out: the selection this job executes. Omitted = legacy
+   *  (dispatch reads the feature link's settings row). */
+  backupMode?: BackupModeValue;
+  modeTargets?: Record<string, unknown>;
 };
 
 type CreateScheduledBackupJobInput = {
@@ -24,6 +30,8 @@ type CreateScheduledBackupJobInput = {
   occurrenceKey: string;
   createdAt?: Date;
   dedupeWindowMinutes?: number;
+  backupMode?: BackupModeValue;
+  modeTargets?: Record<string, unknown>;
 };
 
 async function withBackupJobLock<T>(lockKey: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
@@ -40,7 +48,13 @@ export async function createManualBackupJobIfIdle(
 ): Promise<{ job: Row; created: boolean } | null> {
   const createdAt = input.createdAt ?? new Date();
 
-  return withBackupJobLock(`manual:${input.orgId}:${input.deviceId}`, async (tx) => {
+  // Idle means "no active job for this device AND mode": profile fan-out
+  // runs a device's file/system_image/mssql jobs side by side, but never two
+  // of the same mode concurrently. Legacy (NULL-mode) jobs keep the original
+  // one-active-job-per-device behavior.
+  return withBackupJobLock(
+    `manual:${input.orgId}:${input.deviceId}:${input.backupMode ?? 'legacy'}`,
+    async (tx) => {
     const [existing] = await tx
       .select()
       .from(backupJobs)
@@ -48,6 +62,9 @@ export async function createManualBackupJobIfIdle(
         and(
           eq(backupJobs.orgId, input.orgId),
           eq(backupJobs.deviceId, input.deviceId),
+          input.backupMode
+            ? eq(backupJobs.backupMode, input.backupMode)
+            : sql`${backupJobs.backupMode} IS NULL`,
           inArray(backupJobs.status, ACTIVE_BACKUP_JOB_STATUSES)
         )
       )
@@ -66,6 +83,8 @@ export async function createManualBackupJobIfIdle(
         deviceId: input.deviceId,
         status: 'pending',
         type: 'manual',
+        backupMode: input.backupMode ?? null,
+        modeTargets: input.modeTargets ?? null,
         createdAt,
         updatedAt: createdAt,
       })
@@ -86,8 +105,11 @@ export async function createScheduledBackupJobIfAbsent(
   minuteStart.setSeconds(0, 0);
   const searchEnd = new Date(createdAt.getTime() + 60_000);
 
+  // Profile fan-out creates one job per selection per occurrence — the mode
+  // participates in both the advisory-lock key and the dedupe window so a
+  // Server profile's file/system_image/mssql jobs don't dedupe each other.
   return withBackupJobLock(
-    `scheduled:${input.orgId}:${input.deviceId}:${input.featureLinkId ?? input.configId}:${input.occurrenceKey}`,
+    `scheduled:${input.orgId}:${input.deviceId}:${input.featureLinkId ?? input.configId}:${input.occurrenceKey}:${input.backupMode ?? 'legacy'}`,
     async (tx) => {
       const [existing] = await tx
         .select()
@@ -98,6 +120,9 @@ export async function createScheduledBackupJobIfAbsent(
             eq(backupJobs.deviceId, input.deviceId),
             eq(backupJobs.configId, input.configId),
             eq(backupJobs.type, 'scheduled'),
+            input.backupMode
+              ? eq(backupJobs.backupMode, input.backupMode)
+              : sql`${backupJobs.backupMode} IS NULL`,
             sql`${backupJobs.createdAt} >= ${minuteStart.toISOString()}::timestamptz`,
             sql`${backupJobs.createdAt} < ${searchEnd.toISOString()}::timestamptz`
           )
@@ -117,6 +142,8 @@ export async function createScheduledBackupJobIfAbsent(
           deviceId: input.deviceId,
           status: 'pending',
           type: 'scheduled',
+          backupMode: input.backupMode ?? null,
+          modeTargets: input.modeTargets ?? null,
           createdAt,
           updatedAt: createdAt,
         })

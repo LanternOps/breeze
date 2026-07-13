@@ -31,8 +31,11 @@ export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
 /**
  * Feature types whose per-feature config is fundamentally org-scoped and
  * cannot be authored on a partner-wide ("all organizations") config policy
- * (org_id NULL, #1724): backup/onedrive_helper settings carry a concrete
- * org_id FK, so a partner-wide policy has no owning org to anchor them to.
+ * (org_id NULL, #1724): onedrive_helper settings carry per-tenant M365
+ * library mappings, so a partner-wide policy has no owning org to anchor
+ * them to. backup left this set with the backup-profiles model (spec
+ * 2026-07-13): its settings row is now dual-axis and partner-wide links
+ * resolve each device org's default destination at job time.
  *
  * Every other feature type has migrated to partner-wide support as part of
  * epic #2135 (dual-ownership templates, partner-axis update rings, or
@@ -48,6 +51,5 @@ export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
  * Keeping one list means the API rule and the UI gating can't silently drift.
  */
 export const ORG_SCOPED_ONLY_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = new Set([
-  'backup',
   'onedrive_helper',
 ]);

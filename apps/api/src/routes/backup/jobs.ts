@@ -215,54 +215,71 @@ jobsRoutes.post(
     return c.json({ error: 'No backup config available' }, 400);
   }
 
-  const result = await createManualBackupJobIfIdle({
-    orgId,
-    configId,
-    featureLinkId,
-    deviceId,
-  });
-
-  if (!result) {
-    return c.json({ error: 'Failed to create backup job' }, 500);
+  // Profile fan-out: one manual job per enabled selection (idle-checked per
+  // device+mode). Legacy custom links create a single NULL-mode job as before.
+  const specs = resolved?.selectionSpecs ?? [undefined];
+  const createdJobs: Array<NonNullable<Awaited<ReturnType<typeof createManualBackupJobIfIdle>>>['job']> = [];
+  for (const spec of specs) {
+    const result = await createManualBackupJobIfIdle({
+      orgId,
+      configId,
+      featureLinkId,
+      deviceId,
+      ...(spec ? { backupMode: spec.backupMode, modeTargets: spec.targets } : {}),
+    });
+    if (!result) {
+      return c.json({ error: 'Failed to create backup job' }, 500);
+    }
+    if (result.created) {
+      createdJobs.push(result.job);
+    }
   }
 
-  if (!result.created) {
+  if (createdJobs.length === 0) {
     return c.json({ error: 'A backup job is already pending or running for this device' }, 409);
   }
 
-  const row = result.job;
-
-  // Enqueue BullMQ job to dispatch to agent
-  try {
-    const { enqueueBackupDispatch } = await import(
-      '../../jobs/backupWorker'
-    );
-    await enqueueBackupDispatch(row.id, row.configId, orgId, deviceId);
-  } catch (err) {
-    const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
-    console.error('[BackupJobs] Failed to enqueue dispatch:', err);
-    recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
-    await markBackupJobDispatchFailed(row.id, error);
-    writeRouteAudit(c, {
-      orgId,
-      action: 'backup.job.run',
-      resourceType: 'backup_job',
-      resourceId: row.id,
-      details: { deviceId, configId, featureLinkId, error },
-      result: 'failure',
-    });
-    return c.json({ error }, 502);
+  // Enqueue BullMQ dispatch for each created job
+  const { enqueueBackupDispatch } = await import(
+    '../../jobs/backupWorker'
+  );
+  for (const row of createdJobs) {
+    try {
+      await enqueueBackupDispatch(row.id, row.configId, orgId, deviceId);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
+      console.error('[BackupJobs] Failed to enqueue dispatch:', err);
+      recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
+      await markBackupJobDispatchFailed(row.id, error);
+      writeRouteAudit(c, {
+        orgId,
+        action: 'backup.job.run',
+        resourceType: 'backup_job',
+        resourceId: row.id,
+        details: { deviceId, configId, featureLinkId, error },
+        result: 'failure',
+      });
+      return c.json({ error }, 502);
+    }
   }
 
+  const row = createdJobs[0]!;
   writeRouteAudit(c, {
     orgId,
     action: 'backup.job.run',
     resourceType: 'backup_job',
     resourceId: row.id,
-    details: { deviceId, configId, featureLinkId },
+    details: { deviceId, configId, featureLinkId, jobCount: createdJobs.length },
   });
 
-  return c.json(toJobResponse(row), 201);
+  return c.json(
+    {
+      ...toJobResponse(row),
+      jobs: createdJobs.map((job) => toJobResponse(job)),
+      jobCount: createdJobs.length,
+    },
+    201
+  );
 });
 
 jobsRoutes.get('/jobs/run-all/preview', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {

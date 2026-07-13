@@ -91,6 +91,9 @@ export const backupInlineSettingsSchema = z
     schedule: backupScheduleSchema.optional(),
     retention: backupRetentionSchema.optional(),
     paths: z.array(z.string()).optional(),
+    // Explicit destination (backup_configs id). Omitted/null = resolve the
+    // device org's default destination at job time.
+    destinationConfigId: z.string().nullish(),
   })
   .superRefine((data, ctx) => {
     const schema = targetsMap[data.backupMode];
@@ -108,6 +111,16 @@ export const backupInlineSettingsSchema = z
 export type BackupInlineSettings = z.infer<typeof backupInlineSettingsSchema>;
 export type BackupSchedule = z.infer<typeof backupScheduleSchema>;
 export type BackupRetention = z.infer<typeof backupRetentionSchema>;
+
+// Inline settings for a PROFILE-LINKED backup feature link: "what to protect"
+// lives on the linked backup_profiles row, so backupMode/paths/targets are
+// not validated here (legacy keys may still be present in stored JSONB and
+// are ignored). Schedule/retention/destination stay per-policy.
+export const backupProfileLinkedInlineSettingsSchema = z.object({
+  schedule: backupScheduleSchema.optional(),
+  retention: backupRetentionSchema.optional(),
+  destinationConfigId: z.string().nullish(),
+});
 
 // ── Backup profiles (docs/superpowers/specs/2026-07-13-backup-profiles-design.md)
 //

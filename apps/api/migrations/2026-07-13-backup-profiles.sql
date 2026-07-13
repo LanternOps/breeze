@@ -108,7 +108,74 @@ CREATE INDEX IF NOT EXISTS config_policy_backup_settings_profile_idx
   ON config_policy_backup_settings(backup_profile_id);
 
 -- ============================================
--- Step 4: backup_configs — per-org default destination flag
+-- Step 4: config_policy_backup_settings — dual-axis ownership
+-- ============================================
+-- Backup links were rejected on partner-wide policies (settings carried a
+-- NOT NULL org_id). Profiles + org-default destinations remove that
+-- restriction: a partner policy's backup settings row carries partner_id
+-- (org_id NULL), mirroring its parent configuration_policies row. The
+-- partner axis is DENORMALIZED onto the row rather than reached via an
+-- EXISTS join to the parent (nested-EXISTS RLS policies have bitten us with
+-- bound-parameter bugs before).
+
+ALTER TABLE config_policy_backup_settings
+  ADD COLUMN IF NOT EXISTS partner_id uuid REFERENCES partners(id);
+
+ALTER TABLE config_policy_backup_settings
+  ALTER COLUMN org_id DROP NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'config_policy_backup_settings_one_owner_chk'
+      AND conrelid = 'config_policy_backup_settings'::regclass
+  ) THEN
+    ALTER TABLE config_policy_backup_settings
+      ADD CONSTRAINT config_policy_backup_settings_one_owner_chk
+      CHECK ((org_id IS NULL) <> (partner_id IS NULL));
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS config_policy_backup_settings_partner_idx
+  ON config_policy_backup_settings(partner_id);
+
+ALTER TABLE config_policy_backup_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE config_policy_backup_settings FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS breeze_org_isolation_select ON config_policy_backup_settings;
+DROP POLICY IF EXISTS breeze_org_isolation_insert ON config_policy_backup_settings;
+DROP POLICY IF EXISTS breeze_org_isolation_update ON config_policy_backup_settings;
+DROP POLICY IF EXISTS breeze_org_isolation_delete ON config_policy_backup_settings;
+DROP POLICY IF EXISTS config_policy_backup_settings_isolation ON config_policy_backup_settings;
+CREATE POLICY config_policy_backup_settings_isolation
+  ON config_policy_backup_settings
+  USING (
+    public.breeze_current_scope() = 'system'
+    OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+    OR (partner_id IS NOT NULL AND public.breeze_has_partner_access(partner_id))
+  )
+  WITH CHECK (
+    public.breeze_current_scope() = 'system'
+    OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+    OR (partner_id IS NOT NULL AND public.breeze_has_partner_access(partner_id))
+  );
+
+-- ============================================
+-- Step 5: backup_jobs — per-job selection (profile fan-out)
+-- ============================================
+-- A profile with N enabled selections creates N jobs per occurrence, each
+-- carrying its own mode + targets. NULL = legacy job (dispatch reads the
+-- feature link's settings row, as before).
+
+ALTER TABLE backup_jobs
+  ADD COLUMN IF NOT EXISTS backup_mode backup_mode_enum;
+
+ALTER TABLE backup_jobs
+  ADD COLUMN IF NOT EXISTS mode_targets jsonb;
+
+-- ============================================
+-- Step 6: backup_configs — per-org default destination flag
 -- ============================================
 
 ALTER TABLE backup_configs

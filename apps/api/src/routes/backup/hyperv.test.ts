@@ -81,6 +81,12 @@ vi.mock('../../services/featureConfigResolver', () => ({
     resolveAllBackupAssignedDevicesMock(...(args as [])),
   resolveBackupConfigForDevice: (...args: unknown[]) =>
     resolveBackupConfigForDeviceMock(...(args as [])),
+  effectiveBackupModes: (entry: { selectionSpecs: Array<{ backupMode: string }> | null; settings: { backupMode: string } | null }) =>
+    entry.selectionSpecs
+      ? entry.selectionSpecs.map((spec) => spec.backupMode)
+      : entry.settings
+        ? [entry.settings.backupMode]
+        : [],
 }));
 
 const applyBackupCommandResultToJobMock = vi.fn();

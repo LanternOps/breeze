@@ -9,7 +9,7 @@ import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
-import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
+import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice, effectiveBackupModes } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
 import {
   applyBackupCommandResultToJob,
@@ -129,7 +129,7 @@ hypervRoutes.get(
 
     const assignedDevices = await resolveAllBackupAssignedDevices(orgId);
     const targetDeviceIds = assignedDevices
-      .filter((entry) => entry.configId && entry.settings?.backupMode === 'hyperv')
+      .filter((entry) => entry.configId && effectiveBackupModes(entry).includes('hyperv'))
       .map((entry) => entry.deviceId);
 
     if (targetDeviceIds.length === 0) {
