@@ -86,6 +86,46 @@ describe('tenancyRegistry', () => {
     expect(withExtensionDeviceOrgMoveDelete([])).toEqual(['demo_things']);
   });
 
+  it('dedupes device-cascade tables declared by both an extension and core, keeping the first (extension) position', () => {
+    expect(withExtensionDeviceCascade(['sample_parent', 'backup_jobs'])).toEqual([
+      'sample_child', 'sample_parent', 'backup_jobs',
+    ]);
+  });
+
+  it('dedupes a shared table declared by two extensions in device-cascade lists', () => {
+    const sampleManifest = {
+      name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
+      migrationsDir: 'migrations',
+      tenancy: {
+        orgCascadeDeleteTables: [],
+        deviceCascadeDeleteTables: ['memory_blocks', 'sample_child'],
+        deviceOrgDenormalizedTables: [],
+      },
+    };
+    vi.mocked(discoverExtensions).mockReturnValueOnce([
+      { name: 'sample', dir: '/x/sample', migrationsDir: null, manifest: sampleManifest },
+      {
+        name: 'other', dir: '/x/other', migrationsDir: null,
+        manifest: {
+          ...sampleManifest, name: 'other', routeNamespace: 'other',
+          tenancy: { ...sampleManifest.tenancy, deviceCascadeDeleteTables: ['memory_blocks', 'other_child'] },
+        },
+      },
+    ]);
+    expect(withExtensionDeviceCascade(['devices_data'])).toEqual([
+      'memory_blocks', 'sample_child', 'other_child', 'devices_data',
+    ]);
+  });
+
+  it('dedupes device-org-move-delete and device-org-denormalized overlaps with core', () => {
+    expect(withExtensionDeviceOrgMoveDelete(['demo_things', 'core_rows'])).toEqual([
+      'demo_things', 'core_rows',
+    ]);
+    expect(withExtensionDeviceOrgDenormalized(['sample_events', 'agent_logs'])).toEqual([
+      'sample_events', 'agent_logs',
+    ]);
+  });
+
   it('is a pure pass-through with no extensions', async () => {
     vi.mocked(discoverExtensions).mockReturnValueOnce([]);
     resetExtensionTenancyCacheForTests();

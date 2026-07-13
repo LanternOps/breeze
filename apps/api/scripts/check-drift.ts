@@ -97,9 +97,13 @@ async function main() {
         `[check-drift] WARN: ledger row "${row}" belongs to an extension not present on disk`,
       );
     }
-    if (absentExtensionRows.length > 0 && process.env.STRICT_EXTENSION_DRIFT === 'true') {
+    // Strict by default (#2424): an absent-extension ledger row usually means
+    // an extension was removed without cleaning up — its migrations can no
+    // longer be checksum-verified. Set STRICT_EXTENSION_DRIFT=false only for a
+    // deliberate, acknowledged extension removal.
+    if (absentExtensionRows.length > 0 && process.env.STRICT_EXTENSION_DRIFT !== 'false') {
       console.error(
-        '[check-drift] STRICT_EXTENSION_DRIFT=true — failing on absent-extension ledger rows',
+        '[check-drift] failing on absent-extension ledger rows (set STRICT_EXTENSION_DRIFT=false to tolerate a deliberate extension removal)',
       );
       process.exit(1);
     }

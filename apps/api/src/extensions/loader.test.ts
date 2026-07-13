@@ -4,8 +4,20 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 vi.mock('../services/aiTools', () => ({ aiTools: new Map() }));
-vi.mock('../middleware/auth', () => ({ authMiddleware: async (_c: unknown, next: () => Promise<void>) => next() }));
-vi.mock('../middleware/agentAuth', () => ({ agentAuthMiddleware: async (_c: unknown, next: () => Promise<void>) => next() }));
+// Auth mocks stamp a response header so tests can observe WHICH guard the
+// loader's default-deny wrapper applied to each route.
+vi.mock('../middleware/auth', () => ({
+  authMiddleware: async (c: { header: (k: string, v: string) => void }, next: () => Promise<void>) => {
+    c.header('x-guard', 'user');
+    return next();
+  },
+}));
+vi.mock('../middleware/agentAuth', () => ({
+  agentAuthMiddleware: async (c: { header: (k: string, v: string) => void }, next: () => Promise<void>) => {
+    c.header('x-guard', 'agent');
+    return next();
+  },
+}));
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../services/secretCrypto', () => ({
   encryptSecret: vi.fn((value: string, options: { aad?: string }) => `encrypted:${options.aad}:${value}`),
@@ -18,7 +30,11 @@ vi.mock('../services/clientIp', () => ({ getTrustedClientIp: () => 'extension-lo
 import { mountExtensions } from './loader';
 import { __resetSkipPrefixesForTests, globalRateLimit } from '../middleware/globalRateLimit';
 
-function scaffoldRuntimeExtension(root: string, manifestOverrides: Record<string, unknown> = {}) {
+function scaffoldRuntimeExtension(
+  root: string,
+  manifestOverrides: Record<string, unknown> = {},
+  entrySource?: string,
+) {
   const dir = join(root, 'demo');
   mkdirSync(join(dir, 'src'), { recursive: true });
   writeFileSync(
@@ -28,13 +44,14 @@ function scaffoldRuntimeExtension(root: string, manifestOverrides: Record<string
   // A real loadable entry — plain TS, imported under vitest's transform.
   writeFileSync(
     join(dir, 'src', 'index.ts'),
-    `import { Hono } from 'hono';
+    entrySource ?? `import { Hono } from 'hono';
      const ext = {
        register(ctx) {
          const app = new Hono();
          const initialAiToolCount = ctx.aiTools.size;
          app.get('/health', (c) => c.json({ ok: true, ext: 'demo', initialAiToolCount }));
          app.get('/agent/health', (c) => c.json({ ok: true }));
+         app.get('/pub/thing', (c) => c.json({ ok: true, pub: true }));
          ctx.mountRoute(app);
          ctx.aiTools.set('demo_tool', { definition: { name: 'demo_tool', description: 'x', input_schema: { type: 'object' } }, tier: 1, handler: async () => 'ok' });
          const ciphertext = ctx.secrets.encryptForColumn('demo_secrets', 'value', 'secret');
@@ -175,5 +192,135 @@ describe('mountExtensions', () => {
     aiTools.set('demo_tool', { definition: { name: 'demo_tool' } } as never);
     const app = new Hono();
     await expect(mountExtensions(app, root)).rejects.toThrow(/demo_tool/);
+  });
+
+  describe('default-deny auth guard', () => {
+    it('applies core authMiddleware to non-agent routes and agentAuthMiddleware to /agent/ routes', async () => {
+      scaffoldRuntimeExtension(root);
+      const app = new Hono();
+      await mountExtensions(app, root);
+
+      const userRoute = await app.request('/api/v1/demo/health');
+      expect(userRoute.status).toBe(200);
+      expect(userRoute.headers.get('x-guard')).toBe('user');
+
+      const agentRoute = await app.request('/api/v1/demo/agent/health');
+      expect(agentRoute.status).toBe(200);
+      expect(agentRoute.headers.get('x-guard')).toBe('agent');
+    });
+
+    it('skips core auth only for manifest-declared publicRoutes (exact match)', async () => {
+      scaffoldRuntimeExtension(root, { publicRoutes: ['/health'] });
+      const app = new Hono();
+      await mountExtensions(app, root);
+
+      const publicRoute = await app.request('/api/v1/demo/health');
+      expect(publicRoute.status).toBe(200);
+      expect(publicRoute.headers.get('x-guard')).toBeNull();
+
+      // Everything not listed stays behind core auth.
+      const guarded = await app.request('/api/v1/demo/pub/thing');
+      expect(guarded.headers.get('x-guard')).toBe('user');
+      const agentRoute = await app.request('/api/v1/demo/agent/health');
+      expect(agentRoute.headers.get('x-guard')).toBe('agent');
+    });
+
+    it('supports wildcard publicRoutes prefixes', async () => {
+      scaffoldRuntimeExtension(root, { publicRoutes: ['/pub/*'] });
+      const app = new Hono();
+      await mountExtensions(app, root);
+
+      const pub = await app.request('/api/v1/demo/pub/thing');
+      expect(pub.status).toBe(200);
+      expect(pub.headers.get('x-guard')).toBeNull();
+
+      const guarded = await app.request('/api/v1/demo/health');
+      expect(guarded.headers.get('x-guard')).toBe('user');
+    });
+
+    it('does not register the rate-limit skip prefix when the extension never mounts routes', async () => {
+      scaffoldRuntimeExtension(
+        root,
+        { agentRoutes: true },
+        'const ext = { register(ctx) { /* declares agentRoutes but never calls ctx.mountRoute */ } }; export default ext;',
+      );
+      const app = new Hono();
+      app.use('*', globalRateLimit({ limit: 1, windowSeconds: 60 }));
+      app.get('/api/v1/demo/agent/ping', (c) => c.json({ ok: true }));
+
+      await mountExtensions(app, root);
+
+      // No loader-wrapped /agent/ prefix exists, so the exemption was never
+      // granted — the global limiter still applies to the namespace.
+      expect((await app.request('/api/v1/demo/agent/ping')).status).toBe(200);
+      expect((await app.request('/api/v1/demo/agent/ping')).status).toBe(429);
+    });
+  });
+
+  describe('boot-time extension RLS assertion', () => {
+    const tenancy = { orgCascadeDeleteTables: ['demo_items'] };
+
+    async function mockRlsCatalog(rows: unknown[]) {
+      const { db } = await import('../db');
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(rows);
+    }
+
+    it('mounts when every declared table has RLS enabled + forced + at least one policy', async () => {
+      scaffoldRuntimeExtension(root, { tenancy });
+      await mockRlsCatalog([
+        { table_name: 'demo_items', rls_enabled: true, rls_forced: true, policy_count: 2 },
+      ]);
+      const app = new Hono();
+      await mountExtensions(app, root);
+      expect((await app.request('/api/v1/demo/health')).status).toBe(200);
+    });
+
+    it('fails the boot when a declared table does not exist', async () => {
+      scaffoldRuntimeExtension(root, { tenancy });
+      await mockRlsCatalog([]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(/demo_items.*does not exist/);
+    });
+
+    it('fails the boot when RLS is enabled but not forced', async () => {
+      scaffoldRuntimeExtension(root, { tenancy });
+      await mockRlsCatalog([
+        { table_name: 'demo_items', rls_enabled: true, rls_forced: false, policy_count: 1 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(/FORCE ROW LEVEL SECURITY/);
+    });
+
+    it('fails the boot when a declared table has zero policies', async () => {
+      scaffoldRuntimeExtension(root, { tenancy });
+      await mockRlsCatalog([
+        { table_name: 'demo_items', rls_enabled: true, rls_forced: true, policy_count: 0 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(/no RLS policies/);
+    });
+
+    it('checks every tenancy array, deduplicated', async () => {
+      scaffoldRuntimeExtension(root, {
+        tenancy: {
+          orgCascadeDeleteTables: ['demo_items'],
+          deviceCascadeDeleteTables: ['demo_items', 'demo_child'],
+          deviceOrgDenormalizedTables: ['demo_events'],
+          deviceOrgMoveDeleteTables: ['demo_moves'],
+        },
+      });
+      await mockRlsCatalog([]);
+      const err = await mountExtensions(new Hono(), root).catch((e: Error) => e);
+      expect(err).toBeInstanceOf(Error);
+      const msg = (err as Error).message;
+      for (const table of ['demo_items', 'demo_child', 'demo_events', 'demo_moves']) {
+        expect(msg).toContain(`"${table}"`);
+      }
+      expect(msg.match(/demo_items/g)).toHaveLength(1); // deduped across arrays
+    });
+
+    it('skips the DB probe entirely when no tenancy tables are declared', async () => {
+      scaffoldRuntimeExtension(root); // tenancy: {}
+      const { db } = await import('../db');
+      await mountExtensions(new Hono(), root);
+      expect(db.execute).not.toHaveBeenCalled();
+    });
   });
 });

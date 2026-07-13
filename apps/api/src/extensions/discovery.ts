@@ -65,5 +65,20 @@ export function discoverExtensions(root: string = resolveExtensionsRoot()): Disc
       migrationsDir: existsSync(migrationsDir) ? migrationsDir : null,
     });
   }
+  // Cross-extension collision tripwire. Directory names guarantee unique
+  // extension names, but two extensions could still declare the same
+  // routeNamespace — the second mount would silently shadow (or interleave
+  // with) the first, including its auth guard. Fail discovery instead.
+  const namespaceOwners = new Map<string, string>();
+  for (const ext of out) {
+    const owner = namespaceOwners.get(ext.manifest.routeNamespace);
+    if (owner) {
+      throw new Error(
+        `[extensions] routeNamespace "${ext.manifest.routeNamespace}" is declared by both "${owner}" and "${ext.name}"`,
+      );
+    }
+    namespaceOwners.set(ext.manifest.routeNamespace, ext.name);
+  }
+
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
