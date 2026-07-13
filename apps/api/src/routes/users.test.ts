@@ -1119,7 +1119,16 @@ describe('user routes', () => {
       })
     });
 
+    // SET payloads captured from inside the email-change transaction, so tests
+    // can assert the epoch advance + refresh-family revoke landed in the SAME
+    // transaction as the email write (#2428).
+    let capturedTxUpdates: Array<Record<string, unknown>> = [];
+
     const updateReturning = (row: Record<string, unknown>) => {
+      capturedTxUpdates = [];
+
+      // Non-email profile edits (name/preferences, same-address PATCH) take the
+      // bare db.update path — no transaction, no epoch bump.
       vi.mocked(db.update).mockReturnValue({
         set: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -1127,6 +1136,26 @@ describe('user routes', () => {
           })
         })
       } as any);
+
+      // A genuine email change runs the users write + advanceUserEpochs +
+      // revokeAllRefreshFamilies in ONE db.transaction. Minimal `tx` stub that
+      // routes .returning() by the SET shape: advanceUserEpochs is the only
+      // caller that sets `authEpoch`; revokeAllRefreshFamilies never calls
+      // .returning() at all (awaits the .where() node directly).
+      const txUpdate = vi.fn(() => ({
+        set: (values: Record<string, unknown>) => {
+          capturedTxUpdates.push(values);
+          return {
+            where: () => ({
+              returning: () =>
+                'authEpoch' in values
+                  ? Promise.resolve([{ authEpoch: 2, mfaEpoch: 1, emailEpoch: 2, passwordResetEpoch: 1 }])
+                  : Promise.resolve([row])
+            })
+          };
+        }
+      }));
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ update: txUpdate }));
     };
 
     // First select = self load ({ email, passwordHash }); second select (only
@@ -1437,6 +1466,76 @@ describe('user routes', () => {
       );
       const actions = calls.map((a) => a.action);
       expect(actions).toContain('user.email.change');
+    });
+
+    // #2428: an email change moves the account-recovery surface (the new
+    // address can drive password reset + MFA recovery), so it must invalidate
+    // prior credentials the way a password change does — auth_epoch (kills live
+    // access tokens), email_epoch (kills verification artifacts bound to the old
+    // address), a durable refresh-family revoke, and the post-commit MCP OAuth
+    // sweep (EdDSA bearers never see user-JWT epochs).
+    it('case 9b: genuine email change advances auth+email epochs and revokes families IN the same transaction, then sweeps OAuth', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('new@example.com'));
+      requireCurrentPasswordStepUpMock.mockResolvedValueOnce(null);
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com', currentPassword: 'correct-horse' })
+      });
+
+      expect(res.status).toBe(200);
+      // The email write itself went through the transaction, not a bare update.
+      expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(1);
+      expect(capturedTxUpdates.some((v) => v.email === 'new@example.com')).toBe(true);
+      // advanceUserEpochs({ auth: true, email: true }) — BOTH counters, and no
+      // others (an email change must not fake a password reset or MFA change).
+      const epochSet = capturedTxUpdates.find((v) => 'authEpoch' in v);
+      expect(epochSet).toBeDefined();
+      expect(epochSet).toHaveProperty('emailEpoch');
+      expect(epochSet).not.toHaveProperty('mfaEpoch');
+      expect(epochSet).not.toHaveProperty('passwordResetEpoch');
+      // revokeAllRefreshFamilies-shaped update (revoked_at / revoked_reason).
+      expect(capturedTxUpdates.some((v) => 'revokedReason' in v)).toBe(true);
+      // Post-commit cleanup: Redis cutoff + permission cache + MCP OAuth sweep.
+      expect(runPostCommitCleanup).toHaveBeenCalledWith('user-123');
+      expect(runPostCommitCleanup).toHaveBeenCalledTimes(1);
+    });
+
+    it('case 9c: name-only edit does NOT advance epochs, revoke families, or sweep OAuth', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning({ ...updatedRow('old@example.com'), name: 'Renamed' });
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      // A profile rename must never sign the user out everywhere.
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+      expect(capturedTxUpdates).toHaveLength(0);
+      expect(runPostCommitCleanup).not.toHaveBeenCalled();
+    });
+
+    it('case 9d: same-address PATCH does NOT advance epochs or sweep OAuth', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('old@example.com'));
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'OLD@example.com' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+      expect(runPostCommitCleanup).not.toHaveBeenCalled();
     });
 
     it('case 10a: email service NOT configured ⇒ warns, does not attempt send, still 200', async () => {

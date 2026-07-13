@@ -698,22 +698,64 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     return c.json({ error: 'No valid updates provided' }, 400);
   }
 
-  const [updated] = await db
-    .update(users)
-    .set(updates)
-    .where(eq(users.id, auth.user.id))
-    .returning({
-      id: users.id,
-      email: users.email,
-      name: users.name,
-      avatarUrl: users.avatarUrl,
-      status: users.status,
-      mfaEnabled: users.mfaEnabled,
-      preferences: users.preferences
-    });
+  const returningColumns = {
+    id: users.id,
+    email: users.email,
+    name: users.name,
+    avatarUrl: users.avatarUrl,
+    status: users.status,
+    mfaEnabled: users.mfaEnabled,
+    preferences: users.preferences
+  };
+
+  // An email change is an account-recovery-surface change: the new address can
+  // drive password reset and MFA recovery, so prior credentials must not
+  // survive it (#2428). Advance auth_epoch (kills every outstanding access
+  // token on its next request) AND email_epoch (kills every outstanding
+  // verification artifact bound to the OLD address), and durably revoke the
+  // refresh families — all in the SAME transaction as the email write, so a
+  // rollback undoes the sign-out with it. Scoped strictly to a genuine,
+  // step-up-cleared change (`previousEmail` set): a name/preferences edit, or
+  // a same-address PATCH, must never sign the user out.
+  //
+  // Runs in the caller's own request context, not a system context: this is a
+  // self-service handler writing the caller's OWN `users` row and OWN
+  // refresh_token_families rows, which the self/user-id-scoped RLS policies
+  // admit — same precedent as POST /auth/change-password.
+  const emailChanged = previousEmail !== undefined;
+
+  const [updated] = emailChanged
+    ? await db.transaction(async (tx) => {
+        const rows = await tx
+          .update(users)
+          .set(updates)
+          .where(eq(users.id, auth.user.id))
+          .returning(returningColumns);
+        // Only advance/revoke when the write actually landed — an RLS-filtered
+        // 0-row update must not bump an epoch for a row we never changed.
+        if (rows.length > 0) {
+          await advanceUserEpochs(tx, auth.user.id, { auth: true, email: true });
+          await revokeAllRefreshFamilies(tx, auth.user.id, 'email-change');
+        }
+        return rows;
+      })
+    : await db
+        .update(users)
+        .set(updates)
+        .where(eq(users.id, auth.user.id))
+        .returning(returningColumns);
 
   if (!updated) {
     return c.json({ error: 'Failed to update profile' }, 500);
+  }
+
+  // Post-commit cleanup after an email change: Redis JWT cutoff, permission
+  // cache clear, and the MCP OAuth grant sweep — the EdDSA bearer path never
+  // sees user-JWT epochs, so those grants must be revoked out-of-band or an
+  // MCP token minted before the change keeps working. Best-effort per step and
+  // never throws; the durable revocation above is already committed.
+  if (emailChanged) {
+    await runPostCommitCleanup(auth.user.id);
   }
 
   // Every successful self-profile change MUST be audited regardless of caller

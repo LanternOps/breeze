@@ -24,6 +24,7 @@ vi.mock('../db/schema', () => ({
     partnerId: 'evt.partnerId',
     userId: 'evt.userId',
     email: 'evt.email',
+    emailEpoch: 'evt.emailEpoch',
     expiresAt: 'evt.expiresAt',
     consumedAt: 'evt.consumedAt',
     supersededAt: 'evt.supersededAt',
@@ -38,6 +39,8 @@ vi.mock('../db/schema', () => ({
   },
   users: {
     id: 'users.id',
+    email: 'users.email',
+    emailEpoch: 'users.emailEpoch',
     emailVerifiedAt: 'users.emailVerifiedAt',
   },
 }));
@@ -77,12 +80,45 @@ function chainUpdateNoReturning() {
   };
 }
 
+const future = () => new Date(Date.now() + 60_000);
+
+/** A live, unconsumed token row bound to a@b.com at email_epoch 1. */
+function tokenRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'evt-1',
+    partnerId: 'p-1',
+    userId: 'u-1',
+    email: 'a@b.com',
+    emailEpoch: 1,
+    expiresAt: future(),
+    consumedAt: null,
+    supersededAt: null,
+    ...overrides,
+  };
+}
+
+/**
+ * consumeVerificationToken issues three SELECTs in order: the token row, the
+ * live user row (#2428 generation check), then the partner row.
+ */
+function mockConsumeSelects(
+  token: Record<string, unknown>,
+  liveUser: Record<string, unknown> | null = { email: 'a@b.com', emailEpoch: 1 },
+  partner: Record<string, unknown> | null = { id: 'p-1', status: 'pending', paymentMethodAttachedAt: null }
+) {
+  vi.mocked(db.select)
+    .mockReturnValueOnce(chainSelect([token]) as any)
+    .mockReturnValueOnce(chainSelect(liveUser ? [liveUser] : []) as any)
+    .mockReturnValueOnce(chainSelect(partner ? [partner] : []) as any);
+}
+
 describe('generateVerificationToken', () => {
   beforeEach(() => vi.resetAllMocks());
 
   it('inserts a SHA-256 hashed token row and returns the raw nanoid', async () => {
     const valuesSpy = vi.fn().mockResolvedValue(undefined);
     vi.mocked(db.insert).mockReturnValue({ values: valuesSpy } as any);
+    vi.mocked(db.select).mockReturnValue(chainSelect([{ emailEpoch: 1 }]) as any);
 
     const raw = await generateVerificationToken({
       partnerId: 'p-1',
@@ -102,6 +138,28 @@ describe('generateVerificationToken', () => {
     expect(inserted.tokenHash).not.toBe(raw);
     expect(inserted.expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
+
+  // #2428: the row records the generation it was minted under, so a later email
+  // change (which advances email_epoch) invalidates it at consume.
+  it('binds the token to the user CURRENT email_epoch', async () => {
+    const valuesSpy = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.insert).mockReturnValue({ values: valuesSpy } as any);
+    vi.mocked(db.select).mockReturnValue(chainSelect([{ emailEpoch: 7 }]) as any);
+
+    await generateVerificationToken({ partnerId: 'p-1', userId: 'u-1', email: 'a@b.com' });
+
+    expect(valuesSpy.mock.calls[0]![0]!.emailEpoch).toBe(7);
+  });
+
+  it('stamps a null epoch when the user row cannot be read (never blocks the send)', async () => {
+    const valuesSpy = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.insert).mockReturnValue({ values: valuesSpy } as any);
+    vi.mocked(db.select).mockReturnValue(chainSelect([]) as any);
+
+    await generateVerificationToken({ partnerId: 'p-1', userId: 'u-1', email: 'a@b.com' });
+
+    expect(valuesSpy.mock.calls[0]![0]!.emailEpoch).toBeNull();
+  });
 });
 
 describe('consumeVerificationToken', () => {
@@ -115,16 +173,7 @@ describe('consumeVerificationToken', () => {
 
   it('returns consumed when consumed_at is already set', async () => {
     vi.mocked(db.select).mockReturnValue(
-      chainSelect([
-        {
-          id: 'evt-1',
-          partnerId: 'p-1',
-          userId: 'u-1',
-          email: 'a@b.com',
-          expiresAt: new Date(Date.now() + 60_000),
-          consumedAt: new Date(),
-        },
-      ]) as any
+      chainSelect([tokenRow({ consumedAt: new Date() })]) as any
     );
 
     const result = await consumeVerificationToken('rawtoken');
@@ -133,16 +182,7 @@ describe('consumeVerificationToken', () => {
 
   it('returns expired when expires_at is in the past', async () => {
     vi.mocked(db.select).mockReturnValue(
-      chainSelect([
-        {
-          id: 'evt-1',
-          partnerId: 'p-1',
-          userId: 'u-1',
-          email: 'a@b.com',
-          expiresAt: new Date(Date.now() - 1000),
-          consumedAt: null,
-        },
-      ]) as any
+      chainSelect([tokenRow({ expiresAt: new Date(Date.now() - 1000) })]) as any
     );
 
     const result = await consumeVerificationToken('rawtoken');
@@ -150,23 +190,7 @@ describe('consumeVerificationToken', () => {
   });
 
   it('marks token consumed, stamps users + partners email_verified_at on success without auto-activating', async () => {
-    const future = new Date(Date.now() + 60_000);
-    const tokenSelect = chainSelect([
-      {
-        id: 'evt-1',
-        partnerId: 'p-1',
-        userId: 'u-1',
-        email: 'a@b.com',
-        expiresAt: future,
-        consumedAt: null,
-      },
-    ]);
-    const partnerSelect = chainSelect([
-      { id: 'p-1', status: 'pending', paymentMethodAttachedAt: null },
-    ]);
-    vi.mocked(db.select)
-      .mockReturnValueOnce(tokenSelect as any)
-      .mockReturnValueOnce(partnerSelect as any);
+    mockConsumeSelects(tokenRow());
 
     const tokenUpdate = chainUpdateReturning([{ id: 'evt-1' }]);
     const userUpdate = chainUpdateNoReturning();
@@ -193,23 +217,11 @@ describe('consumeVerificationToken', () => {
   });
 
   it('auto-activates partner when status=pending and payment method attached', async () => {
-    const future = new Date(Date.now() + 60_000);
-    const tokenSelect = chainSelect([
-      {
-        id: 'evt-1',
-        partnerId: 'p-1',
-        userId: 'u-1',
-        email: 'a@b.com',
-        expiresAt: future,
-        consumedAt: null,
-      },
-    ]);
-    const partnerSelect = chainSelect([
-      { id: 'p-1', status: 'pending', paymentMethodAttachedAt: new Date() },
-    ]);
-    vi.mocked(db.select)
-      .mockReturnValueOnce(tokenSelect as any)
-      .mockReturnValueOnce(partnerSelect as any);
+    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1 }, {
+      id: 'p-1',
+      status: 'pending',
+      paymentMethodAttachedAt: new Date(),
+    });
 
     const tokenUpdate = chainUpdateReturning([{ id: 'evt-1' }]);
     const userUpdate = chainUpdateNoReturning();
@@ -242,44 +254,79 @@ describe('consumeVerificationToken', () => {
 
   it('returns superseded when supersededAt is set on the row (resend invalidated this link)', async () => {
     vi.mocked(db.select).mockReturnValueOnce(
-      chainSelect([
-        {
-          id: 'evt-1',
-          partnerId: 'p-1',
-          userId: 'u-1',
-          email: 'a@b.com',
-          expiresAt: new Date(Date.now() + 60_000),
-          consumedAt: null,
-          supersededAt: new Date(Date.now() - 1000),
-        },
-      ]) as any
+      chainSelect([tokenRow({ supersededAt: new Date(Date.now() - 1000) })]) as any
     );
 
     const result = await consumeVerificationToken('rawtoken');
     expect(result).toEqual({ ok: false, error: 'superseded' });
   });
 
+  // #2428 — the generation gate. Without it, a link mailed to the OLD address
+  // still redeems after an email change and stamps email_verified_at on the
+  // NEW address, which nobody ever proved control of.
+  describe('email generation binding (#2428)', () => {
+    it('returns superseded when the user email_epoch has moved on (email changed since issue)', async () => {
+      mockConsumeSelects(tokenRow({ emailEpoch: 1 }), { email: 'a@b.com', emailEpoch: 2 });
+
+      const result = await consumeVerificationToken('rawtoken');
+
+      expect(result).toEqual({ ok: false, error: 'superseded' });
+      // Fail closed BEFORE any write: the stale link must not consume itself,
+      // and must never stamp email_verified_at.
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('returns superseded when the live address no longer matches the token address', async () => {
+      mockConsumeSelects(tokenRow({ email: 'old@b.com' }), { email: 'new@b.com', emailEpoch: 1 });
+
+      const result = await consumeVerificationToken('rawtoken');
+
+      expect(result).toEqual({ ok: false, error: 'superseded' });
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('returns superseded when the user row is gone', async () => {
+      mockConsumeSelects(tokenRow(), null);
+
+      const result = await consumeVerificationToken('rawtoken');
+
+      expect(result).toEqual({ ok: false, error: 'superseded' });
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
+    it('accepts a legacy NULL-epoch row (pre-migration) whose address still matches', async () => {
+      mockConsumeSelects(tokenRow({ emailEpoch: null }), { email: 'a@b.com', emailEpoch: 4 });
+
+      vi.mocked(db.update)
+        .mockReturnValueOnce(chainUpdateReturning([{ id: 'evt-1' }]) as any)
+        .mockReturnValueOnce(chainUpdateNoReturning() as any)
+        .mockReturnValueOnce(chainUpdateNoReturning() as any);
+
+      const result = await consumeVerificationToken('rawtoken');
+
+      // In-flight signup links must survive the deploy rather than hard-fail.
+      expect(result.ok).toBe(true);
+    });
+
+    it('matches the address case-insensitively', async () => {
+      mockConsumeSelects(tokenRow({ email: 'A@B.com' }), { email: 'a@b.com', emailEpoch: 1 });
+
+      vi.mocked(db.update)
+        .mockReturnValueOnce(chainUpdateReturning([{ id: 'evt-1' }]) as any)
+        .mockReturnValueOnce(chainUpdateNoReturning() as any)
+        .mockReturnValueOnce(chainUpdateNoReturning() as any);
+
+      const result = await consumeVerificationToken('rawtoken');
+      expect(result.ok).toBe(true);
+    });
+  });
+
   it('does NOT auto-activate a suspended partner even if payment is attached', async () => {
-    const future = new Date(Date.now() + 60_000);
-    vi.mocked(db.select)
-      .mockReturnValueOnce(
-        chainSelect([
-          {
-            id: 'evt-1',
-            partnerId: 'p-1',
-            userId: 'u-1',
-            email: 'a@b.com',
-            expiresAt: future,
-            consumedAt: null,
-            supersededAt: null,
-          },
-        ]) as any
-      )
-      .mockReturnValueOnce(
-        chainSelect([
-          { id: 'p-1', status: 'suspended', paymentMethodAttachedAt: new Date() },
-        ]) as any
-      );
+    mockConsumeSelects(tokenRow(), { email: 'a@b.com', emailEpoch: 1 }, {
+      id: 'p-1',
+      status: 'suspended',
+      paymentMethodAttachedAt: new Date(),
+    });
 
     const tokenUpdate = chainUpdateReturning([{ id: 'evt-1' }]);
     const userUpdate = chainUpdateNoReturning();
@@ -304,19 +351,7 @@ describe('consumeVerificationToken', () => {
   });
 
   it('returns consumed if a concurrent request claimed the token first', async () => {
-    const future = new Date(Date.now() + 60_000);
-    vi.mocked(db.select).mockReturnValueOnce(
-      chainSelect([
-        {
-          id: 'evt-1',
-          partnerId: 'p-1',
-          userId: 'u-1',
-          email: 'a@b.com',
-          expiresAt: future,
-          consumedAt: null,
-        },
-      ]) as any
-    );
+    mockConsumeSelects(tokenRow());
 
     // Conditional UPDATE returns no rows — another request claimed it.
     vi.mocked(db.update).mockReturnValueOnce(chainUpdateReturning([]) as any);
