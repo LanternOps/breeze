@@ -1489,7 +1489,12 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       // The email write itself went through the transaction, not a bare update.
       expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(1);
-      expect(capturedTxUpdates.some((v) => v.email === 'new@example.com')).toBe(true);
+      const emailWrite = capturedTxUpdates.find((v) => v.email === 'new@example.com');
+      expect(emailWrite).toBeDefined();
+      // The NEW address is unproven: verification must not carry over from the
+      // old one (it would also strand the user — /resend-verification refuses
+      // to mint a link while the account reads as already-verified).
+      expect(emailWrite!.emailVerifiedAt).toBeNull();
       // advanceUserEpochs({ auth: true, email: true }) — BOTH counters, and no
       // others (an email change must not fake a password reset or MFA change).
       const epochSet = capturedTxUpdates.find((v) => 'authEpoch' in v);
@@ -1502,6 +1507,44 @@ describe('user routes', () => {
       // Post-commit cleanup: Redis cutoff + permission cache + MCP OAuth sweep.
       expect(runPostCommitCleanup).toHaveBeenCalledWith('user-123');
       expect(runPostCommitCleanup).toHaveBeenCalledTimes(1);
+      // The revocation outcome is recorded in the audit, not swallowed: a bearer
+      // that survived a failed OAuth sweep must be visible to an auditor.
+      const emailAudit = createAuditLogAsyncMock.mock.calls
+        .map((call: any[]) => call[0])
+        .find((a: any) => a.action === 'user.email.change');
+      expect(emailAudit.details).toMatchObject({
+        sessionsRevoked: true,
+        redisCutoffOk: true,
+        permissionCacheCleared: true,
+        oauthGrantsRevokedOk: true
+      });
+    });
+
+    it('case 9e: records a FAILED OAuth sweep in the email-change audit (200, but the bearer may have survived)', async () => {
+      orgScopeAuth();
+      mockSelfAndUniqueness({ email: 'old@example.com', passwordHash: 'hash' });
+      updateReturning(updatedRow('new@example.com'));
+      requireCurrentPasswordStepUpMock.mockResolvedValueOnce(null);
+      // Durable revocation committed; the best-effort MCP grant sweep did not.
+      vi.mocked(runPostCommitCleanup).mockResolvedValueOnce({
+        redisOk: true,
+        permissionCacheOk: true,
+        oauthOk: false
+      });
+
+      const res = await app.request('/users/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ email: 'new@example.com', currentPassword: 'correct-horse' })
+      });
+
+      // Deliberately NOT a 503: this path is not retry-safe (a retry sees the
+      // address already changed and would no-op). The failure is recorded.
+      expect(res.status).toBe(200);
+      const emailAudit = createAuditLogAsyncMock.mock.calls
+        .map((call: any[]) => call[0])
+        .find((a: any) => a.action === 'user.email.change');
+      expect(emailAudit.details.oauthGrantsRevokedOk).toBe(false);
     });
 
     it('case 9c: name-only edit does NOT advance epochs, revoke families, or sweep OAuth', async () => {

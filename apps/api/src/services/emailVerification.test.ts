@@ -53,10 +53,19 @@ import {
 } from './emailVerification';
 
 function chainSelect(rows: unknown[]) {
+  // `.limit(1)` is awaited directly by most callers, but the live-user read in
+  // consumeVerificationToken continues with `.for('update')` (row lock — see
+  // the check-then-act race it closes). Model the node as an awaitable that
+  // also carries `.for`, so both shapes resolve to the same rows.
+  const limitNode = Promise.resolve(rows) as Promise<unknown[]> & {
+    for: (mode: string) => Promise<unknown[]>;
+  };
+  limitNode.for = vi.fn().mockResolvedValue(rows);
+
   return {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(rows),
+        limit: vi.fn().mockReturnValue(limitNode),
       }),
     }),
   };
@@ -151,14 +160,19 @@ describe('generateVerificationToken', () => {
     expect(valuesSpy.mock.calls[0]![0]!.emailEpoch).toBe(7);
   });
 
-  it('stamps a null epoch when the user row cannot be read (never blocks the send)', async () => {
+  // Fail CLOSED: a NULL epoch disables the generation check at consume, so it
+  // must only ever come from a pre-migration row — never be minted fresh
+  // because the user row was invisible in the current DB context.
+  it('throws rather than minting a NULL-epoch (generation-unbound) token when the user row is unreadable', async () => {
     const valuesSpy = vi.fn().mockResolvedValue(undefined);
     vi.mocked(db.insert).mockReturnValue({ values: valuesSpy } as any);
     vi.mocked(db.select).mockReturnValue(chainSelect([]) as any);
 
-    await generateVerificationToken({ partnerId: 'p-1', userId: 'u-1', email: 'a@b.com' });
+    await expect(
+      generateVerificationToken({ partnerId: 'p-1', userId: 'u-1', email: 'a@b.com' })
+    ).rejects.toThrow(/not readable/i);
 
-    expect(valuesSpy.mock.calls[0]![0]!.emailEpoch).toBeNull();
+    expect(valuesSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -265,23 +279,25 @@ describe('consumeVerificationToken', () => {
   // still redeems after an email change and stamps email_verified_at on the
   // NEW address, which nobody ever proved control of.
   describe('email generation binding (#2428)', () => {
-    it('returns superseded when the user email_epoch has moved on (email changed since issue)', async () => {
+    // 'address_changed', NOT 'superseded': no newer link was sent, so the copy
+    // must not tell the user to go find one. See ConsumeFailureReason.
+    it('returns address_changed when the user email_epoch has moved on (email changed since issue)', async () => {
       mockConsumeSelects(tokenRow({ emailEpoch: 1 }), { email: 'a@b.com', emailEpoch: 2 });
 
       const result = await consumeVerificationToken('rawtoken');
 
-      expect(result).toEqual({ ok: false, error: 'superseded' });
+      expect(result).toEqual({ ok: false, error: 'address_changed' });
       // Fail closed BEFORE any write: the stale link must not consume itself,
       // and must never stamp email_verified_at.
       expect(vi.mocked(db.update)).not.toHaveBeenCalled();
     });
 
-    it('returns superseded when the live address no longer matches the token address', async () => {
+    it('returns address_changed when the live address no longer matches the token address', async () => {
       mockConsumeSelects(tokenRow({ email: 'old@b.com' }), { email: 'new@b.com', emailEpoch: 1 });
 
       const result = await consumeVerificationToken('rawtoken');
 
-      expect(result).toEqual({ ok: false, error: 'superseded' });
+      expect(result).toEqual({ ok: false, error: 'address_changed' });
       expect(vi.mocked(db.update)).not.toHaveBeenCalled();
     });
 

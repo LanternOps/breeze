@@ -728,7 +728,16 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     ? await db.transaction(async (tx) => {
         const rows = await tx
           .update(users)
-          .set(updates)
+          // Clear `email_verified_at`: nobody has proven control of the NEW
+          // address yet. Leaving it set would carry the OLD address's
+          // verification over to an unproven one — the same false "verified"
+          // this PR's epoch gate stops a stale link from producing, just
+          // through the front door — and it would also strand the user, since
+          // /auth/resend-verification refuses to mint a link while the flag is
+          // set. Written only inside the transaction, deliberately NOT added to
+          // `updates`, so the audit's changedFields keeps listing exactly the
+          // fields the CALLER asked to change.
+          .set({ ...updates, emailVerifiedAt: null })
           .where(eq(users.id, auth.user.id))
           .returning(returningColumns);
         // Only advance/revoke when the write actually landed — an RLS-filtered
@@ -754,9 +763,15 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   // sees user-JWT epochs, so those grants must be revoked out-of-band or an
   // MCP token minted before the change keeps working. Best-effort per step and
   // never throws; the durable revocation above is already committed.
-  if (emailChanged) {
-    await runPostCommitCleanup(auth.user.id);
-  }
+  //
+  // Deliberately NOT surfaced as a 503 the way the admin suspension path does
+  // (see the status-change PATCH below). That path is retry-safe; this one is
+  // NOT — on a retry the address already equals `self.email`, so `emailChanging`
+  // is false and the whole epoch/revoke/cleanup block is skipped. A 503 telling
+  // the caller to retry would instruct them to run a provable no-op. Instead the
+  // per-step outcome goes into the email-change audit (below): a surviving MCP
+  // bearer after a failed sweep must leave a trace beyond a Sentry event.
+  const cleanup = emailChanged ? await runPostCommitCleanup(auth.user.id) : undefined;
 
   // Every successful self-profile change MUST be audited regardless of caller
   // scope (SOC2 coverage). Partner-scope callers have auth.orgId === null, so
@@ -794,7 +809,17 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
       details: {
         previousEmail,
         newEmail: updated.email,
-        stepUp: stepUpMethod
+        stepUp: stepUpMethod,
+        // Revocation outcome (#2428). The durable half — epoch advance +
+        // refresh-family revoke — committed or the request would have failed.
+        // These record whether the best-effort half reached Redis, the
+        // permission cache and the MCP OAuth grants, so a bearer that survived
+        // a failed sweep is visible to an auditor, not only to Sentry.
+        sessionsRevoked: true,
+        redisCutoffOk: cleanup?.redisOk,
+        permissionCacheCleared: cleanup?.permissionCacheOk,
+        oauthGrantsRevokedOk: cleanup?.oauthOk,
+        oauthArtifactsRevoked: cleanup?.oauthResult
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),

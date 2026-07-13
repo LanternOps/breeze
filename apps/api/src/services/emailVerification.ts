@@ -27,11 +27,20 @@ export interface GenerateTokenInput {
  * refuses a token whose epoch has moved on. Same fail-closed generation binding
  * the password-reset envelope uses for `password_reset_epoch`.
  *
- * The epoch is read inside the same system context as the insert. It is NOT
- * read in a transaction with it: a concurrent email change that lands between
- * the read and the insert would mint a token stamped with the pre-change epoch,
- * which then simply fails closed at consume (the strict direction) — never the
- * reverse.
+ * A user row that cannot be READ is a hard error, never a NULL epoch. NULL is
+ * reserved for rows minted before the 2026-07-16 migration, and consume treats
+ * it as "skip the generation check" — so silently minting one here would hand
+ * out a permanently weaker token. `users.email_epoch` is NOT NULL, so a missing
+ * value can only mean the row is invisible in the current DB context. Note
+ * `withSystemDbAccessContext` does NOT escalate when a context is already
+ * active (see db/index.ts), so on the authenticated resend path this runs under
+ * the CALLER's context and is admitted only because `users`' policy grants the
+ * caller their own row. A future caller under a narrower context must fail
+ * loudly rather than mint an unbound token.
+ *
+ * The epoch read is not in a transaction with the insert: a concurrent email
+ * change landing in between mints a token stamped with the pre-change epoch,
+ * which then fails closed at consume (the strict direction) — never the reverse.
  */
 export async function generateVerificationToken(input: GenerateTokenInput): Promise<string> {
   const rawToken = nanoid(48);
@@ -45,12 +54,18 @@ export async function generateVerificationToken(input: GenerateTokenInput): Prom
       .where(eq(users.id, input.userId))
       .limit(1);
 
+    if (!user) {
+      throw new Error(
+        `generateVerificationToken: user ${input.userId} not readable in the current DB context`
+      );
+    }
+
     await db.insert(emailVerificationTokens).values({
       tokenHash,
       partnerId: input.partnerId,
       userId: input.userId,
       email: input.email.toLowerCase(),
-      emailEpoch: user?.emailEpoch ?? null,
+      emailEpoch: user.emailEpoch,
       expiresAt,
     });
   });
@@ -58,7 +73,16 @@ export async function generateVerificationToken(input: GenerateTokenInput): Prom
   return rawToken;
 }
 
-export type ConsumeFailureReason = 'invalid' | 'expired' | 'consumed' | 'superseded';
+export type ConsumeFailureReason =
+  | 'invalid'
+  | 'expired'
+  | 'consumed'
+  | 'superseded'
+  // The account's address moved on after this link was issued (#2428). Distinct
+  // from 'superseded' (a NEWER link was sent) on purpose: no newer link exists,
+  // so telling the user "use the most recent email" would send them looking for
+  // one that was never sent. The caller must offer a resend instead.
+  | 'address_changed';
 
 export type ConsumeResult =
   | { ok: true; partnerId: string; userId: string; email: string; autoActivated: boolean }
@@ -123,18 +147,31 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
       // A NULL token epoch is a row minted before the 2026-07-16 migration:
       // no generation was recorded, so it is held to the address match only
       // rather than hard-failing every in-flight signup link at deploy.
+      //
+      // FOR UPDATE is load-bearing, not decoration. Without it this is a
+      // check-then-act that fails OPEN: the claim UPDATE below guards only
+      // consumed_at/superseded_at, so under READ COMMITTED an email change
+      // committing between this SELECT and that UPDATE would let the stale
+      // token claim itself and stamp email_verified_at on the address that just
+      // moved — precisely the bug this gate exists to stop. Locking the `users`
+      // row makes the concurrent email-change transaction (which UPDATEs that
+      // same row) block until we commit, so the two serialize.
       const [liveUser] = await tx
         .select({ email: users.email, emailEpoch: users.emailEpoch })
         .from(users)
         .where(eq(users.id, row.userId))
-        .limit(1);
+        .limit(1)
+        .for('update');
+
+      if (!liveUser) {
+        return { ok: false, error: 'superseded' as const };
+      }
 
       if (
-        !liveUser ||
         liveUser.email.toLowerCase() !== row.email.toLowerCase() ||
         (row.emailEpoch !== null && row.emailEpoch !== liveUser.emailEpoch)
       ) {
-        return { ok: false, error: 'superseded' as const };
+        return { ok: false, error: 'address_changed' as const };
       }
 
       const now = new Date();

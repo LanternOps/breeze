@@ -11,7 +11,20 @@ type State =
   | { phase: 'loading' }
   | { phase: 'no-token' }
   | { phase: 'success'; autoActivated: boolean }
-  | { phase: 'error'; reason: 'invalid' | 'expired' | 'consumed' | 'superseded' | 'network' | 'unknown' };
+  | {
+      phase: 'error';
+      reason:
+        | 'invalid'
+        | 'expired'
+        | 'consumed'
+        | 'superseded'
+        // The account's email moved after this link was mailed (#2428). NOT
+        // 'superseded' — no newer link exists, so the copy must not send the
+        // user hunting for one. They need to request a fresh link instead.
+        | 'address_changed'
+        | 'network'
+        | 'unknown';
+    };
 
 export default function VerifyEmailPage() {
   const { t } = useTranslation('auth');
@@ -38,7 +51,13 @@ export default function VerifyEmailPage() {
         return;
       }
       const err = result.error;
-      if (err === 'invalid' || err === 'expired' || err === 'consumed' || err === 'superseded') {
+      if (
+        err === 'invalid' ||
+        err === 'expired' ||
+        err === 'consumed' ||
+        err === 'superseded' ||
+        err === 'address_changed'
+      ) {
         setState({ phase: 'error', reason: err });
         return;
       }
@@ -134,6 +153,15 @@ export default function VerifyEmailPage() {
         defaultValue: 'Please use the most recent verification email — the older link is no longer valid.',
       }),
     },
+    address_changed: {
+      title: t('verifyEmail.errors.addressChanged.title', {
+        defaultValue: 'Your email address has changed',
+      }),
+      body: t('verifyEmail.errors.addressChanged.body', {
+        defaultValue:
+          'This link was sent to your previous address, so it can no longer be used. Sign in and request a new verification email for your current address.',
+      }),
+    },
     network: {
       title: t('verifyEmail.errors.network.title', { defaultValue: 'We couldn’t reach Breeze' }),
       body: t('verifyEmail.errors.network.body', { defaultValue: 'Check your connection and try the link again.' }),
@@ -146,7 +174,12 @@ export default function VerifyEmailPage() {
     },
   };
   const copy = errorCopy[state.reason];
-  const showResendLink = state.reason === 'invalid' || state.reason === 'expired';
+  // 'address_changed' MUST offer the resend path: the user's only route to a
+  // usable link is a fresh one for their current address, and PATCH /users/me
+  // now clears email_verified_at so /auth/resend-verification will actually
+  // mint it (it refuses while the account reads as already-verified).
+  const showResendLink =
+    state.reason === 'invalid' || state.reason === 'expired' || state.reason === 'address_changed';
 
   return (
     <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
