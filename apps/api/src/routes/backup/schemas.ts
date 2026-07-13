@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { deriveS3RegionFromEndpoint } from '@breeze/shared';
 import {
   backupRetentionSchema as sharedBackupRetentionSchema,
   backupRetentionUpdateSchema as sharedBackupRetentionUpdateSchema,
@@ -14,6 +15,34 @@ const queryBoolean = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+/**
+ * Validates s3-provider details and reports missing bucket/region.
+ * Region may be omitted when it can be derived from the endpoint
+ * (e.g. s3.us-west-004.backblazeb2.com) — S3-compatible providers like
+ * Backblaze B2 reject requests signed with a mismatched region, so a
+ * blanket default is never safe. Returns the resolved region so callers
+ * can persist it.
+ */
+export function validateS3Details(details: Record<string, unknown>): {
+  error: string | null;
+  region: string | null;
+} {
+  const bucket = typeof details.bucket === 'string' ? details.bucket.trim() : '';
+  if (!bucket) {
+    return { error: 'S3 bucket is required', region: null };
+  }
+  const explicitRegion = typeof details.region === 'string' ? details.region.trim() : '';
+  const endpoint = typeof details.endpoint === 'string' ? details.endpoint : undefined;
+  const region = explicitRegion || deriveS3RegionFromEndpoint(endpoint);
+  if (!region) {
+    return {
+      error: 'S3 region is required (set it explicitly or use an endpoint that includes it, e.g. s3.us-west-004.backblazeb2.com)',
+      region: null,
+    };
+  }
+  return { error: null, region };
+}
+
 export const configSchema = z.object({
   name: z.string().min(1),
   provider: z.enum(['s3', 'local']),
@@ -23,6 +52,12 @@ export const configSchema = z.object({
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
   ).optional()
+}).superRefine((data, ctx) => {
+  if (data.provider !== 's3') return;
+  const { error } = validateS3Details(data.details ?? {});
+  if (error) {
+    ctx.addIssue({ code: 'custom', message: error, path: ['details'] });
+  }
 });
 
 export const configUpdateSchema = z.object({

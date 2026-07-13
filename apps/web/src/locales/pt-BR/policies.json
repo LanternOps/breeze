@@ -509,7 +509,12 @@
         "immutableDays": "immutableDays",
         "backupWindowStart": "backupWindowStart",
         "backupWindowEnd": "backupWindowEnd",
-        "retentionSummary": "{{days}}d, {{versions}} versões"
+        "retentionSummary": "{{days}}d, {{versions}} versões",
+        "addAtLeastOneBackupPath": "Adicione pelo menos um caminho de backup antes de salvar",
+        "s3RegionIsRequired": "A região do S3 é obrigatória — informe-a ou use um endpoint que a inclua (ex.: s3.us-west-004.backblazeb2.com)",
+        "failedToUpdateBackupConfig": "Falha ao atualizar a configuração de backup",
+        "editingStorageConfiguration": "Editando configuração de armazenamento",
+        "secretsUnchangedHint": "Mantenha as credenciais mascaradas para preservar as chaves salvas."
       },
       "complianceTab": {
         "requiredSoftware": "Software obrigatório",

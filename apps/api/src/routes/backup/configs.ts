@@ -16,8 +16,9 @@ import {
 } from '../../services/backupEncryption';
 import { checkBackupProviderCapabilities, type ProviderCapabilityStatus } from '../../services/backupSnapshotStorage';
 import { PERMISSIONS } from '../../services/permissions';
+import { deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { resolveScopedOrgId } from './helpers';
-import { configSchema, configUpdateSchema } from './schemas';
+import { configSchema, configUpdateSchema, validateS3Details } from './schemas';
 
 export const configsRoutes = new Hono();
 
@@ -146,7 +147,7 @@ async function probeLocalConfig(details: Record<string, unknown>): Promise<void>
 
 async function probeS3Config(details: Record<string, unknown>): Promise<void> {
   const bucket = typeof details.bucket === 'string' ? details.bucket : '';
-  const region = typeof details.region === 'string' ? details.region : 'us-east-1';
+  const storedRegion = typeof details.region === 'string' ? details.region.trim() : '';
   const accessKeyId = typeof details.accessKey === 'string' ? details.accessKey : '';
   const secretAccessKey = typeof details.secretKey === 'string' ? details.secretKey : '';
   const endpoint = typeof details.endpoint === 'string' ? details.endpoint : undefined;
@@ -154,6 +155,14 @@ async function probeS3Config(details: Record<string, unknown>): Promise<void> {
 
   if (!bucket.trim() || !accessKeyId.trim() || !secretAccessKey.trim()) {
     throw new Error('S3 bucket and credentials are required');
+  }
+
+  // Configs saved before region validation existed can carry '' — derive
+  // from the endpoint (required for B2 etc., where the signing region must
+  // match) and only fall back to us-east-1 for endpoint-less AWS configs.
+  const region = storedRegion || deriveS3RegionFromEndpoint(endpoint) || (endpoint ? '' : 'us-east-1');
+  if (!region) {
+    throw new Error('S3 region is not configured — edit the storage configuration and set the region for this endpoint');
   }
 
   const client = new S3Client({
@@ -208,12 +217,19 @@ configsRoutes.post(
     }
 
     const payload = c.req.valid('json');
+    const details: Record<string, unknown> = { ...(payload.details ?? {}) };
+    if (payload.provider === 's3') {
+      // Schema already rejected unresolvable configs; persist the resolved
+      // region so endpoint-derived regions are explicit in storage.
+      const { region } = validateS3Details(details);
+      if (region) details.region = region;
+    }
     const encryption = payload.encryption ?? false;
     try {
       assertBackupStorageEncryptionSupported({
         encryption,
         provider: payload.provider,
-        providerConfig: payload.details ?? {},
+        providerConfig: details,
       });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : 'Backup encryption is not supported for this config' }, 400);
@@ -227,7 +243,7 @@ configsRoutes.post(
         name: payload.name,
         type: 'file',
         provider: payload.provider,
-        providerConfig: payload.details ?? {},
+        providerConfig: details,
         providerCapabilities: null,
         providerCapabilitiesCheckedAt: null,
         encryption,
@@ -309,6 +325,13 @@ configsRoutes.patch(
       const nextProviderConfig = payload.details !== undefined
         ? preserveSecretFields(payload.details, current.providerConfig)
         : current.providerConfig;
+      if (payload.details !== undefined && current.provider === 's3' && isRecord(nextProviderConfig)) {
+        const { error, region } = validateS3Details(nextProviderConfig);
+        if (error) {
+          return c.json({ error }, 400);
+        }
+        if (region) nextProviderConfig.region = region;
+      }
       const nextEncryption = payload.encryption ?? current.encryption;
 
       try {

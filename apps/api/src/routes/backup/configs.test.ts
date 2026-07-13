@@ -18,6 +18,7 @@ const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
 const checkBackupProviderCapabilitiesMock = vi.fn();
 const s3SendMock = vi.fn();
+const s3ClientCtorMock = vi.fn();
 
 vi.mock('../../db', () => ({
   db: {
@@ -66,6 +67,9 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: class S3Client {
+    constructor(config: unknown) {
+      s3ClientCtorMock(config);
+    }
     send = s3SendMock;
   },
   PutObjectCommand: class PutObjectCommand {
@@ -110,6 +114,7 @@ describe('backup config routes', () => {
     updateMock.mockReset();
     checkBackupProviderCapabilitiesMock.mockReset();
     s3SendMock.mockReset();
+    s3ClientCtorMock.mockReset();
     selectMock.mockImplementation(() => chainMock([]));
     insertMock.mockImplementation(() => chainMock([]));
     updateMock.mockImplementation(() => chainMock([]));
@@ -349,14 +354,14 @@ describe('backup config routes', () => {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
       body: JSON.stringify({
-        details: { bucket: 'archive' },
+        details: { bucket: 'archive', region: 'us-east-1' },
       }),
     });
 
     expect(res.status).toBe(200);
     const updateSet = updateMock.mock.results[0]?.value?.set;
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
-      providerConfig: { bucket: 'archive', accessKey: 'key', secretKey: 'secret' },
+      providerConfig: { bucket: 'archive', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' },
       providerCapabilities: null,
       providerCapabilitiesCheckedAt: null,
     }));
@@ -393,6 +398,7 @@ describe('backup config routes', () => {
       body: JSON.stringify({
         details: {
           bucket: 'archive',
+          region: 'us-east-1',
           secretKey: { redacted: true, hasSecret: true, masked: '********' },
           credentials: {
             token: '********',
@@ -406,6 +412,7 @@ describe('backup config routes', () => {
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
       providerConfig: {
         bucket: 'archive',
+        region: 'us-east-1',
         secretKey: 'existing-secret-key',
         credentials: {
           token: 'existing-nested-token',
@@ -416,5 +423,106 @@ describe('backup config routes', () => {
     const body = await res.json();
     expect(JSON.stringify(body)).not.toContain('existing-secret-key');
     expect(JSON.stringify(body)).not.toContain('existing-nested-token');
+  });
+
+  it('rejects S3 config creation without a region or region-bearing endpoint', async () => {
+    const res = await app.request('/backup/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'MinIO backups',
+        provider: 's3',
+        details: {
+          bucket: 'backups',
+          region: '',
+          accessKey: 'key',
+          secretKey: 'secret',
+          endpoint: 'minio.internal.example.com',
+        },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('derives and persists the region from an S3-compatible endpoint on create', async () => {
+    insertMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-west-004',
+        accessKey: 'key',
+        secretKey: 'secret',
+        endpoint: 's3.us-west-004.backblazeb2.com',
+      },
+    })]));
+
+    const res = await app.request('/backup/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'B2 backups',
+        provider: 's3',
+        details: {
+          bucket: 'backups',
+          region: '',
+          accessKey: 'key',
+          secretKey: 'secret',
+          endpoint: 's3.us-west-004.backblazeb2.com',
+        },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const insertValues = insertMock.mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({ region: 'us-west-004' }),
+    }));
+  });
+
+  it('rejects S3 config updates that drop the region without a derivable endpoint', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        details: { bucket: 'archive', region: '', accessKey: 'key', secretKey: 'secret' },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('region');
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('derives the probe region from the endpoint when a stored region is empty', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: '',
+        accessKey: 'key',
+        secretKey: 'secret',
+        endpoint: 's3.us-west-004.backblazeb2.com',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+    s3SendMock.mockResolvedValue({});
+    checkBackupProviderCapabilitiesMock.mockResolvedValue({
+      objectLock: { supported: true, error: null },
+    });
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe('success');
+    expect(s3ClientCtorMock).toHaveBeenCalledWith(
+      expect.objectContaining({ region: 'us-west-004' }),
+    );
   });
 });
