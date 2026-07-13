@@ -206,9 +206,10 @@ export interface CommandResult {
   data?: unknown;
   /**
    * The device_commands row id, attached by executeCommand once a command row
-   * exists. Lets callers point at the persisted result (e.g. the AI pprof tool
-   * references GET /devices/:id/commands/:commandId instead of inlining the
-   * artifact). Absent on failures that occur before the row is created.
+   * exists (success or failure). Lets callers point at the persisted result
+   * (e.g. the AI pprof tool references GET /devices/:id/commands/:commandId
+   * instead of inlining the artifact). Absent only on failures that occur
+   * before the row is created (device missing/offline, insert failure).
    */
   commandId?: string;
 }
@@ -853,7 +854,9 @@ export async function executeCommand(
           // may still pick the command up via the heartbeat path before the
           // timeout fires, in which case the user gets a real result.
           if (INTERACTIVE_COMMAND_TYPES.has(type)) {
-            return { status: 'failed' as const, error: DEVICE_UNREACHABLE_ERROR };
+            // Row already exists at this point — attach its id so the
+            // "commandId present ⇔ row exists" contract holds on this path too.
+            return { status: 'failed' as const, error: DEVICE_UNREACHABLE_ERROR, commandId: command.id };
           }
         }
       }

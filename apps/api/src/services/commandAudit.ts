@@ -73,8 +73,24 @@ export function commandAuditDetails(
  * runtime profiles of the agent's own process (heap allocation sites /
  * goroutine stacks of our binary) — nothing user-generated to leak, and
  * redacting it would make the profiles unretrievable (#2401).
+ *
+ * String literal (not CommandTypes.CAPTURE_PPROF) on purpose: commandQueue.ts
+ * imports this module, so a value import back into commandQueue would create
+ * a runtime import cycle.
  */
 const RAW_STDOUT_COMMAND_TYPES = new Set(['capture_pprof']);
+
+/**
+ * True when a command type's stdout is an opaque machine artifact that must
+ * be stored byte-for-byte. Both result-ingest legs (agent WS + REST) use this
+ * to skip `redactSecretsFromOutput` on stdout: the secret patterns
+ * (case-insensitive AKIA + 16 alnum, etc.) statistically fire inside
+ * megabytes of random base64 and would silently corrupt the profile bytes.
+ * stderr/error redaction is never skipped.
+ */
+export function isRawStdoutArtifactCommand(type: string): boolean {
+  return RAW_STDOUT_COMMAND_TYPES.has(type);
+}
 
 export function sanitizeCommandResultForHistory(
   result: CommandResult | null | undefined,

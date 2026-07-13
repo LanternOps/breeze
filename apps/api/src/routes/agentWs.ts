@@ -32,6 +32,7 @@ import { isAgentTenantActive } from '../services/tenantStatus';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput } from '../services/secretRedaction';
+import { isRawStdoutArtifactCommand } from '../services/commandAudit';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
@@ -605,7 +606,11 @@ function commandResultToStdout(result: AgentCommandResult): string | undefined {
     (result.result !== undefined ? JSON.stringify(result.result) : undefined);
 }
 
-function buildStoredCommandResult(result: AgentCommandResult, stdout: string | undefined) {
+function buildStoredCommandResult(
+  commandType: string,
+  result: AgentCommandResult,
+  stdout: string | undefined,
+) {
   // Finding #5 (WS leg): strip full PEM private-key blocks from agent output
   // BEFORE it is persisted into device_commands.result and later shown to
   // scripts:read users. Mirrors the REST ingest path
@@ -613,10 +618,15 @@ function buildStoredCommandResult(result: AgentCommandResult, stdout: string | u
   // server-side-visible output, so we redact here as defense-in-depth.
   // Preserve null/undefined (don't coerce to '') to keep the stored shape
   // stable; exitCode/status/durationMs are untouched.
+  //
+  // Exception: artifact-bearing stdout (capture_pprof base64 profiles) must be
+  // stored byte-for-byte -- the redaction patterns statistically fire inside
+  // megabytes of random base64 and would silently corrupt the artifact (#2401).
+  const skipStdoutRedaction = isRawStdoutArtifactCommand(commandType);
   return {
     status: result.status,
     exitCode: result.exitCode,
-    stdout: stdout != null ? redactSecretsFromOutput(stdout) : stdout,
+    stdout: stdout != null && !skipStdoutRedaction ? redactSecretsFromOutput(stdout) : stdout,
     stderr: result.stderr != null ? redactSecretsFromOutput(result.stderr) : result.stderr,
     durationMs: result.durationMs,
     error: result.error,
@@ -1524,7 +1534,7 @@ async function processCommandResult(
         .set({
             status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
             completedAt: new Date(),
-            result: buildStoredCommandResult(normalizedResult, stdout)
+            result: buildStoredCommandResult(command.type, normalizedResult, stdout)
         })
         .where(
           and(

@@ -80,6 +80,33 @@ describe('commandAudit', () => {
       heapProfileBytes: 2048,
     });
 
+    it('passes multi-KB stdout through byte-for-byte, bypassing the 4096-char truncation and secret patterns', () => {
+      // Real pprof stdout is megabytes of base64. The sanitizer's default
+      // pass truncates strings at 4096 chars and rewrites secret-shaped
+      // substrings — either would silently corrupt the profile. This pins
+      // that the raw override wins: exact equality on a >4096-char payload
+      // containing a secret-shaped substring.
+      const bigBase64 = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo='.repeat(300); // ~10,800 chars
+      const withSecretShape = JSON.stringify({
+        capturedAt: '2026-07-12T10:00:00Z',
+        heapProfileBase64: `${bigBase64}token=abcdefgh12345678${bigBase64}`,
+        heapProfileBytes: 999999,
+      });
+      expect(withSecretShape.length).toBeGreaterThan(4096);
+
+      const command = sanitizeCommandForHistory(
+        {
+          id: 'cmd-big',
+          type: 'capture_pprof',
+          payload: { profile: 'heap' },
+          result: { status: 'completed', stdout: withSecretShape },
+        },
+        { allowRawStdout: true },
+      );
+
+      expect((command.result as { stdout: string }).stdout).toBe(withSecretShape);
+    });
+
     it('keeps capture_pprof stdout when allowRawStdout is set (single-command GET)', () => {
       const command = sanitizeCommandForHistory(
         {

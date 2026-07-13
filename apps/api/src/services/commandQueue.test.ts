@@ -385,6 +385,56 @@ describe('command queue service', () => {
     expect(result).toEqual({ ...completed.result, commandId: completed.id });
   });
 
+  // Behavioral pin for AUDITED_COMMANDS membership: capture_pprof is a
+  // privileged diagnostic, so dispatching it must write an audit_logs row.
+  // AUDITED_COMMANDS is module-private, so removal of the entry would be
+  // invisible without this test (#2401).
+  it('writes an audit log when executing capture_pprof', async () => {
+    const device = { id: 'dev-2', status: 'online', orgId: 'org-1', hostname: 'host-a', agentId: null };
+    const queued = { id: 'cmd-pprof' };
+    const completed = {
+      id: 'cmd-pprof',
+      status: 'completed',
+      result: { status: 'completed', stdout: '{}' }
+    };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([device])
+          })
+        })
+      } as any)
+      .mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([completed])
+          })
+        })
+      } as any);
+
+    const auditValues = vi.fn().mockReturnValue({ execute: vi.fn().mockResolvedValue(undefined) });
+    vi.mocked(db.insert)
+      .mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([queued])
+        })
+      } as any)
+      .mockReturnValueOnce({ values: auditValues } as any);
+
+    const result = await executeCommand('dev-2', CommandTypes.CAPTURE_PPROF, { profile: 'all' }, { userId: 'user-1' });
+
+    expect(result.status).toBe('completed');
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'agent.command.capture_pprof',
+      actorId: 'user-1',
+      resourceType: 'device',
+      resourceId: 'dev-2',
+      orgId: 'org-1',
+    }));
+  });
+
   it('should return pending commands for a device', async () => {
     const commands = [{ id: 'cmd-5' }, { id: 'cmd-6' }];
     vi.mocked(db.select).mockReturnValue({

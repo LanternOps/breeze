@@ -1012,6 +1012,59 @@ describe('device commands routes', () => {
   });
 
   describe('GET /devices/:id/commands', () => {
+    it('keeps capture_pprof stdout redacted in the LIST endpoint (no raw pass-through)', async () => {
+      // The raw stdout pass-through is deliberately scoped to the
+      // single-command GET; history pages must never balloon by megabytes of
+      // base64 per capture_pprof row (#2401).
+      const pprofStdout = JSON.stringify({
+        heapProfileBase64: 'aGVhcC1wcm9maWxlLWJ5dGVz',
+        heapProfileBytes: 2048,
+      });
+
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online'
+      } as never);
+
+      vi.mocked(db.select)
+        // count query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as never)
+        // page query
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([{
+                    id: 'cmd-pprof',
+                    deviceId: 'device-a',
+                    type: 'capture_pprof',
+                    status: 'completed',
+                    payload: { profile: 'heap' },
+                    result: { status: 'completed', stdout: pprofStdout }
+                  }])
+                })
+              })
+            })
+          })
+        } as never);
+
+      const res = await app.request('/devices/device-a/commands', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].result.stdout).toContain('stdout omitted');
+      expect(JSON.stringify(body)).not.toContain('aGVhcC1wcm9maWxlLWJ5dGVz');
+    });
+
     it('denies command history when the device is outside the caller site restriction', async () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
         id: 'device-a',

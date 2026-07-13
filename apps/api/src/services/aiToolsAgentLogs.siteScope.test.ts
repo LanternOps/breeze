@@ -10,7 +10,12 @@ vi.mock('./commandQueue', () => ({
   queueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
   executeCommand: vi.fn(async () => ({
     status: 'completed',
-    stdout: JSON.stringify({ capturedAt: '2026-07-12T10:00:00Z', runtime: { goroutines: 1 } }),
+    stdout: JSON.stringify({
+      capturedAt: '2026-07-12T10:00:00Z',
+      runtime: { goroutines: 1 },
+      goroutineProfileBase64: 'Zm9v',
+      goroutineProfileBytes: 3,
+    }),
     commandId: 'c2',
   })),
 }));

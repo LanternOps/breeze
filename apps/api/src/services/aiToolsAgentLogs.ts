@@ -303,7 +303,12 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         });
 
         if (result.status !== 'completed') {
-          return JSON.stringify({ error: result.error || 'Profile capture failed' });
+          return JSON.stringify({
+            error: result.error || 'Profile capture failed',
+            // Present when the command row was created before failing —
+            // lets the operator inspect the stored result/stderr.
+            commandId: result.commandId ?? null,
+          });
         }
 
         // The agent returns the profiles base64-encoded in stdout (up to
@@ -313,8 +318,14 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         try {
           captured = JSON.parse(result.stdout ?? '{}');
         } catch (parseErr) {
-          console.error('[ai:capture_agent_pprof] Failed to parse capture result', parseErr);
-          return JSON.stringify({ error: 'Failed to parse profile capture response' });
+          console.error(
+            `[ai:capture_agent_pprof] Failed to parse capture result (deviceId=${deviceId}, commandId=${result.commandId ?? 'unknown'})`,
+            parseErr,
+          );
+          return JSON.stringify({
+            error: 'Failed to parse profile capture response',
+            commandId: result.commandId ?? null,
+          });
         }
 
         const profiles: Record<string, { sizeBytes: number }> = {};
@@ -323,6 +334,19 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         }
         if (typeof captured.goroutineProfileBytes === 'number') {
           profiles.goroutine = { sizeBytes: captured.goroutineProfileBytes };
+        }
+
+        // A completed command whose stdout carries no profile fields means
+        // the agent/API contract drifted (or stdout was lost in transit).
+        // Don't dress that up as success.
+        if (Object.keys(profiles).length === 0) {
+          console.error(
+            `[ai:capture_agent_pprof] Completed capture returned no profile data (deviceId=${deviceId}, commandId=${result.commandId ?? 'unknown'})`,
+          );
+          return JSON.stringify({
+            error: 'Profile capture completed but returned no profile data (agent/API version mismatch?)',
+            commandId: result.commandId ?? null,
+          });
         }
 
         return JSON.stringify({

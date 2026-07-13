@@ -409,7 +409,7 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.error).toBe('Device is offline, cannot execute command');
     });
 
-    it('should handle unparseable agent output', async () => {
+    it('should handle unparseable agent output and still return the commandId', async () => {
       mockDeviceSelect('dev-1');
       vi.mocked(executeCommand).mockResolvedValue({
         status: 'completed',
@@ -421,6 +421,25 @@ describe('aiToolsAgentLogs', () => {
       const result = await tool.handler({ deviceId: 'dev-1' }, makeAuth('org-1'));
       const parsed = JSON.parse(result);
       expect(parsed.error).toContain('Failed to parse profile capture response');
+      expect(parsed.commandId).toBe('cmd-pprof-4');
+    });
+
+    it('should NOT report success when a completed result carries no profile data', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(executeCommand).mockResolvedValue({
+        status: 'completed',
+        // Valid JSON but no heapProfileBytes/goroutineProfileBytes fields
+        // (agent/API contract drift or stdout lost in transit).
+        stdout: JSON.stringify({ capturedAt: '2026-07-12T10:00:00Z' }),
+        commandId: 'cmd-pprof-5',
+      } as any);
+
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler({ deviceId: 'dev-1' }, makeAuth('org-1'));
+      const parsed = JSON.parse(result);
+      expect(parsed.status).toBeUndefined();
+      expect(parsed.error).toContain('no profile data');
+      expect(parsed.commandId).toBe('cmd-pprof-5');
     });
   });
 });

@@ -31,5 +31,15 @@ export function bodyLimitForPath(path: string): { maxSize: number; error: string
   if (path.match(/^\/api\/v1\/software\/catalog\/[^/]+\/versions\/upload$/)) {
     return { maxSize: 512 * 1024 * 1024, error: 'Package too large (max 500MB)' };
   }
+  // Agent command results submitted via the heartbeat/REST fallback leg (used
+  // when the WS path is unavailable). commandResultSchema already caps stdout
+  // and stderr at 5MB each; without this carve-out a large-but-valid result
+  // (e.g. a ~2.8MB capture_pprof profile payload, or big script output) is
+  // 413-rejected before the schema runs, the row never completes, and the
+  // caller sees a misleading generic timeout (#2401). 12MB covers both capped
+  // fields plus JSON escaping/envelope. Agent-authenticated route.
+  if (path.match(/^\/api\/v1\/agents\/[^/]+\/commands\/[^/]+\/result$/)) {
+    return { maxSize: 12 * 1024 * 1024, error: 'Command result too large (max 12MB)' };
+  }
   return { maxSize: 1024 * 1024, error: 'Request body too large' };
 }

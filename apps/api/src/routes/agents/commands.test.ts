@@ -236,6 +236,52 @@ describe('agent commands routes', () => {
     expect(serialized).not.toContain('BODYb64lineTwo');
   });
 
+  it('stores capture_pprof stdout byte-for-byte (secret redaction would corrupt the base64 profiles, #2401)', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'capture_pprof',
+          status: 'sent',
+          targetRole: 'agent',
+        },
+      ])
+    );
+    const updateChain = chainMock([{ id: 'cmd-1' }]);
+    updateMock.mockReturnValueOnce(updateChain);
+
+    // Base64 profile payload containing substrings the redaction patterns
+    // fire on (case-insensitive AKIA + 16 alnum; token=...). In random
+    // base64 these occur by chance roughly once per ~MB — redaction would
+    // silently corrupt the gzip protobuf.
+    const pprofStdout = JSON.stringify({
+      capturedAt: '2026-07-12T10:00:00Z',
+      heapProfileBase64: `QUJDakiAABCDEF1234567890abToken=abcdefgh12345678REVG${'Zm9v'.repeat(100)}`,
+      heapProfileBytes: 4096,
+    });
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        status: 'completed',
+        exitCode: 0,
+        stdout: pprofStdout,
+        stderr: `stderr-pre ${PRIVATE_KEY_BLOCK} stderr-post`,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+
+    const stored = updateChain.set.mock.calls[0][0];
+    // stdout is the artifact channel — byte-for-byte.
+    expect(stored.result.stdout).toBe(pprofStdout);
+    // stderr is NOT exempt.
+    expect(stored.result.stderr).toBe('stderr-pre [PRIVATE_KEY_REDACTED] stderr-post');
+  });
+
   it('redacts private-key blocks from the software-install deployment result path', async () => {
     // sw-install commandId embeds deployment + device UUIDs; the device UUID
     // must equal the authenticated agent's deviceId for the update to fire.
