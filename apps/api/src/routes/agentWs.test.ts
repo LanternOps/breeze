@@ -1498,7 +1498,7 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
     expect(writeAuditEvent).not.toHaveBeenCalled();
   });
 
-  it('redacts a PEM private key from stdout before it is persisted', async () => {
+  it('redacts a PEM private key from stdout, stderr, AND error before persistence (#2419)', async () => {
     const preValidatedAgent = { deviceId: 'device-r', orgId: 'org-r' };
     vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
       { id: 'cmd-1', type: 'run_script', payload: {}, deviceId: 'device-r' },
@@ -1520,16 +1520,22 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
       data: JSON.stringify({
         type: 'command_result',
         commandId: '99999999-9999-4999-8999-999999999999',
-        status: 'completed',
-        exitCode: 0,
+        status: 'failed',
+        exitCode: 1,
         stdout: `key follows:\n${pem}\nend`,
+        stderr: `warning, leaked key:\n${pem}`,
+        error: `command failed while handling key:\n${pem}`,
       }),
     } as any, ws as any);
 
     expect(setSpy).toHaveBeenCalledTimes(1);
-    const stored = setSpy.mock.calls[0]![0] as { result: { stdout: string } };
-    expect(stored.result.stdout).toContain('[PRIVATE_KEY_REDACTED]');
-    expect(stored.result.stdout).not.toContain('BEGIN RSA PRIVATE KEY');
+    const stored = setSpy.mock.calls[0]![0] as {
+      result: { stdout: string; stderr: string; error: string };
+    };
+    for (const field of ['stdout', 'stderr', 'error'] as const) {
+      expect(stored.result[field]).toContain('[PRIVATE_KEY_REDACTED]');
+      expect(stored.result[field]).not.toContain('BEGIN RSA PRIVATE KEY');
+    }
   });
 });
 

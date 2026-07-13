@@ -627,7 +627,7 @@ function buildStoredCommandResult(
     stdout: stdout != null && !skipStdoutRedaction ? redactSecretsFromOutput(stdout) : stdout,
     stderr: result.stderr != null ? redactSecretsFromOutput(result.stderr) : result.stderr,
     durationMs: result.durationMs,
-    error: result.error,
+    error: result.error != null ? redactSecretsFromOutput(result.error) : result.error,
   };
 }
 
