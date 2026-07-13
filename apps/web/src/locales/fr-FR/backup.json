@@ -383,7 +383,7 @@
     "signedAt": "Signé à :",
     "noRecoveryBundlesHaveBeenCreatedForThis": "Aucun pack de récupération n’a encore été créé pour ce jeton.",
     "bootableRecoveryMedia": "Supports de récupération démarrables",
-    "buildASignedLinuxAmd64RecoveryIsoFrom": "Construis un ISO de récupération signé Linux/amd64 à partir du dernier pack de récupération signé.",
+    "buildASignedLinuxAmd64RecoveryIsoFrom": "Créez une image ISO de récupération Linux/amd64 signée à partir du dernier paquet de récupération signé.",
     "createIso": "Créer un ISO",
     "downloadIso": "Télécharger ISO",
     "via": "via",
