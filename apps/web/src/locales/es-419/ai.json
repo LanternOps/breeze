@@ -25,7 +25,7 @@
     "placeholder": "Pregunta por sus dispositivos...",
     "stopResponse": "Detener respuesta",
     "thinking": "La AI está procesando... haga clic en Detener para cancelar",
-    "sendShortcut": "Cmd+Enter to send"
+    "sendShortcut": "Cmd+Enter para enviar"
   },
   "aiChatMessages": {
     "title": "Asistente de Breeze AI",

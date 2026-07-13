@@ -736,7 +736,7 @@
     "smsConfiguration": "SMS Konfiguration",
     "addNumber": "Nummer hinzufügen",
     "enterPhoneNumbersInInternationalFormatE": "Geben Sie Telefonnummern im internationalen Format ein (z. B. +1234567890).",
-    "twilioFromNumberOptional": "Twilio From Number (optional)",
+    "twilioFromNumberOptional": "Twilio-Absendernummer (optional)",
     "optionalOverrideForSenderNumberWhenNot": "Optionale Überschreibung der Absendernummer, wenn kein Messaging-Dienst verwendet wird",
     "twilioMessagingServiceSidOptional": "Twilio Messaging-Dienst SID (optional)",
     "mgxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx": "MGXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",

@@ -154,7 +154,7 @@
     "duration": "Dauer",
     "size": "Größe",
     "errors": "Fehler",
-    "vssStatus": "VSS Status",
+    "vssStatus": "VSS-Status",
     "latestBackupJob": "Letzter Sicherungsauftrag",
     "oneOrMoreVssWritersAreNotStable": "Einer oder mehrere VSS-Writer sind nicht stabil. Überprüfen Sie vor der nächsten Ausführung die neuesten Writer-Zustände.",
     "writer": "VSS-Writer",

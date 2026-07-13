@@ -1591,7 +1591,7 @@
         "openChecks": "Offene Prüfungen",
         "snmpPolling": "SNMP-Abfrage",
         "snmpPollingDescription": "Konfigurieren Sie die SNMP-Abfrage pro Asset. Geheimnisse werden nicht gezeigt; Lassen Sie das Feld leer, um vorhandene Werte beizubehalten.",
-        "snmpVersion": "SNMP Version",
+        "snmpVersion": "SNMP-Version",
         "snmpVersions": {
           "v1": "v1",
           "v2c": "v2c",

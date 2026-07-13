@@ -520,7 +520,7 @@
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
     "failedToRemoveIsolation": "Die Isolierung konnte nicht entfernt werden",
-    "endpointProtectionEdr": "Endpoint Protection (EDR)",
+    "endpointProtectionEdr": "Endpunktschutz (EDR)",
     "isolateDevice": "Gerät isolieren",
     "removeIsolation": "Isolation entfernen",
     "sentineloneThreats": "SentinelOne-Bedrohungen",
