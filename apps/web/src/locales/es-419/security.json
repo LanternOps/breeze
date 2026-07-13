@@ -157,7 +157,7 @@
     "diskEncryption": "Cifrado de disco",
     "enabled": "Activado",
     "firewall": "Cortafuegos",
-    "guardianGatekeeper": "Guardián (guardián)",
+    "guardianGatekeeper": "Protección (Gatekeeper)",
     "lastScan": "Último escaneo",
     "loadingSecurityStatus": "Cargando estado de seguridad...",
     "noDeviceSecurityDataAvailable": "No hay datos de seguridad del dispositivo disponibles.",
@@ -1232,7 +1232,7 @@
     "schedule": {
       "manual": "Manual",
       "interval": "Intervalo",
-      "cron": "cron",
+      "cron": "Cron",
       "everyMinutes": "Cada {{minutes}}m"
     },
     "table": {
@@ -1455,7 +1455,7 @@
       "dnsfilter": "DNSFilter",
       "pihole": "Pi-hole",
       "opendns": "OpenDNS",
-      "quad9": "cuádruple9",
+      "quad9": "Quad9",
       "adguardHome": "AdGuard Home"
     },
     "actions": {

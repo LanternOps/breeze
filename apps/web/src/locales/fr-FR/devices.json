@@ -1051,7 +1051,7 @@
     "category": "Catégorie",
     "allCategories": "Toutes les catégories",
     "source": "Source",
-    "eGMicrosoftWindowsSecurityAuditing": "par exemple Microsoft-Windows-Audit-Sécurité",
+    "eGMicrosoftWindowsSecurityAuditing": "par exemple Microsoft-Windows-Security-Auditing",
     "eGComAppleOpendirectoryd": "p. ex. com.apple.opendirectoryd",
     "eGSshd": "Par exemple SSHD",
     "eGSourceName": "par exemple, nom de la source",
@@ -1194,10 +1194,10 @@
       "windows": {
         "installedNativeEmpty": "Aucune mise à jour Windows signalée.",
         "installedNativePrimaryColumn": "Mise à jour",
-        "installedNativeTitle": "Mises à jour Windows installées",
+        "installedNativeTitle": "Mises à jour Windows Update installées",
         "pendingNativeEmpty": "Aucune mise à jour Windows en attente.",
         "pendingNativePrimaryColumn": "Mise à jour",
-        "pendingNativeTitle": "Mises à jour Windows en attente"
+        "pendingNativeTitle": "Mises à jour Windows Update en attente"
       }
     },
     "installPatchNotApprovedTitle": "Cette organisation n’a pas approuvé {{name}}. Approuvez le correctif avant l’installation.",
@@ -1634,7 +1634,7 @@
     "startDate": "Date de début",
     "status": {
       "active": "Active",
-      "appleCareSubscription": "Abonnement AppleCare",
+      "appleCareSubscription": "Abonnement Apple Care",
       "expired": "Expirée",
       "expiring": "Expire bientôt",
       "unknown": "Inconnu"

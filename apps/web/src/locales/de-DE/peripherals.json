@@ -43,7 +43,7 @@
       "storage": "Speichergeräte",
       "all_usb": "Alle USB-Geräte",
       "bluetooth": "Bluetooth",
-      "thunderbolt": "Blitz"
+      "thunderbolt": "Thunderbolt"
     },
     "allActions": "Alle Aktionen",
     "actions": {
@@ -80,7 +80,7 @@
       "storage": "Speichergeräte",
       "all_usb": "Alle USB-Geräte",
       "bluetooth": "Bluetooth",
-      "thunderbolt": "Blitz"
+      "thunderbolt": "Thunderbolt"
     },
     "action": "Aktion",
     "actions": {

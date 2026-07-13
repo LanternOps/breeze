@@ -1820,7 +1820,7 @@
     "emailAttributeIsRequired": "E-Mail-Attribut ist erforderlich",
     "nameAttributeIsRequired": "Namensattribut ist erforderlich",
     "customConfiguration": "Benutzerdefinierte Konfiguration",
-    "azureADEntraID": "Azure AD/Entra-ID",
+    "azureADEntraID": "Azure AD / Entra ID",
     "okta": "Okta",
     "googleWorkspace": "Google Workspace",
     "auth0": "Auth0",

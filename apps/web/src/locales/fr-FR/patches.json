@@ -421,7 +421,7 @@
       "description": "Ce qui est approuvé automatiquement dans cet anneau, et combien de temps il faut conserver un patch après sa sortie chez le fabricant. Le principe par défaut s’applique à toutes les catégories ; Ajoutez une dérogation pour traiter un autre type différemment.",
       "allCategories": "Toutes les catégories",
       "default": "Par défaut",
-      "severityNote": "Les sévérités s’appliquent aux mises à jour du système d’exploitation. Les mises à jour d’applications tierces (winget, homebrew) n’ont aucune sévérité du fournisseur — lorsqu’une politique permet à d’autres sources logicielles, elles approuvent automatiquement selon le rythme de ce ring, quel que soit le niveau de sévérité sélectionné ici.",
+      "severityNote": "Les sévérités s’appliquent aux mises à jour du système d’exploitation. Les mises à jour d’applications tierces (winget, Homebrew) n’ont aucune sévérité du fournisseur — lorsqu’une politique permet à d’autres sources logicielles, elles approuvent automatiquement selon le rythme de ce ring, quel que soit le niveau de sévérité sélectionné ici.",
       "manualDefault": "Chaque patch de cette bague nécessite une approbation manuelle.",
       "manualCategory": "Les correctifs de cette catégorie nécessitent une approbation manuelle.",
       "noOverrides": "Toutes les catégories suivent la norme par défaut. Ajoutez une dérogation pour traiter un autre type différemment."

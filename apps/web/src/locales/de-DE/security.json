@@ -157,7 +157,7 @@
     "diskEncryption": "Festplattenverschlüsselung",
     "enabled": "Aktiviert",
     "firewall": "Firewall",
-    "guardianGatekeeper": "Wächter (Torwächter)",
+    "guardianGatekeeper": "Schutz (Gatekeeper)",
     "lastScan": "Letzter Scan",
     "loadingSecurityStatus": "Sicherheitsstatus wird geladen...",
     "noDeviceSecurityDataAvailable": "Keine Gerätesicherheitsdaten verfügbar.",
@@ -1325,14 +1325,14 @@
     "description": "Verbinden Sie einen DNS-Filteranbieter, um Abfrageprotokolle und Bedrohungsereignisse aufzunehmen.",
     "providers": {
       "umbrella": {
-        "label": "Cisco-Regenschirm",
+        "label": "Cisco Umbrella",
         "helpText": "API Schlüssel + Geheimnis aus dem Umbrella Reporting API; OrganizationId aus Ihrem Umbrella-Dashboard URL.",
         "apiKeyPlaceholder": "reporting-api-key",
         "apiSecretPlaceholder": "reporting-api-secret",
         "organizationIdPlaceholder": "1234567"
       },
       "cloudflare": {
-        "label": "Cloudflare-Gateway",
+        "label": "Cloudflare Gateway",
         "helpText": "API Token mit Zero Trust → Gateway → Lesebereich.",
         "apiTokenPlaceholder": "cf-api-token",
         "accountIdPlaceholder": "32-stelliges Hex aus dem Cloudflare-Dashboard"
@@ -1344,13 +1344,13 @@
         "accountIdPlaceholder": "Bei Single-Tenant leer lassen"
       },
       "pihole": {
-        "label": "Pi-Loch",
+        "label": "Pi-hole",
         "helpText": "Pi-hole API Endpunkt + API Schlüssel. Verwenden Sie den LAN-routbaren Hostnamen.",
         "apiKeyPlaceholder": "Pihole-API-Schlüssel von /admin",
         "apiEndpointPlaceholder": "http://pihole.local"
       },
       "adguardHome": {
-        "label": "AdGuard-Startseite",
+        "label": "AdGuard Home",
         "helpText": "API Endpunkt + HTTP Basisauthentifizierungsbenutzername (apiKey) + Passwort (apiSecret).",
         "usernamePlaceholder": "Administrator",
         "passwordPlaceholder": "Passwort",
@@ -1450,13 +1450,13 @@
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Konfigurierte Integrationen",
     "providers": {
-      "umbrella": "Cisco-Regenschirm",
-      "cloudflare": "Cloudflare-Gateway",
+      "umbrella": "Cisco Umbrella",
+      "cloudflare": "Cloudflare Gateway",
       "dnsfilter": "DNSFilter",
-      "pihole": "Pi-Loch",
+      "pihole": "Pi-hole",
       "opendns": "OpenDNS",
       "quad9": "Quad9",
-      "adguardHome": "AdGuard-Startseite"
+      "adguardHome": "AdGuard Home"
     },
     "actions": {
       "addIntegration": "Integration hinzufügen",

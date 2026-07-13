@@ -20,7 +20,7 @@
     "title": "Asset-Verlauf"
   },
   "branding": {
-    "defaultName": "Breeze-Portal"
+    "defaultName": "Breeze Portal"
   },
   "customerDeviceList": {
     "deviceCount": "{{count}} mit Ihrem Konto verknüpfte Geräte",

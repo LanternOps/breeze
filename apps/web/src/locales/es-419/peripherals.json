@@ -42,7 +42,7 @@
     "classes": {
       "storage": "Almacenamiento",
       "all_usb": "Todo USB",
-      "bluetooth": "bluetooth",
+      "bluetooth": "Bluetooth",
       "thunderbolt": "Thunderbolt"
     },
     "allActions": "Todas las acciones",
@@ -79,7 +79,7 @@
     "classes": {
       "storage": "Almacenamiento",
       "all_usb": "Todo USB",
-      "bluetooth": "bluetooth",
+      "bluetooth": "Bluetooth",
       "thunderbolt": "Thunderbolt"
     },
     "action": "Acción",

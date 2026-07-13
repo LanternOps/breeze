@@ -512,7 +512,7 @@
       "softwareNameProhibited": "z. B. BitTorrent",
       "diskPath": "C: oder /home",
       "minimumVersion": "z. B. 10.0 oder 22.04",
-      "registryPath": "HKLM\\SOFTWARE\\Richtlinien\\...",
+      "registryPath": "HKLM\\SOFTWARE\\Policies\\...",
       "remediationScript": "Wählen Sie ein Korrekturskript aus..."
     },
     "sections": {
@@ -942,7 +942,7 @@
       "powershell": "PowerShell",
       "bash": "Bash",
       "python": "Python",
-      "cmd": "CMD (Charge)"
+      "cmd": "CMD (Batch)"
     },
     "runAs": {
       "system": {

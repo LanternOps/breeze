@@ -585,7 +585,7 @@
     "resourceType": "Ressourcentyp",
     "resource": "Ressource",
     "ipAddress": "IP-Adresse",
-    "id": "Ausweis",
+    "id": "ID",
     "error": "Fehler",
     "details": "Details",
     "showing": "Zeigt",
@@ -1051,7 +1051,7 @@
     "category": "Kategorie",
     "allCategories": "Alle Kategorien",
     "source": "Quelle",
-    "eGMicrosoftWindowsSecurityAuditing": "z.B. Microsoft-Windows-Sicherheitsüberwachung",
+    "eGMicrosoftWindowsSecurityAuditing": "z. B. Microsoft-Windows-Security-Auditing",
     "eGComAppleOpendirectoryd": "z.B. com.apple.opendirectoryd",
     "eGSshd": "z.B. sshd",
     "eGSourceName": "z.B. Quellenname",
@@ -1070,7 +1070,7 @@
     "theAgentHasnTReportedManagement": "Der Agent hat den Verwaltungsstatus für dieses Gerät noch nicht gemeldet. Die Daten werden während der Heartbeat-Zyklen automatisch erfasst.",
     "identityDirectoryStatus": "Identität und Verzeichnisstatus",
     "refresh": "Aktualisieren",
-    "azureAdEntraIdJoined": "Azure AD/Entra-ID beigetreten",
+    "azureAdEntraIdJoined": "Mit Azure AD / Entra ID verbunden",
     "domainJoined": "Domain beigetreten",
     "workplaceJoined": "Arbeitsplatz beigetreten",
     "domain": "Domäne:",
@@ -1194,10 +1194,10 @@
       "windows": {
         "installedNativeEmpty": "Es wurden keine Windows-Updates gemeldet.",
         "installedNativePrimaryColumn": "Aktualisieren",
-        "installedNativeTitle": "Installierte Windows-Updates",
+        "installedNativeTitle": "Installierte Updates von Windows Update",
         "pendingNativeEmpty": "Keine ausstehenden Windows-Updates.",
         "pendingNativePrimaryColumn": "Aktualisieren",
-        "pendingNativeTitle": "Ausstehende Windows-Updates"
+        "pendingNativeTitle": "Ausstehende Updates von Windows Update"
       }
     },
     "installPatchNotApprovedTitle": "Diese Organisation hat {{name}} nicht genehmigt. Genehmigen Sie den Patch vor der Installation.",

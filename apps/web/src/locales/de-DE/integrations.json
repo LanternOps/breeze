@@ -24,7 +24,7 @@
     "connectWorkspace": "Arbeitsbereich verbinden",
     "oauthRedirectStartsWhenYouConnectASlack": "Die OAuth-Umleitung startet, wenn Sie eine Verbindung zu einem Slack-Workspace herstellen.",
     "defaultChannel": "Standardkanal",
-    "microsoftTeams": "Microsoft-Teams",
+    "microsoftTeams": "Microsoft Teams",
     "configureTenantCredentialsForTeamsAlertDelivery": "Konfigurieren Sie Mandantenanmeldeinformationen für die Zustellung von Teams-Benachrichtigungen.",
     "tenantID": "Mieter-ID",
     "clientID": "Kunden-ID",

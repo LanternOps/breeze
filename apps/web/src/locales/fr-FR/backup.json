@@ -337,7 +337,7 @@
     "recoveryBootstrap": "Bootstrap de récupération",
     "createInspectAuthenticateAndRevokeRecoveryTokensFor": "Créez, inspectez, authentifiez et révoquez des jetons de récupération pour les flux de travail manuels de récupération. Cet onglet démarre des environnements de récupération manuelle et peut mettre en place des packs de récupération téléchargeables.",
     "cliTemplate": "CLI modèle",
-    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token &lt;token&gt; --server &lt;API-server&gt;",
+    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token &lt;token&gt; --server &lt;api-server&gt;",
     "createRecoveryToken": "Créer un jeton de récupération",
     "generateANewTokenForASpecificBackup": "Générez un nouveau jeton pour un instantané de sauvegarde spécifique et un profil de récupération.",
     "snapshot": "Instantané",

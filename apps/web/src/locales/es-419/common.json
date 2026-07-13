@@ -23,7 +23,7 @@
     "sensitiveData": "Datos confidenciales",
     "peripherals": "Periféricos",
     "aiRiskEngine": "AI Motor de riesgos",
-    "cisBenchmarks": "CIS Puntos de referencia",
+    "cisBenchmarks": "CIS Benchmarks",
     "complianceBaselines": "Líneas base de cumplimiento",
     "quotes": "Cotizaciones",
     "invoices": "Facturas",
@@ -315,7 +315,7 @@
       "create": "Crear filtro",
       "new": "Nuevo filtro",
       "nameRequired": "El nombre es obligatorio",
-      "namePlaceholder": "por ejemplo, servidores Windows",
+      "namePlaceholder": "p. ej., Windows Servers",
       "description": "Descripción (opcional)",
       "descriptionPlaceholder": "Describa con qué coincide este filtro",
       "conditions": "Condiciones",
@@ -1469,7 +1469,7 @@
         "deviceType": "Tipo de dispositivo",
         "placeholders": {
           "name": "Núcleo de Cisco",
-          "vendor": "cisco",
+          "vendor": "Cisco",
           "deviceType": "Interruptor central",
           "description": "Conmutadores de alto rendimiento con múltiples enlaces ascendentes",
           "oidName": "Tiempo de actividad del sistema",
@@ -1483,7 +1483,7 @@
         "oid": "OID",
         "oidTypes": {
           "gauge": "Indicador",
-          "counter64": "contador64",
+          "counter64": "Counter64",
           "timeTicks": "TimeTicks",
           "integer": "Entero",
           "octetString": "OctetString"

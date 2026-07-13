@@ -925,7 +925,7 @@
     "parameters": {
       "emptyPrefix": "Aún no hay parámetros. Los parámetros permiten a los usuarios proporcionar valores en tiempo de ejecución; haga referencia a ellos en su secuencia de comandos como",
       "emptyMiddle": "(PowerShell/Bash) o",
-      "emptySuffix": "(Pitón)."
+      "emptySuffix": "(Python)."
     },
     "execution": {
       "timeoutHint": "El script se elimina después de esta duración. Los 300 segundos (5 min) predeterminados son adecuados para la mayoría de las tareas. Máximo 3600s (1 hora).",

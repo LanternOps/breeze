@@ -685,7 +685,7 @@
     "channelOptional": "Canal (opcional)",
     "alerts": "#alertas",
     "overrideTheDefaultChannelConfiguredInThe": "Anular el canal predeterminado configurado en el webhook",
-    "microsoftTeamsConfiguration": "Configuración de equipos Microsoft",
+    "microsoftTeamsConfiguration": "Configuración de Microsoft Teams",
     "httpsOutlookOfficeComWebhook": "https://outlook.office.com/webhook/...",
     "createAnIncomingWebhookConnectorInYour": "Cree un conector de webhook entrante en su canal de Teams",
     "pagerdutyConfiguration": "Configuración de PagerDuty",
@@ -697,7 +697,7 @@
     "error": "Error",
     "warning": "Advertencia",
     "info": "Información",
-    "pushoverConfiguration": "Configuración de empuje",
+    "pushoverConfiguration": "Configuración de Pushover",
     "applicationToken": "Ficha de aplicación",
     "leaveBlankToInheritFromPartner": "Dejar en blanco para heredar del socio",
     "value30CharAppKeyFromYourPushover": "Clave de aplicación de 30 caracteres de su aplicación Pushover. En blanco se utiliza el valor predeterminado del socio.",
@@ -713,8 +713,8 @@
     "emergencyRepeatsUntilAck": "Emergencia (se repite hasta que se reconozca)",
     "fallsBackToAlertSeverityMappingWhen": "Vuelva al mapeo de gravedad de alerta cuando no está configurado.",
     "soundOptional": "Sonido (opcional)",
-    "pushover": "persona fácil de convencer",
-    "builtInNamePushoverBikeBugleOr": "Nombre incorporado (pushover, bicicleta, corneta,…) o su sonido personalizado.",
+    "pushover": "pushover",
+    "builtInNamePushoverBikeBugleOr": "Nombre incorporado (pushover, bike, bugle, …) o su sonido personalizado.",
     "webhookConfiguration": "Configuración del webhook",
     "url": "URL",
     "httpsApiExampleComAlerts": "https://api.example.com/alerts",
@@ -761,7 +761,7 @@
         "description": "Publicar alertas en el canal Slack"
       },
       "teams": {
-        "label": "Microsoft Equipos",
+        "label": "Microsoft Teams",
         "description": "Publicar alertas en el canal de Teams"
       },
       "pagerduty": {
@@ -777,7 +777,7 @@
         "description": "Enviar notificaciones SMS"
       },
       "pushover": {
-        "label": "Persona fácil de convencer",
+        "label": "Pushover",
         "description": "Push a teléfonos a través de Pushover (con capacidad de prioridad de emergencia)"
       }
     },
@@ -800,11 +800,11 @@
     "allTypes": "Todos los tipos",
     "email": "Correo electrónico",
     "slack": "Slack",
-    "microsoftTeams": "Microsoft Equipos",
+    "microsoftTeams": "Microsoft Teams",
     "pagerduty": "PagerDuty",
     "webhook": "Webhook",
     "sms": "SMS",
-    "pushover": "Persona fácil de convencer",
+    "pushover": "Pushover",
     "noNotificationChannelsFoundTryAdjustingYour": "No se encontraron canales de notificación. Intente ajustar su búsqueda o filtros.",
     "partnerWideChannelReceivesAlertsFromEvery": "Canal en todo el socio: recibe alertas de cada organización",
     "allOrgs": "Todas las organizaciones",
@@ -825,7 +825,7 @@
     "noRecipients": "Sin destinatarios",
     "emailNotification": "Notificación por correo electrónico",
     "slackNotification": "Notificación Slack",
-    "teamsNotification": "Notificación de equipos",
+    "teamsNotification": "Notificación de Teams",
     "pagerDutyIntegration": "Integración del PagerDuty",
     "customWebhook": "Webhook personalizado",
     "pushoverKey": "Clave {{key}}…",
@@ -836,11 +836,11 @@
     "channelType": {
       "email": "Correo electrónico",
       "slack": "Slack",
-      "teams": "Microsoft Equipos",
+      "teams": "Microsoft Teams",
       "pagerduty": "PagerDuty",
       "webhook": "Webhook",
       "sms": "SMS",
-      "pushover": "Persona fácil de convencer"
+      "pushover": "Pushover"
     }
   },
   "notificationChannelsPage": {

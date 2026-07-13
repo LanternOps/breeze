@@ -315,7 +315,7 @@
       "create": "Créer un filtre",
       "new": "Nouveau filtre",
       "nameRequired": "Le nom est requis",
-      "namePlaceholder": "par exemple, Windows Serveurs",
+      "namePlaceholder": "par exemple, Windows Servers",
       "description": "Description (optionnelle)",
       "descriptionPlaceholder": "Décrivez ce que ce filtre correspond",
       "conditions": "Conditions",
@@ -1234,7 +1234,7 @@
         },
         "providers": {
           "microsoft365": "Microsoft 365",
-          "googleWorkspace": "Google Espace de travail"
+          "googleWorkspace": "Google Workspace"
         },
         "loading": "Chargement des données de sauvegarde cloud...",
         "alphaDisclaimer": "La sauvegarde cloud-to-cloud est en accès anticipé. La configuration de la connexion est disponible pour évaluation, mais les tâches de synchronisation et de restauration ne sont pas encore implémentées.",
@@ -1297,7 +1297,7 @@
         "selectProvider": "Sélectionnez le fournisseur cloud pour sauvegarder.",
         "providers": {
           "microsoft365": "Microsoft 365",
-          "googleWorkspace": "Google Espace de travail",
+          "googleWorkspace": "Google Workspace",
           "azureAd": "Azure AD",
           "googleCloud": "Google Nuage"
         },
@@ -1343,7 +1343,7 @@
       "C2CRestoreDialog": {
         "providers": {
           "microsoft365": "Microsoft 365",
-          "googleWorkspace": "Google Espace de travail"
+          "googleWorkspace": "Google Workspace"
         },
         "errors": {
           "loadBackupItems": "Impossible de charger les éléments de sauvegarde",

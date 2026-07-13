@@ -1082,7 +1082,7 @@
     "s": "s",
     "detectedAcross": "detectado a través de",
     "categor": "categoría",
-    "ies": "es",
+    "ies": "ies",
     "y": "y",
     "noManagementToolsDetectedOnThis": "No se detectaron herramientas de administración en este dispositivo.",
     "scanWarnings": "Advertencias de escaneo",
@@ -1115,7 +1115,7 @@
       "lastChecked": "Última comprobación",
       "memory": "Memoria",
       "name": "Nombre",
-      "pid": "pid",
+      "pid": "Pid",
       "status": "Estado",
       "type": "Tipo"
     },
@@ -1130,7 +1130,7 @@
     "searchPlaceholder": "Búsqueda por proceso, dirección, puerto...",
     "table": {
       "local": "Local",
-      "pid": "pid",
+      "pid": "Pid",
       "process": "Proceso",
       "protocol": "Protocolo",
       "remote": "Remoto",
@@ -1223,7 +1223,7 @@
       "approval": "Aprobación",
       "category": "Categoría",
       "installed": "Instalado",
-      "kb": "kb",
+      "kb": "Kb",
       "software": "Software",
       "source": "Fuente"
     },
@@ -1237,7 +1237,7 @@
       "cpu": "CPU",
       "disk": "Disco",
       "download": "Descargar",
-      "ram": "RAM",
+      "ram": "Ram",
       "readOps": "Leer operaciones",
       "upload": "Subir",
       "writeOps": "Operaciones de escritura"
@@ -1247,7 +1247,7 @@
       "cpu": "CPU",
       "disk": "Disco",
       "download": "Descargar",
-      "ram": "RAM",
+      "ram": "Ram",
       "readThroughput": "Rendimiento de lectura",
       "upload": "Subir",
       "writeThroughput": "Rendimiento de escritura"
@@ -1591,7 +1591,7 @@
     "showFindings": "Mostrar hallazgos",
     "stats": {
       "accepted": "Aceptado",
-      "kev": "kev",
+      "kev": "Kev",
       "mitigated": "mitigado",
       "open": "Abierto",
       "patchReady": "Parche listo",
@@ -1611,7 +1611,7 @@
       "actions": "Acciones",
       "cve": "Cve",
       "cvss": "cvss",
-      "kev": "kev",
+      "kev": "Kev",
       "risk": "Riesgo",
       "severity": "Gravedad",
       "status": "Estado"
@@ -2095,9 +2095,9 @@
     },
     "table": {
       "cpu": "CPU",
-      "pid": "pid",
+      "pid": "Pid",
       "process": "Proceso",
-      "ram": "RAM"
+      "ram": "Ram"
     },
     "title": "Procesos principales"
   },

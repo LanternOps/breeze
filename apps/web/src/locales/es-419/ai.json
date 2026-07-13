@@ -137,7 +137,7 @@
       "aiEnabled": "AI para Office habilitado para {{orgName}}"
     },
     "notEnabled": {
-      "title": "Breeze AI para Office no está habilitado en esta instancia.",
+      "title": "Breeze AI for Office no está habilitado en esta instancia.",
       "description": "Configure <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (el registro de la aplicación complementaria Entra) en API y vuelva a cargar."
     },
     "title": "Organizaciones clientes",
@@ -171,7 +171,7 @@
       "entraTenantId": "Entra inquilino ID",
       "guidError": "Debe ser un GUID (Centro de administración de Entra → Descripción general → Inquilino ID).",
       "saveContinue": "Guardar y continuar",
-      "consentDescription": "Un administrador de Microsoft 365 del inquilino del cliente debe otorgar consentimiento de administrador a la aplicación Breeze AI para Office. Envíeles este enlace (o ábralo usted mismo si tiene Global Admin en el inquilino del cliente):",
+      "consentDescription": "Un administrador de Microsoft 365 del inquilino del cliente debe otorgar consentimiento de administrador a la aplicación Breeze AI for Office. Envíeles este enlace (o ábralo usted mismo si tiene Global Admin en el inquilino del cliente):",
       "loadingConsent": "Cargando consentimiento URL…",
       "copyUrl": "Copiar URL",
       "openNewTab": "Abrir en nueva pestaña",
@@ -184,7 +184,7 @@
       "deployTitle": "Implemente el complemento de Excel mediante la implementación centralizada de Microsoft 365",
       "deploySteps": {
         "signIn": "Inicie sesión en el <strong>centro de administración de Microsoft 365 del inquilino del cliente</strong> → Configuración → Aplicaciones integradas.",
-        "upload": "Elija <strong>Cargar aplicaciones personalizadas</strong> → Complemento de Office → proporcione Breeze AI para el manifiesto de Office URL desde su instancia Breeze.",
+        "upload": "Elija <strong>Cargar aplicaciones personalizadas</strong> → Complemento de Office → proporcione la URL del manifiesto de Breeze AI for Office desde su instancia de Breeze.",
         "assign": "Asigne el complemento a todos o a los grupos de usuarios cubiertos por la política de acceso de esta organización.",
         "wait": "La implementación puede tardar hasta 24 horas en aparecer en la cinta de Excel de los usuarios (Inicio → Complementos).",
         "signInAutomatically": "Los usuarios inician sesión automáticamente con su cuenta de trabajo Microsoft, sin credenciales adicionales."

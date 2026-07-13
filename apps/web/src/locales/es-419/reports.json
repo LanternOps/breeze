@@ -459,7 +459,7 @@
           "policySet": {
             "label": "Conjunto de políticas",
             "options": {
-              "cis": "CIS Puntos de referencia",
+              "cis": "CIS Benchmarks",
               "custom": "Políticas personalizadas",
               "hipaa": "HIPAA",
               "iso27001": "ISO 27001"

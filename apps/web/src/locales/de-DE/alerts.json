@@ -714,7 +714,7 @@
     "fallsBackToAlertSeverityMappingWhen": "Wenn diese Option nicht aktiviert ist, wird auf die Zuordnung des Schweregrads der Warnung zurückgegriffen.",
     "soundOptional": "Ton (optional)",
     "pushover": "pushover",
-    "builtInNamePushoverBikeBugleOr": "Eingebauter Name (Pushover, Bike, Signalhorn, …) oder Ihr benutzerdefinierter Sound.",
+    "builtInNamePushoverBikeBugleOr": "Integrierter Name (pushover, bike, bugle, …) oder Ihr benutzerdefinierter Sound.",
     "webhookConfiguration": "Webhook-Konfiguration",
     "url": "URL",
     "httpsApiExampleComAlerts": "https://api.example.com/alerts",
@@ -761,7 +761,7 @@
         "description": "Veröffentlichen Sie Benachrichtigungen im Slack-Kanal"
       },
       "teams": {
-        "label": "Microsoft-Teams",
+        "label": "Microsoft Teams",
         "description": "Veröffentlichen Sie Benachrichtigungen im Teams-Kanal"
       },
       "pagerduty": {
@@ -800,7 +800,7 @@
     "allTypes": "Alle Typen",
     "email": "E-Mail",
     "slack": "Slack",
-    "microsoftTeams": "Microsoft-Teams",
+    "microsoftTeams": "Microsoft Teams",
     "pagerduty": "PagerDuty",
     "webhook": "Webhook",
     "sms": "SMS",
@@ -836,7 +836,7 @@
     "channelType": {
       "email": "E-Mail",
       "slack": "Slack",
-      "teams": "Microsoft-Teams",
+      "teams": "Microsoft Teams",
       "pagerduty": "PagerDuty",
       "webhook": "Webhook",
       "sms": "SMS",

@@ -157,7 +157,7 @@
     "diskEncryption": "Chiffrement du disque",
     "enabled": "Activé",
     "firewall": "Pare-feu",
-    "guardianGatekeeper": "Gardien (Gardien)",
+    "guardianGatekeeper": "Protection (Gatekeeper)",
     "lastScan": "Dernier scan",
     "loadingSecurityStatus": "Chargement de l’état de sécurité...",
     "noDeviceSecurityDataAvailable": "Aucune donnée de sécurité de l’appareil disponible.",
@@ -865,7 +865,7 @@
   },
   "pamPamRespondModal": {
     "errors": {
-      "windowsHello": "Windows Bonjour, vérification échouée",
+      "windowsHello": "Échec de la vérification Windows Hello",
       "actionFailed": "Impossible de {{decision}} demande",
       "network": "Erreur réseau"
     },
@@ -981,7 +981,7 @@
     "placeholders": {
       "microsoftCorporation": "par exemple Microsoft Corporation",
       "hexChars": "64 caractères hexagonaux",
-      "programFilesGlob": "C:\\Program Dossiers\\**",
+      "programFilesGlob": "C:\\Program Files\\**",
       "explorer": "explorer.exe",
       "printui": "printui.dll, PrintUIEntry",
       "runScript": "run_script",
@@ -1332,7 +1332,7 @@
         "organizationIdPlaceholder": "1234567"
       },
       "cloudflare": {
-        "label": "Cloudflare Porte d’entrée",
+        "label": "Cloudflare Gateway",
         "helpText": "Jeton API avec portée Zero Trust → Gateway → Lecture.",
         "apiTokenPlaceholder": "cf-api-token",
         "accountIdPlaceholder": "hexagone de 32 caractères provenant du tableau de bord Cloudflare"
@@ -1451,7 +1451,7 @@
     "title": "Intégrations configurées",
     "providers": {
       "umbrella": "Cisco Umbrella",
-      "cloudflare": "Cloudflare Porte d’entrée",
+      "cloudflare": "Cloudflare Gateway",
       "dnsfilter": "DNSFilter",
       "pihole": "Pi-hole",
       "opendns": "OpenDNS",

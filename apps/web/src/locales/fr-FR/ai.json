@@ -177,7 +177,7 @@
       "openNewTab": "Ouvrir dans un nouvel onglet",
       "afterConsent": "Après avoir accordé, Microsoft redirige vers une page de confirmation Breeze. Le consentement apparaît comme accordé ici une fois que le premier utilisateur se connecte depuis Excel — il n’y a pas de sondage en direct contre Microsoft (décision Plan-4 1).",
       "consentGranted": "J’ai donné mon consentement",
-      "enableDescription": "Activez l’assistant pour cette organisation. Cela écrit <code>enabled : true</code> à la politique de l’organisation avec les valeurs par défaut sûres (tous les utilisateurs, lecture/écriture avec approbation de l’utilisateur final, rédigation DLP pour les types financiers/identifiants). Accordez tout dans le rédacteur politique ensuite.",
+      "enableDescription": "Activez l’assistant pour cette organisation. Cela inscrit <code>enabled: true</code> dans la politique de l’organisation avec des valeurs par défaut sûres (tous les utilisateurs, accès en lecture/écriture avec approbation de l’utilisateur final et masquage DLP des données financières et d’identification). Ajustez ensuite tous les paramètres dans l’éditeur de politiques.",
       "enabling": "Facilitant...",
       "alreadyEnabled": "Déjà activé — continuer",
       "enableAi": "Activer l’IA pour Office",

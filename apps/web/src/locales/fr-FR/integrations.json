@@ -72,17 +72,17 @@
       "backup": "Sauvegarde"
     },
     "activity": {
-      "threeMinutesAgo": "Il y a 3 mois",
+      "threeMinutesAgo": "Il y a 3 min",
       "elevenMinutesAgo": "Il y a 11 minutes",
-      "fiveMinutesAgo": "Il y a 5 mois",
+      "fiveMinutesAgo": "Il y a 5 min",
       "oneDayAgo": "Il y a 1 d"
     }
   },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Connexion vérifiée et enregistrée.",
-    "googleWorkspace": "Google Espace de travail",
+    "googleWorkspace": "Google Workspace",
     "connectAWorkspaceDomainSoTheAIAssistant": "Connectez un domaine Workspace afin que l’assistant IA puisse gérer les utilisateurs et les groupes de cette organisation. ",
-    "googleWorkspaceIntegrationIsNotEnabledOnThis": "Google L’intégration de l’espace de travail n’est pas activée sur cette instance. ",
+    "googleWorkspaceIntegrationIsNotEnabledOnThis": "L’intégration Google Workspace n’est pas activée sur cette instance. ",
     "anAdministratorEnablesItBySetting": "Un administrateur l’active en définissant",
     "onTheAPIServerThenReloadingThisPage": "sur le serveur API, puis je recharge cette page. ",
     "connectAWorkspaceDomainSoTheAIAssistant2": "Connectez un domaine Workspace afin que l’assistant IA puisse rechercher les utilisateurs, gérer des groupes, réinitialiser des mots de passe, effectuer des opérations de démontage guidé, et plus encore pour cette organisation. ",
@@ -247,7 +247,7 @@
     "unifi": "UniFi",
     "sentinelone": "SentinelOne",
     "huntress": "Huntress",
-    "googleWorkspace": "Google Espace de travail",
+    "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
     "tdSYNNEXPricing": "Tarification TD SYNNEX",
