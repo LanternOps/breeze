@@ -235,10 +235,6 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 		backupProvider = providers.NewLocalProvider(localPath)
 	}
 
-	schedule, _ := time.ParseDuration(cfg.BackupSchedule)
-	if schedule <= 0 {
-		schedule = 24 * time.Hour
-	}
 	retention := cfg.BackupRetention
 	if retention <= 0 {
 		retention = 7
@@ -256,7 +252,6 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 	mgr := backup.NewBackupManager(backup.BackupConfig{
 		Provider:           backupProvider,
 		Paths:              cfg.BackupPaths,
-		Schedule:           schedule,
 		Retention:          retention,
 		VSSEnabled:         cfg.BackupVSSEnabled,
 		SystemStateEnabled: cfg.BackupSystemStateEnabled,

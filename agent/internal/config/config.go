@@ -63,7 +63,6 @@ type Config struct {
 	EnabledCollectors        []string `mapstructure:"enabled_collectors"`
 	BackupEnabled            bool     `mapstructure:"backup_enabled"`
 	BackupPaths              []string `mapstructure:"backup_paths"`
-	BackupSchedule           string   `mapstructure:"backup_schedule"`
 	BackupRetention          int      `mapstructure:"backup_retention"`
 	BackupProvider           string   `mapstructure:"backup_provider"`
 	BackupLocalPath          string   `mapstructure:"backup_local_path"`

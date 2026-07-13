@@ -51,7 +51,6 @@ func TestNewBackupManager(t *testing.T) {
 	config := BackupConfig{
 		Provider:  provider,
 		Paths:     []string{"/tmp/data"},
-		Schedule:  time.Hour,
 		Retention: 5,
 	}
 
@@ -61,9 +60,6 @@ func TestNewBackupManager(t *testing.T) {
 	}
 	if mgr.config.Provider != provider {
 		t.Error("provider not stored correctly")
-	}
-	if mgr.config.Schedule != time.Hour {
-		t.Errorf("schedule = %v, want %v", mgr.config.Schedule, time.Hour)
 	}
 	if mgr.config.Retention != 5 {
 		t.Errorf("retention = %d, want 5", mgr.config.Retention)
@@ -85,110 +81,15 @@ func TestGetProvider_Nil(t *testing.T) {
 	}
 }
 
-func TestStart_NilProvider(t *testing.T) {
-	mgr := NewBackupManager(BackupConfig{
-		Schedule: time.Hour,
-	})
-	err := mgr.Start()
-	if err == nil {
-		t.Fatal("Start should fail with nil provider")
-	}
-	if !strings.Contains(err.Error(), "backup provider is required") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestStart_ZeroSchedule(t *testing.T) {
-	provider := newMockProvider()
-	mgr := NewBackupManager(BackupConfig{
-		Provider: provider,
-		Schedule: 0,
-	})
-	// Zero schedule should not error (backup schedule disabled)
-	err := mgr.Start()
-	if err != nil {
-		t.Fatalf("Start with zero schedule should not error: %v", err)
-	}
-}
-
-func TestStart_NegativeSchedule(t *testing.T) {
-	provider := newMockProvider()
-	mgr := NewBackupManager(BackupConfig{
-		Provider: provider,
-		Schedule: -1,
-	})
-	err := mgr.Start()
-	if err != nil {
-		t.Fatalf("Start with negative schedule should not error: %v", err)
-	}
-}
-
-func TestStart_DoubleStart(t *testing.T) {
-	provider := newMockProvider()
-	mgr := NewBackupManager(BackupConfig{
-		Provider: provider,
-		Paths:    []string{"/tmp"},
-		Schedule: time.Hour,
-	})
-
-	// Simulate the scheduler already running by setting the flag directly.
-	mgr.mu.Lock()
-	mgr.schedulerRunning = true
-	mgr.mu.Unlock()
-
-	err := mgr.Start()
-	if err == nil {
-		t.Fatal("second Start should fail")
-	}
-	if !strings.Contains(err.Error(), "already started") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Clean up
-	mgr.mu.Lock()
-	mgr.schedulerRunning = false
-	mgr.mu.Unlock()
-}
-
-func TestStop_NotStarted(t *testing.T) {
+func TestStop_NoActiveJob(t *testing.T) {
 	mgr := NewBackupManager(BackupConfig{})
 	if mgr.Stop() {
-		t.Error("Stop should report false when nothing is running")
+		t.Error("Stop should report false when no backup job is running")
 	}
 }
 
-func TestStartStop_SetsSchedulerRunning(t *testing.T) {
-	provider := newMockProvider()
-	mgr := NewBackupManager(BackupConfig{
-		Provider: provider,
-		Schedule: time.Hour,
-	})
-
-	// Verify Start sets schedulerRunning
-	if err := mgr.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-
-	mgr.mu.Lock()
-	running := mgr.schedulerRunning
-	mgr.mu.Unlock()
-
-	if !running {
-		t.Error("schedulerRunning should be true after Start")
-	}
-
-	if !mgr.Stop() {
-		t.Error("Stop should report that the scheduler was stopped")
-	}
-
-	mgr.mu.Lock()
-	running = mgr.schedulerRunning
-	mgr.mu.Unlock()
-	if running {
-		t.Error("schedulerRunning should be false after Stop")
-	}
-}
-
+// Backups are server-scheduled and dispatched as backup_run commands, so the
+// only thing Stop has to unwind is an in-flight on-demand job (#2452).
 func TestStop_CancelsActiveBackup(t *testing.T) {
 	tmpDir := t.TempDir()
 	createTempFile(t, tmpDir, "data.txt", "cancel me")
@@ -197,12 +98,13 @@ func TestStop_CancelsActiveBackup(t *testing.T) {
 	mgr := NewBackupManager(BackupConfig{
 		Provider: provider,
 		Paths:    []string{tmpDir},
-		Schedule: time.Hour,
 	})
 
-	if err := mgr.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_, _ = mgr.RunBackup()
+	}()
 
 	select {
 	case <-provider.started:
@@ -214,11 +116,15 @@ func TestStop_CancelsActiveBackup(t *testing.T) {
 		t.Fatal("Stop should report that an active backup was stopped")
 	}
 
-	mgr.mu.Lock()
-	running := mgr.schedulerRunning
-	mgr.mu.Unlock()
-	if running {
-		t.Error("schedulerRunning should be false after stopping an active backup")
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the cancelled backup to unwind")
+	}
+
+	// A second Stop is a no-op once the job has unwound.
+	if mgr.Stop() {
+		t.Error("Stop should report false after the active backup has already stopped")
 	}
 }
 

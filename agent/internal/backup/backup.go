@@ -34,7 +34,6 @@ type BackupConfig struct {
 	Provider           providers.BackupProvider
 	Paths              []string
 	Excludes           []string // Glob exclusion patterns for file-mode backups (see excludeMatcher)
-	Schedule           time.Duration
 	Retention          int
 	VSSEnabled         bool   // Windows only: create VSS shadow copy before backup
 	SystemStateEnabled bool   // Collect system state alongside file backup
@@ -55,7 +54,10 @@ type BackupJob struct {
 	SystemStateManifest *systemstate.SystemStateManifest // nil when system state was not collected
 }
 
-// BackupManager orchestrates scheduled and on-demand backups.
+// BackupManager orchestrates on-demand backups. Backup scheduling is owned by
+// the server: the API fans a policy out per selection and dispatches
+// backup_run commands, which the helper executes via RunBackupWithExcludes.
+// There is deliberately no agent-local scheduler (#2452).
 type BackupManager struct {
 	config BackupConfig
 
@@ -63,9 +65,6 @@ type BackupManager struct {
 	jobRunning       bool
 	jobCancel        context.CancelFunc
 	jobDoneCh        chan struct{}
-	schedulerRunning bool
-	stopCh           chan struct{}
-	doneCh           chan struct{}
 	lastSnapshotTime time.Time
 }
 
@@ -88,68 +87,26 @@ func (m *BackupManager) GetStagingDir() string {
 	return m.config.StagingDir
 }
 
-// Start begins scheduled backups.
-func (m *BackupManager) Start() error {
-	if m.config.Provider == nil {
-		return errors.New("backup provider is required")
-	}
-	if m.config.Schedule <= 0 {
-		log.Printf("[backup] backup schedule disabled")
-		return nil
-	}
-
-	m.mu.Lock()
-	if m.schedulerRunning {
-		m.mu.Unlock()
-		return errors.New("backup manager already started")
-	}
-	m.schedulerRunning = true
-	m.stopCh = make(chan struct{})
-	m.doneCh = make(chan struct{})
-	stopCh := m.stopCh
-	doneCh := m.doneCh
-	m.mu.Unlock()
-
-	log.Printf("[backup] starting backup manager (schedule=%v)", m.config.Schedule)
-	go m.runScheduler(stopCh, doneCh)
-	return nil
-}
-
-// Stop stops scheduled backups.
+// Stop cancels an in-flight backup job and waits for it to unwind. It reports
+// whether a job was actually running (false = nothing to stop).
 func (m *BackupManager) Stop() bool {
 	m.mu.Lock()
-	if !m.schedulerRunning && !m.jobRunning {
+	if !m.jobRunning {
 		m.mu.Unlock()
 		return false
 	}
-	stopScheduler := m.schedulerRunning
-	stopCh := m.stopCh
-	doneCh := m.doneCh
 	jobCancel := m.jobCancel
 	jobDoneCh := m.jobDoneCh
-	m.schedulerRunning = false
 	m.mu.Unlock()
 
 	log.Printf("[backup] stopping backup manager")
 	if jobCancel != nil {
 		jobCancel()
 	}
-	if stopScheduler && stopCh != nil {
-		close(stopCh)
-	}
-	if stopScheduler && doneCh != nil {
-		<-doneCh
-	}
 	if jobDoneCh != nil {
 		<-jobDoneCh
 	}
 	m.mu.Lock()
-	if m.stopCh == stopCh {
-		m.stopCh = nil
-	}
-	if m.doneCh == doneCh {
-		m.doneCh = nil
-	}
 	if m.jobDoneCh == jobDoneCh {
 		m.jobCancel = nil
 		m.jobDoneCh = nil
@@ -338,27 +295,6 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 	job.Status = jobStatusCompleted
 	job.Error = errors.Join(scanErr, retentionErr)
 	return job, nil
-}
-
-func (m *BackupManager) runScheduler(stopCh, doneCh chan struct{}) {
-	defer close(doneCh)
-	if _, err := m.RunBackup(); err != nil {
-		log.Printf("[backup] initial scheduled backup failed: %v", err)
-	}
-
-	ticker := time.NewTicker(m.config.Schedule)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-stopCh:
-			return
-		case <-ticker.C:
-			if _, err := m.RunBackup(); err != nil {
-				log.Printf("[backup] scheduled backup failed: %v", err)
-			}
-		}
-	}
 }
 
 type backupFile struct {

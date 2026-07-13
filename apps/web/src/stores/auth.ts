@@ -813,40 +813,6 @@ export interface Partner {
   status?: string;
 }
 
-export async function apiRegister(
-  email: string,
-  password: string,
-  name: string
-): Promise<{
-  success: boolean;
-  user?: User;
-  tokens?: Tokens;
-  error?: string;
-}> {
-  try {
-    const response = await fetch(buildApiUrl('/auth/register'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ email, password, name })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return { success: false, error: extractApiError(data, 'Registration failed') };
-    }
-
-    return {
-      success: true,
-      user: data.user,
-      tokens: data.tokens
-    };
-  } catch {
-    return { success: false, error: 'Network error' };
-  }
-}
-
 export async function apiRegisterPartner(
   companyName: string,
   email: string,
