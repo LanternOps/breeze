@@ -43,6 +43,7 @@ export default function EdrSummaryPanel() {
   const [s1, setS1] = useState<S1Status | null>(null);
   const [huntress, setHuntress] = useState<HuntressStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fetchFailed, setFetchFailed] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -54,6 +55,11 @@ export default function EdrSummaryPanel() {
       setS1(s1Res.status === "fulfilled" ? s1Res.value : null);
       setHuntress(
         huntressRes.status === "fulfilled" ? huntressRes.value : null,
+      );
+      // An unconfigured integration still resolves with { integration: null };
+      // a rejected fetch is a real failure and must not look like "not configured".
+      setFetchFailed(
+        s1Res.status === "rejected" || huntressRes.status === "rejected",
       );
       setLoading(false);
     })();
@@ -76,7 +82,20 @@ export default function EdrSummaryPanel() {
       </div>
     );
   }
-  if (!showS1 && !showHuntress) return null;
+  if (!showS1 && !showHuntress) {
+    if (!fetchFailed) return null;
+    return (
+      <div
+        className="rounded-lg border bg-card p-6 shadow-xs"
+        data-testid="edr-summary-panel"
+      >
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <ShieldAlert className="h-4 w-4" />
+          {t("securityEdrSummaryPanel.edrStatusUnavailable")}
+        </div>
+      </div>
+    );
+  }
   return (
     <div
       className="rounded-lg border bg-card p-6 shadow-xs"

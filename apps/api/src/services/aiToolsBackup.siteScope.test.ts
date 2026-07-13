@@ -121,3 +121,73 @@ describe('query_backups list_jobs — site narrowing (device-keyed jobs)', () =>
     expect(parsed.showing).toBe(1);
   });
 });
+
+describe('restore_snapshot — cross-site snapshot authorization (source device site)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const snapshotRow = {
+    id: 's1', orgId: 'org-1', providerSnapshotId: 'provider-xyz', deviceId: 'src-dev',
+    metadata: {}, size: 1024, hardwareProfile: {},
+  };
+
+  // Return the queued selects in order.
+  function seqSelect(results: Array<unknown[]>) {
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      const rows = results[call++] ?? [];
+      return { from: () => ({ where: () => ({ limit: () => Promise.resolve(rows) }) }) };
+    });
+  }
+
+  it('denies a Site-A target + Site-B snapshot (cross-site restore) and does not insert', async () => {
+    seqSelect([
+      [{ id: 'd1', siteId: 'site-A' }], // target device (allowed)
+      [snapshotRow],                    // snapshot row (source deviceId = src-dev)
+      [{ siteId: 'site-B' }],           // snapshot source device → forbidden site
+    ]);
+    const result = await handlerFor('restore_snapshot')({ snapshotId: 's1', deviceId: 'd1' }, makeAuth(['site-A']));
+    expect(result).toContain('access denied');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it('allows a same-site restore (Site-A target + Site-A snapshot) and inserts a restore job', async () => {
+    seqSelect([
+      [{ id: 'd1', siteId: 'site-A' }],   // target device (allowed)
+      [snapshotRow],                      // snapshot row
+      [{ siteId: 'site-A' }],             // snapshot source device → same site, allowed
+      [{ id: 'd1', status: 'online' }],   // target device online check
+    ]);
+    const now = new Date();
+    const rj = {
+      id: 'rj', deviceId: 'd1', snapshotId: 's1', restoreType: 'full', selectedPaths: [],
+      status: 'pending', targetPath: null, targetConfig: null, createdAt: now, startedAt: null,
+      completedAt: null, updatedAt: now, restoredSize: null, restoredFiles: null, commandId: null,
+    };
+    (db as any).insert = vi.fn(() => ({ values: () => ({ returning: () => Promise.resolve([rj]) }) }));
+    (db as any).update = vi.fn(() => ({ set: () => ({ where: () => ({ returning: () => Promise.resolve([{ ...rj, status: 'running', commandId: 'c1' }]) }) }) }));
+    const result = await handlerFor('restore_snapshot')({ snapshotId: 's1', deviceId: 'd1' }, makeAuth(['site-A']));
+    const parsed = JSON.parse(result);
+    expect(parsed.success).toBe(true);
+    expect((db as any).insert).toHaveBeenCalled();
+  });
+
+  it('unrestricted caller restores without a source-device query (no regression)', async () => {
+    // Unrestricted: loader skips the source-device gate. Selects: target, snapshot, target-online.
+    seqSelect([
+      [{ id: 'd1', siteId: 'site-Z' }], // target device
+      [snapshotRow],                    // snapshot row
+      [{ id: 'd1', status: 'online' }], // target device online check
+    ]);
+    const now = new Date();
+    const rj = {
+      id: 'rj', deviceId: 'd1', snapshotId: 's1', restoreType: 'full', selectedPaths: [],
+      status: 'pending', targetPath: null, targetConfig: null, createdAt: now, startedAt: null,
+      completedAt: null, updatedAt: now, restoredSize: null, restoredFiles: null, commandId: null,
+    };
+    (db as any).insert = vi.fn(() => ({ values: () => ({ returning: () => Promise.resolve([rj]) }) }));
+    (db as any).update = vi.fn(() => ({ set: () => ({ where: () => ({ returning: () => Promise.resolve([{ ...rj, status: 'running', commandId: 'c1' }]) }) }) }));
+    const result = await handlerFor('restore_snapshot')({ snapshotId: 's1', deviceId: 'd1' }, makeAuth(undefined));
+    const parsed = JSON.parse(result);
+    expect(parsed.success).toBe(true);
+  });
+});

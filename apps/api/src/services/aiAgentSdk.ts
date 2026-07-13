@@ -22,7 +22,7 @@ import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from '.
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat } from './aiToolOutput';
-import { buildApprovalPush, getUserPushTokens, sendExpoPush } from './expoPush';
+import { dispatchApprovalPushToTokens, getUserPushTokens } from './expoPush';
 import { decideHelperToolAction } from './pamToolActionGovernance';
 import { loadSession, loadConnection } from './m365Helpers';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
@@ -560,6 +560,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // Best-effort push notification to the user's mobile device(s).
       if (approvalRequestId) {
         try {
+          // Token read happens INSIDE the org DB context; the push network
+          // sends run AFTER it closes so we never hold the transaction open
+          // across the round-trip (#1105). dispatchApprovalPushToTokens fans
+          // out across every provider (Expo relay + native APNs).
           const tokens = await withDbAccessContext(
             {
               scope: 'organization',
@@ -569,18 +573,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             },
             () => getUserPushTokens(session.auth.user.id),
           );
-          if (tokens.length > 0) {
-            await sendExpoPush(
-              tokens.map((to) => ({
-                to,
-                ...buildApprovalPush({
-                  approvalId: approvalRequestId!,
-                  actionLabel,
-                  requestingClientLabel: 'Breeze AI',
-                }),
-              })),
-            );
-          }
+          await dispatchApprovalPushToTokens(tokens, {
+            approvalId: approvalRequestId,
+            actionLabel,
+            requestingClientLabel: 'Breeze AI',
+          });
         } catch (err) {
           console.error('[AI-SDK] Failed to dispatch approval push notification:', err);
         }

@@ -13,6 +13,7 @@ import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './Scr
 import DeviceSettingsModal from './DeviceSettingsModal';
 import AddDeviceModal from './AddDeviceModal';
 import CreateGroupModal from './CreateGroupModal';
+import LinkVmHostModal from './LinkVmHostModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { DeviceFilterToolbar } from './DeviceFilterToolbar';
 import { type ListFilters, DEFAULT_LIST_FILTERS } from './deviceListFilters';
@@ -28,7 +29,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
-import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle, isAccessDenied } from '@/lib/errorMessages';
 import AccessDenied from '../shared/AccessDenied';
@@ -37,6 +38,21 @@ import { ENABLE_NETWORK_DEVICES_IN_LIST } from '@/lib/featureFlags';
 import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
+
+// vm_host member role (#2308): unknown values degrade to "ungrouped" (null) by
+// design — a wrong nesting would be worse than none — but the degradation must
+// be observable, or a future third role silently flattens every affected fleet
+// until someone files "VM nesting stopped working". Warn once per value, not
+// per row/refetch.
+const warnedUnknownLinkGroupRoles = new Set<string>();
+function normalizeLinkGroupRole(value: unknown): 'host' | 'guest' | null {
+  if (value === 'host' || value === 'guest') return value;
+  if (value != null && !warnedUnknownLinkGroupRoles.has(String(value))) {
+    warnedUnknownLinkGroupRoles.add(String(value));
+    console.warn(`[devices] unknown linkGroupRole ${JSON.stringify(value)} — treating the device as ungrouped`);
+  }
+  return null;
+}
 
 type ViewMode = 'list' | 'grid';
 
@@ -89,6 +105,9 @@ export default function DevicesPage() {
     return window.location.hash === '#add-device';
   });
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
+  // vm_host link creation (#2308): the bulk action opens a host-picker modal
+  // over the selected devices; null = closed.
+  const [vmHostPickerDevices, setVmHostPickerDevices] = useState<Device[] | null>(null);
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   type PendingScriptRun = { script: Script; runAs: ScriptRunAsSelection; parameters?: Record<string, unknown>; devices: Device[] };
   const [pendingScriptRun, setPendingScriptRun] = useState<PendingScriptRun | null>(null);
@@ -362,6 +381,10 @@ export default function DevicesPage() {
           // Linked multi-boot profiles (#2138): grouping is computed
           // client-side per page in DeviceList from this id alone.
           linkGroupId: typeof d.linkGroupId === 'string' ? d.linkGroupId : null,
+          // vm_host member role (#2308): validated against the known values so
+          // an unexpected API value degrades to "ungrouped" instead of leaking
+          // (warned once per value — see normalizeLinkGroupRole).
+          linkGroupRole: normalizeLinkGroupRole(d.linkGroupRole),
           enrolledAt: d.enrolledAt as string | undefined,
           desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
           hardware: hardware ? {
@@ -763,6 +786,28 @@ export default function DevicesPage() {
     }
   };
 
+  // vm_host (#2308): the picker chose a host — create the group. Mirrors the
+  // multiboot bulk path's toast/refetch handling.
+  const handleVmHostConfirm = async (hostDeviceId: string) => {
+    const targets = vmHostPickerDevices;
+    if (!targets || actionInProgress) return;
+    try {
+      setActionInProgress(true);
+      await linkDevicesVmHost(hostDeviceId, targets.map(d => d.id));
+      const host = targets.find(d => d.id === hostDeviceId);
+      showToast({
+        type: 'success',
+        message: `Linked ${targets.length - 1} guest VM${targets.length - 1 === 1 ? '' : 's'} under ${host?.displayName || host?.hostname || 'the host server'}.`,
+      });
+      setVmHostPickerDevices(null);
+      await fetchDevices();
+    } catch (err) {
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Failed to link devices' });
+    } finally {
+      setActionInProgress(false);
+    }
+  };
+
   const handleBulkAction = async (action: string, allSelectedDevices: Device[]) => {
     if (actionInProgress || allSelectedDevices.length === 0) return;
 
@@ -799,6 +844,17 @@ export default function DevicesPage() {
 
     if (action === 'deploy-software') {
       void navigateTo('/software');
+      return;
+    }
+
+    // vm_host (#2308): needs a host decision first — open the picker modal;
+    // the POST happens in handleVmHostConfirm once a host is chosen.
+    if (action === 'link-vm-host') {
+      if (deviceIds.length < 2) {
+        showToast({ type: 'error', message: 'Select at least two devices — one host server and its guest VMs.' });
+        return;
+      }
+      setVmHostPickerDevices(selectedDevices);
       return;
     }
 
@@ -1165,6 +1221,16 @@ export default function DevicesPage() {
         onClose={() => setShowCreateGroup(false)}
         onCreated={handleGroupCreated}
       />
+
+      {vmHostPickerDevices && (
+        <LinkVmHostModal
+          isOpen={true}
+          devices={vmHostPickerDevices}
+          busy={actionInProgress}
+          onConfirm={hostId => void handleVmHostConfirm(hostId)}
+          onClose={() => setVmHostPickerDevices(null)}
+        />
+      )}
 
       <ScriptPickerModal
         isOpen={scriptPickerOpen}

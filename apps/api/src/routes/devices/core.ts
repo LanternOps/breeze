@@ -568,6 +568,10 @@ coreRoutes.get(
         // Linked multi-boot profiles (#2138): null => unlinked. The web list
         // groups rows client-side by this id (inactive strips / group bar).
         linkGroupId: devices.linkGroupId,
+        // vm_host member role (#2308): 'host' | 'guest' | null. Lets the web
+        // list nest guest rows under their host without joining the group
+        // table — a non-null role implies the group's kind is 'vm_host'.
+        linkGroupRole: devices.linkGroupRole,
         createdAt: devices.createdAt,
         updatedAt: devices.updatedAt,
         // Hardware summary
@@ -688,6 +692,7 @@ coreRoutes.get(
         batteryStatus: d.batteryStatus ?? null,
         activeVpns: d.activeVpns ?? null,
         linkGroupId: d.linkGroupId ?? null,
+        linkGroupRole: d.linkGroupRole ?? null,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
@@ -1356,6 +1361,12 @@ coreRoutes.delete(
       }
     }
 
+    // #2138/#2308 — whether deleting this device dissolved its link group
+    // (lone multiboot survivor unlinked, or a vm_host group left headless and
+    // its guests unlinked). Recorded in the audit details: an unexplained
+    // "why did this whole VM group un-group?" must be traceable to this event.
+    let linkGroupDissolved = false;
+
     // Cascade: remove all FK-referencing records in a transaction.
     // Uses raw SQL to cover all child tables without importing each schema.
     // When adding new tables with device_id FK, add them here too.
@@ -1388,10 +1399,11 @@ coreRoutes.delete(
         await tx.delete(devices).where(eq(devices.id, deviceId));
 
         // #2138 — the deleted device's link_group_id went with its row. If it
-        // was a boot profile and the group now has a single lone survivor,
-        // dissolve the (meaningless) group.
+        // was a boot profile and the group now has a single lone survivor —
+        // or it was a vm_host group's HOST (#2308), leaving the group
+        // headless — dissolve the group.
         if (device.linkGroupId) {
-          await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
+          linkGroupDissolved = await dissolveLinkGroupIfBelowMinimum(tx, device.linkGroupId);
         }
       });
     } catch (err: unknown) {
@@ -1413,7 +1425,16 @@ coreRoutes.delete(
       resourceType: 'device',
       resourceId: deviceId,
       resourceName: device.hostname ?? device.displayName ?? deviceId,
-      details: { uninstallCommandSent: uninstallSent }
+      details: {
+        uninstallCommandSent: uninstallSent,
+        // #2138/#2308 — deleting a linked device can dissolve its link group
+        // (and unlink every remaining member). Without this flag the audit
+        // trail would show only "device deleted" while sibling devices
+        // silently lost their grouping.
+        ...(device.linkGroupId
+          ? { linkGroupId: device.linkGroupId, linkGroupDissolved }
+          : {}),
+      }
     });
 
     return c.json({

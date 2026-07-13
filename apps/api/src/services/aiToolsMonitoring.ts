@@ -155,6 +155,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         properties: {
           action: { type: 'string', enum: ['get', 'create', 'update', 'delete'], description: 'The action to perform' },
           monitorId: { type: 'string', description: 'Monitor UUID (required for get/update/delete)' },
+          assetId: { type: 'string', description: 'Discovered-asset UUID to bind the monitor to (sets its site scope). Required for site-restricted users on create.' },
           name: { type: 'string', description: 'Monitor name (for create/update)' },
           monitorType: { type: 'string', description: 'Monitor type: icmp_ping, tcp_port, http_check, dns_check (for create)' },
           target: { type: 'string', description: 'Target host/URL (for create/update)' },
@@ -242,8 +243,35 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         if (!input.monitorType) return JSON.stringify({ error: 'monitorType is required' });
         if (!input.target) return JSON.stringify({ error: 'target is required' });
 
+        const assetId = typeof input.assetId === 'string' && input.assetId ? input.assetId : null;
+
+        // Validate the asset binding belongs to the caller's org (fail closed
+        // on a cross-org assetId) before it can set the monitor's site scope.
+        if (assetId) {
+          const [asset] = await db
+            .select({ id: discoveredAssets.id })
+            .from(discoveredAssets)
+            .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
+            .limit(1);
+          if (!asset) return JSON.stringify({ error: 'Asset not found or access denied' });
+        }
+
+        // Site-axis gate on create (SR5-08): a site-restricted caller MUST bind
+        // the monitor to an asset in a site they can access. Fail closed if
+        // unbound — an assetless monitor has no site, and the worker would then
+        // pick an arbitrary org agent to probe an arbitrary target across sites.
+        // Unrestricted callers pass regardless (assertMonitorSiteAccess short-
+        // circuits when auth.canAccessSite is undefined).
+        if (!(await assertMonitorSiteAccess({ id: 'new', assetId, orgId }))) {
+          return JSON.stringify({
+            error:
+              'Site-restricted users must bind the monitor to an asset in an accessible site (provide assetId).',
+          });
+        }
+
         const [monitor] = await db.insert(networkMonitors).values({
           orgId,
+          assetId,
           name: input.name as string,
           monitorType: input.monitorType as 'icmp_ping' | 'tcp_port' | 'http_check' | 'dns_check',
           target: input.target as string,

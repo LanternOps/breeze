@@ -12,7 +12,7 @@ import { BreezeOidcAdapter, getGrantBreezeMeta, getGrantBreezeMetaAsync } from '
 import { findAccount } from './findAccount';
 import { loadJwks } from './keys';
 import { revokeJti } from './revocationCache';
-import { getPartnerScopePolicy } from './partnerScopePolicy';
+import { ALL_MCP_SCOPES, computeEffectiveMcpScopes, resolveGrantContext } from './effectiveScopes';
 import { isSentryEnabled } from '../services/sentry';
 import { db } from '../db';
 import {
@@ -33,7 +33,16 @@ let providerInstance: Provider | null = null;
 // Shared AccessToken TTL. Used for the JWT exp AND as the TTL for the
 // grant-revocation cache marker (see revocationCache.revokeGrant) so the
 // marker outlives every JWT derived from the grant.
-export const ACCESS_TOKEN_TTL_SECONDS = 600;
+//
+// 30 minutes (#2363): the original 600s meant every MCP client had to run
+// a silent refresh 6×/hour, which turned any refresh-path bug into a
+// 10-minute session cap and multiplied refresh traffic. Revocation
+// latency is bounded by the revocation cache (per-jti + per-grant
+// markers checked by bearer middleware on every request), not by this
+// TTL, so raising it does not extend the residual-access window after an
+// explicit revoke. Keep GRANT_REVOCATION_TTL_SECONDS in adapter.ts >= this
+// value (enforced by a test in provider.test.ts).
+export const ACCESS_TOKEN_TTL_SECONDS = 1800;
 export const REFRESH_TOKEN_TTL_SECONDS = 14 * 24 * 60 * 60;
 
 // DCR cleanup TTL: a registered OAuth client that has never been used and
@@ -223,36 +232,33 @@ export async function buildExtraTokenClaims(
   };
 }
 
-// Master list of MCP scopes this provider knows how to issue. The policy
-// helper intersects this with the partner's allowlist; any scope added to
-// this list must also be added to `scopes:` below.
-export const ALL_MCP_SCOPES = ['mcp:read', 'mcp:write', 'mcp:execute'] as const;
+// Master list of MCP scopes this provider knows how to issue now lives in
+// effectiveScopes.ts (the shared home for scope-policy logic); re-exported
+// here for backward compatibility with existing importers of `./provider`.
+export { ALL_MCP_SCOPES };
 
 /**
- * Resolve the partner_id for the current token request. Strategy:
- *   1. Grant entity's breeze meta (authoritative — set at consent time).
- *   2. Client row's partner binding (fallback for client_credentials-style
- *      flows that don't have a Grant).
- * Returns null when neither source has a partner_id; callers treat that
- * as "no policy applicable" and fall back to all-scopes (back-compat).
+ * Resolve the partner_id for a resource-server scope calculation when NO
+ * OAuth Grant is present on the request — e.g. the very first `/oauth/auth`
+ * resource-indicator check before consent has happened, or a
+ * client_credentials-style flow that never creates a Grant. Falls back to
+ * the Client entity's partner binding. Our adapter stores that binding on
+ * `oauth_clients.partner_id`; oidc-provider doesn't project that onto the
+ * Client entity by default but our Client metadata carries `partner_id`
+ * where set (see adapter.ts Client projection). Probe a couple of
+ * conventional locations defensively. Returns null when no partner binding
+ * is resolvable.
+ *
+ * Grant-bearing requests MUST NOT use this function — `resolveGrantContext`
+ * (effectiveScopes.ts) is the only authoritative tenancy source once a
+ * Grant exists (MCP-OAUTH-02: a sync, cache-only Grant lookup here missed
+ * the async DB fallback and returned null partner after a restart, which
+ * `resolveAllowedMcpScopes(null)` then treated as "issue every MCP scope").
  */
 export function resolvePartnerIdForResourceServerInfo(
   ctx: any,
   client: any,
 ): string | null {
-  const grant: any = ctx?.oidc?.entities?.Grant;
-  if (grant) {
-    const grantId: string | undefined = grant.jti ?? grant.grantId;
-    const meta = getGrantBreezeMeta(grantId) ?? grant.breeze;
-    if (meta?.partner_id && typeof meta.partner_id === 'string') {
-      return meta.partner_id;
-    }
-  }
-  // Fall back to the Client entity. Our adapter stores partner binding on
-  // oauth_clients.partner_id; oidc-provider doesn't project that onto the
-  // Client entity by default but our Client metadata carries `partner_id`
-  // where set (see adapter.ts Client projection). Probe a couple of
-  // conventional locations defensively.
   const fromClient =
     client?.partner_id ??
     client?.partnerId ??
@@ -263,21 +269,44 @@ export function resolvePartnerIdForResourceServerInfo(
 }
 
 /**
- * Apply the partner's scope policy to the set of scopes this provider
- * would otherwise issue for `resource`. Returns the effective scope
- * string (space-joined). When no policy is set or the lookup returns
- * `{}`, this degrades to `allScopes` (current behavior).
+ * Compute the effective MCP scope string for a resource-server scope
+ * calculation (initial `/oauth/auth` resource check, authorization_code
+ * token exchange, and — critically — refresh-token exchange after an API
+ * restart). Extracted from the `getResourceServerInfo` closure so it's unit
+ * testable in isolation (see provider.test.ts).
+ *
+ * When a Grant is present, tenancy is resolved via `resolveGrantContext`
+ * (async, DB-backed on a cache miss) — never the old sync, cache-only path.
+ * A Grant with no durable partner tenancy throws `GrantTenancyError`, which
+ * propagates out of this function, out of `getResourceServerInfo`, and
+ * becomes a generic `server_error` OAuth response (oidc-provider's
+ * `err_out` helper never exposes a thrown Error's message to the client —
+ * see `lib/helpers/err_out.js`); the `server_error` listener wired in
+ * `getProvider()` below logs the detail for on-call.
  */
-export async function resolveAllowedMcpScopes(
-  partnerId: string | null,
-  allScopes: readonly string[] = ALL_MCP_SCOPES,
-): Promise<{ allowed: string[]; reduced: boolean }> {
-  if (!partnerId) return { allowed: [...allScopes], reduced: false };
-  const policy = await getPartnerScopePolicy(partnerId);
-  const whitelist = policy.mcp_allowed_scopes;
-  if (!whitelist) return { allowed: [...allScopes], reduced: false };
-  const allowed = allScopes.filter((s) => whitelist.includes(s));
-  return { allowed, reduced: allowed.length < allScopes.length };
+export async function resolveMcpResourceServerScope(
+  ctx: any,
+  client: any,
+): Promise<{ scope: string; partnerId: string | null; reduced: boolean }> {
+  const grant: any = ctx?.oidc?.entities?.Grant;
+  const grantId: string | undefined = grant ? (grant.jti ?? grant.grantId) : undefined;
+  const hasGrant = !!grantId;
+
+  const partnerId = hasGrant
+    ? (await resolveGrantContext(grantId!))?.partnerId ?? null
+    : resolvePartnerIdForResourceServerInfo(ctx, client);
+
+  const allowed = await computeEffectiveMcpScopes({
+    requested: [...ALL_MCP_SCOPES],
+    partnerId,
+    hasGrant,
+  });
+
+  return {
+    scope: allowed.join(' '),
+    partnerId,
+    reduced: allowed.length < ALL_MCP_SCOPES.length,
+  };
 }
 
 export async function handleRevocationSuccess(
@@ -400,16 +429,20 @@ export async function getProvider(): Promise<Provider> {
       resourceIndicators: {
         enabled: true,
         defaultResource: () => OAUTH_RESOURCE_URL,
-        // M-B3 follow-up (audit 2026-04-24): per-tenant scope policy. If
-        // the partner has `settings.oauth_scope_policy.mcp_allowed_scopes`
-        // set, we intersect it with the issuable scope set; otherwise we
-        // issue all scopes (back-compat). Partner lookup uses a short-TTL
-        // process-local cache (see partnerScopePolicy.ts) so the hot path
-        // is still O(1) after the first call per partner per minute.
+        // M-B3 follow-up (audit 2026-04-24), hardened for MCP-OAUTH-01/02
+        // (2026-07-11): per-tenant scope policy applied through the single
+        // authoritative resolver in effectiveScopes.ts. If the partner has
+        // `settings.oauth_scope_policy.mcp_allowed_scopes` set, we intersect
+        // it with the issuable scope set; otherwise we issue all scopes
+        // (back-compat). Partner lookup uses a short-TTL process-local
+        // cache (see partnerScopePolicy.ts) so the hot path is still O(1)
+        // after the first call per partner per minute. Grant tenancy
+        // resolution (`resolveMcpResourceServerScope` -> `resolveGrantContext`)
+        // is async and DB-backed on a cache miss — this is what makes a
+        // refresh-token exchange after an API restart resolve the CURRENT
+        // partner policy instead of silently reverting to "all scopes".
         getResourceServerInfo: async (ctx: any, resource: string, client: any) => {
-          const partnerId = resolvePartnerIdForResourceServerInfo(ctx, client);
-          const { allowed, reduced } = await resolveAllowedMcpScopes(partnerId);
-          const scope = allowed.join(' ');
+          const { scope, partnerId, reduced } = await resolveMcpResourceServerScope(ctx, client);
           if (isSentryEnabled()) {
             Sentry.addBreadcrumb({
               category: 'oauth.scope',
@@ -430,12 +463,13 @@ export async function getProvider(): Promise<Provider> {
                 },
               });
             }
-          }
-          if (!partnerId) {
-            // Partner could not be resolved — log a breadcrumb so
-            // operators notice if this becomes a common case (policy is
-            // silently bypassed).
-            if (isSentryEnabled()) {
+            if (!partnerId) {
+              // Only reachable for the documented grantless-legacy case
+              // (no Grant yet, e.g. the initial /oauth/auth resource-
+              // indicator check, or a client with no partner binding) —
+              // a Grant with unresolvable tenancy now throws instead of
+              // reaching here. Still worth a breadcrumb so operators
+              // notice if this becomes a common case for the wrong reason.
               Sentry.addBreadcrumb({
                 category: 'oauth.scope_policy',
                 level: 'warning',

@@ -100,6 +100,10 @@ type HeartbeatPayload struct {
 	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
 	// Windows box — omitempty then drops the field entirely.
 	OneDriveDeviceState *onedrivehelper.DeviceState `json:"onedriveDeviceState,omitempty"`
+	// Agent's own Go runtime memory gauges (#2389). Collected every heartbeat
+	// (runtime.ReadMemStats is microseconds) so fleet-wide agent memory leaks
+	// are visible from the server without shell access to the device.
+	AgentRuntime *collectors.RuntimeStats `json:"agentRuntime,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -221,6 +225,12 @@ type Heartbeat struct {
 	// executed twice when delivered via both WebSocket and heartbeat.
 	seenCommands   map[string]time.Time
 	seenCommandsMu sync.Mutex
+
+	// commandInFlightWarnAfter overrides the wedged-worker watchdog interval
+	// in executeCommandViaPool; non-positive means
+	// defaultCommandInFlightWarnAfter. Set before the heartbeat runs (tests
+	// only) — never mutated afterwards.
+	commandInFlightWarnAfter time.Duration
 
 	// Guard against concurrent cert renewals from successive heartbeats
 	certRenewing      atomic.Bool
@@ -2563,12 +2573,50 @@ func (h *Heartbeat) sendReliabilityMetrics(sentAt time.Time) {
 // heartbeatWatchdogTimeoutNs is the duration (in nanoseconds) after which
 // sendHeartbeatWithWatchdog dumps all goroutine stacks if the wrapped send
 // has not returned. Stored as an int64 via sync/atomic so tests can override
-// it from another goroutine without tripping -race. Production default is
-// 15s; tests may shorten it via setHeartbeatWatchdogTimeout().
+// it from another goroutine without tripping -race. Tests may shorten it via
+// setHeartbeatWatchdogTimeout().
+//
+// Production default is 90s. The watchdog times the WHOLE runHeartbeat() —
+// metrics collection, the primary POST (one 30s-capped context around the
+// retry loop), and once consecutive failures reach backupProbeThreshold
+// (with a backup URL configured) a second full backup-probe POST (another
+// 30s cap) — so a routine slow/flapping uplink legitimately takes up to
+// ~60-65s. The watchdog exists to catch indefinite broker-mutex starvation
+// (#387), which blows past any finite bound, so 90s keeps the diagnostic
+// while never firing on a merely degraded link (#2386: a 15s timeout fired
+// on every heartbeat for days on a slow macOS uplink).
 var heartbeatWatchdogTimeoutNs atomic.Int64
 
+// heartbeatWatchdogDumpIntervalNs rate-limits the expensive part of a
+// watchdog fire (stop-the-world runtime.Stack over all goroutines + a multi-KB
+// WARN log the shipper uploads): at most one goroutine dump per interval,
+// across invocations. Fires inside the interval log a cheap one-line WARN
+// with a suppressed counter instead. Atomic so tests can shrink it.
+var heartbeatWatchdogDumpIntervalNs atomic.Int64
+
+// heartbeatWatchdogLastDumpNs is the unix-nano timestamp of the last emitted
+// goroutine dump (0 = never). heartbeatWatchdogSuppressedDumps counts fires
+// whose dump was rate-limited since the last emitted dump.
+var (
+	heartbeatWatchdogLastDumpNs      atomic.Int64
+	heartbeatWatchdogSuppressedDumps atomic.Int64
+)
+
+// heartbeatWatchdogMaxDumpBytes caps the raw goroutine dump put in the WARN
+// log's `goroutines` field. The API's log endpoint rejects any entry whose
+// stringified `fields` object exceeds 32,000 chars — and one oversized entry
+// 400s the WHOLE shipped batch (#2386). Typical dumps inflate only a few
+// percent under JSON escaping (one \n + one \t per frame line), but the cap
+// is sized for the ~2x worst case where every char escapes to two
+// (TestWatchdogDumpFitsAPIFieldsLimit models this): 12KB*2 leaves headroom
+// under the ceiling. Pathological dumps heavy in <>& (six-byte \u00XX
+// escapes) are backstopped by the shipper's capFields, which replaces
+// oversized fields with a marker rather than burning the batch.
+const heartbeatWatchdogMaxDumpBytes = 12 * 1024
+
 func init() {
-	heartbeatWatchdogTimeoutNs.Store(int64(15 * time.Second))
+	heartbeatWatchdogTimeoutNs.Store(int64(90 * time.Second))
+	heartbeatWatchdogDumpIntervalNs.Store(int64(10 * time.Minute))
 }
 
 // heartbeatWatchdogTimeout returns the current watchdog timeout as a duration.
@@ -2581,6 +2629,59 @@ func heartbeatWatchdogTimeout() time.Duration {
 // default alone.
 func setHeartbeatWatchdogTimeout(d time.Duration) time.Duration {
 	return time.Duration(heartbeatWatchdogTimeoutNs.Swap(int64(d)))
+}
+
+// heartbeatWatchdogDumpInterval returns the current minimum interval between
+// emitted goroutine dumps.
+func heartbeatWatchdogDumpInterval() time.Duration {
+	return time.Duration(heartbeatWatchdogDumpIntervalNs.Load())
+}
+
+// setHeartbeatWatchdogDumpInterval overrides the dump rate-limit interval and
+// returns the previous value. Intended for tests.
+func setHeartbeatWatchdogDumpInterval(d time.Duration) time.Duration {
+	return time.Duration(heartbeatWatchdogDumpIntervalNs.Swap(int64(d)))
+}
+
+// resetHeartbeatWatchdogDumpState clears the cross-invocation rate-limit
+// state (last-dump timestamp + suppressed counter). Intended for tests.
+func resetHeartbeatWatchdogDumpState() {
+	heartbeatWatchdogLastDumpNs.Store(0)
+	heartbeatWatchdogSuppressedDumps.Store(0)
+}
+
+// heartbeatWatchdogTryAcquireDump reports whether a goroutine dump may be
+// emitted now, atomically claiming the slot if so. Safe for concurrent
+// watchdog goroutines (overlapping invocations race for one slot).
+//
+// The slot is consumed even if the resulting WARN entry is later dropped by
+// a full shipper buffer — acceptable because the dump still reaches the
+// local log via the base handler, and when the buffer is full (network
+// dead) nothing would ship anyway.
+func heartbeatWatchdogTryAcquireDump(now time.Time, interval time.Duration) bool {
+	for {
+		last := heartbeatWatchdogLastDumpNs.Load()
+		if last != 0 && now.UnixNano()-last < int64(interval) {
+			return false
+		}
+		if heartbeatWatchdogLastDumpNs.CompareAndSwap(last, now.UnixNano()) {
+			return true
+		}
+	}
+}
+
+// truncateGoroutineDump caps a runtime.Stack dump at max bytes, cutting at a
+// goroutine boundary when possible so the tail isn't a half-printed frame.
+func truncateGoroutineDump(dump string, max int) string {
+	if len(dump) <= max {
+		return dump
+	}
+	total := len(dump)
+	cut := dump[:max]
+	if i := strings.LastIndex(cut, "\n\ngoroutine "); i > 0 {
+		cut = cut[:i]
+	}
+	return cut + fmt.Sprintf("\n... [truncated, %d of %d bytes]", len(cut), total)
 }
 
 // sendHeartbeatFn is the function invoked inside sendHeartbeatWithWatchdog.
@@ -2704,23 +2805,32 @@ func (h *Heartbeat) sendHeartbeatWithWatchdog() {
 	defer close(done)
 
 	go func() {
-		const maxDumpBytes = 100 * 1024 // 100 KB cap to avoid log storm
-
 		// The select fires at most once per invocation, so sync.Once is
 		// unnecessary — a plain select is sufficient.
 		select {
 		case <-done:
 			// Normal return — watchdog cancelled.
 		case <-time.After(timeout):
+			elapsedMs := time.Since(start).Milliseconds()
+			if !heartbeatWatchdogTryAcquireDump(time.Now(), heartbeatWatchdogDumpInterval()) {
+				// Rate-limited: skip the stop-the-world stack dump and the
+				// multi-KB log entry; note the fire cheaply instead.
+				suppressed := heartbeatWatchdogSuppressedDumps.Add(1)
+				log.Warn("heartbeat send exceeded watchdog timeout (goroutine dump rate-limited)",
+					"elapsed_ms", elapsedMs,
+					"timeout_ms", timeout.Milliseconds(),
+					"suppressed_dumps", suppressed)
+				return
+			}
+			suppressed := heartbeatWatchdogSuppressedDumps.Swap(0)
 			buf := make([]byte, 1<<20) // 1 MiB stack buffer
 			n := runtime.Stack(buf, true)
-			dump := string(buf[:n])
-			if len(dump) > maxDumpBytes {
-				dump = dump[:maxDumpBytes] + "\n... [truncated]"
-			}
+			dump := truncateGoroutineDump(string(buf[:n]), heartbeatWatchdogMaxDumpBytes)
 			log.Warn("heartbeat send exceeded watchdog timeout — dumping goroutine stacks",
-				"elapsed_ms", time.Since(start).Milliseconds(),
+				"elapsed_ms", elapsedMs,
 				"timeout_ms", timeout.Milliseconds(),
+				"goroutine_count", runtime.NumGoroutine(),
+				"suppressed_dumps_since_last", suppressed,
 				"goroutines", dump)
 		}
 	}()
@@ -2803,6 +2913,9 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Current power/battery state (#2142). Nil on platforms that can't report
 	// it or when the query failed — omitempty then drops the field.
 	payload.Battery = h.hardwareCol.CollectBattery()
+
+	// Agent's own runtime memory gauges (#2389).
+	payload.AgentRuntime = collectors.CollectRuntimeStats()
 
 	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
 	// Windows box — omitempty then drops the field entirely.
@@ -3528,21 +3641,52 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 		}
 	}
 
-	select {
-	case result := <-resultCh:
-		return result
-	case <-h.stopChan:
-		return tools.CommandResult{
-			Status: "failed",
-			Error:  "agent is shutting down",
-		}
-	case <-h.pool.Context().Done():
-		return tools.CommandResult{
-			Status: "failed",
-			Error:  "command execution interrupted during shutdown",
+	// Watchdog: log-only, deliberately NOT a timeout. Some handlers are
+	// long-running by design (run_script up to 1h, software installs, patch
+	// loops), so failing the command here would race legitimate work. The log
+	// flags workers wedged on an unbounded blocking call — each one pins its
+	// decoded command payload (up to the 64MB websocket read limit,
+	// maxMessageSize in internal/websocket) for the process lifetime and
+	// permanently shrinks the pool (issue #2387).
+	warnAfter := h.commandInFlightWarnAfter
+	if warnAfter <= 0 {
+		warnAfter = defaultCommandInFlightWarnAfter
+	}
+	started := time.Now()
+	watchdog := time.NewTimer(warnAfter)
+	defer watchdog.Stop()
+
+	for {
+		select {
+		case result := <-resultCh:
+			return result
+		case <-watchdog.C:
+			log.Warn("command still in flight after watchdog interval — handler may be wedged and retaining its payload",
+				logging.KeyCommandID, cmd.ID,
+				"type", cmd.Type,
+				"elapsed", time.Since(started).Round(time.Second).String(),
+			)
+			watchdog.Reset(warnAfter)
+		case <-h.stopChan:
+			return tools.CommandResult{
+				Status: "failed",
+				Error:  "agent is shutting down",
+			}
+		case <-h.pool.Context().Done():
+			return tools.CommandResult{
+				Status: "failed",
+				Error:  "command execution interrupted during shutdown",
+			}
 		}
 	}
 }
+
+// defaultCommandInFlightWarnAfter is how long a pool-dispatched command may
+// run before the dispatch loop logs a wedged-worker warning (and again each
+// further interval). Generous on purpose: the longest legitimate handlers
+// (scripts capped at executor.MaxTimeout = 1h, patch installs) must not trip
+// it in normal operation.
+const defaultCommandInFlightWarnAfter = 2 * time.Hour
 
 func isEphemeralCommand(cmdType string) bool {
 	switch cmdType {

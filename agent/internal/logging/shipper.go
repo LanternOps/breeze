@@ -11,6 +11,8 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +38,18 @@ const (
 	defaultMaxBatchSize  = 500
 	defaultBufferSize    = 500
 )
+
+// maxEntriesPerShipRequest mirrors the API log endpoint's per-request cap:
+// apps/api/src/routes/agents/logs.ts validates `logs: z.array(...).max(200)`
+// and 400s the entire request when exceeded — and 4xx responses are never
+// retried, so an oversized request loses every entry in it (#2397). The
+// shipper accumulates up to defaultMaxBatchSize (500) entries per flush, so
+// each flush is split into chunks of at most this many entries per HTTP
+// request. Go and TypeScript can't share a constant; this comment is the
+// sync mechanism — this value must stay <= the API-side cap (never raise it
+// in lockstep with a server bump: self-hosted API versions vary, so the
+// agent must conform to the oldest supported cap).
+const maxEntriesPerShipRequest = 200
 
 // LogEntry represents a single log entry to be shipped remotely.
 type LogEntry struct {
@@ -109,8 +123,85 @@ func (s *Shipper) Stop() {
 	s.wg.Wait()
 }
 
+// maxShippedFieldsJSONBytes mirrors the API log endpoint's per-entry cap
+// (apps/api/src/routes/agents/logs.ts rejects entries whose stringified
+// `fields` exceeds 32,000 chars — and a single oversized entry 400s the
+// whole batch, burning every legitimate entry shipped with it, #2386).
+// For strings, Go's marshaled byte length is >= JSON.stringify().length
+// (UTF-8 bytes >= UTF-16 units, plus Go additionally HTML-escapes <>& to
+// six-byte \u00XX forms); float formatting can differ by a few bytes per
+// field in either direction, which the 1,000-byte headroom absorbs.
+//
+// Note this guards only `fields` — the API also caps message (10,000) and
+// component (100), which nothing in the agent currently approaches.
+const maxShippedFieldsJSONBytes = 31000
+
+// maxSalvagedFieldBytes is the per-field size above which a field is dropped
+// (by name) when the entry as a whole is over the ship limit.
+const maxSalvagedFieldBytes = 1024
+
+// capFields enforces the API's per-entry `fields` size limit locally before
+// the entry is buffered, so one bloated or unmarshalable entry cannot get
+// the whole shipped batch rejected (the API 400s the entire batch on any
+// invalid entry, and shipBatch drops all entries on a whole-batch marshal
+// failure). Small fields are salvaged — operators need correlating scalars
+// like ids and durations — and the oversized/unmarshalable ones are dropped
+// by name in a `fields_dropped` marker.
+func capFields(fields map[string]any) map[string]any {
+	if fields == nil {
+		return nil
+	}
+	b, err := json.Marshal(fields)
+	if err == nil && len(b) <= maxShippedFieldsJSONBytes {
+		return fields
+	}
+	var reason string
+	if err != nil {
+		// e.g. a NaN/Inf float or a non-marshalable value smuggled into a
+		// slog attr. Left alone it would fail the whole-batch marshal in
+		// shipBatch and silently drop every co-batched entry.
+		reason = fmt.Sprintf("fields not JSON-marshalable (%v)", err)
+	} else {
+		reason = fmt.Sprintf("fields JSON was %d bytes, exceeds ship limit of %d", len(b), maxShippedFieldsJSONBytes)
+	}
+
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic salvage order
+
+	capped := make(map[string]any, len(fields)+1)
+	var dropped []string
+	// Salvage into half the ship limit so the kept fields + marker + JSON
+	// syntax overhead can never re-breach the cap.
+	const salvageBudget = maxShippedFieldsJSONBytes / 2
+	used := 0
+	for _, k := range keys {
+		vb, verr := json.Marshal(fields[k])
+		if verr != nil {
+			dropped = append(dropped, k+"(unmarshalable)")
+			continue
+		}
+		if len(vb) > maxSalvagedFieldBytes || used+len(vb)+len(k)+8 > salvageBudget {
+			dropped = append(dropped, fmt.Sprintf("%s(%dB)", k, len(vb)))
+			continue
+		}
+		capped[k] = fields[k]
+		used += len(vb) + len(k) + 8
+	}
+
+	marker := reason + "; dropped: " + strings.Join(dropped, ", ")
+	if len(marker) > 2000 {
+		marker = marker[:2000] + "..."
+	}
+	capped["fields_dropped"] = marker
+	return capped
+}
+
 // Enqueue adds a log entry to the buffer. Non-blocking; drops if buffer is full.
 func (s *Shipper) Enqueue(entry LogEntry) {
+	entry.Fields = capFields(entry.Fields)
 	select {
 	case s.buffer <- entry:
 	default:
@@ -186,6 +277,15 @@ const (
 	shipRetryBackoff = 1 * time.Second
 )
 
+// shipBatch ships a flushed batch, splitting it into chunks of at most
+// maxEntriesPerShipRequest entries per HTTP request — the API rejects any
+// larger request wholesale (#2397). Each chunk succeeds or fails
+// independently: a non-auth 4xx on one chunk drops only that chunk's entries
+// and later chunks still ship. A terminal failure — network error or 429/5xx
+// after exhausting retries (server unreachable/unhealthy), or a 401 (token
+// dead for every chunk alike) — aborts the remaining chunks instead, since
+// each further chunk would burn another doomed request or retry cycle for
+// the same outcome, blocking the ship loop.
 func (s *Shipper) shipBatch(entries []LogEntry) {
 	if s.authMon != nil && s.authMon.ShouldSkip() {
 		// Auth-dead: don't drop entries on the ticker path — re-buffer
@@ -217,13 +317,33 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 		return
 	}
 
+	for start := 0; start < len(entries); start += maxEntriesPerShipRequest {
+		end := min(start+maxEntriesPerShipRequest, len(entries))
+		if !s.shipChunk(entries[start:end]) {
+			if remaining := len(entries) - end; remaining > 0 {
+				fmt.Fprintf(os.Stderr, "[log-shipper] dropping %d entries in remaining chunks after terminal failure\n", remaining)
+				s.droppedCount.Add(int64(remaining))
+			}
+			return
+		}
+	}
+}
+
+// shipChunk sends one HTTP request carrying at most maxEntriesPerShipRequest
+// entries, with per-chunk retry for network errors and 429/5xx responses.
+// It returns false on terminal failures that would doom every remaining
+// chunk alike — network error or retryable status after exhausting retries,
+// or a 401 (dead token) — so the caller can stop burning requests on the
+// rest of the batch. Chunk-local outcomes (success, or a non-retried
+// non-auth 4xx that drops only this chunk) return true.
+func (s *Shipper) shipChunk(entries []LogEntry) bool {
 	payload, err := json.Marshal(map[string]any{
 		"logs": entries,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[log-shipper] marshal error: %v\n", err)
 		s.droppedCount.Add(int64(len(entries)))
-		return
+		return true
 	}
 
 	// Compress payload with gzip
@@ -232,12 +352,12 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 	if _, err := gw.Write(payload); err != nil {
 		fmt.Fprintf(os.Stderr, "[log-shipper] gzip write error: %v\n", err)
 		s.droppedCount.Add(int64(len(entries)))
-		return
+		return true
 	}
 	if err := gw.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "[log-shipper] gzip close error: %v\n", err)
 		s.droppedCount.Add(int64(len(entries)))
-		return
+		return true
 	}
 	compressedBytes := compressed.Bytes()
 
@@ -264,7 +384,7 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 			cancel()
 			fmt.Fprintf(os.Stderr, "[log-shipper] request build error: %v\n", err)
 			s.droppedCount.Add(int64(len(entries)))
-			return
+			return true
 		}
 
 		req.Header.Set("Authorization", "Bearer "+s.authToken.Reveal())
@@ -281,7 +401,7 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 			}
 			fmt.Fprintf(os.Stderr, "[log-shipper] HTTP error (giving up after %d attempts): %v\n", shipRetryCount+1, err)
 			s.droppedCount.Add(int64(len(entries)))
-			return
+			return false
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
@@ -300,7 +420,7 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d (giving up after %d attempts): %s\n",
 				resp.StatusCode, shipRetryCount+1, string(body))
 			s.droppedCount.Add(int64(len(entries)))
-			return
+			return false
 		}
 
 		if resp.StatusCode >= 500 {
@@ -316,21 +436,34 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d (giving up after %d attempts): %s\n",
 				resp.StatusCode, shipRetryCount+1, string(body))
 			s.droppedCount.Add(int64(len(entries)))
-			return
+			return false
 		}
 
 		if resp.StatusCode >= 400 {
-			// Client error (4xx): do not retry
+			// Client error (4xx): do not retry this chunk.
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			resp.Body.Close()
 			cancel()
-			if resp.StatusCode == http.StatusUnauthorized && s.authMon != nil {
-				s.authMon.RecordAuthFailure()
-			}
 			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d for %d entries: %s\n",
 				resp.StatusCode, len(entries), string(body))
 			s.droppedCount.Add(int64(len(entries)))
-			return
+			if resp.StatusCode == http.StatusUnauthorized {
+				// Auth is request-independent: the token won't get healthier
+				// between chunks, so shipping the batch's remaining chunks
+				// would just burn one doomed request — and one extra
+				// RecordAuthFailure — per chunk, skewing the auth monitor's
+				// skip threshold (tuned for one failure per flush, the
+				// pre-chunking behavior). Terminal: record once, abort batch.
+				if s.authMon != nil {
+					s.authMon.RecordAuthFailure()
+				}
+				return false
+			}
+			// Other 4xxs are chunk-local — the rejection is about this
+			// request's contents (e.g. a validation failure) — so only this
+			// chunk's entries are dropped and the batch's remaining chunks
+			// still ship (#2397).
+			return true
 		}
 
 		// Success
@@ -340,8 +473,9 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 		if s.authMon != nil {
 			s.authMon.RecordSuccess()
 		}
-		return
+		return true
 	}
+	return true // unreachable: the loop always returns on its final attempt
 }
 
 // DroppedLogCount returns the current count of dropped log entries without

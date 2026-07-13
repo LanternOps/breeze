@@ -63,7 +63,7 @@ vi.mock('../../db/schema', async () => ({
 const bridgeMocks = vi.hoisted(() => ({
   resolveElevationApprovers: vi.fn(),
   getUserPushTokens: vi.fn(),
-  sendExpoPush: vi.fn(),
+  dispatchApprovalPushToTokens: vi.fn(),
   buildApprovalPush: vi.fn(() => ({ title: 'Approval requested', body: 'x' })),
 }));
 vi.mock('../../services/pamApprovers', () => ({
@@ -71,7 +71,7 @@ vi.mock('../../services/pamApprovers', () => ({
 }));
 vi.mock('../../services/expoPush', () => ({
   getUserPushTokens: bridgeMocks.getUserPushTokens,
-  sendExpoPush: bridgeMocks.sendExpoPush,
+  dispatchApprovalPushToTokens: bridgeMocks.dispatchApprovalPushToTokens,
   buildApprovalPush: bridgeMocks.buildApprovalPush,
 }));
 
@@ -239,7 +239,7 @@ describe('agent elevation-requests ingestion route', () => {
     // Default: no eligible approvers -> mobile bridge is a no-op.
     bridgeMocks.resolveElevationApprovers.mockResolvedValue([]);
     bridgeMocks.getUserPushTokens.mockResolvedValue([]);
-    bridgeMocks.sendExpoPush.mockResolvedValue([]);
+    bridgeMocks.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
   });
 
   it('inserts an elevation request and returns id + status', async () => {
@@ -410,7 +410,7 @@ describe('ingest decisioning (#1163)', () => {
     pamMocks.publishEvent.mockResolvedValue('evt-1');
     bridgeMocks.resolveElevationApprovers.mockResolvedValue([]);
     bridgeMocks.getUserPushTokens.mockResolvedValue([]);
-    bridgeMocks.sendExpoPush.mockResolvedValue([]);
+    bridgeMocks.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
   });
 
   async function post(app: Hono) {
@@ -773,8 +773,14 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
     mockSelects([{ id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'WS-01' } as any]);
     pamMocks.evaluatePamBridge.mockResolvedValue({ match: null, auditMatches: [] });
     pamMocks.publishEvent.mockResolvedValue('evt-1');
-    bridgeMocks.getUserPushTokens.mockResolvedValue(['ExponentPushToken[abc]']);
-    bridgeMocks.sendExpoPush.mockResolvedValue([{ status: 'ok', id: 'tk' }]);
+    bridgeMocks.getUserPushTokens.mockResolvedValue([
+      { token: 'ExponentPushToken[abc]', platform: 'ios', provider: 'expo' },
+    ]);
+    bridgeMocks.dispatchApprovalPushToTokens.mockResolvedValue({
+      tokensFound: 1,
+      dispatched: 1,
+      errors: 0,
+    });
   });
 
   async function post(app: Hono) {
@@ -818,7 +824,7 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
     );
     // Push attempted for each approver.
     expect(bridgeMocks.getUserPushTokens).toHaveBeenCalledTimes(2);
-    expect(bridgeMocks.sendExpoPush).toHaveBeenCalledTimes(2);
+    expect(bridgeMocks.dispatchApprovalPushToTokens).toHaveBeenCalledTimes(2);
   });
 
   it('auto_approved elevation does NOT trigger the bridge', async () => {
@@ -860,7 +866,7 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
 
   it('a failing push does not abort the remaining approvers', async () => {
     bridgeMocks.resolveElevationApprovers.mockResolvedValue(['user-a', 'user-b']);
-    bridgeMocks.sendExpoPush.mockRejectedValueOnce(new Error('expo 500'));
+    bridgeMocks.dispatchApprovalPushToTokens.mockRejectedValueOnce(new Error('push 500'));
     const { values } = happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
 
     const res = await post(buildApp());

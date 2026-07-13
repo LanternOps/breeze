@@ -244,7 +244,7 @@ func Test_FailoverHeartbeatIncludesNewFields(t *testing.T) {
 		FlapDetected:  h.recovery.Count24h() >= h.maxPer24h,
 	}
 	fc := NewFailoverClient(server.URL, "agent-test", "tok", nil)
-	if _, err := fc.SendHeartbeat("v-test", h.wd.State(), nil, stats); err != nil {
+	if _, err := fc.SendHeartbeat("v-test", h.wd.State(), stats); err != nil {
 		t.Fatalf("SendHeartbeat: %v", err)
 	}
 	if got := captured["mainAgentRestartCount24h"]; got != float64(5) {

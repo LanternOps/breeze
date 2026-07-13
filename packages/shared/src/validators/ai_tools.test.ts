@@ -153,6 +153,28 @@ describe('scriptBuilderContextSchema', () => {
     ).toBe(true);
   });
 
+  it('should pass timeoutSeconds through unchanged at or below the 3600 executor cap', () => {
+    const result = scriptBuilderContextSchema.safeParse({
+      editorSnapshot: { timeoutSeconds: 3600 },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.editorSnapshot?.timeoutSeconds).toBe(3600);
+    }
+  });
+
+  it('should clamp legacy timeoutSeconds above 3600 to the executor cap (#2398)', () => {
+    for (const legacy of [3601, 7200, 86400]) {
+      const result = scriptBuilderContextSchema.safeParse({
+        editorSnapshot: { timeoutSeconds: legacy },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.editorSnapshot?.timeoutSeconds).toBe(3600);
+      }
+    }
+  });
+
   it('should reject name over 255 chars in editorSnapshot', () => {
     const result = scriptBuilderContextSchema.safeParse({
       editorSnapshot: { name: 'x'.repeat(256) },

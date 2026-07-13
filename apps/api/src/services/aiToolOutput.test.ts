@@ -1,5 +1,59 @@
 import { describe, expect, it } from 'vitest';
-import { compactToolResultForChat } from './aiToolOutput';
+import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
+
+// SR5-16: tool_input is persisted UNCONDITIONALLY to the transcript (even for
+// denied calls). Sensitive keys must be masked at that chokepoint.
+describe('redactSensitiveToolInput', () => {
+  const REDACTED = '[REDACTED]';
+
+  it('masks known-sensitive keys (accessKey/secretKey/password/token/apiKey/clientSecret/privateKey/connectionString)', () => {
+    const out = redactSensitiveToolInput({
+      accessKey: 'AKIAIOSFODNN7EXAMPLE',
+      secretKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+      password: 'hunter2',
+      token: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+      apiKey: 'sk-ant-super-secret',
+      clientSecret: 'cs-value',
+      privateKey: '-----BEGIN PRIVATE KEY-----',
+      connectionString: 'Server=db;Password=p;',
+    });
+
+    for (const key of Object.keys(out)) {
+      expect(out[key]).toBe(REDACTED);
+    }
+  });
+
+  it('masks sensitive keys nested inside providerConfig (manage_backup_configs shape)', () => {
+    const out = redactSensitiveToolInput({
+      provider: 's3',
+      providerConfig: {
+        region: 'us-east-1',
+        bucket: 'backups',
+        accessKey: 'AKIA...',
+        secretKey: 'super-secret',
+      },
+    });
+
+    const cfg = out.providerConfig as Record<string, unknown>;
+    // Non-sensitive fields survive so the transcript stays useful.
+    expect(cfg.region).toBe('us-east-1');
+    expect(cfg.bucket).toBe('backups');
+    // Secrets are masked.
+    expect(cfg.accessKey).toBe(REDACTED);
+    expect(cfg.secretKey).toBe(REDACTED);
+    expect(out.provider).toBe('s3');
+  });
+
+  it('leaves inputs with no sensitive keys untouched', () => {
+    const input = { deviceId: 'dev-1', command: 'restart', count: 3, enabled: true };
+    expect(redactSensitiveToolInput(input)).toEqual(input);
+  });
+
+  it('scrubs inline secret assignments embedded in string values', () => {
+    const out = redactSensitiveToolInput({ note: 'use password=hunter2 to connect' });
+    expect(out.note).not.toContain('hunter2');
+  });
+});
 
 describe('compactToolResultForChat', () => {
   it('returns compact JSON preview for oversized non-JSON output', () => {

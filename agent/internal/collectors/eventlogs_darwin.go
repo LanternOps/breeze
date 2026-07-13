@@ -6,65 +6,47 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
 // Collect gathers event logs from macOS sources in parallel
 func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
-	c.mu.Lock()
-	lastCollect := c.lastCollectTime
-	c.mu.Unlock()
+	// Each source advances its watermark from the START of this pass, not the
+	// end: the sub-collectors query up to roughly this instant, so stamping
+	// after they finish would leave a gap covering the pass duration. The tiny
+	// overlap this creates can at worst duplicate an event that lands mid-pass
+	// — preferable to silently dropping it. Watermarks are per-source
+	// (runEventLogSubCollectors) so a failing source retries its own window
+	// next pass without freezing the windows of the sources that succeeded.
+	passStart := time.Now()
 
 	categories, minLevel, maxEvents := c.readConfig()
 
-	type catCollector struct {
-		category string
-		fn       func(since time.Time) ([]EventLogEntry, error)
+	securityEnabled := categoryEnabled(categories, "security")
+	hardwareEnabled := categoryEnabled(categories, "hardware")
+
+	var subCollectors []eventLogSubCollector
+	if securityEnabled || hardwareEnabled {
+		// security + hardware share ONE `log show` invocation (issue #2390:
+		// two parallel queries doubled seconds of CPU per pass for the same data).
+		subCollectors = append(subCollectors, eventLogSubCollector{
+			name: "unifiedlog",
+			fn: func(since time.Time) ([]EventLogEntry, error) {
+				return c.collectUnifiedLogEvents(since, securityEnabled, hardwareEnabled)
+			},
+		})
+	}
+	if categoryEnabled(categories, "application") {
+		subCollectors = append(subCollectors, eventLogSubCollector{name: "crashreports", fn: c.collectCrashReports})
+	}
+	if categoryEnabled(categories, "system") {
+		subCollectors = append(subCollectors, eventLogSubCollector{name: "power", fn: c.collectPowerEvents})
 	}
 
-	all := []catCollector{
-		{"security", c.collectSecurityEvents},
-		{"hardware", c.collectHardwareErrors},
-		{"application", c.collectCrashReports},
-		{"system", c.collectPowerEvents},
-	}
-
-	// Filter to only enabled categories
-	var active []catCollector
-	for _, cc := range all {
-		if categoryEnabled(categories, cc.category) {
-			active = append(active, cc)
-		}
-	}
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var allEvents []EventLogEntry
-
-	wg.Add(len(active))
-	for _, cc := range active {
-		go func(f func(since time.Time) ([]EventLogEntry, error)) {
-			defer wg.Done()
-			events, err := f(lastCollect)
-			if err != nil {
-				slog.Warn("event log sub-collector error", "error", err.Error())
-				return
-			}
-			mu.Lock()
-			allEvents = append(allEvents, events...)
-			mu.Unlock()
-		}(cc.fn)
-	}
-	wg.Wait()
-
-	c.mu.Lock()
-	c.lastCollectTime = time.Now()
-	c.mu.Unlock()
+	allEvents := c.runEventLogSubCollectors(subCollectors, passStart)
 
 	// Filter by minimum level
 	allEvents = filterByLevel(allEvents, minLevel)
@@ -88,43 +70,31 @@ type unifiedLogEntry struct {
 	ProcessID        int    `json:"processID"`
 }
 
-// collectSecurityEvents gathers auth failures, TCC changes from unified log
-func (c *EventLogCollector) collectSecurityEvents(since time.Time) ([]EventLogEntry, error) {
-	predicate := `subsystem == "com.apple.opendirectoryd" OR eventMessage CONTAINS[c] "authentication" OR subsystem == "com.apple.TCC"`
-
-	return c.queryUnifiedLog(predicate, "security", since)
-}
-
-// collectHardwareErrors gathers disk, thermal, kernel errors from unified log
-func (c *EventLogCollector) collectHardwareErrors(since time.Time) ([]EventLogEntry, error) {
-	predicate := `(subsystem CONTAINS "com.apple.iokit" AND messageType >= error) OR eventMessage CONTAINS[c] "thermal" OR eventMessage CONTAINS[c] "kernel panic"`
-
-	return c.queryUnifiedLog(predicate, "hardware", since)
-}
-
-// queryUnifiedLog runs `log show` with a predicate and returns parsed entries
-func (c *EventLogCollector) queryUnifiedLog(predicate, category string, since time.Time) ([]EventLogEntry, error) {
-	elapsed := time.Since(since)
-	lastMinutes := int(elapsed.Minutes())
-	if lastMinutes < 1 {
-		lastMinutes = 1
-	}
-	if lastMinutes > 60 {
-		lastMinutes = 60
+// collectUnifiedLogEvents gathers security events (auth failures, TCC changes)
+// and hardware errors (disk, thermal, kernel) from the unified log in a single
+// `log show` invocation, re-categorizing each entry in Go. Querying the
+// unified log costs seconds of CPU regardless of how little it returns
+// (issue #2390), so the two categories must never fan out as separate queries.
+func (c *EventLogCollector) collectUnifiedLogEvents(since time.Time, securityEnabled, hardwareEnabled bool) ([]EventLogEntry, error) {
+	predicate := buildUnifiedLogPredicate(securityEnabled, hardwareEnabled)
+	if predicate == "" {
+		return nil, nil
 	}
 
-	// Wrap predicate with messageType filter so macOS filters at the source.
-	// The Go code below only keeps error/fault entries anyway, so this avoids
-	// downloading megabytes of info/debug JSON that would be discarded.
-	filteredPredicate := fmt.Sprintf(`(%s) AND (messageType >= error)`, predicate)
+	start := unifiedLogQueryStart(since, time.Now())
 
-	output, err := runCollectorOutput(collectorLongCommandTimeout, "log", "show",
-		"--predicate", filteredPredicate,
+	// runCollectorBoundedOutput streams stdout through an io.LimitReader so the
+	// 4 MiB cap is enforced before the bytes are buffered (the old
+	// runCollectorOutput buffered everything first and checked post-hoc).
+	output, err := runCollectorBoundedOutput(collectorLongCommandTimeout, "log", "show",
+		"--predicate", predicate,
 		"--style", "json",
-		"--last", fmt.Sprintf("%dm", lastMinutes),
+		"--start", start.Format(unifiedLogStartFormat),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("log show failed: %w", err)
+		// The runner's error already names the command and includes capped
+		// stderr; don't double-wrap.
+		return nil, err
 	}
 
 	if len(output) == 0 {
@@ -152,7 +122,7 @@ func (c *EventLogCollector) queryUnifiedLog(predicate, category string, since ti
 		results = append(results, EventLogEntry{
 			Timestamp: e.Timestamp,
 			Level:     level,
-			Category:  category,
+			Category:  classifyUnifiedLogCategory(e.Subsystem, e.EventMessage, securityEnabled, hardwareEnabled),
 			Source:    truncateCollectorString(source),
 			EventID:   truncateCollectorString(fmt.Sprintf("%s:%d", source, e.ProcessID)),
 			Message:   truncateString(e.EventMessage, 500),

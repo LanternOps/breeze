@@ -78,3 +78,36 @@ describe('sendDeviceCommand error extraction', () => {
     expect(thrownMessage).toBe('Failed to send device command');
   });
 });
+
+describe('linkDevicesVmHost wire shape (#2308)', () => {
+  it('POSTs kind, hostDeviceId, and deviceIds to /devices/link-groups', async () => {
+    const { linkDevicesVmHost } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(makeJsonResponse({ id: 'grp-vm' }));
+
+    const result = await linkDevicesVmHost('dev-host', ['dev-host', 'dev-vm1', 'dev-vm2']);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/devices/link-groups');
+    expect(init?.method).toBe('POST');
+    // The exact body contract the API's createLinkGroupSchema validates —
+    // a drifted key here means every vm_host link 400s.
+    expect(JSON.parse(init?.body as string)).toEqual({
+      kind: 'vm_host',
+      hostDeviceId: 'dev-host',
+      deviceIds: ['dev-host', 'dev-vm1', 'dev-vm2'],
+    });
+    expect(result).toEqual({ id: 'grp-vm' });
+  });
+
+  it('throws the API error message on failure', async () => {
+    const { linkDevicesVmHost } = await import('./deviceActions');
+    fetchMock.mockResolvedValue(
+      makeJsonResponse({ error: 'A vm_host group requires hostDeviceId' }, false, 400),
+    );
+
+    await expect(linkDevicesVmHost('dev-host', ['dev-host', 'dev-vm1'])).rejects.toThrow(
+      'A vm_host group requires hostDeviceId',
+    );
+  });
+});

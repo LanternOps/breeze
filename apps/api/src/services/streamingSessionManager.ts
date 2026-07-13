@@ -27,7 +27,7 @@ import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools'
 import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
-import { redactAiToolOutputText } from './aiToolOutput';
+import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { isRecognizedSelfHostSignal } from '../config/env';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
@@ -684,7 +684,15 @@ export class StreamingSessionManager {
                     sessionId: session.breezeSessionId,
                     role: 'assistant',
                     content: assistantContent || null,
-                    contentBlocks: message.message.content as unknown as Record<string, unknown>[],
+                    // SR5-16: the assistant content blocks embed each tool_use's
+                    // raw `input`, so redact those here too — otherwise the same
+                    // plaintext secret persisted below in `tool_input` would still
+                    // land here in cleartext.
+                    contentBlocks: message.message.content.map((b) =>
+                      b.type === 'tool_use'
+                        ? { ...b, input: redactSensitiveToolInput(b.input as Record<string, unknown>) }
+                        : b,
+                    ) as unknown as Record<string, unknown>[],
                     inputTokens: message.message.usage?.input_tokens ?? 0,
                     outputTokens: message.message.usage?.output_tokens ?? 0,
                   })
@@ -708,7 +716,11 @@ export class StreamingSessionManager {
                         sessionId: session.breezeSessionId,
                         role: 'tool_use',
                         toolName: bareName,
-                        toolInput: block.input as Record<string, unknown>,
+                        // SR5-16: mask known-sensitive keys (accessKey, secretKey,
+                        // password, token, apiKey, clientSecret, privateKey,
+                        // connectionString, …) before persisting. Unconditional —
+                        // this runs even for tool calls the user later denies.
+                        toolInput: redactSensitiveToolInput(block.input as Record<string, unknown>),
                         toolUseId: block.id,
                       })
                   );

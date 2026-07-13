@@ -44,25 +44,30 @@ describe('revokeAllUserOauthArtifacts', () => {
     const userId = '11111111-1111-1111-1111-111111111111';
     const futureExpiry = new Date(Date.now() + 7 * 24 * 3600 * 1000);
 
-    // First select: refresh tokens.
+    // First select: refresh tokens. Grant discovery no longer reads payload —
+    // jti markers key on the token ROW id (Task 3 removes payload.jti), and
+    // grants come from the authoritative oauth_grants select below.
     mockSelectRows([
-      { id: 'rt-1', payload: { jti: 'jti-1', grantId: 'grant-A' }, expiresAt: futureExpiry },
-      { id: 'rt-2', payload: { jti: 'jti-2', grantId: 'grant-A' }, expiresAt: futureExpiry }, // same grant
-      { id: 'rt-3', payload: { jti: 'jti-3', grantId: 'grant-B' }, expiresAt: futureExpiry },
+      { id: 'rt-1', expiresAt: futureExpiry },
+      { id: 'rt-2', expiresAt: futureExpiry },
+      { id: 'rt-3', expiresAt: futureExpiry },
     ]);
-    // Second select: grants (includes a "dangling" grant-C with no active refresh).
+    // Second select: grants (authoritative inventory, incl. a code-only grant-C
+    // with no active refresh row).
     mockSelectRows([{ id: 'grant-A' }, { id: 'grant-B' }, { id: 'grant-C' }]);
 
     mockUpdateChain();
 
     const result = await revokeAllUserOauthArtifacts(userId);
 
-    expect(revokeJtiMock).toHaveBeenCalledWith('jti-1', expect.any(Number));
-    expect(revokeJtiMock).toHaveBeenCalledWith('jti-2', expect.any(Number));
-    expect(revokeJtiMock).toHaveBeenCalledWith('jti-3', expect.any(Number));
+    // jti markers keyed on the token row id, not payload.jti.
+    expect(revokeJtiMock).toHaveBeenCalledWith('rt-1', expect.any(Number));
+    expect(revokeJtiMock).toHaveBeenCalledWith('rt-2', expect.any(Number));
+    expect(revokeJtiMock).toHaveBeenCalledWith('rt-3', expect.any(Number));
     expect(revokeJtiMock).toHaveBeenCalledTimes(3);
 
-    // grant-A should be written once (dedup), grant-B once, grant-C once from dangling pass.
+    // Every grant from the authoritative oauth_grants select gets a marker,
+    // including the code-only grant-C with no refresh row.
     const grantCalls = revokeGrantMock.mock.calls.map((c) => c[0]);
     expect(grantCalls.sort()).toEqual(['grant-A', 'grant-B', 'grant-C']);
 
@@ -107,28 +112,28 @@ describe('revokeAllUserOauthArtifacts', () => {
 
   it('revokes partner-wide OAuth artifacts for tenant lifecycle changes', async () => {
     mockSelectRows([
-      { id: 'rt-partner', payload: { jti: 'jti-partner', grantId: 'grant-partner' }, expiresAt: new Date(Date.now() + 60_000) },
+      { id: 'rt-partner', expiresAt: new Date(Date.now() + 60_000) },
     ]);
     mockSelectRows([{ id: 'grant-partner' }]);
     mockUpdateChain();
 
     const result = await revokeAllPartnerOauthArtifacts('66666666-6666-6666-8666-666666666666');
 
-    expect(revokeJtiMock).toHaveBeenCalledWith('jti-partner', expect.any(Number));
+    expect(revokeJtiMock).toHaveBeenCalledWith('rt-partner', expect.any(Number));
     expect(revokeGrantMock).toHaveBeenCalledWith('grant-partner', expect.any(Number));
     expect(result.refreshTokensRevoked).toBe(1);
   });
 
   it('revokes org-wide OAuth artifacts for tenant lifecycle changes', async () => {
     mockSelectRows([
-      { id: 'rt-org', payload: { jti: 'jti-org', grantId: 'grant-org' }, expiresAt: new Date(Date.now() + 60_000) },
+      { id: 'rt-org', expiresAt: new Date(Date.now() + 60_000) },
     ]);
     mockSelectRows([{ id: 'grant-org' }]);
     mockUpdateChain();
 
     const result = await revokeAllOrgOauthArtifacts('77777777-7777-7777-8777-777777777777');
 
-    expect(revokeJtiMock).toHaveBeenCalledWith('jti-org', expect.any(Number));
+    expect(revokeJtiMock).toHaveBeenCalledWith('rt-org', expect.any(Number));
     expect(revokeGrantMock).toHaveBeenCalledWith('grant-org', expect.any(Number));
     expect(result.refreshTokensRevoked).toBe(1);
   });
@@ -136,7 +141,7 @@ describe('revokeAllUserOauthArtifacts', () => {
   it('propagates revokeJti cache failures', async () => {
     const userId = '44444444-4444-4444-4444-444444444444';
     mockSelectRows([
-      { id: 'rt-1', payload: { jti: 'jti-1', grantId: 'grant-A' }, expiresAt: new Date(Date.now() + 60_000) },
+      { id: 'rt-1', expiresAt: new Date(Date.now() + 60_000) },
     ]);
     mockUpdateChain();
     revokeJtiMock.mockRejectedValueOnce(new Error('redis down'));

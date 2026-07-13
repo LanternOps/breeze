@@ -14,6 +14,7 @@ const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/auditEvents', () => ({
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeRouteAudit: vi.fn()
 }));
 
@@ -205,6 +206,93 @@ describe('scripts routes', () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.id).toBe(SCRIPT_ID_1);
+  });
+
+  it('should accept timeoutSeconds at the 3600 executor cap on create', async () => {
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: SCRIPT_ID_1,
+          name: 'Long Script',
+          orgId: ORG_ID
+        }])
+      })
+    } as any);
+
+    const res = await app.request('/scripts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        name: 'Long Script',
+        osTypes: ['linux'],
+        language: 'bash',
+        content: 'echo hello',
+        timeoutSeconds: 3600
+      })
+    });
+
+    expect(res.status).toBe(201);
+  });
+
+  it('should reject timeoutSeconds above 3600 on create (#2398 — agent clamps at 1h)', async () => {
+    for (const tooLong of [3601, 7200, 86400]) {
+      const res = await app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Too Long',
+          osTypes: ['linux'],
+          language: 'bash',
+          content: 'echo hello',
+          timeoutSeconds: tooLong
+        })
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('should reject timeoutSeconds above 3600 on update (#2398)', async () => {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ timeoutSeconds: 7200 })
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('should accept timeoutSeconds at the 3600 cap on update', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: SCRIPT_ID_1,
+            name: 'Script One',
+            content: 'echo hi',
+            version: 1,
+            isSystem: false,
+            orgId: ORG_ID
+          }])
+        })
+      })
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: SCRIPT_ID_1,
+            timeoutSeconds: 3600,
+            version: 2
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ timeoutSeconds: 3600 })
+    });
+    expect(res.status).toBe(200);
   });
 
   it('should update a script and return updated record', async () => {

@@ -211,6 +211,122 @@ describe('TicketFormsCard', () => {
     expect(fetchMock.mock.calls.some(([u, i]) => String(u) === '/ticket-forms' && (i as RequestInit)?.method === 'POST')).toBe(false);
   });
 
+  it('creates a partner-wide form with an org allowlist → POST body visibleOrgIds: [a, b]', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [FORM] });
+      if (url === '/ticket-forms' && init?.method === 'POST')
+        return makeJsonResponse({ data: { ...FORM, id: 'f-2' } });
+      if (url === '/orgs/organizations?limit=100')
+        return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }, { id: 'org-b', name: 'Org B' }] });
+      if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+    render(<TicketFormsCard />);
+    await screen.findByTestId('ticket-form-row-f-1');
+    fireEvent.click(screen.getByTestId('ticket-form-create'));
+    fireEvent.change(screen.getByTestId('ticket-form-name'), { target: { value: 'Limited' } });
+    fireEvent.click(screen.getByTestId('ticket-form-owner-partner'));
+    fireEvent.click(screen.getByTestId('ticket-form-limit-orgs'));
+    fireEvent.click(screen.getByTestId('ticket-form-visible-org-org-a'));
+    fireEvent.click(screen.getByTestId('ticket-form-visible-org-org-b'));
+    fireEvent.click(screen.getByTestId('ticket-form-save'));
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(([u, i]) => String(u) === '/ticket-forms' && (i as RequestInit)?.method === 'POST');
+      expect(post).toBeTruthy();
+      const body = JSON.parse(String((post![1] as RequestInit).body));
+      expect(body.ownerScope).toBe('partner');
+      expect(body.visibleOrgIds).toEqual(['org-a', 'org-b']);
+    });
+  });
+
+  it('blocks save with an inline issue when limit-orgs is checked but zero orgs selected', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [FORM] });
+      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
+      if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+    render(<TicketFormsCard />);
+    await screen.findByTestId('ticket-form-row-f-1');
+    fireEvent.click(screen.getByTestId('ticket-form-create'));
+    fireEvent.change(screen.getByTestId('ticket-form-name'), { target: { value: 'Empty allowlist' } });
+    fireEvent.click(screen.getByTestId('ticket-form-limit-orgs'));
+    fireEvent.click(screen.getByTestId('ticket-form-save'));
+    expect(await screen.findByTestId('ticket-form-issues')).toBeTruthy();
+    expect(screen.getByTestId('ticket-form-issues').textContent).toContain('Select at least one organization');
+    expect(fetchMock.mock.calls.some(([u, i]) => String(u) === '/ticket-forms' && (i as RequestInit)?.method === 'POST')).toBe(false);
+  });
+
+  it('hydrates the allowlist from a limited partner-wide row and clears it via unchecking → PUT visibleOrgIds: null', async () => {
+    const limitedForm = { ...FORM, visibleOrgIds: ['org-a'] };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [limitedForm] });
+      if (url === '/ticket-forms/f-1' && init?.method === 'PUT') return makeJsonResponse({ data: FORM });
+      if (url === '/orgs/organizations?limit=100')
+        return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }, { id: 'org-b', name: 'Org B' }] });
+      if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+    render(<TicketFormsCard />);
+    await screen.findByTestId('ticket-form-row-f-1');
+    fireEvent.click(screen.getByTestId('ticket-form-edit-f-1'));
+    // Hydration: checkbox pre-checked, org-a pre-selected.
+    expect((screen.getByTestId('ticket-form-limit-orgs') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('ticket-form-visible-org-org-a') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('ticket-form-visible-org-org-b') as HTMLInputElement).checked).toBe(false);
+    // Uncheck the limit → save clears the allowlist.
+    fireEvent.click(screen.getByTestId('ticket-form-limit-orgs'));
+    fireEvent.click(screen.getByTestId('ticket-form-save'));
+    await waitFor(() => {
+      const put = fetchMock.mock.calls.find(([u, i]) => String(u) === '/ticket-forms/f-1' && (i as RequestInit)?.method === 'PUT');
+      expect(put).toBeTruthy();
+      const body = JSON.parse(String((put![1] as RequestInit).body));
+      expect(body.visibleOrgIds).toBeNull();
+    });
+  });
+
+  it('renders an N-orgs count badge for a limited partner-wide row', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/ticket-forms' && (!init || !init.method))
+        return makeJsonResponse({ data: [{ ...FORM, visibleOrgIds: ['org-a', 'org-b'] }] });
+      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [] });
+      if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+    render(<TicketFormsCard />);
+    await screen.findByTestId('ticket-form-row-f-1');
+    expect(screen.getByTestId('ticket-form-org-count-f-1').textContent).toContain('2 orgs');
+    expect(screen.queryByTestId('ticket-form-all-orgs-f-1')).toBeNull();
+  });
+
+  it('never shows the allowlist control for an org-owned form, and PUT omits visibleOrgIds', async () => {
+    const orgForm = { ...FORM, orgId: 'org-a', partnerId: null, visibleOrgIds: null };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/ticket-forms' && (!init || !init.method)) return makeJsonResponse({ data: [orgForm] });
+      if (url === '/ticket-forms/f-1' && init?.method === 'PUT') return makeJsonResponse({ data: orgForm });
+      if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
+      if (url === '/ticket-categories') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+    render(<TicketFormsCard />);
+    await screen.findByTestId('ticket-form-row-f-1');
+    fireEvent.click(screen.getByTestId('ticket-form-edit-f-1'));
+    expect(screen.queryByTestId('ticket-form-limit-orgs')).toBeNull();
+    fireEvent.change(screen.getByTestId('ticket-form-name'), { target: { value: 'Org form v2' } });
+    fireEvent.click(screen.getByTestId('ticket-form-save'));
+    await waitFor(() => {
+      const put = fetchMock.mock.calls.find(([u, i]) => String(u) === '/ticket-forms/f-1' && (i as RequestInit)?.method === 'PUT');
+      expect(put).toBeTruthy();
+      const body = JSON.parse(String((put![1] as RequestInit).body));
+      expect(body).not.toHaveProperty('visibleOrgIds');
+    });
+  });
+
   it('two-step delete: first click arms, second click fires DELETE', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

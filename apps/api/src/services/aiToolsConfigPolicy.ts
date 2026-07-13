@@ -20,6 +20,7 @@ import {
   listFeatureLinks,
   listAssignments,
   validateAssignmentTarget,
+  authorizeAssignmentTarget,
   canManagePartnerWidePolicies,
   policyAccessCondition,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -273,6 +274,14 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: targetValidation.error });
       }
 
+      // Site sub-axis (SR5-07): RLS does not enforce the site allowlist, so a
+      // site-restricted caller must be blocked from assigning to org/partner
+      // targets or to a site/group/device outside their allowed sites.
+      const siteAuth = await authorizeAssignmentTarget(auth, input.level as any, targetId);
+      if (!siteAuth.valid) {
+        return JSON.stringify({ error: siteAuth.error });
+      }
+
       // assignPolicy returns null (instead of throwing) on a duplicate — see
       // the comment on its onConflictDoNothing insert in configurationPolicy.ts
       // for why the raised-violation catch pattern doesn't work inside this
@@ -344,6 +353,14 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
       // under the partner. Same blast radius as assigning, so the same gate applies.
       if (assignment.policyOrgId === null && !canManagePartnerWidePolicies(auth)) {
         return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      }
+
+      // Site sub-axis (SR5-07): re-check against the stored target so a
+      // site-restricted caller can't remove an assignment reaching a site,
+      // group, or device outside their allowlist (RLS does not enforce site).
+      const siteAuth = await authorizeAssignmentTarget(auth, assignment.level as any, assignment.targetId);
+      if (!siteAuth.valid) {
+        return JSON.stringify({ error: siteAuth.error });
       }
 
       const deleted = await unassignPolicy(input.assignmentId as string, assignment.configPolicyId);
@@ -656,7 +673,7 @@ Inline settings shapes by feature type:
 - monitoring: { checkIntervalSeconds: 60, watches: [{ watchType: "service"|"process", name: "wuauserv", displayName?: "Windows Update", enabled: true, alertOnStop: true, alertAfterConsecutiveFailures: 2, alertSeverity: "critical"|"high"|"medium"|"low"|"info", cpuThresholdPercent?: 90, memoryThresholdMb?: 500, thresholdDurationSeconds: 300, autoRestart: false, maxRestartAttempts: 3, restartCooldownSeconds: 300 }], eventLogAlerts?: [{ name, category: "security"|"hardware"|"application"|"system", level: "warning"|"error"|"critical", sourcePattern?, messagePattern?, countThreshold: 1, windowMinutes: 15, severity: "high", enabled: true }] }
 - maintenance: { recurrence: "once"|"daily"|"weekly"|"monthly", windowStart?: "ISO-8601 (for once)", durationHours: 1-72, timezone: "America/New_York", suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false, notifyBeforeMinutes?: 15, notifyOnStart: true, notifyOnEnd: true }
 - automation: { items: [{ name, enabled: true, triggerType: "schedule"|"event"|"manual", cronExpression?: "0 2 * * *", timezone?: "America/New_York", eventType?: "device.offline"|"alert.triggered"|"compliance.failed"|"patch.available", actions: [{ type: "run_script"|"send_notification"|"create_alert"|"execute_command", scriptId?|channelId?|severity?|message?|command? }], onFailure: "stop"|"continue"|"notify" }] }
-- event_log: { retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 5, rateLimitPerHour: 12000 }
+- event_log: { retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ["security","hardware","application","system"], minimumLevel: "info"|"warning"|"error"|"critical", collectionIntervalMinutes: 15, rateLimitPerHour: 12000 }
 - compliance: { items: [{ name, enforcementLevel: "monitor"|"warn"|"enforce", checkIntervalMinutes: 60, rules: [{ type: "required_software"|"prohibited_software"|"disk_space_minimum"|"os_version"|"registry_check"|"config_file_check", name?|minGb?|osType?|path?|valueName?|expectedValue?|minVersion? }] }] }
 - security: { realTimeProtection: true, behavioralMonitoring: true, cloudLookup: true, scheduledScans: true, scanHour: "2", scanMinute: "0", scanDayOfWeek: "*", scanDayOfMonth: "*", autoQuarantine: true, notifyUser: true, blockUntrustedUsb: false, exclusions: [] }
 - backup: { scheduleFrequency: "daily"|"weekly"|"monthly", scheduleTime: "02:00", scheduleDayOfWeek?: "tue", retentionPreset: "standard"|"extended"|"compliance"|"custom", retentionDays?: 30, retentionVersions?: 5, compression: true, encryption: true, paths: [], excludePatterns: [], notifyOnFailure: true, notifyOnSuccess: false, notifyOnMissed: true }

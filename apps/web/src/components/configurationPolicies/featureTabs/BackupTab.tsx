@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   HardDrive,
   Loader2,
+  Pencil,
   Plus,
   Trash2,
   CheckCircle2,
@@ -12,6 +13,7 @@ import {
   Clock,
   Shield,
 } from "lucide-react";
+import { deriveS3RegionFromEndpoint } from "@breeze/shared";
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
@@ -101,6 +103,16 @@ type BackupInlineSettingsPayload = {
   targets: Record<string, unknown>;
 };
 // ── Constants ──────────────────────────────────────────────────────────────────
+// Matches the API's redaction sentinel: sending it back on PATCH keeps the stored secret.
+const MASKED_SECRET = "********";
+function hasStoredSecret(value: unknown): boolean {
+  if (typeof value === "string") return value.length > 0;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    return record.redacted === true && record.hasSecret !== false;
+  }
+  return false;
+}
 const scheduleDefaults: BackupScheduleSettings = {
   scheduleFrequency: "daily",
   scheduleTime: "03:00",
@@ -370,14 +382,21 @@ function PathList({
   onRemove,
   placeholder,
   label,
+  pendingValue,
+  onPendingChange,
 }: {
   items: string[];
   onAdd: (value: string) => void;
   onRemove: (value: string) => void;
   placeholder: string;
   label: string;
+  /** Optional controlled pending input so the parent can flush a typed-but-not-added value on save. */
+  pendingValue?: string;
+  onPendingChange?: (value: string) => void;
 }) {
-  const [input, setInput] = useState("");
+  const [localInput, setLocalInput] = useState("");
+  const input = pendingValue ?? localInput;
+  const setInput = onPendingChange ?? setLocalInput;
   const handleAdd = () => {
     const trimmed = input.trim();
     if (!trimmed || items.includes(trimmed)) return;
@@ -614,12 +633,14 @@ export default function BackupTab({
   const [selectedConfigId, setSelectedConfigId] = useState<string>(
     () => effectiveLink?.featurePolicyId ?? "",
   );
-  const [mode, setMode] = useState<"select" | "create">("select");
-  // New config fields
+  const [mode, setMode] = useState<"select" | "create" | "edit">("select");
+  // New / edited config fields
+  const [editingConfigId, setEditingConfigId] = useState<string | null>(null);
   const [newConfigName, setNewConfigName] = useState("");
   const [newProvider, setNewProvider] = useState<BackupProvider>("s3");
   const [s3Bucket, setS3Bucket] = useState("");
   const [s3Region, setS3Region] = useState("us-east-1");
+  const [s3RegionTouched, setS3RegionTouched] = useState(false);
   const [s3AccessKey, setS3AccessKey] = useState("");
   const [s3SecretKey, setS3SecretKey] = useState("");
   const [s3Endpoint, setS3Endpoint] = useState("");
@@ -627,6 +648,8 @@ export default function BackupTab({
   const [configSaving, setConfigSaving] = useState(false);
   const [configError, setConfigError] = useState<string>();
   const [testMessage, setTestMessage] = useState<string>();
+  // Typed-but-not-added backup path, flushed on save (controlled PathList input)
+  const [pendingPath, setPendingPath] = useState("");
   // Connection test
   const [testStatus, setTestStatus] = useState<
     "idle" | "testing" | "success" | "failed"
@@ -747,21 +770,22 @@ export default function BackupTab({
     }
   };
   // ── Create config via API ──────────────────────────────────────────────────
+  const buildProviderDetails = (): Record<string, unknown> =>
+    newProvider === "s3"
+      ? {
+          bucket: s3Bucket,
+          region: s3Region.trim(),
+          accessKey: s3AccessKey,
+          secretKey: s3SecretKey,
+          ...(s3Endpoint ? { endpoint: s3Endpoint } : {}),
+          ...(settings.s3Prefix ? { prefix: settings.s3Prefix } : {}),
+        }
+      : { path: localPath };
   const createConfig = async (): Promise<string | null> => {
     setConfigError(undefined);
     setConfigSaving(true);
     try {
-      const details: Record<string, unknown> =
-        newProvider === "s3"
-          ? {
-              bucket: s3Bucket,
-              region: s3Region,
-              accessKey: s3AccessKey,
-              secretKey: s3SecretKey,
-              ...(s3Endpoint ? { endpoint: s3Endpoint } : {}),
-              ...(settings.s3Prefix ? { prefix: settings.s3Prefix } : {}),
-            }
-          : { path: localPath };
+      const details = buildProviderDetails();
       const response = await fetchWithAuth("/backup/configs", {
         method: "POST",
         body: JSON.stringify({
@@ -795,14 +819,92 @@ export default function BackupTab({
       setConfigSaving(false);
     }
   };
+  // ── Edit existing config ───────────────────────────────────────────────────
+  const beginEditConfig = (config: BackupConfig) => {
+    const details = config.details ?? {};
+    setEditingConfigId(config.id);
+    setNewConfigName(config.name);
+    setNewProvider(config.provider === "local" ? "local" : "s3");
+    setS3Bucket(typeof details.bucket === "string" ? details.bucket : "");
+    const region = typeof details.region === "string" ? details.region : "";
+    setS3Region(region);
+    setS3RegionTouched(Boolean(region.trim()));
+    setS3Endpoint(typeof details.endpoint === "string" ? details.endpoint : "");
+    update("s3Prefix", typeof details.prefix === "string" ? details.prefix : "");
+    setS3AccessKey(hasStoredSecret(details.accessKey) ? MASKED_SECRET : "");
+    setS3SecretKey(hasStoredSecret(details.secretKey) ? MASKED_SECRET : "");
+    setLocalPath(
+      typeof details.path === "string" ? details.path : "/var/backups/breeze",
+    );
+    setConfigError(undefined);
+    setMode("edit");
+  };
+  const updateConfig = async (): Promise<string | null> => {
+    if (!editingConfigId) return null;
+    setConfigError(undefined);
+    setConfigSaving(true);
+    try {
+      const response = await fetchWithAuth(
+        `/backup/configs/${editingConfigId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            name: newConfigName,
+            details: buildProviderDetails(),
+          }),
+        },
+      );
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(
+          extractApiError(
+            data,
+            i18n.t(
+              "policies:configurationPolicies.featureTabs.backupTab.failedToUpdateBackupConfig",
+            ),
+          ),
+        );
+      }
+      const updated = await response.json();
+      const cfg = updated.data ?? updated;
+      setConfigs((prev) => prev.map((c) => (c.id === cfg.id ? cfg : c)));
+      setSelectedConfigId(cfg.id);
+      setEditingConfigId(null);
+      setMode("select");
+      return cfg.id;
+    } catch (err) {
+      setConfigError(err instanceof Error ? err.message : "An error occurred");
+      return null;
+    } finally {
+      setConfigSaving(false);
+    }
+  };
   // ── Save feature link ──────────────────────────────────────────────────────
   const handleSave = async (options?: {
     downgradeInvalidProvider?: boolean;
   }) => {
     clearError();
     setConfigError(undefined);
+    // File mode: commit a typed-but-not-added path, then require at least one.
+    let pathsForSave = settings.paths;
+    if (backupMode === "file") {
+      const pending = pendingPath.trim();
+      if (pending && !pathsForSave.includes(pending)) {
+        pathsForSave = [...pathsForSave, pending];
+        update("paths", pathsForSave);
+        setPendingPath("");
+      }
+      if (pathsForSave.length === 0) {
+        setConfigError(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.addAtLeastOneBackupPath",
+          ),
+        );
+        return;
+      }
+    }
     let configId = selectedConfigId;
-    if (mode === "create") {
+    if (mode === "create" || mode === "edit") {
       if (!newConfigName.trim()) {
         setConfigError(
           i18n.t(
@@ -819,6 +921,18 @@ export default function BackupTab({
         );
         return;
       }
+      if (
+        newProvider === "s3" &&
+        !s3Region.trim() &&
+        !deriveS3RegionFromEndpoint(s3Endpoint)
+      ) {
+        setConfigError(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.s3RegionIsRequired",
+          ),
+        );
+        return;
+      }
       if (newProvider === "local" && !localPath.trim()) {
         setConfigError(
           i18n.t(
@@ -827,9 +941,9 @@ export default function BackupTab({
         );
         return;
       }
-      const created = await createConfig();
-      if (!created) return;
-      configId = created;
+      const savedId = mode === "create" ? await createConfig() : await updateConfig();
+      if (!savedId) return;
+      configId = savedId;
     }
     if (!configId) {
       setConfigError(
@@ -851,10 +965,14 @@ export default function BackupTab({
       );
       return;
     }
+    const baseSettings = { ...settings, paths: pathsForSave };
     const settingsToSave =
       providerModeInvalid && options?.downgradeInvalidProvider
-        ? { ...settings, immutabilityMode: "application" as ImmutabilityMode }
-        : settings;
+        ? {
+            ...baseSettings,
+            immutabilityMode: "application" as ImmutabilityMode,
+          }
+        : baseSettings;
     const result = await save(existingLink?.id ?? null, {
       featureType: "backup",
       featurePolicyId: configId,
@@ -1166,12 +1284,19 @@ export default function BackupTab({
           {configs.length > 0 && (
             <button
               type="button"
-              onClick={() =>
-                setMode(mode === "create" ? "select" : "create")
-              }
+              onClick={() => {
+                if (mode === "select") {
+                  setMode("create");
+                } else {
+                  setEditingConfigId(null);
+                  setMode("select");
+                }
+              }}
               className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
             >
-              {mode === "create" ? (
+              {mode === "edit" ? (
+                i18n.t("common:actions.cancel")
+              ) : mode === "create" ? (
                 i18n.t(
                   "policies:configurationPolicies.featureTabs.backupTab.useExistingConfig",
                 )
@@ -1332,10 +1457,22 @@ export default function BackupTab({
                             </span>
                           </span>
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                          {capabilitySummary(selectedConfig)}
-                        </p>
+                        {capabilitySummary(selectedConfig) !== testMessage && (
+                          <p className="text-xs text-muted-foreground">
+                            {capabilitySummary(selectedConfig)}
+                          </p>
+                        )}
                       </div>
+                      <div className="flex items-center gap-2">
+                      {/* Edit config button */}
+                      <button
+                        type="button"
+                        onClick={() => beginEditConfig(selectedConfig)}
+                        className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        {i18n.t("common:actions.edit")}
+                      </button>
                       {/* Test connection button */}
                       <button
                         type="button"
@@ -1371,6 +1508,7 @@ export default function BackupTab({
                                   "policies:configurationPolicies.featureTabs.backupTab.test",
                                 )}
                       </button>
+                      </div>
                     </div>
                     {testMessage && (
                       <div
@@ -1389,8 +1527,15 @@ export default function BackupTab({
             )}
           </div>
         ) : (
-          /* ── Create new config ────────────────────────────────────────── */
+          /* ── Create / edit config ─────────────────────────────────────── */
           <div className="mt-2 space-y-4 rounded-md border bg-muted/10 p-4">
+            {mode === "edit" && (
+              <p className="text-xs font-medium text-primary">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.editingStorageConfiguration",
+                )}
+              </p>
+            )}
             <div>
               <label className="text-xs font-medium text-muted-foreground">
                 {i18n.t(
@@ -1407,6 +1552,8 @@ export default function BackupTab({
               />
             </div>
 
+            {/* Provider is immutable once created — hide the picker while editing */}
+            {mode !== "edit" && (
             <div>
               <label className="text-xs font-medium text-muted-foreground">
                 {i18n.t(
@@ -1449,6 +1596,7 @@ export default function BackupTab({
                 })}
               </div>
             </div>
+            )}
 
             {newProvider === "s3" && (
               <div className="space-y-3">
@@ -1476,7 +1624,10 @@ export default function BackupTab({
                     </label>
                     <input
                       value={s3Region}
-                      onChange={(e) => setS3Region(e.target.value)}
+                      onChange={(e) => {
+                        setS3Region(e.target.value);
+                        setS3RegionTouched(true);
+                      }}
                       placeholder={i18n.t(
                         "policies:configurationPolicies.featureTabs.backupTab.usEast1",
                       )}
@@ -1519,6 +1670,13 @@ export default function BackupTab({
                     />
                   </div>
                 </div>
+                {mode === "edit" && (
+                  <p className="chart-legend-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.secretsUnchangedHint",
+                    )}
+                  </p>
+                )}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div>
                     <label className="text-xs text-muted-foreground">
@@ -1558,7 +1716,16 @@ export default function BackupTab({
                     </label>
                     <input
                       value={s3Endpoint}
-                      onChange={(e) => setS3Endpoint(e.target.value)}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setS3Endpoint(value);
+                        // Providers like Backblaze B2 encode the signing region
+                        // in the endpoint — fill it in unless the user set one.
+                        const derived = deriveS3RegionFromEndpoint(value);
+                        if (derived && (!s3RegionTouched || !s3Region.trim())) {
+                          setS3Region(derived);
+                        }
+                      }}
                       placeholder={i18n.t(
                         "policies:configurationPolicies.featureTabs.backupTab.httpsS3UsWest002Backblazeb2Com",
                       )}
@@ -1626,6 +1793,8 @@ export default function BackupTab({
                     settings.paths.filter((p) => p !== v),
                   )
                 }
+                pendingValue={pendingPath}
+                onPendingChange={setPendingPath}
                 placeholder={i18n.t(
                   "policies:configurationPolicies.featureTabs.backupTab.cUsersOrHomeOrEtc",
                 )}

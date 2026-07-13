@@ -4,6 +4,7 @@
   "private": true,
   "description": "Fast, modern Remote Monitoring and Management platform",
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lint": "turbo run lint",

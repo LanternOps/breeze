@@ -9,6 +9,8 @@ vi.mock('drizzle-orm', () => ({
   eq: (a: unknown, b: unknown) => ({ _op: 'eq', a, b }),
   ilike: (a: unknown, b: unknown) => ({ _op: 'ilike', a, b }),
   asc: (a: unknown) => ({ _op: 'asc', a }),
+  or: (...args: unknown[]) => ({ _op: 'or', args }),
+  sql: (strings: TemplateStringsArray, ...vals: unknown[]) => ({ _op: 'sql', strings: [...strings], vals }),
 }));
 
 vi.mock('../db', () => ({
@@ -25,6 +27,7 @@ vi.mock('../db/schema', () => ({
     isBundle: 'ci.is_bundle',
     isActive: 'ci.is_active',
     partnerId: 'ci.partner_id',
+    attributes: 'ci.attributes',
   },
   catalogItemOrgPricing: { id: 'cop.id' },
   catalogBundleComponents: {
@@ -117,8 +120,47 @@ describe('aiToolsCatalog: search_catalog', () => {
 
     const conds = flattenConditions(capture.where);
     expect(conds).toContainEqual({ _op: 'eq', a: 'ci.item_type', b: 'hardware' });
-    // search term is escaped (% and _ become \% and \_) and wrapped in %...%
-    expect(conds).toContainEqual({ _op: 'ilike', a: 'ci.name', b: '%50\\%\\_off%' });
+    // The search condition is an OR across name / sku / distributor part numbers;
+    // the term is escaped (% and _ become \% and \_) and wrapped in %...%
+    const orToken = conds.find((c) => c._op === 'or');
+    expect(orToken).toBeDefined();
+    expect(orToken.args).toContainEqual({ _op: 'ilike', a: 'ci.name', b: '%50\\%\\_off%' });
+  });
+
+  it('search matches sku and distributor part-number attributes (mfgPartNo / synnexSku)', async () => {
+    const capture: WhereCapture = {};
+    vi.mocked(db.select).mockReturnValue(makeChain([], capture) as any);
+
+    await tools().get('search_catalog')!.handler({ search: '14703953' }, partnerAuth());
+
+    const orToken = flattenConditions(capture.where).find((c) => c._op === 'or');
+    expect(orToken).toBeDefined();
+    // name + item SKU columns
+    expect(orToken.args).toContainEqual({ _op: 'ilike', a: 'ci.name', b: '%14703953%' });
+    expect(orToken.args).toContainEqual({ _op: 'ilike', a: 'ci.sku', b: '%14703953%' });
+    // jsonb fragments on attributes.distributor.mfgPartNo / .synnexSku
+    const sqlFragments = orToken.args.filter((a: any) => a._op === 'sql');
+    expect(sqlFragments).toHaveLength(2);
+    const fragmentText = sqlFragments.map((f: any) => f.strings.join('?')).join(' | ');
+    expect(fragmentText).toContain("'distributor' ->> 'mfgPartNo'");
+    expect(fragmentText).toContain("'distributor' ->> 'synnexSku'");
+    for (const f of sqlFragments) {
+      expect(f.vals).toContainEqual('%14703953%');
+    }
+  });
+
+  it('applies the isBundle filter for both true and false (but not when omitted)', async () => {
+    for (const isBundle of [true, false]) {
+      const capture: WhereCapture = {};
+      vi.mocked(db.select).mockReturnValue(makeChain([], capture) as any);
+      await tools().get('search_catalog')!.handler({ isBundle }, partnerAuth());
+      expect(flattenConditions(capture.where)).toContainEqual({ _op: 'eq', a: 'ci.is_bundle', b: isBundle });
+    }
+    // omitted → no isBundle condition
+    const capture: WhereCapture = {};
+    vi.mocked(db.select).mockReturnValue(makeChain([], capture) as any);
+    await tools().get('search_catalog')!.handler({}, partnerAuth());
+    expect(flattenConditions(capture.where).some((c) => c.a === 'ci.is_bundle')).toBe(false);
   });
 });
 
@@ -151,6 +193,171 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     expect(parsed.components).toBeUndefined();
     // Only the item lookup ran — the components query is gated on isBundle.
     expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('strips internal IDs and attributes.distributor.raw, keeping normalized distributor fields', async () => {
+    const row = {
+      id: ITEM_ID,
+      partnerId: PARTNER_ID,
+      createdBy: 'user-uuid',
+      name: 'SPL Dock',
+      isBundle: false,
+      costBasis: '100.00',
+      markupPercent: '20.00',
+      unitPrice: '120.00',
+      attributes: {
+        category: 'docks',
+        distributor: {
+          source: 'td_synnex_ec_express',
+          synnexSku: '14703953',
+          mfgPartNo: 'SPL-DOCK-1',
+          status: 'Active',
+          cost: 100,
+          msrp: 150,
+          warehouses: [{ code: 'A1', available: 3 }],
+          importedAt: '2026-07-01T00:00:00.000Z',
+          raw: { hugeVerbatimProviderPayload: true, price: 100, msrp: 150 },
+        },
+      },
+    };
+    vi.mocked(db.select).mockReturnValueOnce(makeChain([row], {}) as any);
+
+    const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, partnerAuth());
+    const parsed = JSON.parse(out);
+
+    // Internal IDs are redacted server-side (MCP instructions say never reveal them).
+    expect(parsed.item).not.toHaveProperty('partnerId');
+    expect(parsed.item).not.toHaveProperty('createdBy');
+    // The verbatim import blob is stripped…
+    expect(parsed.item.attributes.distributor).not.toHaveProperty('raw');
+    // …but the normalized distributor fields survive.
+    expect(parsed.item.attributes.distributor).toMatchObject({
+      synnexSku: '14703953',
+      mfgPartNo: 'SPL-DOCK-1',
+      status: 'Active',
+      cost: 100,
+      msrp: 150,
+      importedAt: '2026-07-01T00:00:00.000Z',
+    });
+    expect(parsed.item.attributes.distributor.warehouses).toEqual([{ code: 'A1', available: 3 }]);
+    // Non-distributor attributes are untouched.
+    expect(parsed.item.attributes.category).toBe('docks');
+    // Partner scope keeps cost/margin fields.
+    expect(parsed.item.costBasis).toBe('100.00');
+    expect(parsed.item.markupPercent).toBe('20.00');
+  });
+
+  it('drops unknown/future top-level columns and unknown distributor sub-fields by construction (allowlist)', async () => {
+    const row = {
+      id: ITEM_ID,
+      partnerId: PARTNER_ID,
+      createdBy: 'user-uuid',
+      name: 'SPL Dock',
+      isBundle: false,
+      unitPrice: '120.00',
+      // A column a future migration might add — must NOT reach MCP output because
+      // the output is an allowlist, not a blocklist of known-sensitive names.
+      supplierAccountId: 'acct-should-not-leak',
+      internalNotes: 'confidential margin strategy',
+      attributes: {
+        category: 'docks',
+        distributor: {
+          synnexSku: '14703953',
+          cost: 100,
+          msrp: 150,
+          raw: { verbatim: true },
+          // A future distributor sub-field an importer might store — must be dropped.
+          dealerCost: 42,
+          supplierToken: 'secret-token',
+        },
+      },
+    };
+    vi.mocked(db.select).mockReturnValueOnce(makeChain([row], {}) as any);
+
+    const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, partnerAuth());
+    const parsed = JSON.parse(out);
+
+    // Unknown top-level columns are dropped even for partner (full-access) scope.
+    expect(parsed.item).not.toHaveProperty('supplierAccountId');
+    expect(parsed.item).not.toHaveProperty('internalNotes');
+    // Known allowlisted fields still present.
+    expect(parsed.item.name).toBe('SPL Dock');
+    expect(parsed.item.unitPrice).toBe('120.00');
+    // Unknown distributor sub-fields (and the raw blob) are dropped; normalized survive.
+    expect(parsed.item.attributes.distributor).not.toHaveProperty('raw');
+    expect(parsed.item.attributes.distributor).not.toHaveProperty('dealerCost');
+    expect(parsed.item.attributes.distributor).not.toHaveProperty('supplierToken');
+    expect(parsed.item.attributes.distributor).toMatchObject({ synnexSku: '14703953', cost: 100, msrp: 150 });
+    // Non-distributor attribute keys still pass through.
+    expect(parsed.item.attributes.category).toBe('docks');
+  });
+
+  it('redacts costBasis/markupPercent/distributor.cost for org-scoped callers (defense-in-depth)', async () => {
+    const row = {
+      id: ITEM_ID,
+      partnerId: PARTNER_ID,
+      createdBy: 'user-uuid',
+      name: 'SPL Dock',
+      isBundle: false,
+      costBasis: '100.00',
+      markupPercent: '20.00',
+      unitPrice: '120.00',
+      attributes: { distributor: { synnexSku: '14703953', cost: 100, msrp: 150, raw: {} } },
+    };
+    vi.mocked(db.select).mockReturnValueOnce(makeChain([row], {}) as any);
+
+    const orgAuth = {
+      user: { id: 'u1' },
+      partnerId: PARTNER_ID, // org tokens DO carry the owning org's partnerId
+      scope: 'organization',
+      orgId: 'org-1',
+      accessibleOrgIds: ['org-1'],
+    } as any;
+    const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, orgAuth);
+    const parsed = JSON.parse(out);
+
+    expect(parsed.item).not.toHaveProperty('costBasis');
+    expect(parsed.item).not.toHaveProperty('markupPercent');
+    expect(parsed.item.attributes.distributor).not.toHaveProperty('cost');
+    expect(parsed.item.attributes.distributor).not.toHaveProperty('raw');
+    // Sell-side fields remain visible.
+    expect(parsed.item.unitPrice).toBe('120.00');
+    expect(parsed.item.attributes.distributor.msrp).toBe(150);
+  });
+
+  it('redacts revenueAllocation from bundle components for org-scoped callers', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeChain([{ id: ITEM_ID, isBundle: true, attributes: {} }], {}) as any)
+      .mockReturnValueOnce(
+        makeChain(
+          [{ id: 'comp-row', componentItemId: 'c1', quantity: '2', showOnInvoice: false, revenueAllocation: '60.00' }],
+          {}
+        ) as any
+      );
+
+    const orgAuth = {
+      user: { id: 'u1' },
+      partnerId: PARTNER_ID,
+      scope: 'organization',
+      orgId: 'org-1',
+      accessibleOrgIds: ['org-1'],
+    } as any;
+    const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, orgAuth);
+    const parsed = JSON.parse(out);
+    expect(parsed.components).toEqual([
+      { id: 'comp-row', componentItemId: 'c1', quantity: '2', showOnInvoice: false },
+    ]);
+  });
+
+  it('handles items with no distributor attributes (empty attributes object)', async () => {
+    const row = { id: ITEM_ID, partnerId: PARTNER_ID, createdBy: null, isBundle: false, attributes: {} };
+    vi.mocked(db.select).mockReturnValueOnce(makeChain([row], {}) as any);
+
+    const out = await tools().get('get_catalog_item')!.handler({ catalogItemId: ITEM_ID }, partnerAuth());
+    const parsed = JSON.parse(out);
+    expect(parsed.item.attributes).toEqual({});
+    expect(parsed.item).not.toHaveProperty('partnerId');
+    expect(parsed.item).not.toHaveProperty('createdBy');
   });
 
   it('returns components for a bundle item (second select scoped to the bundle + partner)', async () => {

@@ -36,18 +36,32 @@ vi.mock('../middleware/bearerTokenAuth', () => ({
 
 vi.mock('./mcpExecutionOrg', () => ({
   resolveMcpExecutionOrgId: () => 'org-1',
+  // Task 6 routed the ordinary Tier 3 path through resolveMcpExecutionContext +
+  // McpExecutionOrgError (replacing the bare resolveMcpExecutionOrgId call). This
+  // mock must export both or the route's execution-org resolution throws before
+  // the ledger/tier assertions below can run.
+  resolveMcpExecutionContext: async () => ({ orgId: 'org-1' }),
+  McpExecutionOrgError: class McpExecutionOrgError extends Error {},
 }));
 
 // Keep the REAL checkGuardrails (the unit under test for FIX 1 — per-action
 // tier escalation), but stub the RBAC permission + rate-limit checks so the
 // mocked API-key auth context (which carries no real RBAC grants) doesn't get
 // denied AFTER the scope gates. These checks are orthogonal to the tier gating.
+//
+// checkPermissionRequirement (MCP-OAUTH-03 resource RBAC, used by
+// resources/read) is stubbed here too, for the same reason: the FIX-3
+// site-axis tests below exercise site narrowing, not RBAC, and per-test
+// getUserPermissions() overrides via vi.doMock do not reliably propagate
+// through this outer importOriginal-wrapped mock across vi.resetModules()
+// cycles — stubbing it directly avoids that test-infra fragility.
 vi.mock('../services/aiGuardrails', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/aiGuardrails')>();
   return {
     ...actual,
     checkToolPermission: vi.fn(async () => null),
     checkToolRateLimit: vi.fn(async () => null),
+    checkPermissionRequirement: vi.fn(async () => null),
   };
 });
 
@@ -327,13 +341,15 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
   }
 
   it('site-restricted caller does not see site-B devices via resources/read', async () => {
-    // Restrict creator to site-A only.
+    // Restrict creator to site-A only. MCP-OAUTH-03: resources/read now
+    // requires devices.read before it will even reach the site-axis
+    // narrowing under test here, so the role must hold it.
     vi.doMock('../services/permissions', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../services/permissions')>();
       return {
         ...actual,
         getUserPermissions: vi.fn(async () => ({
-          permissions: [],
+          permissions: [{ resource: 'devices', action: 'read' }],
           partnerId: null,
           orgId: 'org-1',
           roleId: 'role-1',
@@ -416,12 +432,14 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
   // model the route's inArray(alerts.deviceId, [d-a]) narrowing by returning
   // only a-a from the alert list query.
   it('C4: site-restricted caller does not see site-B alerts via resources/read', async () => {
+    // MCP-OAUTH-03: resources/read now requires alerts.read before the
+    // site-axis narrowing under test here even runs.
     vi.doMock('../services/permissions', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../services/permissions')>();
       return {
         ...actual,
         getUserPermissions: vi.fn(async () => ({
-          permissions: [],
+          permissions: [{ resource: 'alerts', action: 'read' }],
           partnerId: null,
           orgId: 'org-1',
           roleId: 'role-1',
@@ -530,12 +548,14 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
   }
 
   function restrictToSiteA() {
+    // MCP-OAUTH-03: resources/read now requires devices.read before the
+    // site-axis narrowing under test here even runs.
     vi.doMock('../services/permissions', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../services/permissions')>();
       return {
         ...actual,
         getUserPermissions: vi.fn(async () => ({
-          permissions: [],
+          permissions: [{ resource: 'devices', action: 'read' }],
           partnerId: null,
           orgId: 'org-1',
           roleId: 'role-1',

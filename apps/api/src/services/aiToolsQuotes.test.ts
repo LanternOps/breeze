@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./quoteService', () => ({
   createQuote: vi.fn().mockResolvedValue({ id: 'quote-1', status: 'draft' }),
+  listQuotes: vi.fn().mockResolvedValue([
+    { id: 'quote-1', quoteNumber: 'Q-2026-0001', status: 'draft' },
+    { id: 'quote-2', quoteNumber: 'Q-2026-0002', status: 'sent' },
+  ]),
   updateQuote: vi.fn().mockResolvedValue({ id: 'quote-1', introNotes: 'Updated' }),
   getQuote: vi.fn().mockResolvedValue({
     quote: {
@@ -70,11 +74,17 @@ const auth: AuthContext = {
 
 const actor = { userId: 'u-1', partnerId: 'p-1', accessibleOrgIds: ['org-1'] };
 
-function getTool(): AiTool {
+// Payloads are parsed with the shared route schemas, which require real UUIDs.
+const ORG_UUID = '11111111-1111-4111-8111-111111111111';
+const SITE_UUID = '22222222-2222-4222-8222-222222222222';
+const CATALOG_UUID = '33333333-3333-4333-8333-333333333333';
+const BLOCK_UUID = '44444444-4444-4444-8444-444444444444';
+
+function getTool(name = 'manage_quotes'): AiTool {
   const map = new Map<string, AiTool>();
   registerQuoteTools(map);
-  const t = map.get('manage_quotes');
-  if (!t) throw new Error('manage_quotes not registered');
+  const t = map.get(name);
+  if (!t) throw new Error(`${name} not registered`);
   return t;
 }
 
@@ -83,8 +93,8 @@ describe('manage_quotes', () => {
 
   it('create_draft calls createQuote with input payload and actor built from auth', async () => {
     const input = {
-      orgId: 'org-1',
-      siteId: 'site-1',
+      orgId: ORG_UUID,
+      siteId: SITE_UUID,
       currencyCode: 'USD',
       introNotes: 'Proposal intro',
     };
@@ -167,9 +177,9 @@ describe('manage_quotes', () => {
       {
         action: 'add_catalog_line',
         quoteId: 'quote-1',
-        catalogItemId: 'catalog-1',
+        catalogItemId: CATALOG_UUID,
         quantity: 2,
-        blockId: 'block-1',
+        blockId: BLOCK_UUID,
         partNumber: 'MPN-42',
       },
       auth,
@@ -177,9 +187,9 @@ describe('manage_quotes', () => {
 
     expect(quoteService.addCatalogLine).toHaveBeenCalledWith(
       'quote-1',
-      'catalog-1',
+      CATALOG_UUID,
       2,
-      'block-1',
+      BLOCK_UUID,
       actor,
       { partNumber: 'MPN-42' },
     );
@@ -215,5 +225,201 @@ describe('manage_quotes', () => {
     const out = await getTool().handler({ action: 'nope' }, auth);
 
     expect(JSON.parse(out)).toHaveProperty('error');
+  });
+});
+
+describe('manage_quotes input validation (#2362)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('update without quoteId returns a structured VALIDATION_ERROR instead of throwing', async () => {
+    const out = await getTool().handler({ action: 'update', patch: {} }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('quoteId');
+    expect(quoteService.updateQuote).not.toHaveBeenCalled();
+  });
+
+  it('update without patch returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool().handler({ action: 'update', quoteId: 'quote-1' }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('patch');
+    expect(quoteService.updateQuote).not.toHaveBeenCalled();
+  });
+
+  it('create_draft without input returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool().handler({ action: 'create_draft' }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('input');
+    expect(quoteService.createQuote).not.toHaveBeenCalled();
+  });
+
+  it('add_manual_line missing sourceType/taxable returns a VALIDATION_ERROR naming the fields', async () => {
+    const out = await getTool().handler(
+      {
+        action: 'add_manual_line',
+        quoteId: 'quote-1',
+        line: { name: 'Onsite labor', description: 'Two hours', quantity: 2, unitPrice: 150 },
+      },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('line.sourceType');
+    expect(parsed.error).toContain('line.taxable');
+    expect(quoteService.addManualLine).not.toHaveBeenCalled();
+  });
+
+  it('add_manual_line with a valid line passes the parsed line (with schema defaults) to the service', async () => {
+    const out = await getTool().handler(
+      {
+        action: 'add_manual_line',
+        quoteId: 'quote-1',
+        line: { sourceType: 'manual', name: 'Onsite labor', quantity: 2, unitPrice: 150, taxable: false },
+      },
+      auth,
+    );
+
+    expect(quoteService.addManualLine).toHaveBeenCalledWith(
+      'quote-1',
+      expect.objectContaining({
+        sourceType: 'manual',
+        name: 'Onsite labor',
+        quantity: 2,
+        unitPrice: 150,
+        taxable: false,
+        // Defaults applied by quoteLineInputSchema
+        customerVisible: true,
+        recurrence: 'one_time',
+        depositEligible: false,
+      }),
+      actor,
+    );
+    expect(JSON.parse(out)).toEqual({ id: 'line-1', quoteId: 'quote-1' });
+  });
+
+  it('add_catalog_line with partNumber but no catalogItemId returns a VALIDATION_ERROR, not a throw', async () => {
+    const out = await getTool().handler(
+      { action: 'add_catalog_line', quoteId: 'quote-1', partNumber: 'MPN-42' },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('catalogItemId');
+    expect(quoteService.addCatalogLine).not.toHaveBeenCalled();
+  });
+
+  it('add_catalog_line with a non-UUID catalogItemId returns a VALIDATION_ERROR with the field path', async () => {
+    const out = await getTool().handler(
+      { action: 'add_catalog_line', quoteId: 'quote-1', catalogItemId: 'not-a-uuid', quantity: 1 },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('catalogItemId');
+    expect(quoteService.addCatalogLine).not.toHaveBeenCalled();
+  });
+
+  it('add_block with a mismatched content shape returns a VALIDATION_ERROR', async () => {
+    const out = await getTool().handler(
+      { action: 'add_block', quoteId: 'quote-1', block: { blockType: 'heading', content: {} } },
+      auth,
+    );
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('block.');
+    expect(quoteService.addBlock).not.toHaveBeenCalled();
+  });
+
+  it('remove_line without lineId returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool().handler({ action: 'remove_line', quoteId: 'quote-1' }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('lineId');
+    expect(quoteService.removeLine).not.toHaveBeenCalled();
+  });
+});
+
+describe('list_quotes / get_quote read tools (#2361)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('list_quotes with no filters lists quotes with the default limit', async () => {
+    const out = await getTool('list_quotes').handler({}, auth);
+
+    expect(quoteService.listQuotes).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 25 }),
+      actor,
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.showing).toBe(2);
+    expect(parsed.quotes).toHaveLength(2);
+    expect(parsed.quotes[0].id).toBe('quote-1');
+  });
+
+  it('list_quotes forwards org/status filters and clamps limit via the shared schema', async () => {
+    await getTool('list_quotes').handler({ orgId: ORG_UUID, status: 'sent', limit: 10 }, auth);
+
+    expect(quoteService.listQuotes).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: ORG_UUID, status: 'sent', limit: 10 }),
+      actor,
+    );
+  });
+
+  it('list_quotes with an invalid status returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool('list_quotes').handler({ status: 'bogus' }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('status');
+    expect(quoteService.listQuotes).not.toHaveBeenCalled();
+  });
+
+  it('get_quote returns the full view (header + blocks + lines) from getQuote', async () => {
+    const out = await getTool('get_quote').handler({ quoteId: 'quote-1' }, auth);
+
+    expect(quoteService.getQuote).toHaveBeenCalledWith('quote-1', actor);
+    const parsed = JSON.parse(out);
+    expect(parsed.quote.id).toBe('quote-1');
+    expect(parsed).toHaveProperty('blocks');
+    expect(parsed).toHaveProperty('lines');
+  });
+
+  it('get_quote without quoteId returns a structured VALIDATION_ERROR', async () => {
+    const out = await getTool('get_quote').handler({}, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('quoteId');
+    expect(quoteService.getQuote).not.toHaveBeenCalled();
+  });
+
+  it('get_quote maps QuoteServiceError (e.g. QUOTE_NOT_FOUND) to a structured error', async () => {
+    vi.mocked(quoteService.getQuote).mockRejectedValueOnce(
+      new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND'),
+    );
+
+    const out = await getTool('get_quote').handler({ quoteId: 'missing' }, auth);
+
+    expect(JSON.parse(out)).toEqual({ error: 'Quote not found', code: 'QUOTE_NOT_FOUND' });
+  });
+
+  it('update with an empty patch is rejected with VALIDATION_ERROR and does not touch the quote (#2361)', async () => {
+    const out = await getTool().handler({ action: 'update', quoteId: 'quote-1', patch: {} }, auth);
+
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('get_quote');
+    // No UPDATE runs, so updatedAt cannot be bumped by an empty patch.
+    expect(quoteService.updateQuote).not.toHaveBeenCalled();
+    expect(quoteService.getQuote).not.toHaveBeenCalled();
   });
 });

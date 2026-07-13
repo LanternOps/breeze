@@ -254,7 +254,9 @@ export default function DeviceSecurityStatus({
         <span
           className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${data.threatsDetected > 0 ? "bg-red-500/10 text-red-700" : "bg-emerald-500/10 text-emerald-700"}`}
         >
-          {data.threatsDetected} threats
+          {t("securityDeviceSecurityStatus.threatsDetectedCount", {
+            count: data.threatsDetected,
+          })}
         </span>
       </div>
 
@@ -267,8 +269,9 @@ export default function DeviceSecurityStatus({
             {data.providerVersion ?? data.definitionsVersion ?? "-"}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {t("securityDeviceSecurityStatus.definitionsUpdated")}
-            {formatDate(data.definitionsUpdatedAt)}
+            {t("securityDeviceSecurityStatus.definitionsUpdated", {
+              time: formatDate(data.definitionsUpdatedAt),
+            })}
           </p>
         </div>
         <div className="rounded-md border bg-muted/30 p-4">

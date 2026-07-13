@@ -16,6 +16,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
 import { deviceSiteDenied, deviceIdSiteDenied } from './aiToolsSiteScope';
+import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -105,19 +106,12 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Only Hyper-V VM restore is currently supported' });
       }
 
-      const snapshotConditions: SQL[] = [eq(backupSnapshots.id, snapshotId)];
-      const sc = orgWhere(auth, backupSnapshots.orgId);
-      if (sc) snapshotConditions.push(sc);
-      const [snapshot] = await db
-        .select({
-          id: backupSnapshots.id,
-          orgId: backupSnapshots.orgId,
-          snapshotId: backupSnapshots.snapshotId,
-        })
-        .from(backupSnapshots)
-        .where(and(...snapshotConditions))
-        .limit(1);
-      if (!snapshot) return JSON.stringify({ error: 'Snapshot not found or access denied' });
+      // Load the snapshot under org AND site scope (source device site gated),
+      // so a site-restricted caller cannot restore a cross-site snapshot onto a
+      // target they legitimately own.
+      const snapshotResult = await loadSnapshotWithSiteAccess(auth, snapshotId);
+      if ('error' in snapshotResult) return JSON.stringify({ error: snapshotResult.error });
+      const snapshot = snapshotResult.snapshot;
 
       const deviceConditions: SQL[] = [eq(devices.id, targetDeviceId)];
       const dc = orgWhere(auth, devices.orgId);
@@ -161,7 +155,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         CommandTypes.VM_RESTORE_FROM_BACKUP,
         {
           restoreJobId: restoreJob?.id,
-          snapshotId: snapshot.snapshotId,
+          snapshotId: snapshot.providerSnapshotId,
           vmName,
           memoryMb: vmSpecs.memoryMb,
           cpuCount: vmSpecs.cpuCount,
@@ -239,19 +233,12 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'snapshotId, targetDeviceId, and vmName are required' });
       }
 
-      const snapshotConditions: SQL[] = [eq(backupSnapshots.id, snapshotId)];
-      const sc = orgWhere(auth, backupSnapshots.orgId);
-      if (sc) snapshotConditions.push(sc);
-      const [snapshot] = await db
-        .select({
-          id: backupSnapshots.id,
-          orgId: backupSnapshots.orgId,
-          snapshotId: backupSnapshots.snapshotId,
-        })
-        .from(backupSnapshots)
-        .where(and(...snapshotConditions))
-        .limit(1);
-      if (!snapshot) return JSON.stringify({ error: 'Snapshot not found or access denied' });
+      // Load the snapshot under org AND site scope (source device site gated),
+      // so a site-restricted caller cannot instant-boot a cross-site snapshot
+      // onto a target they legitimately own.
+      const snapshotResult = await loadSnapshotWithSiteAccess(auth, snapshotId);
+      if ('error' in snapshotResult) return JSON.stringify({ error: snapshotResult.error });
+      const snapshot = snapshotResult.snapshot;
 
       const deviceConditions: SQL[] = [eq(devices.id, targetDeviceId)];
       const dc = orgWhere(auth, devices.orgId);
@@ -294,7 +281,7 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         CommandTypes.VM_INSTANT_BOOT,
         {
           restoreJobId: restoreJob?.id,
-          snapshotId: snapshot.snapshotId,
+          snapshotId: snapshot.providerSnapshotId,
           vmName,
           memoryMb: vmSpecs.memoryMb,
           cpuCount: vmSpecs.cpuCount,

@@ -167,7 +167,10 @@ const createScriptSchema = z.object({
   language: z.enum(['powershell', 'bash', 'python', 'cmd']),
   content: z.string().min(1),
   parameters: z.any().optional(),
-  timeoutSeconds: z.number().int().min(1).max(86400).default(300),
+  // Max 3600: the agent executor clamps script timeouts to 1 hour
+  // (agent/internal/executor/executor.go MaxTimeout) — accepting more
+  // at intake is silent false configurability (#2398).
+  timeoutSeconds: z.number().int().min(1).max(3600).default(300),
   runAs: z.enum(['system', 'user', 'elevated']).default('system'),
   isSystem: z.boolean().optional(),
   exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional(),
@@ -182,7 +185,7 @@ const updateScriptSchema = z.object({
   language: z.enum(['powershell', 'bash', 'python', 'cmd']).optional(),
   content: z.string().min(1).optional(),
   parameters: z.any().optional(),
-  timeoutSeconds: z.number().int().min(1).max(86400).optional(),
+  timeoutSeconds: z.number().int().min(1).max(3600).optional(),
   runAs: z.enum(['system', 'user', 'elevated']).optional(),
   exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional(),
   // Re-scope on edit (issue #1734). Mirrors the create-time "Available to"

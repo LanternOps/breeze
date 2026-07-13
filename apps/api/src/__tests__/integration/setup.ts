@@ -246,10 +246,26 @@ export async function teardownIntegrationTests() {
   }
 }
 
-function isUndefinedTableError(error: unknown): boolean {
-  const code = (error as { code?: string; cause?: { code?: string } } | undefined)?.code
+function sqlStateOf(error: unknown): string | undefined {
+  return (error as { code?: string; cause?: { code?: string } } | undefined)?.code
     ?? (error as { cause?: { code?: string } } | undefined)?.cause?.code;
-  return code === '42P01';
+}
+
+function isUndefinedTableError(error: unknown): boolean {
+  return sqlStateOf(error) === '42P01';
+}
+
+// 40P01 = deadlock_detected, 40001 = serialization_failure. Both are
+// transient lock races, not broken cleanup: the TRUNCATE grabs ACCESS
+// EXCLUSIVE on ~all tenant tables in one statement, and an in-flight
+// background query from the PREVIOUS test (app-pool FK check / SELECT) can
+// still hold a conflicting lock for a few ms. Postgres kills one side; the
+// competitor finishes immediately after, so a retry succeeds. Before #2205
+// these were silently swallowed — leaving the DB dirty; retrying (loudly)
+// is strictly better on both axes.
+function isTransientLockError(error: unknown): boolean {
+  const code = sqlStateOf(error);
+  return code === '40P01' || code === '40001';
 }
 
 async function cleanupAppendOnlyMlFeedbackEvents() {
@@ -263,8 +279,77 @@ async function cleanupAppendOnlyMlFeedbackEvents() {
   }
 }
 
+// Tables reset by cleanupDatabase(). Order is irrelevant — they are truncated
+// in a single TRUNCATE ... CASCADE statement (see below), which resolves the
+// FK graph itself. Strictly only the ROOTS (plus global tables not reached by
+// any cascade) need naming, but many FK-children are listed deliberately:
+// redundant entries are harmless in a single TRUNCATE, and belt-and-braces if
+// an FK is ever dropped. Don't prune the list to "just roots".
+const CLEANUP_TABLES = [
+  'device_commands',
+  'device_group_memberships',
+  'device_groups',
+  'device_metrics',
+  'device_network',
+  'device_hardware',
+  'device_software',
+  'device_link_groups',
+  'devices',
+  'automation_executions',
+  'automations',
+  'alert_history',
+  'alerts',
+  'alert_templates',
+  'script_executions',
+  'scripts',
+  'sites',
+  'organization_users',
+  'organizations',
+  'partner_users',
+  'partners',
+  'sessions',
+  'api_keys',
+  'role_permissions',
+  'roles',
+  'audit_logs',
+  'users',
+  // BE-16 vulnerability management. The global tables are not reached by any
+  // tenant-root CASCADE, so list them explicitly to avoid cross-run
+  // accumulation.
+  'device_vulnerabilities',
+  'os_vulnerabilities',
+  'software_vulnerabilities',
+  'software_products',
+  'vulnerabilities',
+  'vulnerability_sources'
+];
+
+// Resolved once per test file (module instance): which of CLEANUP_TABLES exist
+// in this branch's schema. Replaces the old per-statement 42P01 tolerance —
+// filtering up front lets the truncate run as ONE statement, and the schema
+// cannot change mid-run (autoMigrate runs in beforeAll, before any cleanup).
+let existingCleanupTables: string[] | null = null;
+
+async function resolveCleanupTables(): Promise<string[]> {
+  if (existingCleanupTables === null) {
+    const rows = await testClient`
+      SELECT tablename FROM pg_tables
+      WHERE schemaname = 'public' AND tablename = ANY(${CLEANUP_TABLES})
+    `;
+    const present = new Set(rows.map((r) => r.tablename as string));
+    existingCleanupTables = CLEANUP_TABLES.filter((t) => present.has(t));
+  }
+  return existingCleanupTables;
+}
+
 export async function cleanupDatabase() {
-  if (!testDb) return;
+  // A cleanup that silently does nothing is exactly the #2205 failure mode —
+  // refuse loudly instead of no-opping when setup hasn't run. (vitest skips
+  // the global beforeEach when the beforeAll that initializes testDb failed,
+  // so every legitimate caller reaches this line with testDb set.)
+  if (!testDb) {
+    throw new Error('cleanupDatabase called before integration setup ran — refusing to silently no-op (#2205)');
+  }
 
   // Defense-in-depth: the same guard fires in setupIntegrationTests, but assert
   // again here in case a future caller invokes cleanupDatabase outside the
@@ -276,58 +361,73 @@ export async function cleanupDatabase() {
   // organizations TRUNCATE CASCADE side effect.
   await cleanupAppendOnlyMlFeedbackEvents();
 
-  // Truncate all tables in reverse dependency order
-  // This ensures we don't hit foreign key constraints
-  const tables = [
-    'device_commands',
-    'device_group_memberships',
-    'device_groups',
-    'device_metrics',
-    'device_network',
-    'device_hardware',
-    'device_software',
-    // #2138 — devices carries a composite FK to device_link_groups; truncate
-    // the groups first (CASCADE clears the referencing devices) so cleanup is
-    // FK-safe and deterministic.
-    'device_link_groups',
-    'devices',
-    'automation_executions',
-    'automations',
-    'alert_history',
-    'alerts',
-    'alert_templates',
-    'script_executions',
-    'scripts',
-    'sites',
-    'organization_users',
-    'organizations',
-    'partner_users',
-    'partners',
-    'sessions',
-    'api_keys',
-    'role_permissions',
-    'roles',
-    'audit_logs',
-    'users',
-    // BE-16 vulnerability management. The four global tables are not reached by
-    // the `devices` CASCADE, so reset them per-test to avoid cross-run
-    // accumulation. TRUNCATE ... CASCADE on `vulnerabilities` clears its
-    // dependents (software_vulnerabilities, device_vulnerabilities); the rest
-    // are listed explicitly for clarity. (try/catch ignores them on branches
-    // without the migration.)
-    'device_vulnerabilities',
-    'os_vulnerabilities',
-    'software_vulnerabilities',
-    'software_products',
-    'vulnerabilities',
-    'vulnerability_sources'
-  ];
+  const tablesToTruncate = await resolveCleanupTables();
 
-  for (const table of tables) {
+  // audit_logs carries a BEFORE TRUNCATE trigger (`audit_log_block_truncate`,
+  // migration 2026-05-25-k) that unconditionally rejects ANY truncate whose
+  // cascade set reaches the table — the append-only bypass GUC
+  // (`breeze.allow_audit_retention`) only exists for DELETE. Every TRUNCATE of
+  // partners/organizations therefore used to fail wholesale, and the old
+  // blanket try/catch swallowed it, so tenant-root rows silently accumulated
+  // across suites (#2205). The test client connects as the table owner, so
+  // disable the trigger for the duration of the reset and re-enable it in a
+  // finally — a failed truncate must never leave the append-only guard off.
+  // (ALTER TABLE ... DISABLE TRIGGER is a catalog change, not session-local,
+  // but integration files run one at a time — fileParallelism:false — so no
+  // concurrent test can observe the window.) Production semantics are
+  // untouched: this is an owner-only ALTER on the throwaway test database,
+  // not a change to the trigger itself.
+  //
+  // PERF: this is ONE TRUNCATE statement, not a per-table loop. Each CASCADE
+  // truncate resolves + locks its whole FK closure; doing that ~35 times per
+  // test added ~2s/test once the tenant-root truncates started succeeding —
+  // ~24 min across the ~690-test CI run, pushing the ~50-min Integration
+  // Tests job past its 55-min ceiling. A single statement takes one pass
+  // over the union of the same lock set.
+  await testClient`ALTER TABLE audit_logs DISABLE TRIGGER audit_log_block_truncate`;
+  try {
+    const MAX_TRUNCATE_ATTEMPTS = 3;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await testClient`TRUNCATE TABLE ${testClient(tablesToTruncate)} CASCADE`;
+        break;
+      } catch (error) {
+        // Deadlock/serialization races with a still-in-flight query from the
+        // previous test are transient (see isTransientLockError) — retry a
+        // couple of times, VISIBLY, before giving up.
+        if (isTransientLockError(error) && attempt < MAX_TRUNCATE_ATTEMPTS) {
+          console.warn(
+            `cleanupDatabase: TRUNCATE hit ${sqlStateOf(error)} (attempt ${attempt}/${MAX_TRUNCATE_ATTEMPTS}) — ` +
+            'a query from the previous test was still holding locks; retrying'
+          );
+          await new Promise((r) => setTimeout(r, 100 * attempt));
+          continue;
+        }
+        // No other tolerated failures: missing tables were already filtered
+        // out by resolveCleanupTables(), so ANY other error means the DB was
+        // NOT reset — fail loudly instead of letting state leak into the next
+        // test (the silent swallow of this failure is how #2205 stayed
+        // hidden).
+        throw new Error(
+          'cleanupDatabase: TRUNCATE ... CASCADE of the core tables failed — the database was not reset. ' +
+          'Failing loudly so leaked tenant state cannot poison later tests (#2205).',
+          { cause: error }
+        );
+      }
+    }
+  } finally {
     try {
-      await testClient`TRUNCATE TABLE ${testClient(table)} CASCADE`;
-    } catch {
-      // Table might not exist yet, ignore
+      await testClient`ALTER TABLE audit_logs ENABLE TRIGGER audit_log_block_truncate`;
+    } catch (enableError) {
+      // A throw from a finally block REPLACES an in-flight exception from the
+      // try block, so log before propagating — otherwise a truncate failure's
+      // diagnostic error (with its cause) would be silently discarded, and
+      // the fact that the append-only guard is now OFF would be invisible.
+      console.error(
+        'cleanupDatabase: failed to re-enable audit_log_block_truncate — the append-only TRUNCATE guard is OFF in the test DB',
+        enableError
+      );
+      throw enableError;
     }
   }
 

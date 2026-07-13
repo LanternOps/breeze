@@ -4,10 +4,12 @@ import type { HttpBindings } from '@hono/node-server';
 import { and, eq } from 'drizzle-orm';
 import { getProvider } from '../oauth/provider';
 import { setGrantBreezeMeta } from '../oauth/adapter';
+import { isAcceptedResourceIndicator } from '../oauth/resourceIndicators';
+import { computeEffectiveMcpScopes } from '../oauth/effectiveScopes';
 import { authMiddleware } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthClients, oauthClientPartnerGrants, partners, partnerUsers, users } from '../db/schema';
-import { BILLING_URL, MCP_OAUTH_ENABLED, OAUTH_ISSUER, OAUTH_RESOURCE_URL } from '../config/env';
+import { BILLING_URL, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { ERROR_IDS, logOauthError } from '../oauth/log';
 import { writeRouteAudit } from '../services/auditEvents';
 
@@ -110,7 +112,12 @@ if (MCP_OAUTH_ENABLED) {
     const provider = await getProvider();
     const details = await interactionDetails(provider, c, c.req.param('uid'));
     const resource = details.params.resource as string | undefined;
-    if (resource && resource !== OAUTH_RESOURCE_URL) {
+    // #2363: accept the tight alias set (…/sse, trailing slash, …/message)
+    // alongside the canonical OAUTH_RESOURCE_URL. The /oauth/auth
+    // pre-handler normalizes aliases before oidc-provider stores the
+    // interaction, so this is defense-in-depth for flows started before
+    // that normalization existed (or paths that bypass it).
+    if (resource && !isAcceptedResourceIndicator(resource)) {
       throw new HTTPException(400, { message: 'unsupported resource indicator' });
     }
 
@@ -141,11 +148,35 @@ if (MCP_OAUTH_ENABLED) {
     // DCR time per RFC 7591). Fall back to the auth-request param if some
     // client somehow sent one, then to the opaque client_id as a last resort
     // so the heading never renders blank.
+    //
+    // MCP-OAUTH-08: this display name is UNVERIFIED, attacker-controllable DCR
+    // metadata. An anonymous DCR caller picks any `client_name` it likes
+    // ("Claude", "Microsoft"), so the consent UI must never present it as a
+    // trusted identity. We hard-code `verification: 'unverified'` — the bit is
+    // NOT derived from any client-supplied field — and ship the exact callback
+    // redirect_uri + origin so the user can see where the authorization code
+    // will actually be routed (the real anti-phishing signal).
     const registeredName = (clientRow?.metadata as { client_name?: unknown } | undefined)?.client_name;
-    const clientName =
+    const displayName =
       (typeof registeredName === 'string' && registeredName.trim()) ||
       (typeof (details.params as any).client_name === 'string' && (details.params as any).client_name) ||
       clientId;
+
+    // The redirect_uri for THIS authorization request is where the code will
+    // be delivered. Surface it (and its origin) so the user approves a
+    // specific callback destination, not just a name. If it is absent or
+    // unparseable we send empty strings and let the consent form fail closed
+    // rather than render a consent screen missing the destination.
+    const rawRedirectUri = (details.params as { redirect_uri?: unknown }).redirect_uri;
+    const redirectUri = typeof rawRedirectUri === 'string' ? rawRedirectUri : '';
+    let redirectOrigin = '';
+    if (redirectUri) {
+      try {
+        redirectOrigin = new URL(redirectUri).origin;
+      } catch {
+        redirectOrigin = '';
+      }
+    }
 
     // On a first-visit single-step flow the prompt is `login`, and
     // `prompt.details.scopes.new` doesn't exist yet — fall back to the
@@ -158,15 +189,36 @@ if (MCP_OAUTH_ENABLED) {
     const displayScopes =
       promptScopesNew.length > 0 ? promptScopesNew : requestScopes;
 
+    // MCP-OAUTH-01: attach each partner option's AUTHORITATIVE effective MCP
+    // scope set (provider-supported ∩ requested ∩ displayed ∩ that partner's
+    // `mcp_allowed_scopes` policy) so the consent UI can show what selecting
+    // a given partner will actually grant — never the raw client-requested/
+    // displayed set, which may exceed a read-only or execute-disabled
+    // partner's policy. No Grant exists yet at this point in the flow.
+    const partnersWithScopes = await Promise.all(
+      memberships.map(async (membership) => ({
+        ...membership,
+        effectiveScopes: await computeEffectiveMcpScopes({
+          requested: requestScopes,
+          displayed: displayScopes,
+          partnerId: membership.partnerId,
+          hasGrant: false,
+        }),
+      })),
+    );
+
     return c.json({
       uid: details.uid,
       client: {
         client_id: clientId,
-        client_name: clientName,
+        display_name: displayName,
+        verification: 'unverified' as const,
+        redirect_uri: redirectUri,
+        redirect_origin: redirectOrigin,
       },
       scopes: displayScopes,
       resource: resource ?? null,
-      partners: memberships,
+      partners: partnersWithScopes,
     });
   });
 
@@ -174,7 +226,8 @@ if (MCP_OAUTH_ENABLED) {
     const provider = await getProvider();
     const details = await interactionDetails(provider, c, c.req.param('uid'));
     const resource = details.params.resource as string | undefined;
-    if (resource && resource !== OAUTH_RESOURCE_URL) {
+    // #2363: same alias acceptance as the GET handler above.
+    if (resource && !isAcceptedResourceIndicator(resource)) {
       throw new HTTPException(400, { message: 'unsupported resource indicator' });
     }
 
@@ -277,7 +330,24 @@ if (MCP_OAUTH_ENABLED) {
 
     const missingResourceScopes =
       (promptDetails.missingResourceScopes as Record<string, string[]> | undefined) ?? {};
+    // MCP-OAUTH-01 (Fix round 1): oidc-provider's `checkResource` runs at
+    // /oauth/auth time, BEFORE a partner is chosen (hasGrant:false at that
+    // point), so `missingResourceScopes[OAUTH_RESOURCE_URL]` is populated
+    // with the client's FULL requested scope set — never narrowed by any
+    // partner policy. `Grant.addResourceScope` UNIONS with prior values
+    // (oidc-provider lib/models/grant.js addResourceScope), so if this loop
+    // wrote that unfiltered set here, the later partner-policy-narrowed
+    // `addResourceScope` call below could never shrink it back down. Skip
+    // the MCP resource here entirely — the effective-scopes call below owns
+    // it exclusively and unconditionally, so it is the ONLY write the MCP
+    // resource ever receives. Non-MCP resources (if any) are unaffected.
+    // (#2363 interplay) The MCP resource may be keyed by an accepted alias
+    // (…/sse, trailing slash, …/message) on flows that predate or bypass the
+    // /oauth/auth normalization, so match the full accepted set — not just
+    // the canonical OAUTH_RESOURCE_URL — or an alias-keyed flow would get
+    // the unfiltered union write this skip exists to prevent.
     for (const [res, scopes] of Object.entries(missingResourceScopes)) {
+      if (isAcceptedResourceIndicator(res)) continue;
       grant.addResourceScope(res, scopes.join(' '));
     }
     // H3: only grant the intersection of (requested) ∩ (displayed). The UI
@@ -316,18 +386,39 @@ if (MCP_OAUTH_ENABLED) {
     if (requestedScopes.length > 0 && grantedScopes.length === 0) {
       throw new HTTPException(400, { message: 'invalid_scope' });
     }
+    // MCP-OAUTH-01: recompute the MCP-scope intersection authoritatively
+    // against the SELECTED partner's current `mcp_allowed_scopes` policy —
+    // never trust the browser (or the earlier GET response) to have already
+    // applied it. `grantedScopes` above is already the requested∩displayed
+    // intersection, so it's the authoritative "requested" input here (no
+    // separate `displayed` arg needed). This applies on every consent path,
+    // INCLUDING the `prompt=login` single-step fallback a few lines above,
+    // where `displayedScopeSet` is seeded straight from the request's own
+    // scope param — that fallback only established H3 (displayed ⊇ granted);
+    // it says nothing about partner policy, so without this step a POST
+    // could still persist a scope the selected partner's policy forbids.
+    const effectiveMcpScopes = await computeEffectiveMcpScopes({
+      requested: grantedScopes,
+      partnerId: body.partner_id,
+      hasGrant: true,
+    });
+    const finalGrantedScopes = [
+      ...grantedScopes.filter((s) => !s.startsWith('mcp:')),
+      ...effectiveMcpScopes,
+    ];
     // Grant the intersection at BOTH the OIDC and resource level. The
     // provider's consent prompt machinery checks `missingOIDCScope` against
     // the OIDC grant set even for scopes that "logically" belong to a
     // resource indicator (because they appear in the auth request's
     // `scope` parameter). Granting them in both places means the consent
     // prompt is auto-satisfied on resume.
-    if (grantedScopes.length) grant.addOIDCScope(grantedScopes.join(' '));
-    if (resource) {
-      const resourceScopes = grantedScopes.filter((scope) => scope.startsWith('mcp:'));
-      if (!missingResourceScopes[resource] && resourceScopes.length) {
-        grant.addResourceScope(resource, resourceScopes.join(' '));
-      }
+    if (finalGrantedScopes.length) grant.addOIDCScope(finalGrantedScopes.join(' '));
+    // MCP-OAUTH-01 (Fix round 1): unconditional — this is the ONLY write
+    // the MCP resource ever receives (the missingResourceScopes loop above
+    // explicitly skips it), so there is no earlier broader write for
+    // Grant.addResourceScope's union semantics to fail to shrink.
+    if (resource && effectiveMcpScopes.length) {
+      grant.addResourceScope(resource, effectiveMcpScopes.join(' '));
     }
 
     const grantId = await grant.save();

@@ -121,11 +121,34 @@ export const listSchema = z.object({
 
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
 
-export const createTicketSchema = z.object({
-  subject: z.string().min(1).max(255),
-  description: z.string().min(1),
-  priority: ticketPrioritySchema.optional().default('normal')
-});
+// Phase 2 (ticket intake forms): subject/description become optional when a
+// formId is supplied — createTicket composes them from the form (title
+// template + rendered responses). Portal keeps its OWN schema (does not
+// import the shared createTicketSchema) per the Phase 2 plan's global
+// constraints. `priority.default('normal')` is intentionally kept even though
+// a form may carry its own defaultPriority: the portal UI has no per-form
+// priority prefill yet, so the portal's explicit 'normal' wins over the
+// form's default in Phase 2 — acceptable per the design brief; revisit if/when
+// the portal form UI grows a priority prefill.
+export const createTicketSchema = z
+  .object({
+    subject: z.string().min(1).max(255).optional(),
+    description: z.string().min(1).optional(),
+    priority: ticketPrioritySchema.optional().default('normal'),
+    formId: z.string().guid().optional(),
+    formResponses: z.record(z.string(), z.unknown()).optional()
+  })
+  .superRefine((v, ctx) => {
+    if (!v.formId && (!v.subject || !v.subject.trim())) {
+      ctx.addIssue({ code: 'custom', path: ['subject'], message: 'subject is required unless a formId is provided' });
+    }
+    if (!v.formId && (!v.description || !v.description.trim())) {
+      ctx.addIssue({ code: 'custom', path: ['description'], message: 'description is required unless a formId is provided' });
+    }
+    if (v.formResponses && !v.formId) {
+      ctx.addIssue({ code: 'custom', path: ['formResponses'], message: 'formResponses requires formId' });
+    }
+  });
 
 export const ticketParamSchema = z.object({
   id: z.string().guid()

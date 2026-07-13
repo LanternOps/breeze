@@ -609,7 +609,7 @@ export default function ScriptForm({
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="timeout-seconds" className="text-sm font-medium">{t('scriptForm.fields.timeoutSeconds')}</label>
-            <input id="timeout-seconds" type="number" min={1} max={86400} className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register('timeoutSeconds')} />
+            <input id="timeout-seconds" type="number" min={1} max={3600} className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register('timeoutSeconds')} />
             {errors.timeoutSeconds && <p className="text-sm text-destructive">{errors.timeoutSeconds.message}</p>}
             <p className="text-xs text-muted-foreground">{t('scriptForm.execution.timeoutHint')}</p>
           </div>

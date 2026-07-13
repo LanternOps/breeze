@@ -83,7 +83,14 @@ vi.mock('../middleware/bearerTokenAuth', () => ({
   bearerTokenAuthMiddleware: async () => { throw new Error('should not be called without a Bearer header'); },
   resolvePartnerAccessibleOrgIds: async () => [],
 }));
-vi.mock('./mcpExecutionOrg', () => ({ resolveMcpExecutionOrgId: () => 'org-1' }));
+vi.mock('./mcpExecutionOrg', () => ({
+  resolveMcpExecutionOrgId: () => 'org-1',
+  // Task 6 routed the Tier 3 path through resolveMcpExecutionContext +
+  // McpExecutionOrgError; the mock must export both or the route throws at the
+  // execution-org resolution step before the assertions below can run.
+  resolveMcpExecutionContext: async () => ({ orgId: 'org-1' }),
+  McpExecutionOrgError: class McpExecutionOrgError extends Error {},
+}));
 vi.mock('../services/mcpToolExecutionLedger', () => ({
   beginMcpToolExecutionLedger: async () => ({ id: 'ledger-1' }),
   completeMcpToolExecutionLedger: async () => undefined,

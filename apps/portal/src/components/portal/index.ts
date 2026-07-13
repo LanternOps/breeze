@@ -12,6 +12,7 @@ export { ResetPasswordForm } from './ResetPasswordForm';
 export { DeviceList } from './DeviceList';
 export { TicketList } from './TicketList';
 export { NewTicketForm } from './NewTicketForm';
+export { default as TicketFormFields } from './TicketFormFields';
 export { TicketDetails } from './TicketDetails';
 export { AssetList } from './AssetList';
 export { ProfileSettings } from './ProfileSettings';

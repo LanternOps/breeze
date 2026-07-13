@@ -120,6 +120,16 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // org_id is for routing + cascade only. Functional cross-partner/cross-org
   // forge proof: customerEmailDomainsRls.integration.test.ts.
   'customer_email_domains',
+  // ticket_form_org_links (2026-07-11): FK-child of the dual-axis ticket_forms
+  // parent (Shape 5-adjacent, registered in PARENT_FK_JOIN_POLICY_TABLES
+  // below). Its own org_id column is the ALLOWLISTED org, not the tenancy
+  // axis — the loose `LIKE '%breeze_has_org_access%'` substring match in the
+  // generic org-tenant test would otherwise spuriously "pass" this table
+  // because the FK-join policy text does call breeze_has_org_access(tf.org_id)
+  // (the PARENT's column), just not on this table's own org_id. Excluding it
+  // here keeps that generic check honest; PARENT_FK_JOIN_POLICY_TABLES is the
+  // real assertion for this table's policy shape.
+  'ticket_form_org_links',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -411,6 +421,12 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // never allowlisted, so the contract test couldn't see it. Register it so a
   // future regression that drops/weakens the policy is caught.
   ['psa_ticket_mappings', ['psa_connections']],
+  // ticket_form_org_links (2026-07-11): org allowlist for partner-wide
+  // ticket_forms. Its policy joins through ticket_forms and OR's in the
+  // parent's dual-axis predicate (org OR partner OR system) — a plain
+  // breeze_has_org_access(parent.org_id) join would be WRONG because the
+  // parent's org_id is NULL for the partner-wide forms this table scopes.
+  ['ticket_form_org_links', ['ticket_forms']],
 ]);
 
 // Tables scoped to the calling user via breeze_current_user_id().

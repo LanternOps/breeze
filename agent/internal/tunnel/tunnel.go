@@ -18,6 +18,13 @@ const (
 	dialTimeout = 10 * time.Second
 )
 
+// defaultWriteTimeout bounds each Write to the local target. Without it a
+// stalled target (full TCP send buffer, wedged VNC server) blocks the calling
+// worker forever, pinning the command payload that carried the data and
+// permanently shrinking the command worker pool (issue #2387). Tests shorten
+// the bound via the Session.writeTimeout field.
+const defaultWriteTimeout = 30 * time.Second
+
 // DataCallback is called when data is read from the TCP connection.
 type DataCallback func(tunnelID string, data []byte)
 
@@ -31,8 +38,15 @@ type Session struct {
 	TargetPort int
 	TunnelType string // "vnc" or "proxy"
 
-	conn       net.Conn
-	done       chan struct{}
+	conn net.Conn
+	// writeTimeout bounds each Write; non-positive means defaultWriteTimeout.
+	// Set before the session is used (tests only) — never mutated afterwards.
+	writeTimeout time.Duration
+	// closeReason records why the session was torn down (e.g. a write
+	// timeout) so readLoop's onClose reports the true cause instead of the
+	// read-side symptom ("use of closed network connection").
+	closeReason atomic.Value // stores error
+	done        chan struct{}
 	closeOnce  sync.Once
 	onData     DataCallback
 	onClose    CloseCallback
@@ -87,9 +101,32 @@ func (s *Session) Write(data []byte) error {
 	default:
 	}
 
+	timeout := s.writeTimeout
+	if timeout <= 0 {
+		timeout = defaultWriteTimeout
+	}
+
+	// Bound the write so a stalled target cannot wedge the caller forever.
+	// On timeout the session is torn down rather than left running: the
+	// write may have partially flushed, corrupting the VNC/proxy stream
+	// framing, and a target that stalled for the full deadline is presumed
+	// dead.
+	if err := s.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("set write deadline for %s:%d: %w", s.TargetHost, s.TargetPort, err)
+	}
 	n, err := s.conn.Write(data)
 	if err != nil {
-		return fmt.Errorf("write to %s:%d: %w", s.TargetHost, s.TargetPort, err)
+		wrapped := fmt.Errorf("write to %s:%d: %w", s.TargetHost, s.TargetPort, err)
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			log.Warn("tunnel write timed out, closing session",
+				"tunnelId", s.ID,
+				"target", fmt.Sprintf("%s:%d", s.TargetHost, s.TargetPort),
+				"timeout", timeout.String(),
+			)
+			s.closeReason.Store(fmt.Errorf("tunnel write timed out after %s: %w", timeout, wrapped))
+			s.Close()
+		}
+		return wrapped
 	}
 	s.bytesSent.Add(int64(n))
 	s.touch()
@@ -132,6 +169,11 @@ func (s *Session) readLoop() {
 
 	defer func() {
 		s.Close()
+		// A recorded close reason (e.g. write timeout) is the true cause;
+		// the read error here is usually just its symptom.
+		if reason, ok := s.closeReason.Load().(error); ok {
+			closeErr = reason
+		}
 		if s.onClose != nil {
 			s.onClose(s.ID, closeErr)
 		}

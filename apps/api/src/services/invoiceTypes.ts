@@ -12,11 +12,22 @@ export interface InvoiceActor {
   userId: string | null;
   partnerId: string | null;
   accessibleOrgIds: string[] | null;
+  /**
+   * Site-axis allowlist (sub-org restriction), mirroring `AuthContext.allowedSiteIds`
+   * and enforced with the same `siteAccessCheck` semantics (middleware/auth.ts).
+   * `undefined` = unrestricted (partner/system scope, or an org user with no site
+   * restriction) — behaves exactly as before this field existed. When set to an
+   * array the actor is site-restricted: it may only touch invoices whose `siteId`
+   * is in the list, and a null-site invoice is DENIED (matching the auth closure,
+   * which denies a restricted caller for a null/undefined siteId).
+   */
+  allowedSiteIds?: string[];
 }
 
 export type InvoiceServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'ORG_DENIED'
+  | 'SITE_DENIED'
   | 'INVOICE_NOT_FOUND'
   | 'NOT_A_DRAFT'
   | 'NOTHING_TO_INVOICE'

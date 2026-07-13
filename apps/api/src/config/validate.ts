@@ -506,6 +506,19 @@ const envSchema = z
     CF_ACCESS_AUD: z.string().optional(),
     CF_ACCESS_TRUSTS_MFA: z.string().optional(),
 
+    // -- Native APNs push (replaces the Expo push relay) ---------------------
+    // All optional at boot: push is an optional feature. If ANY APNS_* is set,
+    // the superRefine "all-or-none" block below requires the four credential
+    // fields (key/kid/team/bundle); APNS_ENVIRONMENT stays optional and
+    // defaults to 'production' at the sender. APNS_AUTH_KEY holds the raw .p8
+    // PEM contents and may contain literal "\n" escapes (env files can't carry
+    // real newlines); the sender normalizes them before importPKCS8.
+    APNS_AUTH_KEY: z.string().optional(),
+    APNS_KEY_ID: z.string().optional(),
+    APNS_TEAM_ID: z.string().optional(),
+    APNS_BUNDLE_ID: z.string().optional(),
+    APNS_ENVIRONMENT: z.enum(['sandbox', 'production']).optional(),
+
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
     REDIS_URL: z.string().default('redis://localhost:6379'),
@@ -1174,6 +1187,40 @@ const envSchema = z
           'AGENT_AUTO_PROMOTE must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (sync immediately becomes the fleet upgrade target). Set false to require explicit promotion via POST /agent-versions/promote.',
       });
     }
+
+    // --- Native APNs push (all-or-none) ---
+    // Push is optional, so an empty APNS_* set is fine. But a partial set
+    // (e.g. team + bundle without the signing key) would silently fail to
+    // deliver at first use rather than at boot. If the operator has opted in
+    // by setting ANY APNS_* field, require the four credentials. Environment
+    // stays optional (defaults to 'production' at the sender). Validated in
+    // every NODE_ENV — a half-configured push relay is a bug regardless.
+    const apnsFields = [
+      data.APNS_AUTH_KEY,
+      data.APNS_KEY_ID,
+      data.APNS_TEAM_ID,
+      data.APNS_BUNDLE_ID,
+      data.APNS_ENVIRONMENT,
+    ];
+    const anyApnsSet = apnsFields.some((v) => v != null && v.trim() !== '');
+    if (anyApnsSet) {
+      const required: Array<[keyof typeof data, string | undefined]> = [
+        ['APNS_AUTH_KEY', data.APNS_AUTH_KEY],
+        ['APNS_KEY_ID', data.APNS_KEY_ID],
+        ['APNS_TEAM_ID', data.APNS_TEAM_ID],
+        ['APNS_BUNDLE_ID', data.APNS_BUNDLE_ID],
+      ];
+      for (const [key, value] of required) {
+        if (!value || value.trim() === '') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key as string],
+            message:
+              `${key} is required when any APNS_* variable is set. Native APNs push needs APNS_AUTH_KEY (the .p8 PEM), APNS_KEY_ID, APNS_TEAM_ID and APNS_BUNDLE_ID together; APNS_ENVIRONMENT is optional (defaults to production).`,
+          });
+        }
+      }
+    }
   });
 
 // Inferred config type from the schema
@@ -1352,6 +1399,11 @@ export function validateConfig(): AppConfig {
     CF_ACCESS_TEAM_DOMAIN: env.CF_ACCESS_TEAM_DOMAIN,
     CF_ACCESS_AUD: env.CF_ACCESS_AUD,
     CF_ACCESS_TRUSTS_MFA: env.CF_ACCESS_TRUSTS_MFA,
+    APNS_AUTH_KEY: env.APNS_AUTH_KEY,
+    APNS_KEY_ID: env.APNS_KEY_ID,
+    APNS_TEAM_ID: env.APNS_TEAM_ID,
+    APNS_BUNDLE_ID: env.APNS_BUNDLE_ID,
+    APNS_ENVIRONMENT: env.APNS_ENVIRONMENT,
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     REDIS_HOST: env.REDIS_HOST,

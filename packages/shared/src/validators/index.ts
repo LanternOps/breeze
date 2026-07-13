@@ -649,7 +649,10 @@ export const eventLogInlineSettingsSchema = z.object({
   maxEventsPerCycle: z.number().int().min(10).max(500).default(100),
   collectCategories: z.array(z.enum(['security', 'hardware', 'application', 'system'])).min(1).default(['security', 'hardware', 'application', 'system']),
   minimumLevel: z.enum(['info', 'warning', 'error', 'critical']).default('info'),
-  collectionIntervalMinutes: z.number().int().min(1).max(60).default(5),
+  // 15m default (was 5m) — each collection pass fans out subprocess work on
+  // the agent; on macOS a `log show` pass costs seconds of CPU even when it
+  // returns nothing (issue #2390). Still configurable 1-60.
+  collectionIntervalMinutes: z.number().int().min(1).max(60).default(15),
   rateLimitPerHour: z.number().int().min(100).max(100000).default(12000),
 });
 

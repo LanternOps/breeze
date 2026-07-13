@@ -146,7 +146,58 @@ function selectWhereOrderLimitResolved(rows: unknown[]) {
   };
 }
 
-const { recordMonitorCheckResult, processScheduler } = await import('./monitorWorker');
+const { recordMonitorCheckResult, processScheduler, selectExecutionAgentForMonitor } = await import('./monitorWorker');
+
+describe('selectExecutionAgentForMonitor (SR5-08 site-bound fallback)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('picks an online agent in the monitor site when one exists', async () => {
+    vi.mocked(db.select)
+      // asset → siteId
+      .mockReturnValueOnce(selectLimitResolved([{ siteId: 'site-1' }]) as any)
+      // site agent lookup → online agent in site-1
+      .mockReturnValueOnce(selectLimitResolved([{ agentId: 'agent-site-1' }]) as any);
+
+    const agentId = await selectExecutionAgentForMonitor({ orgId: 'org-1', assetId: 'asset-1' });
+    expect(agentId).toBe('agent-site-1');
+  });
+
+  it('does NOT fall back to an arbitrary org agent when a site-bound monitor has no online site agent', async () => {
+    vi.mocked(db.select)
+      // asset → siteId (site-1)
+      .mockReturnValueOnce(selectLimitResolved([{ siteId: 'site-1' }]) as any)
+      // no online agent in site-1
+      .mockReturnValueOnce(selectLimitResolved([]) as any);
+
+    const agentId = await selectExecutionAgentForMonitor({ orgId: 'org-1', assetId: 'asset-1' });
+    // Fail closed rather than cross the site boundary.
+    expect(agentId).toBeNull();
+    // Only the asset + site-agent lookups ran — no org-wide fallback query.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows an org-wide agent for an unbound (assetless) monitor — behavior preserved', async () => {
+    vi.mocked(db.select)
+      // org-wide online agent lookup
+      .mockReturnValueOnce(selectLimitResolved([{ agentId: 'agent-any' }]) as any);
+
+    const agentId = await selectExecutionAgentForMonitor({ orgId: 'org-1', assetId: null });
+    expect(agentId).toBe('agent-any');
+    // No asset lookup for an assetless monitor; only the org-wide query runs.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats an asset with a null site as unbound (org-wide allowed)', async () => {
+    vi.mocked(db.select)
+      // asset → siteId null
+      .mockReturnValueOnce(selectLimitResolved([{ siteId: null }]) as any)
+      // org-wide online agent lookup
+      .mockReturnValueOnce(selectLimitResolved([{ agentId: 'agent-any' }]) as any);
+
+    const agentId = await selectExecutionAgentForMonitor({ orgId: 'org-1', assetId: 'asset-1' });
+    expect(agentId).toBe('agent-any');
+  });
+});
 
 describe('processScheduler (#1105 connection-hold)', () => {
   beforeEach(() => {

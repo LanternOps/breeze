@@ -69,7 +69,11 @@ const ticketFormBaseSchema = z.object({
   defaultTags: z.array(z.string().min(1).max(100)).max(20),
   showInPortal: z.boolean(),
   isActive: z.boolean(),
-  sortOrder: z.number().int().min(0).max(10_000)
+  sortOrder: z.number().int().min(0).max(10_000),
+  // Org allowlist (Phase 2, epic #2135 follow-on): null/absent = visible to
+  // all the partner's orgs; array = allowlist. Only meaningful on
+  // partner-wide forms — routes reject it on org-owned forms.
+  visibleOrgIds: z.array(z.string().guid()).max(500).nullable().optional()
 });
 
 export const createTicketFormSchema = ticketFormBaseSchema.extend({

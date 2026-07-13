@@ -22,6 +22,7 @@ vi.mock('../services/rate-limit', () => ({
   })),
 }));
 vi.mock('../services/auditEvents', () => ({
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeAuditEvent: vi.fn()
 }));
 // Enrollment now gates on tenant status; default to an active tenant so these
@@ -901,7 +902,7 @@ describe('agent routes', () => {
           max_events_per_cycle: 100,
           collect_categories: ['security', 'hardware', 'application', 'system'],
           minimum_level: 'info',
-          collection_interval_minutes: 5,
+          collection_interval_minutes: 15,
         },
         policy_registry_state_probes: [
           { registry_path: 'HKLM\\SOFTWARE\\Policies\\Alpha', value_name: 'Flag' },
@@ -1018,7 +1019,7 @@ describe('agent routes', () => {
           max_events_per_cycle: 100,
           collect_categories: ['security', 'hardware', 'application', 'system'],
           minimum_level: 'info',
-          collection_interval_minutes: 5,
+          collection_interval_minutes: 15,
         },
         policy_registry_state_probes: [],
         policy_config_state_probes: [],

@@ -37,7 +37,12 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 
+vi.mock('../../services/auditEvents', () => ({
+  writeAuditEvent: vi.fn(),
+}));
+
 import { db } from '../../db';
+import { writeAuditEvent } from '../../services/auditEvents';
 import { logsRoutes } from './logs';
 
 // ---------------------------------------------------------------------------
@@ -63,6 +68,25 @@ function mockInsertSuccess() {
   vi.mocked(db.insert).mockReturnValue({
     values,
   } as any);
+  return values;
+}
+
+// The route inserts in batches of 100. This lets the FIRST batch land and the
+// SECOND batch throw, so we exercise the partial-insert path (some rows in,
+// some lost) while the swallowed error still leaves an ingest-audit trail.
+function mockInsertPartial() {
+  const values = vi
+    .fn()
+    .mockResolvedValueOnce(undefined) // first 100-row batch succeeds
+    .mockRejectedValueOnce(new Error('insert failed for batch 2'));
+  vi.mocked(db.insert).mockReturnValue({ values } as any);
+  return values;
+}
+
+// Every batch insert throws → inserted stays 0.
+function mockInsertFailure() {
+  const values = vi.fn().mockRejectedValue(new Error('insert failed'));
+  vi.mocked(db.insert).mockReturnValue({ values } as any);
   return values;
 }
 
@@ -194,6 +218,110 @@ describe('agent logs routes', () => {
           },
         }),
       ]);
+    });
+  });
+
+  describe('POST /agents/:id/logs — ingest audit (Finding #9)', () => {
+    it('writes a content-free agent.logs.submit audit event on ingest', async () => {
+      mockDeviceLookup(true);
+      mockInsertSuccess();
+
+      const logs = Array.from({ length: 3 }, () =>
+        makeLogEntry({ message: 'secret token=abc123' })
+      );
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+      const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
+      expect(event).toMatchObject({
+        orgId: ORG_ID,
+        actorType: 'agent',
+        actorId: AGENT_ID,
+        action: 'agent.logs.submit',
+        resourceType: 'device',
+        resourceId: DEVICE_ID,
+        details: { submittedCount: 3, insertedCount: 3 },
+      });
+      // Content-free: no log message contents leak into the audit details.
+      expect(JSON.stringify(event.details)).not.toContain('token=');
+      // partialFailure omitted on a fully-successful insert.
+      expect(event.details).not.toHaveProperty('partialFailure');
+    });
+
+    it('still writes the ingest audit with partialFailure when some rows fail to insert', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockDeviceLookup(true);
+      mockInsertPartial();
+
+      // 150 entries → two batches (100 + 50). The 100-row batch lands, the
+      // 50-row batch throws, so 100 are inserted and 50 are lost.
+      const logs = Array.from({ length: 150 }, () =>
+        makeLogEntry({ message: 'secret token=abc123' })
+      );
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs }),
+      });
+
+      // Partial success → 207 with the inserted/total split.
+      expect(res.status).toBe(207);
+      expect(await res.json()).toEqual({ received: 100, total: 150, partial: true });
+
+      // The ingest audit STILL fires on partial failure, carrying the reduced
+      // insertedCount and the partialFailure shortfall.
+      expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+      const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
+      expect(event).toMatchObject({
+        orgId: ORG_ID,
+        actorType: 'agent',
+        actorId: AGENT_ID,
+        action: 'agent.logs.submit',
+        resourceType: 'device',
+        resourceId: DEVICE_ID,
+        details: { submittedCount: 150, insertedCount: 100, partialFailure: 50 },
+      });
+      // Content-free even on the failure path.
+      expect(JSON.stringify(event.details)).not.toContain('token=');
+
+      consoleError.mockRestore();
+    });
+
+    it('writes the ingest audit and returns 500 when every insert fails (inserted === 0)', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockDeviceLookup(true);
+      mockInsertFailure();
+
+      const logs = Array.from({ length: 3 }, () =>
+        makeLogEntry({ message: 'secret token=abc123' })
+      );
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs }),
+      });
+
+      // Total failure → 500, no rows accepted.
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Failed to insert logs', received: 0 });
+
+      // The audit fires BEFORE the 500 return, so the arrival of the batch is
+      // still recorded even though nothing persisted.
+      expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+      const [, event] = vi.mocked(writeAuditEvent).mock.calls[0]!;
+      expect(event).toMatchObject({
+        action: 'agent.logs.submit',
+        resourceId: DEVICE_ID,
+        details: { submittedCount: 3, insertedCount: 0, partialFailure: 3 },
+      });
+      expect(JSON.stringify(event.details)).not.toContain('token=');
+
+      consoleError.mockRestore();
     });
   });
 });

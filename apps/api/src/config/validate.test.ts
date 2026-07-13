@@ -1445,4 +1445,55 @@ describe('validateConfig', () => {
       },
     );
   });
+
+  describe('APNs push (all-or-none)', () => {
+    const apnsFull = {
+      APNS_AUTH_KEY: '-----BEGIN PRIVATE KEY-----\\nMIG...\\n-----END PRIVATE KEY-----',
+      APNS_KEY_ID: 'ABC123KEYID',
+      APNS_TEAM_ID: 'TEAM123456',
+      APNS_BUNDLE_ID: 'app.breeze.mobile',
+    };
+
+    it('passes when no APNS_* variable is set (push disabled)', () => {
+      withEnv(validEnv, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('passes when all four credentials are set (environment defaulted)', () => {
+      withEnv({ ...validEnv, ...apnsFull }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('passes when the optional APNS_ENVIRONMENT is also set', () => {
+      withEnv({ ...validEnv, ...apnsFull, APNS_ENVIRONMENT: 'sandbox' }, () => {
+        const config = validateConfig();
+        expect(config.APNS_ENVIRONMENT).toBe('sandbox');
+      });
+    });
+
+    it.each(['APNS_AUTH_KEY', 'APNS_KEY_ID', 'APNS_TEAM_ID', 'APNS_BUNDLE_ID'])(
+      'refuses boot when %s is missing but other APNS_* are set',
+      (missing) => {
+        const partial: Record<string, string> = { ...apnsFull };
+        delete partial[missing];
+        withEnv({ ...validEnv, ...partial }, () => {
+          expect(() => validateConfig()).toThrow(missing);
+        });
+      },
+    );
+
+    it('refuses boot when only APNS_ENVIRONMENT is set (opts in without credentials)', () => {
+      withEnv({ ...validEnv, APNS_ENVIRONMENT: 'production' }, () => {
+        expect(() => validateConfig()).toThrow('APNS_AUTH_KEY');
+      });
+    });
+
+    it('rejects an invalid APNS_ENVIRONMENT value', () => {
+      withEnv({ ...validEnv, ...apnsFull, APNS_ENVIRONMENT: 'staging' }, () => {
+        expect(() => validateConfig()).toThrow('APNS_ENVIRONMENT');
+      });
+    });
+  });
 });

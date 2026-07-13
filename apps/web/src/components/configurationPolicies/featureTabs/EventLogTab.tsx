@@ -19,7 +19,10 @@ const defaults: EventLogSettings = {
   maxEventsPerCycle: 100,
   collectCategories: ["security", "hardware", "application", "system"],
   minimumLevel: "info",
-  collectionIntervalMinutes: 5,
+  // 15m default (was 5m) — issue #2390 subprocess-churn backoff. Keep in sync
+  // with eventLogInlineSettingsSchema (shared validators) and EVENT_LOG_DEFAULTS
+  // (apps/api routes/agents/helpers.ts).
+  collectionIntervalMinutes: 15,
   rateLimitPerHour: 12000,
 };
 const createAllCategories = () => [

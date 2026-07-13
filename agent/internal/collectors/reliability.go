@@ -61,6 +61,11 @@ func NewReliabilityCollector() *ReliabilityCollector {
 	eventCollector := NewEventLogCollector()
 	// Start reliability collection with a lookback window so first upload
 	// includes recent crash/failure signals instead of only new events.
+	// The full 24h lookback applies to file-based sources (DiagnosticReports
+	// crash files — the authoritative long-window crash signal); on macOS the
+	// unified-log query intentionally clamps its window to
+	// unifiedLogMaxLookback, because scanning 24h of unified log costs far
+	// more than the marginal signal it adds (issue #2390).
 	eventCollector.lastCollectTime = time.Now().Add(-reliabilityInitialLookback)
 
 	return &ReliabilityCollector{

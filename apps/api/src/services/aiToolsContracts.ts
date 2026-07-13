@@ -35,6 +35,24 @@ import {
   cancelContract
 } from './contractService';
 import { ContractServiceError, type ContractActor } from './contractTypes';
+import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
+
+/**
+ * Params each manage_contracts action requires, presence-checked BEFORE any
+ * `String(...)` coercion so a missing id can't become the literal string
+ * "undefined" and die downstream as an opaque uuid/DB 500 (#2362 sweep).
+ */
+const MANAGE_CONTRACTS_REQUIRED: Record<string, readonly string[]> = {
+  create_draft: ['input'],
+  update: ['contractId', 'patch'],
+  delete_draft: ['contractId'],
+  add_line: ['contractId', 'line'],
+  remove_line: ['contractId', 'lineId'],
+  activate: ['contractId'],
+  pause: ['contractId'],
+  resume: ['contractId'],
+  cancel: ['contractId'],
+};
 
 function actorFromAuth(auth: AuthContext): ContractActor {
   return {
@@ -156,10 +174,17 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const actor = actorFromAuth(auth);
-      const s = (k: string) => (input[k] == null ? undefined : String(input[k]));
+
+      const action = String(input.action);
+      const required = MANAGE_CONTRACTS_REQUIRED[action];
+      if (!required) {
+        return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
+      }
+      const missing = missingParamsJson(input, action, required);
+      if (missing) return missing;
 
       try {
-        switch (input.action) {
+        switch (action) {
           case 'create_draft':
             return JSON.stringify(await createContract(input.input as CreateContractInput, actor));
           case 'update':
@@ -189,10 +214,10 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           case 'cancel':
             return JSON.stringify(await cancelContract(String(input.contractId), actor));
           default:
-            return JSON.stringify({ error: `Unknown action: ${s('action')}` });
+            return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
         }
       } catch (err) {
-        const json = serviceErrorToJson(err);
+        const json = serviceErrorToJson(err) ?? zodErrorToJson(err);
         if (json) return json;
         throw err;
       }

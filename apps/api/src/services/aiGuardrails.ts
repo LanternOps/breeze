@@ -70,7 +70,11 @@ const TIER1_ACTIONS: Record<string, string[]> = {
 
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
 const TIER3_ACTIONS: Record<string, string[]> = {
-  file_operations: ['write', 'delete', 'mkdir', 'rename'],
+  // SR5-01: filesystem READ/LIST are privileged. The endpoint agent runs as
+  // root/LocalSystem and does not restrict reads to an approved root, so an
+  // unapproved read can exfiltrate any file (/etc/shadow, SAM hive, SSH keys).
+  // Require interactive approval (Tier 3) for read/list, same as the mutations.
+  file_operations: ['read', 'list', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
   security_scan: ['quarantine', 'remove', 'restore'],
   disk_cleanup: ['execute'],
@@ -95,6 +99,9 @@ const TIER3_ACTIONS: Record<string, string[]> = {
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],
+  // Org lifecycle (issue #2366) — tenant-shape mutations require approval.
+  // add_contact stays at the tool's base tier (it returns guidance only).
+  manage_organizations: ['create_org', 'update_org', 'create_site'],
 };
 
 // RBAC permission map: tool → { resource, action } (or action-based overrides)
@@ -179,6 +186,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     resume: { resource: 'contracts', action: 'manage' },
     cancel: { resource: 'contracts', action: 'manage' },
   },
+  list_quotes: { resource: 'quotes', action: 'read' },
+  get_quote: { resource: 'quotes', action: 'read' },
   manage_quotes: {
     create_draft: { resource: 'quotes', action: 'write' },
     update: { resource: 'quotes', action: 'write' },
@@ -195,6 +204,13 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     send: { resource: 'quotes', action: 'send' },
     decline: { resource: 'quotes', action: 'write' },
     create_pay_link: { resource: 'quotes', action: 'write' },
+  },
+  list_organizations: { resource: 'organizations', action: 'read' },
+  manage_organizations: {
+    create_org: { resource: 'organizations', action: 'write' },
+    update_org: { resource: 'organizations', action: 'write' },
+    create_site: { resource: 'sites', action: 'write' },
+    add_contact: { resource: 'organizations', action: 'write' },
   },
   manage_services: { resource: 'devices', action: 'execute' },
   manage_processes: {
@@ -215,8 +231,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     execute: { resource: 'devices', action: 'execute' },
   },
   file_operations: {
-    list: { resource: 'devices', action: 'read' },
-    read: { resource: 'devices', action: 'read' },
+    // SR5-01: read/list require devices.execute (not devices.read). Reading an
+    // arbitrary file off a root/LocalSystem agent is a privileged operation.
+    list: { resource: 'devices', action: 'execute' },
+    read: { resource: 'devices', action: 'execute' },
     write: { resource: 'devices', action: 'execute' },
     delete: { resource: 'devices', action: 'execute' },
     mkdir: { resource: 'devices', action: 'execute' },
@@ -504,9 +522,26 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   google_list_licenses: { resource: 'google', action: 'read' },
   google_assign_license: { resource: 'google', action: 'execute' },
   google_remove_license: { resource: 'google', action: 'execute' },
+
+  // Bootstrap authTools (MCP-OAUTH-11). These dispatch outside the main aiTools
+  // registry (see mcpServer.ts dispatchBootstrapAuthTool) but MUST still carry a
+  // product-RBAC mapping — enforced regardless of MCP_REQUIRE_EXECUTE_ADMIN. A
+  // registry-parity test (aiGuardrails.bootstrapParity.test.ts) fails if a future
+  // bootstrap tool omits an entry here. configure_defaults touches three product
+  // surfaces (device groups, alert rules, notification channels), so its extra
+  // permissions live in TOOL_EXTRA_PERMISSIONS below.
+  send_deployment_invites: { resource: 'devices', action: 'write' },
+  configure_defaults: { resource: 'organizations', action: 'write' },
 };
 
 const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string }[]> = {
+  // configure_defaults (MCP-OAUTH-11): primary organizations.write in
+  // TOOL_PERMISSIONS, plus these — it also creates a default device group and a
+  // baseline alert policy, so require devices.write AND alerts.write.
+  configure_defaults: [
+    { resource: 'devices', action: 'write' },
+    { resource: 'alerts', action: 'write' },
+  ],
   restore_snapshot: [{ resource: 'backup', action: 'read' }],
   restore_as_vm: [{ resource: 'backup', action: 'read' }],
   instant_boot_vm: [{ resource: 'backup', action: 'read' }],
@@ -691,6 +726,46 @@ export function checkGuardrails(
 }
 
 /**
+ * Core role-resolution + permission-check primitive shared by checkToolPermission
+ * (tools/call) and any other MCP dispatch path that needs to authorize a single
+ * explicit `{ resource, action }` requirement — e.g. resources/read's
+ * MCP_RESOURCE_PERMISSIONS map (MCP-OAUTH-03). Returns null if allowed, or a
+ * denial reason string if not.
+ *
+ * Preserves the same fail-open short-circuits checkToolPermission has always
+ * had: helper sessions carry a synthetic auth with no roleId, and tool/resource
+ * access for those callers is governed elsewhere (the helper whitelist), not
+ * user RBAC.
+ */
+export async function checkPermissionRequirement(
+  auth: AuthContext,
+  requirement: { resource: string; action: string }
+): Promise<string | null> {
+  if (!auth.token) {
+    console.warn(
+      `[aiGuardrails] checkPermissionRequirement called without auth.token for ${requirement.resource}.${requirement.action}`
+    );
+    return null;
+  }
+  if (auth.token.roleId === null) return null;
+
+  const userPerms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId || undefined,
+    orgId: auth.orgId || undefined,
+  });
+
+  if (!userPerms) {
+    return 'Insufficient permissions: no role assigned';
+  }
+
+  if (!hasPermission(userPerms, requirement.resource, requirement.action)) {
+    return `Insufficient permissions: requires ${requirement.resource}.${requirement.action}`;
+  }
+
+  return null;
+}
+
+/**
  * Check RBAC permissions for a tool invocation.
  * Returns null if allowed, or an error message if denied.
  */
@@ -701,8 +776,6 @@ export async function checkToolPermission(
 ): Promise<string | null> {
   // Helper sessions use a synthetic auth with no roleId — tool access is
   // governed by the helper whitelist (helperToolFilter), not user RBAC.
-  // Helper sessions use a synthetic auth with no roleId — tool access is
-  // governed by the helper whitelist, not user RBAC.
   if (!auth.token) {
     console.warn(`[aiGuardrails] checkToolPermission called without auth.token for tool ${toolName}`);
     return null;
@@ -736,23 +809,12 @@ export async function checkToolPermission(
     return `Missing required "action" argument for tool "${toolName}"`;
   }
 
-  const userPerms = await getUserPermissions(auth.user.id, {
-    partnerId: auth.partnerId || undefined,
-    orgId: auth.orgId || undefined,
-  });
-
-  if (!userPerms) {
-    return 'Insufficient permissions: no role assigned';
-  }
-
-  if (!hasPermission(userPerms, required.resource, required.action)) {
-    return `Insufficient permissions: requires ${required.resource}.${required.action}`;
-  }
+  const denial = await checkPermissionRequirement(auth, required);
+  if (denial) return denial;
 
   for (const extraPermission of TOOL_EXTRA_PERMISSIONS[toolName] ?? []) {
-    if (!hasPermission(userPerms, extraPermission.resource, extraPermission.action)) {
-      return `Insufficient permissions: requires ${extraPermission.resource}.${extraPermission.action}`;
-    }
+    const extraDenial = await checkPermissionRequirement(auth, extraPermission);
+    if (extraDenial) return extraDenial;
   }
 
   return null;
@@ -936,6 +998,13 @@ function buildApprovalDescription(
       parts.push(`Registry ${action}: ${input.keyPath}`);
       if (input.valueName) parts.push(`\\${input.valueName}`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+
+    case 'manage_organizations':
+      if (action === 'create_org') parts.push(`Create organization "${input.name}" (with a default Main Office site)`);
+      else if (action === 'update_org') parts.push(`Update organization ${(input.orgId as string)?.slice(0, 8)}...${input.status ? ` (status → ${input.status})` : ''}`);
+      else if (action === 'create_site') parts.push(`Create site "${input.name}" in organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`);
+      else parts.push(`Organizations: ${action}`);
       break;
 
     case 'manage_monitors':

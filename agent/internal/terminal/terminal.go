@@ -7,12 +7,24 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/observability"
 )
 
 var log = logging.L("terminal")
+
+// defaultWriteTimeout bounds each write to the PTY/stdin pipe. A PTY whose
+// foreground process stopped reading (e.g. Ctrl-S flow control) blocks
+// write(2) forever; because write() used to hold s.mu across that call, one
+// wedged write also deadlocked every later terminal command for the session
+// and pinned a command worker plus its payload for the process lifetime
+// (issue #2387). The PTY fd is opened in blocking mode (posix_openpt without
+// O_NONBLOCK on macOS), so SetWriteDeadline is unavailable; a bounded wait on
+// a writer goroutine is used instead. Tests shorten the bound via the
+// Session.writeTimeout field.
+const defaultWriteTimeout = 30 * time.Second
 
 // Session represents an active terminal session
 type Session struct {
@@ -24,7 +36,11 @@ type Session struct {
 	stdin    io.WriteCloser // used on Windows for pipe-based stdin (both ConPTY and legacy pipes)
 	cmd      *exec.Cmd      // process command (Unix/macOS; nil on Windows ConPTY)
 	mu       sync.Mutex
-	closed   bool
+	writeMu  sync.Mutex // serializes PTY/stdin writes; never held with s.mu
+	// writeTimeout bounds each write; non-positive means defaultWriteTimeout.
+	// Set before the session is used (tests only) — never mutated afterwards.
+	writeTimeout time.Duration
+	closed       bool
 	waitOnce sync.Once // ensures process wait is called exactly once
 	endOnce  sync.Once // ensures terminal close callback runs once
 	onOutput func(data []byte)
@@ -173,12 +189,19 @@ func (m *Manager) removeSessionIfCurrent(id string, target *Session) {
 	delete(m.sessions, id)
 }
 
-// write writes data to the session's PTY or stdin pipe
+// write writes data to the session's PTY or stdin pipe.
+//
+// The blocking write deliberately happens OUTSIDE s.mu: a PTY write can block
+// indefinitely when the foreground process stops draining input, and holding
+// s.mu across it would deadlock close() and every later write for the session.
+// writeMu keeps concurrent writes serialized instead. The write itself runs in
+// a goroutine bounded by writeTimeout; on timeout the session is closed
+// (killing the shell unblocks the wedged write(2)) and an error is returned so
+// the caller's command worker is released.
 func (s *Session) write(data []byte) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.closed {
+		s.mu.Unlock()
 		return fmt.Errorf("session is closed")
 	}
 
@@ -189,17 +212,54 @@ func (s *Session) write(data []byte) error {
 	}
 
 	// Prefer stdin pipe (Windows), fall back to PTY fd (Unix/macOS)
-	if s.stdin != nil {
-		_, err := s.stdin.Write(data)
-		return err
+	var w io.Writer
+	switch {
+	case s.stdin != nil:
+		w = s.stdin
+	case s.pty != nil:
+		w = s.pty
 	}
+	s.mu.Unlock()
 
-	if s.pty == nil {
+	if w == nil {
 		return fmt.Errorf("PTY not available")
 	}
 
-	_, err := s.pty.Write(data)
-	return err
+	done := make(chan error, 1)
+	go func() {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		_, err := w.Write(data)
+		done <- err
+	}()
+
+	timeout := s.writeTimeout
+	if timeout <= 0 {
+		timeout = defaultWriteTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		log.Warn("terminal write timed out, closing session",
+			"sessionId", s.ID, "timeout", timeout.String())
+		// Close in a goroutine: close() takes s.mu and waits for the shell
+		// process, and killing the shell is what unblocks the stuck write.
+		// A close failure here must never be silent — closing the fd is the
+		// mechanism that releases the wedged writer goroutine, so if it fails
+		// that goroutine (and writeMu) stays pinned.
+		go func() {
+			defer observability.Recoverer("terminal.writeTimeoutClose")
+			if err := s.close(); err != nil {
+				log.Error("failed to close session after write timeout — wedged writer may remain pinned",
+					"sessionId", s.ID, "error", err.Error())
+			}
+		}()
+		return fmt.Errorf("terminal write timed out after %s; session %s close initiated", timeout, s.ID)
+	}
 }
 
 // close closes the terminal session

@@ -219,7 +219,10 @@ export const configPolicyEventLogSettings = pgTable('config_policy_event_log_set
   maxEventsPerCycle: integer('max_events_per_cycle').notNull().default(100),
   collectCategories: text('collect_categories').array().notNull().default(['security', 'hardware', 'application', 'system']),
   minimumLevel: eventLogLevelEnum('minimum_level').notNull().default('info'),
-  collectionIntervalMinutes: integer('collection_interval_minutes').notNull().default(5),
+  // 15m default (was 5m) — issue #2390. Shadowed in practice (writes always go
+  // through eventLogInlineSettingsSchema, which supplies the value), but kept in
+  // sync to avoid latent drift. Migration: 2026-07-12-event-log-interval-default.sql
+  collectionIntervalMinutes: integer('collection_interval_minutes').notNull().default(15),
   rateLimitPerHour: integer('rate_limit_per_hour').notNull().default(12000),
   enableFullTextSearch: boolean('enable_full_text_search').notNull().default(true),
   enableCorrelation: boolean('enable_correlation').notNull().default(true),

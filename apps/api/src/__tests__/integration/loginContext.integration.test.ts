@@ -18,51 +18,27 @@
  * of `partnerSso` IS the availability signal, there is no separate
  * `available` field.
  *
- * IMPORTANT — "which partners exist" is GLOBAL state, and cleanupDatabase()'s
- * per-test TRUNCATE of `partners` (setup.ts) is NOT actually effective:
- * `TRUNCATE partners CASCADE` cascades transitively into `organizations` and
- * from there into `audit_logs`, whose `audit_log_block_truncate` trigger
- * unconditionally rejects any TRUNCATE reaching it (append-only enforcement,
- * no bypass GUC for TRUNCATE — only DELETE has one) — so that whole TRUNCATE
- * statement fails and is silently swallowed by cleanupDatabase()'s try/catch,
- * meaning `partners`/`organizations` rows actually accumulate across every
- * integration test that has ever run against this container. No existing
- * suite notices because they all scope assertions to a specific ID; this is
- * the first that counts rows globally. Reset both tables ourselves below with
- * TRUNCATE ... CASCADE, temporarily disabling the audit_logs trigger (the
- * test-DB user owns the table) — plain DELETEs are not order-independent:
- * whatever FK-child rows earlier suites left behind (backup_configs, etc.)
- * make them fail with 23503.
+ * "Which partners exist" is GLOBAL state. cleanupDatabase() (setup.ts) used
+ * to silently fail to truncate `partners`/`organizations` — the cascade
+ * reached `audit_logs`, whose `audit_log_block_truncate` trigger rejected the
+ * whole statement and the error was swallowed — so this suite originally
+ * carried a suite-local trigger-aware truncate workaround. That fix now lives
+ * in cleanupDatabase() itself (#2205): the global per-test beforeEach disables
+ * the audit trigger around the reset and fails loudly on any other truncate
+ * error, so the tenant roots are genuinely empty before every test here and
+ * the local workaround has been removed.
  *
  * Run:
  *   pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts \
  *     src/__tests__/integration/loginContext.integration.test.ts
  */
 import './setup';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { ssoProviders, partnerLoginBranding } from '../../db/schema';
 import { createPartner } from './db-utils';
 import { loginContextRoutes } from '../../routes/auth/loginContext';
-
-beforeEach(async () => {
-  const testDb = getTestDb();
-  // Bare `DELETE FROM organizations/partners` is not enough here: earlier
-  // suites in the same run leave rows in FK-child tables without ON DELETE
-  // CASCADE (backup_configs bit us in CI, 23503). TRUNCATE ... CASCADE is the
-  // only order-independent reset, and the audit_logs BEFORE TRUNCATE trigger
-  // (append-only enforcement) is the one thing blocking it — the test-DB user
-  // owns the table, so disable it just for this statement and re-enable in a
-  // finally so a failed truncate can't leave the guard off.
-  await testDb.execute(sql`ALTER TABLE audit_logs DISABLE TRIGGER audit_log_block_truncate`);
-  try {
-    await testDb.execute(sql`TRUNCATE TABLE partners, organizations CASCADE`);
-  } finally {
-    await testDb.execute(sql`ALTER TABLE audit_logs ENABLE TRIGGER audit_log_block_truncate`);
-  }
-});
 
 async function createPartnerAxisProvider(
   partnerId: string,

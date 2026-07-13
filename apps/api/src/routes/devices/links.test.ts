@@ -261,6 +261,219 @@ describe('device link-group routes (create success + PATCH branches)', () => {
   });
 });
 
+describe('vm_host link groups (#2308)', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authState.canAccessSite = () => true;
+    app = new Hono();
+    app.route('/devices', linksRoutes);
+  });
+
+  /**
+   * tx.update chain that records every .set() payload and resolves the rows
+   * `rowsFor` chooses for that payload. The where() result is both awaitable
+   * (remove path has no .returning) and .returning-capable (claim paths).
+   */
+  function txUpdateChain(sets: unknown[], rowsFor: (s: Record<string, unknown>) => unknown[]) {
+    return () => ({
+      set: (s: Record<string, unknown>) => {
+        sets.push(s);
+        return {
+          where: () => ({
+            returning: () => Promise.resolve(rowsFor(s)),
+            then: (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
+              Promise.resolve(undefined).then(res, rej),
+          }),
+        };
+      },
+    });
+  }
+
+  it('400s a vm_host create without hostDeviceId', async () => {
+    const res = await app.request(
+      jsonReq('/devices/link-groups', 'POST', { kind: 'vm_host', deviceIds: [UUID_A, UUID_B] }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('400s a vm_host create whose hostDeviceId is not one of deviceIds', async () => {
+    const res = await app.request(
+      jsonReq('/devices/link-groups', 'POST', {
+        kind: 'vm_host',
+        hostDeviceId: '33333333-3333-3333-3333-333333333333',
+        deviceIds: [UUID_A, UUID_B],
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('400s a multiboot create that supplies hostDeviceId (peers have no host)', async () => {
+    const res = await app.request(
+      jsonReq('/devices/link-groups', 'POST', { hostDeviceId: UUID_A, deviceIds: [UUID_A, UUID_B] }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('creates a vm_host group: kind persisted, host claimed as host, others as guests', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck)
+      .mockResolvedValueOnce(mockDevice({ id: UUID_A }) as any)
+      .mockResolvedValueOnce(mockDevice({ id: UUID_B }) as any);
+
+    let insertValues: Record<string, unknown> | undefined;
+    const updateSets: Record<string, unknown>[] = [];
+    dbTransactionMock.mockImplementation((async (cb: any) =>
+      cb({
+        insert: () => ({
+          values: (v: Record<string, unknown>) => {
+            insertValues = v;
+            return { returning: () => Promise.resolve([{ id: 'grp-vm' }]) };
+          },
+        }),
+        update: txUpdateChain(updateSets as unknown[], (s) =>
+          s.linkGroupRole === 'host' ? [{ id: UUID_A }] : [{ id: UUID_B }],
+        ),
+      })) as any);
+    // loadMembers for the response body.
+    dbSelectMock.mockReturnValueOnce(
+      selectChain([
+        { deviceId: UUID_A, linkGroupId: 'grp-vm', siteId: 's', hostname: 'hv-01', displayName: null, osType: 'windows', osVersion: '2022', agentVersion: '1', status: 'online', lastSeenAt: null, role: 'host' },
+        { deviceId: UUID_B, linkGroupId: 'grp-vm', siteId: 's', hostname: 'vm-01', displayName: null, osType: 'linux', osVersion: '22', agentVersion: '1', status: 'online', lastSeenAt: null, role: 'guest' },
+      ]) as any,
+    );
+
+    const res = await app.request(
+      jsonReq('/devices/link-groups', 'POST', {
+        kind: 'vm_host',
+        hostDeviceId: UUID_A,
+        deviceIds: [UUID_A, UUID_B],
+      }),
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { kind: string; members: Array<{ deviceId: string; role: string | null }> };
+    expect(body.kind).toBe('vm_host');
+    expect(insertValues?.kind).toBe('vm_host');
+    // Host batch first (role 'host', exactly the host id), then the guests.
+    expect(updateSets).toHaveLength(2);
+    expect(updateSets[0]).toMatchObject({ linkGroupId: 'grp-vm', linkGroupRole: 'host' });
+    expect(updateSets[1]).toMatchObject({ linkGroupId: 'grp-vm', linkGroupRole: 'guest' });
+    // Roles surfaced on members so the UI can nest without a second fetch.
+    expect(body.members.find((m) => m.deviceId === UUID_A)?.role).toBe('host');
+    expect(body.members.find((m) => m.deviceId === UUID_B)?.role).toBe('guest');
+    // Audit trail records the kind and the host decision.
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'device_link_group.create',
+        details: expect.objectContaining({ kind: 'vm_host', hostDeviceId: UUID_A }),
+      }),
+    );
+  });
+
+  it('creates a multiboot group with a single peer claim (role NULL)', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck)
+      .mockResolvedValueOnce(mockDevice({ id: UUID_A }) as any)
+      .mockResolvedValueOnce(mockDevice({ id: UUID_B }) as any);
+
+    const updateSets: Record<string, unknown>[] = [];
+    dbTransactionMock.mockImplementation((async (cb: any) =>
+      cb({
+        insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 'grp-1' }]) }) }),
+        update: txUpdateChain(updateSets as unknown[], () => [{ id: UUID_A }, { id: UUID_B }]),
+      })) as any);
+    dbSelectMock.mockReturnValueOnce(selectChain([]) as any);
+
+    const res = await app.request(jsonReq('/devices/link-groups', 'POST', { deviceIds: [UUID_A, UUID_B] }));
+    expect(res.status).toBe(201);
+    expect((await res.json() as { kind: string }).kind).toBe('multiboot');
+    expect(updateSets).toHaveLength(1);
+    // Explicit NULL self-heals any stale role; peers never carry one.
+    expect(updateSets[0]).toMatchObject({ linkGroupRole: null });
+  });
+
+  it('409s a vm_host create when the guest claim races (host batch alone is not enough)', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck)
+      .mockResolvedValueOnce(mockDevice({ id: UUID_A }) as any)
+      .mockResolvedValueOnce(mockDevice({ id: UUID_B }) as any);
+    dbTransactionMock.mockImplementation((async (cb: any) =>
+      cb({
+        insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 'grp-vm' }]) }) }),
+        // Host batch claims its row; the guest batch loses UUID_B to a
+        // concurrent link (returns no rows) — the whole create must 409.
+        update: txUpdateChain([], (s) => (s.linkGroupRole === 'host' ? [{ id: UUID_A }] : [])),
+      })) as any);
+
+    const res = await app.request(
+      jsonReq('/devices/link-groups', 'POST', {
+        kind: 'vm_host',
+        hostDeviceId: UUID_A,
+        deviceIds: [UUID_A, UUID_B],
+      }),
+    );
+    expect(res.status).toBe(409);
+  });
+
+  it('PATCH add to a vm_host group links newcomers as guests and never rewrites existing member roles', async () => {
+    // getGroupWithOrgCheck → a vm_host group.
+    dbSelectMock.mockReturnValueOnce(
+      selectChain([{ id: 'grp-vm', orgId: 'org-123', kind: 'vm_host', name: null }]) as any,
+    );
+    // The device being added is unlinked.
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValueOnce(mockDevice({ id: UUID_B }) as any);
+    // Current membership (size-ceiling check).
+    dbSelectMock.mockReturnValueOnce(selectChain([{ id: UUID_A }]) as any);
+
+    const updateSets: Record<string, unknown>[] = [];
+    dbTransactionMock.mockImplementation((async (cb: any) =>
+      cb({
+        update: txUpdateChain(updateSets as unknown[], (s) =>
+          s.linkGroupRole === 'guest' ? [{ id: UUID_B }] : [],
+        ),
+      })) as any);
+    // loadMembers for the response body.
+    dbSelectMock.mockReturnValueOnce(selectChain([]) as any);
+
+    const res = await app.request(
+      jsonReq('/devices/link-groups/grp-vm', 'PATCH', { addDeviceIds: [UUID_B] }),
+    );
+    expect(res.status).toBe(200);
+
+    // Sets in order: group updatedAt touch, re-add batch, newcomer claim.
+    const reAddSet = updateSets.find((s) => 'linkGroupId' in s && !('linkGroupRole' in s));
+    const claimSet = updateSets.find((s) => s.linkGroupRole === 'guest');
+    // The re-add batch must NOT touch linkGroupRole — overwriting would
+    // demote the group's host to guest and dissolve the group.
+    expect(reAddSet).toBeDefined();
+    expect(claimSet).toMatchObject({ linkGroupId: 'grp-vm', linkGroupRole: 'guest' });
+  });
+
+  it('PATCH remove clears the member role together with the membership', async () => {
+    dbSelectMock.mockReturnValueOnce(
+      selectChain([{ id: 'grp-vm', orgId: 'org-123', kind: 'vm_host', name: null }]) as any,
+    );
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValueOnce(
+      mockDevice({ id: UUID_B, linkGroupId: 'grp-vm' }) as any,
+    );
+    dbSelectMock.mockReturnValueOnce(selectChain([{ id: UUID_A }, { id: UUID_B }]) as any);
+
+    const updateSets: Record<string, unknown>[] = [];
+    dbTransactionMock.mockImplementation((async (cb: any) =>
+      cb({
+        update: txUpdateChain(updateSets as unknown[], () => []),
+      })) as any);
+    dbSelectMock.mockReturnValueOnce(selectChain([]) as any);
+
+    const res = await app.request(
+      jsonReq('/devices/link-groups/grp-vm', 'PATCH', { removeDeviceIds: [UUID_B] }),
+    );
+    expect(res.status).toBe(200);
+    const unlinkSet = updateSets.find((s) => s.linkGroupId === null);
+    expect(unlinkSet).toMatchObject({ linkGroupId: null, linkGroupRole: null });
+  });
+});
+
 describe('device link-group routes (site-scope member filtering)', () => {
   let app: Hono;
 

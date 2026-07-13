@@ -1678,9 +1678,11 @@ func (b *Broker) removeSessionMapsLocked(session *Session) {
 		delete(b.byIdentity, key)
 	}
 
-	// Track the PID so we can kill it before spawning a replacement.
-	// Don't kill here — the process may still be serving an active desktop session.
-	// Key includes role so SYSTEM and user helper stale PIDs are tracked separately.
+	// Track the PID so it can be killed before spawning a replacement
+	// (Windows only — see trackStaleHelper; elsewhere this is a deliberate
+	// no-op). Don't kill here — the process may still be serving an active
+	// desktop session. Key includes role so SYSTEM and user helper stale
+	// PIDs are tracked separately.
 	if session.PID > 0 {
 		staleKey := session.WinSessionID + "-" + session.HelperRole
 		b.trackStaleHelper(staleKey, session.PID)
@@ -1701,13 +1703,28 @@ func (b *Broker) removeSession(session *Session) {
 
 // trackStaleHelper records a disconnected helper PID for later cleanup.
 // Called under b.mu lock.
+//
+// Windows-only: the sole drain path is KillStaleHelpers, whose callers are all
+// Windows-gated (it exists to release DXGI Desktop Duplication locks before
+// respawning a helper). On macOS/Linux nothing ever drains this map, so
+// tracking there grows unbounded for the life of the daemon (issue #2387).
+// macOS handles helper teardown differently: live sessions are closed at
+// logout via CloseSessionsByDesktopContext, and launchd `kickstart -k` kills
+// any lingering instance on respawn.
 func (b *Broker) trackStaleHelper(winSessionID string, pid int) {
+	if runtime.GOOS != "windows" {
+		return
+	}
 	b.staleHelpers[winSessionID] = append(b.staleHelpers[winSessionID], pid)
 }
 
 // KillStaleHelpers kills any disconnected helper processes for the given
 // Windows session. Call this before spawning a new helper to release DXGI
 // Desktop Duplication locks held by orphaned processes.
+//
+// Windows-only contract: trackStaleHelper only records PIDs on Windows, so on
+// any other platform this is always a no-op against an empty map — do not add
+// non-Windows callers expecting it to find anything.
 func (b *Broker) KillStaleHelpers(winSessionID string) {
 	b.mu.Lock()
 	pids := b.staleHelpers[winSessionID]

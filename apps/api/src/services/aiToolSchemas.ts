@@ -285,6 +285,30 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     payment: z.record(z.string(), z.unknown()).optional(),
   }),
 
+  list_quotes: z.object({
+    orgId: uuid.optional(),
+    status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  get_quote: z.object({
+    quoteId: uuid,
+  }),
+
+  list_organizations: z.object({
+    search: z.string().max(255).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  manage_organizations: z.object({
+    action: z.enum(['create_org', 'update_org', 'create_site', 'add_contact']),
+    orgId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
+    address: z.record(z.string(), z.unknown()).optional(),
+    email: z.string().email().max(255).optional(),
+  }),
+
   manage_quotes: z.object({
     action: z.enum([
       'create_draft',
@@ -321,6 +345,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   search_catalog: z.object({
     search: z.string().optional(),
     itemType: z.enum(['hardware', 'software', 'service']).optional(),
+    isBundle: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
 

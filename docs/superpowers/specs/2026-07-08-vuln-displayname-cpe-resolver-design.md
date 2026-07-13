@@ -265,7 +265,8 @@ provisions `breeze_app`). Pattern: `vulnerabilityCorrelation.integration.test.ts
   - RLS: `software_product_resolutions` denies cross-tenant access as `breeze_app`
     (contract test).
 - **Live read-only sanity** (post-merge, NO prod mutation): re-query US prod read-only
-  (Tailscale SSH `root@100.79.234.33`, `docker run postgres:16-alpine psql "$DATABASE_URL"`)
+  (Tailscale SSH to the US prod droplet — address in gitignored `internal/` notes —
+  then `docker run postgres:16-alpine psql "$DATABASE_URL"`)
   to confirm surfaced-product variety jumps well beyond Chrome. Secret stays on the droplet.
 
 ## Rollout / relationship to #2292

@@ -428,6 +428,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(mockSelectWhere([{ count: 1 }]) as any)
         .mockReturnValueOnce(
           mockSelectOrderLimitOffset([
@@ -461,6 +463,44 @@ describe('portal routes', () => {
       expect(body.data).toHaveLength(1);
       expect(body.pagination.total).toBe(1);
     });
+
+    // #2345 — enforcement wiring regression guard: drives the REAL portalRoutes
+    // mount (index.ts registration order included), not a re-wired test app. If
+    // the portalTicketsEnabledMiddleware use() in routes/portal/index.ts is ever
+    // removed or reordered, this fails.
+    it('returns 403 PORTAL_TICKETS_DISABLED through the real mount when enable_tickets is false', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(
+          mockSelectLimit([
+            portalUser
+          ]) as any
+        )
+        .mockReturnValueOnce(
+          mockSelectLimit([
+            portalUser
+          ]) as any
+        )
+        // portalTicketsEnabledMiddleware branding lookup — explicit false
+        .mockReturnValueOnce(mockSelectLimit([{ enableTickets: false }]) as any);
+
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined)
+        })
+      } as any);
+
+      const token = await loginUser();
+
+      const res = await app.request('/portal/tickets?page=1&limit=25', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Ticketing is not enabled for this portal');
+      expect(body.code).toBe('PORTAL_TICKETS_DISABLED');
+    });
   });
 
   describe('POST /portal/tickets', () => {
@@ -475,7 +515,9 @@ describe('portal routes', () => {
           mockSelectLimit([
             portalUser
           ]) as any
-        );
+        )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
@@ -538,6 +580,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(
           mockSelectLimit([
             {
@@ -593,6 +637,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
@@ -625,6 +671,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(mockSelectLimit([{ id: 'ticket-1' }]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
@@ -674,6 +722,8 @@ describe('portal routes', () => {
             portalUser
           ]) as any
         )
+        // #2345 — portalTicketsEnabledMiddleware branding lookup (no row → fail-open, ticketing enabled)
+        .mockReturnValueOnce(mockSelectLimit([]) as any)
         .mockReturnValueOnce(mockSelectLimit([]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({

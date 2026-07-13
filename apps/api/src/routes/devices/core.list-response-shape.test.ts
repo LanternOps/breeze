@@ -15,6 +15,12 @@ import { Hono } from 'hono';
 // failure mode — `pendingReboot` is selected from the DB in core.ts but was
 // omitted by the same response mapper, so the list/grid badge never rendered
 // (the device-detail page worked because it returns the full row).
+//
+// Extended for #2138/#2308: the device-list link-group scalars
+// (`linkGroupId`, `linkGroupRole`) drive the client-side multiboot grouping
+// and vm_host guest nesting. If the mapper drops either, every linked device
+// silently renders ungrouped while all other tests stay green — the exact
+// dropped-field failure mode this file exists to catch.
 
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -140,6 +146,8 @@ describe('GET /devices — response shape', () => {
         lastUser: null,
         uptimeSeconds: null,
         isHeadless: false,
+        linkGroupId: '44444444-4444-4444-8444-444444444444',
+        linkGroupRole: 'host',
         createdAt: new Date('2026-05-26T19:39:57.519Z'),
         updatedAt: new Date('2026-05-26T19:41:26.390Z'),
         cpuModel: null,
@@ -170,6 +178,11 @@ describe('GET /devices — response shape', () => {
     // #1720 — reliability score + trend surfaced for the list column.
     expect(row).toHaveProperty('reliabilityScore', 42);
     expect(row).toHaveProperty('reliabilityTrend', 'degrading');
+    // #2138/#2308 — link-group scalars must survive the mapper: the web list
+    // groups multiboot rows by linkGroupId and nests vm_host guests by
+    // linkGroupRole; dropping either silently un-groups every linked device.
+    expect(row).toHaveProperty('linkGroupId', '44444444-4444-4444-8444-444444444444');
+    expect(row).toHaveProperty('linkGroupRole', 'host');
   });
 
   it('returns null watchdogStatus / mainAgentSilentSince for healthy rows (still present in shape)', async () => {
@@ -201,6 +214,8 @@ describe('GET /devices — response shape', () => {
         lastUser: null,
         uptimeSeconds: null,
         isHeadless: false,
+        linkGroupId: null,
+        linkGroupRole: null,
         createdAt: new Date(),
         updatedAt: new Date(),
         cpuModel: null,
@@ -239,5 +254,11 @@ describe('GET /devices — response shape', () => {
     expect(row.mainAgentSilentSince).toBeNull();
     expect(row.watchdogVersion).toBeNull();
     expect(row.pendingReboot).toBe(false);
+
+    // #2138/#2308 — link-group keys present (null) even for unlinked devices.
+    expect(Object.prototype.hasOwnProperty.call(row, 'linkGroupId')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(row, 'linkGroupRole')).toBe(true);
+    expect(row.linkGroupId).toBeNull();
+    expect(row.linkGroupRole).toBeNull();
   });
 });

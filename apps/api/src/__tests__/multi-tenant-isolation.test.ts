@@ -86,6 +86,7 @@ vi.mock('../middleware/auth', () => ({
 // ─── Mock side-effect services ────────────────────────────────────────────────
 
 vi.mock('../services/auditEvents', () => ({
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeRouteAudit: vi.fn(),
   writeAuditEvent: vi.fn(),
 }));

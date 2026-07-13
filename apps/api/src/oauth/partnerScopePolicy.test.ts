@@ -117,7 +117,8 @@ describe('getPartnerScopePolicy', () => {
   it('fails CLOSED to an empty whitelist when the DB lookup throws (deny all MCP scopes)', async () => {
     // A DB error must NOT mint over-broad tokens. {} would be treated as
     // "no cap -> all scopes" (the old fail-open bug); { mcp_allowed_scopes: [] }
-    // makes resolveAllowedMcpScopes strip every scope (requested ∩ [] = []).
+    // makes computeEffectiveMcpScopes (effectiveScopes.ts) strip every scope
+    // (requested ∩ [] = []).
     const { db } = await import('../db');
     const spy = vi.spyOn(db, 'select').mockImplementationOnce(() => {
       throw new Error('db down');

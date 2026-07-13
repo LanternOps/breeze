@@ -77,7 +77,7 @@ vi.mock('./aiAgentSdkTools', () => ({
 }));
 
 const mockGetUserPushTokens = vi.fn();
-const mockSendExpoPush = vi.fn();
+const mockDispatchApprovalPushToTokens = vi.fn();
 const mockBuildApprovalPush = vi.fn((..._args: unknown[]) => ({
   title: 'Approval requested',
   body: 'Breeze AI: Execute command',
@@ -89,7 +89,7 @@ const mockBuildApprovalPush = vi.fn((..._args: unknown[]) => ({
 }));
 vi.mock('./expoPush', () => ({
   getUserPushTokens: (...args: unknown[]) => mockGetUserPushTokens(...args),
-  sendExpoPush: (...args: unknown[]) => mockSendExpoPush(...args),
+  dispatchApprovalPushToTokens: (...args: unknown[]) => mockDispatchApprovalPushToTokens(...args),
   buildApprovalPush: (...args: unknown[]) => mockBuildApprovalPush(...args),
 }));
 
@@ -468,7 +468,7 @@ describe('createSessionPreToolUse', () => {
     vi.mocked(checkToolPermission).mockResolvedValue(null);
     vi.mocked(checkToolRateLimit).mockResolvedValue(null);
     mockGetUserPushTokens.mockResolvedValue([]);
-    mockSendExpoPush.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
   });
 
   it('auto-approve allows Tier 2 tools and creates an executing audit record', async () => {
@@ -528,8 +528,10 @@ describe('createSessionPreToolUse', () => {
       description: 'Execute command on host-1',
     } as any);
     const { values } = mockInsertReturning({ id: 'exec-1' });
-    mockGetUserPushTokens.mockResolvedValue(['ExponentPushToken[abc]']);
-    mockSendExpoPush.mockResolvedValue([{ status: 'ok' }]);
+    mockGetUserPushTokens.mockResolvedValue([
+      { token: 'ExponentPushToken[abc]', platform: 'ios', provider: 'expo' },
+    ]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 1, dispatched: 1, errors: 0 });
     vi.mocked(waitForApproval).mockResolvedValue(true);
     const session = makeActiveSession({ approvalMode: 'per_step' });
 
@@ -554,7 +556,7 @@ describe('createSessionPreToolUse', () => {
 
     // Push dispatched (best-effort).
     expect(mockGetUserPushTokens).toHaveBeenCalledWith('user-1');
-    expect(mockSendExpoPush).toHaveBeenCalled();
+    expect(mockDispatchApprovalPushToTokens).toHaveBeenCalled();
 
     // SSE event includes BOTH executionId and approvalRequestId.
     expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
@@ -641,7 +643,7 @@ describe('createSessionPreToolUse', () => {
         status: 'pending',
       }));
       expect(mockGetUserPushTokens).not.toHaveBeenCalled();
-      expect(mockSendExpoPush).not.toHaveBeenCalled();
+      expect(mockDispatchApprovalPushToTokens).not.toHaveBeenCalled();
 
       expect(mockDecideHelperToolAction).toHaveBeenCalledWith({
         orgId: 'org-1',

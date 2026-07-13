@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
@@ -40,6 +40,32 @@ function assertOrg(actor: QuoteActor, orgId: string): void {
   if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(orgId)) {
     throw new QuoteServiceError('Organization access denied', 403, 'ORG_DENIED');
   }
+}
+
+/**
+ * Site-axis guard mirroring `siteAccessCheck` (middleware/auth.ts). An actor with
+ * no `allowedSiteIds` (undefined) is unrestricted — a no-op, so partner/system
+ * callers and all-sites org users are unaffected. A site-restricted actor may only
+ * touch a siteId in its allowlist; a null/undefined siteId (an org-level quote) is
+ * DENIED, exactly as the auth closure denies a restricted caller for a null site.
+ */
+function assertSite(actor: QuoteActor, siteId: string | null | undefined): void {
+  if (!actor.allowedSiteIds) return; // unrestricted
+  if (!siteId || !actor.allowedSiteIds.includes(siteId)) {
+    throw new QuoteServiceError('Site access denied', 403, 'SITE_DENIED');
+  }
+}
+
+/**
+ * Org + site guard for a loaded quote row. The single authorization chokepoint for
+ * every quote path (CRUD via loadDraft, getQuote, and the pay-link path in
+ * quotePay). Exported so quotePay can enforce the same site restriction that was
+ * previously bypassable (org is enforced downstream in createInvoicePayLink; site
+ * was not enforced anywhere on the quote).
+ */
+export function assertQuoteAccess(actor: QuoteActor, quote: { orgId: string; siteId: string | null }): void {
+  assertOrg(actor, quote.orgId);
+  assertSite(actor, quote.siteId);
 }
 
 /**
@@ -85,7 +111,7 @@ async function recomputeAndPersist(quoteId: string): Promise<void> {
 async function loadDraft(quoteId: string, actor: QuoteActor) {
   const [q] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
-  assertOrg(actor, q.orgId);
+  assertQuoteAccess(actor, q);
   if (q.status !== 'draft') throw new QuoteServiceError('Quote is not a draft', 409, 'NOT_A_DRAFT');
   return q;
 }
@@ -138,6 +164,7 @@ async function resolveQuoteTaxRate(orgId: string, partnerId: string): Promise<st
 export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   const partnerId = resolvePartner(actor);
   assertOrg(actor, input.orgId);
+  assertSite(actor, input.siteId ?? null);
   const taxRate = await resolveQuoteTaxRate(input.orgId, partnerId);
   // Number at creation (not at send): techs reference the number while drafting
   // and in the list. A deleted draft leaves a counter gap, which the numbering
@@ -166,7 +193,7 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
 export async function getQuote(id: string, actor: QuoteActor) {
   const [q] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
-  assertOrg(actor, q.orgId);
+  assertQuoteAccess(actor, q);
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
   const lines = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder);
   // dueOnAcceptanceTotal is a derived (non-persisted) figure: the amount accept
@@ -194,6 +221,10 @@ export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {
   const conds = [] as Array<ReturnType<typeof eq>>;
   if (query.orgId) { assertOrg(actor, query.orgId); conds.push(eq(quotes.orgId, query.orgId)); }
   if (query.status) conds.push(eq(quotes.status, query.status as never));
+  // Site-restricted callers only see quotes assigned to a site in their allowlist.
+  // `siteId IN (...)` is false for NULL, so null-site (org-level) quotes are
+  // excluded — consistent with assertSite denying a restricted caller a null site.
+  if (actor.allowedSiteIds) conds.push(inArray(quotes.siteId, actor.allowedSiteIds) as ReturnType<typeof eq>);
   // Deterministic keyset: order by (createdAt, id) desc; cursor is the last row's id.
   if (query.cursor) {
     const [c] = await db.select({ createdAt: quotes.createdAt }).from(quotes).where(eq(quotes.id, query.cursor)).limit(1);
@@ -223,6 +254,9 @@ export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {
  *  explicitly cleared with null. A tax-rate change triggers a totals recompute. */
 export async function updateQuote(id: string, input: UpdateQuoteInput, actor: QuoteActor) {
   const q = await loadDraft(id, actor);
+  // A site-restricted caller may not move the quote to a site it can't access
+  // (nor clear it to null, which a restricted caller can never see).
+  if (input.siteId !== undefined) assertSite(actor, input.siteId);
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (input.siteId !== undefined) set.siteId = input.siteId;
   if (input.title !== undefined) set.title = input.title === null ? null : input.title.trim() || null;

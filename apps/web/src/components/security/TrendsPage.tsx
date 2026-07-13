@@ -175,8 +175,7 @@ export default function TrendsPage() {
       {error && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-center">
           <p className="text-sm text-amber-700">
-            {t("securityTrendsPage.dataMayBeOutdated")}
-            {error}
+            {t("securityTrendsPage.dataMayBeOutdated", { error })}
           </p>
         </div>
       )}

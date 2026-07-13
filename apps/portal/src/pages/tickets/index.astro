@@ -13,6 +13,14 @@ const response = await portalApi.getTickets(
 if (response.statusCode === 401) {
   return Astro.redirect(withBase('/login'));
 }
+
+// #2345 — the enable_tickets gate 403s with code PORTAL_TICKETS_DISABLED;
+// bounce to the portal home instead of rendering a dead page. Other 403s
+// (e.g. "Account is not active") keep the previous behavior: fall through and
+// render the page with the API error inline.
+if (response.statusCode === 403 && response.code === 'PORTAL_TICKETS_DISABLED') {
+  return Astro.redirect(withBase('/devices'));
+}
 ---
 
 <PortalLayout title="Support Tickets">

@@ -5,7 +5,7 @@ import { invoices, invoiceStripePayments } from '../db/schema';
 import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
 import { toMinorUnits } from './stripeMoney';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
-import { requireOrgAccess } from './invoiceService';
+import { requireOrgAccess, requireSiteAccess } from './invoiceService';
 
 // Statuses whose balance can be collected online. Mirrors the customer-portal
 // PAYABLE set (routes/portal/invoices.ts) — drafts/paid/void are excluded.
@@ -37,6 +37,9 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   );
   if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   requireOrgAccess(actor, inv.orgId);
+  // Site-axis guard: a site-restricted caller must not mint a pay link for an
+  // out-of-site invoice. No-op for unrestricted (partner/system/portal) actors.
+  requireSiteAccess(actor, inv.siteId);
   if (!PAYABLE.has(inv.status)) throw new InvoiceServiceError('Invoice is not payable', 409, 'NOT_PAYABLE');
 
   // Deposit-first: charge the deposit remaining while unmet, else the full

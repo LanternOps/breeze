@@ -85,6 +85,7 @@ export * from './tickets';
 export * from './ticketConfig';
 export * from './ticketResponseTemplates';
 export * from './ticketForms';
+export * from './ticketFormOrgLinks';
 export * from './ticketMailbox';
 export * from './catalog';
 export * from './timeTracking';

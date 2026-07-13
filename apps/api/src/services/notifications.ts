@@ -4,6 +4,7 @@ import { db } from '../db';
 import { alerts, mobileDevices, organizationUsers, pushNotifications, users } from '../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { getEventBus } from './eventBus';
+import { isApnsConfigured, sendApnsNotification } from './apns';
 
 export interface PushPayload {
   title: string;
@@ -175,12 +176,45 @@ export async function sendFCM(token: string, payload: PushPayload): Promise<Push
 }
 
 export async function sendAPNS(token: string, payload: PushPayload): Promise<PushSendResult> {
-  const tokenFingerprint = createHash('sha256').update(token).digest('hex').slice(0, 12);
-  console.warn('[Notifications] APNS sending is not implemented yet.', {
-    tokenFingerprint,
+  // No credentials configured → keep the historical no-op stub so alert pushes
+  // degrade gracefully in dev/self-hosted deployments without APNs keys.
+  if (!isApnsConfigured()) {
+    const tokenFingerprint = createHash('sha256').update(token).digest('hex').slice(0, 12);
+    console.warn('[Notifications] APNS not configured; push stubbed.', {
+      tokenFingerprint,
+      title: payload.title,
+    });
+    return { messageId: `apns-stub-${Date.now()}`, status: 'stubbed' };
+  }
+
+  // Mirror sendFCM: fold alertId/eventType into the data payload so the mobile
+  // app can deep-link. The native sender never throws — translate a delivery
+  // failure into a thrown error so sendPushToDevice records status 'failed',
+  // exactly as an FCM send rejection would.
+  const data: Record<string, unknown> = { ...payload.data };
+  if (payload.alertId) data.alertId = payload.alertId;
+  if (payload.eventType) data.eventType = payload.eventType;
+
+  const res = await sendApnsNotification(token, {
     title: payload.title,
+    body: payload.body,
+    data,
   });
-  return { messageId: `apns-stub-${Date.now()}`, status: 'stubbed' };
+
+  if (res.ok) {
+    return { messageId: `apns-${Date.now()}`, status: 'sent' };
+  }
+
+  // Dead token: purge it so we stop targeting it, then surface the failure.
+  if (res.unregistered) {
+    try {
+      await db.update(mobileDevices).set({ apnsToken: null }).where(eq(mobileDevices.apnsToken, token));
+    } catch (err) {
+      console.error('[Notifications] failed to purge unregistered APNS token', err);
+    }
+  }
+
+  throw new Error(`APNS delivery failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`);
 }
 
 export function isInQuietHours(quietHours?: QuietHoursConfig | null): boolean {

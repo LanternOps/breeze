@@ -91,6 +91,9 @@ var allCommandTypes = []string{
 	// handlers.go — log shipping
 	tools.CmdSetLogLevel,
 
+	// handlers.go — runtime diagnostics (handlers_diag.go)
+	tools.CmdCapturePprof,
+
 	// handlers_autoupdate.go
 	tools.CmdSetAutoUpdate,
 

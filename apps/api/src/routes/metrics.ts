@@ -30,6 +30,7 @@ import {
 } from '../services/sentinelOne/metrics';
 import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
 import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
+import { setProxyTrustMetricsRecorder } from '../services/clientIp';
 
 export {
   recordBackupCommandTimeout,
@@ -289,6 +290,19 @@ const opsAlertDeliveriesTotal = new Counter({
   registers: [register]
 });
 
+// Proxy-trust misconfiguration signal (#2364). Counts occurrences (not unique
+// requests — client-IP resolution can run more than once per request) of
+// forwarded-ip headers arriving from a TCP peer outside TRUSTED_PROXY_CIDRS
+// while proxy-header trust is enabled. A nonzero rate in production means the
+// pinned proxy CIDR is stale and per-IP limits/audit attribution are pooling
+// onto the proxy IP. `services/clientIp.ts` holds the thin recorder (same
+// import-cycle rationale as `abuseMetrics.ts`).
+const proxyTrustUntrustedPeerTotal = new Counter({
+  name: 'breeze_proxy_trust_untrusted_peer_total',
+  help: 'Forwarded-ip headers seen from a peer outside TRUSTED_PROXY_CIDRS while proxy trust is enabled (stale-pin signal)',
+  registers: [register]
+});
+
 const processStartTimeGauge = new Gauge({
   name: 'process_start_time_seconds',
   help: 'Start time of the process since unix epoch in seconds',
@@ -329,6 +343,7 @@ commandsDispatchedTotal.labels('script', 'user', 'redacted').inc(0);
 abuseSignalsFiredTotal.labels('alert').inc(0);
 abuseSweepRunsTotal.labels('success').inc(0);
 opsAlertDeliveriesTotal.labels('webhook', 'success').inc(0);
+proxyTrustUntrustedPeerTotal.inc(0);
 nodejsVersionInfoGauge.labels(process.version).set(1);
 
 interface CounterValue {
@@ -648,6 +663,10 @@ setAbuseMetricsRecorder({
   onSignalFired: (severity) => abuseSignalsFiredTotal.labels(normalizeMetricLabel(severity, 'unknown')).inc(),
   onSweepRun: (result) => abuseSweepRunsTotal.labels(result).inc(),
   onAlertDelivery: (channel, result) => opsAlertDeliveriesTotal.labels(normalizeMetricLabel(channel, 'unknown'), result).inc(),
+});
+
+setProxyTrustMetricsRecorder({
+  onForwardedHeadersFromUntrustedPeer: () => proxyTrustUntrustedPeerTotal.inc(),
 });
 
 async function refreshBackupOperationalGauges(): Promise<void> {

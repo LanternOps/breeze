@@ -88,9 +88,11 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       // Both narrowings leave rows with no device reference governed by the org
       // axis only, and are a no-op for unrestricted partner/system callers.
       //
-      // Known residual (documented, not closed here): array-valued `details.deviceIds`
-      // (sparse) and free-text device hostnames in `resourceName` carry no reliable
-      // single device id to key off, so those references are left to the org axis.
+      // Array-valued `details.deviceIds` (software deploy jobs, device-link
+      // groups) IS now closed (SR5-17): a row is excluded if its array shares any
+      // element with the out-of-scope set. Known residual: free-text device
+      // hostnames in `resourceName` carry no reliable device id to key off, so
+      // those references are left to the org axis.
       if (auth.allowedSiteIds && auth.canAccessSite) {
         const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
         // One device scan yields both partitions: `allowed` (in-scope, for the
@@ -127,16 +129,29 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
               : ne(auditLogs.resourceType, 'device'),
           );
           // (2) `details`-referenced rows: exclude any row whose
-          // `details.deviceId` / `details.linkedDeviceId` is a known out-of-scope
-          // fleet device. Rows where the key is absent (NULL ->> result) are
-          // untouched — only a positive match against the forbidden set excludes.
+          // `details.deviceId` / `details.linkedDeviceId` (scalar) OR
+          // `details.deviceIds` (array — SR5-17) references a known out-of-scope
+          // fleet device. Rows where the key is absent (NULL ->> result / no
+          // array) are untouched — only a positive match against the forbidden
+          // set excludes. A row that batches devices under `deviceIds` (software
+          // deploy jobs, device-link groups) is dropped entirely if ANY element
+          // is forbidden, so no out-of-site UUID leaks in the returned `details`.
           if (forbiddenDeviceIds.length > 0) {
             const deviceIdRef = sql`${auditLogs.details}->>'deviceId'`;
             const linkedDeviceIdRef = sql`${auditLogs.details}->>'linkedDeviceId'`;
+            // `?|` (jsonb array/text overlap): true when the `deviceIds` array
+            // shares any element with the forbidden set. Guarded so a missing key
+            // or non-array value never excludes. Params are bound individually.
+            const deviceIdsRef = sql`${auditLogs.details}->'deviceIds'`;
+            const forbiddenArray = sql`array[${sql.join(
+              forbiddenDeviceIds.map((id) => sql`${id}`),
+              sql`, `,
+            )}]::text[]`;
             conditions.push(
               and(
                 or(isNull(deviceIdRef), not(inArray(deviceIdRef, forbiddenDeviceIds)))!,
                 or(isNull(linkedDeviceIdRef), not(inArray(linkedDeviceIdRef, forbiddenDeviceIds)))!,
+                sql`(${deviceIdsRef} is null or jsonb_typeof(${deviceIdsRef}) <> 'array' or not (${deviceIdsRef} ?| ${forbiddenArray}))`,
               )!,
             );
           }

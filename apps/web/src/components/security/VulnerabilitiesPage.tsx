@@ -70,7 +70,14 @@ export default function VulnerabilitiesPage() {
   const [error, setError] = useState<string>();
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [severity, setSeverity] = useState("");
+  // Deep-linkable severity filter (#severity=critical), see dashboard severity rows.
+  const [severity, setSeverity] = useState(() => {
+    if (typeof window === "undefined") return "";
+    const match = window.location.hash.match(
+      /severity=(critical|high|medium|low)/,
+    );
+    return match ? match[1] : "";
+  });
   const [status, setStatus] = useState("");
   const [category, setCategory] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -240,7 +247,15 @@ export default function VulnerabilitiesPage() {
         <div className="flex flex-wrap gap-2">
           <select
             value={severity}
-            onChange={(e) => setSeverity(e.target.value)}
+            onChange={(e) => {
+              const value = e.target.value;
+              setSeverity(value);
+              window.history.replaceState(
+                null,
+                "",
+                value ? `#severity=${value}` : window.location.pathname,
+              );
+            }}
             className="h-10 rounded-md border bg-background px-3 text-sm"
           >
             <option value="">

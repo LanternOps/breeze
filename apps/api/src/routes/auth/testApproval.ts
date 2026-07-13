@@ -3,11 +3,7 @@ import { db } from '../../db';
 import { approvalRequests } from '../../db/schema/approvals';
 import { authMiddleware } from '../../middleware/auth';
 import { rateLimiter, getRedis } from '../../services';
-import {
-  buildApprovalPush,
-  getUserPushTokens,
-  sendExpoPush,
-} from '../../services/expoPush';
+import { dispatchApprovalPush } from '../../services/expoPush';
 import {
   getClientRateLimitKey,
   resolveUserAuditOrgId,
@@ -96,34 +92,13 @@ testApprovalRoutes.post('/me/test-approval', authMiddleware, async (c) => {
   // Push fan-out is best-effort. The approval row itself is what matters —
   // the mobile app polls + foregrounds anyway. We surface the device count
   // so the web UI can tell users that haven't signed into mobile yet.
-  let tokensFound = 0;
-  let dispatched = 0;
-  const errors: string[] = [];
-  try {
-    const tokens = await getUserPushTokens(userId);
-    tokensFound = tokens.length;
-    if (tokens.length > 0) {
-      const tickets = await sendExpoPush(
-        tokens.map((to) => ({
-          to,
-          ...buildApprovalPush({
-            approvalId: row.id,
-            actionLabel: row.actionLabel,
-            requestingClientLabel: row.requestingClientLabel,
-          }),
-        })),
-      );
-      dispatched = tickets.filter((t) => t.status === 'ok').length;
-      for (const t of tickets) {
-        if (t.status === 'error') {
-          errors.push(t.message ?? 'unknown');
-        }
-      }
-    }
-  } catch (err) {
-    console.error('[test-approval] push dispatch failed:', err);
-    errors.push(err instanceof Error ? err.message : String(err));
-  }
+  // dispatchApprovalPush fans out across every provider (Expo + native APNs)
+  // and never throws.
+  const { tokensFound, dispatched, errors } = await dispatchApprovalPush(userId, {
+    approvalId: row.id,
+    actionLabel: row.actionLabel,
+    requestingClientLabel: row.requestingClientLabel,
+  });
 
   const auditOrgId = await resolveUserAuditOrgId(userId);
   writeAuthAudit(c, {

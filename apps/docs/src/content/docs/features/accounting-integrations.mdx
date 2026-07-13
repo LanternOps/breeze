@@ -1,0 +1,133 @@
+---
+title: Accounting & Payments Integrations — QuickBooks & Stripe
+description: Connect QuickBooks Online and your Stripe account from the Accounting tab of the Integrations page to sync your books and collect card payments.
+sidebar:
+  label: "Accounting & Payments"
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The **Accounting** tab of the Integrations page is where you connect Breeze to the tools that handle your money: **QuickBooks Online** for your books, and **Stripe** for collecting card payments online. Open it at [Integrations → Accounting](/integrations#accounting).
+
+<Aside type="note">
+  Accounting and payment integrations are **partner-account only**. They're set up once for your practice, not per customer. If you sign in with an organization (customer) account, the tab shows a message that the integration is available to partner accounts and there's nothing to configure.
+</Aside>
+
+The tab has two sub-tabs:
+
+- **QuickBooks** — connect QuickBooks Online, choose how invoices push, and import your existing customers. Deep link: [/integrations#quickbooks](/integrations#quickbooks).
+- **Payments** — connect your Stripe account so customers can pay invoices by card. Deep link: [/integrations#stripe](/integrations#stripe).
+
+---
+
+<Tabs>
+  <TabItem label="QuickBooks Online">
+
+QuickBooks Online connects through Intuit's standard OAuth consent flow. Once connected, Breeze can push your issued invoices to your books and pull your existing QuickBooks customers into Breeze.
+
+### Connecting QuickBooks
+
+<Steps>
+
+1. Open [Integrations → Accounting](/integrations#accounting) and select the **QuickBooks** sub-tab.
+2. Click **Connect to QuickBooks**. Breeze hands you off with a full-page redirect to Intuit's consent screen.
+3. Sign in to Intuit and authorize Breeze. Approving returns you to the Accounting tab with the connection established, and a confirmation toast appears.
+4. The panel now shows the connection **status**, the connected **environment** (sandbox or production), and when it was connected.
+
+</Steps>
+
+<Aside type="note">
+  Connecting and disconnecting QuickBooks are **MFA-gated** — you may be prompted to complete multi-factor authentication before the action goes through.
+</Aside>
+
+### What syncs
+
+| Item | Direction | Notes |
+|------|-----------|-------|
+| **Customers** | QuickBooks → Breeze | Import your existing QuickBooks customers as Breeze organizations (see below). |
+| **Invoices** | Breeze → QuickBooks | Issued invoices push to QuickBooks, either automatically or manually (your choice). |
+| **Payments** | Breeze → QuickBooks | Payments recorded against invoices flow to your books alongside the invoice. |
+
+### Invoice push mode
+
+On the connected panel, choose how issued invoices reach QuickBooks:
+
+- **Automatic (on issue)** — an invoice pushes to QuickBooks the moment you issue it.
+- **Manual** — invoices are held so you push them on your own schedule.
+
+You can switch between the two at any time; the change is saved immediately.
+
+### Importing customers
+
+Once QuickBooks is connected, an **Import customers** section appears so you can bring your existing QuickBooks customers into Breeze as organizations — no re-typing.
+
+<Steps>
+
+1. In the **Import customers** section, click **Load customers** to pull your QuickBooks customer list.
+2. Tick the customers you want. Customers you've already imported show an **Already imported** badge, are disabled, and are excluded from select-all.
+3. Click **Import selected**. Breeze reports how many were **imported**, **skipped**, and **failed**, and lists any failures inline so you can see exactly which customer and why.
+
+</Steps>
+
+<Aside>
+  The import is idempotent — it keys off the QuickBooks customer id, so re-running it never creates duplicates. One QuickBooks company (realm) connects per partner.
+</Aside>
+
+### Reconnecting and disconnecting
+
+- If the panel shows a **Reconnect required** badge, Intuit's authorization has expired — click **Reconnect QuickBooks** to run the consent flow again. The last error is shown to help you understand why.
+- **Refresh** re-checks the current connection status.
+- **Disconnect** removes the QuickBooks connection from Breeze (MFA-gated).
+
+  </TabItem>
+  <TabItem label="Stripe Payments">
+
+The **Payments** sub-tab connects your Stripe account so your customers can pay invoices by card online. This is the one-time, partner-level connection step — the collecting, payment links, and refunds are covered under [Online Payments](/features/online-payments/).
+
+<Aside type="note">
+  You are always the merchant of record and Breeze takes no platform fee. See [Online Payments](/features/online-payments/) for how the money flows.
+</Aside>
+
+### Connecting Stripe
+
+Breeze connects to Stripe using a **secret API key** you paste in from your Stripe dashboard.
+
+<Steps>
+
+1. Open [Integrations → Accounting](/integrations#accounting) and select the **Payments** sub-tab.
+2. In your [Stripe dashboard](https://dashboard.stripe.com/apikeys), copy a secret key — a standard secret key (`sk_live…` / `sk_test…`) or a restricted key (`rk_live…`).
+3. Paste it into the key field and click **Save key**. The field is masked, so the key is never shown back to you.
+4. On success the panel switches to the connected view.
+
+</Steps>
+
+### Connected view
+
+Once connected, the panel shows:
+
+- The **Stripe account** it's linked to, masked to the last few characters (for example `acct_••••1A2b`).
+- The **last 4** characters of the saved key.
+- A **Live** or **Test mode** badge, so you can tell at a glance whether you're taking real payments.
+
+To disconnect, click **Disconnect** — this removes the saved Stripe key from Breeze.
+
+### What this enables
+
+Connecting Stripe here is what makes online payments possible everywhere else in Breeze:
+
+- **Payment links** on issued [invoices](/features/invoices/).
+- A **Pay now** button in the [Customer Portal](/features/portal/).
+- Automatic recording of online payments against the invoice, badged **Online**.
+
+Refunds are reflect-only — you issue them from your own Stripe dashboard and Breeze stays in sync. The full collect-and-refund workflow lives in [Online Payments](/features/online-payments/).
+
+  </TabItem>
+</Tabs>
+
+---
+
+## Related
+
+- [Online Payments](/features/online-payments/) — collect card payments, send payment links, and handle refunds
+- [Invoices](/features/invoices/) — issue invoices that push to QuickBooks and carry payment links
+- [Integrations](/features/integrations/) — the full Integrations page, including PSA, communication, and distributor connections

@@ -113,6 +113,12 @@ export const PERMISSION_GRANTS = {
   // cannot unilaterally waive a critical/KEV finding.
   VULN_RISK_ACCEPT: { resource: 'vulnerabilities', action: 'accept_risk' },
 
+  // AI session audit (SR5-09) — read OTHER users' AI session history via the
+  // admin dashboard. A dedicated, higher-trust capability: ordinary AI reads use
+  // organizations:read and only ever return the caller's OWN sessions, so the
+  // cross-user admin/audit surface must NOT be gated on organizations:read.
+  AI_SESSIONS_READ_ALL: { resource: 'ai_sessions', action: 'read_all' },
+
   // Admin
   ADMIN_ALL: { resource: '*', action: '*' },
 } as const;

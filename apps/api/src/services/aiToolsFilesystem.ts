@@ -2,7 +2,9 @@
  * AI Filesystem Tools
  *
  * Tools for file operations and disk usage analysis.
- * - file_operations (Tier 1 read/list, Tier 3 write/delete): Perform file operations on a device
+ * - file_operations (all actions Tier 3): Perform file operations on a device.
+ *   Reads run as root/LocalSystem on the endpoint, so read/list are privileged
+ *   (require devices.execute + approval), same as write/delete (SR5-01).
  * - analyze_disk_usage (Tier 1): Analyze filesystem usage for a device
  * - disk_cleanup (Tier 1 preview, Tier 3 execute): Preview or execute disk cleanup
  */
@@ -12,6 +14,7 @@ import { devices, deviceFilesystemCleanupRuns } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { AGENT_MAX_FILE_WRITE_BYTES } from '../routes/systemTools/schemas';
 import {
   buildCleanupPreview,
   getLatestFilesystemSnapshot,
@@ -52,15 +55,15 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
   }
 
   // ============================================
-  // file_operations - Tier 1 (read/list), Tier 3 (write/delete)
+  // file_operations - all actions Tier 3 (SR5-01)
   // ============================================
 
   registerTool({
-    tier: 1 as AiToolTier, // Runtime tier check for write/delete in guardrails
+    tier: 1 as AiToolTier, // Base tier; guardrails escalate every action to Tier 3 via TIER3_ACTIONS
     deviceArgs: ['deviceId'],
     definition: {
       name: 'file_operations',
-      description: 'Perform file operations on a device. List and read are safe; write, delete, mkdir, and rename require approval.',
+      description: 'Perform file operations on a device. All actions (list, read, write, delete, mkdir, rename) require approval because the agent reads/writes as root/LocalSystem.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -91,6 +94,20 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
       const fileCommandType = actionMap[input.action as string];
       if (!fileCommandType) return JSON.stringify({ error: `Unknown action: ${input.action}` });
+
+      // The agent rejects file_write payloads over 4MB decoded, and its WS
+      // read limit (16MB) is sized from that cap — an oversized frame kills
+      // the agent's connection instead of being rejected (issue #2399).
+      // Reject before dispatch, mirroring fileUploadBodySchema; this tool
+      // sends plain text, so measure UTF-8 bytes (what the agent writes).
+      if (fileCommandType === 'file_write') {
+        const contentBytes = Buffer.byteLength((input.content as string) ?? '', 'utf8');
+        if (contentBytes > AGENT_MAX_FILE_WRITE_BYTES) {
+          return JSON.stringify({
+            error: `File content too large (${contentBytes} bytes; max ${AGENT_MAX_FILE_WRITE_BYTES}). Use the file transfer feature for larger files.`,
+          });
+        }
+      }
 
       const result = await executeCommand(deviceId, fileCommandType, {
         path: input.path,

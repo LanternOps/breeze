@@ -124,6 +124,11 @@ export const CommandTypes = {
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',
 
+  // Runtime diagnostics — on-demand pprof capture from the agent (#2389).
+  // Profiles are captured in-process and returned base64 in the command
+  // result; the agent never opens a listening socket for this.
+  CAPTURE_PPROF: 'capture_pprof',
+
   // Screenshot (AI Vision)
   TAKE_SCREENSHOT: 'take_screenshot',
 

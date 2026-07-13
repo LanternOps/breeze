@@ -1,0 +1,114 @@
+---
+title: Distributor Integrations — Pax8 & TD SYNNEX
+description: Connect Pax8 and TD SYNNEX from the Distributors tab to sync license subscriptions and pull live distributor pricing into your Product Catalog.
+sidebar:
+  label: "Distributor Integrations"
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Distributor integrations live on the **Distributors** tab of the Integrations page (**Integrations → Distributors**, [`/integrations#distributors`](/integrations#distributors)). They let you bring vendor licenses and live product pricing into Breeze: **Pax8** syncs client companies and license subscriptions you can map to organizations and link to recurring contract lines, and **TD SYNNEX Pricing** (EC Express) looks up real-time cost, MSRP, and stock availability you can import straight into your [Product Catalog](/features/product-catalog/).
+
+The tab has two sub-tabs:
+
+- **Pax8** — [`/integrations#pax8`](/integrations#pax8)
+- **TD SYNNEX Pricing** — [`/integrations#tdsynnex-ec`](/integrations#tdsynnex-ec)
+
+<Aside type="note">
+  Distributor integrations are **partner-account only**. They are configured once for your MSP and shared across all of your customers. If you sign in with an organization-scoped account, both sub-tabs show a message that the integration is available to partner accounts only — there is nothing to configure at the organization level.
+</Aside>
+
+<Aside>
+  Legacy note: an older TD SYNNEX **Digital Bridge** connector is intentionally hidden. Its catalog endpoint isn't entitled for pricing data, so **TD SYNNEX Pricing** (EC Express) is the working connector documented here. If you're looking for TD SYNNEX product pricing, use the **TD SYNNEX Pricing** sub-tab.
+</Aside>
+
+---
+
+## Connecting a distributor
+
+<Tabs>
+  <TabItem label="Pax8">
+
+Pax8 connects with your Pax8 **OAuth client credentials**. Once connected, Breeze pulls your Pax8 companies and their license subscriptions so you can map them to Breeze organizations and link them to recurring contract lines.
+
+<Steps>
+1. Open **Integrations → Distributors → Pax8** ([`/integrations#pax8`](/integrations#pax8)).
+
+2. In the **Connection** card, fill in:
+   - **Display name** — a label for this connection (defaults to `Pax8`).
+   - **Client ID** — your Pax8 OAuth client ID.
+   - **Client secret** — your Pax8 OAuth client secret.
+   - **Webhook secret** *(optional)* — used to verify inbound Pax8 webhooks.
+
+3. Click **Connect Pax8**. Secrets are stored encrypted; once saved, each field shows a **Configured** badge. When updating an existing connection you can leave a secret field blank to keep the stored value.
+
+4. Click **Test connection** to verify the credentials reach Pax8.
+
+5. Click **Sync now** to pull companies and subscriptions. The sync runs in the background — the **Sync status** card shows the last sync time, status, and any last error once it finishes.
+</Steps>
+
+<Aside type="caution">
+  Pax8 write actions (connecting, syncing, and linking subscriptions) are **MFA-gated** on the server. If you see an "MFA required" message, enable multi-factor authentication on your Breeze account and retry.
+</Aside>
+
+**What syncs from Pax8**
+
+- **Companies** — your Pax8 client companies, with status, shown in the **Company mapping** table. Map each Pax8 company to a Breeze organization (or leave it unmapped).
+- **License subscriptions** — pulled per company, including product name, vendor, quantity, unit cost, unit price, currency, billing term, and status.
+- **Contract-line linkage** — once a company is mapped to an organization, each subscription can be linked to a contract line so quantities flow into recurring billing.
+
+**Subscription actions**
+
+A subscription only becomes linkable after its company is mapped to a Breeze organization. Each subscription row then offers:
+
+| Action | Description |
+|--------|-------------|
+| **Link** | Connect the subscription to a contract line (or create a new manual line) |
+| **Change** | Re-point the subscription to a different contract line |
+| **Pause** | Stop automatic quantity sync while keeping the link intact |
+| **Resume** | Re-enable automatic quantity sync |
+| **Unlink** | Remove the connection between the subscription and the contract line |
+
+When sync is enabled on a link, Pax8 subscription quantities are pushed to the linked contract line on each sync. Pausing stops future quantity updates but leaves the last-synced quantity in place so billing isn't affected unexpectedly.
+
+  </TabItem>
+  <TabItem label="TD SYNNEX Pricing">
+
+**TD SYNNEX Pricing** connects to TD SYNNEX **EC Express** to look up real-time cost, MSRP, and stock availability, and import products straight into your [Product Catalog](/features/product-catalog/). It authenticates with your EC Express account credentials.
+
+<Steps>
+1. Open **Integrations → Distributors → TD SYNNEX Pricing** ([`/integrations#tdsynnex-ec`](/integrations#tdsynnex-ec)).
+
+2. Fill in your EC Express connection details:
+   - **Customer No** — your TD SYNNEX customer number.
+   - **Region** — your account region (defaults to `US`).
+   - **Email** — your EC Express account email.
+   - **Password** — your EC Express account password (stored masked).
+
+3. Tick **Enabled**, then click **Save settings**. The password is stored securely and shown masked afterward.
+
+4. Click **Test connection** to verify the credentials against EC Express. The status label shows whether the last test succeeded or failed (with the error message on failure). *Test connection requires the integration to be enabled.*
+</Steps>
+
+**What you can pull from TD SYNNEX**
+
+TD SYNNEX Pricing is a **live lookup + import** flow rather than a background sync:
+
+- **Product lookup** — search by SYNNEX SKU or manufacturer part number. Each result shows the product name, status, description, your **cost**, **MSRP**, **total available** quantity, and a per-warehouse stock breakdown (available, on order, ETA).
+- **Import to catalog** — import a result into your Product Catalog. The **sell price** is pre-filled from your partner default markup over cost (falling back to MSRP, then cost) and is editable. A live margin summary is shown, warning you if the sell price is below cost.
+- On import, Breeze records the product name, SKU (SYNNEX SKU or manufacturer part), description, your entered sell price, the cost basis, and whether the item is taxable (following your partner's hardware-tax policy).
+
+<Aside>
+  Lookups require the integration to be **enabled** and connected. For the full catalog-import workflow, see [Product Catalog → Importing from distributor catalogs](/features/product-catalog/#importing-from-distributor-catalogs).
+</Aside>
+
+  </TabItem>
+</Tabs>
+
+---
+
+## Related
+
+- [Product Catalog](/features/product-catalog/) — where imported distributor products and pricing land.
+- [Quotes & Proposals](/features/quotes/) — build priced quotes from your catalog.
+- [Integrations overview](/features/integrations/) — all Breeze integrations, including PSA, security, and identity connectors.

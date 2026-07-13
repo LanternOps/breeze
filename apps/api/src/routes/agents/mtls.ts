@@ -13,7 +13,8 @@ import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { orgMtlsSettingsSchema, orgHelperSettingsSchema, orgLogForwardingSettingsSchema } from '@breeze/shared';
-import { getOrgMtlsSettings, getOrgHelperSettings, issueMtlsCertForDevice, isObject } from './helpers';
+import { getOrgHelperSettings, issueMtlsCertForDevice, isObject } from './helpers';
+import { disconnectAgent } from '../agentWs';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { encryptSecret } from '../../services/secretCrypto';
@@ -93,6 +94,47 @@ function resolveSecretForStorage(incoming: unknown, existing: unknown): string |
   return encryptSecret(trimmed) ?? undefined;
 }
 
+type OrgMtlsPolicy = { certLifetimeDays: number; expiredCertPolicy: 'auto_reissue' | 'quarantine' };
+
+/**
+ * Read the org's mTLS policy for the /renew-cert agent path.
+ *
+ * SECURITY (fail-closed): this route hand-rolls bearer auth and skips
+ * agentAuthMiddleware (see AGENT_AUTH_SKIP_ID_SEGMENTS), so it carries NO
+ * ambient request DB context. Under FORCE RLS the bare `breeze_app` pool would
+ * return 0 rows for a contextless read — silently collapsing an org configured
+ * `quarantine` into the `auto_reissue` default and handing a fresh cert+key to
+ * a possibly-compromised agent. We therefore read INSIDE
+ * `withSystemDbAccessContext` (mirroring the device lookup above) so RLS
+ * returns the real row and the true policy is honored.
+ *
+ * Returns `null` when the org row is genuinely absent. Callers MUST treat null
+ * as the most-restrictive path (error / deny) — never fall back to
+ * `auto_reissue` on a missing row. (An org that simply has no mTLS settings
+ * still yields a row and its real default policy; only a truly missing org row
+ * returns null.) The parse mirrors helpers.ts `getOrgMtlsSettings`, inlined
+ * here so we can distinguish "no org row" from "org with default settings",
+ * which that helper cannot.
+ */
+async function readOrgMtlsPolicyOrNull(orgId: string): Promise<OrgMtlsPolicy | null> {
+  return withSystemDbAccessContext(async () => {
+    const [org] = await db
+      .select({ settings: organizations.settings })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    if (!org) return null;
+    const settings = isObject(org.settings) ? org.settings : {};
+    const mtls = isObject(settings.mtls) ? settings.mtls : {};
+    const certLifetimeDays =
+      typeof mtls.certLifetimeDays === 'number' && mtls.certLifetimeDays >= 1 && mtls.certLifetimeDays <= 365
+        ? Math.round(mtls.certLifetimeDays)
+        : 90;
+    const expiredCertPolicy = mtls.expiredCertPolicy === 'quarantine' ? 'quarantine' : 'auto_reissue';
+    return { certLifetimeDays, expiredCertPolicy };
+  });
+}
+
 // ============================================
 // mTLS Certificate Renewal
 // ============================================
@@ -142,6 +184,32 @@ mtlsRoutes.post('/renew-cert', async (c) => {
 
   if (!device || !match) {
     return c.json({ error: 'Invalid agent credentials' }, 401);
+  }
+
+  // FINDING #2 (fail-closed): only the CURRENT token may mint new cert material.
+  // `matchAgentTokenHash` accepts the PREVIOUS (superseded) token within its
+  // rotation grace window — that's correct for idempotent agent traffic
+  // (heartbeats/results) but NOT for this cert-issuing route: a stolen,
+  // already-rotated token must not be able to obtain a fresh certificate +
+  // private key. When the previous hash matched, `match.tokenRotationRequired`
+  // is true; reject here (ONLY on this route — the general agent auth path
+  // keeps accepting the previous token for grace). The message tells a
+  // legitimate agent to finish rotating before renewing.
+  if (match.tokenRotationRequired) {
+    writeAuditEvent(c, {
+      orgId: device.orgId,
+      actorType: 'agent',
+      actorId: device.agentId,
+      action: 'agent.mtls.renew.denied',
+      resourceType: 'device',
+      resourceId: device.id,
+      result: 'denied',
+      details: { reason: 'previous_token_rejected' },
+    });
+    return c.json(
+      { error: 'Rotate to the current agent token before renewing the certificate' },
+      401
+    );
   }
 
   // Task 18: auto-suspended tokens fail closed at every auth gate. The
@@ -246,20 +314,53 @@ mtlsRoutes.post('/renew-cert', async (c) => {
     return c.json({ error: 'mTLS not configured' }, 400);
   }
 
-  const mtlsSettings = await getOrgMtlsSettings(device.orgId);
+  // FINDING #1 (fail-closed): read the org mTLS policy INSIDE a system DB
+  // context. A contextless read here returns 0 rows under FORCE RLS, which
+  // would silently downgrade a `quarantine` org to the `auto_reissue` default.
+  // A genuinely missing org row (null) is treated as an error — never
+  // auto_reissue — so we deny rather than issue a cert against an org we can't
+  // resolve a policy for.
+  const mtlsSettings = await readOrgMtlsPolicyOrNull(device.orgId);
+  if (!mtlsSettings) {
+    console.error('[agents] mTLS renew: org policy row not found, failing closed:', device.orgId);
+    writeAuditEvent(c, {
+      orgId: device.orgId,
+      actorType: 'agent',
+      actorId: device.agentId,
+      action: 'agent.mtls.renew.denied',
+      resourceType: 'device',
+      resourceId: device.id,
+      result: 'denied',
+      details: { reason: 'org_policy_unavailable' },
+    });
+    return c.json({ error: 'Certificate renewal unavailable' }, 500);
+  }
 
   const certExpired = device.mtlsCertExpiresAt && device.mtlsCertExpiresAt.getTime() < Date.now();
 
   if (certExpired && mtlsSettings.expiredCertPolicy === 'quarantine') {
-    await db
-      .update(devices)
-      .set({
-        status: 'quarantined',
-        quarantinedAt: new Date(),
-        quarantinedReason: 'mtls_cert_expired',
-        updatedAt: new Date(),
-      })
-      .where(eq(devices.id, device.id));
+    // FINDING #1: the quarantine write must run in a system DB context and
+    // actually affect a row. A contextless / 0-row write under FORCE RLS would
+    // "succeed" while leaving the device un-quarantined. Require exactly 1 row;
+    // if none, fail closed (500) rather than tearing down / returning as if the
+    // device were isolated.
+    const quarantined = await withSystemDbAccessContext(async () =>
+      db
+        .update(devices)
+        .set({
+          status: 'quarantined',
+          quarantinedAt: new Date(),
+          quarantinedReason: 'mtls_cert_expired',
+          updatedAt: new Date(),
+        })
+        .where(eq(devices.id, device.id))
+        .returning({ id: devices.id })
+    );
+
+    if (quarantined.length !== 1) {
+      console.error('[agents] mTLS quarantine write affected 0 rows, failing closed:', device.id);
+      return c.json({ error: 'Certificate renewal failed' }, 500);
+    }
 
     // Cut any live remote-control session to this device. Flipping `status`
     // alone is only checked at connect time, so an in-flight desktop/terminal
@@ -268,6 +369,13 @@ mtlsRoutes.post('/renew-cert', async (c) => {
     // inside the service) is recorded in the audit trail below so there's a
     // forensic record that live control may have persisted.
     const teardownResult = await terminateDeviceRemoteSessions(device.id);
+
+    // FINDING #3: also sever the agent command WebSocket. terminateDeviceRemoteSessions
+    // only cuts remote-desktop/terminal sessions; the agent's own command channel
+    // would keep draining decrypted commands after quarantine. In-process only
+    // (cross-replica broadcast is handled by the agentWs owner). Mirrors the
+    // decommission caller in devices/core.ts (code 4041).
+    const agentWsDisconnect = disconnectAgent(device.agentId, 4041, 'Device quarantined: mTLS cert expired');
 
     writeAuditEvent(c, {
       orgId: device.orgId,
@@ -279,6 +387,7 @@ mtlsRoutes.post('/renew-cert', async (c) => {
       details: {
         reason: 'mtls_cert_expired',
         remoteSessionTeardown: teardownResult === TEARDOWN_FAILED ? 'failed' : 'ok',
+        agentWsDisconnect,
       },
     });
 
@@ -305,30 +414,63 @@ mtlsRoutes.post('/renew-cert', async (c) => {
     return c.json({ error: message }, 500);
   }
 
+  // FINDING #1 (atomicity / fail-closed): do NOT return certificate material
+  // until its metadata has provably persisted. The write runs in a system DB
+  // context and must affect exactly 1 row; a contextless / 0-row write under
+  // FORCE RLS would otherwise "succeed" silently, leaving us handing out an
+  // UNTRACKED cert (no serial/expiry/cfId recorded → cannot be revoked or
+  // reasoned about later). If persistence fails or affects 0 rows, revoke the
+  // just-issued cert (best-effort) and deny the renewal. Better to deny than to
+  // leak an untracked cert.
+  let persisted: { id: string }[];
   try {
-    await db
-      .update(devices)
-      .set({
-        mtlsCertSerialNumber: cert.serialNumber,
-        mtlsCertExpiresAt: new Date(cert.expiresOn),
-        mtlsCertIssuedAt: new Date(cert.issuedOn),
-        mtlsCertCfId: cert.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(devices.id, device.id));
+    persisted = await withSystemDbAccessContext(async () =>
+      db
+        .update(devices)
+        .set({
+          mtlsCertSerialNumber: cert.serialNumber,
+          mtlsCertExpiresAt: new Date(cert.expiresOn),
+          mtlsCertIssuedAt: new Date(cert.issuedOn),
+          mtlsCertCfId: cert.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(devices.id, device.id))
+        .returning({ id: devices.id })
+    );
+  } catch (dbErr) {
+    console.error('[agents] failed to persist renewed mTLS cert metadata to DB:', String(dbErr));
+    persisted = [];
+  }
 
+  if (persisted.length !== 1) {
+    console.error('[agents] mTLS cert metadata write affected 0 rows, revoking untracked cert and failing closed:', device.id);
+    try {
+      await cfService.revokeCertificate(cert.id);
+    } catch (revokeErr) {
+      console.error('[agents] failed to revoke untracked mTLS cert after metadata write failure:', String(revokeErr));
+    }
     writeAuditEvent(c, {
       orgId: device.orgId,
       actorType: 'agent',
       actorId: device.agentId,
-      action: 'agent.mtls.renewed',
+      action: 'agent.mtls.renew.denied',
       resourceType: 'device',
       resourceId: device.id,
-      details: { serialNumber: cert.serialNumber },
+      result: 'denied',
+      details: { reason: 'cert_metadata_persist_failed', serialNumber: cert.serialNumber },
     });
-  } catch (dbErr) {
-    console.error('[agents] failed to persist renewed mTLS cert metadata to DB:', String(dbErr));
+    return c.json({ error: 'Certificate renewal failed' }, 500);
   }
+
+  writeAuditEvent(c, {
+    orgId: device.orgId,
+    actorType: 'agent',
+    actorId: device.agentId,
+    action: 'agent.mtls.renewed',
+    resourceType: 'device',
+    resourceId: device.id,
+    details: { serialNumber: cert.serialNumber },
+  });
 
   // E4: record successful renewal in the long-term cooldown window.
   if (redis) {

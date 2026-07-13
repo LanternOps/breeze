@@ -8,6 +8,8 @@ const {
   listAssignmentsMock,
   listAssignmentsForTargetMock,
   validateAssignmentTargetMock,
+  authorizeAssignmentTargetMock,
+  getAssignmentMock,
   canManagePartnerWideMock,
 } = vi.hoisted(() => ({
   getConfigPolicyMock: vi.fn(),
@@ -16,6 +18,8 @@ const {
   listAssignmentsMock: vi.fn(),
   listAssignmentsForTargetMock: vi.fn(),
   validateAssignmentTargetMock: vi.fn(),
+  authorizeAssignmentTargetMock: vi.fn(),
+  getAssignmentMock: vi.fn(),
   canManagePartnerWideMock: vi.fn(),
 }));
 
@@ -32,6 +36,8 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     listAssignments: listAssignmentsMock,
     listAssignmentsForTarget: listAssignmentsForTargetMock,
     validateAssignmentTarget: validateAssignmentTargetMock,
+    authorizeAssignmentTarget: authorizeAssignmentTargetMock,
+    getAssignment: getAssignmentMock,
     canManagePartnerWidePolicies: canManagePartnerWideMock,
   };
 });
@@ -88,6 +94,13 @@ describe('configurationPolicies assignment routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // SR5-07 site sub-axis: default to "allowed" so existing (unrestricted)
+    // cases are unaffected; individual tests override to assert denial. The real
+    // helper is a no-op for callers without allowedSiteIds, so mocking it keeps
+    // these route tests DB-free while still exercising the wiring.
+    authorizeAssignmentTargetMock.mockResolvedValue({ valid: true });
+    // getAssignment backs the DELETE re-check; default to a partner-level row.
+    getAssignmentMock.mockResolvedValue({ id: 'aid', level: 'partner', targetId: PARTNER_ID });
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', makeAuth());
@@ -432,5 +445,49 @@ describe('configurationPolicies assignment routes', () => {
     });
 
     expect(res.status).toBe(201);
+  });
+
+  // ============================================================
+  // Security: SR5-07 site sub-axis on assignment create/delete
+  // ============================================================
+
+  it('denies a create whose target is outside the caller site access (403) before inserting', async () => {
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    authorizeAssignmentTargetMock.mockResolvedValue({ valid: false, error: 'Target device is outside your site access' });
+
+    const res = await app.request(`/${POLICY_ID}/assignments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: 'device', targetId: DEVICE_ID }),
+    });
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: 'Target device is outside your site access' });
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('denies a delete whose stored target is outside the caller site access (403) before removing', async () => {
+    const AID = '77777777-7777-7777-7777-777777777777';
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
+    getAssignmentMock.mockResolvedValue({ id: AID, level: 'device', targetId: DEVICE_ID });
+    authorizeAssignmentTargetMock.mockResolvedValue({ valid: false, error: 'Target device is outside your site access' });
+
+    const res = await app.request(`/${POLICY_ID}/assignments/${AID}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(403);
+    expect(getAssignmentMock).toHaveBeenCalledWith(AID, POLICY_ID);
+    expect(unassignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when the delete target assignment does not exist', async () => {
+    const AID = '88888888-8888-8888-8888-888888888888';
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
+    getAssignmentMock.mockResolvedValue(null);
+
+    const res = await app.request(`/${POLICY_ID}/assignments/${AID}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(404);
+    expect(unassignPolicyMock).not.toHaveBeenCalled();
   });
 });

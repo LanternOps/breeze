@@ -1271,7 +1271,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ## Post-implementation verification (not a code task)
 
 1. **Full API suite** (single-fork to avoid the known parallel flakiness — memory `api_test_suite_parallel_flakiness`): `cd apps/api && pnpm test:run` and `pnpm test:docker` for integration.
-2. **Live read-only sanity (NO prod mutation):** after merge + a correlation cycle, re-query US prod read-only (Tailscale SSH `root@100.79.234.33`, `docker run --rm postgres:16-alpine psql "$DATABASE_URL" -c "..."`, secret stays on the droplet) to confirm the count of DISTINCT surfaced products in `device_vulnerabilities` (joined to `software_inventory.name`) jumps well beyond Chrome. Report before/after counts.
+2. **Live read-only sanity (NO prod mutation):** after merge + a correlation cycle, re-query US prod read-only (Tailscale SSH to the US prod droplet — address in gitignored `internal/` notes — then `docker run --rm postgres:16-alpine psql "$DATABASE_URL" -c "..."`, secret stays on the droplet) to confirm the count of DISTINCT surfaced products in `device_vulnerabilities` (joined to `software_inventory.name`) jumps well beyond Chrome. Report before/after counts.
 3. **PR:** open against `main`; run `/code-review` and the pr-review-toolkit before requesting merge. Do NOT merge/close — hand back for review (per repo workflow).
 
 ## Spec B (#2291) — deferred

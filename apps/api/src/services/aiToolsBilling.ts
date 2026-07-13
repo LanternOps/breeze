@@ -45,6 +45,7 @@ import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { computeContractEstimate, getContract } from './contractService';
 import { toCents } from './invoiceMath';
+import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 
 type UpdateInvoiceLinePatch = Parameters<typeof updateLine>[2];
 type UpdateInvoiceHeaderPatch = Parameters<typeof updateInvoice>[1];
@@ -53,7 +54,11 @@ function actorFromAuth(auth: AuthContext): InvoiceActor {
   return {
     userId: auth.user.id,
     partnerId: auth.partnerId ?? null,
-    accessibleOrgIds: auth.accessibleOrgIds
+    accessibleOrgIds: auth.accessibleOrgIds,
+    // Thread the caller's site-axis restriction so a site-limited AI session can't
+    // read/mutate out-of-site invoices. undefined (partner/system, all-sites org
+    // users) stays unrestricted, preserving prior behavior.
+    allowedSiteIds: auth.allowedSiteIds
   };
 }
 
@@ -77,6 +82,30 @@ function withDepositPaid<T extends { depositDue?: string | null; amountPaid: str
   if (inv.depositDue == null) return inv;
   return { ...inv, depositPaid: toCents(inv.amountPaid) >= toCents(inv.depositDue) };
 }
+
+/**
+ * Params each manage_invoices action requires, presence-checked BEFORE any
+ * `String(...)` coercion so a missing id can't become the literal string
+ * "undefined" and die downstream as an opaque uuid/DB 500 (#2362 sweep).
+ */
+const MANAGE_INVOICES_REQUIRED: Record<string, readonly string[]> = {
+  create_draft: ['orgId'],
+  add_manual_line: ['invoiceId', 'line'],
+  add_catalog_line: ['invoiceId', 'catalogItemId', 'quantity'],
+  add_bundle_line: ['invoiceId', 'bundleId', 'quantity'],
+  add_contract_line: ['invoiceId', 'contractId', 'contractLineId'],
+  update_line: ['invoiceId', 'lineId', 'patch'],
+  remove_line: ['invoiceId', 'lineId'],
+  update_header: ['invoiceId', 'patch'],
+  delete_draft: ['invoiceId'],
+  assemble_from_org: ['orgId', 'from', 'to'],
+  assemble_from_ticket: ['ticketId'],
+  issue: ['invoiceId'],
+  void: ['invoiceId', 'reason'],
+  record_payment: ['invoiceId', 'payment'],
+  void_payment: ['paymentId'],
+  create_pay_link: ['invoiceId'],
+};
 
 export function registerBillingTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_invoices', {
@@ -198,8 +227,16 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       const actor = actorFromAuth(auth);
       const s = (k: string) => (input[k] == null ? undefined : String(input[k]));
 
+      const action = String(input.action);
+      const required = MANAGE_INVOICES_REQUIRED[action];
+      if (!required) {
+        return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
+      }
+      const missing = missingParamsJson(input, action, required);
+      if (missing) return missing;
+
       try {
-        switch (input.action) {
+        switch (action) {
           case 'create_draft':
             return JSON.stringify(await createManualInvoice(
               {
@@ -267,10 +304,10 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           case 'create_pay_link':
             return JSON.stringify(await createInvoicePayLink(String(input.invoiceId), actor));
           default:
-            return JSON.stringify({ error: `Unknown action: ${String(input.action)}` });
+            return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
         }
       } catch (err) {
-        const json = serviceErrorToJson(err);
+        const json = serviceErrorToJson(err) ?? zodErrorToJson(err);
         if (json) return json;
         throw err;
       }

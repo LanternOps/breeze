@@ -130,8 +130,44 @@ export const fileTrashPurgeBodySchema = z.object({
   trashIds: z.array(trashIdString).optional(),
 });
 
-export const fileUploadBodySchema = z.object({
-  path: filePathString,
-  content: z.string().min(0).max(50_000_000),
-  encoding: z.enum(['base64', 'text']).optional().default('text'),
-});
+// The agent rejects file_write payloads over 4MB decoded
+// (agent/internal/remote/tools/fileops.go MaxFileWriteSize), and its WebSocket
+// read limit is sized from that cap (agent/internal/websocket/client.go
+// maxMessageSize, issue #2399) — an oversized frame is not gracefully
+// rejected, it kills the agent's WS connection. Enforce the same bound here so
+// the API never emits a file_write frame the agent cannot accept. Larger
+// transfers go through the chunked file-transfer endpoints instead.
+export const AGENT_MAX_FILE_WRITE_BYTES = 4 * 1024 * 1024;
+// Mirrors Go's base64.StdEncoding.EncodedLen(n): ceil(n/3)*4, padding included.
+export const AGENT_MAX_FILE_WRITE_BASE64_CHARS =
+  Math.ceil(AGENT_MAX_FILE_WRITE_BYTES / 3) * 4;
+
+export const fileUploadBodySchema = z
+  .object({
+    path: filePathString,
+    // Custom message: the char count references the invisible base64 blob,
+    // not the user's file — surface the actionable limit instead (the
+    // FileManager UI always uploads base64 and renders this message verbatim).
+    content: z
+      .string()
+      .min(0)
+      .max(AGENT_MAX_FILE_WRITE_BASE64_CHARS, {
+        message: 'File too large (max 4MB); use file transfer for larger files',
+      }),
+    encoding: z.enum(['base64', 'text']).optional().default('text'),
+  })
+  .superRefine((body, ctx) => {
+    // The .max() above bounds base64 exactly; text content is measured in
+    // UTF-8 bytes (what the agent writes to disk), which can exceed the char
+    // count for multi-byte content.
+    const tooLarge =
+      body.encoding === 'text' &&
+      Buffer.byteLength(body.content, 'utf8') > AGENT_MAX_FILE_WRITE_BYTES;
+    if (tooLarge) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['content'],
+        message: `File too large (max ${AGENT_MAX_FILE_WRITE_BYTES / (1024 * 1024)}MB); use file transfer for larger files`,
+      });
+    }
+  });

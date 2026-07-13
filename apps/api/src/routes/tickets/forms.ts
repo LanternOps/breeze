@@ -9,8 +9,26 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
-import { listTicketFormsForOrg } from '../../services/ticketFormService';
+import {
+  getTicketFormOrgLinkMap,
+  listTicketFormsForOrg,
+  syncTicketFormOrgLinks,
+  TicketFormError
+} from '../../services/ticketFormService';
 import { assertCategoryInPartner, TicketServiceError } from '../../services/ticketService';
+
+const VISIBLE_ORG_IDS_SCOPE_ERROR = 'visibleOrgIds is only valid on partner-wide forms';
+
+/**
+ * The persisted allowlist state is exactly two values (spec ruling, Task 2/3
+ * review): null/absent = visible to every org under the partner, or a
+ * non-empty array = the allowlist. An empty array is meaningless — "no link
+ * rows" already means visible-to-all — so routes normalize it to null before
+ * ever reaching syncTicketFormOrgLinks.
+ */
+function normalizeVisibleOrgIds(v: string[] | null | undefined): string[] | null {
+  return v && v.length > 0 ? v : null;
+}
 
 export const ticketFormRoutes = new Hono();
 
@@ -32,7 +50,7 @@ const idParamSchema = z.object({ id: z.string().guid() });
 // duplicate the mapping locally instead. (ticketPartsRoutes has its own copy too,
 // mapping a different error type, TimeEntryServiceError.)
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  if (err instanceof TicketServiceError) {
+  if (err instanceof TicketServiceError || err instanceof TicketFormError) {
     return c.json({ error: err.message }, err.status);
   }
   throw err;
@@ -89,7 +107,10 @@ ticketFormRoutes.get('/ticket-forms', authMiddleware, scopes, requireTicketRead,
     .from(ticketForms)
     .where(ticketFormAccessCondition(auth))
     .orderBy(asc(ticketForms.sortOrder), asc(ticketForms.name));
-  return c.json({ data: rows });
+  // Management list only (NOT /available — pickers don't need the allowlist).
+  const linkMap = await getTicketFormOrgLinkMap(rows.map((r) => r.id));
+  const data = rows.map((r) => ({ ...r, visibleOrgIds: linkMap.get(r.id) ?? null }));
+  return c.json({ data });
 });
 
 ticketFormRoutes.get(
@@ -126,6 +147,12 @@ ticketFormRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const payload = c.req.valid('json');
+
+    // Fail fast, before any DB work: visibleOrgIds is only meaningful on a
+    // partner-wide form (org-owned forms have no partner allowlist axis).
+    if (payload.visibleOrgIds !== undefined && payload.ownerScope !== 'partner') {
+      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR }, 400);
+    }
 
     // Ownership axis (Partner-Wide First, epic #2135, mirrors software
     // policies #2126). The partner is ALWAYS derived from the caller's own
@@ -181,6 +208,29 @@ ticketFormRoutes.post(
       .returning();
     if (!row) return c.json({ error: 'Failed to create ticket form' }, 500);
 
+    // Org-owned forms have no allowlist axis and were already rejected above
+    // if visibleOrgIds was supplied; only partner-wide creates sync links.
+    const normalizedVisibleOrgIds = normalizeVisibleOrgIds(payload.visibleOrgIds);
+    if (payload.ownerScope === 'partner') {
+      try {
+        await syncTicketFormOrgLinks(row.id, normalizedVisibleOrgIds, auth.partnerId!);
+      } catch (err) {
+        // A failed sync (e.g. cross-partner org id) must not leave an
+        // orphaned half-created form behind — delete it and surface the 400.
+        // The rollback itself must not be allowed to throw and mask the
+        // original TicketFormError with an unrelated 500.
+        try {
+          await db.delete(ticketForms).where(eq(ticketForms.id, row.id));
+        } catch (rollbackErr) {
+          console.warn('[ticket-forms] rollback delete failed after syncTicketFormOrgLinks error', {
+            formId: row.id,
+            rollbackErr
+          });
+        }
+        return handleServiceError(c, err);
+      }
+    }
+
     writeRouteAudit(c, {
       orgId: row.orgId,
       action: 'ticket_form.create',
@@ -190,7 +240,7 @@ ticketFormRoutes.post(
       details: { formId: row.id, name: row.name, partnerWide: row.orgId === null }
     });
 
-    return c.json({ data: row }, 201);
+    return c.json({ data: { ...row, visibleOrgIds: normalizedVisibleOrgIds } }, 201);
   }
 );
 
@@ -214,6 +264,12 @@ ticketFormRoutes.put(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    // visibleOrgIds is only meaningful on a partner-wide row (org-owned forms
+    // have no partner allowlist axis).
+    if (payload.visibleOrgIds !== undefined && row.orgId !== null) {
+      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR }, 400);
+    }
+
     if (payload.categoryId) {
       const effectivePartnerId = await resolveEffectivePartnerId({ orgId: row.orgId, partnerId: row.partnerId });
       try {
@@ -223,15 +279,33 @@ ticketFormRoutes.put(
       }
     }
 
+    // undefined = links untouched; null/[] = clear (normalized); non-empty
+    // array = replace. Run BEFORE the column update so a rejected sync (e.g.
+    // cross-partner org id) leaves the form row completely unmodified.
+    if (payload.visibleOrgIds !== undefined) {
+      const normalized = normalizeVisibleOrgIds(payload.visibleOrgIds);
+      try {
+        await syncTicketFormOrgLinks(id, normalized, row.partnerId!);
+      } catch (err) {
+        return handleServiceError(c, err);
+      }
+    }
+
+    // visibleOrgIds is not a ticket_forms column — strip it explicitly rather
+    // than relying on drizzle to drop unknown keys from the .set() spread.
+    const { visibleOrgIds, ...columns } = payload;
+
     // version identifies which field schema stored responses were validated
     // against and which template composed the subject, so it only bumps when
     // fields/titleTemplate change; presentation-only fields (isActive/sortOrder)
-    // don't bump.
+    // don't bump. visibleOrgIds is NOT presentation-only — it drives the
+    // allowlist sync above — it's simply not a ticket_forms column, so it
+    // can't participate in the version bump either way.
     const bumpVersion = payload.fields !== undefined || payload.titleTemplate !== undefined;
     const [updated] = await db
       .update(ticketForms)
       .set({
-        ...payload,
+        ...columns,
         ...(bumpVersion ? { version: row.version + 1 } : {}),
         updatedAt: new Date()
       })
