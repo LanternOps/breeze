@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -67,20 +67,140 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
   return current;
 }
 
-const PROTECTED_IMPORT_SOURCES: Record<string, ReadonlySet<string>> = {
-  issueUserSession: new Set(['./userSession', '../services', '../../services']),
-  setRefreshTokenCookie: new Set([
-    './helpers',
-    './auth/helpers',
-    '../routes/auth/helpers',
-  ]),
+const CANONICAL_PROTECTED_FILES: Record<string, string> = {
+  issueUserSession: join(SRC_DIR, 'services/userSession.ts'),
+  setRefreshTokenCookie: join(SRC_DIR, 'routes/auth/helpers.ts'),
 };
+
+const moduleResolutionCache = new Map<string, string | null>();
+const canonicalExportCache = new Map<string, ReadonlySet<string>>();
+
+function normalizeFileName(fileName: string): string {
+  const absolute = resolve(fileName);
+  return ts.sys.fileExists(absolute) && ts.sys.realpath ? ts.sys.realpath(absolute) : absolute;
+}
+
+function resolveModuleFile(specifier: string, containingFile: string): string | null {
+  const key = `${normalizeFileName(containingFile)}::${specifier}`;
+  const cached = moduleResolutionCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = ts.resolveModuleName(
+    specifier,
+    containingFile,
+    {
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      target: ts.ScriptTarget.Latest,
+    },
+    ts.sys,
+  ).resolvedModule?.resolvedFileName;
+  const normalized = result ? normalizeFileName(result) : null;
+  moduleResolutionCache.set(key, normalized);
+  return normalized;
+}
+
+interface ImportedBinding {
+  importedName: string;
+  targetFile: string;
+}
+
+function canonicalExportNames(
+  moduleFile: string,
+  canonicalFile: string,
+  canonicalName: string,
+  visiting: Set<string> = new Set(),
+): ReadonlySet<string> {
+  const normalizedModule = normalizeFileName(moduleFile);
+  const normalizedCanonical = normalizeFileName(canonicalFile);
+  const cacheKey = `${normalizedCanonical}::${canonicalName}::${normalizedModule}`;
+  const cached = canonicalExportCache.get(cacheKey);
+  if (cached) return cached;
+  if (normalizedModule === normalizedCanonical) {
+    const names = new Set([canonicalName]);
+    canonicalExportCache.set(cacheKey, names);
+    return names;
+  }
+  if (visiting.has(cacheKey) || !ts.sys.fileExists(normalizedModule)) return new Set();
+  visiting.add(cacheKey);
+
+  const sourceFile = ts.createSourceFile(
+    normalizedModule,
+    readFileSync(normalizedModule, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const importedBindings = new Map<string, ImportedBinding>();
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement)
+      || !ts.isStringLiteral(statement.moduleSpecifier)
+      || !statement.importClause?.namedBindings
+      || !ts.isNamedImports(statement.importClause.namedBindings)
+    ) continue;
+    const targetFile = resolveModuleFile(statement.moduleSpecifier.text, normalizedModule);
+    if (!targetFile) continue;
+    for (const element of statement.importClause.namedBindings.elements) {
+      importedBindings.set(element.name.text, {
+        importedName: element.propertyName?.text ?? element.name.text,
+        targetFile,
+      });
+    }
+  }
+
+  const exportedNames = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isExportDeclaration(statement)) continue;
+    if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+      const targetFile = resolveModuleFile(statement.moduleSpecifier.text, normalizedModule);
+      if (!targetFile) continue;
+      const targetNames = canonicalExportNames(
+        targetFile,
+        normalizedCanonical,
+        canonicalName,
+        visiting,
+      );
+      if (!statement.exportClause) {
+        for (const name of targetNames) exportedNames.add(name);
+      } else if (ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          const sourceName = element.propertyName?.text ?? element.name.text;
+          if (targetNames.has(sourceName)) exportedNames.add(element.name.text);
+        }
+      }
+      continue;
+    }
+    if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+      for (const element of statement.exportClause.elements) {
+        const localName = element.propertyName?.text ?? element.name.text;
+        const imported = importedBindings.get(localName);
+        if (!imported) continue;
+        const targetNames = canonicalExportNames(
+          imported.targetFile,
+          normalizedCanonical,
+          canonicalName,
+          visiting,
+        );
+        if (targetNames.has(imported.importedName)) exportedNames.add(element.name.text);
+      }
+    }
+  }
+
+  visiting.delete(cacheKey);
+  canonicalExportCache.set(cacheKey, exportedNames);
+  return exportedNames;
+}
 
 function protectedConventionError(functionName: string, detail: string): Error {
   return new Error(`Protected symbol convention violation for ${functionName}: ${detail}`);
 }
 
-function countTrackedSymbolCalls(source: string, functionName: string): number {
+function countTrackedSymbolCalls(
+  source: string,
+  functionName: string,
+  fileName = join(SRC_DIR, '__session_inventory_fixture.ts'),
+  canonicalFile = CANONICAL_PROTECTED_FILES[functionName],
+): number {
   const sourceFile = ts.createSourceFile(
     'session-inventory.ts',
     source,
@@ -88,9 +208,8 @@ function countTrackedSymbolCalls(source: string, functionName: string): number {
     true,
     ts.ScriptKind.TS,
   );
-  const approvedSources = PROTECTED_IMPORT_SOURCES[functionName];
-  if (!approvedSources) throw new Error(`Unknown protected symbol: ${functionName}`);
-  let hasProtectedImport = false;
+  if (!canonicalFile) throw new Error(`Unknown protected symbol: ${functionName}`);
+  const protectedBindings = new Map<string, { importedName: string; reExported: boolean }>();
 
   const inspectImports = (node: ts.Node): void => {
     if (
@@ -98,7 +217,6 @@ function countTrackedSymbolCalls(source: string, functionName: string): number {
       && node.expression.kind === ts.SyntaxKind.ImportKeyword
       && node.arguments[0]
       && ts.isStringLiteral(node.arguments[0])
-      && approvedSources.has(node.arguments[0].text)
     ) {
       const awaited = ts.isAwaitExpression(node.parent) ? node.parent : undefined;
       const declaration = awaited && ts.isVariableDeclaration(awaited.parent)
@@ -107,16 +225,24 @@ function countTrackedSymbolCalls(source: string, functionName: string): number {
       const elements = declaration && ts.isObjectBindingPattern(declaration.name)
         ? declaration.name.elements
         : undefined;
-      const isExistingGetRedisImport = functionName === 'issueUserSession'
-        && node.arguments[0].text === '../services'
-        && elements?.length === 1
-        && !elements[0]?.dotDotDotToken
-        && !elements[0]?.propertyName
-        && ts.isIdentifier(elements[0]?.name)
-        && elements[0].name.text === 'getRedis';
-      if (isExistingGetRedisImport) {
-        // Three existing enrollment-key paths dynamically load only getRedis.
-        // Keep that exact unrelated barrel import outside this symbol contract.
+      const targetFile = resolveModuleFile(node.arguments[0].text, fileName);
+      const targetNames = targetFile
+        ? canonicalExportNames(targetFile, canonicalFile, functionName)
+        : new Set<string>();
+      if (targetNames.size === 0) {
+        ts.forEachChild(node, inspectImports);
+        return;
+      }
+      const destructuresOnlyUnrelatedExports = !!elements
+        && elements.length > 0
+        && elements.every((element) => {
+          if (element.dotDotDotToken) return false;
+          const importedName = element.propertyName && ts.isIdentifier(element.propertyName)
+            ? element.propertyName.text
+            : ts.isIdentifier(element.name) ? element.name.text : undefined;
+          return !!importedName && !targetNames.has(importedName);
+        });
+      if (destructuresOnlyUnrelatedExports) {
         ts.forEachChild(node, inspectImports);
         return;
       }
@@ -125,24 +251,31 @@ function countTrackedSymbolCalls(source: string, functionName: string): number {
     if (
       ts.isImportDeclaration(node)
       && ts.isStringLiteral(node.moduleSpecifier)
-      && approvedSources.has(node.moduleSpecifier.text)
       && node.importClause
     ) {
+      const bindings = node.importClause.namedBindings;
+      const targetFile = resolveModuleFile(node.moduleSpecifier.text, fileName);
+      const targetNames = targetFile
+        ? canonicalExportNames(targetFile, canonicalFile, functionName)
+        : new Set<string>();
+      if (targetNames.size === 0) {
+        ts.forEachChild(node, inspectImports);
+        return;
+      }
       if (node.importClause.name) {
         throw protectedConventionError(functionName, 'default imports are forbidden');
       }
-      const bindings = node.importClause.namedBindings;
       if (bindings && ts.isNamespaceImport(bindings)) {
         throw protectedConventionError(functionName, 'namespace imports are forbidden');
       }
       if (bindings && ts.isNamedImports(bindings)) {
         for (const element of bindings.elements) {
           const importedName = element.propertyName?.text ?? element.name.text;
-          if (importedName !== functionName) continue;
-          if (element.name.text !== functionName || element.propertyName) {
-            throw protectedConventionError(functionName, 'named import aliases are forbidden');
-          }
-          hasProtectedImport = true;
+          if (!targetNames.has(importedName)) continue;
+          protectedBindings.set(element.name.text, {
+            importedName,
+            reExported: false,
+          });
         }
       }
     }
@@ -151,14 +284,27 @@ function countTrackedSymbolCalls(source: string, functionName: string): number {
   inspectImports(sourceFile);
 
   // Same-named exports from unrelated modules are outside this contract.
-  if (!hasProtectedImport) return 0;
+  if (protectedBindings.size === 0) return 0;
 
   let count = 0;
   const inspectReferences = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) && node.text === functionName) {
+    if (ts.isIdentifier(node) && protectedBindings.has(node.text)) {
+      const binding = protectedBindings.get(node.text)!;
       if (ts.isImportSpecifier(node.parent)) return;
-      if (ts.isTypeQueryNode(node.parent) && node.parent.exprName === node) return;
+      if (ts.isExportSpecifier(node.parent)) {
+        binding.reExported = true;
+        return;
+      }
+      if (
+        ts.isTypeQueryNode(node.parent)
+        && node.parent.exprName === node
+        && node.text === functionName
+        && binding.importedName === functionName
+      ) return;
       if (ts.isCallExpression(node.parent) && node.parent.expression === node) {
+        if (node.text !== functionName || binding.importedName !== functionName) {
+          throw protectedConventionError(functionName, 'named import aliases are forbidden');
+        }
         count += 1;
         return;
       }
@@ -170,13 +316,18 @@ function countTrackedSymbolCalls(source: string, functionName: string): number {
     ts.forEachChild(node, inspectReferences);
   };
   inspectReferences(sourceFile);
+  for (const [localName, binding] of protectedBindings) {
+    if ((localName !== functionName || binding.importedName !== functionName) && !binding.reExported) {
+      throw protectedConventionError(functionName, 'named import aliases are forbidden');
+    }
+  }
   return count;
 }
 
 function collectCallInventory(functionName: string): Map<string, number> {
   const inventory = new Map<string, number>();
   for (const file of walkProductionTypeScript(SRC_DIR)) {
-    const count = countTrackedSymbolCalls(readFileSync(file, 'utf8'), functionName);
+    const count = countTrackedSymbolCalls(readFileSync(file, 'utf8'), functionName, file);
     if (count > 0) inventory.set(relative(SRC_DIR, file), count);
   }
   return inventory;
@@ -309,22 +460,142 @@ function provesAuthorizedSsoExchangeCookieFlow(source: string): boolean {
 }
 
 describe('session inventory analyzer fixtures', () => {
+  const analyzeFixture = countTrackedSymbolCalls as unknown as (
+    source: string,
+    functionName: string,
+    fileName: string,
+    canonicalFile: string,
+  ) => number;
+
+  function withModuleGraph(
+    files: Record<string, string>,
+    run: (root: string) => void,
+  ): void {
+    const root = mkdtempSync(join(tmpdir(), 'protected-module-graph-'));
+    try {
+      for (const [relativePath, content] of Object.entries(files)) {
+        const fullPath = join(root, relativePath);
+        mkdirSync(join(fullPath, '..'), { recursive: true });
+        writeFileSync(fullPath, content);
+      }
+      run(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('resolves a protected issuer through an alternate relative path', () => {
+    withModuleGraph({
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'routes/consumer.ts': "import { issueUserSession } from '../services/userSession'; issueUserSession();",
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+      )).toBe(1);
+    });
+  });
+
+  it('resolves protected symbols through nested re-export barrels and cycles', () => {
+    withModuleGraph({
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'services/a.ts': "export * from './b';",
+      'services/b.ts': "export * from './a'; export * from './userSession';",
+      'routes/consumer.ts': "import { issueUserSession } from '../services/a'; issueUserSession();",
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+      )).toBe(1);
+    });
+  });
+
+  it('recognizes a named alias re-export and still rejects alias consumption', () => {
+    withModuleGraph({
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'services/barrel.ts': "export { issueUserSession as issue } from './userSession';",
+      'routes/consumer.ts': "import { issue as issueUserSession } from '../services/barrel'; issueUserSession();",
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(() => analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+      )).toThrow(/protected symbol convention/i);
+    });
+  });
+
+  it('rejects consumption that preserves an arbitrary canonical re-export alias', () => {
+    withModuleGraph({
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'services/barrel.ts': "export { issueUserSession as issue } from './userSession';",
+      'routes/consumer.ts': "import { issue } from '../services/barrel'; issue();",
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(() => analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+      )).toThrow(/protected symbol convention/i);
+    });
+  });
+
+  it('resolves the protected cookie writer through a nested local re-export', () => {
+    withModuleGraph({
+      'auth/helpers.ts': 'export function setRefreshTokenCookie() {}',
+      'auth/barrel.ts': "import { setRefreshTokenCookie as local } from './helpers'; export { local as setRefreshTokenCookie };",
+      'routes/consumer.ts': "import { setRefreshTokenCookie } from '../auth/barrel'; setRefreshTokenCookie();",
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'setRefreshTokenCookie',
+        consumer,
+        join(root, 'auth/helpers.ts'),
+      )).toBe(1);
+    });
+  });
+
+  it('ignores a genuinely unrelated same-named export in the module graph', () => {
+    withModuleGraph({
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'unrelated.ts': 'export function issueUserSession() {}',
+      'consumer.ts': "import { issueUserSession } from './unrelated'; issueUserSession();",
+    }, (root) => {
+      const consumer = join(root, 'consumer.ts');
+      expect(analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+      )).toBe(0);
+    });
+  });
+
   it.each([
     [
       'named import alias',
-      "import { issueUserSession as issue } from './userSession'; issue({} as never);",
+      "import { issueUserSession as issue } from './services/userSession'; issue({} as never);",
     ],
     [
       'namespace property call',
-      "import * as sessions from './userSession'; sessions.issueUserSession({} as never);",
+      "import * as sessions from './services/userSession'; sessions.issueUserSession({} as never);",
     ],
     [
       'local alias',
-      "import { issueUserSession } from './userSession'; const issue = issueUserSession; issue({} as never);",
+      "import { issueUserSession } from './services/userSession'; const issue = issueUserSession; issue({} as never);",
     ],
     [
       'call/apply forms',
-      "import { issueUserSession } from './userSession'; issueUserSession.call(null, {}); issueUserSession.apply(null, [{}]);",
+      "import { issueUserSession } from './services/userSession'; issueUserSession.call(null, {}); issueUserSession.apply(null, [{}]);",
     ],
   ])('rejects issueUserSession through %s', (_name, source) => {
     expect(() => countTrackedSymbolCalls(source, 'issueUserSession')).toThrow(
@@ -335,19 +606,19 @@ describe('session inventory analyzer fixtures', () => {
   it.each([
     [
       'named import alias',
-      "import { setRefreshTokenCookie as install } from './auth/helpers'; install(c, token);",
+      "import { setRefreshTokenCookie as install } from './routes/auth/helpers'; install(c, token);",
     ],
     [
       'namespace property call',
-      "import * as helpers from './auth/helpers'; helpers.setRefreshTokenCookie(c, token);",
+      "import * as helpers from './routes/auth/helpers'; helpers.setRefreshTokenCookie(c, token);",
     ],
     [
       'local alias',
-      "import { setRefreshTokenCookie } from './auth/helpers'; const install = setRefreshTokenCookie; install(c, token);",
+      "import { setRefreshTokenCookie } from './routes/auth/helpers'; const install = setRefreshTokenCookie; install(c, token);",
     ],
     [
       'call/apply forms',
-      "import { setRefreshTokenCookie } from './auth/helpers'; setRefreshTokenCookie.call(null, c, token); setRefreshTokenCookie.apply(null, [c, token]);",
+      "import { setRefreshTokenCookie } from './routes/auth/helpers'; setRefreshTokenCookie.call(null, c, token); setRefreshTokenCookie.apply(null, [c, token]);",
     ],
   ])('rejects setRefreshTokenCookie through %s', (_name, source) => {
     expect(() => countTrackedSymbolCalls(source, 'setRefreshTokenCookie')).toThrow(
@@ -358,23 +629,23 @@ describe('session inventory analyzer fixtures', () => {
   it.each([
     [
       'dynamic import destructuring',
-      "async function f() { const { issueUserSession } = await import('./userSession'); await issueUserSession({}); }",
+      "async function f() { const { issueUserSession } = await import('./services/userSession'); await issueUserSession({}); }",
     ],
     [
       'bind',
-      "import { issueUserSession } from './userSession'; const issue = issueUserSession.bind(null); issue({});",
+      "import { issueUserSession } from './services/userSession'; const issue = issueUserSession.bind(null); issue({});",
     ],
     [
       'shadowing',
-      "import { issueUserSession } from './userSession'; function f(issueUserSession: () => void) { issueUserSession(); }",
+      "import { issueUserSession } from './services/userSession'; function f(issueUserSession: () => void) { issueUserSession(); }",
     ],
     [
       'namespace destructuring',
-      "import * as sessions from './userSession'; const { issueUserSession } = sessions; issueUserSession({});",
+      "import * as sessions from './services/userSession'; const { issueUserSession } = sessions; issueUserSession({});",
     ],
     [
       'object alias',
-      "import { issueUserSession } from './userSession'; const issuers = { issueUserSession }; issuers.issueUserSession({});",
+      "import { issueUserSession } from './services/userSession'; const issuers = { issueUserSession }; issuers.issueUserSession({});",
     ],
   ])('rejects issueUserSession %s', (_name, source) => {
     expect(() => countTrackedSymbolCalls(source, 'issueUserSession')).toThrow(
@@ -385,15 +656,15 @@ describe('session inventory analyzer fixtures', () => {
   it.each([
     [
       'dynamic import destructuring',
-      "async function f() { const { setRefreshTokenCookie } = await import('./auth/helpers'); setRefreshTokenCookie(c, token); }",
+      "async function f() { const { setRefreshTokenCookie } = await import('./routes/auth/helpers'); setRefreshTokenCookie(c, token); }",
     ],
     [
       'bind',
-      "import { setRefreshTokenCookie } from './auth/helpers'; const install = setRefreshTokenCookie.bind(null); install(c, token);",
+      "import { setRefreshTokenCookie } from './routes/auth/helpers'; const install = setRefreshTokenCookie.bind(null); install(c, token);",
     ],
     [
       'shadowing',
-      "import { setRefreshTokenCookie } from './auth/helpers'; function f(setRefreshTokenCookie: () => void) { setRefreshTokenCookie(); }",
+      "import { setRefreshTokenCookie } from './routes/auth/helpers'; function f(setRefreshTokenCookie: () => void) { setRefreshTokenCookie(); }",
     ],
   ])('rejects setRefreshTokenCookie %s', (_name, source) => {
     expect(() => countTrackedSymbolCalls(source, 'setRefreshTokenCookie')).toThrow(
@@ -528,7 +799,7 @@ describe('browser-auth issuer inventory (9 issuances in 7 files; 10 cookie write
       'services/recoveryCodeAuth.ts': 1,
     });
     expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(9);
-  });
+  }, 15_000);
 
   it('freezes every production setRefreshTokenCookie call site', () => {
     const inventory = collectCallInventory('setRefreshTokenCookie');
@@ -545,7 +816,7 @@ describe('browser-auth issuer inventory (9 issuances in 7 files; 10 cookie write
       'routes/sso.ts': 1,
     });
     expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(10);
-  });
+  }, 15_000);
 
   it('writes the SSO exchange refresh cookie only after consuming the exchange grant', () => {
     const source = readFileSync(join(SRC_DIR, 'routes/sso.ts'), 'utf8');
