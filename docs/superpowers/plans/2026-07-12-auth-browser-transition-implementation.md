@@ -17,7 +17,7 @@
 - Request-path database access uses the established context helpers; terminal transition infrastructure uses an explicit outside-to-system transaction.
 - PostgreSQL is authoritative. Redis failures cannot reactivate a family, reopen a binding, or validate a stale JTI.
 - No database row lock or transaction spans password hashing, email, webhooks, or IdP network calls.
-- Every production call to `issueUserSession` requires the guarded capability and transaction. No optional unguarded overload remains.
+- At final enforcement, every production call to `issueUserSession` requires the guarded capability and transaction; no optional unguarded overload remains. During Tasks 4-9 only, an explicitly named `issueUserSessionLegacyDuringTransition` shim may keep not-yet-migrated callers buildable. Its exact caller inventory is frozen, it may not gain callers, refresh may not use it after Task 4, and Task 11 deletes it before enforcement can be enabled.
 - Use strict TDD for each task: observe the focused regression fail before changing production code.
 - Keep commits reviewable and use the checkpoints named below. Do not push, merge, or deploy from this plan.
 
@@ -110,6 +110,13 @@ export async function issueUserSession(
     capability: AuthIssuanceCapability;
     familyId?: string;
   },
+): Promise<TokenPair & { familyId: string }>;
+
+// Temporary Tasks 4-9 migration seam. The source contract freezes its exact
+// remaining callers, and Task 11 removes it before final enforcement.
+export async function issueUserSessionLegacyDuringTransition(
+  identity: UserSessionIdentity,
+  existingOptions?: LegacyIssueOptions,
 ): Promise<TokenPair & { familyId: string }>;
 ```
 
@@ -402,7 +409,7 @@ options: {
 }
 ```
 
-Assert the capability against the transition in the same transaction. Remove the non-transactional family insert path from production issuance.
+Assert the capability against the transition in the same transaction. Move the old non-transactional family insert path behind the explicitly named `issueUserSessionLegacyDuringTransition` migration seam. Freeze its exact existing callers in `userSession.callers.test.ts`; any new caller fails the contract. Refresh must use only guarded `issueUserSession` in this task. Tasks 5, 6, and 9 remove callers from the seam; Task 11 deletes it.
 
 - [ ] **Step 4: Implement refresh authority classification**
 
@@ -421,9 +428,9 @@ Only `current` may select a global subject. `legacy_or_stale_family` permits exa
 
 Admission occurs before any old-JTI claim. Finalization locks transition then user then family, validates the durable current digest, creates the successor, updates the digest, and records the binding's current family. Redis rotation markers run after commit.
 
-- [ ] **Step 6: Activate the future inventory assertion for guarded issuance**
+- [ ] **Step 6: Activate staged inventory assertions**
 
-Update `userSession.callers.test.ts` so direct call-site options must contain `tx` and `capability`, or calls must occur inside an approved guarded service whose source contains the runtime assertion.
+Update `userSession.callers.test.ts` so refresh contains `tx` and `capability`, guarded calls occur inside an approved service with the runtime assertion, and the migration shim has exactly the frozen remaining callers. Keep the final "every issuer guarded" assertion skipped until Task 11 removes the shim; Task 12 proves the final inventory.
 
 - [ ] **Step 7: Run focused and race tests**
 
@@ -852,6 +859,8 @@ Introduce an explicit production-safe flag such as `AUTH_BROWSER_TRANSITIONS_ENF
 - [ ] **Step 3: Remove boolean quarantine authority**
 
 Delete `CF_ACCESS_LOGOUT_QUARANTINE_COOKIE_NAME`, `hasCfAccessLogoutQuarantine`, setter/clearer, and the `setRefreshTokenCookie` request-cookie check added in `675f66ac2`. The durable transition remains the sole authority. Keep compatibility cookie clearing for one release only if needed, but never consult it for authorization.
+
+Also delete `issueUserSessionLegacyDuringTransition`, prove its caller count is zero, and activate the Task 1 future assertion requiring a guarded capability at every production issuer. Startup must reject `AUTH_BROWSER_TRANSITIONS_ENFORCED=true` while the legacy export exists.
 
 - [ ] **Step 4: Add bounded cleanup**
 
