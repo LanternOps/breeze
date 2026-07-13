@@ -320,7 +320,7 @@ export interface IssueVerifiedPendingMfaSessionInput {
   mobileDeviceId?: string;
   finalizeFactor?: (
     tx: AuthLifecycleTransaction,
-    user: Awaited<ReturnType<typeof loadLockedPendingMfaAuthority>>['user'],
+    user: NonNullable<Awaited<ReturnType<typeof loadLockedPendingMfaAuthority>>['user']>,
   ) => Promise<void>;
 }
 

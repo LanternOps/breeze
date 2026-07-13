@@ -1335,6 +1335,31 @@ describe('passkey MFA auth routes', () => {
     expect(res.headers.get('set-cookie')).toBeNull();
   });
 
+  it('cancels the lease when verified passkey metadata cannot be normalized', async () => {
+    dbState.selectQueue.push([{
+      id: 'credential-row-1', userId: 'user-123', credentialId: 'credential-1',
+      publicKey: 'public-key', counter: 0, transports: ['internal'], disabledAt: null,
+    }]);
+    passkeyMocks.verifyPasskeyAuthentication.mockResolvedValueOnce({ verified: true });
+    passkeyMocks.authenticationInfoToPasskeyUpdateFields
+      .mockImplementationOnce(() => { throw new Error('invalid authentication metadata'); });
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+    expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
   it('fails closed when the verified passkey counter update no longer owns an active credential', async () => {
     dbState.selectQueue.push([{
       id: 'credential-row-1', userId: 'user-123', credentialId: 'credential-1',
@@ -1565,6 +1590,8 @@ describe('passkey MFA auth routes', () => {
     const body = await res.json();
     expect(body.recoveryCodes).toEqual(['AAAA-BBBB', 'CCCC-DDDD']);
     const userUpdate = dbState.updateSets.find((set) => 'mfaEnabled' in set);
+    expect(userUpdate).toBeDefined();
+    if (!userUpdate) throw new Error('Expected MFA user update');
     expect(userUpdate).toMatchObject({ mfaEnabled: true, mfaMethod: 'passkey' });
     expect(userUpdate.mfaRecoveryCodes).toHaveLength(2);
     expect(userUpdate.mfaRecoveryCodes).not.toContain('AAAA-BBBB');

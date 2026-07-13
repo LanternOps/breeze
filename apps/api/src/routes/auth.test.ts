@@ -1526,6 +1526,8 @@ describe('auth routes', () => {
         primaryAuthenticationMethod: 'password',
         configuredMfaMethod: method,
         primaryMfaMethod: method,
+        browserTransitionId: '11111111-1111-4111-8111-111111111111',
+        browserGeneration: 3,
         issuedAt: '2026-07-12T12:00:00.000Z',
         expiresAt: '2026-07-12T12:05:00.000Z',
       });
@@ -1587,6 +1589,8 @@ describe('auth routes', () => {
         primaryAuthenticationMethod: 'password',
         configuredMfaMethod: 'sms',
         primaryMfaMethod: 'sms',
+        browserTransitionId: '11111111-1111-4111-8111-111111111111',
+        browserGeneration: 3,
         issuedAt: '2026-07-12T12:00:00.000Z',
         expiresAt: '2026-07-12T12:05:00.000Z',
       });

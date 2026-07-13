@@ -605,7 +605,13 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     return c.json({ error: 'Passkey verification failed' }, 401);
   }
 
-  const updateFields = authenticationInfoToPasskeyUpdateFields(verification);
+  let updateFields;
+  try {
+    updateFields = authenticationInfoToPasskeyUpdateFields(verification);
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => false);
+    throw error;
+  }
   let completed;
   try {
     completed = await issueVerifiedPendingMfaSession({
