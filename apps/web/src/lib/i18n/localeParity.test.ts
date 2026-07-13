@@ -67,8 +67,10 @@ describe('locale parity', () => {
   const reference = readNamespaces('en');
   const referenceValues = readNamespaceValues('en');
 
-  it('has at least en and pt-BR', () => {
-    expect(locales).toEqual(expect.arrayContaining(['en', 'pt-BR']));
+  it('contains every supported locale catalog', () => {
+    expect(locales).toEqual(
+      expect.arrayContaining(['en', 'pt-BR', 'es-419', 'fr-FR', 'de-DE']),
+    );
   });
 
   for (const locale of locales.filter((value) => value !== 'en')) {
