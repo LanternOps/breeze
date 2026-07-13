@@ -34,12 +34,6 @@ export default function AdminSessionManager() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const currentOrgId = useOrgStore((state) => state.currentOrgId);
   const [idleTimeoutMs, setIdleTimeoutMs] = useState(DEFAULT_IDLE_TIMEOUT_MS);
-  // False while the effective timeout for the CURRENT scope is still in flight.
-  // Scope switches (All Orgs ↔ org) refetch asynchronously, and until that lands
-  // `idleTimeoutMs` still holds the PREVIOUS scope's budget — enforcing it would
-  // let a 5-minute org timeout idle-log-out a partner admin who just switched to
-  // All Orgs. The heartbeat therefore skips idle logout until this resolves.
-  const [idleTimeoutResolved, setIdleTimeoutResolved] = useState(false);
   const lastActivityAtRef = useRef<number>(Date.now());
   const lastRefreshAtRef = useRef<number>(0);
   const refreshInFlightRef = useRef(false);
@@ -72,31 +66,35 @@ export default function AdminSessionManager() {
   useEffect(() => {
     if (!isAuthenticated) {
       setIdleTimeoutMs(DEFAULT_IDLE_TIMEOUT_MS);
-      setIdleTimeoutResolved(false);
       return;
     }
 
     let cancelled = false;
 
-    // The scope just changed (or we just mounted), so whatever is in state
-    // belongs to the previous scope. Park enforcement and drop back to the
-    // frontend default until the new scope's budget lands, so a stale — possibly
-    // much shorter — budget can never be applied to the new scope (#2429).
-    setIdleTimeoutResolved(false);
+    // The scope just changed (or we just mounted), so whatever budget is in
+    // state belongs to the PREVIOUS scope. Drop back to the frontend default
+    // until the new scope's budget lands — otherwise a 5-minute org budget
+    // stays armed against a partner admin who just switched to All Orgs and
+    // logs them out moments later (#2429).
+    //
+    // Deliberately a reset-to-default and NOT a "park enforcement until this
+    // resolves" flag: a settings fetch that never settles (hung connection)
+    // would then disable idle logout for the whole session. Always enforcing
+    // *some* budget fails safe. The default is only ever in force for the
+    // duration of the refetch, and a scope switch is itself user activity, so
+    // the idle clock is at ~0 across that window anyway.
     setIdleTimeoutMs(DEFAULT_IDLE_TIMEOUT_MS);
 
     /**
-     * Settle the timeout for this scope. `configuredMinutes` is null when the
-     * lookup failed, which keeps the frontend default. EVERY path must call
-     * this: leaving `idleTimeoutResolved` false would park idle logout forever
-     * and turn a failed settings fetch into a session that never times out.
+     * Apply the timeout for this scope. `configuredMinutes` is null when the
+     * lookup failed, which leaves the frontend default in force — never the
+     * previous scope's value.
      */
     const settleTimeout = (configuredMinutes: number | null) => {
       if (cancelled) return;
       if (configuredMinutes !== null && Number.isFinite(configuredMinutes) && configuredMinutes > 0) {
         setIdleTimeoutMs(Math.max(1, configuredMinutes) * 60 * 1000);
       }
-      setIdleTimeoutResolved(true);
     };
 
     const loadSessionTimeout = async () => {
@@ -169,9 +167,7 @@ export default function AdminSessionManager() {
       const now = Date.now();
       const idleMs = now - lastActivityAtRef.current;
 
-      // Never idle-log-out against a budget we haven't confirmed for the current
-      // scope — mid-switch that value belongs to the scope we just left (#2429).
-      if (idleTimeoutResolved && idleMs >= idleTimeoutMs) {
+      if (idleMs >= idleTimeoutMs) {
         idleLogoutInFlightRef.current = true;
         await apiLogout();
         if (!cancelled) {
@@ -212,7 +208,7 @@ export default function AdminSessionManager() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [isAuthenticated, idleTimeoutMs, idleTimeoutResolved]);
+  }, [isAuthenticated, idleTimeoutMs]);
 
   return null;
 }

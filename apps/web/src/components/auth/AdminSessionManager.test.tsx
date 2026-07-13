@@ -337,6 +337,28 @@ describe('AdminSessionManager scope switching (#2348 / #2429)', () => {
     expect(apiLogoutMock).not.toHaveBeenCalled();
   });
 
+  it('still idle-logs-out on the default budget when the settings fetch never settles', async () => {
+    // Guard against the tempting-but-wrong fix for the stale-budget bug: gating
+    // idle logout on "the new scope's budget has resolved" means a settings
+    // request that hangs forever silently disables session expiry altogether.
+    // Enforcement must always fall back to the frontend default, never park.
+    setScope(ORG_ID);
+    fetchWithAuthMock.mockReturnValue(new Promise<Response>(() => {})); // never settles
+
+    render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(61 * 60_000); // past the 60-minute default
+      await Promise.resolve();
+    });
+
+    expect(apiLogoutMock).toHaveBeenCalledTimes(1);
+    expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
+  });
+
   it('applies the newly selected org budget after switching All Organizations → org', async () => {
     // Partner scope allows 24h.
     setScope(null);
