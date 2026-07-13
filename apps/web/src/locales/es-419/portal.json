@@ -1,0 +1,101 @@
+{
+  "assetCheckout": {
+    "expectedReturnDate": "Fecha prevista de regreso",
+    "notes": "Notas (opcional)",
+    "notesPlaceholder": "Agregue cualquier detalle de recogida o entrega",
+    "requesting": "Solicitando: {{assetName}}",
+    "submit": "Solicitar pago",
+    "submitting": "Enviando solicitud...",
+    "title": "Pago de activos",
+    "validation": {
+      "expectedReturnDate": "Seleccione una fecha prevista de regreso"
+    }
+  },
+  "assetHistory": {
+    "actions": {
+      "check-in": "registrarse",
+      "check-out": "verificar"
+    },
+    "description": "Actividad reciente de check-in y check-out",
+    "title": "Historial de activos"
+  },
+  "branding": {
+    "defaultName": "Portal Breeze"
+  },
+  "customerDeviceList": {
+    "deviceCount": "Dispositivos {{count}} vinculados a su cuenta",
+    "deviceCount_one": "Dispositivo {{count}} vinculado a su cuenta",
+    "deviceCount_other": "Dispositivos {{count}} vinculados a su cuenta",
+    "title": "Mis dispositivos"
+  },
+  "deviceStatus": {
+    "lastSeen": "Visto por última vez {{lastSeen}}",
+    "status": {
+      "maintenance": "mantenimiento",
+      "offline": "desconectado",
+      "online": "en línea"
+    },
+    "unknown": "Desconocido"
+  },
+  "header": {
+    "customerPortal": "Portal del cliente",
+    "profile": "Perfil",
+    "signOut": "desconectar"
+  },
+  "login": {
+    "email": "Correo electrónico",
+    "emailPlaceholder": "you@company.com",
+    "forgotPassword": "¿Olvidó su contraseña?",
+    "lookup": "Buscar",
+    "needHelp": "¿Necesita ayuda?",
+    "organization": "Organización",
+    "organizationPlaceholder": "Acme Corp o ORG-123",
+    "password": "Contraseña",
+    "passwordPlaceholder": "Ingrese su contraseña",
+    "signingIn": "Iniciando sesión...",
+    "submit": "Iniciar sesión",
+    "validation": {
+      "email": "Introduzca una dirección de correo electrónico válida",
+      "organization": "Ingrese el nombre o código de su organización",
+      "passwordLength": "La contraseña debe tener al menos 8 caracteres."
+    }
+  },
+  "passwordReset": {
+    "confirm": {
+      "code": "Restablecer código",
+      "codePlaceholder": "123456",
+      "confirmPassword": "Confirmar Contraseña",
+      "confirmPasswordPlaceholder": "Vuelva a ingresar su nueva contraseña",
+      "newPassword": "Nueva contraseña",
+      "newPasswordPlaceholder": "Ingrese una nueva contraseña",
+      "resetting": "Restableciendo contraseña...",
+      "submit": "Restablecer contraseña"
+    },
+    "email": "Correo electrónico",
+    "emailPlaceholder": "you@company.com",
+    "rememberedPassword": "¿Recordó su contraseña?",
+    "request": {
+      "sending": "Enviando correo electrónico de reinicio...",
+      "submit": "Enviar enlace de reinicio"
+    },
+    "signIn": "Iniciar sesión",
+    "validation": {
+      "code": "Ingrese el código de reinicio de 6 dígitos",
+      "email": "Introduzca una dirección de correo electrónico válida",
+      "passwordLength": "La contraseña debe tener al menos 8 caracteres.",
+      "passwordsMatch": "Las contraseñas no coinciden"
+    }
+  },
+  "sidebar": {
+    "collapse": "Contraer navegación del portal",
+    "expand": "Ampliar la navegación del portal",
+    "items": {
+      "assetCheckout": "Pago de activos",
+      "helpCenter": "Centro de ayuda",
+      "myDevices": "Mis dispositivos",
+      "overview": "Descripción general",
+      "supportTickets": "Tickets de soporte"
+    },
+    "navigation": "Navegación del portal"
+  }
+}

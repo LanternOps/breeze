@@ -1,0 +1,474 @@
+{
+  "slaChip": {
+    "pausedLeft": "En pausa · quedan {{relative}}",
+    "left": "Quedan {{relative}}",
+    "breached": "violado"
+  },
+  "slaTimers": {
+    "title": "SLA",
+    "firstResponse": "Primera respuesta",
+    "resolution": "Resolución",
+    "state": {
+      "met": "Cumplió",
+      "notMet": "No cumplido",
+      "breached": "violado",
+      "pausedLeft": "En pausa · quedan {{relative}}",
+      "left": "Quedan {{relative}}"
+    },
+    "clockPaused": "Reloj en pausa mientras el ticket es {{status}}.",
+    "status": {
+      "onHold": "en espera",
+      "pending": "pendiente"
+    }
+  },
+  "cannedResponsePicker": {
+    "button": "Respuesta enlatada"
+  },
+  "deviceTicketsTab": {
+    "loading": "Cargando tickets...",
+    "loadFailed": "Los tickets no se pudieron cargar.",
+    "empty": "No hay entradas para este dispositivo.",
+    "status": {
+      "new": "Nuevo",
+      "open": "Abierto",
+      "pending": "Pendiente",
+      "on_hold": "En espera",
+      "resolved": "Resuelto",
+      "closed": "Cerrado"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alto",
+      "normal": "Normal",
+      "low": "Bajo"
+    }
+  },
+  "ticketQueueList": {
+    "empty": "No hay entradas coincidentes.",
+    "clearFilters": "Limpiar filtros",
+    "ariaLabel": "Cola de entradas",
+    "selectTicket": "Seleccione {{ticket}}",
+    "timeAgo": {
+      "minutes": "hace {{count}}m",
+      "minutes_one": "hace {{count}}m",
+      "minutes_other": "hace {{count}}m",
+      "hours": "hace {{count}}h",
+      "hours_one": "hace {{count}}h",
+      "hours_other": "hace {{count}}h",
+      "days": "hace {{count}}d",
+      "days_one": "hace {{count}}d",
+      "days_other": "hace {{count}}d"
+    },
+    "status": {
+      "new": "Nuevo",
+      "open": "Abierto",
+      "pending": "Pendiente",
+      "on_hold": "En espera",
+      "resolved": "Resuelto",
+      "closed": "Cerrado"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alto",
+      "normal": "Normal",
+      "low": "Bajo"
+    }
+  },
+  "ticketArchivedList": {
+    "emptyTitle": "No hay tickets archivados.",
+    "emptyDescription": "Los tickets eliminados aparecen aquí. Restaure uno para devolverlo a las colas activas.",
+    "ariaLabel": "Entradas archivadas",
+    "deleted": "eliminado {{relative}}",
+    "restore": "Restaurar",
+    "restoring": "Restaurando…",
+    "timeAgo": {
+      "minutes": "hace {{count}}m",
+      "minutes_one": "hace {{count}}m",
+      "minutes_other": "hace {{count}}m",
+      "hours": "hace {{count}}h",
+      "hours_one": "hace {{count}}h",
+      "hours_other": "hace {{count}}h",
+      "days": "hace {{count}}d",
+      "days_one": "hace {{count}}d",
+      "days_other": "hace {{count}}d"
+    },
+    "status": {
+      "new": "Nuevo",
+      "open": "Abierto",
+      "pending": "Pendiente",
+      "on_hold": "En espera",
+      "resolved": "Resuelto",
+      "closed": "Cerrado"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alto",
+      "normal": "Normal",
+      "low": "Bajo"
+    }
+  },
+  "ticketComposer": {
+    "reply": "Responder",
+    "internalNote": "nota interna",
+    "internalBanner": "Interno: no visible para el solicitante",
+    "replyPlaceholder": "Responder a {{requester}}…",
+    "requesterFallback": "solicitante",
+    "internalPlaceholder": "Agregue una nota interna...",
+    "sending": "Enviando",
+    "sendReply": "Enviar respuesta",
+    "addInternalNote": "Agregar nota interna"
+  },
+  "ticketFeed": {
+    "empty": "Aún no hay actividad.",
+    "commentDeleted": "{{author}} — eliminado",
+    "commentFallback": "un comentario",
+    "requester": "Solicitante",
+    "technician": "Técnico",
+    "internal": "Interno",
+    "edited": "editado",
+    "system": {
+      "systemAuthor": "Sistema",
+      "technicianAuthor": "Técnico",
+      "statusChanged": "{{author}} cambió de estado: {{from}} a {{to}}",
+      "assigned": "{{author}} asignó este ticket",
+      "unassigned": "{{author}} desasignó este ticket",
+      "loggedTime": "{{author}} tiempo registrado",
+      "systemEvent": "Evento del sistema",
+      "collapsed": "cambios {{count}}. Espectáculo",
+      "collapsed_one": "cambio {{count}}. Espectáculo",
+      "collapsed_other": "cambios {{count}}. Espectáculo"
+    },
+    "status": {
+      "new": "Nuevo",
+      "open": "Abierto",
+      "pending": "Pendiente",
+      "on_hold": "En espera",
+      "resolved": "Resuelto",
+      "closed": "Cerrado"
+    },
+    "deleteDialog": {
+      "title": "Eliminar comentario",
+      "message": "¿Está seguro de que desea eliminar este comentario? Esta acción no se puede deshacer."
+    }
+  },
+  "ticketPartsCard": {
+    "title": "Partes",
+    "empty": "Sin piezas.",
+    "nonBillableSuffix": "· no facturable",
+    "marginTitle": "Margen",
+    "deletePrompt": "¿Borrar?",
+    "addPart": "Agregar parte",
+    "fromCatalogPrefix": "Del catálogo:",
+    "unlink": "Desconectar",
+    "catalogPlaceholder": "Agregar desde catálogo (opcional)",
+    "quantity": "Cantidad",
+    "unitPrice": "Precio unitario",
+    "costPlaceholder": "Costo (opcional)",
+    "cost": "Costo",
+    "billable": "facturable",
+    "update": "Actualizar",
+    "toast": {
+      "updateFailed": "No se pudo actualizar la parte",
+      "updated": "Parte actualizada",
+      "addFailed": "No se pudo agregar la parte",
+      "added": "Parte agregada",
+      "updateFailedSentence": "No se pudo actualizar la parte.",
+      "addFailedSentence": "No se pudo agregar la parte.",
+      "deleteFailed": "No se pudo eliminar la parte",
+      "deleted": "Parte eliminada",
+      "deleteFailedSentence": "No se pudo eliminar la parte."
+    }
+  },
+  "ticketTimeBilling": {
+    "title": "Tiempo y facturación",
+    "totalTime": "tiempo total",
+    "billable": "facturable",
+    "timeAmount": "Cantidad de tiempo",
+    "partsCount": "Piezas ({{count}})",
+    "partsCount_one": "Piezas ({{count}})",
+    "partsCount_other": "Piezas ({{count}})",
+    "starting": "Iniciando…",
+    "startTimer": "Iniciar temporizador",
+    "logTime": "Tiempo de registro",
+    "minutes": "Minutos",
+    "descriptionPlaceholder": "Descripción (opcional)",
+    "techFallback": "Técnico",
+    "running": "en ejecución",
+    "toast": {
+      "startTimerFailed": "No se pudo iniciar el cronómetro.",
+      "logFailed": "No se pudo registrar el tiempo",
+      "logged": "Tiempo registrado",
+      "logFailedSentence": "No se pudo registrar el tiempo."
+    }
+  },
+  "inboundReviewQueue": {
+    "title": "Cola de revisión",
+    "description": "Correos electrónicos entrantes fallidos y en cuarentena (remitente desconocido). Convertir en ticket o descartar.",
+    "loading": "Cargando.",
+    "loadFailed": "No se pudo cargar la cola de revisión.",
+    "adminsOnly": "La cola de revisión está disponible solo para administradores.",
+    "empty": "Nada que revisar.",
+    "unknownSender": "(remitente desconocido)",
+    "noSubject": "(sin tema)",
+    "selectOrganization": "Seleccionar organización…",
+    "createTicket": "Crear ticket",
+    "convertToTicket": "Convertir en ticket",
+    "dismiss": "Descartar",
+    "prev": "Anterior",
+    "pageOf": "Página {{page}} de {{totalPages}}",
+    "pickOrgFirst": "Elija una organización primero.",
+    "convertFailed": "Error al convertir a ticket. Reintentar.",
+    "ticketCreated": "Ticket creado desde correo electrónico",
+    "dismissFailed": "Descartar falló. Reintentar.",
+    "dismissed": "Correo electrónico entrante descartado",
+    "parseStatus": {
+      "quarantined": "en cuarentena",
+      "failed": "fallido"
+    },
+    "friendly": {
+      "orgNotAccessible": "Esa organización no está disponible bajo su socio.",
+      "rowNotFound": "Ese correo electrónico entrante ya no está disponible.",
+      "rowAlreadyResolved": "Ese correo electrónico entrante ya fue manejado. Actualizando la lista.",
+      "noSender": "Este correo electrónico no tiene una dirección de remitente utilizable, por lo que no puede convertirse en un ticket. Descartarlo o realizar un seguimiento fuera de banda."
+    }
+  },
+  "createTicketPage": {
+    "title": "Crear ticket",
+    "orgsLoadFailed": "Las organizaciones no pudieron cargarse.",
+    "selectOrganization": "Seleccionar organización",
+    "subject": "Asunto",
+    "requesterOptional": "Solicitante (opcional)",
+    "defaultYou": "Predeterminado (usuario actual)",
+    "someoneElse": "Alguien más…",
+    "requesterName": "Nombre del solicitante",
+    "emailOptional": "Correo electrónico (opcional)",
+    "requesterEmail": "Correo electrónico del solicitante",
+    "deviceOptional": "Dispositivo (opcional)",
+    "category": "Categoría",
+    "priority": "Prioridad",
+    "creating": "Creando",
+    "createTicket": "Crear ticket",
+    "creationFailed": "Error al crear el ticket. Reintentar.",
+    "createdToast": "Ticket {{number}} creado",
+    "startFromForm": "Comenzar desde un formulario (opcional)",
+    "blankTicketOption": "ticket en blanco",
+    "priorityOptions": {
+      "low": "Bajo",
+      "normal": "Normal",
+      "high": "Alto",
+      "urgent": "Urgente"
+    }
+  },
+  "ticketFormFields": {
+    "selectPlaceholder": "Seleccionar…"
+  },
+  "ticketsPage": {
+    "title": "Tickets",
+    "createTicket": "Crear ticket",
+    "reviewQueue": "Cola de revisión",
+    "archived": "Archivado",
+    "searchPlaceholder": "buscar entradas",
+    "filterByOrganization": "Filtrar por organización",
+    "allOrganizations": "Todas las organizaciones",
+    "filterByPriority": "Filtrar por prioridad",
+    "allPriorities": "Todas las prioridades",
+    "filterByCategory": "Filtrar por categoría",
+    "allCategories": "Todas las categorias",
+    "assigneeLockedTitle": "La pestaña ya filtra por persona asignada",
+    "filterByAssignee": "Filtrar por cesionario",
+    "allAssignees": "Todos los cesionarios",
+    "sortTickets": "ordenar tickets",
+    "loadFailed": "Los tickets no se pudieron cargar.",
+    "selectAll": "Seleccionar todo",
+    "selectedCount": "{{count}} seleccionado",
+    "selectedCount_one": "{{count}} seleccionado",
+    "selectedCount_other": "{{count}} seleccionado",
+    "clearSelection": "Limpiar",
+    "noSelection": "Seleccione un ticket. Utilice j/k para moverse, Enter para expandir.",
+    "ticketingSettings": "Configuración de gestión de tickets",
+    "assignFailed": "La asignación falló. Reintentar.",
+    "assignedToYou": "Asignado a usted",
+    "restoreFailed": "La restauración falló. Reintentar.",
+    "ticketRestored": "Ticket restaurado",
+    "tabs": {
+      "mine": "Mis entradas",
+      "unassigned": "No asignado",
+      "open": "Todo abierto",
+      "breaching": "rompiendo pronto",
+      "closed": "Cerrado"
+    },
+    "sort": {
+      "triage": "orden de triaje",
+      "newest": "Lo nuevo primero",
+      "oldest": "El más viejo primero",
+      "due": "Fecha de vencimiento"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alto",
+      "normal": "Normal",
+      "low": "Bajo"
+    },
+    "status": {
+      "new": "Nuevo",
+      "open": "Abierto",
+      "pending": "Pendiente",
+      "on_hold": "En espera",
+      "resolved": "Resuelto",
+      "closed": "Cerrado"
+    },
+    "empty": {
+      "title": "Aún no hay entradas",
+      "description": "Los tickets llegan desde el portal del cliente, desde reglas de alerta y desde técnicos. Cree el primero o conecte una regla de alerta para abrir tickets automáticamente."
+    },
+    "bulk": {
+      "assignToAria": "Asignación masiva a",
+      "assignTo": "Asignar a…",
+      "unassign": "Desasignar",
+      "setStatusAria": "Estado de configuración masiva",
+      "setStatus": "Establecer estado…",
+      "updateFailed": "Error en la actualización masiva. Reintentar.",
+      "deleteFailed": "Error en la eliminación masiva. Reintentar.",
+      "updatedPast": "actualizado",
+      "deletedPast": "eliminado",
+      "reasonCount": "{{count}} {{reason}}",
+      "reasonCount_one": "{{count}} {{reason}}",
+      "reasonCount_other": "{{count}} {{reason}}",
+      "partialToast": "{{updated}} {{verb}}, {{skipped}} omitido{{failedSuffix}}{{reasonsSuffix}}",
+      "successToast": "{{updated}} {{verb}}",
+      "failedSuffix": ", {{failed}} falló",
+      "reasonsSuffix": " — {{reasons}}",
+      "reason": {
+        "outOfScope": "fuera de su alcance",
+        "invalidTransition": "cambio de estado no válido",
+        "assigneeNotFound": "cesionario no encontrado",
+        "assigneeWrongPartner": "el cesionario pertenece a otro socio",
+        "concurrentModification": "modificado por alguien más",
+        "ticketPartnerUnresolvable": "socio de ticket irresoluble",
+        "other": "otros errores"
+      }
+    },
+    "bulkDeleteDialog": {
+      "title": "¿Eliminar ticket {{count}}?",
+      "title_one": "¿Eliminar ticket {{count}}?",
+      "title_other": "¿Eliminar entradas {{count}}?",
+      "message": "Esto los oculta de todas las colas; un administrador puede restaurarlos desde Archivados.",
+      "confirm": "Eliminar entradas"
+    }
+  },
+  "ticketWorkbench": {
+    "notFound": "No se encontró el ticket. Es posible que se haya eliminado o que usted no tenga acceso.",
+    "loadFailed": "El ticket no se pudo cargar.",
+    "backToQueue": "volver a la cola",
+    "ticketSubject": "Asunto del ticket",
+    "openFullPage": "Abrir página completa",
+    "priorityLabel": "Prioridad",
+    "categoryLabel": "Categoría",
+    "noCategory": "Sin categoría",
+    "currentCategory": "Categoría actual",
+    "assignee": "Responsable",
+    "unassigned": "No asignado",
+    "mspStaff": "personal del MSP",
+    "assigneeValue": "Cesionario: {{assignee}} ✕",
+    "source": "Fuente",
+    "dueDate": "Fecha de vencimiento",
+    "waitingOn": "esperando",
+    "resolution": "Resolución",
+    "linkedAlerts": "Alertas vinculadas",
+    "status": {
+      "new": "Nuevo",
+      "open": "Abierto",
+      "pending": "Pendiente",
+      "on_hold": "En espera",
+      "resolved": "Resuelto",
+      "closed": "Cerrado"
+    },
+    "priority": {
+      "urgent": "Urgente",
+      "high": "Alto",
+      "normal": "Normal",
+      "low": "Bajo"
+    },
+    "tags": {
+      "label": "Etiquetas",
+      "removeTag": "Eliminar etiqueta {{tag}}",
+      "addTag": "Añadir etiqueta…",
+      "addTagAria": "Agregar etiqueta"
+    },
+    "invoice": {
+      "create": "Crear factura",
+      "creating": "Creando…",
+      "createFailed": "No se pudo crear una factura a partir de este ticket.",
+      "created": "Borrador de factura creado"
+    },
+    "move": {
+      "open": "Mover a otra organización...",
+      "label": "Mover a la organización",
+      "selectOrganization": "Seleccionar organización…",
+      "confirm": "Mover",
+      "failed": "El movimiento falló. Reintentar."
+    },
+    "triage": {
+      "title": "Triaje sugerido",
+      "checking": "Comprobando las señales de los tickets...",
+      "priority": "Prioridad: {{priority}}",
+      "category": "Categoría: {{category}}",
+      "confidence": "{{percent}}% confianza",
+      "notRight": "No está bien",
+      "applying": "Aplicando…",
+      "suggestedCategory": "Categoría sugerida",
+      "applyFailed": "No se pudo aplicar la sugerencia de clasificación de tickets.",
+      "applied": "Se aplicó la sugerencia de clasificación de tickets",
+      "feedbackFailed": "No se pudieron guardar los comentarios sobre la clasificación de tickets.",
+      "feedbackSaved": "Comentarios sobre la clasificación de tickets guardados"
+    },
+    "resolve": {
+      "noteLabel": "Nota de resolución (visible para el solicitante)",
+      "submit": "resolver ticket"
+    },
+    "pending": {
+      "reasonLabel": "¿A qué está esperando? (opcional)",
+      "setPending": "Establecer pendiente",
+      "putOnHold": "Poner en espera"
+    },
+    "description": {
+      "empty": "Sin descripción.",
+      "add": "Agregar descripción"
+    },
+    "requester": {
+      "label": "Solicitante",
+      "someoneElse": "Alguien más…",
+      "nameAria": "Nombre del solicitante",
+      "emailPlaceholder": "Correo electrónico (opcional)",
+      "emailAria": "Correo electrónico del solicitante"
+    },
+    "device": {
+      "none": "Sin dispositivo",
+      "unlink": "Desconectar"
+    },
+    "toast": {
+      "statusUpdated": "Estado actualizado",
+      "statusUpdateFailed": "Error en la actualización del estado. Reintentar.",
+      "ticketResolved": "Ticket resuelto",
+      "resolveFailed": "La resolución falló. Reintentar.",
+      "replyFailed": "La respuesta falló. Reintentar.",
+      "updateFailed": "La actualización falló. Reintentar.",
+      "commentEditFailed": "Error al editar el comentario. Reintentar.",
+      "commentDeleteFailed": "Error al eliminar el comentario. Reintentar.",
+      "priorityUpdateFailed": "Error en la actualización de prioridad. Reintentar.",
+      "categoryUpdateFailed": "Error al actualizar la categoría. Reintentar.",
+      "assigned": "Asignado",
+      "unassigned": "No asignado",
+      "assignFailed": "La asignación falló. Reintentar."
+    },
+    "delete": {
+      "failed": "Error al eliminar. Reintentar.",
+      "deleted": "Ticket eliminado"
+    },
+    "deleteDialog": {
+      "title": "¿Eliminar este ticket?",
+      "message": "Esto oculta el ticket de todas las colas. Un administrador puede restaurarlo desde la cola Archivado.",
+      "confirm": "Eliminar ticket"
+    }
+  }
+}

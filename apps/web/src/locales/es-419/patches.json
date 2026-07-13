@@ -1,0 +1,463 @@
+{
+  "patchApprovalModal": {
+    "title": "Revisar parche",
+    "close": "Cerrar",
+    "cancel": "Cancelar",
+    "deferUntil": "Aplazar hasta",
+    "actions": {
+      "approve": {
+        "label": "Aprobar",
+        "description": "Permita que este parche se implemente automáticamente o en la próxima ventana de mantenimiento."
+      },
+      "decline": {
+        "label": "Rechazar",
+        "description": "Bloquee la implementación de este parche hasta que se revise nuevamente."
+      },
+      "defer": {
+        "label": "Aplazar",
+        "description": "Posponga la decisión y revise más tarde."
+      }
+    },
+    "notes": {
+      "label": "Notas",
+      "placeholder": "Agregue contexto o una razón para la decisión..."
+    },
+    "errors": {
+      "partnerLevel": "Las aprobaciones de parches se gestionan a nivel de socio",
+      "chooseDeferUntil": "Elija cuándo se debe aplazar el parche hasta",
+      "updateFailed": "No se pudo actualizar la aprobación del parche"
+    },
+    "toast": {
+      "approved": "Parche aprobado",
+      "declined": "Parche rechazado",
+      "deferred": "Parche diferido"
+    },
+    "confirm": {
+      "title": "Confirmar la aprobación del parche",
+      "selectedOrganization": "la organización seleccionada",
+      "messageOne": "¿Aprobar el parche en el dispositivo {{count}} en {{org}}?",
+      "messageMany": "¿Aprobar el parche en dispositivos {{count}} en {{org}}?"
+    }
+  },
+  "patchComplianceView": {
+    "unknownDevice": "Desconocido",
+    "emptyValue": "—",
+    "searchPlaceholder": "Buscar dispositivos...",
+    "showing": "Mostrando {{shown}} de {{total}}",
+    "empty": "No se encontraron dispositivos.",
+    "emptyFiltered": "Ningún dispositivo coincide con sus filtros.",
+    "errors": {
+      "fetchData": "No se pudieron recuperar los datos del parche",
+      "loadPendingPatches": "No se pudieron cargar los parches pendientes para el dispositivo {{deviceId}}"
+    },
+    "actions": {
+      "tryAgain": "Intentar otra vez",
+      "export": "Exportar",
+      "refreshCompliance": "Actualizar datos de cumplimiento",
+      "clear": "Limpiar",
+      "scan": "Escanear",
+      "install": "Instalar",
+      "installCount": "Instalar ({{count}})",
+      "view": "Ver"
+    },
+    "export": {
+      "selectOrganization": "Seleccione una organización para exportar un informe de cumplimiento",
+      "generateFailed": "No se pudo generar el informe",
+      "queued": "Informe de cumplimiento {{reportId}} en cola. Preparando descarga...",
+      "ready": "El informe de cumplimiento {{reportId}} está listo. Iniciando descarga...",
+      "failed": "Error en el informe de cumplimiento {{reportId}}",
+      "checkFailed": "No se pudo verificar el estado del informe",
+      "noReportId": "El informe estaba en cola pero no se devolvió ningún informe ID"
+    },
+    "summary": {
+      "compliantPercent": "{{percent}}% compatible",
+      "devices": "{{compliant}} de dispositivos {{total}}",
+      "pendingDevices": "{{count}} tiene parches pendientes",
+      "approved": "{{count}} aprobado",
+      "pendingApproval": "{{count}} pendiente de aprobación",
+      "critical": "{{count}} crítico",
+      "reboot": "reiniciar {{count}}"
+    },
+    "filters": {
+      "allDevices": "Todos los dispositivos ({{count}})",
+      "pendingPatches": "Parches pendientes ({{count}})",
+      "critical": "Crítico ({{count}})",
+      "pendingReboot": "Reinicio pendiente ({{count}})",
+      "thirdPartyPending": "Pendiente de terceros ({{count}})",
+      "compliant": "Cumple ({{count}})"
+    },
+    "selection": {
+      "selected": "{{count}} seleccionado",
+      "selectAll": "Seleccionar todo",
+      "deselectAll": "Deseleccionar todo",
+      "selectDevice": "Seleccione {{name}}",
+      "deselectDevice": "Deseleccionar {{name}}"
+    },
+    "table": {
+      "device": "Dispositivo",
+      "status": "Estado",
+      "approved": "Aprobado",
+      "approvedTitle": "Parches excepcionales aprobados para su instalación",
+      "pendingApproval": "Pendiente de aprobación",
+      "pendingApprovalTitle": "Parches destacados aún pendientes de aprobación",
+      "osPatches": "Parches OS",
+      "osPatchesTitle": "Actualizaciones destacadas de los administradores de paquetes Windows Update, Apple o Linux",
+      "thirdParty": "Tercero",
+      "thirdPartyTitle": "Actualizaciones destacadas de fuentes personalizadas o de terceros",
+      "critical": "Crítico",
+      "criticalTitle": "Parches sobresalientes clasificados como de gravedad crítica",
+      "lastActivity": "Última actividad",
+      "lastActivityTitle": "Actividad de escaneo o aplicación de parches más reciente",
+      "reboot": "Reiniciar",
+      "rebootTitle": "OS informa un reinicio pendiente: cualquier causa (actualizaciones de Windows, CBS, cambios de nombre de archivos pendientes); informado por el agente. Para dispositivos fuera de línea, esto refleja el estado en su último registro.",
+      "actions": "Acciones"
+    },
+    "status": {
+      "ok": "OK",
+      "outstanding": "{{count}} pendientes"
+    },
+    "reboot": {
+      "offlineTitle": "El dispositivo está fuera de línea: esto refleja el estado de OS en su último registro y puede estar obsoleto.",
+      "yes": "Sí",
+      "yesAsOf": "Sí · a partir de {{time}}"
+    },
+    "relative": {
+      "justNow": "En este momento",
+      "minutesAgo": "hace {{count}}m",
+      "hoursAgo": "hace {{count}}h",
+      "daysAgo": "hace {{count}}d"
+    },
+    "activity": {
+      "noActivity": "Ninguna actividad registrada",
+      "installed": "Instalado {{time}}",
+      "scanned": "Escaneado {{time}}",
+      "lastScanned": "Último escaneo {{time}}",
+      "lastInstalled": "Última instalación {{time}}",
+      "noScan": "No se registró ningún escaneo",
+      "noInstall": "No se registró ninguna instalación"
+    },
+    "confirm": {
+      "title": "Confirmar acción de flota",
+      "selectedOrganization": "la organización seleccionada",
+      "scanAction": "Buscar parches",
+      "installAction": "Aplicar parches",
+      "messageOne": "{{action}} en el dispositivo {{count}} en {{org}}?",
+      "messageMany": "{{action}} en dispositivos {{count}} en {{org}}?",
+      "messageMultiOrg": "¿{{action}} en dispositivos {{count}} en organizaciones {{orgCount}} ({{orgNames}})?"
+    }
+  },
+  "patchInstallHistory": {
+    "title": "Historial de operaciones de parches",
+    "loading": "Cargando historial de parches...",
+    "empty": "No se encontraron operaciones de parche.",
+    "emptyValue": "--",
+    "unknownPatch": "Parche desconocido",
+    "operationCountOne": "operación {{count}}",
+    "operationCountMany": "operaciones {{count}}",
+    "errors": {
+      "fetchHistory": "No se pudo recuperar el historial de parches"
+    },
+    "actions": {
+      "retry": "Reintentar",
+      "refresh": "Actualizar",
+      "refreshing": "Actualizando...",
+      "clearFilters": "Limpiar filtros"
+    },
+    "filters": {
+      "allTypes": "Todos los tipos",
+      "allStatus": "Todo el estado"
+    },
+    "operationTypes": {
+      "install": "Instalar",
+      "scan": "Escanear",
+      "rollback": "Revertir",
+      "download": "Descargar"
+    },
+    "status": {
+      "completed": "Terminado",
+      "failed": "Fallido",
+      "pending": "Pendiente",
+      "running": "En ejecución",
+      "timeout": "Tiempo de espera",
+      "unknown": "Desconocido"
+    },
+    "table": {
+      "operation": "Operación",
+      "status": "Estado",
+      "patches": "Parches",
+      "duration": "Duración",
+      "date": "Fecha"
+    },
+    "pagination": {
+      "showing": "Mostrando {{start}} a {{end}} de {{total}}",
+      "pageStatus": "Página {{current}} de {{total}}"
+    },
+    "duration": {
+      "lessThanSecond": "<1s",
+      "seconds": "{{count}}s",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s"
+    },
+    "relative": {
+      "justNow": "En este momento",
+      "minutesAgo": "hace {{count}}m",
+      "hoursAgo": "hace {{count}}h",
+      "daysAgo": "hace {{count}}d"
+    },
+    "detail": {
+      "installed": "Instalado",
+      "failed": "Fallido",
+      "pending": "Pendiente",
+      "scanned": "escaneado",
+      "rebootRequired": "Reiniciar requerido",
+      "yes": "Sí",
+      "started": "Iniciado",
+      "completed": "Terminado",
+      "error": "Error",
+      "patchResults": "Resultados del parche",
+      "reboot": "Reiniciar",
+      "empty": "No hay resultados detallados del parche disponibles.",
+      "table": {
+        "patch": "Parche",
+        "kb": "KB",
+        "status": "Estado",
+        "error": "Error"
+      }
+    }
+  },
+  "patchList": {
+    "title": "Parches",
+    "summary": "{{shown}} de parches {{total}}",
+    "searchPlaceholder": "Buscar parches...",
+    "loading": "Cargando parches...",
+    "empty": "No se encontraron parches. Intente ajustar su búsqueda o filtros.",
+    "vendorBy": "por {{vendor}}",
+    "moreCves": "+{{count}} más",
+    "sortBy": "Ordenar por {{label}}",
+    "errors": {
+      "approvePatches": "No se pudieron aprobar los parches",
+      "declinePatches": "No se pudieron rechazar los parches"
+    },
+    "severity": {
+      "critical": "Crítico",
+      "important": "Importante",
+      "moderate": "Moderado",
+      "low": "Bajo"
+    },
+    "approval": {
+      "pending": "Pendiente",
+      "approved": "Aprobado",
+      "declined": "Rechazado",
+      "deferred": "Diferido"
+    },
+    "filters": {
+      "allSeverities": "Todas las gravedades",
+      "allStatus": "Todo el estado",
+      "moreFilters": "Más filtros",
+      "lessFilters": "Menos filtros",
+      "allSources": "Todas las fuentes",
+      "allOs": "Todo OS"
+    },
+    "actions": {
+      "deploy": "Desplegar",
+      "review": "Revisar",
+      "details": "Detalles",
+      "approveCount": "Aprobar {{count}}",
+      "declineCount": "Rechazar {{count}}",
+      "deployCount": "Implementar {{count}}",
+      "clearSelection": "Borrar selección",
+      "tryAgain": "Intentar otra vez"
+    },
+    "selection": {
+      "selected": "{{count}} seleccionado",
+      "selectAll": "Seleccionar todo",
+      "deselectAll": "Deseleccionar todo",
+      "selectAllPatches": "Seleccionar todos los parches",
+      "deselectAllPatches": "Deseleccionar todos los parches",
+      "selectPatch": "Seleccione {{title}}",
+      "deselectPatch": "Deseleccionar {{title}}"
+    },
+    "table": {
+      "patch": "Parche",
+      "severity": "Gravedad",
+      "source": "Fuente",
+      "os": "OS",
+      "release": "Liberar",
+      "approval": "Aprobación",
+      "actions": "Acciones"
+    },
+    "pagination": {
+      "rowsPerPage": "Filas por página",
+      "pageStatus": "Página {{current}} de {{total}}"
+    }
+  },
+  "patchesPage": {
+    "title": "Gestión de parches",
+    "description": "Administre anillos de actualización, aprobaciones, cumplimiento e implementaciones de parches.",
+    "ringScopeHint": "Los anillos de actualización se gestionan a nivel de socio",
+    "loadingRings": "Cargando anillos de actualización...",
+    "tabs": {
+      "compliance": "Cumplimiento",
+      "patches": "Parches",
+      "updateRings": "Actualizar anillos"
+    },
+    "actions": {
+      "runScan": "Ejecutar escaneo",
+      "scanning": "Analizando...",
+      "newRing": "Nuevo anillo",
+      "tryAgain": "Intentar otra vez",
+      "scan": "Escanear",
+      "close": "Cerrar",
+      "saving": "Guardando...",
+      "creating": "Creando...",
+      "saveChanges": "Guardar cambios",
+      "createRing": "Crear anillo"
+    },
+    "errors": {
+      "fetchRings": "No se pudieron recuperar los anillos de actualización",
+      "fetchPatches": "No se pudieron recuperar los parches",
+      "partnerLevel": "Las aprobaciones de parches se gestionan a nivel de socio",
+      "approvePatches": "No se pudieron aprobar los parches",
+      "approveCountOne": "No se pudo aprobar el parche {{count}}",
+      "approveCountMany": "No se pudieron aprobar los parches {{count}}",
+      "declineCount": "No se pudieron rechazar los parches {{count}}",
+      "loadDevicesForScan": "No se pudieron cargar los dispositivos para escanear",
+      "noDevicesForScan": "No hay dispositivos disponibles para escanear",
+      "updateRing": "No se pudo actualizar el anillo",
+      "createRing": "No se pudo crear el anillo de actualización",
+      "deleteRing": "No se pudo eliminar el anillo"
+    },
+    "toast": {
+      "ringSaved": "Anillo de actualización guardado",
+      "ringCreated": "Anillo de actualización creado",
+      "ringDeleted": "Anillo de actualización eliminado",
+      "chooseDevicesForInstall": "Elija los dispositivos en los que aplicar este parche desde la pestaña Cumplimiento."
+    },
+    "scan": {
+      "confirmTitle": "Confirmar escaneo de parches",
+      "selectedOrganization": "la organización seleccionada",
+      "confirmMessageOne": "¿Buscar parches en el dispositivo {{count}} en {{org}}?",
+      "confirmMessageMany": "¿Buscar parches en dispositivos {{count}} en {{org}}?",
+      "confirmMessageMultiOrg": "¿Busca parches en dispositivos {{count}} en organizaciones {{orgCount}} ({{orgNames}})?",
+      "failedFallback": "Falló el escaneo de parches",
+      "deviceOne": "dispositivo",
+      "deviceMany": "dispositivos",
+      "failedToQueue": "{{count}} no pudo hacer cola",
+      "skipped": "{{count}} omitido (sin acceso/no encontrado)",
+      "failedZero": "Error en la exploración del parche: 0 de {{requested}} {{noun}} en cola.",
+      "failedZeroWithShortfall": "Error en la exploración del parche: 0 de {{requested}} {{noun}} en cola ({{shortfall}}).",
+      "queuedPartial": "Escaneo de parches en cola para {{queued}} de {{requested}} {{noun}} — {{shortfall}}.",
+      "dispatchedSuffix": ", {{count}} enviado inmediatamente",
+      "queuedSuccess": "Escaneo de parches en cola para {{queued}} {{noun}}{{dispatchSuffix}}."
+    },
+    "ringModal": {
+      "editTitle": "Editar anillo de actualización",
+      "createTitle": "Crear anillo de actualización"
+    }
+  },
+  "ringSelector": {
+    "label": "Anillo de actualización:",
+    "allRings": "Todos los anillos",
+    "ringOption": "{{name}} (Orden {{order}}, +{{days}}d)"
+  },
+  "sourceFilterChips": {
+    "sources": {
+      "all": "Todo",
+      "microsoft": "Microsoft",
+      "apple": "Apple",
+      "linux": "Linux",
+      "thirdParty": "Tercero"
+    }
+  },
+  "updateRingForm": {
+    "validation": {
+      "selectCategory": "Seleccione una categoría",
+      "selectSeverity": "Seleccione al menos una gravedad para la aprobación automática.",
+      "nameRequired": "El nombre del anillo es obligatorio."
+    },
+    "categories": {
+      "security": "Actualizaciones de seguridad",
+      "feature": "Actualizaciones de funciones",
+      "firmware": "firmware",
+      "driver": "Controladores",
+      "thirdPartyApp": "Aplicaciones de terceros",
+      "definitions": "Actualizaciones de definiciones"
+    },
+    "severities": {
+      "critical": "Crítico",
+      "important": "Importante",
+      "moderate": "Moderado",
+      "low": "Bajo"
+    },
+    "approveToggle": {
+      "ariaLabel": "Parches de aprobación automática",
+      "autoApprove": "Aprobar automáticamente",
+      "manual": "Manual"
+    },
+    "holdAfterRelease": "Mantener después del lanzamiento",
+    "days": "días",
+    "fields": {
+      "name": "Nombre",
+      "rolloutOrder": "Orden de lanzamiento",
+      "description": "Descripción",
+      "deadlineDays": "Plazo (días)",
+      "rebootGraceHours": "Gracia de reinicio (horas)",
+      "autoApproveSeverities": "Aprobar automáticamente gravedades",
+      "category": "Categoría"
+    },
+    "placeholders": {
+      "name": "p.ej. Piloto, amplio",
+      "description": "Opcional: para qué sirve este anillo",
+      "noDeadline": "Sin fecha límite"
+    },
+    "help": {
+      "rolloutOrder": "Los números más bajos aparecen primero."
+    },
+    "installEnforcement": {
+      "title": "Instalar aplicación",
+      "description": "Cuánto tiempo tienen los dispositivos para aplicar parches aprobados y cuánto tiempo un usuario puede posponer el reinicio. El comportamiento de reinicio en sí se establece según la política en la pestaña Parche."
+    },
+    "approvalPolicy": {
+      "title": "Política de aprobación",
+      "description": "Qué se aprueba automáticamente en este anillo y durante cuánto tiempo se debe retener un parche después del lanzamiento del proveedor. El valor predeterminado se aplica a todas las categorías; agregue una anulación para tratar uno de manera diferente.",
+      "allCategories": "Todas las categorias",
+      "default": "Por defecto",
+      "severityNote": "Se aplican gravedades a las actualizaciones de OS. Las actualizaciones de aplicaciones de terceros (winget, Homebrew) no tienen gravedad de proveedor: cuando una política habilita otras fuentes de software, se aprueban automáticamente según la cadencia de este anillo, independientemente de las gravedades seleccionadas aquí.",
+      "manualDefault": "Cada parche de este anillo necesita aprobación manual.",
+      "manualCategory": "Los parches de esta categoría necesitan aprobación manual.",
+      "noOverrides": "Todas las categorías siguen el valor predeterminado. Agregue una anulación para tratar uno de manera diferente."
+    },
+    "usage": {
+      "messageOne": "Este anillo se aplica al dispositivo {{count}}. Los cambios entran en vigor en su próximo check-in.",
+      "messageMany": "Este anillo se aplica a los dispositivos {{count}}. Los cambios entran en vigor en su próximo check-in."
+    },
+    "actions": {
+      "addOverride": "Agregar anulación",
+      "removeOverride": "Eliminar anulación",
+      "cancel": "Cancelar",
+      "saving": "Guardando...",
+      "saveRing": "Guardar anillo"
+    }
+  },
+  "updateRingList": {
+    "title": "Actualizar anillos",
+    "summary": "{{shown}} de anillos {{total}}",
+    "searchPlaceholder": "Anillos de búsqueda...",
+    "empty": "No se encontraron anillos de actualización.",
+    "emptyValue": "—",
+    "none": "Ninguno",
+    "days": "{{count}} días",
+    "editRing": "Editar {{name}}",
+    "deleteRing": "Eliminar {{name}}",
+    "pageStatus": "Página {{current}} de {{total}}",
+    "table": {
+      "order": "Orden",
+      "ring": "Anillo",
+      "deferral": "Aplazamiento",
+      "deadline": "Fecha límite",
+      "devices": "Dispositivos",
+      "compliance": "Cumplimiento",
+      "updated": "Actualizado",
+      "actions": "Acciones"
+    }
+  }
+}

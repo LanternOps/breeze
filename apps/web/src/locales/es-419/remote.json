@@ -1,0 +1,760 @@
+{
+  "remoteAccessPage": {
+    "title": "Acceso remoto",
+    "subtitle": "Inicie herramientas remotas para dispositivos en línea.",
+    "terminal": {
+      "title": "Terminal de inicio",
+      "description": "Seleccione un dispositivo para conectarse"
+    },
+    "files": {
+      "title": "Transferencia de archivos",
+      "description": "Transferir archivos hacia/desde dispositivos"
+    },
+    "sessions": {
+      "title": "Historial de sesiones",
+      "description": "Ver sesiones pasadas"
+    }
+  },
+  "connectDesktopButton": {
+    "connectDesktop": "Conectar escritorio",
+    "connecting": "Conectando...",
+    "creatingSession": "Creando sesión...",
+    "denied": {
+      "description": "El usuario negó la conexión remota.",
+      "title": "Conexión denegada"
+    },
+    "desktopUnavailable": "Escritorio no disponible",
+    "dismiss": "Descartar",
+    "downloadFor": "Descargar para {{platform}}",
+    "errors": {
+      "connectionFailed": "La conexión falló",
+      "createDesktopCode": "No se pudo crear el código de escritorio",
+      "createDesktopSession": "No se pudo crear la sesión de escritorio",
+      "createVncTunnel": "No se pudo crear el túnel vnc",
+      "deviceChanged": "No se pudo cambiar el dispositivo",
+      "http": "Error en el inicio remoto (HTTP {{status}})",
+      "invalidDesktopCode": "El código de escritorio no es válido",
+      "issueVncCode": "No se pudo emitir el código vnc",
+      "securityCheckToast": "No se pudo realizar el control de seguridad",
+      "securityPolicy": "No se pudo cumplir con la política de seguridad",
+      "server": "Error al servidor",
+      "vncTunnelFailed": "No se pudo realizar el túnel vnc"
+    },
+    "fallback": {
+      "title": "Título",
+      "viewerDescription": "Descripción del visor",
+      "vncDescription": "Descripción de VNC"
+    },
+    "launcherSkip": {
+      "configError": "Error de configuración",
+      "emptyUrlTemplate": "Plantilla de URL vacía",
+      "missingIdentifier": "A este dispositivo le falta el identificador por dispositivo que necesita la herramienta remota configurada por el socio (por ejemplo, el par RustDesk ID). Recurrir al escritorio remoto integrado. Configure el identificador en Configuración del dispositivo → Campos personalizados.",
+      "providerDisabled": "La herramienta remota configurada por el socio para este dispositivo está actualmente deshabilitada. Recurrir al escritorio remoto integrado."
+    },
+    "launching": "Iniciando...",
+    "launchingViewer": "Lanzando visor...",
+    "openInBrowser": "Abrir en el navegador",
+    "policyDisabled": "Política deshabilitada",
+    "policyDisabledNamed": "El escritorio remoto está deshabilitado por la política \"{{name}}\"",
+    "unavailable": {
+      "default": "El escritorio no está disponible en este dispositivo",
+      "headless": "Este dispositivo no tiene pantalla: el escritorio remoto no está disponible",
+      "helperNotConnected": "El asistente de escritorio macOS aún no está conectado. Habilite el relé VNC para conectarse a través de macOS Screen Sharing.",
+      "manualInstall": "El escritorio con ventana de inicio de sesión solo es compatible con instalaciones administradas",
+      "missingEntitlement": "El escritorio de la ventana de inicio de sesión está bloqueado hasta que se apruebe el derecho de Apple requerido",
+      "missingPermission": "Todavía faltan los permisos macOS necesarios para el acceso al escritorio desatendido",
+      "unsupportedOs": "El escritorio con ventana de inicio de sesión requiere macOS 14 (Sonoma) o posterior. Habilite VNC Relay en la política de configuración del dispositivo para conectarse en la pantalla de inicio de sesión.",
+      "virtualDisplay": "No hay ninguna pantalla capturable disponible para esta Mac. Habilite el relé VNC para conectarse a través de macOS Screen Sharing."
+    }
+  },
+  "connectVncButton": {
+    "creatingTunnel": "Creando túnel...",
+    "errors": {
+      "connectionFailed": "La conexión falló",
+      "createTunnel": "No se pudo crear el túnel",
+      "createVncTunnel": "No se pudo crear el túnel vnc",
+      "issueConnectCode": "No se pudo emitir el código de conexión",
+      "tunnelFailed": "No se pudo realizar el túnel"
+    },
+    "fallback": {
+      "description": "Descripción",
+      "title": "Título"
+    },
+    "launching": "Iniciando...",
+    "openInBrowser": "Abrir en el navegador",
+    "policyDisabled": "Política deshabilitada",
+    "policyDisabledNamed": "Política deshabilitada Nombrada",
+    "unavailable": "Indisponible",
+    "vncDesktop": "Escritorio Vnc",
+    "vncRemote": "control remoto vnc"
+  },
+  "deleteConfirmDialog": {
+    "deletePermanently": "Eliminar permanentemente",
+    "headingMultiple": "¿Eliminar elementos {{count}}?",
+    "headingSingle": "¿Eliminar {{name}}?",
+    "itemCount": "Cantidad de elementos",
+    "moveToTrash": "Mover a la papelera",
+    "recycleBinNotice": "Aviso sobre la papelera de reciclaje",
+    "totalSize": "Total: {{size}}",
+    "itemCount_one": "artículo {{count}}",
+    "itemCount_other": "{{count}} elementos"
+  },
+  "eventViewer": {
+    "allSources": "Todas las fuentes",
+    "auto": "Auto",
+    "categories": "Categorías",
+    "clearAll": "Borrar todo",
+    "copyMessage": "Copiar mensaje",
+    "dateRange": "Rango de fechas",
+    "detailsTitle": "Detalles Título",
+    "eventCount": "Recuento de eventos",
+    "eventIdPlaceholder": "Marcador de posición de ID de evento",
+    "eventLogs": "Registros de eventos",
+    "eventsTitle": "Eventos {{name}}",
+    "fields": {
+      "category": "Categoría",
+      "computer": "Equipo",
+      "dateTime": "Fecha Hora",
+      "details": "Detalles",
+      "eventId": "ID de evento",
+      "keywords": "Palabras clave",
+      "level": "Nivel",
+      "logName": "Nombre de registro",
+      "message": "Mensaje",
+      "processId": "Identificación del proceso",
+      "rawXml": "XML sin formato",
+      "source": "Fuente",
+      "taskCategory": "Categoría de tarea",
+      "threadId": "ID del hilo"
+    },
+    "filters": "Filtros",
+    "levels": {
+      "critical": "Crítico",
+      "error": "Error",
+      "information": "Información",
+      "warning": "Advertencia"
+    },
+    "logTitle": "registro {{name}}",
+    "lookupEventId": "ID de evento de búsqueda",
+    "noEvents": "Sin eventos",
+    "noHandler": "Sin controlador",
+    "noMatches": "No hay coincidencias",
+    "page": "Página {{current}} de {{total}}",
+    "ranges": {
+      "allTime": "Todo el tiempo",
+      "last24Hours": "Últimas 24 horas",
+      "last30Days": "Últimos 30 días",
+      "last7Days": "Últimos 7 días",
+      "lastHour": "Última hora"
+    },
+    "recordId": "Registro ID: {{id}}",
+    "searchPlaceholder": "Marcador de posición de búsqueda",
+    "showing": "Mostrando {{start}} a {{end}} de {{total}}",
+    "time": {
+      "daysAgo": "hace {{count}}d",
+      "hoursAgo": "hace {{count}}h",
+      "justNow": "En este momento",
+      "minutesAgo": "hace {{count}}m"
+    },
+    "eventCount_one": "evento {{count}}",
+    "eventCount_other": "eventos {{count}}"
+  },
+  "fileActivityPanel": {
+    "actions": {
+      "copy": "Copiar",
+      "delete": "Eliminar",
+      "download": "Descargar",
+      "move": "Mover",
+      "purge": "Purga",
+      "restore": "Restaurar",
+      "upload": "Subir"
+    },
+    "clearActivity": "Borrar actividad",
+    "clear": "Limpiar",
+    "empty": "Vacío",
+    "hideActivity": "Ocultar actividad",
+    "operationFailed": "Operación fallida",
+    "results": {
+      "failed": "Fallido",
+      "success": "Éxito",
+      "unverified": "No verificado"
+    },
+    "showActivity": "Mostrar actividad",
+    "time": {
+      "daysAgo": "hace {{count}}d",
+      "hoursAgo": "hace {{count}}h",
+      "justNow": "En este momento",
+      "minutesAgo": "hace {{count}}m"
+    },
+    "title": "Título",
+    "unverifiedHint": "Pista no verificada"
+  },
+  "fileManager": {
+    "activeCount": "{{count}} activo",
+    "activity": "Actividad",
+    "cancelled": "Cancelado",
+    "cancelledUploadNote": "La carga se detuvo en este navegador. Si el comando de escritura ya llegó al dispositivo, es posible que el archivo aún esté guardado allí.",
+    "copyTo": "Copiar a",
+    "disk": {
+      "analyze": "Analizar",
+      "baseline": "Base",
+      "candidates": "candidatos {{count}} · potencial {{size}}",
+      "captured": "Capturado: {{date}}",
+      "categories": {
+        "browser_cache": "caché del navegador",
+        "package_cache": "Caché de paquetes",
+        "temp_files": "archivos temporales",
+        "trash": "Papelera"
+      },
+      "cleanupPreview": "Vista previa de limpieza",
+      "cleanupResult": "Limpieza {{status}}: {{size}} recuperado de los objetivos {{count}}, {{failed}} falló.",
+      "data": "Datos: {{size}}",
+      "deleteFiles": "Eliminar archivos",
+      "deleteTargets": "Eliminar objetivos",
+      "deleteTargetsConfirm": "¿Eliminar los objetivos de limpieza seleccionados por {{count}}? Estos archivos se eliminarán permanentemente del dispositivo.",
+      "description": "Escaneo rápido y planificación de limpieza segura para {{path}}",
+      "execute": "Ejecutar ({{count}})",
+      "incremental": "incremental",
+      "largestDirectories": "Directorios más grandes",
+      "largestFiles": "Archivos más grandes",
+      "lowerBound": "Límite inferior",
+      "mode": "Modo: {{value}}",
+      "onDemand": "Bajo demanda",
+      "partialScan": "Escaneo parcial",
+      "previewCleanup": "Vista previa de limpieza",
+      "scanRunning": "Escaneo en ejecución ({{status}})",
+      "scanned": "Escaneado: archivos {{count}}",
+      "selected": "Seleccionado: {{count}} · {{size}}",
+      "threshold": "Límite",
+      "title": "Título",
+      "trigger": "Activador: {{value}}"
+    },
+    "dismiss": "Descartar",
+    "dropFiles": "Soltar archivos",
+    "emptyDirectory": "Directorio vacío",
+    "errors": {
+      "copy": "No se pudo copiar",
+      "delete": "No se pudo eliminar",
+      "download": "No se pudo descargar",
+      "loadDirectory": "No se pudo cargar el directorio",
+      "move": "No se pudo mover",
+      "readFile": "No se pudo leer el archivo",
+      "upload": "No se pudo cargar",
+      "uploadTimeout": "La carga expiró después de 2 minutos. Es posible que el archivo aún esté escrito en el dispositivo; actualice para verificarlo."
+    },
+    "freeOf": "{{free}} libre de {{total}}",
+    "goUp": "Subir",
+    "home": "Inicio",
+    "modified": "Modificado",
+    "moveTo": "Convidar a",
+    "selectedCount": "Recuento seleccionado",
+    "size": "Tamaño",
+    "title": "Título",
+    "transfers": "Transferencias",
+    "trash": "Papelera",
+    "selectedCount_one": "{{count}} seleccionado",
+    "selectedCount_other": "{{count}} seleccionado"
+  },
+  "folderPickerDialog": {
+    "errors": {
+      "loadDirectory": "No se pudo cargar el directorio"
+    },
+    "goUp": "Subir",
+    "noSubdirectories": "Sin subdirectorios",
+    "selectFolder": "Seleccionar carpeta",
+    "selectedFolder": "Carpeta seleccionada"
+  },
+  "processManager": {
+    "autoRefresh": "Actualización automática",
+    "columns": {
+      "memory": "Memoria",
+      "processName": "Nombre del proceso"
+    },
+    "details": {
+      "commandLine": "Línea de comando",
+      "parentPid": "PID de los padres",
+      "priority": "Prioridad",
+      "startTime": "Hora de inicio",
+      "threads": "Hilos"
+    },
+    "errors": {
+      "handlerNotConfigured": "El controlador no está configurado",
+      "killFailed": "No se pudo finalizar el proceso"
+    },
+    "killConfirm": "Confirmar finalización",
+    "killProcess": "Finalizar proceso",
+    "killing": "Finalizando",
+    "loadingDetails": "Cargando detalles",
+    "noData": "Sin datos",
+    "noMatches": "No hay coincidencias",
+    "processMemory": "Memoria de proceso",
+    "processes": "Procesos",
+    "searchPlaceholder": "Buscar procesos",
+    "showing": "Mostrando {{shown}} de {{total}} procesos",
+    "status": {
+      "idle": "Inactivo",
+      "running": "En ejecución",
+      "sleeping": "Durmiendo",
+      "stopped": "Detenido",
+      "zombie": "Zombi"
+    },
+    "title": "Gerente de Procesos",
+    "totalCpu": "CPU total",
+    "pid": "PID",
+    "cpu": "CPU"
+  },
+  "proxyTunnelPage": {
+    "errors": {
+      "invalidTicket": "No se pudo obtener el ticket no válido",
+      "obtainTicket": "No se pudo obtener el ticket",
+      "prepareConnection": "No se pudo preparar la conexión",
+      "tlsUntrusted": "Este dispositivo presentó un certificado autofirmado o que no es de confianza. Vuelva a crear la sesión de proxy con \"Permitir certificado autofirmado\" habilitado para continuar.",
+      "tunnelFailed": "No se pudo realizar el túnel"
+    },
+    "openInNewTab": "Abrir en nueva pestaña",
+    "preparingConnection": "Preparando conexión proxy…",
+    "proxiedService": "Servicio proxy",
+    "status": {
+      "connected": "Conectado",
+      "connecting": "Conectando...",
+      "disconnected": "Desconectado",
+      "failed": "Fallido"
+    },
+    "target": "Objetivo",
+    "title": "Proxy de red",
+    "tunnelDetails": "Detalles del túnel",
+    "tunnelId": "Identificación del túnel"
+  },
+  "registryEditor": {
+    "copyPath": "Copiar ruta",
+    "data": "Datos",
+    "decimal": "Decimal",
+    "deleteKey": "Eliminar clave",
+    "deleteKeyConfirm": "¿Está seguro de que desea eliminar la clave \"{{name}}\" y todas sus subclaves y valores? Esta acción no se puede deshacer.",
+    "deleteValue": "Eliminar valor",
+    "deleteValueConfirm": "¿Está seguro de que desea eliminar el valor \"{{name}}\"? Esta acción no se puede deshacer.",
+    "device": "Dispositivo: {{id}}",
+    "editValue": "Editar valor",
+    "enterDecimalValue": "Introduzca el valor decimal",
+    "enterHexBytes": "Introduzca bytes hexadecimales",
+    "enterHexValue": "Introduzca el valor hexadecimal",
+    "enterKeyName": "Introduzca el nombre de la clave",
+    "enterStringValue": "Introduzca el valor de la cadena",
+    "enterStrings": "Introducir cadenas",
+    "enterValueName": "Introduzca el nombre del valor",
+    "errors": {
+      "createKey": "No se pudo crear la clave",
+      "createKeyDetail": "No se pudo crear la clave de registro: {{message}}",
+      "deleteKey": "No se pudo eliminar la clave",
+      "deleteKeyDetail": "No se pudo eliminar la clave de registro: {{message}}",
+      "deleteValue": "No se pudo eliminar el valor",
+      "deleteValueDetail": "No se pudo eliminar el valor del registro: {{message}}",
+      "invalidFormat": "Error al formato no válido",
+      "invalidNumber": "Error al número no válido",
+      "keyNameBackslash": "No se pudo introducir la barra invertida del nombre de la clave",
+      "keyNameRequired": "No se pudo ingresar el nombre de clave requerido",
+      "keyProvider": "No se pudo acceder al proveedor de claves",
+      "loadKeys": "No se pudieron cargar las claves",
+      "loadKeysDetail": "No se pudieron cargar las claves de registro: {{message}}",
+      "loadValues": "No se pudieron cargar los valores",
+      "loadValuesDetail": "No se pudieron cargar los valores del registro: {{message}}",
+      "saveValue": "No se pudo guardar el valor",
+      "saveValueDetail": "No se pudo guardar el valor del registro: {{message}}",
+      "valueNameRequired": "No se pudo valorar el nombre requerido",
+      "valueProvider": "No se pudo valorar al proveedor"
+    },
+    "hexadecimal": "hexadecimal",
+    "key": "Clave",
+    "keyName": "Nombre clave",
+    "newKey": "Nueva clave",
+    "newValue": "Nuevo valor",
+    "noMatchingValues": "No hay valores coincidentes",
+    "noValues": "Sin valores",
+    "parentPath": "Ruta principal",
+    "root": "Raíz",
+    "searchPlaceholder": "Marcador de posición de búsqueda",
+    "title": "Editor de registro",
+    "value": "Valor",
+    "valueCount": "Recuento de valores",
+    "valueData": "Datos de valor",
+    "valueName": "Nombre del valor",
+    "valueNotSet": "Valor no establecido",
+    "valueCount_one": "valor {{count}}",
+    "valueCount_other": "valores {{count}}"
+  },
+  "remoteDeviceLauncherPage": {
+    "action": "Acción",
+    "backToRemoteAccess": "Volver al acceso remoto",
+    "errors": {
+      "loadDevices": "No se pudieron cargar los dispositivos"
+    },
+    "lastSeen": "Visto por última vez",
+    "modes": {
+      "files": {
+        "action": "Abrir archivos",
+        "description": "Elija un dispositivo en línea para abrir el administrador de archivos remoto.",
+        "title": "Iniciar transferencia de archivos"
+      },
+      "terminal": {
+        "action": "Terminal abierta",
+        "description": "Elija un dispositivo en línea para abrir una terminal remota.",
+        "title": "Iniciar sesión de terminal"
+      }
+    },
+    "noOnlineDevices": "Sin dispositivos en línea",
+    "noSearchMatches": "No hay coincidencias de búsqueda",
+    "openDeviceList": "Abrir lista de dispositivos",
+    "os": "os",
+    "searchPlaceholder": "Marcador de posición de búsqueda"
+  },
+  "remoteFilesPage": {
+    "breadcrumbs": {
+      "devices": "Dispositivos",
+      "fileManager": "Gestor de archivos"
+    },
+    "deviceNotFoundDescription": "Descripción del dispositivo no encontrado",
+    "deviceNotFoundTitle": "Título del dispositivo no encontrado",
+    "deviceOfflineDescription": "El dispositivo es actualmente {{status}}. El acceso remoto a archivos solo está disponible cuando el dispositivo está en línea.",
+    "deviceOfflineTitle": "Título del dispositivo sin conexión",
+    "errorTitle": "Título del error",
+    "errors": {
+      "deviceNotFound": "Dispositivo no encontrado",
+      "fetchDevice": "No se pudo recuperar el dispositivo",
+      "generic": "Se produjo un error"
+    },
+    "refreshStatus": "Actualizar estado",
+    "title": "Título"
+  },
+  "remoteTerminal": {
+    "connectedBang": "Explosión conectada",
+    "connectingTo": "Conectándose a {{hostname}}...",
+    "copySelection": "Copiar selección",
+    "disconnect": "Desconectar",
+    "errorMessage": "Error: {{message}}",
+    "errors": {
+      "closedUnexpectedly": "No se pudo cerrar inesperadamente",
+      "connection": "No se pudo conectar",
+      "createSession": "No se pudo crear la sesión",
+      "createTicket": "No se pudo crear el ticket",
+      "failed": "No falló",
+      "initialize": "No se pudo inicializar",
+      "invalidTicket": "No se pudo obtener el ticket no válido",
+      "webSocket": "No se pudo acceder al socket web"
+    },
+    "exitFullscreen": "Salir de pantalla completa",
+    "fullscreen": "Pantalla completa",
+    "reconnect": "Reconectar",
+    "sessionEnded": "Sesión finalizada",
+    "status": {
+      "connected": "Conectado",
+      "connecting": "Conectando...",
+      "disconnected": "Desconectado",
+      "failed": "Fallido",
+      "reconnecting": "Reconectando"
+    },
+    "welcome": "Bienvenido"
+  },
+  "remoteTerminalPage": {
+    "deviceNotFoundDescription": "Descripción del dispositivo no encontrado",
+    "deviceNotFoundTitle": "Título del dispositivo no encontrado",
+    "errorTitle": "Título del error",
+    "errors": {
+      "deviceNotFound": "Dispositivo no encontrado",
+      "fetchDevice": "No se pudo recuperar el dispositivo",
+      "generic": "Se produjo un error"
+    },
+    "offlineWarning": "El estado del dispositivo es actualmente {{status}}. Intentando conectarse de todos modos.",
+    "title": "Título"
+  },
+  "remoteToolsPage": {
+    "agentRestartingDescription": "El agente Breeze se está reiniciando. El dispositivo se volverá a conectar automáticamente...",
+    "agentRestartingTitle": "Reinicio del agente",
+    "errors": {
+      "createRegistryKey": "No se pudo crear la clave de registro",
+      "deleteRegistryKey": "No se pudo eliminar la clave de registro",
+      "deleteRegistryValue": "No se pudo eliminar el valor del registro",
+      "disableTask": "No se pudo deshabilitar la tarea",
+      "enableTask": "No se pudo habilitar la tarea",
+      "eventDetails": "No se pudieron acceder a los detalles del evento",
+      "fetchEventLogs": "No se pudieron recuperar los registros de eventos",
+      "fetchProcesses": "No se pudieron recuperar los procesos",
+      "fetchServices": "No se pudieron recuperar los servicios",
+      "fetchTasks": "No se pudieron recuperar las tareas",
+      "killProcess": "No se pudo finalizar el proceso",
+      "processDetails": "No se pudieron procesar los detalles",
+      "queryEvents": "No se pudieron consultar los eventos",
+      "registryKeys": "Error al registrar las claves",
+      "registryValues": "No se pudieron registrar los valores",
+      "restartService": "No se pudo reiniciar el servicio",
+      "runTask": "No se pudo ejecutar la tarea",
+      "setRegistryValue": "No se pudo establecer el valor del registro",
+      "startService": "No se pudo iniciar el servicio",
+      "stopService": "No se pudo detener el servicio",
+      "taskDetails": "No se pudieron completar los detalles de la tarea",
+      "taskHistory": "No se pudo realizar el historial de tareas"
+    },
+    "policyDisabled": "Una política de configuración ha deshabilitado las herramientas del sistema remoto.",
+    "policyDisabledNamed": "La política de configuración \"{{name}}\" ha deshabilitado las herramientas del sistema remoto.",
+    "policyDisabledTitle": "Las herramientas remotas están deshabilitadas para este dispositivo",
+    "tabs": {
+      "eventlog": "Registro de eventos",
+      "files": "Explorador de archivos",
+      "processes": "Procesos",
+      "registry": "Registro",
+      "services": "Servicios",
+      "tasks": "Tareas programadas",
+      "terminal": "Terminal"
+    },
+    "title": "Herramientas remotas"
+  },
+  "scheduledTasks": {
+    "action": {
+      "restart": "Reiniciar",
+      "start": "Comenzar",
+      "stop": "Detener"
+    },
+    "adjustSearch": "Ajustar búsqueda",
+    "arguments": "Argumentos",
+    "author": "Autor",
+    "deviceId": "Dispositivo ID: {{id}}",
+    "inFolder": "en {{folder}}",
+    "lastResult": "Último resultado",
+    "lastRun": "Última ejecución",
+    "matching": "Coincidiendo con \"{{query}}\"",
+    "nextRun": "Siguiente ejecución",
+    "noActions": "No hay acciones configuradas",
+    "noConditions": "No hay condiciones configuradas",
+    "noDescription": "Sin descripción",
+    "noHistory": "No hay historial disponible",
+    "noTasksAvailable": "No hay tareas programadas disponibles",
+    "noTriggers": "No hay activadores configurados",
+    "noneInFolder": "No hay tareas programadas en esta carpeta",
+    "notLoaded": "No se han cargado tareas programadas para este dispositivo",
+    "programScript": "Programa/script",
+    "runAs": "Ejecutar como",
+    "runNow": "Ejecutar ahora",
+    "searchPlaceholder": "Buscar tareas...",
+    "startIn": "Empezar en",
+    "startProgram": "Iniciar programa",
+    "status": {
+      "disabled": "Desactivado",
+      "queued": "En cola",
+      "ready": "Listo",
+      "running": "En ejecución",
+      "unknown": "Desconocido"
+    },
+    "tabs": {
+      "actions": "Acciones",
+      "conditions": "Condiciones",
+      "general": "General",
+      "history": "Historial",
+      "settings": "Configuración",
+      "triggers": "Desencadenantes"
+    },
+    "taskCount": "Recuento de tareas",
+    "title": "Tareas programadas",
+    "idleConditions": "Condiciones inactivas",
+    "powerConditions": "Condiciones de energía",
+    "networkConditions": "Condiciones de la red",
+    "generalSettings": "Configuraciones generales",
+    "restartOnFailure": "Reiniciar en caso de falla",
+    "waitForIdle": "Esperar inactivo: {{value}}",
+    "waitTimeout": "Tiempo de espera: {{value}}",
+    "stopOnIdleEnd": "Detener en el extremo inactivo: {{value}}",
+    "restartOnIdle": "Reiniciar en inactivo: {{value}}",
+    "startOnAcOnly": "Comience solo en AC: {{value}}",
+    "stopOnBattery": "Detener si tiene batería: {{value}}",
+    "requiredNetwork": "Requerido: {{name}}",
+    "allowOnDemand": "Permitir que la tarea se ejecute bajo demanda",
+    "runOnlyIfNetwork": "Ejecutar solo si la red está disponible",
+    "executionTimeLimit": "Límite de tiempo de ejecución: {{value}}",
+    "multipleInstances": "Si hay varias instancias: {{value}}",
+    "restartCount": "Recuento de reinicios: {{count}}",
+    "restartInterval": "Intervalo de reinicio: {{value}}",
+    "taskCount_one": "tarea {{count}}",
+    "taskCount_other": "tareas {{count}}"
+  },
+  "servicesManager": {
+    "account": "Cuenta",
+    "action": {
+      "restart": "Reiniciar",
+      "start": "Comenzar",
+      "stop": "Detener"
+    },
+    "actionBlocked": "Acción bloqueada",
+    "adjustHint": "Ajustar sugerencia",
+    "agentRestartConfirm": "Reiniciar agente Confirmar",
+    "agentStopBlocked": "Agente detenido bloqueado",
+    "allStatus": "Todo el estado",
+    "cannotStopAgent": "No se puede detener al agente",
+    "changeStartupType": "Cambiar tipo de inicio",
+    "confirmAction": "Confirmar acción",
+    "dependencies": "Dependencias",
+    "dependentServices": "Servicios para dependientes",
+    "displayName": "Nombre para mostrar",
+    "executablePath": "Ruta ejecutable",
+    "loading": "Cargando",
+    "noDescription": "Sin descripción",
+    "noServicesAvailable": "No hay servicios disponibles",
+    "noServicesFound": "No se encontraron servicios",
+    "ok": "De acuerdo",
+    "page": "Página {{current}} de {{total}}",
+    "refreshHint": "Actualizar sugerencia",
+    "restartService": "Reiniciar servicio",
+    "searchPlaceholder": "Marcador de posición de búsqueda",
+    "serviceConfirm": "¿Está seguro de que desea {{action}} el servicio {{service}}?",
+    "showing": "Mostrando {{start}} a {{end}} de {{total}}",
+    "startService": "Iniciar servicio",
+    "startup": "Puesta en marcha",
+    "status": {
+      "running": "En ejecución",
+      "stopped": "Detenido"
+    },
+    "stopService": "Detener servicio",
+    "summary": "{{shown}} de los servicios {{total}} en {{device}}",
+    "title": "Título",
+    "windowsOnlyDescription": "El Administrador de servicios solo está disponible para dispositivos Windows. {{device}} está ejecutando {{os}}.",
+    "windowsOnlyTitle": "Windows Solo Título"
+  },
+  "sessionHistory": {
+    "columns": {
+      "data": "Datos",
+      "duration": "Duración",
+      "started": "Iniciado"
+    },
+    "filters": {
+      "allTime": "Todo el tiempo",
+      "allTypes": "Todos los tipos",
+      "allUsers": "Todos los usuarios",
+      "lastSevenDays": "Últimos siete días",
+      "lastThirtyDays": "Últimos treinta días",
+      "today": "Hoy",
+      "yesterday": "Ayer"
+    },
+    "noSessions": "Sin sesiones",
+    "page": "Página {{current}} de {{total}}",
+    "searchPlaceholder": "Marcador de posición de búsqueda",
+    "showing": "Mostrando {{start}} a {{end}} de {{total}}",
+    "stats": {
+      "averageDuration": "Duración promedio",
+      "dataTransferred": "Datos transferidos",
+      "totalDuration": "Duración total",
+      "totalSessions": "Sesiones totales"
+    },
+    "status": {
+      "active": "Activo",
+      "connecting": "Conectando...",
+      "disconnected": "Desconectado",
+      "failed": "Fallido",
+      "pending": "Pendiente"
+    },
+    "subtitle": "Registro de auditoría de acceso remoto",
+    "title": "Historial de sesiones",
+    "todayAt": "Hoy {{time}}",
+    "types": {
+      "desktop": "Escritorio",
+      "fileTransfer": "Transferencia de archivos",
+      "terminal": "Terminal"
+    },
+    "viewDetails": "Ver detalles",
+    "yesterdayAt": "Ayer {{time}}"
+  },
+  "sessionHistoryPage": {
+    "detailsTitle": "Detalles Título",
+    "errors": {
+      "exportFetch": "No se pudo exportar la recuperación"
+    },
+    "fields": {
+      "dataTransferred": "Datos transferidos",
+      "deviceId": "Identificación del dispositivo",
+      "duration": "Duración",
+      "ended": "Terminado",
+      "hostname": "Nombre de host",
+      "sessionId": "ID de sesión",
+      "started": "Iniciado",
+      "userId": "Usuario ID",
+      "os": "OS",
+      "email": "Correo electrónico"
+    },
+    "sections": {
+      "recording": "Grabación",
+      "sessionInformation": "Información de la sesión",
+      "timeline": "Línea de tiempo"
+    },
+    "subtitle": "Ver y auditar sesiones de acceso remoto",
+    "title": "Historial de sesiones",
+    "viewDevice": "Ver dispositivo",
+    "viewRecording": "Ver grabación"
+  },
+  "trashView": {
+    "columns": {
+      "deletedAt": "Eliminado en",
+      "deletedBy": "Eliminado por",
+      "originalPath": "Camino original",
+      "size": "Tamaño"
+    },
+    "deleteConfirm": "¿Eliminar permanentemente los elementos {{count}}? Esto no se puede deshacer.",
+    "deletePermanently": "Eliminar permanentemente",
+    "deleteSelected": "Eliminar permanentemente ({{count}})",
+    "empty": "Vacío",
+    "emptyConfirm": "Vacío Confirmar",
+    "emptyTrash": "Vaciar la papelera",
+    "errors": {
+      "empty": "No se pudo vaciar",
+      "load": "No se pudo cargar",
+      "purge": "No se pudo purgar",
+      "restore": "No se pudo restaurar",
+      "unverified": "No se pudo desverificar"
+    },
+    "itemCount": "Cantidad de elementos",
+    "loading": "Cargando",
+    "permanentlyDelete": "Eliminar permanentemente",
+    "restoreSelected": "Restaurar seleccionado ({{count}})",
+    "itemCount_one": "elemento {{count}} en la papelera",
+    "itemCount_other": "{{count}} elementos en la papelera"
+  },
+  "vncViewer": {
+    "connect": "Conectar",
+    "credentials": {
+      "macDescription": "Descripción de Mac",
+      "macLoginRequired": "Se requiere inicio de sesión en Mac",
+      "macPassword": "Contraseña de Mac",
+      "macUsername": "Nombre de usuario de Mac",
+      "password": "Contraseña",
+      "passwordRequired": "Se requiere contraseña",
+      "vncDescription": "Descripción de VNC"
+    },
+    "disconnect": "Desconectar",
+    "errors": {
+      "authenticationDetail": "No se pudo acceder al detalle de autenticación",
+      "authenticationFailed": "Error al autenticar",
+      "connectionLost": "No se pudo perder la conexión",
+      "loadViewer": "No se pudo cargar el visor",
+      "securityFailure": "Error por error de seguridad",
+      "securityType": "Error al tipo de seguridad"
+    },
+    "exitFullscreen": "Salir de pantalla completa",
+    "fullscreen": "Pantalla completa",
+    "scalingFit": "Ajuste de escala",
+    "scalingNative": "Escalado nativo",
+    "status": {
+      "connected": "Conectado",
+      "connecting": "Conectando...",
+      "disconnected": "Desconectado",
+      "error": "Error",
+      "passwordRequired": "Se requiere contraseña"
+    },
+    "syncClipboard": "Sincronizar portapapeles",
+    "tunnel": "Túnel {{id}}"
+  },
+  "vncViewerPage": {
+    "connecting": "Conectando...",
+    "disconnect": "Desconectar",
+    "errors": {
+      "connect": "No se pudo conectar",
+      "invalidTicket": "No se pudo obtener el ticket no válido",
+      "obtainTicket": "No se pudo obtener el ticket"
+    },
+    "sessionTitle": "Título de la sesión"
+  }
+}

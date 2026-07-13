@@ -1,0 +1,430 @@
+{
+  "aiApprovalDialog": {
+    "idleFor": "inactivo {{duration}}",
+    "justNow": "En este momento",
+    "offlineFor": "sin conexión {{duration}}",
+    "sessionStates": {
+      "active": "activo",
+      "idle": "inactivo",
+      "locked": "bloqueado",
+      "away": "ausente",
+      "disconnected": "desconectado",
+      "unknown": "desconocido"
+    },
+    "ariaLabel": "Se requiere aprobación de herramienta: {{toolName}}",
+    "title": "Aprobación requerida",
+    "timeRemaining": "{{minutes}} minutos {{seconds}} segundos restantes",
+    "urgentWarning": "Quedan menos de 30 segundos. Esta solicitud será rechazada automáticamente.",
+    "progressLabel": "Tiempo restante antes del rechazo automático",
+    "showParameters": "Mostrar parámetros",
+    "approve": "Aprobar",
+    "reject": "Rechazar"
+  },
+  "aiChatInput": {
+    "waiting": "Esperando respuesta...",
+    "placeholder": "Pregunta por sus dispositivos...",
+    "stopResponse": "Detener respuesta",
+    "thinking": "La AI está procesando... haga clic en Detener para cancelar",
+    "sendShortcut": "Cmd+Enter to send"
+  },
+  "aiChatMessages": {
+    "title": "Asistente de Breeze AI",
+    "description": "Pregunte sobre sus dispositivos, alertas, métricas o solucione problemas.",
+    "unknownTool": "herramienta desconocida",
+    "toolResult": "Resultado de la herramienta",
+    "pauseAi": "Pausa AI",
+    "quickActions": {
+      "serverHealth": {
+        "label": "Comprobar el estado del servidor",
+        "prompt": "Verifique el estado de salud de todos los servidores Windows: muestre CPU, RAM, el uso del disco y cualquier alerta."
+      },
+      "criticalAlerts": {
+        "label": "Mostrar alertas críticas",
+        "prompt": "Enumere todas las alertas críticas y de alta gravedad de las últimas 24 horas con detalles del dispositivo"
+      },
+      "offlineDevices": {
+        "label": "Encuentra dispositivos sin conexión",
+        "prompt": "Muéstrame todos los dispositivos que están actualmente desconectados y cuándo fueron vistos por última vez"
+      },
+      "securityOverview": {
+        "label": "Descripción general de seguridad",
+        "prompt": "Brindeme una descripción general de la seguridad: amenazas activas, análisis recientes y dispositivos que necesitan atención."
+      },
+      "diskSpace": {
+        "label": "Informe de espacio en disco",
+        "prompt": "¿Qué dispositivos se están quedando sin espacio en disco? Mostrar dispositivos con más del 80 % de uso del disco"
+      },
+      "recentActivity": {
+        "label": "Actividad reciente",
+        "prompt": "Muéstreme las entradas del registro de auditoría más recientes: ¿qué acciones se tomaron en las últimas horas?"
+      }
+    }
+  },
+  "aiChatSidebar": {
+    "history": "Historial",
+    "title": "Breeze AI",
+    "conversationHistory": "Historial de conversaciones",
+    "newConversation": "Nueva conversación",
+    "unflagConversation": "Desmarcar conversación",
+    "flagConversation": "Marcar conversación para revisión",
+    "closeShortcut": "Cerrar (Cmd+Mayús+A)",
+    "searchPlaceholder": "Buscar conversaciones...",
+    "noResults": "No se encontraron resultados",
+    "untitledConversation": "Conversación sin título",
+    "noConversations": "Aún no hay conversaciones",
+    "m365Customer": "M365 cliente",
+    "noM365Customer": "Ningún cliente M365",
+    "dismiss": "Descartar"
+  },
+  "aiContextBadge": {
+    "context": "Contexto",
+    "dashboard": "Panel"
+  },
+  "aiCostIndicator": {
+    "messageCount": "{{count}} mensajes",
+    "messageCount_one": "mensaje {{count}}",
+    "messageCount_other": "{{count}} mensajes"
+  },
+  "aiPlanProgressBar": {
+    "completed": "Plan completado ({{completed}}/{{total}})",
+    "aborted": "Plan cancelado en el paso {{step}}",
+    "executing": "Ejecutando: Paso {{step}} de {{total}}",
+    "stop": "Detener",
+    "stepTitle": "Paso {{step}}: {{name}}"
+  },
+  "aiPlanReviewCard": {
+    "title": "Plan de acción",
+    "stepCount": "pasos {{count}}",
+    "stepCount_one": "paso {{count}}",
+    "stepCount_other": "pasos {{count}}",
+    "approveAll": "Aprobar todo",
+    "reject": "Rechazar"
+  },
+  "aiToolCallCard": {
+    "running": "En ejecución...",
+    "input": "Entrada:",
+    "error": "Error:",
+    "output": "Salida:"
+  },
+  "aiForOfficePage": {
+    "title": "AI para Office",
+    "description": "Asistente AI gobernado en el Excel de sus clientes: aprovisionamiento, políticas, auditoría, uso y plantillas",
+    "tabs": {
+      "orgs": "Organizaciones",
+      "sessions": "Sesiones",
+      "usage": "Uso",
+      "templates": "Plantillas"
+    }
+  },
+  "orgsTab": {
+    "status": {
+      "active": "Activo",
+      "consentPending": "Consentimiento pendiente",
+      "notProvisioned": "No aprovisionado"
+    },
+    "errors": {
+      "removeMapping": "No se pudo eliminar la asignación de inquilinos",
+      "loadStatus": "No se pudo cargar el estado de la organización.",
+      "saveMapping": "No se pudo guardar la asignación de inquilinos",
+      "copyConsent": "No se pudo copiar: seleccione URL manualmente",
+      "enableAi": "No se pudo habilitar AI para Office",
+      "loadConsent": "No se pudo cargar el consentimiento URL. Cierre y vuelva a intentarlo."
+    },
+    "messages": {
+      "mappingRemoved": "Se eliminó la asignación de inquilinos para {{orgName}}",
+      "mappingSaved": "Mapeo de inquilinos guardado",
+      "consentCopied": "Consentimiento URL copiado",
+      "aiEnabled": "AI para Office habilitado para {{orgName}}"
+    },
+    "notEnabled": {
+      "title": "Breeze AI para Office no está habilitado en esta instancia.",
+      "description": "Configure <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (el registro de la aplicación complementaria Entra) en API y vuelva a cargar."
+    },
+    "title": "Organizaciones clientes",
+    "description": "Aprovisione el asistente de Excel AI por organización del cliente: asigne el inquilino de Entra, otorgue el consentimiento del administrador, habilite la política, implemente el complemento.",
+    "columns": {
+      "aiEnabled": "AI habilitado",
+      "entraTenant": "Inquilino entrante",
+      "costMtd": "Costo (MTD)",
+      "messagesMtd": "Mensajes (MTD)"
+    },
+    "manage": "Administrar",
+    "setUp": "Configuración",
+    "policy": "Política",
+    "unmap": "Desasignar",
+    "noOrganizations": "Ninguna organización",
+    "removeMapping": {
+      "title": "Eliminar asignación de inquilinos",
+      "message": "Los usuarios del inquilino Entra de {{orgName}} ya no podrán iniciar sesión en el asistente de Excel. Se conservan la política de la organización y el historial de uso.",
+      "confirm": "Eliminar mapeo"
+    },
+    "wizard": {
+      "steps": {
+        "tenant": "Inquilino",
+        "consent": "Consentir",
+        "enable": "Permitir",
+        "deploy": "Desplegar"
+      },
+      "title": "Configurar AI para Office - {{orgName}}",
+      "mapDescription": "Asigne esta organización a su inquilino Microsoft Entra (directorio ID). El mapeo es el eje del aislamiento del inquilino: cada inicio de sesión de Excel de este inquilino llega a esta organización.",
+      "prefilled": "Precargado desde la conexión Microsoft 365 existente de la organización.",
+      "entraTenantId": "Entra inquilino ID",
+      "guidError": "Debe ser un GUID (Centro de administración de Entra → Descripción general → Inquilino ID).",
+      "saveContinue": "Guardar y continuar",
+      "consentDescription": "Un administrador de Microsoft 365 del inquilino del cliente debe otorgar consentimiento de administrador a la aplicación Breeze AI para Office. Envíeles este enlace (o ábralo usted mismo si tiene Global Admin en el inquilino del cliente):",
+      "loadingConsent": "Cargando consentimiento URL…",
+      "copyUrl": "Copiar URL",
+      "openNewTab": "Abrir en nueva pestaña",
+      "afterConsent": "Después de otorgar, Microsoft redirige a una página de confirmación de Breeze. El consentimiento se muestra otorgado aquí una vez que el primer usuario inicia sesión desde Excel; no hay ninguna encuesta en vivo contra Microsoft (decisión 1 del Plan-4).",
+      "consentGranted": "he dado consentimiento",
+      "enableDescription": "Habilite el asistente para esta organización. Esto escribe <code>enabled: true</code> en la política de la organización con valores predeterminados seguros (todos los usuarios, lectura/escritura con la aprobación del usuario final, redacción DLP para tipos financieros/credenciales). Sintonice todo en el editor de políticas después.",
+      "enabling": "Habilitando…",
+      "alreadyEnabled": "Ya habilitado - continuar",
+      "enableAi": "Habilite AI para Office",
+      "deployTitle": "Implemente el complemento de Excel mediante la implementación centralizada de Microsoft 365",
+      "deploySteps": {
+        "signIn": "Inicie sesión en el <strong>centro de administración de Microsoft 365 del inquilino del cliente</strong> → Configuración → Aplicaciones integradas.",
+        "upload": "Elija <strong>Cargar aplicaciones personalizadas</strong> → Complemento de Office → proporcione Breeze AI para el manifiesto de Office URL desde su instancia Breeze.",
+        "assign": "Asigne el complemento a todos o a los grupos de usuarios cubiertos por la política de acceso de esta organización.",
+        "wait": "La implementación puede tardar hasta 24 horas en aparecer en la cinta de Excel de los usuarios (Inicio → Complementos).",
+        "signInAutomatically": "Los usuarios inician sesión automáticamente con su cuenta de trabajo Microsoft, sin credenciales adicionales."
+      },
+      "openPolicyEditor": "Abrir editor de políticas"
+    }
+  },
+  "policyEditor": {
+    "errors": {
+      "ruleNameRequired": "Cada regla DLP personalizada necesita un nombre",
+      "invalidPattern": "La regla DLP \"{{ruleName}}\" tiene un patrón no válido; corríjalo antes de guardar",
+      "save": "No se pudo guardar la política",
+      "load": "No se pudo cargar la política de la organización."
+    },
+    "messages": {
+      "saved": "Política guardada"
+    },
+    "organizations": "Organizaciones",
+    "title": "Política de organización",
+    "description": "Todo lo que el asistente de Excel de esta organización cliente puede hacer.",
+    "sections": {
+      "general": "General",
+      "userAccess": "Acceso de usuario",
+      "budgets": "Presupuestos y límites de tarifas",
+      "branding": "Marca",
+      "dlp": "Prevención de pérdida de datos"
+    },
+    "assistant": "Asistente",
+    "workbookAccess": "Acceso al libro de trabajo",
+    "workbookAccessOptions": {
+      "readWrite": "Leer y escribir (escribe con aprobación del usuario final)",
+      "readOnly": "Sólo lectura (herramientas de escritura eliminadas del modelo)"
+    },
+    "workbookWrites": "Libro de trabajo escribe",
+    "writeOptions": {
+      "ask": "Preguntar siempre (el usuario final aprueba cada escritura)",
+      "allowAuto": "Permitir la aplicación automática (el usuario final puede optar por la aplicación automática)"
+    },
+    "autoApplyHint": "La aplicación automática está desactivada de forma predeterminada y solo es posible cuando se permite aquí.",
+    "allowedModels": "Modelos permitidos",
+    "allModelsHint": "Ninguna selección = todos los modelos disponibles.",
+    "whoCanUse": "¿Quién puede utilizar el asistente?",
+    "userAccessOptions": {
+      "all": "Todos los usuarios del inquilino asignado",
+      "selected": "Sólo usuarios seleccionados"
+    },
+    "noUsersHint": "Ningún usuario ha iniciado sesión desde Excel todavía; los usuarios aparecen aquí después de iniciar sesión por primera vez. Hasta entonces, deja el acceso en \"Todos los usuarios\".",
+    "dailyBudget": "Presupuesto diario ($)",
+    "monthlyBudget": "Presupuesto mensual ($)",
+    "noLimit": "Sin límite",
+    "messagesPerMinute": "Mensajes/min por usuario",
+    "messagesPerHour": "Mensajes/hora por organización",
+    "retentionDays": "Retención de expedientes académicos (días)",
+    "keepForever": "Mantener para siempre",
+    "brandingDescription": "Se muestra en el pie de página del complemento: \"Regido por su proveedor IT\": el gancho de marca blanca (especificación §11).",
+    "displayName": "Nombre para mostrar",
+    "mspNamePlaceholder": "Su nombre MSP",
+    "logoUrl": "Logotipo URL",
+    "dlpDescription": "Se escanea cada carga útil que sale de Breeze para el modelo (especificación §6). Los valores redactados se almacenan redactados: el registro de auditoría nunca mantiene el formato confidencial.",
+    "builtins": {
+      "creditCard": "Números de tarjetas de crédito (validados por Luhn)",
+      "ssn": "SSN / identificaciones nacionales",
+      "iban": "números de cuenta IBAN",
+      "apiKey": "API claves y tokens",
+      "email": "Direcciones de correo electrónico",
+      "phone": "Números de teléfono"
+    },
+    "actions": {
+      "redact": "Redactar",
+      "block": "Solicitud de bloqueo",
+      "log": "Sólo iniciar sesión",
+      "off": "Apagado"
+    },
+    "customRules": "Reglas personalizadas",
+    "addRule": "Agregar regla",
+    "testSample": "Muestra de prueba (pegue datos de celda representativos: evaluados localmente, nunca enviados a ninguna parte)",
+    "ruleName": "Nombre de la regla",
+    "regexPlaceholder": "Expresión regular, p.e. PRJ-\\d{4}",
+    "removeRule": "Eliminar regla",
+    "matchCount": "{{count}} coincide en la muestra",
+    "matchCount_one": "{{count}} coincide en la muestra",
+    "matchCount_other": "{{count}} coincide en la muestra",
+    "patternCompiles": "Compilaciones de patrones: agregue una muestra de prueba arriba para ver coincidencias",
+    "patternError": "Error de patrón: {{error}}",
+    "savePolicy": "Guardar política"
+  },
+  "sessionsTab": {
+    "toolStatus": {
+      "pending": "pendiente",
+      "approved": "aprobado",
+      "rejected": "rechazado",
+      "completed": "terminado",
+      "failed": "fallido"
+    },
+    "errors": {
+      "flag": "No se pudo marcar la sesión",
+      "unflag": "No se pudo desmarcar la sesión",
+      "load": "No se pudieron cargar las sesiones.",
+      "loadTranscript": "No se pudo cargar la transcripción de la sesión."
+    },
+    "messages": {
+      "flagged": "Sesión marcada",
+      "unflagged": "Sesión no marcada"
+    },
+    "allOrganizations": "Todas las organizaciones",
+    "allUsers": "Todos los usuarios",
+    "from": "De",
+    "to": "A",
+    "flaggedOnly": "Sólo marcado",
+    "columns": {
+      "started": "Iniciado",
+      "title": "Título",
+      "turns": "vueltas",
+      "cost": "Costo",
+      "flagged": "Marcado"
+    },
+    "untitled": "Sin título",
+    "flagged": "Marcado",
+    "empty": "Ninguna sesión de cliente AI coincide con los filtros",
+    "pagination": "{{from}}–{{to}} de {{total}}",
+    "prev": "Anterior",
+    "transcriptTitle": "Transcripción de la sesión",
+    "untitledSession": "Sesión sin título",
+    "flagReason": "Motivo de la bandera: {{reason}}",
+    "unflag": "Desmarcar",
+    "flag": "Marcar",
+    "redacted": "redactado: {{type}} ×{{count}}",
+    "noMessages": "No hay mensajes almacenados para esta sesión.",
+    "approvalTrail": "Seguimiento de aprobación de herramientas",
+    "tokenCounts": "{{input}} entrada / {{output}} salida",
+    "requestedAt": "solicitado {{time}}",
+    "approvedAt": "aprobado {{time}}",
+    "rejectedAt": "rechazado {{time}}",
+    "appliedAt": "aplicado {{time}}",
+    "flagDialog": {
+      "title": "Marcar sesión",
+      "description": "El marcado marca la sesión para su seguimiento y se registra en el registro de auditoría.",
+      "reason": "Razón (opcional)",
+      "flagging": "Marcando…"
+    },
+    "unflagDialog": {
+      "title": "Desmarcar sesión",
+      "message": "¿Quitar la bandera de esta sesión? El historial de marcar/desmarcar permanece en el registro de auditoría."
+    }
+  },
+  "templatesTab": {
+    "allApps": "Todas las aplicaciones",
+    "allOrgs": "Todas las organizaciones",
+    "org": "organización",
+    "errors": {
+      "delete": "No se pudo eliminar la plantilla",
+      "load": "No se pudieron cargar las plantillas.",
+      "update": "No se pudo actualizar la plantilla",
+      "create": "No se pudo crear la plantilla"
+    },
+    "messages": {
+      "deleted": "Plantilla \"{{name}}\" eliminada",
+      "updated": "Plantilla actualizada",
+      "created": "Plantilla creada"
+    },
+    "title": "Plantillas de aviso",
+    "description": "Se muestra en el selector de chat vacío del complemento. Las plantillas de \"Todas las organizaciones\" llegan a todas las organizaciones cliente; Plantillas de organización solo suyas.",
+    "newTemplate": "Nueva plantilla",
+    "columns": {
+      "scope": "Alcance",
+      "apps": "Aplicaciones",
+      "category": "Categoría",
+      "updated": "Actualizado"
+    },
+    "empty": "Aún no hay plantillas: cree la primera",
+    "deleteDialog": {
+      "title": "Eliminar plantilla",
+      "message": "¿Eliminar \"{{name}}\"? Desaparece inmediatamente del selector de plantillas del complemento."
+    },
+    "editTemplate": "Editar plantilla",
+    "categoryPlaceholder": "p.ej. finanzas",
+    "promptBody": "cuerpo rápido",
+    "partnerWide": "Todas las organizaciones (en todo el socio)",
+    "scopeImmutable": "El alcance no se puede cambiar después de la creación; elimínelo y vuelva a crearlo para moverlo.",
+    "appsHint": "Deje todo sin marcar para mostrar esta plantilla en cada aplicación.",
+    "saveChanges": "Guardar cambios",
+    "createTemplate": "Crear plantilla"
+  },
+  "usageTab": {
+    "errors": {
+      "export": "Exportación fallida",
+      "load": "No se pudo cargar el informe de uso."
+    },
+    "fromMonth": "Desde el mes",
+    "toMonth": "al mes",
+    "allOrganizations": "Todas las organizaciones",
+    "exporting": "Exportando…",
+    "exportCsv": "Exportar CSV",
+    "rangeError": "Del mes debe ser ≤ al mes",
+    "columns": {
+      "orgUser": "Organización/usuario",
+      "month": "Mes",
+      "messages": "Mensajes",
+      "sessions": "Sesiones",
+      "tokens": "Fichas (entrada/salida)",
+      "cost": "Costo"
+    },
+    "rowCount": "filas {{count}}",
+    "rowCount_one": "fila {{count}}",
+    "rowCount_other": "filas {{count}}",
+    "empty": "No se ha registrado ningún uso en este rango",
+    "total": "Total"
+  },
+  "workspaceChatPanel": {
+    "errors": {
+      "autoDraft": "No se pudo realizar un borrador automático de esta conversación; puede completar el ticket manualmente.",
+      "createTicket": "No se pudo crear el ticket."
+    },
+    "createTicket": "Crear ticket",
+    "dismiss": "Descartar"
+  },
+  "workspaceEmptyState": {
+    "title": "AI Espacio de trabajo",
+    "description": "Ejecute múltiples conversaciones AI simultáneamente. Investigue un problema de dispositivo en una pestaña mientras configura una política en otra.",
+    "newConversation": "Nueva conversación",
+    "limit": "Hasta 5 conversaciones simultáneas"
+  },
+  "workspaceTab": {
+    "approvalPending": "Aprobación pendiente"
+  },
+  "workspaceTabBar": {
+    "newTabShortcut": "Nueva pestaña (Cmd+Mayús+N)",
+    "new": "Nuevo"
+  },
+  "createTicketFromChatModal": {
+    "title": "Crear ticket a partir de una conversación",
+    "subject": "Asunto",
+    "problem": "Problema",
+    "open": "Abierto",
+    "resolved": "Resuelto",
+    "resolution": "Resolución",
+    "resolutionRequired": "Se requiere una nota resolutiva para resolver.",
+    "timeMinutes": "Tiempo (minutos)",
+    "timeMinutesAria": "Tiempo (minutos)",
+    "billable": "facturable",
+    "createTicket": "Crear ticket"
+  }
+}
