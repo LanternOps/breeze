@@ -320,30 +320,48 @@ export async function saveSftpConfig(actor: CatalogActor, input: TdSynnexSftpCon
 }
 
 /**
- * Browse the ingested catalog. Partner-scoped by RLS; the explicit partner_id
- * predicate is defence in depth, not the isolation boundary.
+ * Search the ingested catalog. This is the capability EC Express does NOT have:
+ * its SOAP lookup resolves ONE exact sku-or-part-no at a time, with no keyword,
+ * name, or manufacturer search. This is what makes the nightly file worth having.
+ *
+ * Matching is ILIKE-per-term against the pg_trgm GIN indexes (name, mfg_part_no,
+ * synnex_sku, manufacturer), so a '%term%' predicate is index-backed rather than
+ * a sequential scan over every SKU. Terms are AND-ed: "hp toner 61a" narrows.
+ *
+ * Partner-scoped by RLS; the explicit partner_id predicate is defence in depth,
+ * not the isolation boundary.
  */
 export async function listSftpPriceRows(
   actor: CatalogActor,
-  opts: { q?: string; limit: number; offset: number }
+  opts: { q?: string; limit: number; offset: number; inStockOnly?: boolean }
 ) {
-  const partnerId = requirePartner(actor);
-  const filters = [eq(tdSynnexPriceAvailability.partnerId, partnerId)];
-  if (opts.q && opts.q.trim().length > 0) {
-    const term = `%${opts.q.trim()}%`;
-    filters.push(sql`(
-      ${tdSynnexPriceAvailability.synnexSku} ILIKE ${term}
-      OR ${tdSynnexPriceAvailability.mfgPartNo} ILIKE ${term}
-      OR ${tdSynnexPriceAvailability.name} ILIKE ${term}
-    )`);
-  }
-  const rows = await db.select()
-    .from(tdSynnexPriceAvailability)
-    .where(and(...filters))
-    .orderBy(tdSynnexPriceAvailability.synnexSku)
-    .limit(opts.limit)
-    .offset(opts.offset);
-  return rows;
+  // Still require a partner: the function fails closed on an empty
+  // accessible-partner list, but an unscoped caller should be a 400, not a
+  // silently-empty result set.
+  requirePartner(actor);
+
+  const terms = (opts.q ?? '').trim().split(/\s+/).filter((t) => t.length > 0);
+  if (terms.length === 0) return [];
+
+  // Goes through breeze_search_td_synnex_pa (SECURITY DEFINER) rather than a
+  // plain SELECT. RLS forbids a non-leakproof ILIKE from becoming an index
+  // condition, so a direct query CANNOT use the trigram index and degrades to a
+  // full sequential scan of the catalog. The function enforces the SAME tenancy
+  // predicate internally, from the session GUC — see the migration's comment.
+  // Build ARRAY[$1, $2, ...]::text[] explicitly. Passing the JS array straight in
+  // as a single param makes drizzle expand it to a TUPLE — `('toner')::text[]` —
+  // which fails at the cast. Only a real-Postgres test catches this; a mocked
+  // db.execute happily accepts either.
+  const termList = sql.join(terms.map((t) => sql`${t}`), sql`, `);
+  const rows = await db.execute<typeof tdSynnexPriceAvailability.$inferSelect>(sql`
+    SELECT * FROM public.breeze_search_td_synnex_pa(
+      ARRAY[${termList}]::text[],
+      ${opts.inStockOnly ?? false}::boolean,
+      ${opts.limit}::int,
+      ${opts.offset}::int
+    )
+  `);
+  return Array.from(rows);
 }
 
 /** Resolve the caller's integration id so a route can enqueue a manual sync. */
@@ -525,20 +543,29 @@ async function downloadAndExtract(cfg: ResolvedConfig): Promise<{ fileName: stri
 // ---------------------------------------------------------------------------
 
 function toDbRow(partnerId: string, r: TdSynnexPriceRow, fileDate: string | null, syncedAt: Date) {
+  // numeric columns take strings in drizzle-orm to avoid float drift.
+  const money = (v: number | null) => (v === null ? null : String(v));
   return {
     partnerId,
     synnexSku: r.synnexSku,
     mfgPartNo: r.mfgPartNo,
+    tdPartNo: r.tdPartNo,
     name: r.name,
     description: r.description,
+    manufacturer: r.manufacturer,
     status: r.status,
+    abcCode: r.abcCode,
     currency: r.currency,
-    // numeric columns take strings in drizzle-orm to avoid float drift.
-    cost: r.cost === null ? null : String(r.cost),
-    msrp: r.msrp === null ? null : String(r.msrp),
+    cost: money(r.cost),
+    costWithoutPromo: money(r.costWithoutPromo),
+    msrp: money(r.msrp),
+    mapPrice: money(r.mapPrice),
     totalQty: r.totalQty,
     warehouses: r.warehouses,
-    weight: r.weight === null ? null : String(r.weight),
+    weight: money(r.weight),
+    upc: r.upc,
+    unspsc: r.unspsc,
+    etaDate: r.etaDate,
     raw: r.raw,
     fileDate,
     syncedAt,
@@ -562,15 +589,23 @@ async function upsertRows(
           target: [tdSynnexPriceAvailability.partnerId, tdSynnexPriceAvailability.synnexSku],
           set: {
             mfgPartNo: sql`excluded.mfg_part_no`,
+            tdPartNo: sql`excluded.td_part_no`,
             name: sql`excluded.name`,
             description: sql`excluded.description`,
+            manufacturer: sql`excluded.manufacturer`,
             status: sql`excluded.status`,
+            abcCode: sql`excluded.abc_code`,
             currency: sql`excluded.currency`,
             cost: sql`excluded.cost`,
+            costWithoutPromo: sql`excluded.cost_without_promo`,
             msrp: sql`excluded.msrp`,
+            mapPrice: sql`excluded.map_price`,
             totalQty: sql`excluded.total_qty`,
             warehouses: sql`excluded.warehouses`,
             weight: sql`excluded.weight`,
+            upc: sql`excluded.upc`,
+            unspsc: sql`excluded.unspsc`,
+            etaDate: sql`excluded.eta_date`,
             raw: sql`excluded.raw`,
             fileDate: sql`excluded.file_date`,
             syncedAt: sql`excluded.synced_at`,

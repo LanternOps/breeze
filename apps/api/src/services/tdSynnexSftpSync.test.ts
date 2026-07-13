@@ -173,6 +173,24 @@ describe('syncSftpPriceFile — full vs delta', () => {
     expect(res.rowsPruned).toBe(0);
   });
 
+  it('persists every parsed field — manufacturer/UPC/ABC-code were silently dropped before', async () => {
+    stubSelect(INTEGRATION);
+    const { insertedBatches } = stubWrites();
+
+    await syncSftpPriceFile('int-1');
+
+    const row = (insertedBatches[0] as Array<Record<string, unknown>>)[0]!;
+    // These are the searchable/quote-critical fields. manufacturer + upc are what
+    // a tech actually searches by; abcCode is what says "this SKU is EOL".
+    expect(row.manufacturer).toBe('PCI');            // field 08
+    expect(row.upc).toBe('845161022245');            // field 34
+    expect(row.unspsc).toBe('44103103');             // field 35
+    expect(row.abcCode).toBe('A');                   // field 40
+    expect(row.tdPartNo).toBe('PCI-C8061ARPC');      // field 04
+    expect(row.costWithoutPromo).toBe('36.62');      // field 21
+    expect(row.cost).toBe('36.62');                  // field 13 — the quotable one
+  });
+
   it('downloads the file named after the account number', async () => {
     stubSelect(INTEGRATION);
     stubWrites();

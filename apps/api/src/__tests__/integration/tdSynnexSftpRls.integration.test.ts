@@ -357,3 +357,137 @@ describe('TD SYNNEX SFTP P&A RLS — partner-axis forge (breeze_app role)', () =
     expect(survivor?.cost).toBe('50.0000');
   });
 });
+
+/**
+ * The SECURITY DEFINER search function.
+ *
+ * `breeze_search_td_synnex_pa` runs as `breeze_search`, a role the tenant policy
+ * does NOT apply to — deliberately, because Postgres refuses to use an index for
+ * a non-leakproof qual (ILIKE) beneath an RLS security qual, which turns catalog
+ * search into a full sequential scan. That means RLS is NOT protecting this path:
+ * the function's own `partner_id = ANY(breeze_accessible_partner_ids())` predicate
+ * is the ONLY thing standing between partner A and partner B's price list.
+ *
+ * So these are not "nice to have" tests — they are the isolation proof for the
+ * one path in this feature where RLS has been deliberately stepped around. A
+ * regression here leaks a competitor's negotiated distributor pricing.
+ */
+describe('breeze_search_td_synnex_pa — tenancy without RLS', () => {
+  async function seedRow(partnerId: string, sku: string, name: string, qty = 5) {
+    await withSystemDbAccessContext(() =>
+      db.insert(tdSynnexPriceAvailability).values({
+        partnerId, synnexSku: sku, name, mfgPartNo: `MPN-${sku}`,
+        manufacturer: 'ACME', cost: '10.0000', totalQty: qty,
+      })
+    );
+  }
+
+  const search = (ctx: DbAccessContext, terms: string[], inStock = false) =>
+    withDbAccessContext(ctx, () => {
+      // ARRAY[$1, $2, ...] — passing the JS array as one param makes drizzle
+      // expand it to a tuple, which fails the ::text[] cast (real-pg only bug).
+      const list = terms.length
+        ? sql`ARRAY[${sql.join(terms.map((t) => sql`${t}`), sql`, `)}]::text[]`
+        : sql`ARRAY[]::text[]`;
+      return db.execute<{ synnex_sku: string; partner_id: string }>(sql`
+        SELECT * FROM public.breeze_search_td_synnex_pa(
+          ${list}, ${inStock}::boolean, 50::int, 0::int)
+      `);
+    });
+
+  it('returns the caller partner\'s own rows', async () => {
+    const { a, partnerAContext } = await seedTwoPartners();
+    const sku = `SKU-A-${uniqueSuffix()}`;
+    await seedRow(a.id, sku, 'HP LaserJet Toner Cartridge');
+
+    const rows = Array.from(await search(partnerAContext, ['toner']));
+    expect(rows.map((r) => r.synnex_sku)).toContain(sku);
+  });
+
+  it('NEVER returns another partner\'s rows — the isolation proof for this path', async () => {
+    const { a, b, partnerAContext } = await seedTwoPartners();
+    const skuA = `SKU-A-${uniqueSuffix()}`;
+    const skuB = `SKU-B-${uniqueSuffix()}`;
+    // Both match the search term. Only A's may come back.
+    await seedRow(a.id, skuA, 'HP LaserJet Toner Cartridge');
+    await seedRow(b.id, skuB, 'HP LaserJet Toner Cartridge');
+
+    const rows = Array.from(await search(partnerAContext, ['toner']));
+
+    expect(rows.map((r) => r.synnex_sku)).toContain(skuA);
+    expect(rows.map((r) => r.synnex_sku)).not.toContain(skuB);
+    expect(rows.every((r) => r.partner_id === a.id)).toBe(true);
+  });
+
+  it('AND-s multiple terms rather than OR-ing them', async () => {
+    const { a, partnerAContext } = await seedTwoPartners();
+    const hit = `SKU-HIT-${uniqueSuffix()}`;
+    const miss = `SKU-MISS-${uniqueSuffix()}`;
+    await seedRow(a.id, hit, 'HP LaserJet Toner');
+    await seedRow(a.id, miss, 'Dell Docking Station');
+
+    const rows = Array.from(await search(partnerAContext, ['hp', 'toner']));
+    const skus = rows.map((r) => r.synnex_sku);
+    expect(skus).toContain(hit);
+    expect(skus).not.toContain(miss); // an OR would have matched nothing/everything
+  });
+
+  it('escapes LIKE metacharacters — a bare "%" must not dump the catalog', async () => {
+    const { a, partnerAContext } = await seedTwoPartners();
+    await seedRow(a.id, `SKU-${uniqueSuffix()}`, 'HP LaserJet Toner');
+
+    const rows = Array.from(await search(partnerAContext, ['%']));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('fails closed on empty terms rather than returning everything', async () => {
+    const { a, partnerAContext } = await seedTwoPartners();
+    await seedRow(a.id, `SKU-${uniqueSuffix()}`, 'HP LaserJet Toner');
+
+    expect(Array.from(await search(partnerAContext, []))).toHaveLength(0);
+    expect(Array.from(await search(partnerAContext, ['   ']))).toHaveLength(0);
+  });
+
+  it('honours the in-stock filter', async () => {
+    const { a, partnerAContext } = await seedTwoPartners();
+    const inStock = `SKU-IN-${uniqueSuffix()}`;
+    const outOfStock = `SKU-OUT-${uniqueSuffix()}`;
+    await seedRow(a.id, inStock, 'HP Toner Alpha', 7);
+    await seedRow(a.id, outOfStock, 'HP Toner Beta', 0);
+
+    const all = Array.from(await search(partnerAContext, ['toner'])).map((r) => r.synnex_sku);
+    expect(all).toEqual(expect.arrayContaining([inStock, outOfStock]));
+
+    const only = Array.from(await search(partnerAContext, ['toner'], true)).map((r) => r.synnex_sku);
+    expect(only).toContain(inStock);
+    expect(only).not.toContain(outOfStock);
+  });
+
+  it('actually uses the trigram GIN index (the entire reason the function exists)', async () => {
+    const { a, partnerAContext } = await seedTwoPartners();
+    await seedRow(a.id, `SKU-${uniqueSuffix()}`, 'HP LaserJet Toner');
+
+    // Assert the index is USABLE, not that the planner picks it: on a table with
+    // a handful of test rows a seq scan is correctly cheaper, so asserting the
+    // chosen plan would fail for the wrong reason. enable_seqscan=off removes
+    // that confound and leaves the real invariant — that ILIKE can be an INDEX
+    // COND at all. If a future change puts an RLS security qual back on this
+    // path, ILIKE is demoted to a Filter (non-leakproof quals cannot sit below a
+    // security qual) and this fails. The prod symptom would otherwise be silent:
+    // a full-catalog sequential scan on every keystroke.
+    // SET LOCAL is transaction-scoped, so the SET and the EXPLAIN must run on the
+    // SAME connection — issuing them as two pool calls silently lands them on
+    // different backends and the SET is lost.
+    const plan = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+      return tx.execute<{ 'QUERY PLAN': string }>(sql`
+        EXPLAIN (COSTS OFF)
+        SELECT * FROM public.td_synnex_price_availability
+        WHERE search_text ILIKE '%toner%'
+      `);
+    });
+    const text = Array.from(plan).map((r) => r['QUERY PLAN']).join('\n');
+    expect(text).toMatch(/td_synnex_pa_search_trgm_idx/);
+    expect(text).toMatch(/Index Cond: \(search_text ~~\*/);
+  });
+});

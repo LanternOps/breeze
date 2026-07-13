@@ -342,7 +342,8 @@ const sftpConfigSchema = z.object({
 });
 
 const sftpListSchema = z.object({
-  q: z.string().max(64).optional(),
+  q: z.string().max(120).optional(),
+  inStockOnly: z.coerce.boolean().optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -382,8 +383,8 @@ catalogDistributorRoutes.post('/distributors/td-synnex-sftp/sync', scopes, write
 
 catalogDistributorRoutes.get('/distributors/td-synnex-sftp/products', scopes, readPerm, zValidator('query', sftpListSchema), async (c) => {
   try {
-    const { q, limit, offset } = c.req.valid('query');
-    return c.json({ data: await listSftpPriceRows(catalogActorFrom(c), { q, limit, offset }) });
+    const { q, limit, offset, inStockOnly } = c.req.valid('query');
+    return c.json({ data: await listSftpPriceRows(catalogActorFrom(c), { q, limit, offset, inStockOnly }) });
   } catch (err) { return handleSftpError(c, err); }
 });
 
