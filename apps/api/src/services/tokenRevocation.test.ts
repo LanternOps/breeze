@@ -14,6 +14,10 @@ const dbMocks = vi.hoisted(() => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
+const jwtMocks = vi.hoisted(() => ({
+  verifyToken: vi.fn(),
+}));
+
 // Mock the redis module before importing the module under test
 vi.mock('./redis', () => ({
   getRedis: vi.fn()
@@ -28,6 +32,10 @@ vi.mock('../db', () => ({
   runOutsideDbContext: dbMocks.runOutsideDbContext,
 }));
 
+vi.mock('./jwt', () => ({
+  verifyToken: jwtMocks.verifyToken,
+}));
+
 import { getRedis } from './redis';
 import {
   isUserTokenRevoked,
@@ -40,7 +48,10 @@ import {
   wasRefreshTokenJtiRecentlyRotated,
   isFamilyRevoked,
   isAccessSessionFamilyActive,
+  classifyRefreshTokenAuthority,
+  revokeFamily,
 } from './tokenRevocation';
+import type { AuthLifecycleTransaction } from './authLifecycle';
 
 const mockGetRedis = vi.mocked(getRedis);
 
@@ -77,6 +88,101 @@ describe('tokenRevocation', () => {
     dbMocks.update.mockReturnValue({ set: dbMocks.set });
     dbMocks.withSystemDbAccessContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
     dbMocks.runOutsideDbContext.mockImplementation((fn: () => unknown) => fn());
+    jwtMocks.verifyToken.mockResolvedValue(null);
+  });
+
+  describe('classifyRefreshTokenAuthority', () => {
+    function classificationTx(rows: unknown[][]): AuthLifecycleTransaction {
+      const limit = vi.fn(async () => rows.shift() ?? []);
+      const forUpdate = vi.fn(() => ({ limit }));
+      const where = vi.fn(() => ({ for: forUpdate }));
+      const from = vi.fn(() => ({ where }));
+      const select = vi.fn(() => ({ from }));
+      return { select } as unknown as AuthLifecycleTransaction;
+    }
+
+    const currentPayload = {
+      type: 'refresh',
+      sub: 'user-1',
+      jti: 'jti-current',
+      fam: 'family-1',
+      ae: 4,
+      me: 7,
+    };
+    const liveUser = { id: 'user-1', status: 'active', authEpoch: 4, mfaEpoch: 7 };
+
+    it('admits only the live owner whose JTI digest is durably current', async () => {
+      jwtMocks.verifyToken.mockResolvedValue(currentPayload);
+      const digest = await import('./refreshTokenFamily').then(({ digestRefreshTokenJti }) =>
+        digestRefreshTokenJti('jti-current'));
+      const tx = classificationTx([
+        [liveUser],
+        [{ userId: 'user-1', revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 60_000), currentRefreshJtiDigest: digest, databaseNow: new Date() }],
+      ]);
+
+      await expect(classifyRefreshTokenAuthority(tx, 'signed-refresh')).resolves.toEqual({
+        kind: 'current', userId: 'user-1', familyId: 'family-1',
+      });
+    });
+
+    it.each([
+      ['legacy null', null],
+      ['stale predecessor', '0'.repeat(64)],
+    ])('limits a %s family token to exact-family authority', async (_case, currentDigest) => {
+      jwtMocks.verifyToken.mockResolvedValue(currentPayload);
+      const tx = classificationTx([
+        [liveUser],
+        [{ userId: 'user-1', revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 60_000), currentRefreshJtiDigest: currentDigest, databaseNow: new Date() }],
+      ]);
+
+      await expect(classifyRefreshTokenAuthority(tx, 'signed-refresh')).resolves.toEqual({
+        kind: 'legacy_or_stale_family', familyId: 'family-1',
+      });
+    });
+
+    it.each([
+      ['malformed', null, []],
+      ['wrong owner', currentPayload, [[liveUser], [{ userId: 'user-2', revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 60_000), currentRefreshJtiDigest: '0'.repeat(64), databaseNow: new Date() }]]],
+      ['revoked family', currentPayload, [[liveUser], [{ userId: 'user-1', revokedAt: new Date(), absoluteExpiresAt: new Date(Date.now() + 60_000), currentRefreshJtiDigest: '0'.repeat(64), databaseNow: new Date() }]]],
+      ['expired family', currentPayload, [[liveUser], [{ userId: 'user-1', revokedAt: null, absoluteExpiresAt: new Date(Date.now() - 1), currentRefreshJtiDigest: '0'.repeat(64), databaseNow: new Date() }]]],
+    ])('rejects %s authority', async (_case, payload, rows) => {
+      jwtMocks.verifyToken.mockResolvedValue(payload);
+      await expect(classifyRefreshTokenAuthority(classificationTx(rows as unknown[][]), 'candidate'))
+        .resolves.toEqual({ kind: 'invalid' });
+    });
+  });
+
+  describe('revokeFamily', () => {
+    it('propagates a durable write failure and never publishes a Redis sentinel', async () => {
+      const { redis } = createMockRedis();
+      mockGetRedis.mockReturnValue(redis);
+      const returning = vi.fn().mockRejectedValue(new Error('postgres unavailable'));
+      dbMocks.update.mockReturnValueOnce({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning })) })),
+      });
+
+      await expect(revokeFamily('family-1', 'reuse-detected')).rejects.toThrow('postgres unavailable');
+      expect(redis.setex).not.toHaveBeenCalled();
+    });
+
+    it('publishes the cache sentinel only after the durable row is updated', async () => {
+      const order: string[] = [];
+      const { redis } = createMockRedis({
+        setex: vi.fn(async () => { order.push('redis'); return 'OK'; }),
+      });
+      mockGetRedis.mockReturnValue(redis);
+      const returning = vi.fn(async () => {
+        order.push('postgres');
+        return [{ familyId: 'family-1' }];
+      });
+      dbMocks.update.mockReturnValueOnce({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning })) })),
+      });
+
+      await revokeFamily('family-1', 'reuse-detected');
+
+      expect(order).toEqual(['postgres', 'redis']);
+    });
   });
 
   afterEach(() => {

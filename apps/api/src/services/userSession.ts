@@ -1,5 +1,5 @@
+import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import * as dbModule from '../db';
 import { users } from '../db/schema/users';
 import {
   createTokenPair,
@@ -8,10 +8,19 @@ import {
 } from './jwt';
 import {
   bindRefreshJtiToFamily,
-  getActiveRefreshTokenFamily,
   mintRefreshTokenFamily,
+  RefreshTokenCurrentnessError,
+  rotateRefreshTokenFamilyCurrentJti,
 } from './refreshTokenFamily';
-import type { AuthLifecycleTransaction } from './authLifecycle';
+import {
+  withAuthLifecycleSystemTransaction,
+  type AuthLifecycleTransaction,
+} from './authLifecycle';
+import {
+  assertAuthIssuanceCapability,
+  bindAuthIssuanceSession,
+  type AuthIssuanceCapability,
+} from './authBrowserTransition';
 
 export type UserSessionIdentity = {
   userId: string;
@@ -32,58 +41,71 @@ export class UserSessionFamilyInactiveError extends Error {
   }
 }
 
-type UserSecurityEpochs = {
-  authEpoch: number;
-  mfaEpoch: number;
-};
+type UserSecurityEpochs = { authEpoch: number; mfaEpoch: number };
 
-async function loadUserSecurityEpochs(
+async function lockUserSecurityEpochs(
   userId: string,
-  tx?: AuthLifecycleTransaction,
+  tx: AuthLifecycleTransaction,
 ): Promise<UserSecurityEpochs> {
-  const query = (database: Pick<AuthLifecycleTransaction, 'select'>) =>
-    database
-        .select({
-          authEpoch: users.authEpoch,
-          mfaEpoch: users.mfaEpoch,
-        })
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1);
-  const rows = tx
-    ? await query(tx)
-    : await dbModule.runOutsideDbContext(() =>
-      dbModule.withSystemDbAccessContext(() => query(dbModule.db))
-    );
-  const epochs = rows[0];
-  if (!epochs) {
-    throw new Error('Cannot issue session for missing user');
-  }
+  const [epochs] = await tx
+    .select({ authEpoch: users.authEpoch, mfaEpoch: users.mfaEpoch })
+    .from(users)
+    .where(eq(users.id, userId))
+    .for('update')
+    .limit(1);
+  if (!epochs) throw new Error('Cannot issue session for missing user');
   return epochs;
 }
 
-/**
- * The sole high-level issuer for first-party user access/refresh token pairs.
- * Epochs always come from the live user row, and rotation can only continue in
- * the caller's own durable, unrevoked, unexpired family.
- */
-export async function issueUserSession(
-  identity: UserSessionIdentity,
-  options: { familyId?: string; tx?: AuthLifecycleTransaction } = {},
-): Promise<TokenPair & { familyId: string }> {
-  const epochs = await loadUserSecurityEpochs(identity.userId, options.tx);
-  let familyId: string;
+type GuardedIssueOptions = {
+  tx: AuthLifecycleTransaction;
+  capability: AuthIssuanceCapability;
+  familyId?: string;
+  refreshRotation?: Readonly<{
+    presentedJti: string;
+    authEpoch: number;
+    mfaEpoch: number;
+  }>;
+};
 
+type LegacyIssueOptions = { tx?: AuthLifecycleTransaction };
+
+async function issueInTransaction(
+  identity: UserSessionIdentity,
+  options: {
+    tx: AuthLifecycleTransaction;
+    capability?: AuthIssuanceCapability;
+    familyId?: string;
+    refreshRotation?: GuardedIssueOptions['refreshRotation'];
+  },
+): Promise<TokenPair & { familyId: string }> {
+  if (options.capability) {
+    await assertAuthIssuanceCapability(options.tx, options.capability);
+  }
+
+  // Global order: transition (above), user, then family.
+  const epochs = await lockUserSecurityEpochs(identity.userId, options.tx);
+  if (
+    options.refreshRotation
+    && (epochs.authEpoch !== options.refreshRotation.authEpoch
+      || epochs.mfaEpoch !== options.refreshRotation.mfaEpoch)
+  ) {
+    throw new RefreshTokenCurrentnessError();
+  }
+
+  const refreshJti = randomUUID();
+  let familyId: string;
   if (options.familyId) {
-    const family = await getActiveRefreshTokenFamily(options.familyId, identity.userId, {
-      tx: options.tx,
+    if (!options.refreshRotation) throw new RefreshTokenCurrentnessError();
+    await rotateRefreshTokenFamilyCurrentJti(options.tx, {
+      familyId: options.familyId,
+      userId: identity.userId,
+      presentedJti: options.refreshRotation.presentedJti,
+      successorJti: refreshJti,
     });
-    if (!family) {
-      throw new UserSessionFamilyInactiveError();
-    }
-    familyId = family.familyId;
+    familyId = options.familyId;
   } else {
-    familyId = await mintRefreshTokenFamily(identity.userId, { tx: options.tx });
+    familyId = await mintRefreshTokenFamily(identity.userId, refreshJti, { tx: options.tx });
   }
 
   const tokens = await createTokenPair({
@@ -99,20 +121,48 @@ export async function issueUserSession(
     ae: epochs.authEpoch,
     me: epochs.mfaEpoch,
     sid: familyId,
-  }, { refreshFam: familyId });
+  }, { refreshFam: familyId, refreshJti });
 
-  const issued = { ...tokens, familyId };
-  if (!options.tx) {
-    await bindIssuedUserSession(issued);
+  if (options.capability) {
+    await bindAuthIssuanceSession(
+      options.tx,
+      options.capability,
+      identity.userId,
+      familyId,
+    );
   }
-  return issued;
+  return { ...tokens, familyId };
+}
+
+/** Guarded issuer used by migrated browser-auth flows. */
+export async function issueUserSession(
+  identity: UserSessionIdentity,
+  options: GuardedIssueOptions,
+): Promise<TokenPair & { familyId: string }> {
+  if (!options?.tx || !options.capability) {
+    throw new Error('Guarded user-session issuance requires a transaction and capability');
+  }
+  return issueInTransaction(identity, options);
 }
 
 /**
- * Populate the Redis jti accelerator only after the transaction that created
- * the durable family commits. The signed `fam` claim and PostgreSQL family row
- * remain authoritative if this best-effort cache bind fails.
+ * Temporary Tasks 4-9 migration seam. Its exact callers are frozen by the
+ * source contract; refresh is forbidden from using it and Task 11 removes it.
  */
+export async function issueUserSessionLegacyDuringTransition(
+  identity: UserSessionIdentity,
+  existingOptions: LegacyIssueOptions = {},
+): Promise<TokenPair & { familyId: string }> {
+  if (existingOptions.tx) {
+    return issueInTransaction(identity, { tx: existingOptions.tx });
+  }
+  const issued = await withAuthLifecycleSystemTransaction((tx) =>
+    issueInTransaction(identity, { tx }));
+  await bindIssuedUserSession(issued);
+  return issued;
+}
+
+/** Populate the Redis JTI accelerator only after the authoritative commit. */
 export async function bindIssuedUserSession(
   session: Pick<TokenPair, 'refreshJti'> & { familyId: string },
 ): Promise<void> {

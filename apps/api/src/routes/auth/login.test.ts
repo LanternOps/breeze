@@ -30,9 +30,24 @@ vi.mock('../../services', () => ({
     expiresInSeconds: 900,
     familyId: 'family-id',
   })),
+  issueUserSessionLegacyDuringTransition: vi.fn(async () => ({
+    accessToken: 'access-token', refreshToken: 'refresh-token', refreshJti: 'refresh-jti',
+    expiresInSeconds: 900, familyId: 'family-id',
+  })),
+  beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1, operationId: 'operation-1' })),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, fn: (tx: object) => Promise<unknown>) => fn({})),
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
+    replacement = { kind: 'browser', value: 'a'.repeat(64) };
+  },
+  AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
+  AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
+  RefreshTokenCurrentnessError: class RefreshTokenCurrentnessError extends Error {},
+  digestRefreshTokenJti: vi.fn((jti: string) => `digest:${jti}`),
+  getRefreshRotationGraceSeconds: vi.fn(() => 15),
   decideAuthenticatedUserSession: vi.fn(async (input: Record<string, unknown>) => {
-    const { issueUserSession } = await import('../../services');
-    const tokens = await issueUserSession({
+    const { issueUserSessionLegacyDuringTransition } = await import('../../services');
+    const tokens = await issueUserSessionLegacyDuringTransition({
       ...input,
       mfa: false,
       amr: ['password'],
@@ -47,6 +62,9 @@ vi.mock('../../services', () => ({
     lastUsedAt: new Date(),
     revokedAt: null,
     revokedReason: null,
+    currentRefreshJtiDigest: null,
+    previousRefreshJtiDigest: null,
+    databaseNow: new Date(),
   })),
   UserSessionFamilyInactiveError: class UserSessionFamilyInactiveError extends Error {
     constructor() {
@@ -156,6 +174,8 @@ vi.mock('./helpers', () => ({
     c.header('Set-Cookie', 'breeze_refresh_token=; Path=/api/v1/auth; HttpOnly; SameSite=Strict; Max-Age=0', { append: true });
     c.header('Set-Cookie', 'breeze_csrf_token=; Path=/api/v1/auth; SameSite=Strict; Max-Age=0', { append: true });
   }),
+  getCookieValue: vi.fn(() => 'a'.repeat(64)),
+  rotateCsrfBindingCookie: vi.fn(),
   resolveRefreshToken: vi.fn(() => null),
   validateCookieCsrfRequest: vi.fn(() => null),
   toPublicTokens: vi.fn((tokens: { accessToken: string; expiresInSeconds: number }) => ({
@@ -221,8 +241,11 @@ import { db, withSystemDbAccessContext } from '../../db';
 import {
   getActiveRefreshTokenFamily,
   issueUserSession,
+  issueUserSessionLegacyDuringTransition,
   verifyToken,
   isRefreshTokenJtiRevoked,
+  wasRefreshTokenJtiRecentlyRotated,
+  isFamilyRevoked,
   revokeAllUserTokens,
   revokeFamily,
   revokeRefreshTokenJti,
@@ -230,6 +253,10 @@ import {
   touchFamilyLastUsed,
   isTokenIssuedBeforePasswordChange,
   UserSessionFamilyInactiveError,
+  beginAuthIssuance,
+  finishAuthIssuance,
+  bindIssuedUserSession,
+  RefreshTokenCurrentnessError,
 } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { createAuditLogAsync } from '../../services/auditService';
@@ -250,6 +277,7 @@ import {
   setRefreshTokenCookie,
   setCfAccessLogoutQuarantineCookie,
   cacheRefreshTokenFamilyRevocation,
+  getCookieValue,
 } from './helpers';
 
 function selectChain(rows: unknown[]) {
@@ -635,7 +663,7 @@ describe('POST /login — IP allowlist', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { user: { isPlatformAdmin?: boolean } };
     expect(body.user.isPlatformAdmin).toBe(true);
-    expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
+    expect(issueUserSessionLegacyDuringTransition).toHaveBeenCalledWith(expect.objectContaining({
       mfa: false,
       amr: ['password'],
     }));
@@ -884,11 +912,129 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(issueUserSession).toHaveBeenCalledTimes(1);
     expect(issueUserSession).toHaveBeenCalledWith(
       expect.objectContaining({ mfa: true, amr: ['sso'] }),
-      { familyId: 'family-42' },
+      expect.objectContaining({
+        tx: expect.any(Object),
+        capability: expect.any(Object),
+        familyId: 'family-42',
+        refreshRotation: {
+          presentedJti: 'jti-current',
+          authEpoch: 4,
+          mfaEpoch: 7,
+        },
+      }),
     );
-    // Rotation reuses the verified family rather than minting a new one.
-    expect(vi.mocked(issueUserSession).mock.calls[0]?.[1]).toEqual({ familyId: 'family-42' });
+    expect(beginAuthIssuance).toHaveBeenCalledOnce();
+    expect(finishAuthIssuance).toHaveBeenCalledOnce();
+    expect(bindIssuedUserSession).toHaveBeenCalledOnce();
+  });
+
+  it('durably revokes exactly the replayed family outside rotation grace', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-replayed',
+      fam: 'family-42',
+      ae: 4,
+      me: 7,
+    } as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValueOnce(true);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(revokeFamily).toHaveBeenCalledWith('family-42', 'reuse-detected');
+    expect(beginAuthIssuance).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it('detects durable stale reuse and revokes the exact family when Redis lost the predecessor marker', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-stale-in-postgres',
+      fam: 'family-42',
+      ae: 4,
+      me: 7,
+    } as any);
+    vi.mocked(getActiveRefreshTokenFamily).mockResolvedValueOnce({
+      familyId: 'family-42',
+      userId: 'user-1',
+      createdAt: new Date(),
+      absoluteExpiresAt: new Date(Date.now() + 60_000),
+      lastUsedAt: new Date(Date.now() - 60_000),
+      revokedAt: null,
+      revokedReason: null,
+      currentRefreshJtiDigest: 'digest:successor-jti',
+      previousRefreshJtiDigest: 'digest:some-other-predecessor',
+      databaseNow: new Date(),
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(revokeFamily).toHaveBeenCalledWith('family-42', 'reuse-detected');
+    expect(wasRefreshTokenJtiRecentlyRotated).not.toHaveBeenCalled();
+    expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
+    expect(beginAuthIssuance).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it('uses the atomic database rotation timestamp during the commit-to-Redis-marker window', async () => {
+    const databaseNow = new Date();
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-concurrent-loser',
+      fam: 'family-42',
+      ae: 4,
+      me: 7,
+    } as any);
+    vi.mocked(getActiveRefreshTokenFamily).mockResolvedValueOnce({
+      familyId: 'family-42',
+      userId: 'user-1',
+      createdAt: new Date(),
+      absoluteExpiresAt: new Date(Date.now() + 60_000),
+      lastUsedAt: new Date(databaseNow.getTime() - 10),
+      revokedAt: null,
+      revokedReason: null,
+      currentRefreshJtiDigest: 'digest:successor-jti',
+      previousRefreshJtiDigest: 'digest:jti-concurrent-loser',
+      databaseNow,
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Refresh already in progress', reason: 'refresh_raced' });
     expect(revokeFamily).not.toHaveBeenCalled();
+    expect(wasRefreshTokenJtiRecentlyRotated).not.toHaveBeenCalled();
+    expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
+    expect(beginAuthIssuance).not.toHaveBeenCalled();
+  });
+
+  it('rejects a just-rotated replay without revoking the winning family', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-raced',
+      fam: 'family-42',
+      ae: 4,
+      me: 7,
+    } as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValueOnce(true);
+    vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValueOnce(true);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Refresh already in progress', reason: 'refresh_raced' });
+    expect(revokeFamily).not.toHaveBeenCalled();
+    expect(isFamilyRevoked).not.toHaveBeenCalled();
+    expect(beginAuthIssuance).not.toHaveBeenCalled();
   });
 
   it('rejects refresh assurance that no longer satisfies live policy before jti claim', async () => {
@@ -995,15 +1141,15 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       ae: 4,
       me: 7,
     } as any);
-    vi.mocked(issueUserSession).mockRejectedValueOnce(new UserSessionFamilyInactiveError());
+    vi.mocked(issueUserSession).mockRejectedValueOnce(new RefreshTokenCurrentnessError());
 
     const res = await postRefresh();
 
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Invalid refresh token' });
     expect(getActiveRefreshTokenFamily).toHaveBeenCalledWith('family-42', 'user-1');
-    expect(markRefreshTokenJtiRotated).toHaveBeenCalledWith('jti-inactive-family');
-    expect(revokeRefreshTokenJti).toHaveBeenCalledWith('jti-inactive-family');
+    expect(markRefreshTokenJtiRotated).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
     expect(setRefreshTokenCookie).not.toHaveBeenCalled();
     expect(touchFamilyLastUsed).not.toHaveBeenCalled();

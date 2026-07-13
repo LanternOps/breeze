@@ -507,6 +507,53 @@ function assertCapabilityBrand(
 }
 
 /**
+ * Runtime guard for session issuers. The transaction is supplied by
+ * `finishAuthIssuance`, so this re-check observes (and retains) the transition
+ * lock before any user or refresh-family row is locked.
+ */
+export async function assertAuthIssuanceCapability(
+  tx: AuthLifecycleTransaction,
+  capability: AuthIssuanceCapability,
+): Promise<void> {
+  assertCapabilityBrand(capability);
+  const transition = await lockTransitionById(tx, capability.transitionId);
+  if (
+    !transition
+    || transition.state !== 'active'
+    || transition.generation !== capability.generation
+    || transition.activeOperationId !== capability.operationId
+    || !isAfter(transition.activeOperationExpiresAt, transition.databaseNow)
+  ) {
+    throw new AuthIssuanceCapabilityError();
+  }
+}
+
+/** Link the guarded binding to the exact session family before commit. */
+export async function bindAuthIssuanceSession(
+  tx: AuthLifecycleTransaction,
+  capability: AuthIssuanceCapability,
+  userId: string,
+  familyId: string,
+): Promise<void> {
+  assertCapabilityBrand(capability);
+  const bound = await tx
+    .update(authBrowserTransitions)
+    .set({
+      currentUserId: userId,
+      currentFamilyId: familyId,
+      updatedAt: sql`now()`,
+    })
+    .where(and(
+      eq(authBrowserTransitions.id, capability.transitionId),
+      eq(authBrowserTransitions.generation, capability.generation),
+      eq(authBrowserTransitions.state, 'active'),
+      eq(authBrowserTransitions.activeOperationId, capability.operationId),
+    ))
+    .returning({ id: authBrowserTransitions.id });
+  if (bound.length !== 1) throw new AuthIssuanceCapabilityError();
+}
+
+/**
  * Recheck exact lease ownership before invoking a database-only callback. The
  * callback and operation clearing commit or roll back in one system transaction.
  */

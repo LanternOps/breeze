@@ -40,6 +40,9 @@ export const refreshTokenFamilies = pgTable(
     // Nullable during the legacy-family rollout. New issuance and rotation
     // dual-write the SHA-256 digest; a later fix-forward migration tightens it.
     currentRefreshJtiDigest: varchar('current_refresh_jti_digest', { length: 64 }),
+    // Exact predecessor eligible for the bounded rotation-race grace window.
+    // Updated atomically with currentRefreshJtiDigest and lastUsedAt.
+    previousRefreshJtiDigest: varchar('previous_refresh_jti_digest', { length: 64 }),
   },
   (t) => ({
     userIdx: index('refresh_token_families_user_idx').on(t.userId),

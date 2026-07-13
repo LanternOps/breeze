@@ -324,11 +324,12 @@ export async function createRefreshToken(payload: TokenSigningPayload): Promise<
  * token. Used by `createTokenPair` for the family-aware path.
  */
 export async function createRefreshTokenWithJti(
-  payload: TokenSigningPayload
+  payload: TokenSigningPayload,
+  options: { jti?: string } = {},
 ): Promise<{ token: string; jti: string }> {
   assertAuthenticationMethodsForSigning(payload);
   const { key, kid } = getSignKey();
-  const jti = randomUUID();
+  const jti = options.jti ?? randomUUID();
   const { sid: _sidIgnored, ...refreshPayload } = payload;
   void _sidIgnored;
 
@@ -456,6 +457,8 @@ export interface CreateTokenPairOptions {
    * compatibility while `verifyToken` rejects refresh tokens without it.
    */
   refreshFam?: string;
+  /** Pre-generated inside the authoritative family transaction. */
+  refreshJti?: string;
 }
 
 export type TokenPair = {
@@ -480,7 +483,7 @@ export async function createTokenPair(
 
   const [accessToken, refresh] = await Promise.all([
     createAccessToken(accessPayload),
-    createRefreshTokenWithJti(refreshPayload)
+    createRefreshTokenWithJti(refreshPayload, { jti: options.refreshJti })
   ]);
 
   return {

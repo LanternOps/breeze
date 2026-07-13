@@ -2,6 +2,10 @@ import { and, eq, sql } from 'drizzle-orm';
 import { getRedis } from './redis';
 import * as dbModule from '../db';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
+import { users } from '../db/schema/users';
+import { verifyToken } from './jwt';
+import type { AuthLifecycleTransaction } from './authLifecycle';
+import { digestRefreshTokenJti } from './refreshTokenFamily';
 
 const ACCESS_TOKEN_REVOCATION_TTL_SECONDS = 15 * 60;
 const REFRESH_TOKEN_REVOCATION_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -29,7 +33,7 @@ const REFRESH_JTI_FAMILY_TTL_SECONDS = REFRESH_TOKEN_REVOCATION_TTL_SECONDS + AC
 // reuse-detection. Read per call so the value is runtime-tunable + testable.
 const DEFAULT_REFRESH_ROTATION_GRACE_SECONDS = 15;
 
-function getRotationGraceSeconds(): number {
+export function getRefreshRotationGraceSeconds(): number {
   const raw = Number.parseInt(process.env.REFRESH_ROTATION_GRACE_SECONDS ?? '', 10);
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_REFRESH_ROTATION_GRACE_SECONDS;
 }
@@ -56,6 +60,80 @@ function getRevokedFamilyKey(familyId: string): string {
 
 function getRotationGraceKey(jti: string): string {
   return `refresh-rotated-grace:${jti}`;
+}
+
+export type RefreshAuthority =
+  | { kind: 'current'; userId: string; familyId: string }
+  | { kind: 'legacy_or_stale_family'; familyId: string }
+  | { kind: 'invalid' };
+
+/**
+ * Classify a signed refresh candidate under the caller's authoritative
+ * transaction. The caller must already hold the browser-transition lock;
+ * this helper then locks user before family to preserve the global order.
+ */
+export async function classifyRefreshTokenAuthority(
+  tx: AuthLifecycleTransaction,
+  token: string,
+): Promise<RefreshAuthority> {
+  const payload = await verifyToken(token);
+  if (
+    !payload
+    || payload.type !== 'refresh'
+    || !payload.sub
+    || !payload.jti
+    || !payload.fam
+  ) return { kind: 'invalid' };
+
+  const [user] = await tx
+    .select({
+      id: users.id,
+      status: users.status,
+      authEpoch: users.authEpoch,
+      mfaEpoch: users.mfaEpoch,
+    })
+    .from(users)
+    .where(eq(users.id, payload.sub))
+    .for('update')
+    .limit(1);
+  if (
+    !user
+    || user.status !== 'active'
+    || user.authEpoch !== payload.ae
+    || user.mfaEpoch !== payload.me
+  ) return { kind: 'invalid' };
+
+  const [family] = await tx
+    .select({
+      userId: refreshTokenFamilies.userId,
+      revokedAt: refreshTokenFamilies.revokedAt,
+      absoluteExpiresAt: refreshTokenFamilies.absoluteExpiresAt,
+      currentRefreshJtiDigest: refreshTokenFamilies.currentRefreshJtiDigest,
+      databaseNow: sql<Date>`clock_timestamp()`,
+    })
+    .from(refreshTokenFamilies)
+    .where(eq(refreshTokenFamilies.familyId, payload.fam))
+    .for('update')
+    .limit(1);
+  const databaseNow = family?.databaseNow instanceof Date
+    ? family.databaseNow
+    : new Date(family?.databaseNow ?? Number.NaN);
+  if (
+    !family
+    || family.userId !== payload.sub
+    || family.revokedAt !== null
+    || !(family.absoluteExpiresAt instanceof Date)
+    || !Number.isFinite(databaseNow.getTime())
+    || family.absoluteExpiresAt.getTime() <= databaseNow.getTime()
+  ) return { kind: 'invalid' };
+
+  if (
+    family.currentRefreshJtiDigest === null
+    || family.currentRefreshJtiDigest !== digestRefreshTokenJti(payload.jti)
+  ) {
+    return { kind: 'legacy_or_stale_family', familyId: payload.fam };
+  }
+  return { kind: 'current', userId: payload.sub, familyId: payload.fam };
 }
 
 // Fail-closed: when Redis is unavailable we treat access tokens as revoked.
@@ -247,7 +325,7 @@ export async function revokeRefreshTokenJti(jti: string): Promise<boolean> {
  * already present whenever the revoked state becomes visible to a racer.
  */
 export async function markRefreshTokenJtiRotated(jti: string): Promise<void> {
-  const graceSeconds = getRotationGraceSeconds();
+  const graceSeconds = getRefreshRotationGraceSeconds();
   if (graceSeconds <= 0) return; // strict mode — no leeway marker
   const redis = getRedis();
   if (!redis) return;
@@ -267,7 +345,7 @@ export async function markRefreshTokenJtiRotated(jti: string): Promise<void> {
  * conservative choice that preserves reuse-detection.
  */
 export async function wasRefreshTokenJtiRecentlyRotated(jti: string): Promise<boolean> {
-  if (getRotationGraceSeconds() <= 0) return false; // strict mode — never benign
+  if (getRefreshRotationGraceSeconds() <= 0) return false; // strict mode — never benign
   const redis = getRedis();
   if (!redis) return false;
   try {
@@ -333,10 +411,9 @@ export async function getFamilyForJti(jti: string): Promise<string | null> {
 }
 
 /**
- * Atomically marks the family as revoked in both Redis (hot-path sentinel)
- * and Postgres (durable audit row). Idempotent: a second call against an
- * already-revoked family is a no-op for the PG row's first revocation
- * timestamp (uses `WHERE revoked_at IS NULL`).
+ * Durably marks the family revoked in PostgreSQL, then publishes a best-effort
+ * Redis hot-path sentinel. Idempotent: a second call preserves the first
+ * revocation timestamp and reason through `COALESCE`.
  *
  * Uses `withSystemDbAccessContext` for the DB write because reuse-detection
  * runs before the user-scope is established in /refresh — and even if it
@@ -346,42 +423,35 @@ export async function getFamilyForJti(jti: string): Promise<string | null> {
 export async function revokeFamily(familyId: string, reason: string): Promise<void> {
   const truncatedReason = reason.length > 64 ? reason.slice(0, 64) : reason;
 
-  // Best-effort Redis flip first. Failure here is logged but the DB update
-  // still goes through — fail-closed semantics live in isFamilyRevoked,
-  // which prefers Redis but falls back to PG on Redis miss.
-  const redis = getRedis();
-  if (redis) {
-    try {
-      await redis.setex(
-        getRevokedFamilyKey(familyId),
-        REFRESH_FAMILY_REVOCATION_TTL_SECONDS,
-        '1'
-      );
-    } catch (error) {
-      console.error('[token-revocation] Failed to write family-revoked sentinel to Redis:', error);
-    }
-  } else {
-    console.error('[token-revocation] Redis unavailable while revoking family — DB row will still be updated');
-  }
-
-  // Durable audit: stamp revoked_at on the PG row (idempotent — only the
-  // first revocation wins). Bypass RLS via system scope so the call works
-  // regardless of which DB context (if any) is on the stack.
-  try {
-    await dbModule.withSystemDbAccessContext(async () => {
-      await dbModule.db
+  // PostgreSQL is the authority. Commit its idempotent revocation before any
+  // cache sentinel; a failed/missing durable row must propagate so callers do
+  // not report completed revocation that a Redis flush could undo.
+  await dbModule.withSystemDbAccessContext(async () => {
+    const revoked = await dbModule.db
         .update(refreshTokenFamilies)
         .set({
           revokedAt: sql`COALESCE(revoked_at, now())`,
           revokedReason: sql`COALESCE(revoked_reason, ${truncatedReason})`,
         })
-        .where(eq(refreshTokenFamilies.familyId, familyId));
-    });
+        .where(eq(refreshTokenFamilies.familyId, familyId))
+        .returning({ familyId: refreshTokenFamilies.familyId });
+    if (revoked.length !== 1) {
+      throw new Error('Refresh-token family revocation did not update exactly one durable row');
+    }
+  });
+
+  // Redis is a post-commit accelerator only. Failure cannot reactivate the
+  // family because every refresh path also checks PostgreSQL.
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.setex(
+      getRevokedFamilyKey(familyId),
+      REFRESH_FAMILY_REVOCATION_TTL_SECONDS,
+      '1'
+    );
   } catch (error) {
-    // The Redis sentinel above is what gates /refresh; the DB row is a
-    // durable audit. If Redis flipped but PG didn't, we still block the
-    // attacker — we just lose the audit trail.
-    console.error('[token-revocation] Failed to persist family revocation to DB:', error);
+    console.error('[token-revocation] Failed to write family-revoked sentinel to Redis:', error);
   }
 }
 

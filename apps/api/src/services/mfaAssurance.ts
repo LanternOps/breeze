@@ -2,7 +2,7 @@ import { nanoid } from 'nanoid';
 import type { MfaMethod, MfaPrimaryMethod } from '@breeze/shared';
 import { resolveEffectiveMfaPolicy } from './mfaPolicy';
 import { getRedis } from './redis';
-import { bindIssuedUserSession, issueUserSession } from './userSession';
+import { bindIssuedUserSession, issueUserSessionLegacyDuringTransition } from './userSession';
 import {
   withAuthLifecycleSystemTransaction,
   type AuthLifecycleTransaction,
@@ -462,7 +462,7 @@ export async function decideAuthenticatedUserSession(
       };
     }
 
-    const tokens = await issueUserSession({
+    const tokens = await issueUserSessionLegacyDuringTransition({
       userId: user.id,
       email: user.email,
       roleId: input.roleId,
@@ -598,7 +598,7 @@ export async function issueVerifiedPendingMfaSession(
       throw new PendingMfaInvalidError();
     }
 
-    const tokens = await issueUserSession({
+    const tokens = await issueUserSessionLegacyDuringTransition({
       userId: user.id,
       email: user.email,
       roleId: consumed.roleId,

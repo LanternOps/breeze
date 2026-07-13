@@ -6,7 +6,7 @@ import { users, partners, partnerUsers } from '../../db/schema';
 import {
   hashPassword,
   isPasswordStrong,
-  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
   rateLimiter,
   getRedis
 } from '../../services';
@@ -244,7 +244,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         mfa: false,
         amr: ['password']
       } as const;
-      let tokens = await issueUserSession(sessionIdentity);
+      let tokens = await issueUserSessionLegacyDuringTransition(sessionIdentity);
 
       // Email verification — best-effort send. Failures must not fail the
       // signup, but the result needs to be surfaced to the client so the
@@ -388,7 +388,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         // The initial pair was minted while the partner was pending and was
         // revoked by the activation transaction. Mint only after commit so
         // the response/cookie carry live post-activation epochs.
-        tokens = await issueUserSession(sessionIdentity);
+        tokens = await issueUserSessionLegacyDuringTransition(sessionIdentity);
       }
 
       phase = 'response-build';

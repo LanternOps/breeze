@@ -69,6 +69,7 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
 
 const CANONICAL_PROTECTED_FILES: Record<string, string> = {
   issueUserSession: join(SRC_DIR, 'services/userSession.ts'),
+  issueUserSessionLegacyDuringTransition: join(SRC_DIR, 'services/userSession.ts'),
   setRefreshTokenCookie: join(SRC_DIR, 'routes/auth/helpers.ts'),
 };
 
@@ -1148,21 +1149,30 @@ describe('session inventory analyzer fixtures', () => {
   });
 });
 
-describe('browser-auth issuer inventory (9 issuances in 7 files; 10 cookie writes in 8 files)', () => {
-  it('freezes every production issueUserSession call site', () => {
+describe('browser-auth issuer inventory (1 guarded refresh; 8 frozen legacy issuances; 10 cookie writes)', () => {
+  it('allows guarded issueUserSession only from refresh', () => {
     const inventory = collectCallInventory('issueUserSession');
 
-    expect(new Set(inventory.keys())).toEqual(expectedIssuers);
+    expect(Object.fromEntries(inventory)).toEqual({ 'routes/auth/login.ts': 1 });
+    const source = readFileSync(join(SRC_DIR, 'routes/auth/login.ts'), 'utf8');
+    expect(source).toMatch(/finishAuthIssuance\([\s\S]*issueUserSession\([\s\S]*tx,[\s\S]*capability,/);
+    expect(source).not.toContain('issueUserSessionLegacyDuringTransition');
+  }, 15_000);
+
+  it('freezes the exact remaining migration-shim callers', () => {
+    const inventory = collectCallInventory('issueUserSessionLegacyDuringTransition');
+    expect(new Set(inventory.keys())).toEqual(new Set([...expectedIssuers].filter(
+      (file) => file !== 'routes/auth/login.ts',
+    )));
     expect(Object.fromEntries([...inventory.entries()].sort())).toEqual({
       'routes/auth/cfAccessRedirectLogin.ts': 1,
       'routes/auth/invite.ts': 1,
-      'routes/auth/login.ts': 1,
       'routes/auth/register.ts': 2,
       'routes/sso.ts': 1,
       'services/mfaAssurance.ts': 2,
       'services/recoveryCodeAuth.ts': 1,
     });
-    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(9);
+    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(8);
   }, 15_000);
 
   it('freezes every production setRefreshTokenCookie call site', () => {

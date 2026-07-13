@@ -16,7 +16,7 @@ import {
 } from './mfaAssurance';
 import { lockMfaAssuranceState } from './mfaAssuranceLocks';
 import { resolveEffectiveMfaPolicy } from './mfaPolicy';
-import { bindIssuedUserSession, issueUserSession } from './userSession';
+import { bindIssuedUserSession, issueUserSessionLegacyDuringTransition } from './userSession';
 
 const MFA_METHOD_ORDER = ['totp', 'sms', 'passkey', 'recovery_code'] as const;
 const MFA_POLICY_SOURCE_ORDER = ['role', 'partner', 'organization'] as const;
@@ -239,7 +239,7 @@ export async function completeRecoveryCodeLogin(input: {
         tx,
       });
       if (!policy.allowedMethods.has('recovery_code')) throw new RecoveryCodeInvalidError();
-      const tokens = await issueUserSession({
+      const tokens = await issueUserSessionLegacyDuringTransition({
         userId: user.id,
         email: user.email,
         roleId: pending!.roleId,

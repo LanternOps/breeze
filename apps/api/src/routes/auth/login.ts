@@ -6,7 +6,6 @@ import { users } from '../../db/schema';
 import {
   getActiveRefreshTokenFamily,
   issueUserSession,
-  UserSessionFamilyInactiveError,
   verifyToken,
   verifyPassword,
   hashPassword,
@@ -29,6 +28,15 @@ import {
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
   revokeAllUserTokens,
+  beginAuthIssuance,
+  finishAuthIssuance,
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  bindIssuedUserSession,
+  RefreshTokenCurrentnessError,
+  digestRefreshTokenJti,
+  getRefreshRotationGraceSeconds,
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -37,7 +45,7 @@ import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { nanoid } from 'nanoid';
-import { ENABLE_2FA, loginSchema } from './schemas';
+import { CSRF_COOKIE_NAME, ENABLE_2FA, loginSchema } from './schemas';
 import {
   getClientIP,
   getClientRateLimitKey,
@@ -54,7 +62,9 @@ import {
   NoTenantMembershipError,
   auditUserLoginFailure,
   auditLogin,
-  userRequiresSetup
+  userRequiresSetup,
+  getCookieValue,
+  rotateCsrfBindingCookie,
 } from './helpers';
 import { revokeTerminalLogoutSubjects } from '../../services/terminalLogout';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
@@ -804,41 +814,48 @@ loginRoutes.post('/refresh', async (c) => {
   // path was retired in #917 L-1 (rejected above), so every token reaching here
   // carries a family and the Redis jti→family fallback is no longer needed.
   const familyId: string = payload.fam;
+  const presentedJti: string = payload.jti;
 
   // PostgreSQL is authoritative for family ownership and lifecycle. Perform
   // this owner-bound preflight before any reuse marker or old-JTI claim so an
   // invalid family cannot burn the token or mint a replacement. The same
   // check remains inside issueUserSession after the claim as a race backstop.
+  let preflightCurrentJtiDigest: string | null;
+  let preflightPreviousJtiDigest: string | null;
+  let preflightLastUsedAt: Date;
+  let preflightDatabaseNow: Date;
   try {
     const activeFamily = await getActiveRefreshTokenFamily(familyId, payload.sub);
     if (!activeFamily) {
       clearRefreshTokenCookie(c);
       return c.json({ error: 'Invalid refresh token' }, 401);
     }
+    preflightCurrentJtiDigest = activeFamily.currentRefreshJtiDigest;
+    preflightPreviousJtiDigest = activeFamily.previousRefreshJtiDigest;
+    preflightLastUsedAt = activeFamily.lastUsedAt;
+    preflightDatabaseNow = activeFamily.databaseNow;
   } catch (error) {
     console.error('[auth] Refresh family preflight failed closed:', error);
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  // Reuse detection: if this jti has already been revoked AND we have a
-  // family id, this is a replay of an old (rotated) refresh token. Kill the
-  // whole family + write an audit row + return 401. Without this check the
-  // attacker's later jti would still be valid even after the legitimate
-  // user's next rotation.
-  const jtiAlreadyRevoked = await isRefreshTokenJtiRevoked(payload.jti);
-  if (jtiAlreadyRevoked) {
-    // Distinguish a benign concurrent/double-fired refresh from a true
-    // token-reuse attack. The same cookie replayed within seconds of its own
-    // legitimate rotation (multiple tabs sharing the cookie jar, the periodic
-    // heartbeat refresh, or a page reload fired while a refresh was already in
-    // flight) is NOT an attack: the winning sibling already minted a fresh
-    // cookie this browser shares. We must NOT revoke the family and must NOT
-    // clear the cookie — clearing it would wipe the winner's valid token and
-    // log the user out (issue #1107). The loser just retries and picks up the
-    // winner's new token. Only a replay OUTSIDE the grace window (an old,
-    // long-rotated jti) is treated as reuse and kills the family.
-    if (await wasRefreshTokenJtiRecentlyRotated(payload.jti)) {
+  // PostgreSQL currentness is the reuse-detection authority. A non-null
+  // mismatch here was already stale when this request arrived, so it may
+  // revoke exactly its signed family even if Redis was flushed or the winner
+  // crashed before cache cleanup. Null remains the one-time rollout upgrade.
+  // A request that matches here but loses the guarded CAS later is a genuine
+  // concurrent loser and must not revoke the successor that beat it.
+  const presentedJtiDigest = digestRefreshTokenJti(presentedJti);
+  if (
+    preflightCurrentJtiDigest !== null
+    && preflightCurrentJtiDigest !== presentedJtiDigest
+  ) {
+    const graceSeconds = getRefreshRotationGraceSeconds();
+    const durableGrace = preflightPreviousJtiDigest === presentedJtiDigest
+      && graceSeconds > 0
+      && preflightDatabaseNow.getTime() - preflightLastUsedAt.getTime() <= graceSeconds * 1_000;
+    if (durableGrace) {
       return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
     }
     await revokeFamily(familyId, 'reuse-detected');
@@ -850,7 +867,33 @@ loginRoutes.post('/refresh', async (c) => {
       resourceType: 'refresh_token_family',
       resourceId: familyId,
       details: {
-        replayedJti: payload.jti,
+        replayedJti: presentedJti,
+        reason: 'Durably stale refresh-token JTI replayed — entire family revoked',
+      },
+      ipAddress: getClientIP(c),
+      userAgent: c.req.header('user-agent'),
+      result: 'denied',
+    });
+    clearRefreshTokenCookie(c);
+    return c.json({ error: 'Invalid refresh token' }, 401);
+  }
+
+  // Redis remains an early accelerator for rollout-null families and defense
+  // in depth. It is not required to detect a stale non-null digest above.
+  if (await isRefreshTokenJtiRevoked(presentedJti)) {
+    if (await wasRefreshTokenJtiRecentlyRotated(presentedJti)) {
+      return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
+    }
+    await revokeFamily(familyId, 'reuse-detected');
+    createAuditLogAsync({
+      actorType: 'user',
+      actorId: payload.sub,
+      actorEmail: payload.email,
+      action: 'auth.refresh.reuse_detected',
+      resourceType: 'refresh_token_family',
+      resourceId: familyId,
+      details: {
+        replayedJti: presentedJti,
         reason: 'Revoked refresh-token JTI replayed — entire family revoked',
       },
       ipAddress: getClientIP(c),
@@ -861,9 +904,8 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  // Family-revoked sentinel check: covers the descendant case. If a sibling
-  // refresh on this family already triggered reuse-detection, this token —
-  // although its own jti hasn't been revoked — must also fail.
+  // Redis is only the fast rejection path here; getActiveRefreshTokenFamily
+  // above already checks PostgreSQL, and the final CAS repeats that check.
   if (await isFamilyRevoked(familyId)) {
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
@@ -931,61 +973,59 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  // Task 7: revoke the OLD jti BEFORE minting the new token, not after. This
-  // closes a TOCTOU window — a concurrent /refresh racing on the same cookie
-  // would otherwise both see "jti not revoked" and both mint new pairs.
-  // Revocation failing OR the claim being lost to a concurrent /refresh means
-  // we must NOT issue a new cookie. `revokeRefreshTokenJti` returns false when
-  // the jti was already claimed (NX failed) — that proves another /refresh
-  // raced us, so the legitimate path is to refuse and let the loser retry.
-  // Drop the rotation-grace marker BEFORE revoking the old jti so it is
-  // already present whenever the revoked state becomes visible to a concurrent
-  // racer (see the reuse-detection branch above, issue #1107).
-  await markRefreshTokenJtiRotated(payload.jti);
-
-  let claimedRevocation: boolean;
+  const bindingValue = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
+  let capability;
   try {
-    claimedRevocation = await revokeRefreshTokenJti(payload.jti);
+    capability = await beginAuthIssuance({ kind: 'browser', value: bindingValue ?? '' });
   } catch (error) {
-    console.error('[auth] Refusing to mint refresh token — old jti revocation failed:', error);
-    clearRefreshTokenCookie(c);
-    return c.json({ error: 'Invalid refresh token' }, 401);
-  }
-  if (!claimedRevocation) {
-    // Another /refresh already revoked this jti — the legitimate client
-    // double-fired the same cookie (multi-tab, heartbeat, reload-mid-flight).
-    // We lost the race, so we must not mint a new pair, but we must also NOT
-    // clear the cookie: the winning sibling already set a fresh cookie this
-    // browser shares, and clearing it would log the user out (#1107). Surface
-    // a distinct reason so the client retries rather than redirecting to login.
-    return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
+    if (error instanceof AuthBindingRotationRequiredError) {
+      rotateCsrfBindingCookie(c, error.replacement.value);
+      return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
+    }
+    if (error instanceof AuthBindingUnavailableError || error instanceof AuthIssuanceConflictError) {
+      return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 409);
+    }
+    throw error;
   }
 
-  // Create new token pair. The rotated refresh token inherits the family from
-  // the verified `fam` claim so reuse-detection follows the whole chain.
+  // Finalization owns the transition lock before user and family locks. The
+  // family digest compare/swap and successor signing commit together.
   let tokens: Awaited<ReturnType<typeof issueUserSession>>;
   try {
-    tokens = await issueUserSession({
-      userId: user.id,
-      email: user.email,
-      roleId: context.roleId,
-      orgId: context.orgId,
-      partnerId: context.partnerId,
-      scope: context.scope,
-      mfa: payload.mfa,
-      amr: payload.amr,
-      // SR-001: preserve the device binding from the prior (signed) refresh
-      // token. Deliberately NOT re-read from the header — a refresh must not be
-      // able to drop the binding by omitting it.
-      mobileDeviceId: carryForwardBinding(payload)
-    }, { familyId });
+    tokens = await finishAuthIssuance(capability, (tx) => issueUserSession({
+        userId: user.id,
+        email: user.email,
+        roleId: context.roleId,
+        orgId: context.orgId,
+        partnerId: context.partnerId,
+        scope: context.scope,
+        mfa: payload.mfa,
+        amr: payload.amr,
+        // Preserve the signed device binding; headers cannot drop it.
+        mobileDeviceId: carryForwardBinding(payload),
+      }, {
+        tx,
+        capability,
+        familyId,
+        refreshRotation: {
+          presentedJti,
+          authEpoch: payload.ae,
+          mfaEpoch: payload.me,
+        },
+      }));
   } catch (error) {
-    if (!(error instanceof UserSessionFamilyInactiveError)) throw error;
+    if (!(error instanceof RefreshTokenCurrentnessError)) throw error;
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
-  // Telemetry: bump lastUsedAt on the family row. Fire-and-forget — never
-  // blocks the refresh.
+
+  // Redis is an accelerator only. These effects intentionally occur after the
+  // PostgreSQL commit and cannot reactivate or invalidate durable currentness.
+  await markRefreshTokenJtiRotated(payload.jti);
+  await revokeRefreshTokenJti(payload.jti).catch((error) => {
+    console.warn('[auth] Post-commit refresh JTI cache cleanup failed:', error);
+  });
+  void bindIssuedUserSession(tokens);
   void touchFamilyLastUsed(familyId);
 
   setRefreshTokenCookie(c, tokens.refreshToken);

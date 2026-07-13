@@ -33,7 +33,7 @@ import {
   PROVIDER_PRESETS,
   type OIDCConfig
 } from '../services/sso';
-import { createSession, issueUserSession, rateLimiter, getRedis, type UserSessionIdentity } from '../services';
+import { createSession, issueUserSessionLegacyDuringTransition, rateLimiter, getRedis, type UserSessionIdentity } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -1994,7 +1994,7 @@ ssoRoutes.get('/callback', async (c) => {
     const ip = getClientIP(c);
     const userAgent = c.req.header('user-agent') || 'unknown';
 
-    const { accessToken, refreshToken, expiresInSeconds } = await issueUserSession(sessionIdentity);
+    const { accessToken, refreshToken, expiresInSeconds } = await issueUserSessionLegacyDuringTransition(sessionIdentity);
 
     await createSession({
       userId: user.id,

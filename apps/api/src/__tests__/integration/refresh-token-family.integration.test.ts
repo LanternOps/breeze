@@ -21,6 +21,18 @@ import { generate, generateSecret } from 'otplib';
 import { authRoutes } from '../../routes/auth';
 import { encryptMfaTotpSecret } from '../../services/mfaSecretCrypto';
 import { verifyToken } from '../../services/jwt';
+import { getRedis } from '../../services/redis';
+import {
+  beginAuthIssuance,
+  finishAuthIssuance,
+  resolveAuthBinding,
+  AuthBindingRotationRequiredError,
+} from '../../services/authBrowserTransition';
+import {
+  digestRefreshTokenJti,
+  RefreshTokenCurrentnessError,
+} from '../../services/refreshTokenFamily';
+import { issueUserSession, type UserSessionIdentity } from '../../services/userSession';
 import {
   revokeUserSessionFamilyForLogout,
   withAuthLifecycleSystemTransaction,
@@ -54,6 +66,17 @@ function extractCookies(setCookieHeader: string): RefreshCookies | null {
   return { refreshCookieValue, csrfCookieValue, csrfHeaderValue };
 }
 
+function extractCsrfCookie(setCookieHeader: string): Pick<RefreshCookies, 'csrfCookieValue' | 'csrfHeaderValue'> | null {
+  const csrfCookie = setCookieHeader.split(',').map((part) => part.trim())
+    .find((part) => part.startsWith('breeze_csrf_token='));
+  const csrfCookieValue = csrfCookie?.split(';')[0];
+  if (!csrfCookieValue) return null;
+  return {
+    csrfCookieValue,
+    csrfHeaderValue: decodeURIComponent(csrfCookieValue.split('=')[1] ?? ''),
+  };
+}
+
 async function loginAndExtractCookies(
   app: Hono,
   email: string,
@@ -84,7 +107,8 @@ async function loginAndExtractSession(
 
 async function refreshWithCookies(
   app: Hono,
-  cookies: RefreshCookies
+  cookies: RefreshCookies,
+  allowBindingBootstrap = true,
 ): Promise<{ status: number; nextCookies: RefreshCookies | null; accessToken: string | null }> {
   const res = await app.request('/auth/refresh', {
     method: 'POST',
@@ -97,11 +121,29 @@ async function refreshWithCookies(
   });
 
   const setCookie = res.headers.get('set-cookie') ?? '';
+  if (res.status === 428 && allowBindingBootstrap) {
+    const replacement = extractCsrfCookie(setCookie);
+    if (!replacement) throw new Error(`Refresh 428 omitted replacement binding: ${setCookie}`);
+    return refreshWithCookies(app, {
+      refreshCookieValue: cookies.refreshCookieValue,
+      ...replacement,
+    }, false);
+  }
   const nextCookies = res.status === 200 ? extractCookies(setCookie) : null;
   const body = res.status === 200
     ? await res.json() as { tokens: { accessToken: string } }
     : null;
   return { status: res.status, nextCookies, accessToken: body?.tokens.accessToken ?? null };
+}
+
+function freshBrowserBinding(): string {
+  try {
+    resolveAuthBinding(null);
+  } catch (error) {
+    if (error instanceof AuthBindingRotationRequiredError) return error.replacement.value;
+    throw error;
+  }
+  throw new Error('Missing binding unexpectedly resolved');
 }
 
 async function requestCurrentUser(app: Hono, accessToken: string): Promise<Response> {
@@ -188,6 +230,10 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     expect(r2.nextCookies).not.toBeNull();
     const cookiesB = r2.nextCookies!;
 
+    // Prove PostgreSQL currentness, not the predecessor's Redis marker, is
+    // sufficient to detect the stale replay and revoke the exact family.
+    await getRedis()?.flushdb();
+
     // Step 3: attacker replays cookie A (jti is already revoked).
     // Replay must:
     //   - reject the replay (401)
@@ -195,6 +241,10 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     //     derived token are dead, not just the replayed one.
     const replay = await refreshWithCookies(app, cookiesA);
     expect(replay.status).toBe(401);
+
+    // The durable row remains authoritative after the post-revocation cache
+    // sentinel is lost as well.
+    await getRedis()?.flushdb();
 
     // Step 4: legitimate user's "valid" cookie B is now ALSO dead because
     // the family was revoked. This is the critical assertion that proves
@@ -393,6 +443,30 @@ describe('Refresh-Token Rotation Leeway (#1107)', () => {
     const followup = await refreshWithCookies(app, cookiesB);
     expect(followup.status).toBe(200);
   });
+
+  it('revokes the family when an older ancestor is replayed after a fresh successor rotation', async () => {
+    await createUser({
+      partnerId: testPartnerId,
+      withMembership: true,
+      email: 'leeway-ancestor@example.com',
+      password: 'FamilyPass123!',
+    });
+
+    const cookiesA = await loginAndExtractCookies(app, 'leeway-ancestor@example.com', 'FamilyPass123!');
+    const first = await refreshWithCookies(app, cookiesA);
+    expect(first.status).toBe(200);
+    const cookiesB = first.nextCookies!;
+    const second = await refreshWithCookies(app, cookiesB);
+    expect(second.status).toBe(200);
+    const cookiesC = second.nextCookies!;
+
+    // Only immediate predecessor B may receive durable race grace. A is an
+    // older ancestor and must still trigger exact-family compromise handling.
+    const ancestorReplay = await refreshWithCookies(app, cookiesA);
+    expect(ancestorReplay.status).toBe(401);
+    const currentAfterReplay = await refreshWithCookies(app, cookiesC);
+    expect(currentAfterReplay.status).toBe(401);
+  });
 });
 
 describe('Durable logout/refresh race (Task 6)', () => {
@@ -441,12 +515,12 @@ describe('Durable logout/refresh race (Task 6)', () => {
     const db = getTestDb();
     let logoutSettled = false;
     let logoutPromise: Promise<Response> | undefined;
-    let refreshResult: Awaited<ReturnType<typeof refreshWithCookies>> | undefined;
+    let refreshPromise: ReturnType<typeof refreshWithCookies> | undefined;
 
     // Hold a row lock so logout's conditional UPDATE cannot commit. Start the
-    // logout first, then prove /refresh can mint a descendant while that
-    // request remains blocked. Releasing this transaction is the observed
-    // revocation-commit boundary for all assertions below.
+    // logout first, then start /refresh while both are forced behind the same
+    // family lock. Durable currentness no longer permits a descendant to mint
+    // while lifecycle revocation is waiting on that row.
     await db.transaction(async (tx) => {
       await tx.execute(sql`
         SELECT family_id
@@ -461,16 +535,14 @@ describe('Durable logout/refresh race (Task 6)', () => {
       });
       await waitForBlockedFamilyRevocation();
 
-      refreshResult = await refreshWithCookies(app, originalCookies!);
-      expect(refreshResult.status).toBe(200);
-      expect(refreshResult.nextCookies).not.toBeNull();
-      expect(refreshResult.accessToken).toBeTruthy();
+      refreshPromise = refreshWithCookies(app, originalCookies!);
       expect(logoutSettled).toBe(false);
     });
 
-    const logoutResult = await logoutPromise!;
+    const [logoutResult, refreshResult] = await Promise.all([logoutPromise!, refreshPromise!]);
 
     expect(logoutResult.status).toBe(200);
+    expect(refreshResult.status).toBe(401);
     expect(logoutSettled).toBe(true);
 
     const familyRows = await db.select().from(refreshTokenFamilies);
@@ -484,11 +556,7 @@ describe('Durable logout/refresh race (Task 6)', () => {
     const originalAfterCommit = await refreshWithCookies(app, originalCookies!);
     expect(originalAfterCommit.status).toBe(401);
 
-    const descendantAfterCommit = await refreshWithCookies(app, refreshResult!.nextCookies!);
-    expect(descendantAfterCommit.status).toBe(401);
-
     expect(await requestCurrentUser(app, loginBody.tokens.accessToken)).toMatchObject({ status: 401 });
-    expect(await requestCurrentUser(app, refreshResult!.accessToken!)).toMatchObject({ status: 401 });
     expect(await requestCurrentUser(app, siblingSession.accessToken)).toMatchObject({ status: 200 });
 
     const siblingAfterCommit = await refreshWithCookies(app, siblingSession.cookies);
@@ -522,5 +590,198 @@ describe('Durable logout/refresh race (Task 6)', () => {
       'already_revoked',
       'revoked',
     ]);
+  });
+});
+
+describe('Durable refresh currentness (browser transition Task 4)', () => {
+  let app: Hono;
+  let testPartnerId: string;
+
+  beforeEach(async () => {
+    process.env.E2E_MODE = 'true';
+    app = new Hono();
+    app.route('/auth', authRoutes);
+    testPartnerId = (await createPartner()).id;
+  });
+
+  it('writes the initial login JTI digest into the family row', async () => {
+    const user = await createUser({
+      partnerId: testPartnerId,
+      withMembership: true,
+      email: 'durable-initial@example.com',
+      password: 'FamilyPass123!',
+    });
+    const cookies = await loginAndExtractCookies(app, user.email, 'FamilyPass123!');
+    const refreshToken = decodeURIComponent(cookies.refreshCookieValue.split('=')[1] ?? '');
+    const payload = await verifyToken(refreshToken);
+    expect(payload?.jti).toBeTruthy();
+    expect(payload?.fam).toBeTruthy();
+
+    const [family] = await getTestDb().select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, payload!.fam!));
+    expect(family?.currentRefreshJtiDigest).toBe(digestRefreshTokenJti(payload!.jti!));
+  });
+
+  it('upgrades a live legacy-null family on the next exact-family refresh', async () => {
+    const user = await createUser({
+      partnerId: testPartnerId,
+      withMembership: true,
+      email: 'durable-legacy@example.com',
+      password: 'FamilyPass123!',
+    });
+    const cookies = await loginAndExtractCookies(app, user.email, 'FamilyPass123!');
+    const payload = await verifyToken(decodeURIComponent(cookies.refreshCookieValue.split('=')[1] ?? ''));
+    await getTestDb().update(refreshTokenFamilies)
+      .set({ currentRefreshJtiDigest: null })
+      .where(eq(refreshTokenFamilies.familyId, payload!.fam!));
+
+    const refreshed = await refreshWithCookies(app, cookies);
+    expect(refreshed.status).toBe(200);
+    const nextPayload = await verifyToken(decodeURIComponent(
+      refreshed.nextCookies!.refreshCookieValue.split('=')[1] ?? '',
+    ));
+    const [family] = await getTestDb().select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, payload!.fam!));
+    expect(family?.currentRefreshJtiDigest).toBe(digestRefreshTokenJti(nextPayload!.jti!));
+  });
+
+  it('uses the atomic rotation timestamp before the post-commit Redis marker exists', async () => {
+    const previousGrace = process.env.REFRESH_ROTATION_GRACE_SECONDS;
+    process.env.REFRESH_ROTATION_GRACE_SECONDS = '30';
+    try {
+      const user = await createUser({
+        partnerId: testPartnerId,
+        withMembership: true,
+        email: 'durable-marker-gap@example.com',
+        password: 'FamilyPass123!',
+      });
+      const cookies = await loginAndExtractCookies(app, user.email, 'FamilyPass123!');
+      const predecessor = await verifyToken(decodeURIComponent(
+        cookies.refreshCookieValue.split('=')[1] ?? '',
+      ));
+      if (!predecessor?.fam) throw new Error('Login did not mint a family refresh');
+
+      // Force the exact state between winner commit and its Redis marker: the
+      // durable digest/timestamp have advanced atomically, while Redis is empty.
+      await getTestDb().update(refreshTokenFamilies).set({
+        currentRefreshJtiDigest: digestRefreshTokenJti('forced-successor-jti'),
+        previousRefreshJtiDigest: digestRefreshTokenJti(predecessor.jti!),
+        lastUsedAt: sql`clock_timestamp()`,
+      }).where(eq(refreshTokenFamilies.familyId, predecessor.fam));
+      await getRedis()?.flushdb();
+
+      const loser = await refreshWithCookies(app, cookies);
+      expect(loser.status).toBe(401);
+      const [family] = await getTestDb().select().from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.familyId, predecessor.fam));
+      expect(family?.revokedAt).toBeNull();
+      expect(family?.currentRefreshJtiDigest).toBe(digestRefreshTokenJti('forced-successor-jti'));
+    } finally {
+      if (previousGrace === undefined) delete process.env.REFRESH_ROTATION_GRACE_SECONDS;
+      else process.env.REFRESH_ROTATION_GRACE_SECONDS = previousGrace;
+    }
+  });
+
+  it('starts predecessor grace at the rotation statement after a long family-lock wait', async () => {
+    const previousGrace = process.env.REFRESH_ROTATION_GRACE_SECONDS;
+    process.env.REFRESH_ROTATION_GRACE_SECONDS = '1';
+    try {
+      const user = await createUser({
+        partnerId: testPartnerId,
+        withMembership: true,
+        email: 'durable-lock-wait@example.com',
+        password: 'FamilyPass123!',
+      });
+      const cookiesA = await loginAndExtractCookies(app, user.email, 'FamilyPass123!');
+      const predecessor = await verifyToken(decodeURIComponent(
+        cookiesA.refreshCookieValue.split('=')[1] ?? '',
+      ));
+      if (!predecessor?.fam) throw new Error('Login did not mint a family refresh');
+
+      let winnerPromise!: ReturnType<typeof refreshWithCookies>;
+      await getTestDb().transaction(async (tx) => {
+        await tx.execute(sql`
+          SELECT family_id FROM refresh_token_families
+          WHERE family_id = ${predecessor.fam}::uuid FOR UPDATE
+        `);
+        winnerPromise = refreshWithCookies(app, cookiesA);
+        await waitForBlockedFamilyRevocation();
+        // Exceed the configured grace while finalization's transaction waits.
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+      });
+
+      const winner = await winnerPromise;
+      expect(winner.status).toBe(200);
+      const predecessorReplay = await refreshWithCookies(app, cookiesA);
+      expect(predecessorReplay.status).toBe(401);
+      const [family] = await getTestDb().select().from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.familyId, predecessor.fam));
+      expect(family?.revokedAt).toBeNull();
+      const winnerFollowup = await refreshWithCookies(app, winner.nextCookies!);
+      expect(winnerFollowup.status).toBe(200);
+    } finally {
+      if (previousGrace === undefined) delete process.env.REFRESH_ROTATION_GRACE_SECONDS;
+      else process.env.REFRESH_ROTATION_GRACE_SECONDS = previousGrace;
+    }
+  });
+
+  it('forces two rotations to one durable successor under the family lock', async () => {
+    const user = await createUser({
+      partnerId: testPartnerId,
+      withMembership: true,
+      email: 'durable-cas@example.com',
+      password: 'FamilyPass123!',
+    });
+    const cookies = await loginAndExtractCookies(app, user.email, 'FamilyPass123!');
+    const predecessor = await verifyToken(decodeURIComponent(cookies.refreshCookieValue.split('=')[1] ?? ''));
+    if (!predecessor?.fam || !predecessor.jti) throw new Error('Login did not mint a family refresh');
+
+    const capabilityA = await beginAuthIssuance({ kind: 'browser', value: freshBrowserBinding() });
+    const capabilityB = await beginAuthIssuance({ kind: 'browser', value: freshBrowserBinding() });
+    const identity: UserSessionIdentity = {
+      userId: user.id,
+      email: user.email,
+      roleId: null,
+      orgId: null,
+      partnerId: testPartnerId,
+      scope: 'partner',
+      mfa: predecessor.mfa,
+      amr: predecessor.amr,
+    };
+    const rotate = (capability: typeof capabilityA) => finishAuthIssuance(capability, (tx) =>
+      issueUserSession(identity, {
+        tx,
+        capability,
+        familyId: predecessor.fam!,
+        refreshRotation: {
+          presentedJti: predecessor.jti!,
+          authEpoch: predecessor.ae,
+          mfaEpoch: predecessor.me,
+        },
+      }));
+
+    let pendingA!: ReturnType<typeof rotate>;
+    let pendingB!: ReturnType<typeof rotate>;
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT family_id FROM refresh_token_families
+        WHERE family_id = ${predecessor.fam}::uuid FOR UPDATE
+      `);
+      pendingA = rotate(capabilityA);
+      pendingB = rotate(capabilityB);
+      await waitForBlockedFamilyRevocation();
+    });
+    const rotations = await Promise.allSettled([pendingA, pendingB]);
+
+    const fulfilled = rotations.filter((result) => result.status === 'fulfilled');
+    const rejected = rotations.filter((result) => result.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(RefreshTokenCurrentnessError);
+    const winner = (fulfilled[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof issueUserSession>>>).value;
+    const [family] = await getTestDb().select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, predecessor.fam));
+    expect(family?.revokedAt).toBeNull();
+    expect(family?.currentRefreshJtiDigest).toBe(digestRefreshTokenJti(winner.refreshJti));
   });
 });

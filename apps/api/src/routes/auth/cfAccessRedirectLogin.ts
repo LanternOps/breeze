@@ -14,7 +14,7 @@ import {
   verifyCfAccessJwt,
 } from '../../services/cfAccessJwt';
 import {
-  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
   verifyToken,
 } from '../../services';
 import { revokeTerminalLogoutSubjects } from '../../services/terminalLogout';
@@ -167,7 +167,7 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
 
   const mfaSatisfied = trustsMfa;
 
-  const tokens = await issueUserSession({
+  const tokens = await issueUserSessionLegacyDuringTransition({
     userId: user.id,
     email: user.email,
     roleId: context.roleId,

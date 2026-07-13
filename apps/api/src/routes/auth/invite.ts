@@ -8,7 +8,7 @@ import {
   hashPassword,
   isPasswordStrong,
   getRedis,
-  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
   rateLimiter,
 } from '../../services';
 import { acceptInviteSchema, invitePreviewSchema } from './schemas';
@@ -206,7 +206,7 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
   try {
     const context = await resolveCurrentUserTokenContext(userId);
 
-    const tokens = await issueUserSession({
+    const tokens = await issueUserSessionLegacyDuringTransition({
       userId: user.id,
       email: user.email,
       roleId: context.roleId,

@@ -17,8 +17,8 @@
  * Steps 1+2 live here; 3+4 stay in the route handler so each path can apply
  * its own surrounding logic (db wrapping, audit trail, etc).
  */
-import { randomUUID } from 'crypto';
-import { and, eq } from 'drizzle-orm';
+import { createHash, randomUUID } from 'crypto';
+import { and, eq, getTableColumns, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   refreshTokenFamilies,
@@ -43,30 +43,121 @@ const REFRESH_TOKEN_FAMILY_ABSOLUTE_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
  * outcome; the alternative is a token without a family, which is exactly
  * the bug this helper exists to prevent).
  */
+export function mintRefreshTokenFamily(
+  userId: string,
+  options: { tx: AuthLifecycleTransaction },
+): Promise<string>;
+export function mintRefreshTokenFamily(
+  userId: string,
+  currentRefreshJti: string,
+  options: { tx: AuthLifecycleTransaction },
+): Promise<string>;
 export async function mintRefreshTokenFamily(
   userId: string,
-  options: { tx?: AuthLifecycleTransaction } = {},
+  currentRefreshJtiOrOptions: string | { tx: AuthLifecycleTransaction },
+  maybeOptions?: { tx: AuthLifecycleTransaction },
 ): Promise<string> {
+  const currentRefreshJti = typeof currentRefreshJtiOrOptions === 'string'
+    ? currentRefreshJtiOrOptions
+    : null;
+  const options = typeof currentRefreshJtiOrOptions === 'string'
+    ? maybeOptions
+    : currentRefreshJtiOrOptions;
+  if (!options) throw new Error('Refresh family creation requires a transaction');
   const familyId = randomUUID();
   const absoluteExpiresAt = new Date(Date.now() + REFRESH_TOKEN_FAMILY_ABSOLUTE_LIFETIME_MS);
-  if (options.tx) {
-    await options.tx.insert(refreshTokenFamilies).values({
-      familyId,
-      userId,
-      absoluteExpiresAt,
-    });
-    return familyId;
-  }
-  await dbModule.runOutsideDbContext(() =>
-    dbModule.withSystemDbAccessContext(async () => {
-      await dbModule.db.insert(refreshTokenFamilies).values({
-        familyId,
-        userId,
-        absoluteExpiresAt,
-      });
-    })
-  );
+  await options.tx.insert(refreshTokenFamilies).values({
+    familyId,
+    userId,
+    absoluteExpiresAt,
+    currentRefreshJtiDigest: currentRefreshJti === null
+      ? null
+      : digestRefreshTokenJti(currentRefreshJti),
+  });
   return familyId;
+}
+
+export function digestRefreshTokenJti(jti: string): string {
+  return createHash('sha256').update(jti, 'utf8').digest('hex');
+}
+
+export class RefreshTokenCurrentnessError extends Error {
+  constructor() {
+    super('Refresh token is not the durable current token for its family');
+    this.name = 'RefreshTokenCurrentnessError';
+  }
+}
+
+/**
+ * Lock and atomically advance one owner-bound family. A nullable digest is a
+ * rollout-era family: its first otherwise-valid refresh upgrades it. Once a
+ * digest exists, only the exact predecessor can advance it.
+ */
+export async function rotateRefreshTokenFamilyCurrentJti(
+  tx: AuthLifecycleTransaction,
+  input: {
+    familyId: string;
+    userId: string;
+    presentedJti: string;
+    successorJti: string;
+  },
+): Promise<'rotated' | 'legacy_upgraded'> {
+  const [family] = await tx
+    .select({
+      userId: refreshTokenFamilies.userId,
+      revokedAt: refreshTokenFamilies.revokedAt,
+      absoluteExpiresAt: refreshTokenFamilies.absoluteExpiresAt,
+      currentRefreshJtiDigest: refreshTokenFamilies.currentRefreshJtiDigest,
+      databaseNow: sql<Date>`clock_timestamp()`,
+    })
+    .from(refreshTokenFamilies)
+    .where(and(
+      eq(refreshTokenFamilies.familyId, input.familyId),
+      eq(refreshTokenFamilies.userId, input.userId),
+    ))
+    .for('update')
+    .limit(1);
+
+  const databaseNow = family?.databaseNow instanceof Date
+    ? family.databaseNow
+    : new Date(family?.databaseNow ?? Number.NaN);
+  if (
+    !family
+    || family.userId !== input.userId
+    || family.revokedAt !== null
+    || !(family.absoluteExpiresAt instanceof Date)
+    || !Number.isFinite(family.absoluteExpiresAt.getTime())
+    || !Number.isFinite(databaseNow.getTime())
+    || family.absoluteExpiresAt.getTime() <= databaseNow.getTime()
+  ) {
+    throw new RefreshTokenCurrentnessError();
+  }
+
+  const presentedDigest = digestRefreshTokenJti(input.presentedJti);
+  const wasLegacy = family.currentRefreshJtiDigest === null;
+  if (!wasLegacy && family.currentRefreshJtiDigest !== presentedDigest) {
+    throw new RefreshTokenCurrentnessError();
+  }
+
+  const currentPredicate = wasLegacy
+    ? isNull(refreshTokenFamilies.currentRefreshJtiDigest)
+    : eq(refreshTokenFamilies.currentRefreshJtiDigest, presentedDigest);
+  const updated = await tx
+    .update(refreshTokenFamilies)
+    .set({
+      previousRefreshJtiDigest: presentedDigest,
+      currentRefreshJtiDigest: digestRefreshTokenJti(input.successorJti),
+      lastUsedAt: sql`clock_timestamp()`,
+    })
+    .where(and(
+      eq(refreshTokenFamilies.familyId, input.familyId),
+      eq(refreshTokenFamilies.userId, input.userId),
+      isNull(refreshTokenFamilies.revokedAt),
+      currentPredicate,
+    ))
+    .returning({ familyId: refreshTokenFamilies.familyId });
+  if (updated.length !== 1) throw new RefreshTokenCurrentnessError();
+  return wasLegacy ? 'legacy_upgraded' : 'rotated';
 }
 
 /**
@@ -79,10 +170,13 @@ export async function getActiveRefreshTokenFamily(
   familyId: string,
   userId: string,
   options: { tx?: AuthLifecycleTransaction } = {},
-): Promise<RefreshTokenFamily | null> {
+): Promise<(RefreshTokenFamily & { databaseNow: Date }) | null> {
   const query = (database: Pick<AuthLifecycleTransaction, 'select'>) =>
     database
-        .select()
+        .select({
+          ...getTableColumns(refreshTokenFamilies),
+          databaseNow: sql<Date>`clock_timestamp()`,
+        })
         .from(refreshTokenFamilies)
         .where(and(
           eq(refreshTokenFamilies.familyId, familyId),
@@ -98,16 +192,21 @@ export async function getActiveRefreshTokenFamily(
   const absoluteExpiresAtMs = family?.absoluteExpiresAt instanceof Date
     ? family.absoluteExpiresAt.getTime()
     : Number.NaN;
+  const databaseNow = family?.databaseNow instanceof Date
+    ? family.databaseNow
+    : new Date(family?.databaseNow ?? Number.NaN);
+  const databaseNowMs = databaseNow.getTime();
   if (
     !family
     || family.userId !== userId
     || family.revokedAt !== null
     || !Number.isFinite(absoluteExpiresAtMs)
-    || absoluteExpiresAtMs <= Date.now()
+    || !Number.isFinite(databaseNowMs)
+    || absoluteExpiresAtMs <= databaseNowMs
   ) {
     return null;
   }
-  return family;
+  return { ...family, databaseNow };
 }
 
 /**
