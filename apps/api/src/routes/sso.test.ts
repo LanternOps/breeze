@@ -59,6 +59,13 @@ vi.mock('../services', () => ({
   mintRefreshTokenFamily: vi.fn().mockResolvedValue('sso-family-id-mock'),
   bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
   getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
+  // SR2-11b: /sso/link/start binds the pending link to the initiating refresh
+  // family; the link callback re-checks it is still live (not revoked/expired)
+  // as part of validateLinkBinding. Default: a healthy, far-future family.
+  getRefreshFamily: vi.fn().mockResolvedValue({
+    revokedAt: null,
+    absoluteExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+  }),
   // Partner-axis login rate limiting (#2183 spec §5) — default allowed so
   // existing tests exercising the route body are unaffected; the dedicated
   // 429 test overrides this per-call.
@@ -257,7 +264,10 @@ vi.mock('../middleware/auth', () => ({
       partnerId: null,
       accessibleOrgIds: ['00000000-0000-4000-8000-000000000010'],
       canAccessOrg: () => true,
-      user: { id: '00000000-0000-4000-8000-000000000020', email: 'test@example.com' }
+      user: { id: '00000000-0000-4000-8000-000000000020', email: 'test@example.com' },
+      // SR2-11b: /sso/link/start binds the pending session to the initiating
+      // refresh family. Without this key every link test throws on auth.token.sid.
+      token: { sid: '00000000-0000-4000-8000-0000000000fa' },
     });
     return next();
   }),
@@ -286,7 +296,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
-import { createTokenPair, rateLimiter } from '../services';
+import { createTokenPair, rateLimiter, getUserEpochs, getRefreshFamily } from '../services';
 import { authMiddleware } from '../middleware/auth';
 import {
   discoverOIDCConfig,
@@ -317,6 +327,7 @@ describe('sso routes', () => {
     accessibleOrgIds: string[] | null;
     canAccessOrg: (orgId: string) => boolean;
     partnerOrgAccess: 'all' | 'selected' | 'none' | null;
+    token: Record<string, unknown>;
   }> = {}) => {
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
@@ -326,7 +337,11 @@ describe('sso routes', () => {
         accessibleOrgIds: 'accessibleOrgIds' in overrides ? overrides.accessibleOrgIds : [ORG_UUID],
         canAccessOrg: overrides.canAccessOrg ?? (() => true),
         partnerOrgAccess: 'partnerOrgAccess' in overrides ? overrides.partnerOrgAccess : null,
-        user: { id: USER_UUID, email: 'test@example.com' }
+        user: { id: USER_UUID, email: 'test@example.com' },
+        // SR2-11b: /sso/link/start binds the pending session to the initiating
+        // refresh family — defaults to a populated sid; tests that need to
+        // exercise the missing-sid 503 path override `token`.
+        token: 'token' in overrides ? overrides.token : { sid: '00000000-0000-4000-8000-0000000000fa' }
       });
       return next();
     });
@@ -2685,7 +2700,10 @@ describe('sso routes', () => {
       expect(body.data).toEqual([{ id: 'pp-1', name: 'MSP IdP', type: 'oidc', linked: false }]);
     });
 
-    it('POST /sso/link/start/:providerId returns authUrl, sets state cookie, and stamps linkUserId', async () => {
+    // SR2-11b: /link/start snapshots {authEpoch, mfaEpoch, sid} at creation
+    // (default auth mock: getUserEpochs → {authEpoch:1, mfaEpoch:1}, token.sid
+    // → INITIATING_SID) so the callback can re-check them against live state.
+    it('POST /sso/link/start/:providerId returns authUrl, sets state cookie, and stamps linkUserId + SR2-11b binding', async () => {
       vi.mocked(db.select).mockReturnValueOnce(sel([ORG_PROVIDER]));
       const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
       vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
@@ -2700,7 +2718,13 @@ describe('sso routes', () => {
       expect(body.authUrl).toMatch(/^https:\/\/idp\.example\.com\/auth/);
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_sso_state');
-      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ linkUserId: USER_UUID }));
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+        linkUserId: USER_UUID,
+        providerVersion: ORG_PROVIDER.configVersion,
+        initiatingAuthEpoch: 1,
+        initiatingMfaEpoch: 1,
+        initiatingSessionId: INITIATING_SID,
+      }));
     });
 
     it('POST /sso/link/start 401s an unauthenticated caller', async () => {
@@ -2738,23 +2762,86 @@ describe('sso routes', () => {
       expect(partnerRes.status).toBe(403);
     });
 
+    it('POST /sso/link/start returns 503 when epochs are unavailable (no session written)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(sel([ORG_PROVIDER]));
+      vi.mocked(getUserEpochs).mockResolvedValueOnce(null);
+
+      const res = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(503);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('POST /sso/link/start returns 503 when the token has no sid (no session written)', async () => {
+      setAuthContext({ token: {} });
+      vi.mocked(db.select).mockReturnValueOnce(sel([ORG_PROVIDER]));
+
+      const res = await app.request(`/sso/link/start/${PROVIDER_UUID}`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(503);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     // ── Callback link-mode branch ──────────────────────────────────────────
-    const primeLinkCallback = (linkUserId: string) => {
+    // SR2-11b: validateLinkBinding re-checks the pending link against LIVE
+    // state before it can attach an external identity. It issues, in order:
+    // a `users` select (the linking user), then — only if status/epochs/family
+    // all still check out — ONE axis-membership select (organization_users on
+    // the org axis). That membership select lands BEFORE the route's existing
+    // (provider, sub) userSsoIdentities select. Every link test funnels
+    // through this one helper so that ordering/shift lives in exactly one
+    // place instead of being hand-copied into every test.
+    const INITIATING_SID = '00000000-0000-4000-8000-0000000000fa';
+    const ACTIVE_LINKING_USER = {
+      id: USER_UUID, email: 'tech@example.com', name: 'Tech', status: 'active', orgId: null
+    };
+    const primeLinkCallback = (opts: {
+      linkUserId: string;
+      provider?: Record<string, unknown>;
+      // undefined = default healthy user; null = simulate "user gone" (no row).
+      linkingUser?: Record<string, unknown> | null;
+      // undefined = default live membership row; [] = membership lost.
+      membership?: unknown[];
+      sessionOverrides?: Record<string, unknown>;
+    }) => {
+      const {
+        linkUserId,
+        provider = ORG_PROVIDER,
+        linkingUser = ACTIVE_LINKING_USER,
+        membership = [{ userId: linkUserId }],
+        sessionOverrides = {},
+      } = opts;
+
       vi.mocked(exchangeCodeForTokens).mockResolvedValue({ access_token: 'a', refresh_token: 'r', expires_in: 3600, id_token: 'h.p.s' } as any);
       vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'tech@example.com', name: 'Tech' } as any);
       vi.mocked(mapUserAttributes).mockReturnValue({ email: 'tech@example.com', name: 'Tech' } as any);
       vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-link', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/settings/profile', linkUserId, providerVersion: 1 }]) })
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'sso-session-link', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce',
+            codeVerifier: 'verifier', redirectUrl: '/settings/profile', linkUserId, providerVersion: 1,
+            initiatingAuthEpoch: 1, initiatingMfaEpoch: 1, initiatingSessionId: INITIATING_SID,
+            ...sessionOverrides,
+          }])
+        })
       } as any);
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([provider]))                                // provider by id
+        .mockReturnValueOnce(sel(linkingUser ? [linkingUser] : []))          // validateLinkBinding: users
+        .mockReturnValueOnce(sel(membership));                               // validateLinkBinding: axis membership
     };
     const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
 
     it('callback link mode creates the identity for the SESSION user after verification', async () => {
-      primeLinkCallback(USER_UUID);
-      vi.mocked(db.select)
-        .mockReturnValueOnce(sel([ORG_PROVIDER]))                                        // provider by id
-        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'tech@example.com', name: 'Tech' }])) // linking user
-        .mockReturnValueOnce(sel([]));                                                    // (provider, sub) not in use
+      primeLinkCallback({ linkUserId: USER_UUID });
+      vi.mocked(db.select).mockReturnValueOnce(sel([])); // (provider, sub) not in use
       const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
       vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
 
@@ -2768,10 +2855,10 @@ describe('sso routes', () => {
     });
 
     it('callback link mode rejects an email mismatch (no insert)', async () => {
-      primeLinkCallback(USER_UUID);
-      vi.mocked(db.select)
-        .mockReturnValueOnce(sel([ORG_PROVIDER]))
-        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'someone-else@corp.com', name: 'Other' }]));
+      primeLinkCallback({
+        linkUserId: USER_UUID,
+        linkingUser: { id: USER_UUID, email: 'someone-else@corp.com', name: 'Other', status: 'active', orgId: null },
+      });
 
       const res = await doCallback();
       expect(res.status).toBe(302);
@@ -2781,17 +2868,67 @@ describe('sso routes', () => {
     });
 
     it('callback link mode rejects a (provider, sub) already linked to another user (no insert)', async () => {
-      primeLinkCallback(USER_UUID);
-      vi.mocked(db.select)
-        .mockReturnValueOnce(sel([ORG_PROVIDER]))
-        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'tech@example.com', name: 'Tech' }]))
-        .mockReturnValueOnce(sel([{ id: 'identity-x', userId: '00000000-0000-4000-8000-0000000000aa' }]));
+      primeLinkCallback({ linkUserId: USER_UUID });
+      vi.mocked(db.select).mockReturnValueOnce(sel([{ id: 'identity-x', userId: '00000000-0000-4000-8000-0000000000aa' }]));
 
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location')).toContain('ssoLinkError=identity_in_use');
       expect(db.insert).not.toHaveBeenCalled();
       expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    // ── SR2-11b: live re-check of the /link/start binding ──────────────────
+    it('callback rejects a revoked initiating refresh family (session_invalid, no insert)', async () => {
+      vi.mocked(getRefreshFamily).mockResolvedValueOnce({
+        revokedAt: new Date(), absoluteExpiresAt: new Date(Date.now() + 1e9)
+      });
+      primeLinkCallback({ linkUserId: USER_UUID });
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=session_invalid');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('callback rejects an auth-epoch bump since /link/start (session_invalid, no insert)', async () => {
+      vi.mocked(getUserEpochs).mockResolvedValueOnce({ authEpoch: 2, mfaEpoch: 1 });
+      primeLinkCallback({ linkUserId: USER_UUID });
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=session_invalid');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('callback rejects a suspended linking user (session_invalid, no insert)', async () => {
+      primeLinkCallback({
+        linkUserId: USER_UUID,
+        linkingUser: { ...ACTIVE_LINKING_USER, status: 'suspended' },
+      });
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=session_invalid');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('callback rejects a NULL binding column — pre-deploy row (session_invalid, no insert)', async () => {
+      primeLinkCallback({ linkUserId: USER_UUID, sessionOverrides: { initiatingSessionId: null } });
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=session_invalid');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('callback rejects lost org-axis membership since /link/start (session_invalid, no insert)', async () => {
+      primeLinkCallback({ linkUserId: USER_UUID, membership: [] });
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=session_invalid');
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 
@@ -2877,14 +3014,22 @@ describe('sso routes', () => {
       vi.mocked(exchangeCodeForTokens).mockResolvedValue({ access_token: 'a', refresh_token: 'r', expires_in: 3600, id_token: 'h.p.s' } as any);
       vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'tech@example.com', name: 'Tech' } as any);
       vi.mocked(mapUserAttributes).mockReturnValue({ email: 'tech@example.com', name: 'Tech' } as any);
-      claimSession({ providerVersion: 2, linkUserId: USER_UUID });
+      // SR2-11b: LINK-mode callback now re-checks the /link/start binding
+      // (validateLinkBinding), so the claimed session needs a live binding and
+      // the select queue gains the axis-membership select it issues.
+      claimSession({
+        providerVersion: 2, linkUserId: USER_UUID,
+        initiatingAuthEpoch: 1, initiatingMfaEpoch: 1,
+        initiatingSessionId: '00000000-0000-4000-8000-0000000000fa',
+      });
       vi.mocked(db.select)
         .mockReturnValueOnce(sel([{
           ...GEN_PROVIDER, status: 'testing', configVersion: 2,
           issuer: 'https://issuer.example.com', clientId: 'client-id', clientSecret: 'client-secret',
           jwksUrl: 'https://issuer.example.com/jwks'
         }])) // provider by id
-        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'tech@example.com', name: 'Tech' }])) // linking user
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'tech@example.com', name: 'Tech', status: 'active', orgId: null }])) // validateLinkBinding: users
+        .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // validateLinkBinding: axis membership
         .mockReturnValueOnce(sel([])); // (provider, sub) not in use
       const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
       vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);

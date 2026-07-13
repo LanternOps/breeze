@@ -33,7 +33,7 @@ import {
   PROVIDER_PRESETS,
   type OIDCConfig
 } from '../services/sso';
-import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, getUserEpochs, rateLimiter, getRedis } from '../services';
+import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, getUserEpochs, getRefreshFamily, rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
@@ -553,6 +553,103 @@ function checkProviderGeneration(
     return { ok: false, reason: 'provider_version_mismatch' };
   }
   return { ok: true };
+}
+
+type LinkRejectReason =
+  | 'link_binding_missing'
+  | 'link_user_gone'
+  | 'link_user_inactive'
+  | 'link_epochs_unavailable'
+  | 'link_auth_epoch_mismatch'
+  | 'link_mfa_epoch_mismatch'
+  | 'link_family_missing'
+  | 'link_family_revoked'
+  | 'link_family_expired'
+  | 'link_axis_membership_lost';
+
+/**
+ * SR2-11b: re-check a pending LINK session against LIVE state before it is
+ * allowed to bind an external identity to a Breeze account.
+ *
+ * The session snapshotted {authEpoch, mfaEpoch, sid} at /link/start. Any of the
+ * following since then must kill it:
+ *   - the user was suspended/deleted            -> status / user_gone
+ *   - password reset, email change, membership
+ *     change, platform-privilege change         -> auth_epoch bump
+ *   - any MFA factor change                     -> mfa_epoch bump
+ *   - logout, or a global session revocation    -> the bound refresh family is
+ *                                                  revoked (or gone/expired)
+ *   - removal from the provider's org/partner   -> axis membership lost
+ *
+ * A pre-deploy row (any binding column NULL) is a REJECT, not a pass.
+ *
+ * MUST be called inside withSystemDbAccessContext (/sso/callback is
+ * unauthenticated; getRefreshFamily establishes its own system context).
+ */
+async function validateLinkBinding(
+  session: typeof ssoSessions.$inferSelect,
+  provider: typeof ssoProviders.$inferSelect,
+): Promise<{ ok: true; user: typeof users.$inferSelect } | { ok: false; reason: LinkRejectReason }> {
+  if (
+    session.initiatingAuthEpoch == null ||
+    session.initiatingMfaEpoch == null ||
+    session.initiatingSessionId == null
+  ) {
+    return { ok: false, reason: 'link_binding_missing' };
+  }
+
+  const [linkingUser] = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, session.linkUserId!))
+    .limit(1);
+  if (!linkingUser) return { ok: false, reason: 'link_user_gone' };
+  if (linkingUser.status !== 'active') return { ok: false, reason: 'link_user_inactive' };
+
+  const liveEpochs = await getUserEpochs(linkingUser.id);
+  if (!liveEpochs) return { ok: false, reason: 'link_epochs_unavailable' };
+  if (liveEpochs.authEpoch !== session.initiatingAuthEpoch) {
+    return { ok: false, reason: 'link_auth_epoch_mismatch' };
+  }
+  if (liveEpochs.mfaEpoch !== session.initiatingMfaEpoch) {
+    return { ok: false, reason: 'link_mfa_epoch_mismatch' };
+  }
+
+  const family = await getRefreshFamily(session.initiatingSessionId);
+  if (!family) return { ok: false, reason: 'link_family_missing' };
+  if (family.revokedAt) return { ok: false, reason: 'link_family_revoked' };
+  if (family.absoluteExpiresAt.getTime() <= Date.now()) {
+    return { ok: false, reason: 'link_family_expired' };
+  }
+
+  // Axis membership must STILL be held (the /link/start pool check is a
+  // snapshot, not a guarantee).
+  if (provider.orgId) {
+    const [membership] = await db
+      .select({ userId: organizationUsers.userId })
+      .from(organizationUsers)
+      .where(and(
+        eq(organizationUsers.userId, linkingUser.id),
+        eq(organizationUsers.orgId, provider.orgId),
+      ))
+      .limit(1);
+    if (!membership) return { ok: false, reason: 'link_axis_membership_lost' };
+  } else if (provider.partnerId) {
+    if (linkingUser.orgId != null) return { ok: false, reason: 'link_axis_membership_lost' };
+    const [membership] = await db
+      .select({ userId: partnerUsers.userId })
+      .from(partnerUsers)
+      .where(and(
+        eq(partnerUsers.userId, linkingUser.id),
+        eq(partnerUsers.partnerId, provider.partnerId),
+      ))
+      .limit(1);
+    if (!membership) return { ok: false, reason: 'link_axis_membership_lost' };
+  } else {
+    return { ok: false, reason: 'link_axis_membership_lost' };
+  }
+
+  return { ok: true, user: linkingUser };
 }
 
 function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
@@ -1416,6 +1513,21 @@ ssoRoutes.post(
     const state = generateState();
     const nonce = generateNonce();
 
+    // SR2-11b: bind the pending link to the CURRENT security generation of the
+    // initiating session. Mirrors PR 2's enforceExistingFactorStepUp
+    // (routes/auth/helpers.ts:252-281): capture {authEpoch, mfaEpoch, sid} at
+    // mint, re-check against the LIVE row at consume. This is what makes a
+    // logout / password reset / MFA reset / suspension / global revocation
+    // between start and callback invalidate the pending link.
+    //
+    // Fail closed: without epochs or a sid there is nothing to bind to, so we
+    // refuse to create the session rather than create an unbindable one.
+    const initiatorEpochs = await getUserEpochs(auth.user.id);
+    const initiatingSid = auth.token?.sid;
+    if (!initiatorEpochs || !initiatingSid) {
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+
     // sso_sessions is system-scope-only under RLS (2026-07-16 migration): this
     // insert ran on the bare pool and only worked because the table had no
     // policies. The row is a pre-auth transaction record, not tenant data — it
@@ -1433,6 +1545,9 @@ ssoRoutes.post(
           linkUserId: auth.user.id,
           // SR2-11: snapshot the generation this session was created under.
           providerVersion: provider.configVersion,
+          initiatingAuthEpoch: initiatorEpochs.authEpoch,
+          initiatingMfaEpoch: initiatorEpochs.mfaEpoch,
+          initiatingSessionId: initiatingSid,
           expiresAt: new Date(Date.now() + 10 * 60 * 1000)
         })
       )
@@ -1932,12 +2047,12 @@ ssoRoutes.get('/callback', async (c) => {
     // NEVER creates users, and NEVER touches login's identity resolution.
     if (session.linkUserId) {
       const outcome = await withSystemDbAccessContext(async () => {
-        const [linkingUser] = await db
-          .select()
-          .from(users)
-          .where(eq(users.id, session.linkUserId!))
-          .limit(1);
-        if (!linkingUser) return { error: 'user_gone' as const };
+        // SR2-11b: live re-check of the binding captured at /link/start.
+        const binding = await validateLinkBinding(session, provider);
+        if (!binding.ok) {
+          return { error: 'session_invalid' as const, auditReason: binding.reason };
+        }
+        const linkingUser = binding.user;
 
         // The verified assertion must be for the SAME person: the asserted
         // email must equal the linking user's email. Without this a user could
@@ -1980,6 +2095,24 @@ ssoRoutes.get('/callback', async (c) => {
 
       clearStateCookie();
       if ('error' in outcome) {
+        writeRouteAudit(c, {
+          orgId: provider.orgId,
+          action: 'sso.identity.link_rejected',
+          resourceType: 'sso_provider',
+          resourceId: provider.id,
+          resourceName: provider.name,
+          result: 'denied',
+          details: {
+            // The PUBLIC code is deliberately coarse (session_invalid). The
+            // precise reason lives here only — distinguishing "suspended" from
+            // "session revoked" from "removed from org" in the URL would leak
+            // account state to whoever holds the browser.
+            reason: (outcome as { auditReason?: string }).auditReason ?? outcome.error,
+            publicCode: outcome.error,
+            partnerId: provider.partnerId,
+            userId: session.linkUserId,
+          },
+        });
         return c.redirect(`/settings/profile?ssoLinkError=${outcome.error}`);
       }
       writeRouteAudit(c, {
