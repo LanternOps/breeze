@@ -12,6 +12,7 @@ import { closeRedis, getRedis } from '../../services/redis';
 import { verifyToken } from '../../services/jwt';
 import * as userSessionService from '../../services/userSession';
 import { auditLogs, refreshTokenFamilies, users } from '../../db/schema';
+import { createMfaBrowserTransitionFixture } from './mfa-browser-transition-fixture';
 
 describe('single-use recovery-code login against real PostgreSQL and Redis', () => {
   afterAll(async () => {
@@ -33,6 +34,7 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
     }).where(eq(users.id, created.id)).returning();
     if (!user) throw new Error('Failed to seed recovery-code user');
     const oldFamilyId = await tdb.transaction((tx) => mintRefreshTokenFamily(user.id, { tx }));
+    const transition = await createMfaBrowserTransitionFixture();
     const tempToken = await createPendingMfa({
       userId: user.id,
       authEpoch: user.authEpoch,
@@ -51,11 +53,13 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       primaryAuthenticationMethod: 'password',
       configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
+      browserTransitionId: transition.browserTransitionId,
+      browserGeneration: transition.browserGeneration,
     });
     const app = new Hono().route('/auth', authRoutes);
     const submit = () => app.request('/auth/mfa/verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: transition.cookieHeader },
       body: JSON.stringify({ tempToken, method: 'recovery_code', code: usedCode }),
     });
 
@@ -90,7 +94,9 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
     }).where(eq(users.id, created.id)).returning();
     if (!user) throw new Error('Failed to seed distinct-token race user');
     const oldFamilyId = await tdb.transaction((tx) => mintRefreshTokenFamily(user.id, { tx }));
-    const pendingInput = {
+    const firstTransition = await createMfaBrowserTransitionFixture();
+    const secondTransition = await createMfaBrowserTransitionFixture();
+    const pendingInput = (transition: Awaited<ReturnType<typeof createMfaBrowserTransitionFixture>>) => ({
       userId: user.id, authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch,
       expectedStatus: 'active' as const, roleId: role.id, orgId: null, partnerId: partner.id,
       scope: 'partner' as const, policyRequired: false, policySources: [] as const,
@@ -98,17 +104,22 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       enrolledMethods: new Set(['totp', 'recovery_code'] as const),
       primaryAuthenticationMethod: 'password' as const, configuredMfaMethod: 'totp' as const,
       primaryMfaMethod: 'totp' as const,
-    };
+      browserTransitionId: transition.browserTransitionId,
+      browserGeneration: transition.browserGeneration,
+    });
     const [firstToken, secondToken] = await Promise.all([
-      createPendingMfa(pendingInput), createPendingMfa(pendingInput),
+      createPendingMfa(pendingInput(firstTransition)), createPendingMfa(pendingInput(secondTransition)),
     ]);
     const app = new Hono().route('/auth', authRoutes);
-    const submit = (tempToken: string) => app.request('/auth/mfa/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const submit = (tempToken: string, cookieHeader: string) => app.request('/auth/mfa/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
       body: JSON.stringify({ tempToken, method: 'recovery_code', code }),
     });
 
-    const responses = await Promise.all([submit(firstToken), submit(secondToken)]);
+    const responses = await Promise.all([
+      submit(firstToken, firstTransition.cookieHeader),
+      submit(secondToken, secondTransition.cookieHeader),
+    ]);
 
     expect(responses.map((response) => response.status).sort()).toEqual([200, 401]);
     expect(responses.filter((response) => response.headers.has('set-cookie'))).toHaveLength(1);
@@ -134,7 +145,10 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       mfaRecoveryCodes: [hashRecoveryCode(code)],
     }).where(eq(users.id, created.id)).returning();
     if (!user) throw new Error('Failed to seed malformed recovery user');
-    const pendingInput = {
+    const malformedTransition = await createMfaBrowserTransitionFixture();
+    const wrongTransition = await createMfaBrowserTransitionFixture();
+    const successTransition = await createMfaBrowserTransitionFixture();
+    const pendingInput = (transition: Awaited<ReturnType<typeof createMfaBrowserTransitionFixture>>) => ({
       userId: user.id, authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch,
       expectedStatus: 'active', roleId: role.id, orgId: null, partnerId: partner.id,
       scope: 'partner', policyRequired: false, policySources: [],
@@ -143,36 +157,40 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       ]),
       enrolledMethods: new Set<'totp' | 'recovery_code'>(['totp', 'recovery_code']),
       primaryAuthenticationMethod: 'password', configuredMfaMethod: 'totp', primaryMfaMethod: 'totp',
-    } as const;
+      browserTransitionId: transition.browserTransitionId,
+      browserGeneration: transition.browserGeneration,
+    } as const);
     const [malformedToken, wrongToken, successToken] = await Promise.all([
-      createPendingMfa(pendingInput), createPendingMfa(pendingInput), createPendingMfa(pendingInput),
+      createPendingMfa(pendingInput(malformedTransition)),
+      createPendingMfa(pendingInput(wrongTransition)),
+      createPendingMfa(pendingInput(successTransition)),
     ]);
     const auditWindowStart = new Date();
     const app = new Hono().route('/auth', authRoutes);
     const malformed = await app.request('/auth/mfa/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: malformedTransition.cookieHeader },
       body: JSON.stringify({ tempToken: malformedToken, method: 'recovery_code' }),
     });
     expect(malformed.status).toBe(401);
     expect(await getRedis()!.exists(`mfa:pending:${malformedToken}`)).toBe(0);
     const malformedRetry = await app.request('/auth/mfa/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: malformedTransition.cookieHeader },
       body: JSON.stringify({ tempToken: malformedToken, method: 'recovery_code', code }),
     });
     expect(malformedRetry.status).toBe(401);
     const wrongCode = 'NOPE-0000';
     const wrong = await app.request('/auth/mfa/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: wrongTransition.cookieHeader },
       body: JSON.stringify({ tempToken: wrongToken, method: 'recovery_code', code: wrongCode }),
     });
     expect(wrong.status).toBe(401);
     const success = await app.request('/auth/mfa/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: successTransition.cookieHeader },
       body: JSON.stringify({ tempToken: successToken, method: 'recovery_code', code }),
     });
     expect(success.status).toBe(200);
     const replay = await app.request('/auth/mfa/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: successTransition.cookieHeader },
       body: JSON.stringify({ tempToken: successToken, method: 'recovery_code', code }),
     });
     expect(replay.status).toBe(401);
@@ -185,7 +203,9 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
           eq(auditLogs.action, 'user.login.failed'),
           gte(auditLogs.timestamp, auditWindowStart),
         ));
-      if (failureAudits.length < 4) await new Promise<void>((resolve) => setImmediate(resolve));
+      if (failureAudits.length < 4) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
     }
     expect(failureAudits).toHaveLength(4);
     expect(failureAudits.map((audit) => (audit.details as any)?.reason).sort()).toEqual([
@@ -212,6 +232,7 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
     }).where(eq(users.id, created.id)).returning();
     if (!user) throw new Error('Failed to seed bind-failure user');
     const oldFamilyId = await tdb.transaction((tx) => mintRefreshTokenFamily(user.id, { tx }));
+    const transition = await createMfaBrowserTransitionFixture();
     const tempToken = await createPendingMfa({
       userId: user.id, authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch,
       expectedStatus: 'active', roleId: role.id, orgId: null, partnerId: partner.id,
@@ -219,13 +240,15 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
       enrolledMethods: new Set(['totp', 'recovery_code']),
       primaryAuthenticationMethod: 'password', configuredMfaMethod: 'totp', primaryMfaMethod: 'totp',
+      browserTransitionId: transition.browserTransitionId,
+      browserGeneration: transition.browserGeneration,
     });
     const bindFault = vi.spyOn(userSessionService, 'bindIssuedUserSession')
       .mockRejectedValueOnce(new Error('injected bind failure'));
     let response: Response;
     try {
       response = await new Hono().route('/auth', authRoutes).request('/auth/mfa/verify', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: transition.cookieHeader },
         body: JSON.stringify({ tempToken, method: 'recovery_code', code }),
       });
     } finally {
@@ -262,6 +285,7 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
     }).where(eq(users.id, created.id)).returning();
     if (!user) throw new Error('Failed to seed rollback user');
     const familyId = await tdb.transaction((tx) => mintRefreshTokenFamily(user.id, { tx }));
+    const transition = await createMfaBrowserTransitionFixture();
     const tempToken = await createPendingMfa({
       userId: user.id, authEpoch: user.authEpoch, mfaEpoch: user.mfaEpoch,
       expectedStatus: 'active', roleId: role.id, orgId: null, partnerId: partner.id,
@@ -270,6 +294,8 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       enrolledMethods: new Set(['totp', 'recovery_code']),
       primaryAuthenticationMethod: 'password', configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
+      browserTransitionId: transition.browserTransitionId,
+      browserGeneration: transition.browserGeneration,
     });
     await tdb.execute(sql.raw(`
       CREATE OR REPLACE FUNCTION fail_recovery_epoch_update() RETURNS trigger AS $$
@@ -291,7 +317,7 @@ describe('single-use recovery-code login against real PostgreSQL and Redis', () 
       const app = new Hono().route('/auth', authRoutes);
       response = await app.request('/auth/mfa/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Cookie: transition.cookieHeader },
         body: JSON.stringify({ tempToken, method: 'recovery_code', code }),
       });
     } finally {

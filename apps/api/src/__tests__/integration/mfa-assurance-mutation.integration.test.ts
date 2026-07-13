@@ -10,13 +10,22 @@ import {
   createRole,
   createUser,
 } from './db-utils';
-import { partners, refreshTokenFamilies, users } from '../../db/schema';
 import {
+  authBrowserTransitions,
+  partners,
+  refreshTokenFamilies,
+  users,
+} from '../../db/schema';
+import {
+  beginPendingMfaIssuance,
   createPendingMfa,
   issueVerifiedPendingMfaSession,
   PendingMfaInvalidError,
   readPendingMfa,
 } from '../../services/mfaAssurance';
+import {
+  createMfaBrowserTransitionFixture,
+} from './mfa-browser-transition-fixture';
 import {
   invalidateMfaPolicyAssurance,
   MfaAssuranceMutationStaleError,
@@ -24,6 +33,11 @@ import {
 } from '../../services/mfaAssuranceMutation';
 import { mintRefreshTokenFamily, getActiveRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import { closeRedis } from '../../services/redis';
+import {
+  AuthIssuanceCapabilityError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+} from '../../services/authBrowserTransition';
 import {
   consumeMfaStepUpGrant,
   issueMfaStepUpGrant,
@@ -69,6 +83,7 @@ async function seedPartnerMfaUser() {
 }
 
 async function pendingFor(input: Awaited<ReturnType<typeof seedPartnerMfaUser>>) {
+  const transition = await createMfaBrowserTransitionFixture();
   const tempToken = await createPendingMfa({
     userId: input.user.id,
     authEpoch: input.user.authEpoch,
@@ -85,10 +100,12 @@ async function pendingFor(input: Awaited<ReturnType<typeof seedPartnerMfaUser>>)
     primaryAuthenticationMethod: 'password',
     configuredMfaMethod: 'totp',
     primaryMfaMethod: 'totp',
+    browserTransitionId: transition.browserTransitionId,
+    browserGeneration: transition.browserGeneration,
   });
   const expectedPending = await readPendingMfa(tempToken);
   if (!expectedPending) throw new Error('Pending MFA state was not stored');
-  return { tempToken, expectedPending };
+  return { tempToken, expectedPending, authBinding: transition.authBinding };
 }
 
 describe('MFA assurance mutation atomicity against real PostgreSQL', () => {
@@ -188,8 +205,10 @@ describe('MFA assurance mutation atomicity against real PostgreSQL', () => {
     const tdb = getTestDb();
     const seeded = await seedPartnerMfaUser();
     const pending = await pendingFor(seeded);
+    const capability = await beginPendingMfaIssuance(pending.expectedPending, pending.authBinding);
     const issued = await issueVerifiedPendingMfaSession({
       ...pending,
+      capability,
       verifiedMethod: 'totp',
     });
 
@@ -226,8 +245,10 @@ describe('MFA assurance mutation atomicity against real PostgreSQL', () => {
     });
     await mutationLocked.promise;
 
+    const capability = await beginPendingMfaIssuance(pending.expectedPending, pending.authBinding);
     const issuance = issueVerifiedPendingMfaSession({
       ...pending,
+      capability,
       verifiedMethod: 'totp',
     });
     const rejectedIssuance = expect(issuance).rejects.toBeInstanceOf(PendingMfaInvalidError);
@@ -248,10 +269,96 @@ describe('MFA assurance mutation atomicity against real PostgreSQL', () => {
       reason: 'totp-factor-changed',
     }, async () => undefined);
 
+    const capability = await beginPendingMfaIssuance(pending.expectedPending, pending.authBinding);
     await expect(issueVerifiedPendingMfaSession({
       ...pending,
+      capability,
       verifiedMethod: 'totp',
     })).rejects.toBeInstanceOf(PendingMfaInvalidError);
+  });
+
+  it('rejects before factor writes when the terminal transition wins after admission', async () => {
+    const tdb = getTestDb();
+    const seeded = await seedPartnerMfaUser();
+    const pending = await pendingFor(seeded);
+    const capability = await beginPendingMfaIssuance(
+      pending.expectedPending,
+      pending.authBinding,
+    );
+    await tdb.update(authBrowserTransitions).set({
+      state: 'logout_pending',
+      generation: capability.generation + 1,
+      logoutId: '33333333-3333-4333-8333-333333333333',
+      completionNonceDigest: 'd'.repeat(64),
+      logoutExpiresAt: new Date(Date.now() + 300_000),
+      updatedAt: new Date(),
+    }).where(eq(authBrowserTransitions.id, capability.transitionId));
+    let factorFinalized = false;
+
+    await expect(issueVerifiedPendingMfaSession({
+      ...pending,
+      capability,
+      verifiedMethod: 'totp',
+      finalizeFactor: async (tx) => {
+        factorFinalized = true;
+        await tx.update(users).set({ mfaSecret: 'must-not-persist' })
+          .where(eq(users.id, seeded.user.id));
+      },
+    })).rejects.toBeInstanceOf(AuthIssuanceCapabilityError);
+
+    const [afterUser] = await tdb.select().from(users).where(eq(users.id, seeded.user.id));
+    const families = await tdb.select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.userId, seeded.user.id));
+    expect(factorFinalized).toBe(false);
+    expect(afterUser?.mfaSecret).toBe('integration-encrypted-secret');
+    expect(afterUser?.lastLoginAt).toBeNull();
+    expect(families).toEqual([]);
+  });
+
+  it('rolls factor writes back at the final capability barrier and permits immediate retry', async () => {
+    const tdb = getTestDb();
+    const seeded = await seedPartnerMfaUser();
+    const pending = await pendingFor(seeded);
+    const capability = await beginPendingMfaIssuance(
+      pending.expectedPending,
+      pending.authBinding,
+    );
+
+    await expect(issueVerifiedPendingMfaSession({
+      ...pending,
+      capability,
+      verifiedMethod: 'totp',
+      finalizeFactor: async (tx) => {
+        await tx.update(users).set({ mfaSecret: 'must-roll-back' })
+          .where(eq(users.id, seeded.user.id));
+        await tx.update(authBrowserTransitions).set({
+          state: 'logout_pending',
+          generation: capability.generation + 1,
+          logoutId: '44444444-4444-4444-8444-444444444444',
+          completionNonceDigest: 'e'.repeat(64),
+          logoutExpiresAt: sql`now() + interval '5 minutes'`,
+          updatedAt: sql`now()`,
+        }).where(eq(authBrowserTransitions.id, capability.transitionId));
+      },
+    })).rejects.toBeInstanceOf(AuthIssuanceCapabilityError);
+
+    const [afterUser] = await tdb.select().from(users).where(eq(users.id, seeded.user.id));
+    const [afterTransition] = await tdb.select().from(authBrowserTransitions)
+      .where(eq(authBrowserTransitions.id, capability.transitionId));
+    const families = await tdb.select().from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.userId, seeded.user.id));
+    expect(afterUser?.mfaSecret).toBe('integration-encrypted-secret');
+    expect(afterUser?.lastLoginAt).toBeNull();
+    expect(afterTransition).toMatchObject({
+      state: 'active',
+      generation: capability.generation,
+      activeOperationId: null,
+    });
+    expect(families).toEqual([]);
+
+    const retry = await beginAuthIssuance(pending.authBinding);
+    expect(retry.generation).toBe(capability.generation);
+    await cancelAuthIssuance(retry);
   });
 
   it('revokes the issued family when overlapping session issuance wins before policy mutation', async () => {
@@ -268,8 +375,10 @@ describe('MFA assurance mutation atomicity against real PostgreSQL', () => {
     });
     await tableLocked.promise;
 
+    const capability = await beginPendingMfaIssuance(pending.expectedPending, pending.authBinding);
     const issuance = issueVerifiedPendingMfaSession({
       ...pending,
+      capability,
       verifiedMethod: 'totp',
     });
     // The blocked INSERT proves issuance already holds partner/user/factor

@@ -75,6 +75,7 @@ vi.mock('../services', () => ({
     operationId: '22222222-2222-4222-8222-222222222222',
     expiresAt: new Date(Date.now() + 120_000),
   }),
+  cancelAuthIssuance: vi.fn().mockResolvedValue(true),
   finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => unknown) => {
     const { db } = await import('../db');
     return callback(db);
@@ -334,6 +335,7 @@ import {
   readPendingMfa,
   issueVerifiedPendingMfaSession,
   beginPendingMfaIssuance,
+  cancelAuthIssuance,
   finishAuthIssuance,
   AuthIssuanceCapabilityError,
   PendingMfaInvalidError,
@@ -1239,7 +1241,7 @@ describe('passkey MFA auth routes', () => {
       pendingMfa,
       { kind: 'browser', value: '' },
     );
-    expect(finishAuthIssuance).toHaveBeenCalledOnce();
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
     expect(dbState.updateSets).toEqual([]);
     expect(res.headers.get('set-cookie')).toBeNull();
     expect(redisMock.del).not.toHaveBeenCalled();
@@ -1256,7 +1258,7 @@ describe('passkey MFA auth routes', () => {
       disabledAt: null,
     }]);
     passkeyMocks.verifyPasskeyAuthentication.mockResolvedValueOnce({ verified: false });
-    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+    vi.mocked(cancelAuthIssuance).mockResolvedValueOnce(false);
 
     const res = await app.request('/auth/mfa/passkey/verify', {
       method: 'POST',
@@ -1268,7 +1270,7 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(401);
-    expect(finishAuthIssuance).toHaveBeenCalledOnce();
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
     expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
     expect(issueUserSession).not.toHaveBeenCalled();
     expect(dbState.updateSets).toEqual([]);
@@ -1304,7 +1306,31 @@ describe('passkey MFA auth routes', () => {
       capability: expect.any(Object),
       finalizeFactor: expect.any(Function),
     }));
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
     expect(issueUserSession).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('cancels the lease when passkey verification throws unexpectedly', async () => {
+    dbState.selectQueue.push([{
+      id: 'credential-row-1', userId: 'user-123', credentialId: 'credential-1',
+      publicKey: 'public-key', counter: 0, transports: ['internal'], disabledAt: null,
+    }]);
+    passkeyMocks.verifyPasskeyAuthentication.mockRejectedValueOnce(new Error('challenge store unavailable'));
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+    expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
     expect(dbState.updateSets).toEqual([]);
     expect(res.headers.get('set-cookie')).toBeNull();
   });

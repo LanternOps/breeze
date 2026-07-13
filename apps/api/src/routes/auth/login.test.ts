@@ -35,6 +35,7 @@ vi.mock('../../services', () => ({
     expiresInSeconds: 900, familyId: 'family-id',
   })),
   beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1, operationId: 'operation-1' })),
+  cancelAuthIssuance: vi.fn(async () => true),
   finishAuthIssuance: vi.fn(async (_capability: unknown, fn: (tx: object) => Promise<unknown>) => fn({})),
   bindIssuedUserSession: vi.fn(async () => undefined),
   AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
@@ -257,6 +258,7 @@ import {
   isTokenIssuedBeforePasswordChange,
   UserSessionFamilyInactiveError,
   beginAuthIssuance,
+  cancelAuthIssuance,
   finishAuthIssuance,
   bindIssuedUserSession,
   RefreshTokenCurrentnessError,
@@ -1248,6 +1250,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(markRefreshTokenJtiRotated).not.toHaveBeenCalled();
     expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
     expect(setRefreshTokenCookie).not.toHaveBeenCalled();
     expect(touchFamilyLastUsed).not.toHaveBeenCalled();
   });

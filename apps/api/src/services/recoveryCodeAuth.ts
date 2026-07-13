@@ -20,7 +20,11 @@ import {
 import { lockMfaAssuranceState } from './mfaAssuranceLocks';
 import { resolveEffectiveMfaPolicy } from './mfaPolicy';
 import { bindIssuedUserSession, issueUserSession } from './userSession';
-import { finishAuthIssuance, type AuthBindingSource } from './authBrowserTransition';
+import {
+  cancelAuthIssuance,
+  finishAuthIssuance,
+  type AuthBindingSource,
+} from './authBrowserTransition';
 
 const MFA_METHOD_ORDER = ['totp', 'sms', 'passkey', 'recovery_code'] as const;
 const MFA_POLICY_SOURCE_ORDER = ['role', 'partner', 'organization'] as const;
@@ -224,10 +228,12 @@ export async function completeRecoveryCodeLogin(input: {
   try {
     consumedPending = await consumePendingMfa(input.tempToken);
   } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => false);
     if (error instanceof PendingMfaUnavailableError) throw new RecoveryCodeUnavailableError();
     throw error;
   }
   if (!consumedPending || !pendingMfaRecordsEqual(consumedPending, pending)) {
+    await cancelAuthIssuance(capability).catch(() => false);
     throw new RecoveryCodeInvalidError(pending.userId);
   }
 
@@ -282,6 +288,7 @@ export async function completeRecoveryCodeLogin(input: {
       };
     });
   } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => false);
     if (error instanceof RecoveryCodeInvalidError || error instanceof PendingMfaInvalidError) {
       throw new RecoveryCodeInvalidError(pending.userId);
     }

@@ -29,6 +29,7 @@ import {
   PendingMfaUnavailableError,
   revokeAllUserTokens,
   beginAuthIssuance,
+  cancelAuthIssuance,
   finishAuthIssuance,
   AuthBindingRotationRequiredError,
   AuthBindingUnavailableError,
@@ -1023,6 +1024,7 @@ loginRoutes.post('/refresh', async (c) => {
         },
       }));
   } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => false);
     if (!(error instanceof RefreshTokenCurrentnessError)) throw error;
     clearRefreshTokenCookie(c);
     return c.json({ error: 'Invalid refresh token' }, 401);

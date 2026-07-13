@@ -12,6 +12,7 @@ import {
 import { lockMfaAssuranceState } from './mfaAssuranceLocks';
 import {
   beginAuthIssuance,
+  cancelAuthIssuance,
   finishAuthIssuance,
   type AuthBindingSource,
   type AuthIssuanceCapability,
@@ -31,6 +32,18 @@ const MFA_PRIMARY_METHOD_ORDER: readonly MfaPrimaryMethod[] = ['totp', 'sms', 'p
 const MFA_POLICY_SOURCE_ORDER = ['role', 'partner', 'organization'] as const;
 const PRIMARY_AUTHENTICATION_METHODS = ['password', 'sso', 'cf_access'] as const;
 const MFA_SCOPES = ['system', 'partner', 'organization'] as const;
+
+async function cancelAuthIssuanceOnFailure<T>(
+  capability: AuthIssuanceCapability,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => false);
+    throw error;
+  }
+}
 
 type MfaPolicySource = typeof MFA_POLICY_SOURCE_ORDER[number];
 type PrimaryAuthenticationMethod = typeof PRIMARY_AUTHENTICATION_METHODS[number];
@@ -432,7 +445,8 @@ export async function decideAuthenticatedUserSession(
   input: AuthenticatedUserSessionDecisionInput,
 ) {
   const capability = await beginAuthIssuance(input.authBinding);
-  const decision = await finishAuthIssuance(capability, async (tx) => {
+  const decision = await cancelAuthIssuanceOnFailure(capability, () =>
+    finishAuthIssuance(capability, async (tx) => {
     const { user, activePasskeyCount, policy } = await loadLockedPendingMfaAuthority(tx, input);
     if (!user || user.id !== input.userId || user.status !== 'active') {
       throw new PendingMfaInvalidError();
@@ -506,7 +520,7 @@ export async function decideAuthenticatedUserSession(
       .set({ lastLoginAt: new Date() })
       .where(eq(users.id, user.id));
     return { kind: 'issued' as const, user, tokens };
-  });
+    }));
 
   if (decision.kind === 'pending') {
     const tempToken = await createPendingMfa(decision.createInput);
@@ -527,7 +541,8 @@ export async function createPendingMfaForLogin(
   input: CreatePendingMfaForLoginInput & { authBinding: AuthBindingSource },
 ) {
   const capability = await beginAuthIssuance(input.authBinding);
-  const prepared = await finishAuthIssuance(capability, async (tx) => {
+  const prepared = await cancelAuthIssuanceOnFailure(capability, () =>
+    finishAuthIssuance(capability, async (tx) => {
     const { user, activePasskeyCount, policy } = await loadLockedPendingMfaAuthority(tx, input);
     if (!user || user.id !== input.userId || user.status !== 'active' || user.mfaEnabled !== true) {
       throw new PendingMfaInvalidError();
@@ -564,7 +579,7 @@ export async function createPendingMfaForLogin(
         browserGeneration: capability.generation,
       },
     };
-  });
+    }));
   const tempToken = await createPendingMfa(prepared.createInput);
   return {
     tempToken,
@@ -587,7 +602,7 @@ export async function beginPendingMfaIssuance(
     capability.transitionId !== pending.browserTransitionId
     || capability.generation !== pending.browserGeneration
   ) {
-    await finishAuthIssuance(capability, async () => undefined);
+    await cancelAuthIssuance(capability).catch(() => false);
     throw new PendingMfaInvalidError();
   }
   return capability;
@@ -603,19 +618,20 @@ export async function beginPendingMfaIssuance(
 export async function issueVerifiedPendingMfaSession(
   input: IssueVerifiedPendingMfaSessionInput,
 ) {
-  const consumed = await consumePendingMfa(input.tempToken);
-  if (!consumed || !pendingMfaRecordsEqual(consumed, input.expectedPending)) {
-    throw new PendingMfaInvalidError();
-  }
+  return cancelAuthIssuanceOnFailure(input.capability, async () => {
+    const consumed = await consumePendingMfa(input.tempToken);
+    if (!consumed || !pendingMfaRecordsEqual(consumed, input.expectedPending)) {
+      throw new PendingMfaInvalidError();
+    }
 
-  if (
-    input.capability.transitionId !== consumed.browserTransitionId
-    || input.capability.generation !== consumed.browserGeneration
-  ) {
-    throw new PendingMfaInvalidError();
-  }
+    if (
+      input.capability.transitionId !== consumed.browserTransitionId
+      || input.capability.generation !== consumed.browserGeneration
+    ) {
+      throw new PendingMfaInvalidError();
+    }
 
-  const issued = await finishAuthIssuance(input.capability, async (tx) => {
+    const issued = await finishAuthIssuance(input.capability, async (tx) => {
     let authority;
     try {
       authority = await loadLockedPendingMfaAuthority(tx, {
@@ -685,7 +701,8 @@ export async function issueVerifiedPendingMfaSession(
         scope: consumed.scope,
       },
     };
+    });
+    await bindIssuedUserSession(issued.tokens);
+    return issued;
   });
-  await bindIssuedUserSession(issued.tokens);
-  return issued;
 }

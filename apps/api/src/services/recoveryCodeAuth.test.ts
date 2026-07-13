@@ -23,6 +23,7 @@ const revokeUserSessionFamily = vi.hoisted(() => vi.fn());
 const consumePendingMfa = vi.hoisted(() => vi.fn());
 const readPendingMfa = vi.hoisted(() => vi.fn());
 const beginPendingMfaIssuance = vi.hoisted(() => vi.fn());
+const cancelAuthIssuance = vi.hoisted(() => vi.fn());
 const finishAuthIssuance = vi.hoisted(() => vi.fn());
 const resolveEffectiveMfaPolicy = vi.hoisted(() => vi.fn());
 const issueUserSession = vi.hoisted(() => vi.fn());
@@ -43,7 +44,7 @@ vi.mock('./mfaAssurance', () => ({
   PendingMfaUnavailableError: class PendingMfaUnavailableError extends Error {},
   selectEffectiveMfaMethod: vi.fn(() => 'totp'),
 }));
-vi.mock('./authBrowserTransition', () => ({ finishAuthIssuance }));
+vi.mock('./authBrowserTransition', () => ({ cancelAuthIssuance, finishAuthIssuance }));
 vi.mock('./mfaPolicy', () => ({ resolveEffectiveMfaPolicy }));
 vi.mock('./userSession', () => ({ issueUserSession, bindIssuedUserSession }));
 import {
@@ -56,6 +57,14 @@ import {
   rejectMalformedRecoveryCodeLogin,
 } from './recoveryCodeAuth';
 import { PendingMfaUnavailableError } from './mfaAssurance';
+
+const authBinding = { kind: 'browser' as const, value: 'a'.repeat(64) };
+
+function completeRecovery(
+  input: Omit<Parameters<typeof completeRecoveryCodeLogin>[0], 'authBinding'>,
+) {
+  return completeRecoveryCodeLogin({ ...input, authBinding });
+}
 
 function fakeTx() {
   return {
@@ -123,6 +132,7 @@ describe('recovery-code authentication', () => {
       operationId: '22222222-2222-4222-8222-222222222222',
       expiresAt: new Date(Date.now() + 120_000),
     });
+    cancelAuthIssuance.mockReset().mockResolvedValue(true);
     finishAuthIssuance.mockReset().mockImplementation(async (_capability, fn) => {
       state.events.push('finish');
       return fn(state.tx);
@@ -202,7 +212,7 @@ describe('recovery-code authentication', () => {
   });
 
   it('burns pending state before database work and only issues after the consumption transaction commits', async () => {
-    const result = await completeRecoveryCodeLogin({
+    const result = await completeRecovery({
       tempToken: 'pending-token',
       code: 'ABCD-EF12',
     });
@@ -218,39 +228,41 @@ describe('recovery-code authentication', () => {
   it('does not consume a recovery hash or issue a family when terminal finalization rejects', async () => {
     finishAuthIssuance.mockRejectedValueOnce(new Error('logout pending'));
 
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'pending-token',
       code: 'ABCD-EF12',
-      authBinding: { kind: 'browser', value: 'a'.repeat(64) },
     })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
 
     expect(beginPendingMfaIssuance).toHaveBeenCalledWith(
       state.pending,
-      { kind: 'browser', value: 'a'.repeat(64) },
+      authBinding,
     );
     expect(invalidateUserMfaAssurance).not.toHaveBeenCalled();
     expect(issueUserSession).not.toHaveBeenCalled();
     expect(bindIssuedUserSession).not.toHaveBeenCalled();
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
   });
 
   it('burns pending state and issues no token when the durable transaction fails', async () => {
     state.updateRows = [];
 
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'pending-token', code: 'ABCD-EF12',
     })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
 
     expect(consumePendingMfa).toHaveBeenCalledOnce();
     expect(issueUserSession).not.toHaveBeenCalled();
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
   });
 
   it('fails closed without database work when no pending state exists', async () => {
     consumePendingMfa.mockResolvedValueOnce(null);
 
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'missing', code: 'ABCD-EF12',
     })).rejects.toBeInstanceOf(RecoveryCodeInvalidError);
     expect(withAuthLifecycleSystemTransaction).not.toHaveBeenCalled();
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
   });
 
   it('burns identifiable pending state before rejecting a malformed code', async () => {
@@ -264,7 +276,7 @@ describe('recovery-code authentication', () => {
   it('retains the consumed identity on a wrong-code error for redacted auditing', async () => {
     let failure: unknown;
     try {
-      await completeRecoveryCodeLogin({ tempToken: 'pending-token', code: 'WXYZ-9999' });
+      await completeRecovery({ tempToken: 'pending-token', code: 'WXYZ-9999' });
     } catch (error) {
       failure = error;
     }
@@ -275,7 +287,7 @@ describe('recovery-code authentication', () => {
   it('returns no successful result when post-commit session binding fails', async () => {
     bindIssuedUserSession.mockRejectedValueOnce(new Error('redis bind failed'));
 
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'pending-token', code: 'ABCD-EF12',
     })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
     expect(issueUserSession).toHaveBeenCalledOnce();
@@ -289,7 +301,7 @@ describe('recovery-code authentication', () => {
     bindIssuedUserSession.mockRejectedValueOnce(new Error('sensitive bind detail'));
     revokeUserSessionFamily.mockRejectedValueOnce(new Error('sensitive database detail'));
 
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'pending-token', code: 'ABCD-EF12',
     })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
 
@@ -309,7 +321,7 @@ describe('recovery-code authentication', () => {
   it('does no database work when atomic Redis consumption is unavailable', async () => {
     consumePendingMfa.mockRejectedValueOnce(new PendingMfaUnavailableError());
 
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'pending-token', code: 'ABCD-EF12',
     })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
     expect(withAuthLifecycleSystemTransaction).not.toHaveBeenCalled();
@@ -321,7 +333,7 @@ describe('recovery-code authentication', () => {
       required: false, sources: [], allowedMethods: new Set(['totp']),
     });
 
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'pending-token', code: 'ABCD-EF12',
     })).rejects.toBeInstanceOf(RecoveryCodeInvalidError);
     expect(invalidateUserMfaAssurance).not.toHaveBeenCalled();
@@ -337,7 +349,7 @@ describe('recovery-code authentication', () => {
     ['primary factor snapshot', () => { state.pending = { ...state.pending, primaryMfaMethod: 'sms' }; }],
   ])('fails closed when live %s changes', async (_name, mutate) => {
     mutate();
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'pending-token', code: 'ABCD-EF12',
     })).rejects.toBeInstanceOf(RecoveryCodeInvalidError);
     expect(issueUserSession).not.toHaveBeenCalled();
@@ -345,7 +357,7 @@ describe('recovery-code authentication', () => {
 
   it('fails closed when live membership or role authority cannot be resolved', async () => {
     resolveEffectiveMfaPolicy.mockRejectedValueOnce(new Error('membership removed'));
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'pending-token', code: 'ABCD-EF12',
     })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
     expect(issueUserSession).not.toHaveBeenCalled();
@@ -363,7 +375,7 @@ describe('recovery-code authentication', () => {
       policySources: ['partner'],
       allowedMethods: ['totp', 'recovery_code'],
     };
-    await expect(completeRecoveryCodeLogin({
+    await expect(completeRecovery({
       tempToken: 'pending-token', code: 'ABCD-EF12',
     })).resolves.toMatchObject({ mfaEpoch: 8 });
   });
@@ -378,7 +390,7 @@ describe('recovery-code authentication', () => {
   ] as const)('propagates exact %s authority into the owned session', async (_name, authority) => {
     state.pending = { ...state.pending, ...authority };
 
-    await completeRecoveryCodeLogin({ tempToken: 'pending-token', code: 'ABCD-EF12' });
+    await completeRecovery({ tempToken: 'pending-token', code: 'ABCD-EF12' });
 
     expect(resolveEffectiveMfaPolicy).toHaveBeenCalledWith(expect.objectContaining(authority));
     expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({

@@ -15,7 +15,7 @@ import {
   getRedis,
   issueVerifiedPendingMfaSession,
   beginPendingMfaIssuance,
-  finishAuthIssuance,
+  cancelAuthIssuance,
   AuthBindingRotationRequiredError,
   AuthBindingUnavailableError,
   AuthIssuanceCapabilityError,
@@ -528,43 +528,54 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
     let valid = false;
     let migratedMfaSecret: string | null = null;
     if (effectiveMethod === 'passkey') {
-      await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
+      await cancelAuthIssuance(capability).catch(() => false);
       return c.json({ error: 'Use passkey verification for this MFA session' }, 400);
     }
 
     if (effectiveMethod === 'sms') {
       const phone = user.phoneNumber;
       if (!phone) {
-        await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
+        await cancelAuthIssuance(capability).catch(() => false);
         return c.json({ error: 'No phone number configured for SMS MFA' }, 400);
       }
       const twilio = getTwilioService();
       if (!twilio) {
-        await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
+        await cancelAuthIssuance(capability).catch(() => false);
         return c.json({ error: 'SMS service not configured' }, 501);
       }
-      const result = await twilio.checkVerificationCode(phone, code);
+      let result;
+      try {
+        result = await twilio.checkVerificationCode(phone, code);
+      } catch (error) {
+        await cancelAuthIssuance(capability).catch(() => false);
+        throw error;
+      }
       if (result.serviceError) {
-        await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
+        await cancelAuthIssuance(capability).catch(() => false);
         return c.json({ error: 'SMS verification service temporarily unavailable. Please try again.' }, 502);
       }
       valid = result.valid;
     } else {
-      // TOTP verification
-      const decrypted = decryptMfaSecretForMigration(user.mfaSecret);
-      const decryptedMfaSecret = decrypted.plaintext;
-      if (!decryptedMfaSecret) {
-        await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
-        return c.json({ error: 'Invalid MFA configuration' }, 400);
+      try {
+        // TOTP verification
+        const decrypted = decryptMfaSecretForMigration(user.mfaSecret);
+        const decryptedMfaSecret = decrypted.plaintext;
+        if (!decryptedMfaSecret) {
+          await cancelAuthIssuance(capability).catch(() => false);
+          return c.json({ error: 'Invalid MFA configuration' }, 400);
+        }
+        migratedMfaSecret = decrypted.migratedSecret;
+        // consumeMFAToken: single-use per (user, step) so a live code can't be
+        // replayed into a second login session. (security review #2)
+        valid = await consumeMFAToken(decryptedMfaSecret, code, user.id);
+      } catch (error) {
+        await cancelAuthIssuance(capability).catch(() => false);
+        throw error;
       }
-      migratedMfaSecret = decrypted.migratedSecret;
-      // consumeMFAToken: single-use per (user, step) so a live code can't be
-      // replayed into a second login session. (security review #2)
-      valid = await consumeMFAToken(decryptedMfaSecret, code, user.id);
     }
 
     if (!valid) {
-      await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
+      await cancelAuthIssuance(capability).catch(() => false);
       void auditUserLoginFailure(c, {
         userId: user.id,
         email: user.email,
@@ -593,6 +604,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
           : undefined,
       });
     } catch (error) {
+      await cancelAuthIssuance(capability).catch(() => false);
       if (error instanceof PendingMfaUnavailableError) {
         return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
       }

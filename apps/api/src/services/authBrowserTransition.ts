@@ -554,6 +554,34 @@ export async function bindAuthIssuanceSession(
 }
 
 /**
+ * Best-effort abandonment for a capability whose authority transaction did
+ * not commit. The exact generation and operation CAS prevents a stale owner
+ * from clearing a successor lease or a retired transition.
+ */
+export async function cancelAuthIssuance(
+  capability: AuthIssuanceCapability,
+): Promise<boolean> {
+  assertCapabilityBrand(capability);
+  return withAuthLifecycleSystemTransaction(async (tx) => {
+    const cleared = await tx
+      .update(authBrowserTransitions)
+      .set({
+        activeOperationId: null,
+        activeOperationExpiresAt: null,
+        updatedAt: sql`now()`,
+      })
+      .where(and(
+        eq(authBrowserTransitions.id, capability.transitionId),
+        eq(authBrowserTransitions.generation, capability.generation),
+        eq(authBrowserTransitions.state, 'active'),
+        eq(authBrowserTransitions.activeOperationId, capability.operationId),
+      ))
+      .returning({ id: authBrowserTransitions.id });
+    return cleared.length === 1;
+  });
+}
+
+/**
  * Recheck exact lease ownership before invoking a database-only callback. The
  * callback and operation clearing commit or roll back in one system transaction.
  */

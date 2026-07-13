@@ -11,10 +11,12 @@ import {
 import { refreshTokenFamilies, users } from '../../db/schema';
 import {
   PendingMfaInvalidError,
+  beginPendingMfaIssuance,
   createPendingMfa,
   issueVerifiedPendingMfaSession,
   readPendingMfa,
 } from '../../services/mfaAssurance';
+import { createMfaBrowserTransitionFixture } from './mfa-browser-transition-fixture';
 import { closeRedis, getRedis } from '../../services/redis';
 import { runLockedMfaMutation } from '../../services/mfaAssuranceMutation';
 
@@ -60,6 +62,7 @@ describe('pending MFA issuance serialization against real PostgreSQL and Redis',
     expect(enrolledUser).toBeDefined();
     if (!enrolledUser) throw new Error('Integration user enrollment update returned no row');
 
+    const transition = await createMfaBrowserTransitionFixture();
     const tempToken = await createPendingMfa({
       userId: user.id,
       authEpoch: enrolledUser.authEpoch,
@@ -76,6 +79,8 @@ describe('pending MFA issuance serialization against real PostgreSQL and Redis',
       primaryAuthenticationMethod: 'password',
       configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
+      browserTransitionId: transition.browserTransitionId,
+      browserGeneration: transition.browserGeneration,
     });
     const expectedPending = await readPendingMfa(tempToken);
     expect(expectedPending).not.toBeNull();
@@ -95,9 +100,11 @@ describe('pending MFA issuance serialization against real PostgreSQL and Redis',
     });
     await mutationLocked.promise;
 
+    const capability = await beginPendingMfaIssuance(expectedPending!, transition.authBinding);
     const issuance = issueVerifiedPendingMfaSession({
       tempToken,
       expectedPending: expectedPending!,
+      capability,
       verifiedMethod: 'totp',
     });
     const redis = getRedis();
@@ -128,6 +135,7 @@ describe('pending MFA issuance serialization against real PostgreSQL and Redis',
       mfaMethod: 'totp', mfaSecret: 'integration-encrypted-secret',
     }).where(eq(users.id, user.id)).returning();
     if (!enrolled) throw new Error('Failed to seed issuance-first user');
+    const transition = await createMfaBrowserTransitionFixture();
     const tempToken = await createPendingMfa({
       userId: user.id, authEpoch: enrolled.authEpoch, mfaEpoch: enrolled.mfaEpoch,
       expectedStatus: 'active', roleId: role.id, orgId: null, partnerId: partner.id,
@@ -135,6 +143,8 @@ describe('pending MFA issuance serialization against real PostgreSQL and Redis',
       allowedMethods: new Set(['totp', 'sms', 'passkey', 'recovery_code']),
       enrolledMethods: new Set(['totp']), primaryAuthenticationMethod: 'password',
       configuredMfaMethod: 'totp', primaryMfaMethod: 'totp',
+      browserTransitionId: transition.browserTransitionId,
+      browserGeneration: transition.browserGeneration,
     });
     const expectedPending = await readPendingMfa(tempToken);
     if (!expectedPending) throw new Error('Pending state missing');
@@ -148,7 +158,13 @@ describe('pending MFA issuance serialization against real PostgreSQL and Redis',
     });
     await tableLocked.promise;
 
-    const issuance = issueVerifiedPendingMfaSession({ tempToken, expectedPending, verifiedMethod: 'totp' });
+    const capability = await beginPendingMfaIssuance(expectedPending, transition.authBinding);
+    const issuance = issueVerifiedPendingMfaSession({
+      tempToken,
+      expectedPending,
+      capability,
+      verifiedMethod: 'totp',
+    });
     // Reaching this blocked INSERT proves issuance already acquired the shared
     // partner -> user -> factor locks. Starting mutation only after that point
     // makes this a deterministic issuance-first overlap instead of a sleep race.

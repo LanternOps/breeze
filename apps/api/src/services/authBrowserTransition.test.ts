@@ -203,6 +203,7 @@ import {
   AuthIssuanceCapabilityError,
   AuthIssuanceConflictError,
   beginAuthIssuance,
+  cancelAuthIssuance,
   finishAuthIssuance,
   resolveAuthBinding,
   rotateExpiredBinding,
@@ -519,6 +520,43 @@ describe('auth issuance finalization', () => {
       AuthIssuanceCapabilityError,
     );
     expect(harness.transactionEvents).toEqual([]);
+  });
+});
+
+describe('auth issuance cancellation', () => {
+  it('clears the exact operation and permits an immediate retry', async () => {
+    const abandoned = await beginAuthIssuance(browser());
+
+    await expect(cancelAuthIssuance(abandoned)).resolves.toBe(true);
+    expect(rowFor(browser())).toMatchObject({
+      activeOperationId: null,
+      activeOperationExpiresAt: null,
+    });
+
+    await expect(beginAuthIssuance(browser())).resolves.toMatchObject({
+      transitionId: abandoned.transitionId,
+      generation: abandoned.generation,
+      operationId: expect.not.stringMatching(abandoned.operationId),
+    });
+  });
+
+  it('cannot clear a replacement operation owned by a stale capability', async () => {
+    const stale = await beginAuthIssuance(browser());
+    harness.now = new Date(stale.expiresAt.getTime() + 1);
+    const current = await beginAuthIssuance(browser());
+
+    await expect(cancelAuthIssuance(stale)).resolves.toBe(false);
+    expect(rowFor(browser()).activeOperationId).toBe(current.operationId);
+  });
+
+  it('does not clear a retired generation', async () => {
+    const capability = await beginAuthIssuance(browser());
+    const row = rowFor(browser());
+    row.state = 'retired';
+    row.generation += 1;
+
+    await expect(cancelAuthIssuance(capability)).resolves.toBe(false);
+    expect(row.activeOperationId).toBe(capability.operationId);
   });
 });
 

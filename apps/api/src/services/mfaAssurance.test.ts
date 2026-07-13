@@ -14,6 +14,7 @@ const {
   issueUserSessionMock,
   bindIssuedUserSessionMock,
   beginAuthIssuanceMock,
+  cancelAuthIssuanceMock,
   finishAuthIssuanceMock,
 } = vi.hoisted(() => {
   const store = new Map<string, string>();
@@ -75,6 +76,7 @@ const {
     issueUserSessionMock: vi.fn(),
     bindIssuedUserSessionMock: vi.fn(async () => { events.push('bind'); }),
     beginAuthIssuanceMock: vi.fn(),
+    cancelAuthIssuanceMock: vi.fn(),
     finishAuthIssuanceMock: vi.fn(),
   };
 });
@@ -110,6 +112,7 @@ vi.mock('./userSession', () => ({
 
 vi.mock('./authBrowserTransition', () => ({
   beginAuthIssuance: beginAuthIssuanceMock,
+  cancelAuthIssuance: cancelAuthIssuanceMock,
   finishAuthIssuance: finishAuthIssuanceMock,
 }));
 
@@ -131,6 +134,7 @@ import {
   selectEffectiveMfaMethod,
   type CreatePendingMfaInput,
 } from './mfaAssurance';
+import type { AuthIssuanceCapability } from './authBrowserTransition';
 
 const now = new Date('2026-07-12T12:00:00.000Z');
 const capability = {
@@ -138,7 +142,7 @@ const capability = {
   generation: 3,
   operationId: '22222222-2222-4222-8222-222222222222',
   expiresAt: new Date('2026-07-12T12:02:00.000Z'),
-} as never;
+} as unknown as AuthIssuanceCapability;
 
 function pendingInput(overrides: Partial<CreatePendingMfaInput> = {}): CreatePendingMfaInput {
   return {
@@ -201,6 +205,7 @@ beforeEach(() => {
   lockPolicyMock.mockResolvedValue(undefined);
   bindIssuedUserSessionMock.mockImplementation(async () => { transactionEvents.push('bind'); });
   beginAuthIssuanceMock.mockResolvedValue(capability);
+  cancelAuthIssuanceMock.mockResolvedValue(true);
   finishAuthIssuanceMock.mockImplementation(async (_capability, callback) => {
     transactionEvents.push('finish-start');
     const result = await callback(transactionMock);
@@ -585,6 +590,7 @@ describe('pending MFA V2 state', () => {
 
       await expect(decideAuthenticatedUserSession(input)).rejects.toThrow('logout pending');
       expect(beginAuthIssuanceMock).toHaveBeenCalledWith(common.authBinding);
+      expect(cancelAuthIssuanceMock).toHaveBeenCalledWith(capability);
       expect(issueUserSessionMock).not.toHaveBeenCalled();
       expect(bindIssuedUserSessionMock).not.toHaveBeenCalled();
     },
@@ -627,11 +633,10 @@ describe('pending MFA V2 state', () => {
     )).rejects.toBeInstanceOf(PendingMfaInvalidError);
 
     expect(redisMock.getdel).not.toHaveBeenCalled();
-    expect(finishAuthIssuanceMock).toHaveBeenCalledWith(
-      expect.objectContaining({ generation: 4 }),
-      expect.any(Function),
-    );
     expect(issueUserSessionMock).not.toHaveBeenCalled();
+    expect(cancelAuthIssuanceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ generation: 4 }),
+    );
     expect(bindIssuedUserSessionMock).not.toHaveBeenCalled();
   });
 
@@ -726,6 +731,7 @@ describe('pending MFA V2 state', () => {
 
     expect(redisState.store.has(`mfa:pending:${token}`)).toBe(false);
     expect(issueUserSessionMock).not.toHaveBeenCalled();
+    expect(cancelAuthIssuanceMock).toHaveBeenCalledWith(capability);
   });
 
   it('burns a consumed record that differs from the earlier verified record', async () => {
@@ -743,6 +749,7 @@ describe('pending MFA V2 state', () => {
     })).rejects.toBeInstanceOf(PendingMfaInvalidError);
     expect(dbMock.select).not.toHaveBeenCalled();
     expect(issueUserSessionMock).not.toHaveBeenCalled();
+    expect(cancelAuthIssuanceMock).toHaveBeenCalledWith(capability);
   });
 
   it('fails closed before issuance when atomic consume is absent or Redis fails', async () => {
@@ -756,7 +763,9 @@ describe('pending MFA V2 state', () => {
       expectedPending: expectedPending!,
       verifiedMethod: 'totp',
     })).rejects.toBeInstanceOf(PendingMfaInvalidError);
+    expect(cancelAuthIssuanceMock).toHaveBeenCalledWith(capability);
 
+    cancelAuthIssuanceMock.mockClear();
     redisMock.getdel.mockRejectedValueOnce(new Error('redis down'));
     await expect(issueVerifiedPendingMfaSession({
       capability,
@@ -764,6 +773,7 @@ describe('pending MFA V2 state', () => {
       expectedPending: expectedPending!,
       verifiedMethod: 'totp',
     })).rejects.toBeInstanceOf(PendingMfaUnavailableError);
+    expect(cancelAuthIssuanceMock).toHaveBeenCalledWith(capability);
     expect(issueUserSessionMock).not.toHaveBeenCalled();
   });
 

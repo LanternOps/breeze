@@ -459,11 +459,9 @@ git commit -m "feat(auth): make refresh currentness durable"
 - Modify: `apps/api/src/routes/auth/login.ts`
 - Modify: `apps/api/src/routes/auth/login.test.ts`
 - Modify: `apps/api/src/routes/auth/mfa.ts`
-- Create: `apps/api/src/routes/auth/mfa.test.ts`
-- Modify: `apps/api/src/routes/auth.test.ts` where existing aggregate MFA fixtures need the new capability.
+- Modify: `apps/api/src/routes/auth.test.ts` for focused MFA route regressions and existing aggregate fixtures.
 - Modify: `apps/api/src/routes/auth/passkeys.ts`
-- Create: `apps/api/src/routes/auth/passkeys.test.ts`
-- Modify: `apps/api/src/routes/auth.passkeys.test.ts` where existing aggregate passkey fixtures need the new capability.
+- Modify: `apps/api/src/routes/auth.passkeys.test.ts` for focused passkey route regressions and existing aggregate fixtures.
 - Modify: `apps/api/src/middleware/cfAccessLogin.ts`
 - Modify: `apps/api/src/middleware/cfAccessLogin.test.ts`
 
@@ -503,7 +501,7 @@ Passkey counter update, TOTP migration, last-login update, and family creation u
 - [ ] **Step 6: Run focused tests**
 
 ```bash
-pnpm --filter=@breeze/api exec vitest run src/services/mfaAssurance.test.ts src/services/recoveryCodeAuth.test.ts src/routes/auth/login.test.ts src/routes/auth/mfa.test.ts src/routes/auth/passkeys.test.ts src/middleware/cfAccessLogin.test.ts
+pnpm --filter=@breeze/api exec vitest run src/services/mfaAssurance.test.ts src/services/recoveryCodeAuth.test.ts src/routes/auth/login.test.ts src/routes/auth.test.ts src/routes/auth.passkeys.test.ts src/middleware/cfAccessLogin.test.ts
 ```
 
 Expected: PASS for every factor and both direct primary methods.
@@ -511,7 +509,7 @@ Expected: PASS for every factor and both direct primary methods.
 - [ ] **Step 7: Commit guarded factor issuers**
 
 ```bash
-git add apps/api/src/services/mfaAssurance.ts apps/api/src/services/mfaAssurance.test.ts apps/api/src/services/recoveryCodeAuth.ts apps/api/src/services/recoveryCodeAuth.test.ts apps/api/src/routes/auth/login.ts apps/api/src/routes/auth/login.test.ts apps/api/src/routes/auth/mfa.ts apps/api/src/routes/auth/mfa.test.ts apps/api/src/routes/auth/passkeys.ts apps/api/src/routes/auth/passkeys.test.ts apps/api/src/middleware/cfAccessLogin.ts apps/api/src/middleware/cfAccessLogin.test.ts
+git add apps/api/src/services/mfaAssurance.ts apps/api/src/services/mfaAssurance.test.ts apps/api/src/services/recoveryCodeAuth.ts apps/api/src/services/recoveryCodeAuth.test.ts apps/api/src/routes/auth/login.ts apps/api/src/routes/auth/login.test.ts apps/api/src/routes/auth/mfa.ts apps/api/src/routes/auth.test.ts apps/api/src/routes/auth/passkeys.ts apps/api/src/routes/auth.passkeys.test.ts apps/api/src/middleware/cfAccessLogin.ts apps/api/src/middleware/cfAccessLogin.test.ts
 git commit -m "feat(auth): guard primary and MFA session issuance"
 ```
 

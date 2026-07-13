@@ -46,6 +46,7 @@ vi.mock('../services', () => ({
     operationId: '22222222-2222-4222-8222-222222222222',
     expiresAt: new Date(Date.now() + 120_000),
   }),
+  cancelAuthIssuance: vi.fn().mockResolvedValue(true),
   finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => unknown) => {
     const { db } = await import('../db');
     return callback(db);
@@ -390,6 +391,7 @@ import {
   readPendingMfa,
   issueVerifiedPendingMfaSession,
   beginPendingMfaIssuance,
+  cancelAuthIssuance,
   finishAuthIssuance,
   AuthIssuanceCapabilityError,
   RefreshTokenCurrentnessError,
@@ -1212,7 +1214,7 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(401);
       expect(beginPendingMfaIssuance).toHaveBeenCalledOnce();
-      expect(finishAuthIssuance).toHaveBeenCalledOnce();
+      expect(cancelAuthIssuance).toHaveBeenCalledOnce();
       expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
       expect(issueUserSession).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
@@ -1254,7 +1256,7 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(502);
       expect(beginPendingMfaIssuance).toHaveBeenCalledOnce();
-      expect(finishAuthIssuance).toHaveBeenCalledOnce();
+      expect(cancelAuthIssuance).toHaveBeenCalledOnce();
       expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
       expect(issueUserSession).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
@@ -1262,6 +1264,7 @@ describe('auth routes', () => {
       expect(mfaMutationState.auditWrites).not.toContainEqual(expect.objectContaining({
         action: 'user.login', result: 'success',
       }));
+      expect(cancelAuthIssuance).toHaveBeenCalledOnce();
     });
 
     it('does not apply TOTP migration or last-login state when terminal finalization rejects', async () => {
@@ -1331,12 +1334,49 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(401);
       expect(issueVerifiedPendingMfaSession).toHaveBeenCalledOnce();
+      expect(cancelAuthIssuance).toHaveBeenCalledOnce();
       expect(issueUserSession).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
       expect(res.headers.get('set-cookie')).toBeNull();
       expect(mfaMutationState.auditWrites).not.toContainEqual(expect.objectContaining({
         action: 'user.login', result: 'success',
       }));
+    });
+
+    it('cancels the lease when an SMS provider throws unexpectedly', async () => {
+      vi.mocked(readPendingMfa).mockResolvedValueOnce({
+        version: 2,
+        userId: 'user-123', authEpoch: 1, mfaEpoch: 1, expectedStatus: 'active',
+        roleId: 'role-1', orgId: null, partnerId: 'partner-1', scope: 'partner',
+        policyRequired: false, policySources: [],
+        allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
+        enrolledMethods: ['sms'], primaryAuthenticationMethod: 'password',
+        configuredMfaMethod: 'sms', primaryMfaMethod: 'sms',
+        browserTransitionId: '11111111-1111-4111-8111-111111111111', browserGeneration: 3,
+        issuedAt: '2026-07-12T12:00:00.000Z', expiresAt: '2026-07-12T12:05:00.000Z',
+      });
+      mfaMutationState.twilioAfterCheck = () => { throw new Error('provider transport failed'); };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123', email: 'test@example.com', name: 'Test User', status: 'active',
+              mfaEnabled: true, mfaMethod: 'sms', mfaSecret: null, phoneNumber: '+14155551234',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token', code: '123456' }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+      expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
     });
 
     it('fails closed without a cookie or token when atomic pending consumption loses the race', async () => {

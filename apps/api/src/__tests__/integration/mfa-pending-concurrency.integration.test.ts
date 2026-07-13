@@ -5,6 +5,7 @@ import {
   readPendingMfa,
 } from '../../services/mfaAssurance';
 import { closeRedis, getRedis } from '../../services/redis';
+import { createMfaBrowserTransitionFixture } from './mfa-browser-transition-fixture';
 
 describe('pending MFA Redis atomicity', () => {
   afterAll(async () => {
@@ -12,6 +13,7 @@ describe('pending MFA Redis atomicity', () => {
   });
 
   it('stores a five-minute V2 record and gives exactly one concurrent GETDEL consumer the record', async () => {
+    const transition = await createMfaBrowserTransitionFixture();
     const tempToken = await createPendingMfa({
       userId: 'real-redis-user',
       authEpoch: 3,
@@ -27,6 +29,8 @@ describe('pending MFA Redis atomicity', () => {
       enrolledMethods: new Set(['totp']),
       primaryAuthenticationMethod: 'password',
       primaryMfaMethod: 'totp',
+      browserTransitionId: transition.browserTransitionId,
+      browserGeneration: transition.browserGeneration,
     });
     const key = `mfa:pending:${tempToken}`;
     const redis = getRedis();
@@ -37,6 +41,8 @@ describe('pending MFA Redis atomicity', () => {
       userId: 'real-redis-user',
       authEpoch: 3,
       mfaEpoch: 9,
+      browserTransitionId: transition.browserTransitionId,
+      browserGeneration: transition.browserGeneration,
     });
 
     const results = await Promise.all(Array.from(

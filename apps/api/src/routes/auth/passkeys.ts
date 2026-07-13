@@ -11,7 +11,7 @@ import {
   getRedis,
   issueVerifiedPendingMfaSession,
   beginPendingMfaIssuance,
-  finishAuthIssuance,
+  cancelAuthIssuance,
   AuthBindingRotationRequiredError,
   AuthBindingUnavailableError,
   AuthIssuanceCapabilityError,
@@ -593,14 +593,15 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     });
   } catch (err) {
     if (err instanceof PasskeyChallengeError) {
-      await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
+      await cancelAuthIssuance(capability).catch(() => false);
       return c.json({ error: err.message }, 401);
     }
+    await cancelAuthIssuance(capability).catch(() => false);
     throw err;
   }
 
   if (!verification.verified) {
-    await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
+    await cancelAuthIssuance(capability).catch(() => false);
     return c.json({ error: 'Passkey verification failed' }, 401);
   }
 
@@ -633,6 +634,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
       },
     });
   } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => false);
     if (error instanceof PendingMfaUnavailableError) {
       return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
     }
