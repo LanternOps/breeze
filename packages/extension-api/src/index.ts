@@ -65,8 +65,29 @@ const manifestSchema = z
     entry: z.string().min(1),
     migrationsDir: z.string().min(1).default('migrations'),
     // Opts /api/v1/<routeNamespace>/agent/ out of the global per-IP rate
-    // limiter (agent-token auth carries its own per-agent/org limits).
+    // limiter (agent-token auth carries its own per-agent/org limits). The
+    // loader grants the exemption only for prefixes it wraps with
+    // agentAuthMiddleware itself — manifest trust alone never lifts the limit.
     agentRoutes: z.boolean().optional(),
+    // Default-deny escape hatch: sub-paths (relative to /api/v1/<routeNamespace>)
+    // served WITHOUT core auth. Exact paths ('/health') or prefix wildcards
+    // ('/webhooks/*'). Everything not listed here gets authMiddleware
+    // (or agentAuthMiddleware under /agent/) applied by the loader.
+    publicRoutes: z
+      .array(
+        z
+          .string()
+          .regex(/^\/[a-zA-Z0-9\-_./]*(\/\*)?$/, {
+            message: 'publicRoutes entries must be absolute sub-paths like "/health" or "/webhooks/*"',
+          })
+          .refine((p) => p !== '/' && p !== '/*', {
+            message: 'publicRoutes may not blanket the whole namespace ("/" or "/*") — default-deny would be meaningless',
+          })
+          .refine((p) => p !== '/agent' && !p.startsWith('/agent/'), {
+            message: 'publicRoutes may not expose /agent/ paths — they must stay behind agentAuthMiddleware (they are exempt from the global rate limiter)',
+          }),
+      )
+      .optional(),
     tenancy: tenancySchema.optional().default({
       orgCascadeDeleteTables: [],
       deviceCascadeDeleteTables: [],
@@ -154,7 +175,14 @@ export type ExtensionDatabase = {
 
 /** Injected by the core loader — the ONLY channel through which an extension touches Breeze. */
 export interface ExtensionContext {
-  /** Mounts subApp at /api/v1/<routeNamespace>. Extension must apply its own auth middleware. */
+  /**
+   * Mounts subApp at /api/v1/<routeNamespace>. The loader default-denies:
+   * `/agent/*` paths get core agentAuthMiddleware, everything else gets core
+   * authMiddleware, unless the sub-path is listed in `manifest.publicRoutes`.
+   * Extensions may still apply `ctx.authMiddleware` / `ctx.agentAuthMiddleware`
+   * themselves (e.g. on public routes) — the injected handlers no-op when the
+   * loader guard already authenticated the request.
+   */
   mountRoute: (subApp: Hono) => void;
   /** Core auth middleware, injected so the extension need not import @breeze/api. */
   authMiddleware: MiddlewareHandler;

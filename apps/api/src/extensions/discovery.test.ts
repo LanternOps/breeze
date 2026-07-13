@@ -72,4 +72,18 @@ describe('discoverExtensions', () => {
     scaffold('alpha', { ...MANIFEST, name: 'alpha', routeNamespace: 'alpha', tenancy: {} });
     expect(discoverExtensions(root).map((e) => e.name)).toEqual(['alpha', 'zeta']);
   });
+
+  it('throws when two extensions declare the same routeNamespace', () => {
+    scaffold('alpha', { ...MANIFEST, name: 'alpha', routeNamespace: 'shared', tenancy: {} });
+    scaffold('beta', { ...MANIFEST, name: 'beta', routeNamespace: 'shared', tenancy: {} });
+    expect(() => discoverExtensions(root)).toThrow(/routeNamespace "shared" is declared by both/);
+  });
+
+  it('allows distinct routeNamespaces that differ from the extension name', () => {
+    scaffold('alpha', { ...MANIFEST, name: 'alpha', routeNamespace: 'alpha-routes', tenancy: {} });
+    scaffold('beta', { ...MANIFEST, name: 'beta', routeNamespace: 'beta-routes', tenancy: {} });
+    expect(discoverExtensions(root).map((e) => e.manifest.routeNamespace)).toEqual([
+      'alpha-routes', 'beta-routes',
+    ]);
+  });
 });

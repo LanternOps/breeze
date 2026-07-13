@@ -64,6 +64,24 @@ describe('parseExtensionManifest', () => {
     }
   });
 
+  it('accepts publicRoutes with exact paths and prefix wildcards', () => {
+    const m = parseExtensionManifest({ ...valid, publicRoutes: ['/health', '/webhooks/*'] });
+    expect(m.publicRoutes).toEqual(['/health', '/webhooks/*']);
+    expect(parseExtensionManifest(valid).publicRoutes).toBeUndefined();
+  });
+
+  it('rejects publicRoutes under /agent/ — they must stay behind agentAuthMiddleware', () => {
+    for (const route of ['/agent', '/agent/hook', '/agent/*']) {
+      expect(() => parseExtensionManifest({ ...valid, publicRoutes: [route] })).toThrow(/agent/i);
+    }
+  });
+
+  it('rejects blanket and malformed publicRoutes', () => {
+    for (const route of ['/', '/*', 'health', 'webhooks/*', '/spaced path']) {
+      expect(() => parseExtensionManifest({ ...valid, publicRoutes: [route] })).toThrow();
+    }
+  });
+
   it('rejects table names not starting with the extension name prefix, except memory_blocks', () => {
     expect(() =>
       parseExtensionManifest({
