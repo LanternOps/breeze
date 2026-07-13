@@ -33,6 +33,11 @@ vi.mock('../db/schema', () => new Proxy({
     // Return empty object for any un-mocked table/export
     return {};
   },
+  // vitest validates named imports with `in` before calling get — without a
+  // has trap, any schema export not listed above fails the whole suite load.
+  has() {
+    return true;
+  },
 }));
 
 vi.mock('./aiToolSchemas', () => ({
