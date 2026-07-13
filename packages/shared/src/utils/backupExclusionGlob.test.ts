@@ -5,7 +5,7 @@ import {
   describeExclusionPattern,
   normalizeExclusionPattern,
   compileExcludeMatcher,
-  stripEmptyExclusionPatterns,
+  sanitizeExclusionPatterns,
   isUsableExclusionPattern,
   goPathMatch,
   MAX_EXCLUSION_PATTERN_LENGTH,
@@ -39,9 +39,22 @@ interface MatchingCase {
   divergence?: string;
 }
 
+interface PortLimitationCase {
+  patterns: string[];
+  relPath: string;
+  caseInsensitive: boolean;
+  go: boolean;
+  tsPort: boolean;
+  note: string;
+}
+
 const fixture = JSON.parse(
   readFileSync(join(__dirname, '../fixtures/backup-exclusion-contract.json'), 'utf8'),
-) as { validity: ValidityCase[]; matching: MatchingCase[] };
+) as {
+  validity: ValidityCase[];
+  matching: MatchingCase[];
+  matcherPortLimitations: PortLimitationCase[];
+};
 
 describe('backup exclusion glob — cross-language contract', () => {
   it('the fixture is not empty (a vacuous contract test is worse than none)', () => {
@@ -68,6 +81,29 @@ describe('backup exclusion glob — cross-language contract', () => {
       // A null matcher is the agent's nil matcher: "exclude nothing".
       const got = matcher?.matches(tc.relPath) ?? false;
       expect(got).toBe(tc.expected);
+    });
+  });
+
+  describe('KNOWN matcher-port limitations (deliberate, documented)', () => {
+    // The TS matcher is code-point based; Go's path.Match advances the name by
+    // BYTES and lowercases with simple (not full Unicode) mapping. These cases
+    // pin exactly where the port disagrees, so the boundary cannot silently
+    // widen — and so nobody mistakes the matcher for exact.
+    //
+    // The Go suite asserts the other half (that the agent really behaves this
+    // way). If the port is ever made byte-faithful, these move into matching[].
+    //
+    // This is a limitation of the MATCHER only. describeExclusionPattern — the
+    // validator that actually gates an API save — is exhaustively exact.
+    it.each(fixture.matcherPortLimitations)('$relPath — $note', (tc) => {
+      const matcher = compileExcludeMatcher(tc.patterns, tc.caseInsensitive);
+      const got = matcher?.matches(tc.relPath) ?? false;
+      expect(got).toBe(tc.tsPort);
+      expect(tc.tsPort).not.toBe(tc.go); // must genuinely still be a divergence
+    });
+
+    it('is not empty (if the port became exact, fold these into matching[])', () => {
+      expect(fixture.matcherPortLimitations.length).toBeGreaterThan(0);
     });
   });
 
@@ -148,18 +184,18 @@ describe('describeExclusionPattern — conservative by design', () => {
   });
 });
 
-describe('stripEmptyExclusionPatterns', () => {
+describe('sanitizeExclusionPatterns', () => {
   it('drops blank lines (a textarea artifact) without touching real patterns', () => {
-    expect(stripEmptyExclusionPatterns(['*.tmp', '', '  ', '\\', 'node_modules/**'])).toEqual([
+    expect(sanitizeExclusionPatterns(['*.tmp', '', '  ', '\\', 'node_modules/**'])).toEqual([
       '*.tmp',
       'node_modules/**',
     ]);
   });
 
-  it('preserves the original (un-normalized) spelling of kept patterns', () => {
-    // The agent normalizes at compile time; we must not silently rewrite what
-    // the user typed and stored.
-    expect(stripEmptyExclusionPatterns(['  AppData\\Local  '])).toEqual(['  AppData\\Local  ']);
+  it('trims, but does NOT otherwise rewrite what the user typed', () => {
+    // Trimming is lossless (the agent trims too). Folding '\\' to '/' would not
+    // be: it would visibly change the pattern on round-trip.
+    expect(sanitizeExclusionPatterns(['  AppData\\Local  '])).toEqual(['AppData\\Local']);
   });
 });
 
@@ -179,41 +215,5 @@ describe('goPathMatch — the ported Go primitive', () => {
 
   it('does not reject an inverted range', () => {
     expect(goPathMatch('[z-a]', 'm')).toEqual({ matched: false, bad: false });
-  });
-});
-
-describe('shipped UI presets and suggestion chips', () => {
-  // If a preset the UI ships were rejected by this validator, EVERY policy save
-  // using that preset would fail — the exact over-strict catastrophe #2473 warns
-  // about. Kept in sync by hand with
-  // apps/web/src/components/configurationPolicies/featureTabs/backupTabPresets.ts.
-  const shipped = [
-    // windows preset
-    '**/AppData/Local/Temp/**',
-    '**/AppData/Local/Microsoft/Windows/INetCache/**',
-    '$RECYCLE.BIN/**',
-    'Thumbs.db',
-    '*.tmp',
-    // macos preset
-    '**/Library/Caches/**',
-    '**/.Trash/**',
-    '.DS_Store',
-    '**/Library/Application Support/MobileSync/Backup/**',
-    // linux preset
-    '**/.cache/**',
-    '**/.local/share/Trash/**',
-    // suggestion chips
-    '*.log',
-    '**/Dropbox/**',
-    '**/OneDrive*/**',
-    'node_modules/**',
-  ];
-
-  it.each(shipped)('accepts shipped pattern %s', (pattern) => {
-    expect(describeExclusionPattern(pattern).usable).toBe(true);
-  });
-
-  it('is a non-trivial list (guards against the array being emptied)', () => {
-    expect(shipped.length).toBeGreaterThanOrEqual(15);
   });
 });

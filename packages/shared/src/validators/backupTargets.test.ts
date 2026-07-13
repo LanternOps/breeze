@@ -402,3 +402,89 @@ describe('backup exclusion glob validation (#2473)', () => {
     });
   });
 });
+
+// Regressions caught in review of #2473.
+describe('backup exclusion glob — review regressions', () => {
+  it('reports the index in the USER-SUPPLIED array, not the blank-stripped one', () => {
+    // Blanks are stripped by a transform. If validation ran after the strip, the
+    // bad pattern below (raw index 2) would be reported at index 0, and a UI
+    // mapping the issue back to a textarea row would highlight the wrong line.
+    const result = fileTargetsSchema.safeParse({
+      paths: ['/data'],
+      excludes: ['', '  ', '[a-z0-9_-].log', '*.tmp'],
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['excludes', 2]);
+  });
+
+  it('does not claim the agent would ignore an over-length pattern', () => {
+    // The length cap is an API-side guard; the agent has no length limit. Saying
+    // "the agent would ignore this" would be false.
+    const result = fileTargetsSchema.safeParse({
+      paths: ['/data'],
+      excludes: ['a'.repeat(600)],
+    });
+    expect(result.success).toBe(false);
+    const msg = result.error?.issues[0]?.message ?? '';
+    expect(msg).toMatch(/longer than/i);
+    expect(msg).not.toMatch(/silently exclude nothing/);
+  });
+
+  it('does not impose a new count cap on legacy inline-settings excludes', () => {
+    // This field has always been uncapped. Adding a cap would fail the save for
+    // an existing policy that exceeds it — the over-strict regression #2473 warns
+    // about. (Profiles keep the .max(64) they shipped with in #2417.)
+    const many = Array.from({ length: 200 }, (_, i) => `*.tmp${i}`);
+    expect(fileTargetsSchema.safeParse({ paths: ['/d'], excludes: many }).success).toBe(true);
+    expect(
+      backupProfileSelectionsSchema.safeParse({
+        file: { enabled: true, paths: ['C:\\Users'], excludes: many },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('trims stored profile patterns (preserving the pre-#2473 .trim() behavior)', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      file: { enabled: true, paths: ['C:\\Users'], excludes: ['  *.tmp  '] },
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.file?.excludes).toEqual(['*.tmp']);
+  });
+});
+
+describe('legacy configurations carrying a dead glob (#2473)', () => {
+  // A policy saved BEFORE this change can hold a malformed glob — that population
+  // is precisely what the issue says exists, because techs typed these and the
+  // agent silently dropped them.
+  //
+  // Such a policy now FAILS to save on the next edit, even if the tech only
+  // touched the schedule (BackupTab re-submits the whole inlineSettings blob).
+  // That is intentional: the pattern was already excluding nothing, and the
+  // alternative is to keep pretending it works. This test exists so the behavior
+  // is a recorded decision rather than a production surprise — and so the error
+  // is legible enough for the tech to fix.
+  it('fails the save, pointing at the exact offending pattern', () => {
+    const legacy = {
+      backupMode: 'file',
+      paths: ['/data'],
+      schedule: { frequency: 'daily', time: '03:00' },
+      targets: { paths: ['/data'], excludes: ['*.tmp', '[a-z0-9_-].log'] },
+    };
+    const result = backupInlineSettingsSchema.safeParse(legacy);
+    expect(result.success).toBe(false);
+    // Must point at the row, not the whole blob, so a UI can highlight it.
+    expect(result.error?.issues[0]?.path).toEqual(['targets', 'excludes', 1]);
+    // Must be actionable: name the real problem, not "invalid pattern".
+    expect(result.error?.issues[0]?.message).toMatch(/dash/i);
+  });
+
+  it('a legacy policy whose globs are all valid still saves untouched', () => {
+    const legacy = {
+      backupMode: 'file',
+      paths: ['/data'],
+      schedule: { frequency: 'daily', time: '03:00' },
+      targets: { paths: ['/data'], excludes: ['*.tmp', 'node_modules/**'] },
+    };
+    expect(backupInlineSettingsSchema.safeParse(legacy).success).toBe(true);
+  });
+});

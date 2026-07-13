@@ -389,20 +389,42 @@ export function isUsableExclusionPattern(raw: string): boolean {
 }
 
 /**
- * Drop the patterns the agent would drop anyway (blank lines from a textarea).
+ * Clean a pattern list for storage: trim each entry, then drop the ones that
+ * normalize away to nothing (blank lines from a textarea).
  *
- * The API strips these instead of rejecting them: a blank pattern excludes
- * nothing, so rejecting it would fail a save over an artifact of how the UI
- * splits input — the exact over-strict failure this feature must avoid.
+ * Blanks are STRIPPED rather than rejected: a blank pattern excludes nothing, so
+ * failing a save over an artifact of how the UI splits input would be the exact
+ * over-strict regression this feature must avoid.
+ *
+ * Trimming only — deliberately NOT full normalization. The agent trims anyway,
+ * so this is semantically lossless, whereas folding `\` to `/` would visibly
+ * rewrite what the user typed (`AppData\Local` would round-trip as
+ * `AppData/Local`).
  */
-export function stripEmptyExclusionPatterns(patterns: string[]): string[] {
-  return patterns.filter((p) => normalizeExclusionPattern(p) !== '');
+export function sanitizeExclusionPatterns(patterns: string[]): string[] {
+  return patterns
+    .map((p) => p.trim())
+    .filter((p) => normalizeExclusionPattern(p) !== '');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The matcher itself. Not used for validation — this exists so the contract
-// fixtures can assert MATCH SEMANTICS (not just validity) against real Go, and
-// so the UI can eventually preview "what would this exclude?".
+// The matcher itself. NOT on the validation path, and NOT exported from the
+// package barrel. It exists so the contract fixtures can assert MATCH SEMANTICS
+// (not just validity) against real Go — which is what pins `**` spans, base-name
+// behavior, and the `!`-is-literal rule.
+//
+// ⚠️ KNOWN FIDELITY BOUNDARY — do not build a "what would this exclude?" preview
+// on this. Go's path.Match advances the NAME by bytes in its star loop (so `*??`
+// matches a 3-byte rune), and Go's strings.ToLower uses simple rather than full
+// Unicode case mapping (so `İ` folds to one rune, not two). This code-point port
+// reproduces neither, and knowingly disagrees with the agent on CJK/emoji
+// filenames and Turkish `İ`. Those divergences are enumerated and asserted in
+// `matcherPortLimitations` (backup-exclusion-contract.json) so they cannot widen
+// unnoticed. Making it exact means porting over UTF-8 bytes + Go's case tables.
+//
+// The VALIDATOR above (`describeExclusionPattern`) has no such caveat: it was
+// differentially fuzzed against the real Go matcher over 177k+ patterns with
+// zero divergences, and it is the only thing that gates an API save.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface ExcludeMatcher {

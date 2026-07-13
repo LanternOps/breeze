@@ -40,6 +40,14 @@ type contractFixture struct {
 		Expected        bool     `json:"expected"`
 		Note            string   `json:"note"`
 	} `json:"matching"`
+	MatcherPortLimitations []struct {
+		Patterns        []string `json:"patterns"`
+		RelPath         string   `json:"relPath"`
+		CaseInsensitive bool     `json:"caseInsensitive"`
+		Go              bool     `json:"go"`
+		TSPort          bool     `json:"tsPort"`
+		Note            string   `json:"note"`
+	} `json:"matcherPortLimitations"`
 }
 
 func loadContractFixture(t *testing.T) contractFixture {
@@ -108,6 +116,48 @@ func TestContractMatching(t *testing.T) {
 			if got != tc.Expected {
 				t.Fatalf("matcher(patterns=%q, caseInsensitive=%v).matches(%q) = %v, contract expects %v (%s)",
 					tc.Patterns, tc.CaseInsensitive, tc.RelPath, got, tc.Expected, tc.Note)
+			}
+		})
+	}
+}
+
+// TestContractMatcherPortLimitations pins the KNOWN, DELIBERATE divergences of
+// the TS matcher port.
+//
+// Go's path.Match advances the name by BYTES in its star loop, and Go's
+// strings.ToLower uses simple (not full Unicode) case mapping. A code-point-based
+// JS port reproduces neither. Rather than pretend the port is exact, the fixture
+// records exactly where it is not.
+//
+// This test asserts the GO side of each documented divergence — i.e. that the
+// agent really does behave the way the note claims. Without it, the "known
+// limitation" note could quietly become wrong and nobody would notice. The TS
+// suite asserts the other half (that the port still diverges as documented), so
+// the boundary cannot silently widen either.
+//
+// Note this is a limitation of the MATCHER only. The API-side validator
+// (describeExclusionPattern) is exhaustively exact against this same Go code.
+func TestContractMatcherPortLimitations(t *testing.T) {
+	fx := loadContractFixture(t)
+
+	if len(fx.MatcherPortLimitations) == 0 {
+		t.Fatal("matcherPortLimitations is empty — if the TS port became exact, remove the block " +
+			"and fold these into matching[]; do not just delete the assertions")
+	}
+
+	for _, tc := range fx.MatcherPortLimitations {
+		t.Run(tc.RelPath+" "+tc.Note, func(t *testing.T) {
+			m := newExcludeMatcherForOS(tc.Patterns, tc.CaseInsensitive)
+			got := m.matches(tc.RelPath)
+
+			if got != tc.Go {
+				t.Fatalf("agent matcher(patterns=%q, ci=%v).matches(%q) = %v, but the fixture documents "+
+					"the agent's behavior as %v (%s).\nThe recorded TS-port limitation is therefore stale.",
+					tc.Patterns, tc.CaseInsensitive, tc.RelPath, got, tc.Go, tc.Note)
+			}
+			if tc.Go == tc.TSPort {
+				t.Fatalf("case %q is listed as a port LIMITATION but records go==tsPort (%v) — "+
+					"if the port now agrees, move this case into matching[]", tc.Note, tc.Go)
 			}
 		})
 	}

@@ -91,6 +91,32 @@
       "note": "normalizes to 'foo/*bar'"
     },
 
+    {
+      "pattern": "\\*",
+      "usable": true,
+      "problem": null,
+      "divergence": "FOOTGUN. In path.Match/minimatch, '\\*' is an ESCAPED LITERAL star. Here the backslash folds to '/', giving '/*', which trims to '*' — a base-name glob matching EVERY file. A tech escaping a star to exclude a file literally named '*' instead excludes the entire backup: it succeeds and protects nothing. Syntactically legal, so we accept it (see the matching[] case).",
+      "note": "normalizes to '*' — excludes everything"
+    },
+    {
+      "pattern": "!important.doc",
+      "usable": true,
+      "problem": null,
+      "divergence": "There is NO negation/un-exclude in this dialect. gitignore users write '!keep.doc' expecting to RE-INCLUDE a file; here it is a literal filename match, so it EXCLUDES a file called '!keep.doc' and does nothing else.",
+      "note": "'!' is literal, not a negation"
+    },
+    { "pattern": "[a]]", "usable": true, "problem": null, "note": "class [a] followed by a literal ']'" },
+    { "pattern": "[^]]", "usable": false, "problem": "syntax", "note": "']' cannot open a negated class" },
+    {
+      "pattern": "[\\]]",
+      "usable": false,
+      "problem": "syntax",
+      "divergence": "Would be an escaped ']' inside a class in path.Match/minimatch. Backslash folds to '/' first, so it splits into the malformed segments '[' and ']]'.",
+      "note": "not an escaped ']'"
+    },
+    { "pattern": "[--0]", "usable": false, "problem": "syntax", "note": "dash as range-lo" },
+    { "pattern": "a**b", "usable": true, "problem": null, "note": "'**' inside a segment is just a star" },
+
     { "pattern": "", "usable": false, "problem": "empty", "note": "blank — agent skips; API strips rather than erroring" },
     { "pattern": "   ", "usable": false, "problem": "empty", "note": "whitespace only" },
     { "pattern": "/", "usable": false, "problem": "empty", "note": "separators only" },
@@ -315,6 +341,106 @@
       "relPath": "srv/var/log/syslog",
       "caseInsensitive": false,
       "expected": true
+    },
+
+    {
+      "divergence": "'\\*' excludes EVERYTHING. The backup then succeeds and protects nothing — the same silent-empty-backup class the profiles schema already guards against for `volumes`.",
+      "patterns": ["\\*"],
+      "relPath": "a/b",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "divergence": "'!' is a LITERAL, so a gitignore-style un-exclude actually excludes the file it names.",
+      "patterns": ["!important.doc"],
+      "relPath": "d/!important.doc",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "divergence": "…and it does NOT re-include (or otherwise affect) the file the author meant.",
+      "patterns": ["!important.doc"],
+      "relPath": "d/important.doc",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "'?' does not cross a separator either (the fixture previously only pinned '*')",
+      "patterns": ["a?c"],
+      "relPath": "a/c",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "an interior '**' spans ZERO segments",
+      "patterns": ["a/**/b"],
+      "relPath": "a/b",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "divergence": "On Windows the PATTERN is lowercased too, so an uppercase class silently becomes lowercase: '[A-Z]' matches 'a'. It does not on Linux/macOS (next case).",
+      "patterns": ["[A-Z].txt"],
+      "relPath": "d/a.txt",
+      "caseInsensitive": true,
+      "expected": true
+    },
+    {
+      "note": "case-sensitive platforms: '[A-Z]' does not match 'a'",
+      "patterns": ["[A-Z].txt"],
+      "relPath": "d/a.txt",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "'?' matches one RUNE, not one UTF-16 code unit — pins the code-point decision (an astral char is a single '?')",
+      "patterns": ["?"],
+      "relPath": "d/😀",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "an astral character class compares whole runes",
+      "patterns": ["[😀-😃]"],
+      "relPath": "d/😀",
+      "caseInsensitive": false,
+      "expected": true
+    }
+  ],
+
+  "$matcherPortLimitations": [
+    "KNOWN, DELIBERATE fidelity boundary of the TS matcher port — NOT of the validator.",
+    "",
+    "`describeExclusionPattern` (the only thing that gates an API save) is exhaustively exact: it was",
+    "differentially fuzzed against the real Go matcher over 177k+ patterns with zero divergences.",
+    "",
+    "`compileExcludeMatcher` is a different story. Go's path.Match advances the NAME by BYTES in its star",
+    "loop, and Go's strings.ToLower uses simple (not full Unicode) case mapping. A code-point-based JS port",
+    "cannot reproduce either without vendoring a UTF-8 byte matcher and Go's case tables. The cases below are",
+    "where the port KNOWINGLY disagrees with the agent. They are asserted by the Go test (proving the agent",
+    "really behaves this way, so this note cannot rot) and asserted-as-divergent by the TS test (so the",
+    "boundary cannot silently widen).",
+    "",
+    "Because of this, compileExcludeMatcher is NOT exported from the package barrel and must not be used to",
+    "show users a 'what would this exclude?' preview — it would lie about CJK/emoji filenames and Turkish 'İ'.",
+    "Making it exact means porting the matcher over UTF-8 bytes; see the PR discussion on #2473."
+  ],
+  "matcherPortLimitations": [
+    {
+      "note": "Go's star loop advances by BYTES, so '?' decodes RuneError one byte at a time at a mid-rune offset: '*??' matches any base name ending in a 3-byte rune. The code-point port says false.",
+      "patterns": ["*??"],
+      "relPath": "d/漢",
+      "caseInsensitive": false,
+      "go": true,
+      "tsPort": false
+    },
+    {
+      "note": "Go strings.ToLower('İ') is 'i' (simple mapping, one rune). JS toLowerCase() applies Unicode SpecialCasing and yields 'i' + U+0307 (two code points), so the lengths no longer line up.",
+      "patterns": ["i"],
+      "relPath": "İ",
+      "caseInsensitive": true,
+      "go": true,
+      "tsPort": false
     }
   ]
 }
