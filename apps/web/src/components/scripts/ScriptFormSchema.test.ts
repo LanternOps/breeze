@@ -64,4 +64,18 @@ describe('scriptSchema timeoutSeconds', () => {
       expect(result.success).toBe(false);
     }
   });
+
+  // Deliberate: editing a legacy script saved under the old 86400 cap surfaces
+  // a clear validation error instead of silently clamping — the stored value
+  // was never honored by the agent, so we force a visible correction here
+  // (unlike the AI-builder editorSnapshot, which clamps so session creation
+  // doesn't fail on an unrelated field). See #2398.
+  it('rejects a legacy 86400 value with the 1-hour message on edit', () => {
+    const result = scriptSchema.safeParse({ ...base, timeoutSeconds: 86400 });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues.find((i) => i.path[0] === 'timeoutSeconds');
+      expect(issue?.message).toBe('Timeout cannot exceed 1 hour (3600 seconds)');
+    }
+  });
 });

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
 import { TOOL_TIERS } from './aiAgentSdkTools';
 import { TOOL_PERMISSIONS, checkGuardrails } from './aiGuardrails';
-import { SCRIPT_BUILDER_TOOL_TIERS } from './scriptBuilderTools';
+import { applyScriptMetadataInputShape, SCRIPT_BUILDER_TOOL_TIERS } from './scriptBuilderTools';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 
 /**
@@ -107,5 +108,24 @@ describe('script-builder context tools are fully wired for the session guardrail
         limit: 10,
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('apply_script_metadata timeoutSeconds cap', () => {
+  // The agent executor hard-clamps script timeouts to 3600s
+  // (agent/internal/executor/executor.go MaxTimeout). If this inline cap ever
+  // drifts back up (e.g. to let the builder honor a "2 hour timeout" request),
+  // the builder would propose values the scripts route then rejects with a 400,
+  // breaking the apply flow — see #2398.
+  const schema = z.object(applyScriptMetadataInputShape);
+
+  it('accepts a timeout at the 3600s executor cap', () => {
+    expect(schema.safeParse({ timeoutSeconds: 3600 }).success).toBe(true);
+  });
+
+  it('rejects timeouts above 3600s (#2398)', () => {
+    for (const tooLong of [3601, 7200, 86400]) {
+      expect(schema.safeParse({ timeoutSeconds: tooLong }).success).toBe(false);
+    }
   });
 });

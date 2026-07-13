@@ -260,6 +260,41 @@ describe('scripts routes', () => {
     expect(res.status).toBe(400);
   });
 
+  it('should accept timeoutSeconds at the 3600 cap on update', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: SCRIPT_ID_1,
+            name: 'Script One',
+            content: 'echo hi',
+            version: 1,
+            isSystem: false,
+            orgId: ORG_ID
+          }])
+        })
+      })
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: SCRIPT_ID_1,
+            timeoutSeconds: 3600,
+            version: 2
+          }])
+        })
+      })
+    } as any);
+
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ timeoutSeconds: 3600 })
+    });
+    expect(res.status).toBe(200);
+  });
+
   it('should update a script and return updated record', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({

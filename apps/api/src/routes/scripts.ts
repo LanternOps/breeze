@@ -168,7 +168,7 @@ const createScriptSchema = z.object({
   content: z.string().min(1),
   parameters: z.any().optional(),
   // Max 3600: the agent executor clamps script timeouts to 1 hour
-  // (agent/internal/remote/executor/executor.go MaxTimeout) — accepting more
+  // (agent/internal/executor/executor.go MaxTimeout) — accepting more
   // at intake is silent false configurability (#2398).
   timeoutSeconds: z.number().int().min(1).max(3600).default(300),
   runAs: z.enum(['system', 'user', 'elevated']).default('system'),
