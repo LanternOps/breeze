@@ -24,8 +24,6 @@ import {
 } from '../services/vaultSyncPersistence';
 import { claimConsumeOnce, consumeDispatchedExpectation, recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { backupCommandResultSchema } from './backup/resultSchemas';
-import { claimPendingCommandsForDevice } from '../services/commandDispatch';
-import { decryptCommandsForDelivery } from '../services/sensitiveCommandPayload';
 import { matchRoleScopedAgentTokenHash, suspendAgentToken, type AgentCredentialRole } from '../middleware/agentAuth';
 import { AGENT_TOKEN_SUSPEND_REASON } from '../services/agentTokenSuspension';
 import { isAgentTenantActive } from '../services/tenantStatus';
@@ -1511,7 +1509,7 @@ async function processCommandResult(
     // suspension denormalizes onto devices.agentTokenSuspendedAt) after this
     // long-lived socket was established. Cost: one extra indexed row read per
     // device-bound (UUID) command result — acceptable, and NOT run on the
-    // high-frequency pong/heartbeat/terminal-output frames. If contained, sever
+    // high-frequency pong/terminal-output frames. If contained, sever
     // the authoritative socket and abort without persisting the result.
     if (!(await isAgentDeviceStillAuthorized(agentId))) {
       console.warn(
@@ -1622,94 +1620,6 @@ async function processCommandResult(
 }
 
 /**
- * Cumulative serialized-payload budget for a pending-command batch delivered
- * over the agent WebSocket in a single frame. The agent's WS read limit is
- * 16MB and the largest single command payload is a file_write at ~5.6MB
- * (base64 of the 4MB agent cap, see fileUploadBodySchema); 6MB of payloads
- * plus JSON envelope keeps the worst-case frame comfortably under the limit.
- * Exported for the regression test pinning this value against the agent's
- * read limit (issue #2399).
- */
-export const WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES = 6 * 1024 * 1024;
-
-/**
- * Claim pending commands for delivery over the agent WebSocket. Unlike the
- * HTTP heartbeat claim paths, the WS batch is serialized into a SINGLE frame
- * (`connected` welcome / `heartbeat_ack`) that must stay under the agent's
- * 16MB read limit — exceeding it kills the connection instead of rejecting
- * the frame (agent/internal/websocket/client.go, issue #2399) — so the claim
- * is always budgeted. Over-budget commands stay pending and are picked up by
- * a later heartbeat/claim cycle. Exported so a unit test can pin that the WS
- * path never claims unbudgeted.
- */
-export function claimWsPendingCommandsBudgeted(deviceId: string) {
-  return claimPendingCommandsForDevice(deviceId, 10, 'agent', {
-    maxTotalPayloadBytes: WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES,
-  });
-}
-
-/**
- * Get pending commands for an agent
- */
-async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
-  try {
-    const [device] = await db
-      .select({ id: devices.id, status: devices.status, agentTokenSuspendedAt: devices.agentTokenSuspendedAt })
-      .from(devices)
-      .where(eq(devices.agentId, agentId))
-      .limit(1);
-
-    if (!device) {
-      return [];
-    }
-
-    // Finding #3 (defense-in-depth): the claim path is a sensitive operation on
-    // a long-lived socket. Re-verify containment on the SAME row we already
-    // fetched (zero extra queries) before claiming/decrypting pending commands.
-    // If the device was decommissioned/quarantined or its token suspended
-    // (org/partner tenant suspension denormalizes onto agentTokenSuspendedAt)
-    // after this socket was established, sever it and claim nothing.
-    if (
-      device.status === 'decommissioned' ||
-      device.status === 'quarantined' ||
-      device.agentTokenSuspendedAt
-    ) {
-      console.warn(
-        `[AgentWs] Refusing command claim for ${agentId}: device contained (decommissioned/quarantined/suspended). Severing socket.`
-      );
-      disconnectAgent(agentId, 4001, 'Device no longer authorized');
-      return [];
-    }
-
-    const commands = await claimWsPendingCommandsBudgeted(device.id);
-
-    // Decrypt sensitive command payloads (e.g. FileVault rotation credentials)
-    // just-in-time. WS-connected agents receive pending commands through this
-    // path, so without the decrypt an encryption_rotate_key command would reach
-    // the agent as ciphertext and fail. A command whose payload can't be
-    // decrypted is dropped (not delivered as ciphertext) rather than failing
-    // the whole batch. Ordering note (#2399): the claim's payload budget was
-    // measured on the stored (encrypted) payload BEFORE this decrypt;
-    // ciphertext is >= plaintext size so the budget only over-counts — keep
-    // decryption after the claim so that stays true.
-    return decryptCommandsForDelivery(
-      commands.map(cmd => ({
-        id: cmd.id,
-        type: cmd.type,
-        payload: (cmd.payload as Record<string, unknown>) || {}
-      }))
-    ).map(cmd => ({
-      id: cmd.id,
-      type: cmd.type,
-      payload: (cmd.payload as Record<string, unknown>) ?? {}
-    }));
-  } catch (error) {
-    console.error(`Failed to get pending commands for ${agentId}:`, error);
-    return [];
-  }
-}
-
-/**
  * Create WebSocket handlers for a given agentId with a pre-validated context.
  * Authentication is done BEFORE the WebSocket upgrade in the HTTP middleware,
  * so onOpen no longer needs to validate the token.
@@ -1762,10 +1672,18 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       activeConnections.set(agentId, ws);
       console.log(`Agent ${agentId} connected via WebSocket. Active connections: ${activeConnections.size}`);
 
-      // Update device status and load pending commands under tenant DB context.
-      const pendingCommands = await runWithAgentDbAccess(async () => {
+      // Update device status under tenant DB context. Pending commands are
+      // deliberately NOT claimed here (#2407): no agent version has ever
+      // parsed `pendingCommands` out of the welcome frame
+      // (handleConnectedMessage negotiates capabilities only), so claiming
+      // them marked rows 'sent' that were never delivered — and with no
+      // stale-'sent' reclaim, they were lost permanently. Queued commands
+      // stay 'pending' and reach the agent through the working paths: the
+      // HTTP heartbeat claim (the agent heartbeats immediately on startup)
+      // and executeCommand's direct per-command push while the socket is
+      // live.
+      await runWithAgentDbAccess(async () => {
         await updateDeviceStatus(agentId, 'online');
-        return getPendingCommands(agentId);
       });
 
       // Publish device.online event for real-time UI updates
@@ -1794,12 +1712,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         }
       }
 
-      // Send welcome message with any pending commands
+      // Send welcome message (capabilities negotiation only — see the
+      // pending-commands note above).
       ws.send(JSON.stringify({
         type: 'connected',
         agentId,
         timestamp: Date.now(),
-        pendingCommands,
         capabilities: [...AGENT_WS_CAPABILITIES],
       }));
 
@@ -2235,6 +2153,20 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             {
               const heartbeatMessage = parsed.data as z.infer<typeof heartbeatMessageSchema>;
 
+              // Finding #3 (defense-in-depth): the heartbeat's command-claim
+              // path used to re-verify containment on the device row it
+              // fetched. The claim is gone (#2407), but keep the sever so a
+              // socket that outlived a containment change (decommission,
+              // quarantine, token/tenant suspension) still drops on the next
+              // heartbeat instead of staying online.
+              if (!(await isAgentDeviceStillAuthorized(agentId))) {
+                console.warn(
+                  `[AgentWs] Severing heartbeat socket for ${agentId}: device contained (decommissioned/quarantined/suspended).`
+                );
+                disconnectAgent(agentId, 4001, 'Device no longer authorized');
+                break;
+              }
+
             // Update last seen timestamp
               await runWithAgentDbAccess(async () => {
                 await updateDeviceStatus(agentId, 'online');
@@ -2256,8 +2188,13 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
                 }
               });
 
-              // Check for pending commands and send them
-              const pendingCommands = await runWithAgentDbAccess(async () => getPendingCommands(agentId));
+              // Pending commands are deliberately NOT claimed here (#2407).
+              // No shipped agent sends WS heartbeats (the agent heartbeats
+              // over HTTP), and the agent's readPump skips ID-less frames —
+              // heartbeat_ack included — so any commands embedded here would
+              // be silently dropped while their rows sat falsely marked
+              // 'sent'. `commands` stays in the ack, always empty, for
+              // wire-shape stability with the REST heartbeat response.
 
               // Match the REST heartbeat: ship the active deployment trust
               // keyset on every ack so WS-connected agents (re-)pin the same
@@ -2292,7 +2229,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               ws.send(JSON.stringify({
                 type: 'heartbeat_ack',
                 timestamp: Date.now(),
-                commands: pendingCommands,
+                commands: [],
                 manifestTrustKeys,
               }));
               break;

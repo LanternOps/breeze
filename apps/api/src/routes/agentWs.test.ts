@@ -172,8 +172,6 @@ import {
   isAgentConnected,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
-  claimWsPendingCommandsBudgeted,
-  WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES,
 } from './agentWs';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -399,7 +397,6 @@ describe('WS lifecycle status writes — terminal-status guard (#2230)', () => {
   it('excludes decommissioned/quarantined rows when a WS heartbeat flips a device online', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
     const { whereMock, setMock } = rigStatusUpdateCapture();
-    // getPendingCommands device lookup — no row, so no command claim follows.
     vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
 
     const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
@@ -1387,7 +1384,7 @@ describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it('severs the socket on a heartbeat command-claim when the token was suspended after connect', async () => {
+  it('severs the socket on a heartbeat when the token was suspended after connect', async () => {
     const preValidatedAgent = { deviceId: 'device-s', orgId: 'org-s' };
     vi.mocked(db.update).mockReturnValue(updateResult() as any);
     vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any); // onOpen: register only
@@ -1397,7 +1394,7 @@ describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
     await handlers.onOpen({}, ws as any);
     vi.mocked(ws.close).mockClear();
 
-    // The claim path re-checks the same device row it fetches: a suspended
+    // The heartbeat handler re-checks the device lifecycle row: a suspended
     // token (org/partner tenant suspension denormalizes here) severs the socket.
     vi.mocked(db.select).mockReturnValue(
       selectAgentDevice([{ id: 'device-s', status: 'online', agentTokenSuspendedAt: new Date() }]) as any
@@ -1511,27 +1508,53 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
   });
 });
 
-// Regression for #2399: the agent WS delivers a claimed pending-command batch
-// in a single frame that must stay under the agent's 16MB read limit —
-// exceeding it kills the connection (gorilla ErrReadLimit). These tests pin
-// that the WS claim path is always budgeted; reverting it to a bare
-// claimPendingCommandsForDevice(deviceId, 10) would silently reintroduce the
-// oversized-frame hazard.
-describe('claimWsPendingCommandsBudgeted (#2399)', () => {
-  it('claims with the serialized-payload budget set', async () => {
-    await claimWsPendingCommandsBudgeted('dev-1');
-
-    expect(claimPendingCommandsForDevice).toHaveBeenCalledWith('dev-1', 10, 'agent', {
-      maxTotalPayloadBytes: WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES,
-    });
+// Regression for #2407: pending commands must never be claimed into agent WS
+// frames. No agent version has ever parsed `pendingCommands` out of the
+// `connected` welcome frame or `commands` out of `heartbeat_ack` (the agent's
+// readPump skips ID-less frames), so a WS-side claim marked rows 'sent' that
+// were never delivered — and with no stale-'sent' reclaim, they were lost
+// permanently. Commands must stay 'pending' for the HTTP heartbeat claim and
+// executeCommand's direct per-command push.
+describe('WS frames never claim pending commands (#2407)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
   });
 
-  it('keeps the budget comfortably under the agent 16MB read limit', () => {
-    const agentReadLimit = 16 * 1024 * 1024; // agent/internal/websocket/client.go maxMessageSize
-    expect(WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES).toBe(6 * 1024 * 1024);
-    // Budget + a full extra file_write payload (first-command-always rule)
-    // + generous envelope allowance must still fit under the read limit.
-    const maxSingleFileWriteChars = Math.ceil((4 * 1024 * 1024) / 3) * 4;
-    expect(WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES + maxSingleFileWriteChars + 1024 * 1024).toBeLessThan(agentReadLimit);
+  it('onOpen sends the welcome frame without pendingCommands and claims nothing', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onOpen({}, ws as any);
+
+    expect(claimPendingCommandsForDevice).not.toHaveBeenCalled();
+    const payload = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+    expect(payload.type).toBe('connected');
+    expect(payload).not.toHaveProperty('pendingCommands');
+  });
+
+  it('heartbeat_ack always carries an empty commands array and claims nothing', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'heartbeat', timestamp: 1234567890 }),
+    } as any, ws as any);
+
+    expect(claimPendingCommandsForDevice).not.toHaveBeenCalled();
+    const ack = vi.mocked(ws.send).mock.calls
+      .map(call => JSON.parse(call[0] as string))
+      .find(frame => frame.type === 'heartbeat_ack');
+    expect(ack).toBeDefined();
+    expect(ack!.commands).toEqual([]);
   });
 });

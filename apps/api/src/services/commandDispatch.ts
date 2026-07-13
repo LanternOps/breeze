@@ -49,21 +49,11 @@ export async function claimPendingCommandsForDevice(
   deviceId: string,
   limit: number = 10,
   targetRole: 'agent' | 'watchdog' = 'agent',
-  options: {
-    /**
-     * Stop claiming once the cumulative serialized payload size of already
-     * claimed commands plus the next candidate would exceed this budget
-     * (the first command is always claimed). Used by the agent WebSocket
-     * path, where the whole batch is delivered in a single frame that must
-     * stay under the agent's WS read limit (16MB — exceeding it kills the
-     * connection, agent/internal/websocket/client.go, issue #2399).
-     * Commands left unclaimed stay pending and are delivered by a later
-     * heartbeat/claim cycle. HTTP delivery paths have no frame limit and
-     * omit this.
-     */
-    maxTotalPayloadBytes?: number;
-  } = {},
 ): Promise<DeviceCommandRow[]> {
+  // Only HTTP delivery paths (heartbeat responses) claim batches; the agent
+  // WebSocket never embeds command batches in frames (#2407 removed the
+  // connect-time/heartbeat_ack claims — no agent version ever consumed them),
+  // so the per-frame payload budget that #2399 added here is gone with it.
   return db.transaction(async (tx) => {
     const pendingCommands = await tx
       .select()
@@ -80,31 +70,7 @@ export async function claimPendingCommandsForDevice(
       .for('update', { skipLocked: true });
 
     const claimed: DeviceCommandRow[] = [];
-    let claimedPayloadBytes = 0;
     for (const command of pendingCommands) {
-      if (options.maxTotalPayloadBytes !== undefined) {
-        const payloadBytes = Buffer.byteLength(
-          JSON.stringify(command.payload ?? {}),
-          'utf8',
-        );
-        if (
-          claimed.length > 0 &&
-          claimedPayloadBytes + payloadBytes > options.maxTotalPayloadBytes
-        ) {
-          break;
-        }
-        if (payloadBytes > options.maxTotalPayloadBytes) {
-          // First-command-always rule: a single over-budget payload is still
-          // claimed (otherwise it would block the queue forever), but if it
-          // exceeds the agent's WS read limit the frame will kill the agent's
-          // connection with no server-side signal (ErrReadLimit is agent-side
-          // only) — leave a greppable trail for that mystery reconnect.
-          console.warn(
-            `[commandDispatch] claiming single command over the WS payload budget: id=${command.id} type=${command.type} payloadBytes=${payloadBytes} budget=${options.maxTotalPayloadBytes}`,
-          );
-        }
-        claimedPayloadBytes += payloadBytes;
-      }
       const executedAt = new Date();
       const rows = await tx
         .update(deviceCommands)
