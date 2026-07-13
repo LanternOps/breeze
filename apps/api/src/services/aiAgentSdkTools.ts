@@ -132,6 +132,7 @@ export const TOOL_TIERS = {
   // Agent log tools
   search_agent_logs: 1,
   set_agent_log_level: 2,
+  capture_agent_pprof: 2,
   // Event log tools
   search_logs: 1,
   get_log_trends: 1,
@@ -1516,6 +1517,16 @@ export function createBreezeMcpServer(
         durationMinutes: z.number().int().min(1).max(1440).optional(),
       },
       makeHandler('set_agent_log_level', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'capture_agent_pprof',
+      "Capture Go runtime pprof profiles (heap and/or goroutine) from a device's Breeze agent process for memory/goroutine-leak diagnostics. Returns profile metadata only; the raw profiles are stored on the command result for download.",
+      {
+        deviceId: uuid,
+        profile: z.enum(['heap', 'goroutine', 'all']).optional(),
+      },
+      makeHandler('capture_agent_pprof', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Event log tools

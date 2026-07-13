@@ -72,4 +72,55 @@ describe('commandAudit', () => {
       stderr: '[REDACTED]: stderr omitted from command history',
     });
   });
+
+  describe('capture_pprof raw stdout pass-through (#2401)', () => {
+    const pprofStdout = JSON.stringify({
+      capturedAt: '2026-07-12T10:00:00Z',
+      heapProfileBase64: 'aGVhcC1wcm9maWxlLWJ5dGVz',
+      heapProfileBytes: 2048,
+    });
+
+    it('keeps capture_pprof stdout when allowRawStdout is set (single-command GET)', () => {
+      const command = sanitizeCommandForHistory(
+        {
+          id: 'cmd-4',
+          type: 'capture_pprof',
+          payload: { profile: 'heap' },
+          result: { status: 'completed', stdout: pprofStdout, stderr: 'noise' },
+        },
+        { allowRawStdout: true },
+      );
+
+      expect((command.result as { stdout: string }).stdout).toBe(pprofStdout);
+      // stderr is never passed through, even for allowlisted types.
+      expect((command.result as { stderr: string }).stderr).toContain('stderr omitted');
+    });
+
+    it('still redacts capture_pprof stdout without the opt-in (list endpoints)', () => {
+      const command = sanitizeCommandForHistory({
+        id: 'cmd-5',
+        type: 'capture_pprof',
+        payload: { profile: 'heap' },
+        result: { status: 'completed', stdout: pprofStdout },
+      });
+
+      expect((command.result as { stdout: string }).stdout).toContain('stdout omitted');
+      expect(JSON.stringify(command)).not.toContain('aGVhcC1wcm9maWxlLWJ5dGVz');
+    });
+
+    it('never passes through stdout for non-allowlisted command types, even with the opt-in', () => {
+      const command = sanitizeCommandForHistory(
+        {
+          id: 'cmd-6',
+          type: 'script',
+          payload: { content: 'echo secret' },
+          result: { status: 'completed', stdout: 'token=abc123' },
+        },
+        { allowRawStdout: true },
+      );
+
+      expect((command.result as { stdout: string }).stdout).toContain('stdout omitted');
+      expect(JSON.stringify(command)).not.toContain('abc123');
+    });
+  });
 });

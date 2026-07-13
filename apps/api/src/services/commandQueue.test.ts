@@ -380,7 +380,9 @@ describe('command queue service', () => {
 
     const result = await executeCommand('dev-2', 'list_services');
 
-    expect(result).toEqual(completed.result);
+    // executeCommand attaches the device_commands row id so callers can
+    // reference the persisted result (#2401).
+    expect(result).toEqual({ ...completed.result, commandId: completed.id });
   });
 
   it('should return pending commands for a device', async () => {

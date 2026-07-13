@@ -4,6 +4,7 @@
  * Tools for searching agent diagnostic logs and controlling log levels.
  * - search_agent_logs (Tier 1): Query logs across fleet with filters
  * - set_agent_log_level (Tier 2): Temporarily adjust agent log verbosity
+ * - capture_agent_pprof (Tier 2): On-demand Go runtime profiles from the agent
  */
 
 import { db } from '../db';
@@ -229,6 +230,117 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         const message = err instanceof Error ? err.message : 'Internal error';
         console.error('[ai:set_agent_log_level]', message, err);
         return JSON.stringify({ error: `Failed to set log level: ${message}` });
+      }
+    },
+  });
+
+  // ============================================
+  // 3. capture_agent_pprof — On-demand runtime profiles (#2401)
+  // ============================================
+
+  registerTool({
+    tier: 2 as AiToolTier,
+    deviceArgs: ['deviceId'],
+    definition: {
+      name: 'capture_agent_pprof',
+      description:
+        "Capture Go runtime pprof profiles (heap and/or goroutine) from a device's Breeze agent process, for diagnosing agent memory growth or goroutine leaks. Returns profile metadata only (byte sizes, capture time, runtime gauges including goroutine count) — the raw profiles are stored on the command result and can be downloaded from the device command API for analysis with `go tool pprof`. Requires approval.",
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          deviceId: {
+            type: 'string',
+            description: 'The device UUID whose agent to profile',
+          },
+          profile: {
+            type: 'string',
+            enum: ['heap', 'goroutine', 'all'],
+            description: 'Which profile(s) to capture (default: all)',
+          },
+        },
+        required: ['deviceId'],
+      },
+    },
+    handler: async (input: Record<string, unknown>, auth: AuthContext) => {
+      try {
+        const orgId = getOrgId(auth);
+        if (!orgId) {
+          return JSON.stringify({ error: 'No organization context available' });
+        }
+
+        const deviceId = input.deviceId as string;
+        if (!deviceId) {
+          return JSON.stringify({ error: 'deviceId is required' });
+        }
+
+        const profile = (input.profile as string | undefined) ?? 'all';
+        if (!['heap', 'goroutine', 'all'].includes(profile)) {
+          return JSON.stringify({
+            error: `Invalid profile "${profile}": must be heap, goroutine, or all`,
+          });
+        }
+
+        // Verify device belongs to the caller's organization
+        const [device] = await db
+          .select({ id: devices.id, siteId: devices.siteId })
+          .from(devices)
+          .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
+          .limit(1);
+
+        if (!device) {
+          return JSON.stringify({ error: 'Device not found or access denied' });
+        }
+        // Site axis (app-layer only; RLS does NOT enforce it).
+        if (deviceSiteDenied(auth, device.siteId)) {
+          return JSON.stringify({ error: 'Device not found or access denied' });
+        }
+
+        const { executeCommand } = await import('./commandQueue');
+
+        const result = await executeCommand(deviceId, 'capture_pprof', { profile }, {
+          userId: auth.user.id,
+          timeoutMs: 30000,
+        });
+
+        if (result.status !== 'completed') {
+          return JSON.stringify({ error: result.error || 'Profile capture failed' });
+        }
+
+        // The agent returns the profiles base64-encoded in stdout (up to
+        // ~2.7 MB for "all"). NEVER inline them into the AI transcript —
+        // return metadata and point at the persisted command result instead.
+        let captured: Record<string, unknown>;
+        try {
+          captured = JSON.parse(result.stdout ?? '{}');
+        } catch (parseErr) {
+          console.error('[ai:capture_agent_pprof] Failed to parse capture result', parseErr);
+          return JSON.stringify({ error: 'Failed to parse profile capture response' });
+        }
+
+        const profiles: Record<string, { sizeBytes: number }> = {};
+        if (typeof captured.heapProfileBytes === 'number') {
+          profiles.heap = { sizeBytes: captured.heapProfileBytes };
+        }
+        if (typeof captured.goroutineProfileBytes === 'number') {
+          profiles.goroutine = { sizeBytes: captured.goroutineProfileBytes };
+        }
+
+        return JSON.stringify({
+          status: 'completed',
+          commandId: result.commandId ?? null,
+          capturedAt: captured.capturedAt ?? null,
+          // Runtime gauges at capture time (heapAllocBytes, heapInuseBytes,
+          // sysBytes, numGc, goroutines) for correlating with the profiles.
+          runtime: captured.runtime ?? null,
+          profiles,
+          retrieval: result.commandId
+            ? `Raw profiles are base64-encoded gzip protobuf (the format \`go tool pprof\` consumes), stored on the command result. Fetch GET /devices/${deviceId}/commands/${result.commandId} and decode the heapProfileBase64 / goroutineProfileBase64 fields from the result stdout JSON. Do NOT re-fetch them into this conversation.`
+            : 'Profiles captured but the command id was unavailable; look up the latest capture_pprof command for this device in the command history.',
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal error';
+        console.error('[ai:capture_agent_pprof]', message, err);
+        return JSON.stringify({ error: `Profile capture failed: ${message}` });
       }
     },
   });

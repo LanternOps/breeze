@@ -971,6 +971,44 @@ describe('device commands routes', () => {
       expect(JSON.stringify(body.data)).not.toContain('hunter2');
       expect(JSON.stringify(body.data)).not.toContain('abc123');
     });
+
+    it('passes through raw stdout for capture_pprof so profiles are retrievable (#2401)', async () => {
+      const pprofStdout = JSON.stringify({
+        capturedAt: '2026-07-12T10:00:00Z',
+        heapProfileBase64: 'aGVhcC1wcm9maWxlLWJ5dGVz',
+        heapProfileBytes: 2048,
+      });
+
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a',
+        orgId: 'org-123',
+        hostname: 'host-a',
+        status: 'online'
+      } as never);
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'cmd-pprof',
+              deviceId: 'device-a',
+              type: 'capture_pprof',
+              status: 'completed',
+              payload: { profile: 'heap' },
+              result: { status: 'completed', stdout: pprofStdout }
+            }])
+          })
+        })
+      } as never);
+
+      const res = await app.request('/devices/device-a/commands/cmd-pprof', {
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.result.stdout).toBe(pprofStdout);
+    });
   });
 
   describe('GET /devices/:id/commands', () => {

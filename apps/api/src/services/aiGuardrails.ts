@@ -332,6 +332,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Agent log tools
   search_agent_logs: { resource: 'devices', action: 'read' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
+  capture_agent_pprof: { resource: 'devices', action: 'execute' },
   // Event log tools
   search_logs: { resource: 'devices', action: 'read' },
   get_log_trends: { resource: 'devices', action: 'read' },
@@ -576,6 +577,7 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   detect_log_correlations: { limit: 10, windowSeconds: 300 },
   // Agent log tools
   set_agent_log_level: { limit: 5, windowSeconds: 600 },
+  capture_agent_pprof: { limit: 3, windowSeconds: 600 },
   // Configuration policy tools
   get_configuration_policy: { limit: 30, windowSeconds: 300 },
   manage_configuration_policy: { limit: 20, windowSeconds: 300 },
@@ -946,6 +948,11 @@ function buildApprovalDescription(
       parts.push(`Set log level to ${input.level}`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       if (input.durationMinutes) parts.push(`for ${input.durationMinutes} minutes`);
+      break;
+
+    case 'capture_agent_pprof':
+      parts.push(`Capture agent ${(input.profile as string) ?? 'all'} pprof profile(s)`);
+      if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       break;
 
     case 'apply_configuration_policy':

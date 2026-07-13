@@ -8,6 +8,11 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./commandQueue', () => ({
   queueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
+  executeCommand: vi.fn(async () => ({
+    status: 'completed',
+    stdout: JSON.stringify({ capturedAt: '2026-07-12T10:00:00Z', runtime: { goroutines: 1 } }),
+    commandId: 'c2',
+  })),
 }));
 vi.mock('./logRedaction', () => ({ redactAgentLogRow: (r: any) => ({ message: r.message, fields: r.fields }) }));
 
@@ -43,6 +48,22 @@ describe('set_agent_log_level — site scoping (per-device write)', () => {
   it('unrestricted caller is unaffected', async () => {
     mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'd1', siteId: 'site-Z' }]) }) }) });
     const r = await handlerFor('set_agent_log_level')({ deviceId: 'd1', level: 'debug' }, makeAuth(undefined));
+    expect(r).not.toContain('access denied');
+  });
+});
+
+describe('capture_agent_pprof — site scoping (per-device write)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('denies a device in a forbidden site', async () => {
+    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'd1', siteId: 'site-B' }]) }) }) });
+    const r = await handlerFor('capture_agent_pprof')({ deviceId: 'd1' }, makeAuth(['site-A']));
+    expect(r).toContain('access denied');
+  });
+
+  it('unrestricted caller is unaffected', async () => {
+    mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'd1', siteId: 'site-Z' }]) }) }) });
+    const r = await handlerFor('capture_agent_pprof')({ deviceId: 'd1' }, makeAuth(undefined));
     expect(r).not.toContain('access denied');
   });
 });

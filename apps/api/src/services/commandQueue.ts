@@ -204,6 +204,13 @@ export interface CommandResult {
   error?: string;
   durationMs?: number;
   data?: unknown;
+  /**
+   * The device_commands row id, attached by executeCommand once a command row
+   * exists. Lets callers point at the persisted result (e.g. the AI pprof tool
+   * references GET /devices/:id/commands/:commandId instead of inlining the
+   * artifact). Absent on failures that occur before the row is created.
+   */
+  commandId?: string;
 }
 
 export interface QueuedCommand {
@@ -278,6 +285,9 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.QUARANTINE_FILE,
   CommandTypes.TAKE_SCREENSHOT,
   CommandTypes.COMPUTER_ACTION,
+  // Runtime diagnostics — profiling the agent process is a privileged
+  // diagnostic action; keep a durable audit trail of who triggered it (#2401).
+  CommandTypes.CAPTURE_PPROF,
   CommandTypes.MANAGE_STARTUP_ITEM,
   CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
   // Peripheral control — pushes full active policy set to agent
@@ -852,10 +862,11 @@ export async function executeCommand(
     // Poll for result
     const result = await waitForCommandResult(command.id, timeoutMs);
 
-    return result.result ?? {
+    const finalResult = result.result ?? {
       status: 'failed' as const,
       error: 'Command did not complete',
     };
+    return { ...finalResult, commandId: command.id };
   });
 }
 

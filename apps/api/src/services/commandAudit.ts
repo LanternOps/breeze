@@ -66,21 +66,50 @@ export function commandAuditDetails(
   };
 }
 
-export function sanitizeCommandResultForHistory(result: CommandResult | null | undefined): unknown {
+/**
+ * Command types whose result stdout is a machine artifact with no tenant or
+ * secret content, and whose only delivery channel IS the stored command
+ * result. `capture_pprof` stdout is JSON carrying base64 gzip-protobuf Go
+ * runtime profiles of the agent's own process (heap allocation sites /
+ * goroutine stacks of our binary) — nothing user-generated to leak, and
+ * redacting it would make the profiles unretrievable (#2401).
+ */
+const RAW_STDOUT_COMMAND_TYPES = new Set(['capture_pprof']);
+
+export function sanitizeCommandResultForHistory(
+  result: CommandResult | null | undefined,
+  opts: { keepRawStdout?: boolean } = {},
+): unknown {
   if (!isRecord(result)) return result ?? null;
   const sanitized = sanitizeAuditPayload(result, { maxStringLength: 4096 });
 
   return {
     ...(isRecord(sanitized) ? sanitized : {}),
-    stdout: typeof result.stdout === 'string' ? `${REDACTED}: stdout omitted from command history` : result.stdout,
+    stdout:
+      typeof result.stdout === 'string'
+        ? opts.keepRawStdout
+          ? result.stdout
+          : `${REDACTED}: stdout omitted from command history`
+        : result.stdout,
     stderr: typeof result.stderr === 'string' ? `${REDACTED}: stderr omitted from command history` : result.stderr,
   };
 }
 
-export function sanitizeCommandForHistory<T extends { type: string; payload?: unknown; result?: unknown }>(command: T): T {
+export function sanitizeCommandForHistory<T extends { type: string; payload?: unknown; result?: unknown }>(
+  command: T,
+  opts: {
+    /**
+     * Opt-in stdout pass-through, honored only for RAW_STDOUT_COMMAND_TYPES.
+     * Only the single-command GET sets this — list endpoints stay redacted so
+     * pages of history never balloon by megabytes of base64 per profile row.
+     */
+    allowRawStdout?: boolean;
+  } = {},
+): T {
+  const keepRawStdout = opts.allowRawStdout === true && RAW_STDOUT_COMMAND_TYPES.has(command.type);
   return {
     ...command,
     payload: sanitizeCommandPayloadForAudit(command.type, command.payload as CommandPayload | null | undefined),
-    result: sanitizeCommandResultForHistory(command.result as CommandResult | null | undefined),
+    result: sanitizeCommandResultForHistory(command.result as CommandResult | null | undefined, { keepRawStdout }),
   } as T;
 }
