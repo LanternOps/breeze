@@ -67,6 +67,7 @@ import {
   userRequiresSetup,
   getCookieValue,
   rotateCsrfBindingCookie,
+  setCfAccessLogoutQuarantineCookie,
 } from './helpers';
 import {
   prepareTerminalLogout,
@@ -684,6 +685,10 @@ loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
     result: 'success',
   });
 
+  // Install the legacy issuer barrier on this authoritative POST response.
+  // Top-level GETs must never install it: duplicated navigations can arrive
+  // after completion and would otherwise resurrect a stale quarantine cookie.
+  setCfAccessLogoutQuarantineCookie(c);
   clearRefreshCookieOnly(c);
   return c.json({
     success: true,

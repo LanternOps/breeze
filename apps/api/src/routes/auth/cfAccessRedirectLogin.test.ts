@@ -474,7 +474,8 @@ describe('GET /cf-access-login', () => {
       'https://breeze.example.com/api/v1/auth/cf-access-logout/complete?ticket=signed-ticket',
     );
     expect(cookieState.cleared).toBe(false);
-    expect(cookieState.quarantineSet).toBe(true);
+    expect(cookieState.quarantineSet).toBe(false);
+    expect(res.headers.get('Set-Cookie')).toBeNull();
     expect(completionState.pendingCalls).toEqual([{
       transitionId: verifiedTicket.transitionId,
       logoutId: verifiedTicket.logoutId,
@@ -580,6 +581,28 @@ describe('GET /cf-access-login', () => {
     expect(second.status).toBe(303);
     expect(first.headers.get('Set-Cookie')).toContain(`breeze_csrf_token=${'c'.repeat(64)}`);
     expect(second.headers.get('Set-Cookie')).toBeNull();
+  });
+
+  it('duplicate top navigations cannot reinstall quarantine after successful completion', async () => {
+    const firstTop = await callGet('/cf-access-logout?ticket=signed-ticket');
+    const delayedSecondTop = await callGet('/cf-access-logout?ticket=signed-ticket');
+
+    expect(firstTop.headers.get('Set-Cookie')).toBeNull();
+    expect(delayedSecondTop.headers.get('Set-Cookie')).toBeNull();
+
+    completionState.results = [
+      { kind: 'completed', replacement: { kind: 'browser', value: 'c'.repeat(64) } },
+      { kind: 'replayed', replacement: { kind: 'browser', value: 'c'.repeat(64) } },
+    ];
+    const completed = await callGet('/cf-access-logout/complete?ticket=signed-ticket');
+    const replayed = await callGet('/cf-access-logout/complete?ticket=signed-ticket');
+
+    expect(completed.headers.get('Set-Cookie')).toContain(
+      'breeze_cf_logout_quarantine=; Path=/api/v1',
+    );
+    expect(replayed.headers.get('Set-Cookie')).toBeNull();
+    expect(cookieState.quarantineSet).toBe(false);
+    expect(cookieState.quarantineCleared).toBe(true);
   });
 
   it('does not let a consumed ticket replay clear a newer refresh cookie or overwrite C3', async () => {

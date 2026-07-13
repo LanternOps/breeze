@@ -27,7 +27,6 @@ import {
   getClientIP,
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
-  setCfAccessLogoutQuarantineCookie,
   setRefreshTokenCookie,
   rotateCsrfBindingCookie,
 } from './helpers';
@@ -329,11 +328,6 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
 
   const completionUrl = new URL('/api/v1/auth/cf-access-logout/complete', origin);
   completionUrl.searchParams.set('ticket', ticket);
-
-  // Persist an issuer barrier across both Cloudflare navigation hops. C1 is
-  // deliberately kept until signed durable completion can atomically retire
-  // it and establish C2, including when the browser returns without cookies.
-  setCfAccessLogoutQuarantineCookie(c);
 
   const teamDomain = cfAccessTeamDomain();
   if (!cfAccessTrustEnabled() || !/^[a-z0-9.-]+$/i.test(teamDomain)) {

@@ -370,7 +370,7 @@ describe('POST /cf-access-logout/prepare', () => {
     });
     expect(clearRefreshCookieOnly).toHaveBeenCalledOnce();
     expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
-    expect(setCfAccessLogoutQuarantineCookie).not.toHaveBeenCalled();
+    expect(setCfAccessLogoutQuarantineCookie).toHaveBeenCalledOnce();
     expect(issueTerminalLogoutTicket).toHaveBeenCalledWith({
       transitionId: 'transition-1',
       logoutId: 'logout-1',
@@ -385,6 +385,7 @@ describe('POST /cf-access-logout/prepare', () => {
         'https://breeze.example.com/api/v1/auth/cf-access-logout?ticket=signed-terminal-ticket',
     });
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect(res.headers.get('set-cookie')).toContain('breeze_cf_logout_quarantine=1');
     expect(res.headers.get('set-cookie')).not.toContain('breeze_csrf_token=');
     expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: 'auth.cf_access_terminal_logout.prepare',
@@ -433,6 +434,7 @@ describe('POST /cf-access-logout/prepare', () => {
     expect(res.headers.get('set-cookie')).toBeNull();
     expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
     expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(setCfAccessLogoutQuarantineCookie).not.toHaveBeenCalled();
     expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: 'auth.cf_access_terminal_logout.prepare',
       result: 'failure',
@@ -465,6 +467,7 @@ describe('POST /cf-access-logout/prepare', () => {
 
     expect(res.status).toBe(503);
     expect(res.headers.get('set-cookie')).toBeNull();
+    expect(setCfAccessLogoutQuarantineCookie).not.toHaveBeenCalled();
     expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: 'auth.cf_access_terminal_logout.prepare',
       resourceId: 'transition-1',
@@ -501,6 +504,7 @@ describe('POST /cf-access-logout/prepare', () => {
     expect(prepareTerminalLogout).not.toHaveBeenCalled();
     expect(issueTerminalLogoutTicket).not.toHaveBeenCalled();
     expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
+    expect(setCfAccessLogoutQuarantineCookie).not.toHaveBeenCalled();
   });
 
   it('never exposes cleanup subject or family identifiers at the route boundary', async () => {
