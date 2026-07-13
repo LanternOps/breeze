@@ -15,9 +15,12 @@ const AUTH_BINDING_PATTERN = /^[0-9a-f]{64}$/;
 const AUTH_BINDING_DERIVATION_DOMAIN = 'auth-browser-binding:v1';
 const AUTH_BINDING_HMAC_DOMAIN = 'auth-browser-binding:v1:';
 const AUTH_BINDING_VALUE_DOMAIN = 'auth-browser-binding-value:v1:';
+const AUTH_NATIVE_BINDING_VALUE_DOMAIN = 'auth-native-binding-value:v1:';
 const AUTH_BINDING_SUCCESSOR_DOMAIN = 'auth-browser-binding-successor:v1:';
 const AUTH_ISSUANCE_LEASE_MINUTES = 2;
 const AUTH_ISSUANCE_CAPABILITY: unique symbol = Symbol('AuthIssuanceCapability');
+
+export const NATIVE_AUTH_BINDING_HEADER = 'x-breeze-native-auth-binding';
 
 export type AuthBindingSource =
   | Readonly<{ kind: 'browser'; value: string }>
@@ -26,6 +29,13 @@ export type AuthBindingSource =
 export type ResolvedAuthBinding = Readonly<{
   kind: AuthBindingSource['kind'];
   bindingDigest: string;
+}>;
+
+export type AuthBindingTransportInput = Readonly<{
+  browserBinding?: string | null;
+  nativeBinding?: string | null;
+  /** A raw mobile device id may select native bootstrap, but is never binding authority. */
+  nativeRequest?: boolean;
 }>;
 
 export type AuthIssuanceCapability = Readonly<{
@@ -97,10 +107,28 @@ function bindingValueTag(
   payload: string,
   key: Buffer,
 ): string {
+  const audience = kind === 'native'
+    ? AUTH_NATIVE_BINDING_VALUE_DOMAIN
+    : AUTH_BINDING_VALUE_DOMAIN;
   return createHmac('sha256', key)
-    .update(`${AUTH_BINDING_VALUE_DOMAIN}${kind}:${payload}`)
+    .update(`${audience}${kind}:${payload}`)
     .digest('hex')
     .slice(0, 32);
+}
+
+/**
+ * Select one transport without treating client-selected device metadata as
+ * authority. Native requests stay on the signed-header path even if a cookie
+ * jar also happens to contain a browser binding.
+ */
+export function selectAuthBindingSource(input: AuthBindingTransportInput): AuthBindingSource {
+  if (input.nativeBinding !== null && input.nativeBinding !== undefined) {
+    return Object.freeze({ kind: 'native', value: input.nativeBinding });
+  }
+  if (input.nativeRequest === true) {
+    return Object.freeze({ kind: 'native', value: '' });
+  }
+  return Object.freeze({ kind: 'browser', value: input.browserBinding ?? '' });
 }
 
 function bindingTagMatches(

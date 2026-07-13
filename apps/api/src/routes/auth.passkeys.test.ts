@@ -63,6 +63,16 @@ const {
 });
 
 vi.mock('../services', () => ({
+  NATIVE_AUTH_BINDING_HEADER: 'x-breeze-native-auth-binding',
+  selectAuthBindingSource: vi.fn((input: {
+    browserBinding?: string | null;
+    nativeBinding?: string | null;
+    nativeRequest?: boolean;
+  }) => input.nativeBinding !== null && input.nativeBinding !== undefined
+    ? { kind: 'native', value: input.nativeBinding }
+    : input.nativeRequest
+      ? { kind: 'native', value: '' }
+      : { kind: 'browser', value: input.browserBinding ?? '' }),
   AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
     replacement = { kind: 'browser', value: 'b'.repeat(64) };
   },
@@ -1280,6 +1290,44 @@ describe('passkey MFA auth routes', () => {
     expect(dbState.updateSets).toEqual([]);
     expect(res.headers.get('set-cookie')).toBeNull();
     expect(redisMock.del).not.toHaveBeenCalled();
+  });
+
+  it('uses the signed native binding for passkey MFA issuance admission', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({
+      userId: 'user-123',
+      mfaMethod: 'passkey',
+      amr: ['password'],
+    }));
+    dbState.selectQueue.push([{
+      id: 'credential-row-1',
+      userId: 'user-123',
+      credentialId: 'credential-1',
+      publicKey: 'public-key',
+      counter: 0,
+      transports: ['internal'],
+      disabledAt: null,
+    }]);
+    passkeyMocks.verifyPasskeyAuthentication.mockResolvedValueOnce({ verified: false });
+
+    const nativeBinding = 'c'.repeat(64);
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-mobile-device-id': 'install-1',
+        'x-breeze-native-auth-binding': nativeBinding,
+      },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(beginPendingMfaIssuance).toHaveBeenCalledWith(
+      pendingMfa,
+      { kind: 'native', value: nativeBinding },
+    );
   });
 
   it('cannot release a retired passkey issuance generation into authority or factor state', async () => {

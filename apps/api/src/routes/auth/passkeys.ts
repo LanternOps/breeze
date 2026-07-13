@@ -23,6 +23,8 @@ import {
   readPendingMfa,
   withAuthLifecycleSystemTransaction,
   type PendingMfaSessionV2,
+  NATIVE_AUTH_BINDING_HEADER,
+  selectAuthBindingSource,
 } from '../../services';
 import { lockMfaAssuranceState } from '../../services/mfaAssuranceLocks';
 import { resolveEffectiveMfaPolicy } from '../../services/mfaPolicy';
@@ -81,16 +83,21 @@ import type {
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
 
-function requestAuthBinding(c: Context) {
-  return {
-    kind: 'browser' as const,
-    value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
-  };
+function requestAuthBinding(c: Context, mobileDeviceId: string | null = readMobileDeviceId(c)) {
+  return selectAuthBindingSource({
+    browserBinding: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME),
+    nativeBinding: c.req.header(NATIVE_AUTH_BINDING_HEADER),
+    nativeRequest: mobileDeviceId !== null,
+  });
 }
 
 function authTransitionErrorResponse(c: Context, error: unknown) {
   if (error instanceof AuthBindingRotationRequiredError) {
-    rotateCsrfBindingCookie(c, error.replacement.value);
+    if (error.replacement.kind === 'native') {
+      c.header(NATIVE_AUTH_BINDING_HEADER, error.replacement.value);
+    } else {
+      rotateCsrfBindingCookie(c, error.replacement.value);
+    }
     return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
   }
   if (error instanceof AuthBindingUnavailableError
@@ -582,9 +589,10 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     return c.json({ error: 'Passkey is not registered for this account' }, 403);
   }
 
+  const mobileDeviceId = readMobileDeviceId(c);
   let capability;
   try {
-    capability = await beginPendingMfaIssuance(pending, requestAuthBinding(c));
+    capability = await beginPendingMfaIssuance(pending, requestAuthBinding(c, mobileDeviceId));
   } catch (error) {
     if (error instanceof PendingMfaInvalidError) {
       return c.json({ error: 'Invalid or expired MFA session' }, 401);
@@ -629,7 +637,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
       expectedPending: pending,
       capability,
       verifiedMethod: 'passkey',
-      mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      mobileDeviceId: mobileDeviceId ?? undefined,
       finalizeFactor: async (tx) => {
         const updated = await tx
           .update(userPasskeys)

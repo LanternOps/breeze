@@ -16,12 +16,13 @@ import {
   isCurrentSessionGeneration,
   runAuthSessionTransition,
   runAuthStorageExclusive,
+  runAuthStorageForSessionGeneration,
   SessionGenerationStaleError,
 } from '../services/sessionGeneration';
 
 async function persistAuthenticatedSession(token: string, user: User): Promise<void> {
   const generation = advanceSessionGeneration();
-  await runAuthStorageExclusive(async () => {
+  await runAuthStorageForSessionGeneration(generation, async () => {
     try {
       if (!isCurrentSessionGeneration(generation)) throw new SessionGenerationStaleError();
       await storeToken(token);

@@ -27,6 +27,8 @@ import {
   RecoveryCodeInvalidError,
   RecoveryCodeUnavailableError,
   rejectMalformedRecoveryCodeLogin,
+  NATIVE_AUTH_BINDING_HEADER,
+  selectAuthBindingSource,
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
@@ -92,16 +94,21 @@ const mfaDisableSchema = standardMfaVerifySchema.extend({
 
 export const mfaRoutes = new Hono();
 
-function requestAuthBinding(c: Context) {
-  return {
-    kind: 'browser' as const,
-    value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
-  };
+function requestAuthBinding(c: Context, mobileDeviceId: string | null = readMobileDeviceId(c)) {
+  return selectAuthBindingSource({
+    browserBinding: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME),
+    nativeBinding: c.req.header(NATIVE_AUTH_BINDING_HEADER),
+    nativeRequest: mobileDeviceId !== null,
+  });
 }
 
 function authTransitionErrorResponse(c: Context, error: unknown) {
   if (error instanceof AuthBindingRotationRequiredError) {
-    rotateCsrfBindingCookie(c, error.replacement.value);
+    if (error.replacement.kind === 'native') {
+      c.header(NATIVE_AUTH_BINDING_HEADER, error.replacement.value);
+    } else {
+      rotateCsrfBindingCookie(c, error.replacement.value);
+    }
     return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
   }
   if (error instanceof AuthBindingUnavailableError
@@ -422,13 +429,14 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
   const mfaGrant = 'mfaGrant' in verification ? verification.mfaGrant : undefined;
 
   if (tempToken && method === 'recovery_code') {
+    const mobileDeviceId = readMobileDeviceId(c);
     let completed;
     try {
       completed = await completeRecoveryCodeLogin({
         tempToken,
         code,
-        authBinding: requestAuthBinding(c),
-        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+        authBinding: requestAuthBinding(c, mobileDeviceId),
+        mobileDeviceId: mobileDeviceId ?? undefined,
       });
     } catch (error) {
       if (error instanceof RecoveryCodeInvalidError) {
@@ -513,9 +521,10 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
     // Use the server-stored method only — never allow the client to override
     const effectiveMethod = pending.primaryMfaMethod;
 
+    const mobileDeviceId = readMobileDeviceId(c);
     let capability;
     try {
-      capability = await beginPendingMfaIssuance(pending, requestAuthBinding(c));
+      capability = await beginPendingMfaIssuance(pending, requestAuthBinding(c, mobileDeviceId));
     } catch (error) {
       if (error instanceof PendingMfaInvalidError) {
         return c.json({ error: 'Invalid or expired MFA session' }, 401);
@@ -593,7 +602,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
         expectedPending: pending,
         capability,
         verifiedMethod: effectiveMethod,
-        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+        mobileDeviceId: mobileDeviceId ?? undefined,
         finalizeFactor: migratedMfaSecret
           ? async (tx, issuedUser) => {
             await tx

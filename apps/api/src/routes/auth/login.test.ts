@@ -23,6 +23,16 @@ vi.mock('../../db/schema', () => ({
 }));
 
 vi.mock('../../services', () => ({
+  NATIVE_AUTH_BINDING_HEADER: 'x-breeze-native-auth-binding',
+  selectAuthBindingSource: vi.fn((input: {
+    browserBinding?: string | null;
+    nativeBinding?: string | null;
+    nativeRequest?: boolean;
+  }) => input.nativeBinding !== null && input.nativeBinding !== undefined
+    ? { kind: 'native', value: input.nativeBinding }
+    : input.nativeRequest
+      ? { kind: 'native', value: '' }
+      : { kind: 'browser', value: input.browserBinding ?? '' }),
   issueUserSession: vi.fn(async () => ({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
@@ -39,7 +49,10 @@ vi.mock('../../services', () => ({
   finishAuthIssuance: vi.fn(async (_capability: unknown, fn: (tx: object) => Promise<unknown>) => fn({})),
   bindIssuedUserSession: vi.fn(async () => undefined),
   AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
-    replacement = { kind: 'browser', value: 'a'.repeat(64) };
+    constructor(
+      readonly replacement = { kind: 'browser' as const, value: 'a'.repeat(64) },
+      readonly reason = 'invalid',
+    ) { super('binding refresh required'); }
   },
   AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
   AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
@@ -289,6 +302,7 @@ import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { getMfaAssuranceFailure } from '../../services/mfaPolicy';
 import { prepareTerminalLogout } from '../../services/terminalLogout';
+import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { issueTerminalLogoutTicket } from '../../services/terminalLogoutTicket';
 import {
   resolveCurrentUserTokenContext,
@@ -325,10 +339,13 @@ function updateChain() {
   };
 }
 
-async function postLogin(body: { email: string; password: string }) {
+async function postLogin(
+  body: { email: string; password: string },
+  headers: Record<string, string> = {},
+) {
   return loginRoutes.request('/login', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
   });
 }
@@ -852,6 +869,47 @@ describe('POST /login — IP allowlist', () => {
     const body = await res.json() as { user: { isPlatformAdmin?: boolean } };
     expect(body.user.isPlatformAdmin).toBe(false);
   });
+
+  it('selects the signed native header instead of browser-cookie authority', async () => {
+    const nativeBinding = 'c'.repeat(64);
+    const res = await postLogin(
+      { email: 'admin@msp.com', password: 'correct-horse' },
+      {
+        'x-breeze-mobile-device-id': 'install-1',
+        'x-breeze-native-auth-binding': nativeBinding,
+        cookie: `breeze_csrf_token=${'a'.repeat(64)}`,
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(decideAuthenticatedUserSession).toHaveBeenCalledWith(expect.objectContaining({
+      authBinding: { kind: 'native', value: nativeBinding },
+    }));
+  });
+
+  it('returns a native 428 header without installing a browser cookie', async () => {
+    const { AuthBindingRotationRequiredError } = await import('../../services');
+    vi.mocked(decideAuthenticatedUserSession).mockRejectedValueOnce(
+      new AuthBindingRotationRequiredError(
+        { kind: 'native', value: 'd'.repeat(64) },
+        'invalid',
+      ),
+    );
+    vi.mocked(readMobileDeviceId).mockReturnValueOnce('install-1');
+
+    const res = await postLogin(
+      { email: 'admin@msp.com', password: 'correct-horse' },
+      { 'x-breeze-mobile-device-id': 'install-1' },
+    );
+
+    expect(res.status).toBe(428);
+    expect(decideAuthenticatedUserSession).toHaveBeenCalledWith(expect.objectContaining({
+      authBinding: { kind: 'native', value: '' },
+      mobileDeviceId: 'install-1',
+    }));
+    expect(res.headers.get('x-breeze-native-auth-binding')).toBe('d'.repeat(64));
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
 });
 
 // #719 residual 2: inactive-account and inactive-tenant login denials must
@@ -1024,10 +1082,10 @@ describe('POST /login — guarded issuance owns last_login_at', () => {
 });
 
 describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () => {
-  async function postRefresh() {
+  async function postRefresh(headers: Record<string, string> = {}) {
     return loginRoutes.request('/refresh', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...headers },
     });
   }
 
@@ -1117,6 +1175,29 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(finishAuthIssuance).toHaveBeenCalledOnce();
     expect(bindIssuedUserSession).toHaveBeenCalledOnce();
     expect(touchFamilyLastUsed).not.toHaveBeenCalled();
+  });
+
+  it('uses the persisted native binding for refresh admission', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current-native',
+      fam: 'family-42',
+      ae: 4,
+      me: 7,
+      mfa: true,
+      amr: ['password'],
+    } as any);
+    const nativeBinding = 'e'.repeat(64);
+
+    const res = await postRefresh({
+      'x-breeze-mobile-device-id': 'install-1',
+      'x-breeze-native-auth-binding': nativeBinding,
+    });
+
+    expect(res.status).toBe(200);
+    expect(beginAuthIssuance).toHaveBeenCalledWith({ kind: 'native', value: nativeBinding });
   });
 
   it('uses non-null PostgreSQL currentness without consulting Redis JTI state', async () => {

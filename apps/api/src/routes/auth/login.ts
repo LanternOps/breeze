@@ -38,6 +38,8 @@ import {
   RefreshTokenCurrentnessError,
   digestRefreshTokenJti,
   getRefreshRotationGraceSeconds,
+  NATIVE_AUTH_BINDING_HEADER,
+  selectAuthBindingSource,
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -78,6 +80,25 @@ import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDe
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
 import { captureException } from '../../services/sentry';
 import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
+
+function requestAuthBinding(c: Context, mobileDeviceId = readMobileDeviceId(c)) {
+  return selectAuthBindingSource({
+    browserBinding: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME),
+    nativeBinding: c.req.header(NATIVE_AUTH_BINDING_HEADER),
+    nativeRequest: mobileDeviceId !== null,
+  });
+}
+
+function installAuthBindingReplacement(
+  c: Context,
+  replacement: { kind: 'browser' | 'native'; value: string },
+): void {
+  if (replacement.kind === 'native') {
+    c.header(NATIVE_AUTH_BINDING_HEADER, replacement.value);
+  } else {
+    rotateCsrfBindingCookie(c, replacement.value);
+  }
+}
 import { getMfaAssuranceFailure, resolveEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import {
   revokeUserSessionFamilyForLogout,
@@ -446,13 +467,11 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   // timestamp/auth epoch bind this decision to the credential verified above,
   // closing enrollment and password-change races before pending or direct
   // session issuance.
+  const mobileDeviceId = readMobileDeviceId(c);
   let loginDecision;
   try {
     loginDecision = await decideAuthenticatedUserSession({
-      authBinding: {
-        kind: 'browser',
-        value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
-      },
+      authBinding: requestAuthBinding(c, mobileDeviceId),
       userId: user.id,
       roleId: context.roleId,
       orgId: context.orgId,
@@ -460,7 +479,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       scope: context.scope,
       primaryAuthenticationMethod: 'password',
       requireLocalMfa: ENABLE_2FA,
-      mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      mobileDeviceId: mobileDeviceId ?? undefined,
       credentialBinding: {
         kind: 'password',
         passwordHash: user.passwordHash,
@@ -471,7 +490,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   } catch (error) {
     await floorPromise;
     if (error instanceof AuthBindingRotationRequiredError) {
-      rotateCsrfBindingCookie(c, error.replacement.value);
+      installAuthBindingReplacement(c, error.replacement);
       return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
     }
     if (error instanceof AuthBindingUnavailableError
@@ -1068,13 +1087,12 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  const bindingValue = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
   let capability;
   try {
-    capability = await beginAuthIssuance({ kind: 'browser', value: bindingValue ?? '' });
+    capability = await beginAuthIssuance(requestAuthBinding(c));
   } catch (error) {
     if (error instanceof AuthBindingRotationRequiredError) {
-      rotateCsrfBindingCookie(c, error.replacement.value);
+      installAuthBindingReplacement(c, error.replacement);
       return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
     }
     if (error instanceof AuthBindingUnavailableError || error instanceof AuthIssuanceConflictError) {

@@ -27,8 +27,21 @@ const mfaMutationState = vi.hoisted(() => ({
 
 // Mock all services
 vi.mock('../services', () => ({
+  NATIVE_AUTH_BINDING_HEADER: 'x-breeze-native-auth-binding',
+  selectAuthBindingSource: vi.fn((input: {
+    browserBinding?: string | null;
+    nativeBinding?: string | null;
+    nativeRequest?: boolean;
+  }) => input.nativeBinding !== null && input.nativeBinding !== undefined
+    ? { kind: 'native', value: input.nativeBinding }
+    : input.nativeRequest
+      ? { kind: 'native', value: '' }
+      : { kind: 'browser', value: input.browserBinding ?? '' }),
   AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
-    replacement = { kind: 'browser', value: 'b'.repeat(64) };
+    constructor(
+      readonly replacement = { kind: 'browser' as const, value: 'b'.repeat(64) },
+      readonly reason = 'invalid',
+    ) { super('binding refresh required'); }
   },
   AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
   AuthIssuanceCapabilityError: class AuthIssuanceCapabilityError extends Error {},
@@ -129,6 +142,7 @@ vi.mock('../services', () => ({
   rememberJtiFamily: vi.fn().mockResolvedValue(undefined),
   getFamilyForJti: vi.fn().mockResolvedValue(null),
   revokeFamily: vi.fn().mockResolvedValue(undefined),
+  cacheRefreshTokenFamilyRevocation: vi.fn().mockResolvedValue(undefined),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
@@ -1450,6 +1464,34 @@ describe('auth routes', () => {
       });
       expect(res.headers.get('set-cookie')).toContain(`breeze_csrf_token=${'b'.repeat(64)}`);
       expect(res.headers.get('set-cookie')).not.toContain('breeze_refresh_token=');
+    });
+
+    it('returns a native binding header for mobile MFA rotation without setting a browser cookie', async () => {
+      vi.mocked(completeRecoveryCodeLogin).mockRejectedValueOnce(
+        new AuthBindingRotationRequiredError(
+          { kind: 'native', value: 'c'.repeat(64) },
+          'retired',
+        ),
+      );
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-breeze-mobile-device-id': 'install-1',
+          'x-breeze-native-auth-binding': 'd'.repeat(64),
+        },
+        body: JSON.stringify({
+          tempToken: 'v2-temp-token', method: 'recovery_code', code: 'ABCD-EF12',
+        }),
+      });
+
+      expect(res.status).toBe(428);
+      expect(res.headers.get('x-breeze-native-auth-binding')).toBe('c'.repeat(64));
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(completeRecoveryCodeLogin).toHaveBeenCalledWith(expect.objectContaining({
+        authBinding: { kind: 'native', value: 'd'.repeat(64) },
+      }));
     });
 
     it('returns the same generic failure for a wrong or replayed recovery code without a token', async () => {

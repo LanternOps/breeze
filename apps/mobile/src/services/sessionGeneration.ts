@@ -52,6 +52,24 @@ export async function runAuthStorageExclusive<T>(operation: () => Promise<T>): P
 }
 
 /**
+ * Serialize a SecureStore mutation and fence both sides of the write against
+ * terminal logout/reauthentication. The write itself cannot be cancelled by
+ * the native keychain, so the post-write check prevents its caller from
+ * continuing into a retry or credential install after the boundary.
+ */
+export async function runAuthStorageForSessionGeneration<T>(
+  candidate: number,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return runAuthStorageExclusive(async () => {
+    if (!isCurrentSessionGeneration(candidate)) throw new SessionGenerationStaleError();
+    const result = await operation();
+    if (!isCurrentSessionGeneration(candidate)) throw new SessionGenerationStaleError();
+    return result;
+  });
+}
+
+/**
  * Serialize the complete native cookie transition and its local credential
  * commit. React Native has one shared cookie jar per app process, so keeping
  * the HTTP response and SecureStore/Redux continuation in one FIFO boundary

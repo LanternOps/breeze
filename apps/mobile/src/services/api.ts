@@ -6,6 +6,7 @@ import {
   captureSessionGeneration,
   isCurrentSessionGeneration,
   runAuthSessionTransition,
+  runAuthStorageForSessionGeneration,
   registerAuthRequestController,
   terminateSessionGeneration,
 } from './sessionGeneration';
@@ -17,6 +18,7 @@ const API_CORE_PREFIX = '/api/v1';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
 export const MOBILE_DEVICE_ID_HEADER = 'x-breeze-mobile-device-id';
+export const NATIVE_AUTH_BINDING_HEADER = 'x-breeze-native-auth-binding';
 export const DEVICE_BLOCKED_CODE = 'device_blocked';
 
 type DeviceBlockedListener = (reason: string | null) => void;
@@ -214,6 +216,8 @@ type MobileDeviceRecord = {
 
 // Token management
 const TOKEN_KEY = 'breeze_auth_token';
+const NATIVE_AUTH_BINDING_KEY = 'breeze_native_auth_binding_v1';
+const NATIVE_AUTH_BINDING_PATTERN = /^[0-9a-f]{64}$/;
 
 async function getToken(): Promise<string | null> {
   try {
@@ -223,12 +227,28 @@ async function getToken(): Promise<string | null> {
   }
 }
 
+async function getNativeAuthBinding(): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(NATIVE_AUTH_BINDING_KEY);
+  } catch {
+    return null;
+  }
+}
+
+async function persistNativeAuthBinding(value: string, generation: number): Promise<void> {
+  await runAuthStorageForSessionGeneration(generation, () =>
+    SecureStore.setItemAsync(NATIVE_AUTH_BINDING_KEY, value, {
+      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+    }));
+}
+
 // Request helper
 async function requestWithPrefix<T>(
   endpoint: string,
   prefix: string,
   options: RequestInit = {},
   capturedBearer?: string | null,
+  allowNativeBindingBootstrap = false,
 ): Promise<T> {
   const requestGeneration = captureSessionGeneration();
   const assertCurrent = () => {
@@ -237,6 +257,8 @@ async function requestWithPrefix<T>(
     }
   };
   const token = capturedBearer === undefined ? await getToken() : capturedBearer;
+  assertCurrent();
+  let nativeBinding = await getNativeAuthBinding();
   assertCurrent();
   const method = (options.method ?? 'GET').toUpperCase();
 
@@ -247,6 +269,10 @@ async function requestWithPrefix<T>(
 
   if (token) {
     (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+  }
+
+  if (nativeBinding) {
+    (headers as Record<string, string>)[NATIVE_AUTH_BINDING_HEADER] = nativeBinding;
   }
 
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
@@ -278,34 +304,56 @@ async function requestWithPrefix<T>(
   const timeout = setTimeout(() => controller.abort(), 15_000);
   let response: Response;
   try {
-    response = await fetch(url, {
-      ...options,
-      headers,
-      signal: controller.signal,
-      credentials: 'include',
-    });
-    assertCurrent();
+    let retryCount = 0;
+    while (true) {
+      if (nativeBinding) {
+        (headers as Record<string, string>)[NATIVE_AUTH_BINDING_HEADER] = nativeBinding;
+      } else {
+        delete (headers as Record<string, string>)[NATIVE_AUTH_BINDING_HEADER];
+      }
+      response = await fetch(url, {
+        ...options,
+        headers,
+        signal: controller.signal,
+        credentials: 'include',
+      });
+      assertCurrent();
+
+      const replacement = allowNativeBindingBootstrap && response.status === 428
+        ? response.headers?.get(NATIVE_AUTH_BINDING_HEADER)
+        : null;
+      if (replacement && NATIVE_AUTH_BINDING_PATTERN.test(replacement)) {
+        await persistNativeAuthBinding(replacement, requestGeneration);
+        assertCurrent();
+        nativeBinding = replacement;
+        if (retryCount === 0) {
+          retryCount += 1;
+          continue;
+        }
+      }
+      break;
+    }
 
     if (!response.ok) {
-    const body = await response.json().catch(() => ({} as Record<string, unknown>));
-    assertCurrent();
-    const code = typeof body.code === 'string' ? body.code : undefined;
-    if (code === DEVICE_BLOCKED_CODE) {
-      const reason = typeof body.reason === 'string' ? body.reason : null;
-      notifyDeviceBlocked(reason);
-    }
-    const error: ApiError = {
-      message:
-        (typeof body.error === 'string' && body.error)
-        || (typeof body.message === 'string' && body.message)
-        || 'An error occurred',
-      code,
-      statusCode: response.status
-    };
+      const body = await response.json().catch(() => ({} as Record<string, unknown>));
+      assertCurrent();
+      const code = typeof body.code === 'string' ? body.code : undefined;
+      if (code === DEVICE_BLOCKED_CODE) {
+        const reason = typeof body.reason === 'string' ? body.reason : null;
+        notifyDeviceBlocked(reason);
+      }
+      const error: ApiError = {
+        message:
+          (typeof body.error === 'string' && body.error)
+          || (typeof body.message === 'string' && body.message)
+          || 'An error occurred',
+        code,
+        statusCode: response.status
+      };
       throw error;
     }
 
-  // Handle empty responses
+    // Handle empty responses
     const text = await response.text();
     assertCurrent();
     if (!text) return {} as T;
@@ -388,7 +436,7 @@ export async function login(email: string, password: string): Promise<LoginResul
   const response = await requestWithPrefix<LoginPayload>('/auth/login', API_CORE_PREFIX, {
     method: 'POST',
     body: JSON.stringify({ email, password }),
-  });
+  }, undefined, true);
 
   if (response.mfaRequired) {
     if (!response.tempToken || !response.mfaMethod) {
@@ -427,7 +475,7 @@ export async function verifyMfa(code: string, tempToken: string, method: MfaCode
   const response = await requestWithPrefix<LoginPayload>('/auth/mfa/verify', API_CORE_PREFIX, {
     method: 'POST',
     body: JSON.stringify({ code: normalizedCode, tempToken, method }),
-  });
+  }, undefined, true);
 
   const token = response.tokens?.accessToken || response.accessToken;
   if (!response.user || !token) {
@@ -456,7 +504,9 @@ export async function refreshToken(): Promise<{ token: string }> {
       {
         method: 'POST',
         body: JSON.stringify({})
-      });
+      },
+      undefined,
+      true);
     const token = response.tokens?.accessToken || response.accessToken;
     if (!token) throw { message: 'Failed to refresh token' } as ApiError;
     return { token };

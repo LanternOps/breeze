@@ -22,6 +22,8 @@ import {
   AuthIssuanceConflictError,
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
+  NATIVE_AUTH_BINDING_HEADER,
+  selectAuthBindingSource,
 } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { TenantInactiveError } from '../services/tenantStatus';
@@ -144,13 +146,15 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
   }
 
   const trustsMfa = cfAccessTrustsMfa();
+  const mobileDeviceId = readMobileDeviceId(c);
   let loginDecision;
   try {
     loginDecision = await decideAuthenticatedUserSession({
-      authBinding: {
-        kind: 'browser',
-        value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
-      },
+      authBinding: selectAuthBindingSource({
+        browserBinding: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME),
+        nativeBinding: c.req.header(NATIVE_AUTH_BINDING_HEADER),
+        nativeRequest: mobileDeviceId !== null,
+      }),
       userId: user.id,
       roleId: context.roleId,
       orgId: context.orgId,
@@ -163,11 +167,15 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       },
       requireLocalMfa: ENABLE_2FA && !trustsMfa,
       externallySatisfiedMfa: trustsMfa,
-      mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      mobileDeviceId: mobileDeviceId ?? undefined,
     });
   } catch (error) {
     if (error instanceof AuthBindingRotationRequiredError) {
-      rotateCsrfBindingCookie(c, error.replacement.value);
+      if (error.replacement.kind === 'native') {
+        c.header(NATIVE_AUTH_BINDING_HEADER, error.replacement.value);
+      } else {
+        rotateCsrfBindingCookie(c, error.replacement.value);
+      }
       return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
     }
     if (error instanceof AuthBindingUnavailableError

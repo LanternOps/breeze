@@ -86,6 +86,16 @@ const tokenState = vi.hoisted(() => ({
 }));
 
 vi.mock('../services', () => ({
+  NATIVE_AUTH_BINDING_HEADER: 'x-breeze-native-auth-binding',
+  selectAuthBindingSource: vi.fn((input: {
+    browserBinding?: string | null;
+    nativeBinding?: string | null;
+    nativeRequest?: boolean;
+  }) => input.nativeBinding !== null && input.nativeBinding !== undefined
+    ? { kind: 'native', value: input.nativeBinding }
+    : input.nativeRequest
+      ? { kind: 'native', value: '' }
+      : { kind: 'browser', value: input.browserBinding ?? '' }),
   AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
     replacement = { kind: 'browser', value: 'b'.repeat(64) };
   },
@@ -545,6 +555,27 @@ describe('cfAccessLoginMiddleware', () => {
       mfa: false,
       amr: ['cf_access'],
     });
+  });
+
+  it('passes the signed native binding to Cloudflare assertion issuance', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser };
+    const nativeBinding = 'c'.repeat(64);
+    const { next } = createNext();
+
+    const res = await cfAccessLoginMiddleware(createContext({
+      'Cf-Access-Jwt-Assertion': 'tok',
+      'x-breeze-native-auth-binding': nativeBinding,
+    }), next);
+
+    expect(res).toBeInstanceOf(Response);
+    expect(decideAuthenticatedUserSession).toHaveBeenCalledWith(expect.objectContaining({
+      authBinding: { kind: 'native', value: nativeBinding },
+    }));
   });
 
   it('does not issue a session when the MFA temp-token path short-circuits', async () => {

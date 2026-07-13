@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { runAuthSessionTransition, terminateSessionGeneration } from './sessionGeneration';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  captureSessionGeneration,
+  runAuthSessionTransition,
+  runAuthStorageForSessionGeneration,
+  terminateSessionGeneration,
+} from './sessionGeneration';
 
 describe('runAuthSessionTransition', () => {
   it('preserves FIFO ordering and releases after rejection', async () => {
@@ -42,5 +47,42 @@ describe('runAuthSessionTransition', () => {
       new Promise<string>((resolve) => setTimeout(() => resolve('timed-out-next'), 100)),
     ]);
     expect(nextOutcome).toBe('next');
+  });
+});
+
+describe('runAuthStorageForSessionGeneration', () => {
+  it('rejects a queued native binding write after a terminal boundary', async () => {
+    const generation = captureSessionGeneration();
+    let releaseFirst!: () => void;
+    const first = runAuthStorageForSessionGeneration(generation, async () => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    });
+    const firstOutcome = first.catch((error: unknown) => error);
+    await vi.waitFor(() => expect(releaseFirst).toBeTypeOf('function'));
+    const staleWrite = runAuthStorageForSessionGeneration(generation, async () => {
+      throw new Error('stale binding write ran');
+    });
+    const staleOutcome = staleWrite.catch((error: unknown) => error);
+
+    terminateSessionGeneration();
+    releaseFirst();
+
+    await expect(firstOutcome).resolves.toMatchObject({ name: 'SessionGenerationStaleError' });
+    await expect(staleOutcome).resolves.toMatchObject({ name: 'SessionGenerationStaleError' });
+  });
+
+  it('rejects when a terminal boundary lands while the native binding write is pending', async () => {
+    const generation = captureSessionGeneration();
+    let releaseWrite!: () => void;
+    const write = runAuthStorageForSessionGeneration(generation, async () => {
+      await new Promise<void>((resolve) => { releaseWrite = resolve; });
+    });
+    const outcome = write.catch((error: unknown) => error);
+
+    await vi.waitFor(() => expect(releaseWrite).toBeTypeOf('function'));
+    terminateSessionGeneration();
+    releaseWrite();
+
+    await expect(outcome).resolves.toMatchObject({ name: 'SessionGenerationStaleError' });
   });
 });

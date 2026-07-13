@@ -208,6 +208,7 @@ import {
   completeTerminalLogout,
   isTerminalLogoutPending,
   finishAuthIssuance,
+  selectAuthBindingSource,
   resolveAuthBinding,
   rotateExpiredBinding,
   type AuthBindingSource,
@@ -224,9 +225,16 @@ function derivedKey(source: string): Buffer {
     .digest();
 }
 
-function signedBinding(keySource: string, payload = 'a'.repeat(32)): string {
+function signedBinding(
+  keySource: string,
+  payload = 'a'.repeat(32),
+  kind: AuthBindingSource['kind'] = 'browser',
+): string {
+  const domain = kind === 'native'
+    ? 'auth-native-binding-value:v1:native:'
+    : 'auth-browser-binding-value:v1:browser:';
   const tag = createHmac('sha256', derivedKey(keySource))
-    .update(`auth-browser-binding-value:v1:browser:${payload}`)
+    .update(`${domain}${payload}`)
     .digest('hex')
     .slice(0, 32);
   return `${payload}${tag}`;
@@ -310,6 +318,50 @@ describe('auth browser binding', () => {
       });
       expect((error as AuthBindingRotationRequiredError).replacement.value).not.toBe(C1);
     }
+  });
+
+  it('signs native bindings with an explicit audience/version isolated from browser bindings', () => {
+    const nativeValue = signedBinding(BINDING_KEY, '1'.repeat(32), 'native');
+    const resolved = resolveAuthBinding({ kind: 'native', value: nativeValue });
+
+    expect(resolved).toMatchObject({ kind: 'native', bindingDigest: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(() => resolveAuthBinding({ kind: 'browser', value: nativeValue })).toThrowError(
+      expect.objectContaining({ constructor: AuthBindingRotationRequiredError, reason: 'invalid' }),
+    );
+    expect(() => resolveAuthBinding({ kind: 'native', value: C1 })).toThrowError(
+      expect.objectContaining({ constructor: AuthBindingRotationRequiredError, reason: 'invalid' }),
+    );
+  });
+
+  it('uses a signed native header as authority while treating a raw mobile id only as a bootstrap hint', () => {
+    const nativeValue = signedBinding(BINDING_KEY, '2'.repeat(32), 'native');
+
+    expect(selectAuthBindingSource({
+      browserBinding: C1,
+      nativeBinding: nativeValue,
+      nativeRequest: true,
+    })).toEqual({ kind: 'native', value: nativeValue });
+
+    const rawDeviceIdOnly = selectAuthBindingSource({
+      browserBinding: signedBinding(BINDING_KEY, 'c'.repeat(32)),
+      nativeRequest: true,
+    });
+    expect(rawDeviceIdOnly).toEqual({ kind: 'native', value: '' });
+    expect(() => resolveAuthBinding(rawDeviceIdOnly)).toThrowError(expect.objectContaining({
+      constructor: AuthBindingRotationRequiredError,
+      status: 428,
+      reason: 'invalid',
+      replacement: expect.objectContaining({ kind: 'native', value: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+    }));
+  });
+
+  it('fails to issue without either a browser or native binding', () => {
+    const missing = selectAuthBindingSource({ nativeRequest: false });
+    expect(missing).toEqual({ kind: 'browser', value: '' });
+    expect(() => resolveAuthBinding(missing)).toThrowError(expect.objectContaining({
+      constructor: AuthBindingRotationRequiredError,
+      status: 428,
+    }));
   });
 
   it('uses the unique retained signer key as the canonical digest key across active-key rotation', () => {
