@@ -1665,6 +1665,10 @@
       "shutdown": "Shutdown"
     },
     "addDevice": "Add Device",
+    "confirmDecommissionedSkip": {
+      "message": "{{skipped}} of {{total}} selected devices are decommissioned and will be skipped — they no longer have an agent. Continue with the remaining {{eligible}} device(s)? Any that are offline will run this when they next check in.",
+      "title": "Some selected devices are decommissioned"
+    },
     "confirmRunAction": "Run {{script}}",
     "confirmScriptRun": "Confirm script run",
     "emptyDescription": "Get started by adding your first device. The installer and enrollment key are generated automatically.",
@@ -1687,6 +1691,7 @@
       "agentOnlyAction": "This action applies to agent devices only. Network devices have no agent and were skipped.",
       "alreadyPendingTail": "Already Pending Tail",
       "bulkActionFailed": "Bulk Action Failed",
+      "bulkAllDecommissioned": "All {{total}} selected device(s) are decommissioned — they no longer have an agent to run this.",
       "bulkCommandPartialFailed": "Bulk Command Partial Failed",
       "bulkCommandSent": "Bulk Command Sent",
       "bulkDecommissionFailed": "Bulk Decommission Failed",

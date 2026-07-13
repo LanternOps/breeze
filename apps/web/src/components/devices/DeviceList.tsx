@@ -32,6 +32,12 @@ import type {
   VpnPresence,
 } from "@breeze/shared";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
+// Single source of truth for "can this device still accept a queued command?".
+// Hoisted out of this file (#2465): the bulk bar in DevicesPage needs the SAME
+// rule, and re-deriving it per surface is exactly how the false "must be online"
+// premise got copied three times (DeviceActions -> row menu -> bulk bar). The
+// verified API contract lives next to it — read that before changing this.
+import { isCommandQueueable } from "./bulkActionGating";
 import { widthPercentClass, formatUptime } from "@/lib/utils";
 import { formatLastSeen } from "@/lib/formatTime";
 import { formatNumber } from "@/lib/i18n/format";
@@ -345,11 +351,6 @@ function notOnlineTitle(
   return status === "online"
     ? undefined
     : t(/* i18n-dynamic */ notOnlineTitleKeys[status]);
-}
-
-// A queued command is refused only for a decommissioned device.
-function isCommandQueueable(status: DeviceStatus): boolean {
-  return status !== "decommissioned";
 }
 
 function notQueueableTitle(
@@ -1984,7 +1985,10 @@ export default function DeviceList({
               <MoreHorizontal className="h-4 w-4" />
             </button>
             {bulkMenuOpen && (
-              <div className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+              <div
+                data-testid="bulk-actions-menu"
+                className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
+              >
                 <button
                   type="button"
                   onClick={() => handleBulkAction("reboot")}

@@ -39,6 +39,7 @@ import { ENABLE_NETWORK_DEVICES_IN_LIST } from '@/lib/featureFlags';
 import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
+import { DECOMMISSION_BLOCKED_BULK_ACTIONS, isCommandQueueable } from './bulkActionGating';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -115,6 +116,14 @@ export default function DevicesPage() {
   const [scriptTargetDevices, setScriptTargetDevices] = useState<Device[]>([]);
   type PendingScriptRun = { script: Script; runAs: ScriptRunAsSelection; parameters?: Record<string, unknown>; devices: Device[] };
   const [pendingScriptRun, setPendingScriptRun] = useState<PendingScriptRun | null>(null);
+  // #2465: a bulk agent command whose selection included decommissioned devices
+  // (the one status the API refuses). `devices` is the eligible subset the action
+  // will actually run on — offline devices stay IN, since their command queues
+  // and runs on reconnect. The dialog reports what is being dropped so the user
+  // confirms the reduced target set rather than having part of their selection
+  // silently discarded.
+  type PendingDecommissionedSkip = { action: string; devices: Device[]; skippedCount: number; totalCount: number };
+  const [pendingDecommissionedSkip, setPendingDecommissionedSkip] = useState<PendingDecommissionedSkip | null>(null);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
@@ -832,6 +841,50 @@ export default function DevicesPage() {
       });
     }
 
+    // Decommissioned gate (#2465). Agent commands are QUEUED, not delivered
+    // live: the API refuses exactly one status — `decommissioned` — and any
+    // other device (offline included) has its command stored `pending` and run
+    // on its next check-in. So gate on `decommissioned` ONLY. Filtering to
+    // `status === 'online'` here would look like the obvious fix and would in
+    // fact discard commands the backend would have honoured — see the verified
+    // API contract in bulkActionGating.ts before "tightening" this.
+    //
+    // Decommissioned rows are hidden by default, but a status filter that
+    // includes them (or the #2251 "show" hint) puts them back in reach of a
+    // select-all, which is how they land in a mixed batch.
+    if (DECOMMISSION_BLOCKED_BULK_ACTIONS.has(action)) {
+      const eligibleDevices = selectedDevices.filter(d => isCommandQueueable(d.status));
+      const skippedDecommissionedCount = selectedDevices.length - eligibleDevices.length;
+
+      if (eligibleDevices.length === 0) {
+        showToast({
+          type: 'error',
+          message: t('devicesPage.toasts.bulkAllDecommissioned', { total: selectedDevices.length }),
+        });
+        return;
+      }
+      if (skippedDecommissionedCount > 0) {
+        setPendingDecommissionedSkip({
+          action,
+          devices: eligibleDevices,
+          skippedCount: skippedDecommissionedCount,
+          totalCount: selectedDevices.length,
+        });
+        return;
+      }
+    }
+
+    await runBulkAction(action, selectedDevices);
+  };
+
+  // Executes a bulk action against an already-vetted device set (network rows
+  // dropped, decommissioned targets filtered + confirmed). Offline devices are
+  // deliberately still IN this set — their command queues and runs on reconnect.
+  // Entered either directly from handleBulkAction (nothing to skip) or from the
+  // decommissioned-skip confirm.
+  const runBulkAction = async (action: string, selectedDevices: Device[]) => {
+    if (actionInProgress || selectedDevices.length === 0) return;
+
     const deviceIds = selectedDevices.map(d => d.id);
     const deviceCount = selectedDevices.length;
 
@@ -1265,6 +1318,39 @@ export default function DevicesPage() {
           />
         );
       })()}
+
+      {/* Decommissioned-skip confirm (#2465): the selection contained retired,
+          agent-less devices, which the API refuses. Name the count being dropped
+          and make the user own the reduced batch. Offline devices are NOT
+          dropped — their command queues and runs when they reconnect. */}
+      {pendingDecommissionedSkip && (
+        <ConfirmDialog
+          open={true}
+          onClose={() => setPendingDecommissionedSkip(null)}
+          // Confirming UNMOUNTS this dialog, which is what makes a double-click
+          // safe — a second click has no button to hit. No isLoading/spinner
+          // here on purpose: that would mean keeping the dialog mounted, and
+          // then neither guard holds — ConfirmDialog's `disabled` and
+          // runBulkAction's `actionInProgress` both read a closure captured at
+          // render, still `false` on the second click, so the fleet reboots
+          // twice. (The set-state/dispatch ORDER below is not what saves us:
+          // React batches both. The unmount is.) DevicesPage.test.tsx pins it.
+          onConfirm={() => {
+            const p = pendingDecommissionedSkip;
+            setPendingDecommissionedSkip(null);
+            void runBulkAction(p.action, p.devices);
+          }}
+          title={t('devicesPage.confirmDecommissionedSkip.title')}
+          variant="warning"
+          confirmLabel={t('common:actions.confirm')}
+          confirmTestId="confirm-decommissioned-skip"
+          message={t('devicesPage.confirmDecommissionedSkip.message', {
+            skipped: pendingDecommissionedSkip.skippedCount,
+            total: pendingDecommissionedSkip.totalCount,
+            eligible: pendingDecommissionedSkip.devices.length,
+          })}
+        />
+      )}
 
       {settingsDevice && (
         <DeviceSettingsModal
