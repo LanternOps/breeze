@@ -928,7 +928,7 @@
       "emptySuffix": "(Python)."
     },
     "execution": {
-      "timeoutHint": "O script é encerrado após essa duração. O padrão de 300s (5 min) é adequado para a maioria das tarefas.",
+      "timeoutHint": "O script é encerrado após essa duração. O padrão de 300s (5 min) é adequado para a maioria das tarefas. Máximo de 3600s (1 hora).",
       "elevatedHint": "Usa sudo no macOS/Linux, runas no Windows."
     },
     "exitCodeSeverity": {

@@ -2457,7 +2457,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   language: { type: 'string', enum: ['powershell', 'bash', 'python', 'cmd'] },
                   content: { type: 'string', minLength: 1 },
                   parameters: { type: 'object' },
-                  timeoutSeconds: { type: 'integer', minimum: 1, maximum: 86400, default: 300 },
+                  timeoutSeconds: { type: 'integer', minimum: 1, maximum: 3600, default: 300 },
                   runAs: { type: 'string', enum: ['system', 'user', 'elevated'], default: 'system' }
                 },
                 required: ['name', 'osTypes', 'language', 'content']

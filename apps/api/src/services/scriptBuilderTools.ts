@@ -194,7 +194,9 @@ export function createScriptBuilderMcpServer(
           options: z.string().optional(),
         })).optional(),
         runAs: z.enum(['system', 'user', 'elevated']).optional(),
-        timeoutSeconds: z.number().int().min(1).max(86400).optional(),
+        // 3600 = agent executor MaxTimeout — higher values are silently clamped
+        // on-device, so don't let the builder propose them (#2398).
+        timeoutSeconds: z.number().int().min(1).max(3600).optional(),
       },
       makeApplyHandler('apply_script_metadata', onPostToolUse)
     ),

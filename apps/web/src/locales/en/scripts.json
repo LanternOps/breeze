@@ -928,7 +928,7 @@
       "emptySuffix": "(Python)."
     },
     "execution": {
-      "timeoutHint": "Script is killed after this duration. Default 300s (5 min) is suitable for most tasks.",
+      "timeoutHint": "Script is killed after this duration. Default 300s (5 min) is suitable for most tasks. Maximum 3600s (1 hour).",
       "elevatedHint": "Uses sudo on macOS/Linux, runas on Windows."
     },
     "exitCodeSeverity": {

@@ -208,6 +208,58 @@ describe('scripts routes', () => {
     expect(body.id).toBe(SCRIPT_ID_1);
   });
 
+  it('should accept timeoutSeconds at the 3600 executor cap on create', async () => {
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{
+          id: SCRIPT_ID_1,
+          name: 'Long Script',
+          orgId: ORG_ID
+        }])
+      })
+    } as any);
+
+    const res = await app.request('/scripts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        name: 'Long Script',
+        osTypes: ['linux'],
+        language: 'bash',
+        content: 'echo hello',
+        timeoutSeconds: 3600
+      })
+    });
+
+    expect(res.status).toBe(201);
+  });
+
+  it('should reject timeoutSeconds above 3600 on create (#2398 — agent clamps at 1h)', async () => {
+    for (const tooLong of [3601, 7200, 86400]) {
+      const res = await app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Too Long',
+          osTypes: ['linux'],
+          language: 'bash',
+          content: 'echo hello',
+          timeoutSeconds: tooLong
+        })
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('should reject timeoutSeconds above 3600 on update (#2398)', async () => {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ timeoutSeconds: 7200 })
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('should update a script and return updated record', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({

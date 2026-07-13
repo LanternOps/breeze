@@ -93,7 +93,11 @@ export const scriptBuilderContextSchema = z.object({
       options: z.string().max(1000).optional(),
     })).max(50).optional(),
     runAs: z.enum(['system', 'user', 'elevated']).optional(),
-    timeoutSeconds: z.number().min(1).max(86400).optional(),
+    // The editor snapshot echoes the current form values, which for legacy
+    // scripts may hold timeouts saved under the old 86400 intake cap. Tolerate
+    // those (don't fail session creation on an unrelated field) but clamp to
+    // 3600 — the agent executor's hard MaxTimeout (#2398).
+    timeoutSeconds: z.number().min(1).max(86400).transform((v) => Math.min(v, 3600)).optional(),
   }).optional(),
 });
 
