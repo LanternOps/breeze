@@ -383,7 +383,7 @@
     "signedAt": "Firmado en:",
     "noRecoveryBundlesHaveBeenCreatedForThis": "Aún no se han creado paquetes de recuperación para este token.",
     "bootableRecoveryMedia": "Medios de recuperación de arranque",
-    "buildASignedLinuxAmd64RecoveryIsoFrom": "Cree un ISO de recuperación firmado para Linux/AMD64 a partir del último paquete de recuperación firmado.",
+    "buildASignedLinuxAmd64RecoveryIsoFrom": "Cree un ISO de recuperación firmado para Linux/amd64 a partir del último paquete de recuperación firmado.",
     "createIso": "Crear ISO",
     "downloadIso": "Descargar ISO",
     "via": "a través de",

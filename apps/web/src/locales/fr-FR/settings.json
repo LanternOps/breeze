@@ -1332,7 +1332,7 @@
     "rename": "Renommer",
     "revoke": "Révoquer",
     "registerThisBrowser": "Inscrivez-vous à ce navigateur",
-    "optionalYourPhoneIsAlreadyAnApproverOnceYouSignInToTheMo": "Facultatif — votre téléphone est déjà un appareil d’approbation lorsque vous vous connectez à l’application mobile. Enregistrez aussi ce navigateur : Windows Hello, Touch ID ou la biométrie de votre appareil vous sera demandé.",
+    "optionalYourPhoneIsAlreadyAnApproverOnceYouSignInToTheMo": "Facultatif — votre téléphone est déjà un appareil d’approbation lorsque vous vous connectez à l’application mobile. Enregistrez également ce navigateur : une vérification via Windows Hello, Touch ID ou les données biométriques de votre appareil vous sera alors demandée.",
     "deviceName": "Nom de l’appareil",
     "frontDeskLaptop": "Ordinateur portable à la réception",
     "close": "Fermer",

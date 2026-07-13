@@ -315,7 +315,7 @@
       "create": "Crear filtro",
       "new": "Nuevo filtro",
       "nameRequired": "El nombre es obligatorio",
-      "namePlaceholder": "p. ej., Windows Servers",
+      "namePlaceholder": "p. ej., servidores Windows",
       "description": "Descripción (opcional)",
       "descriptionPlaceholder": "Describa con qué coincide este filtro",
       "conditions": "Condiciones",

@@ -1639,7 +1639,7 @@
     "startDate": "Start Date",
     "status": {
       "active": "Active",
-      "appleCareSubscription": "Apple Care Subscription",
+      "appleCareSubscription": "AppleCare Subscription",
       "expired": "Expired",
       "expiring": "Expiring",
       "unknown": "Unknown"

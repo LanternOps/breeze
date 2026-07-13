@@ -373,7 +373,7 @@
     "macos": "macOS",
     "windows": "Windows",
     "bundleArchitecture": "Architecture des faisceaux",
-    "amd64": "AMD64",
+    "amd64": "amd64",
     "arm64": "arm64",
     "createBundle": "Créer l’archive de récupération",
     "copyChecksum": "Copier la somme de contrôle",

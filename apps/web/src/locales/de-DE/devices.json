@@ -1634,7 +1634,7 @@
     "startDate": "Startdatum",
     "status": {
       "active": "Aktiv",
-      "appleCareSubscription": "Apple Care-Abonnement",
+      "appleCareSubscription": "AppleCare-Abonnement",
       "expired": "Abgelaufen",
       "expiring": "Auslaufend",
       "unknown": "Unbekannt"
