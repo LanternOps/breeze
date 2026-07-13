@@ -2827,7 +2827,7 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(429);
       expect(mintStepUpGrant).not.toHaveBeenCalled();
-      expect(vi.mocked(rateLimiter).mock.calls.some(([, key]) => String(key) === 'mfa:stepup:user-123')).toBe(true);
+      expect(vi.mocked(rateLimiter).mock.calls.some(([, key]) => String(key) === 'mfa:stepup-rl:user-123')).toBe(true);
     });
   });
 

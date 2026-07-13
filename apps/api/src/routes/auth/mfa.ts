@@ -705,7 +705,10 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
   if (!redis) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
-  const stepUpRate = await rateLimiter(redis, `mfa:stepup:${auth.user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+  // Key prefix `mfa:stepup-rl:` is deliberately disjoint from the grant store's
+  // `mfa:stepup:` (mfaStepUpGrant.ts) so the rate-limiter's sorted-set never
+  // shares a namespace with a grant key.
+  const stepUpRate = await rateLimiter(redis, `mfa:stepup-rl:${auth.user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
   if (!stepUpRate.allowed) {
     return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
   }
