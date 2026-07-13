@@ -11,6 +11,7 @@ type TransitionState = 'active' | 'logout_pending' | 'retired';
 interface TransitionRow {
   id: string;
   bindingDigest: string;
+  bindingKeyId: string | null;
   generation: number;
   state: TransitionState;
   activeOperationId: string | null;
@@ -29,6 +30,7 @@ const harness = vi.hoisted(() => {
   const columns = {
     id: 'id',
     bindingDigest: 'bindingDigest',
+    bindingKeyId: 'bindingKeyId',
     generation: 'generation',
     state: 'state',
     activeOperationId: 'activeOperationId',
@@ -48,6 +50,8 @@ const harness = vi.hoisted(() => {
     now: new Date('2026-07-12T20:00:00.000Z'),
     authorityWrites: [] as string[],
     transactionEvents: [] as string[],
+    transactionCalls: 0,
+    failTransactionAt: null as number | null,
     nextId: 1,
   };
 });
@@ -57,6 +61,7 @@ type Predicate =
   | { lt: [string, unknown] }
   | { lte: [string, unknown] }
   | { inArray: [string, readonly unknown[]] }
+  | { notInArray: [string, readonly unknown[]] }
   | { isNull: string }
   | { isNotNull: string }
   | { and: Predicate[] }
@@ -78,6 +83,10 @@ function evaluatePredicate(row: TransitionRow, predicate: Predicate): boolean {
   if ('inArray' in predicate) {
     const [column, values] = predicate.inArray;
     return values.includes(row[column as keyof TransitionRow]);
+  }
+  if ('notInArray' in predicate) {
+    const [column, values] = predicate.notInArray;
+    return !values.includes(row[column as keyof TransitionRow]);
   }
   if ('lt' in predicate || 'lte' in predicate) {
     const [column, expectedValue] = 'lt' in predicate ? predicate.lt : predicate.lte;
@@ -132,6 +141,7 @@ function makeTransaction() {
             harness.rows.set(id, {
               id,
               bindingDigest: String(values.bindingDigest),
+              bindingKeyId: values.bindingKeyId ?? null,
               generation: 1,
               state: 'active',
               activeOperationId: null,
@@ -207,6 +217,7 @@ vi.mock('drizzle-orm', () => ({
   lt: (left: string, right: unknown) => ({ lt: [left, right] }),
   lte: (left: string, right: unknown) => ({ lte: [left, right] }),
   inArray: (left: string, right: readonly unknown[]) => ({ inArray: [left, right] }),
+  notInArray: (left: string, right: readonly unknown[]) => ({ notInArray: [left, right] }),
   isNull: (column: string) => ({ isNull: column }),
   isNotNull: (column: string) => ({ isNotNull: column }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
@@ -221,6 +232,10 @@ vi.mock('../db/schema/authBrowserTransitions', () => ({
 
 vi.mock('./authLifecycle', () => ({
   withAuthLifecycleSystemTransaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
+    harness.transactionCalls += 1;
+    if (harness.failTransactionAt === harness.transactionCalls) {
+      throw new Error('injected cleanup deletion failure');
+    }
     const rowSnapshot = cloneRows();
     const writeSnapshot = [...harness.authorityWrites];
     harness.transactionEvents.push('begin');
@@ -300,6 +315,7 @@ function seedTransition(source: AuthBindingSource, overrides: Partial<Transition
   const row: TransitionRow = {
     id: `10000000-0000-4000-8000-${String(harness.nextId++).padStart(12, '0')}`,
     bindingDigest,
+    bindingKeyId: 'current',
     generation: 1,
     state: 'active',
     activeOperationId: null,
@@ -327,6 +343,8 @@ beforeEach(() => {
   harness.now = new Date('2026-07-12T20:00:00.000Z');
   harness.authorityWrites.length = 0;
   harness.transactionEvents.length = 0;
+  harness.transactionCalls = 0;
+  harness.failTransactionAt = null;
   harness.nextId = 1;
   vi.clearAllMocks();
 });
@@ -495,6 +513,7 @@ describe('auth issuance admission', () => {
     expect(capability.expiresAt.getTime()).toBeLessThanOrEqual(
       harness.now.getTime() + 5 * 60 * 1000,
     );
+    expect(row.bindingKeyId).toBe('current');
   });
 
   it('rejects a second unexpired operation without replacing the owner', async () => {
@@ -763,6 +782,43 @@ describe('binding rotation', () => {
 });
 
 describe('bounded transition cleanup', () => {
+  it('commits expired-pending retirement even when the later deletion phase fails', async () => {
+    const expiredPending = seedTransition(browser(), {
+      state: 'logout_pending',
+      logoutId: '20000000-0000-4000-8000-000000000099',
+      completionNonceDigest: '9'.repeat(64),
+      logoutExpiresAt: new Date(harness.now.getTime() - 1),
+    });
+    harness.failTransactionAt = 2;
+
+    await expect(cleanupAuthBrowserTransitions()).rejects.toThrow(
+      'injected cleanup deletion failure',
+    );
+    expect(harness.rows.get(expiredPending.id)).toMatchObject({
+      state: 'retired',
+      retiredAt: harness.now,
+    });
+  });
+
+  it('keeps an old retired tombstone while its binding signing key remains accepted', async () => {
+    const predecessor = seedTransition(browser(), {
+      bindingKeyId: 'current',
+      state: 'retired',
+      retiredAt: new Date(harness.now.getTime() - 31 * 24 * 60 * 60 * 1000),
+    });
+
+    await expect(cleanupAuthBrowserTransitions()).resolves.toEqual({
+      retiredPending: 0,
+      deletedRetired: 0,
+    });
+    await expect(beginAuthIssuance(browser())).rejects.toMatchObject({
+      constructor: AuthBindingRotationRequiredError,
+      status: 428,
+      reason: 'retired',
+    });
+    expect(harness.rows.get(predecessor.id)?.state).toBe('retired');
+  });
+
   it('retires only expired pending rows and deletes only retired rows older than retention', async () => {
     const active = seedTransition(browser(signedBinding(BINDING_KEY, '1'.repeat(32))), {
       createdAt: new Date(harness.now.getTime() - 60 * 24 * 60 * 60 * 1000),
@@ -786,6 +842,7 @@ describe('bounded transition cleanup', () => {
       retiredAt: new Date(harness.now.getTime() - 30 * 24 * 60 * 60 * 1000),
     });
     const oldRetired = seedTransition(browser(signedBinding(BINDING_KEY, '5'.repeat(32))), {
+      bindingKeyId: 'removed-key',
       state: 'retired',
       retiredAt: new Date(harness.now.getTime() - 30 * 24 * 60 * 60 * 1000 - 1),
     });
@@ -817,6 +874,7 @@ describe('bounded transition cleanup', () => {
         logoutExpiresAt: new Date(harness.now.getTime() - 1),
       });
       seedTransition(browser(signedBinding(BINDING_KEY, payloads[index + 3]!.repeat(32))), {
+        bindingKeyId: `removed-key-${index}`,
         state: 'retired',
         retiredAt: new Date(harness.now.getTime() - 31 * 24 * 60 * 60 * 1000),
       });

@@ -47,9 +47,12 @@ creating a mixed-replica legacy issuance window. Both rollout flags default to
   with the successor; the predecessor never becomes active again.
 - Expired issuance leases are replaceable, but the old capability cannot finish.
 - The daily cleanup job runs at 04:17 UTC with a 500-row bound per phase. It
-  retires expired pending rows and clears their leases, then deletes only
-  already-retired rows older than 30 days. Active and live-pending rows are
-  preserved.
+  retires expired pending rows and clears their leases. A retired row older
+  than 30 days is deleted only after its recorded signing key has left the
+  retained keyring, at which point the old binding is cryptographically
+  invalid; nullable pre-rollout tombstones remain indefinitely. Active and
+  live-pending rows are preserved. Dependent SSO sessions and exchange grants
+  cascade only with a safely deletable transition.
 - Monitor `[AuthBrowserTransitionCleanup]` logs. Each run reports
   `retiredPending`, `deletedRetired`, and `durationMs`; investigate failures or
   sustained full batches.

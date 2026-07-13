@@ -1,10 +1,15 @@
 import { authBrowserTransitionsEnforced } from '../config/env';
 
-// Kept beside the startup assertion rather than importing the protected
-// issuer module: the exact source inventory is the build-time proof that this
-// declaration remains false, and protected issuers may not be namespace-
-// inspected or imported outside their approved finalizers.
-const USER_SESSION_LEGACY_ISSUER_EXPORT_PRESENT = false;
+type UserSessionLegacyIssuerExportPresent =
+  'issueUserSessionLegacyDuringTransition' extends keyof typeof import('./userSession')
+    ? true
+    : false;
+
+// This assignment is mechanically coupled to the actual module export type:
+// reintroducing the legacy export changes the conditional type to `true` and
+// makes the production build fail before an enforcement-enabled replica can
+// start. The runtime assertion remains explicit for rollout diagnostics.
+const USER_SESSION_LEGACY_ISSUER_EXPORT_PRESENT: UserSessionLegacyIssuerExportPresent = false;
 
 function assertCompatible(legacyIssuerPresent: boolean): void {
   if (!authBrowserTransitionsEnforced()) return;

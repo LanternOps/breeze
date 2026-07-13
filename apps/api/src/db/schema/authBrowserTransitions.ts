@@ -26,6 +26,9 @@ export const authBrowserTransitions = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     bindingDigest: varchar('binding_digest', { length: 64 }).notNull(),
+    // Null only for rows admitted before key provenance was recorded. Such
+    // tombstones are retained because their binding cannot be proven invalid.
+    bindingKeyId: varchar('binding_key_id', { length: 128 }),
     generation: bigint('generation', { mode: 'number' }).notNull().default(1),
     state: varchar('state', { length: 24 })
       .$type<AuthBrowserTransitionState>()
@@ -93,6 +96,11 @@ export const authBrowserTransitions = pgTable(
     logoutExpiresIdx: index('auth_browser_transitions_logout_expires_idx').on(
       table.logoutExpiresAt,
     ),
+    retiredCleanupIdx: index('auth_browser_transitions_retired_cleanup_idx').on(
+      table.state,
+      table.retiredAt,
+      table.bindingKeyId,
+    ),
     currentFamilyIdx: index('auth_browser_transitions_current_family_idx').on(
       table.currentFamilyId,
     ),
@@ -124,7 +132,7 @@ export const ssoTokenExchangeGrants = pgTable(
       columns: [table.browserTransitionId],
       foreignColumns: [authBrowserTransitions.id],
       name: 'sso_token_exchange_grants_transition_fk',
-    }),
+    }).onDelete('cascade'),
     familyOwnerFk: foreignKey({
       columns: [table.familyId, table.userId],
       foreignColumns: [refreshTokenFamilies.familyId, refreshTokenFamilies.userId],

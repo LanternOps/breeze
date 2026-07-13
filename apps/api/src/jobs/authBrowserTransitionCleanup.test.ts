@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   addMock,
+  upsertJobSchedulerMock,
   getRepeatableJobsMock,
   removeRepeatableByKeyMock,
   queueCloseMock,
@@ -10,6 +11,7 @@ const {
   capturedWorkerProcessor,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
+  upsertJobSchedulerMock: vi.fn(),
   getRepeatableJobsMock: vi.fn(),
   removeRepeatableByKeyMock: vi.fn(),
   queueCloseMock: vi.fn(),
@@ -21,6 +23,7 @@ const {
 vi.mock('bullmq', () => ({
   Queue: class {
     add = (...args: unknown[]) => addMock(...(args as []));
+    upsertJobScheduler = (...args: unknown[]) => upsertJobSchedulerMock(...(args as []));
     getRepeatableJobs = () => getRepeatableJobsMock();
     removeRepeatableByKey = (...args: unknown[]) => removeRepeatableByKeyMock(...(args as []));
     close = () => queueCloseMock();
@@ -58,6 +61,7 @@ describe('authBrowserTransitionCleanup worker', () => {
     vi.resetAllMocks();
     getRepeatableJobsMock.mockResolvedValue([]);
     addMock.mockResolvedValue(undefined);
+    upsertJobSchedulerMock.mockResolvedValue(undefined);
     removeRepeatableByKeyMock.mockResolvedValue(undefined);
     queueCloseMock.mockResolvedValue(undefined);
     workerCloseMock.mockResolvedValue(undefined);
@@ -79,7 +83,7 @@ describe('authBrowserTransitionCleanup worker', () => {
     });
   });
 
-  it('registers one repeatable job and removes stale configurations first', async () => {
+  it('atomically upserts the durable schedule before removing stale legacy configurations', async () => {
     getRepeatableJobsMock.mockResolvedValue([
       { name: 'auth-browser-transition-cleanup', key: 'old-key' },
       { name: 'unrelated', key: 'unrelated-key' },
@@ -87,15 +91,30 @@ describe('authBrowserTransitionCleanup worker', () => {
 
     await scheduleAuthBrowserTransitionCleanup();
 
+    expect(upsertJobSchedulerMock).toHaveBeenCalledWith(
+      'auth-browser-transition-cleanup',
+      { pattern: '17 4 * * *' },
+      expect.objectContaining({ name: 'auth-browser-transition-cleanup', data: {} }),
+    );
+    expect(upsertJobSchedulerMock.mock.invocationCallOrder[0]).toBeLessThan(
+      removeRepeatableByKeyMock.mock.invocationCallOrder[0]!,
+    );
     expect(removeRepeatableByKeyMock).toHaveBeenCalledTimes(1);
     expect(removeRepeatableByKeyMock).toHaveBeenCalledWith('old-key');
-    expect(addMock).toHaveBeenCalledWith(
-      'auth-browser-transition-cleanup',
-      {},
-      expect.objectContaining({
-        jobId: 'auth-browser-transition-cleanup',
-        repeat: { pattern: '17 4 * * *' },
-      }),
+    expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves the atomic scheduler installed if stale legacy cleanup fails', async () => {
+    getRepeatableJobsMock.mockResolvedValue([
+      { name: 'auth-browser-transition-cleanup', key: 'old-key' },
+    ]);
+    removeRepeatableByKeyMock.mockRejectedValue(new Error('replica stopped after upsert'));
+
+    await expect(scheduleAuthBrowserTransitionCleanup()).rejects.toThrow('replica stopped');
+
+    expect(upsertJobSchedulerMock).toHaveBeenCalledTimes(1);
+    expect(upsertJobSchedulerMock.mock.invocationCallOrder[0]).toBeLessThan(
+      removeRepeatableByKeyMock.mock.invocationCallOrder[0]!,
     );
   });
 
@@ -123,7 +142,7 @@ describe('authBrowserTransitionCleanup worker', () => {
 
   it('initializes, schedules, and shuts down idempotently', async () => {
     await initializeAuthBrowserTransitionCleanupWorker();
-    expect(addMock).toHaveBeenCalledTimes(1);
+    expect(upsertJobSchedulerMock).toHaveBeenCalledTimes(1);
     await shutdownAuthBrowserTransitionCleanupWorker();
     expect(workerCloseMock).toHaveBeenCalledTimes(1);
     expect(queueCloseMock).toHaveBeenCalledTimes(1);

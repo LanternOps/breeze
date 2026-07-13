@@ -8,6 +8,10 @@ const migrationPath = path.resolve(
   import.meta.dirname,
   '../../../migrations/2026-07-12-a-auth-browser-transitions.sql',
 );
+const keyProvenanceMigrationPath = path.resolve(
+  import.meta.dirname,
+  '../../../migrations/2026-07-13-b-auth-browser-transition-key-provenance.sql',
+);
 const transitionSchemaPath = path.resolve(
   import.meta.dirname,
   '../../db/schema/authBrowserTransitions.ts',
@@ -27,6 +31,7 @@ function readSource(file: string): string {
 }
 
 const migrationSql = readSource(migrationPath);
+const keyProvenanceMigrationSql = readSource(keyProvenanceMigrationPath);
 const transitionSchema = readSource(transitionSchemaPath);
 const refreshFamilySchema = readSource(refreshFamilySchemaPath);
 const ssoSchema = readSource(ssoSchemaPath);
@@ -45,6 +50,7 @@ describe('durable browser transition schema contract', () => {
   it('defines the complete transition state, operation, and logout lifecycle', () => {
     expect(transitionSchema).toMatch(/pgTable\(\s*'auth_browser_transitions'/);
     expect(transitionSchema).toContain("bindingDigest: varchar('binding_digest', { length: 64 }).notNull()");
+    expect(transitionSchema).toContain("bindingKeyId: varchar('binding_key_id', { length: 128 })");
     expect(transitionSchema).toContain("generation: bigint('generation', { mode: 'number' })");
     expect(transitionSchema).toContain("state: varchar('state'");
     expect(transitionSchema).toContain("activeOperationId: uuid('active_operation_id')");
@@ -66,6 +72,10 @@ describe('durable browser transition schema contract', () => {
     expect(ssoSchema).toContain("browserTransitionId: uuid('browser_transition_id')");
     expect(ssoSchema).toContain("browserGeneration: bigint('browser_generation', { mode: 'number' })");
     expect(ssoSchema).toContain('sso_sessions_browser_transition_fk');
+    expect(ssoSchema).toMatch(/sso_sessions_browser_transition_fk'[\s\S]+\.onDelete\('cascade'\)/);
+    expect(transitionSchema).toMatch(
+      /sso_token_exchange_grants_transition_fk'[\s\S]+\.onDelete\('cascade'\)/,
+    );
     expect(ssoSchema).not.toContain('sso_sessions_browser_transition_generation_fk');
   });
 
@@ -197,10 +207,10 @@ describe.runIf(runDb)('durable browser transition migration and RLS', () => {
     );
     expect(
       constraints.find((row) => row.conname === 'sso_sessions_browser_transition_fk')?.definition,
-    ).toMatch(/^FOREIGN KEY \(browser_transition_id\) REFERENCES auth_browser_transitions\(id\)$/);
+    ).toMatch(/^FOREIGN KEY \(browser_transition_id\) REFERENCES auth_browser_transitions\(id\) ON DELETE CASCADE$/);
     expect(
       constraints.find((row) => row.conname === 'sso_token_exchange_grants_transition_fk')?.definition,
-    ).toMatch(/^FOREIGN KEY \(browser_transition_id\) REFERENCES auth_browser_transitions\(id\)$/);
+    ).toMatch(/^FOREIGN KEY \(browser_transition_id\) REFERENCES auth_browser_transitions\(id\) ON DELETE CASCADE$/);
 
     const indexes = await admin!`
       SELECT indexname
@@ -285,9 +295,12 @@ describe.runIf(runDb)('durable browser transition migration and RLS', () => {
     }
 
     expect(migrationSql).not.toBe('');
+    expect(keyProvenanceMigrationSql).not.toBe('');
     await admin!.unsafe(migrationSql);
+    await admin!.unsafe(keyProvenanceMigrationSql);
     const before = await catalogSnapshot();
     await admin!.unsafe(migrationSql);
+    await admin!.unsafe(keyProvenanceMigrationSql);
     const after = await catalogSnapshot();
     expect(after).toEqual(before);
   });

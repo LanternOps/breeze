@@ -7,6 +7,9 @@ import {
   authBrowserTransitions,
   refreshTokenFamilies,
   roles,
+  ssoProviders,
+  ssoSessions,
+  ssoTokenExchangeGrants,
   users,
 } from '../../db/schema';
 import {
@@ -231,6 +234,7 @@ beforeEach(() => {
 describe('auth browser transition leases against PostgreSQL', () => {
   it('retires only expired pending rows and deletes only old retired diagnostics', async () => {
     const db = getTestDb();
+    const fixture = await terminalFixture();
     const activeId = '41000000-0000-4000-8000-000000000001';
     const livePendingId = '41000000-0000-4000-8000-000000000002';
     const expiredPendingId = '41000000-0000-4000-8000-000000000003';
@@ -238,21 +242,47 @@ describe('auth browser transition leases against PostgreSQL', () => {
 
     await db.execute(sql`
       INSERT INTO auth_browser_transitions
-        (id, binding_digest, state, active_operation_id,
+        (id, binding_digest, binding_key_id, state, active_operation_id,
          active_operation_expires_at, logout_id, completion_nonce_digest,
          logout_expires_at, retired_at, created_at, updated_at)
       VALUES
-        (${activeId}::uuid, ${'1'.repeat(64)}, 'active', NULL,
+        (${activeId}::uuid, ${'1'.repeat(64)}, 'current', 'active', NULL,
          NULL, NULL, NULL, NULL, NULL, now() - interval '60 days', now() - interval '60 days'),
-        (${livePendingId}::uuid, ${'2'.repeat(64)}, 'logout_pending', ${'42000000-0000-4000-8000-000000000002'}::uuid,
+        (${livePendingId}::uuid, ${'2'.repeat(64)}, 'current', 'logout_pending', ${'42000000-0000-4000-8000-000000000002'}::uuid,
          now() + interval '30 minutes', ${'43000000-0000-4000-8000-000000000002'}::uuid, ${'a'.repeat(64)},
          now() + interval '1 hour', NULL, now() - interval '1 hour', now()),
-        (${expiredPendingId}::uuid, ${'3'.repeat(64)}, 'logout_pending', ${'42000000-0000-4000-8000-000000000003'}::uuid,
+        (${expiredPendingId}::uuid, ${'3'.repeat(64)}, 'current', 'logout_pending', ${'42000000-0000-4000-8000-000000000003'}::uuid,
          now() - interval '30 minutes', ${'43000000-0000-4000-8000-000000000003'}::uuid, ${'b'.repeat(64)},
          now() - interval '1 hour', NULL, now() - interval '2 hours', now() - interval '2 hours'),
-        (${oldRetiredId}::uuid, ${'4'.repeat(64)}, 'retired', NULL,
+        (${oldRetiredId}::uuid, ${'4'.repeat(64)}, 'removed-key', 'retired', NULL,
          NULL, NULL, NULL, NULL, now() - interval '31 days', now() - interval '40 days', now() - interval '31 days')
     `);
+    const [provider] = await db.insert(ssoProviders).values({
+      partnerId: fixture.partner.id,
+      orgId: null,
+      name: 'Cleanup Cascade IdP',
+      type: 'oidc',
+      status: 'active',
+      autoProvision: false,
+    }).returning({ id: ssoProviders.id });
+    if (!provider) throw new Error('Failed to create cleanup SSO provider');
+    const [session] = await db.insert(ssoSessions).values({
+      providerId: provider.id,
+      state: crypto.randomUUID().replaceAll('-', ''),
+      nonce: crypto.randomUUID().replaceAll('-', ''),
+      browserTransitionId: oldRetiredId,
+      browserGeneration: 1,
+      expiresAt: new Date(Date.now() + 60_000),
+    }).returning({ id: ssoSessions.id });
+    const [grant] = await db.insert(ssoTokenExchangeGrants).values({
+      codeDigest: createHash('sha256').update(crypto.randomUUID()).digest('hex'),
+      browserTransitionId: oldRetiredId,
+      browserGeneration: 1,
+      userId: fixture.userA.id,
+      familyId: fixture.sessionA.tokens.familyId,
+      expiresAt: new Date(Date.now() + 60_000),
+    }).returning({ id: ssoTokenExchangeGrants.id });
+    if (!session || !grant) throw new Error('Failed to create cleanup SSO children');
 
     await expect(cleanupAuthBrowserTransitions({ batchSize: 10 })).resolves.toEqual({
       retiredPending: 1,
@@ -271,6 +301,36 @@ describe('auth browser transition leases against PostgreSQL', () => {
       activeOperationExpiresAt: null,
     });
     expect(rows.some((row) => row.id === oldRetiredId)).toBe(false);
+    expect(await db.select().from(ssoSessions).where(eq(ssoSessions.id, session.id))).toEqual([]);
+    expect(await db.select().from(ssoTokenExchangeGrants)
+      .where(eq(ssoTokenExchangeGrants.id, grant.id))).toEqual([]);
+  });
+
+  it('never deletes a retired C1 tombstone while its signing key remains retained', async () => {
+    const db = getTestDb();
+    const c1 = freshBrowserBinding();
+    const capability = await beginAuthIssuance(c1);
+    await db.execute(sql`
+      UPDATE auth_browser_transitions
+      SET state = 'retired',
+          active_operation_id = NULL,
+          active_operation_expires_at = NULL,
+          retired_at = now() - interval '31 days',
+          updated_at = now() - interval '31 days'
+      WHERE id = ${capability.transitionId}::uuid
+    `);
+
+    await expect(cleanupAuthBrowserTransitions({ batchSize: 10 })).resolves.toEqual({
+      retiredPending: 0,
+      deletedRetired: 0,
+    });
+    await expect(beginAuthIssuance(c1)).rejects.toMatchObject({
+      constructor: AuthBindingRotationRequiredError,
+      status: 428,
+      reason: 'retired',
+    });
+    expect((await db.select().from(authBrowserTransitions)
+      .where(eq(authBrowserTransitions.id, capability.transitionId)))[0]?.state).toBe('retired');
   });
 
   it('finalizes a lease whose database timestamp contains sub-millisecond precision', async () => {

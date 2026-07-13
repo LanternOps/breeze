@@ -49,21 +49,27 @@ export function createAuthBrowserTransitionCleanupWorker(): Worker {
 export async function scheduleAuthBrowserTransitionCleanup(
   queue: Queue = getAuthBrowserTransitionCleanupQueue(),
 ): Promise<void> {
+  // BullMQ's scheduler upsert is atomic. Install/refresh the durable schedule
+  // before touching legacy repeat metadata so a replica crash cannot leave a
+  // remove-then-add gap across the fleet.
+  await queue.upsertJobScheduler(
+    REPEAT_JOB_ID,
+    { pattern: DAILY_CRON },
+    {
+      name: JOB_NAME,
+      data: {},
+      opts: {
+        removeOnComplete: { count: 10 },
+        removeOnFail: { count: 25 },
+      },
+    },
+  );
+
   const existingJobs = await queue.getRepeatableJobs();
   for (const job of existingJobs) {
     if (job.name === JOB_NAME) await queue.removeRepeatableByKey(job.key);
   }
 
-  await queue.add(
-    JOB_NAME,
-    {},
-    {
-      jobId: REPEAT_JOB_ID,
-      repeat: { pattern: DAILY_CRON },
-      removeOnComplete: { count: 10 },
-      removeOnFail: { count: 25 },
-    },
-  );
   console.log(
     `[AuthBrowserTransitionCleanup] Scheduled daily cleanup (cron "${DAILY_CRON}", jobId=${REPEAT_JOB_ID})`,
   );

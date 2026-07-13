@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { and, eq, inArray, isNotNull, isNull, lt, lte, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from 'drizzle-orm';
 import { authBrowserTransitions } from '../db/schema/authBrowserTransitions';
 import {
   withAuthLifecycleSystemTransaction,
@@ -96,6 +96,7 @@ type BindingCandidate = SecretDerivedKeyMaterial & { bindingDigest: string };
 type BindingResolution = Readonly<{
   kind: AuthBindingSource['kind'];
   canonicalDigest: string;
+  canonicalKeyId: string | null;
   candidates: readonly BindingCandidate[];
 }>;
 
@@ -168,6 +169,7 @@ function bindingResolution(
   return Object.freeze({
     kind: source.kind,
     canonicalDigest: bindingDigest(source.value, signer.key),
+    canonicalKeyId: signer.keyId,
     candidates: Object.freeze([...byDigest.values()]),
   });
 }
@@ -367,7 +369,10 @@ async function ensureSuccessorTransition(
   if (!successor) {
     await tx
       .insert(authBrowserTransitions)
-      .values({ bindingDigest: resolution.canonicalDigest })
+      .values({
+        bindingDigest: resolution.canonicalDigest,
+        bindingKeyId: resolution.canonicalKeyId,
+      })
       .onConflictDoNothing({ target: authBrowserTransitions.bindingDigest });
     successor = await lockTransitionForResolution(tx, resolution);
   }
@@ -395,7 +400,10 @@ async function beginAuthIssuanceWithMaterials(
     if (!locked) {
       await tx
         .insert(authBrowserTransitions)
-        .values({ bindingDigest: resolution.canonicalDigest })
+        .values({
+          bindingDigest: resolution.canonicalDigest,
+          bindingKeyId: resolution.canonicalKeyId,
+        })
         .onConflictDoNothing({ target: authBrowserTransitions.bindingDigest });
       locked = await lockTransitionForResolution(tx, resolution);
       if (!locked) {
@@ -537,8 +545,11 @@ export type AuthBrowserTransitionCleanupStats = Readonly<{
 /**
  * Bound abandoned-flow recovery work so cleanup cannot hold the transition
  * table for an unbounded pass. Admission remains the correctness path: this
- * sweep only retires already-expired pending rows and later removes diagnostic
- * rows after the maximum 30-day refresh-family lifetime has elapsed.
+ * sweep retires already-expired pending rows. It deletes a retired row only
+ * after the maximum 30-day diagnostic lifetime and after its recorded signing
+ * key leaves the retained keyring, so a still-valid C1 tombstone is permanent.
+ * The two phases use separate transactions: deletion failures cannot undo
+ * authoritative expiry recovery.
  */
 export async function cleanupAuthBrowserTransitions(
   options: Readonly<{ batchSize?: number }> = {},
@@ -548,7 +559,7 @@ export async function cleanupAuthBrowserTransitions(
     Math.min(options.batchSize ?? AUTH_BROWSER_TRANSITION_CLEANUP_BATCH_SIZE, 5_000),
   );
 
-  return withAuthLifecycleSystemTransaction(async (tx) => {
+  const retiredPending = await withAuthLifecycleSystemTransaction(async (tx) => {
     const pendingCandidates = await tx
       .select({ id: authBrowserTransitions.id })
       .from(authBrowserTransitions)
@@ -560,7 +571,7 @@ export async function cleanupAuthBrowserTransitions(
       .for('update', { skipLocked: true })
       .limit(batchSize);
 
-    let retiredPending = 0;
+    let retiredPendingCount = 0;
     if (pendingCandidates.length > 0) {
       const retired = await tx
         .update(authBrowserTransitions)
@@ -578,9 +589,23 @@ export async function cleanupAuthBrowserTransitions(
           lte(authBrowserTransitions.logoutExpiresAt, sql`now()`),
         ))
         .returning({ id: authBrowserTransitions.id });
-      retiredPending = retired.length;
+      retiredPendingCount = retired.length;
     }
 
+    return retiredPendingCount;
+  });
+
+  const retainedBindingKeyIds = getSecretDerivedKeyMaterials(
+    AUTH_BINDING_DERIVATION_DOMAIN,
+  ).retained.flatMap(({ keyId }) => keyId === null ? [] : [keyId]);
+  const retiredKeyNoLongerAccepted = retainedBindingKeyIds.length === 0
+    ? isNotNull(authBrowserTransitions.bindingKeyId)
+    : and(
+        isNotNull(authBrowserTransitions.bindingKeyId),
+        notInArray(authBrowserTransitions.bindingKeyId, retainedBindingKeyIds),
+      );
+
+  const deletedRetired = await withAuthLifecycleSystemTransaction(async (tx) => {
     const retentionCutoff = sql`now() - ${AUTH_BROWSER_TRANSITION_DIAGNOSTIC_RETENTION_MS} * interval '1 millisecond'`;
     const retiredCandidates = await tx
       .select({ id: authBrowserTransitions.id })
@@ -589,13 +614,14 @@ export async function cleanupAuthBrowserTransitions(
         eq(authBrowserTransitions.state, 'retired'),
         isNotNull(authBrowserTransitions.retiredAt),
         lt(authBrowserTransitions.retiredAt, retentionCutoff),
+        retiredKeyNoLongerAccepted,
         isNull(authBrowserTransitions.activeOperationId),
         isNull(authBrowserTransitions.activeOperationExpiresAt),
       ))
       .for('update', { skipLocked: true })
       .limit(batchSize);
 
-    let deletedRetired = 0;
+    let deletedRetiredCount = 0;
     if (retiredCandidates.length > 0) {
       const deleted = await tx
         .delete(authBrowserTransitions)
@@ -604,15 +630,18 @@ export async function cleanupAuthBrowserTransitions(
           eq(authBrowserTransitions.state, 'retired'),
           isNotNull(authBrowserTransitions.retiredAt),
           lt(authBrowserTransitions.retiredAt, retentionCutoff),
+          retiredKeyNoLongerAccepted,
           isNull(authBrowserTransitions.activeOperationId),
           isNull(authBrowserTransitions.activeOperationExpiresAt),
         ))
         .returning({ id: authBrowserTransitions.id });
-      deletedRetired = deleted.length;
+      deletedRetiredCount = deleted.length;
     }
 
-    return Object.freeze({ retiredPending, deletedRetired });
+    return deletedRetiredCount;
   });
+
+  return Object.freeze({ retiredPending, deletedRetired });
 }
 
 export type StoredAuthTransitionIdentity = Readonly<{

@@ -131,7 +131,7 @@ export const ssoSessions = pgTable(
       columns: [table.browserTransitionId],
       foreignColumns: [authBrowserTransitions.id],
       name: 'sso_sessions_browser_transition_fk',
-    }),
+    }).onDelete('cascade'),
   }),
 );
 
