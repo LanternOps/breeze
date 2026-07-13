@@ -38,6 +38,10 @@ describe('durable SSO exchange code envelope', () => {
     const second = sealSsoExchangeCode(payload);
 
     expect(first.code).not.toBe(second.code);
-    expect(() => openSsoExchangeCode(`${first.code.slice(0, -1)}x`)).toThrow();
+    const payloadStart = first.code.lastIndexOf(':') + 1;
+    const mutationIndex = payloadStart + Math.floor((first.code.length - payloadStart) / 2);
+    const replacement = first.code[mutationIndex] === 'A' ? 'B' : 'A';
+    const altered = `${first.code.slice(0, mutationIndex)}${replacement}${first.code.slice(mutationIndex + 1)}`;
+    expect(() => openSsoExchangeCode(altered)).toThrow();
   });
 });
