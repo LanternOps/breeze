@@ -14,7 +14,7 @@ async function installC1(context: BrowserContext, sameSite: SameSiteMode): Promi
     name: COOKIE_NAME,
     value: C1,
     domain: 'example.com',
-    path: '/api/v1/auth',
+    path: '/',
     httpOnly: false,
     secure: true,
     sameSite,
@@ -29,7 +29,6 @@ test.describe('durable terminal logout browser contract', () => {
 
       let completionCount = 0;
       let completionCookie = '';
-      let landingStoredBinding = '';
       const referrers: string[] = [];
 
       await context.route('**/*', async (route: Route) => {
@@ -58,7 +57,7 @@ test.describe('durable terminal logout browser contract', () => {
               ? {
                   'cache-control': 'no-store',
                   'referrer-policy': 'no-referrer',
-                  'set-cookie': `${COOKIE_NAME}=${C2}; Path=/api/v1/auth; SameSite=${sameSite}; Secure`,
+                  'set-cookie': `${COOKIE_NAME}=${C2}; Path=/; SameSite=${sameSite}; Secure`,
                 }
               : {
                   'cache-control': 'no-store',
@@ -70,8 +69,6 @@ test.describe('durable terminal logout browser contract', () => {
         }
 
         if (url.origin === APP_ORIGIN && url.pathname === '/login') {
-          const cookies = await context.cookies(`${APP_ORIGIN}/api/v1/auth/`);
-          landingStoredBinding = cookies.find((cookie) => cookie.name === COOKIE_NAME)?.value ?? '';
           await route.fulfill({
             status: 200,
             contentType: 'text/html',
@@ -89,20 +86,20 @@ test.describe('durable terminal logout browser contract', () => {
 
       await expect(page).toHaveURL(`${APP_ORIGIN}/login?signedOut=1`);
       expect(completionCount).toBe(1);
-      expect(landingStoredBinding).toBe(C2);
+      expect(await page.evaluate(() => document.cookie)).toContain(`${COOKIE_NAME}=${C2}`);
       expect(referrers.every((value) => !value.includes(TICKET))).toBe(true);
 
       if (sameSite === 'Strict') {
         expect(completionCookie).not.toContain(`${COOKIE_NAME}=${C1}`);
       }
 
-      const installed = await context.cookies(`${APP_ORIGIN}/api/v1/auth/`);
+      const installed = await context.cookies(APP_ORIGIN);
       expect(installed.find((cookie) => cookie.name === COOKIE_NAME)?.value).toBe(C2);
 
       await page.goto(completionUrl);
       await expect(page).toHaveURL(`${APP_ORIGIN}/login?signedOut=1`);
       expect(completionCount).toBe(2);
-      const replayCookies = await context.cookies(`${APP_ORIGIN}/api/v1/auth/`);
+      const replayCookies = await context.cookies(APP_ORIGIN);
       expect(replayCookies.find((cookie) => cookie.name === COOKIE_NAME)?.value).toBe(C2);
 
       await context.close();

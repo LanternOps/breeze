@@ -204,6 +204,32 @@ jobs:
       - name: Run Web tests
         run: pnpm test --filter=@breeze/web
 
+  test-auth-browser-transition:
+    name: Test Auth Browser Transition
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: e2e-tests/package-lock.json
+
+      - name: Install browser-contract dependencies
+        working-directory: e2e-tests
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: e2e-tests
+        run: npx playwright install --with-deps chromium
+
+      - name: Run auth browser-transition contract
+        working-directory: e2e-tests
+        run: npm run test:auth-browser-transition
+
   test-portal:
     name: Test Portal
     runs-on: ubuntu-latest
