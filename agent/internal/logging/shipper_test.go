@@ -270,23 +270,28 @@ func TestShipperStartStopDrains(t *testing.T) {
 }
 
 // decodeShippedLogs decompresses one shipped request body and returns its
-// log entries.
+// log entries. It uses t.Errorf (not Fatalf) because it runs inside httptest
+// handler goroutines, where FailNow/Goexit is undefined behavior; on decode
+// failure it returns nil and the caller's count assertions fail loudly.
 func decodeShippedLogs(t *testing.T, body []byte) []LogEntry {
 	t.Helper()
 	gr, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
-		t.Fatalf("gzip reader: %v", err)
+		t.Errorf("gzip reader: %v", err)
+		return nil
 	}
 	defer gr.Close()
 	decompressed, err := io.ReadAll(gr)
 	if err != nil {
-		t.Fatalf("decompress: %v", err)
+		t.Errorf("decompress: %v", err)
+		return nil
 	}
 	var payload struct {
 		Logs []LogEntry `json:"logs"`
 	}
 	if err := json.Unmarshal(decompressed, &payload); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+		t.Errorf("unmarshal: %v", err)
+		return nil
 	}
 	return payload.Logs
 }
@@ -498,6 +503,42 @@ func TestShipBatchRetries5xxPerChunk(t *testing.T) {
 	}
 	if got := s.DroppedLogCount(); got != 0 {
 		t.Fatalf("expected 0 dropped entries, got %d", got)
+	}
+}
+
+// TestShipBatch401AbortsRemainingChunks verifies a 401 is treated as
+// terminal for the whole batch: the token is dead for every chunk alike, so
+// only one request is made, RecordAuthFailure fires exactly once per flush
+// (the pre-chunking behavior the auth monitor's skip threshold was tuned
+// for), and the remaining chunks are dropped with count.
+func TestShipBatch401AbortsRemainingChunks(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	auth := &testAuthSkipper{}
+	s := NewShipper(ShipperConfig{
+		ServerURL:   server.URL,
+		AgentID:     "test-agent",
+		AuthToken:   testToken("tok"),
+		MinLevel:    "debug",
+		HTTPClient:  server.Client(),
+		AuthMonitor: auth,
+	})
+
+	s.shipBatch(makeEntries(500))
+
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 request (401 is terminal, not retried), got %d", got)
+	}
+	if got := auth.failures.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 RecordAuthFailure per flush, got %d", got)
+	}
+	if got := s.DroppedLogCount(); got != 500 {
+		t.Fatalf("expected all 500 entries dropped (200 rejected + 300 aborted), got %d", got)
 	}
 }
 

@@ -201,11 +201,12 @@ const (
 // shipBatch ships a flushed batch, splitting it into chunks of at most
 // maxEntriesPerShipRequest entries per HTTP request — the API rejects any
 // larger request wholesale (#2397). Each chunk succeeds or fails
-// independently: a 4xx on one chunk drops only that chunk's entries and
-// later chunks still ship. A terminal transport failure (network error, or
-// 429/5xx after exhausting retries) aborts the remaining chunks instead —
-// the server is unreachable or unhealthy, and each further chunk would burn
-// another full retry cycle for the same outcome, blocking the ship loop.
+// independently: a non-auth 4xx on one chunk drops only that chunk's entries
+// and later chunks still ship. A terminal failure — network error or 429/5xx
+// after exhausting retries (server unreachable/unhealthy), or a 401 (token
+// dead for every chunk alike) — aborts the remaining chunks instead, since
+// each further chunk would burn another doomed request or retry cycle for
+// the same outcome, blocking the ship loop.
 func (s *Shipper) shipBatch(entries []LogEntry) {
 	if s.authMon != nil && s.authMon.ShouldSkip() {
 		// Auth-dead: don't drop entries on the ticker path — re-buffer
@@ -241,7 +242,7 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 		end := min(start+maxEntriesPerShipRequest, len(entries))
 		if !s.shipChunk(entries[start:end]) {
 			if remaining := len(entries) - end; remaining > 0 {
-				fmt.Fprintf(os.Stderr, "[log-shipper] dropping %d entries in remaining chunks after transport failure\n", remaining)
+				fmt.Fprintf(os.Stderr, "[log-shipper] dropping %d entries in remaining chunks after terminal failure\n", remaining)
 				s.droppedCount.Add(int64(remaining))
 			}
 			return
@@ -251,10 +252,11 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 
 // shipChunk sends one HTTP request carrying at most maxEntriesPerShipRequest
 // entries, with per-chunk retry for network errors and 429/5xx responses.
-// It returns false when the transport is terminally unhealthy (network error
-// or retryable status after exhausting retries) so the caller can stop
-// burning retry cycles on the batch's remaining chunks; chunk-local outcomes
-// (success, or a non-retried 4xx that drops only this chunk) return true.
+// It returns false on terminal failures that would doom every remaining
+// chunk alike — network error or retryable status after exhausting retries,
+// or a 401 (dead token) — so the caller can stop burning requests on the
+// rest of the batch. Chunk-local outcomes (success, or a non-retried
+// non-auth 4xx that drops only this chunk) return true.
 func (s *Shipper) shipChunk(entries []LogEntry) bool {
 	payload, err := json.Marshal(map[string]any{
 		"logs": entries,
@@ -359,18 +361,29 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 		}
 
 		if resp.StatusCode >= 400 {
-			// Client error (4xx): do not retry. Chunk-local — the rejection
-			// is about this request's contents, so only this chunk's entries
-			// are dropped and the batch's remaining chunks still ship.
+			// Client error (4xx): do not retry this chunk.
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			resp.Body.Close()
 			cancel()
-			if resp.StatusCode == http.StatusUnauthorized && s.authMon != nil {
-				s.authMon.RecordAuthFailure()
-			}
 			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d for %d entries: %s\n",
 				resp.StatusCode, len(entries), string(body))
 			s.droppedCount.Add(int64(len(entries)))
+			if resp.StatusCode == http.StatusUnauthorized {
+				// Auth is request-independent: the token won't get healthier
+				// between chunks, so shipping the batch's remaining chunks
+				// would just burn one doomed request — and one extra
+				// RecordAuthFailure — per chunk, skewing the auth monitor's
+				// skip threshold (tuned for one failure per flush, the
+				// pre-chunking behavior). Terminal: record once, abort batch.
+				if s.authMon != nil {
+					s.authMon.RecordAuthFailure()
+				}
+				return false
+			}
+			// Other 4xxs are chunk-local — the rejection is about this
+			// request's contents (e.g. a validation failure) — so only this
+			// chunk's entries are dropped and the batch's remaining chunks
+			// still ship (#2397).
 			return true
 		}
 
