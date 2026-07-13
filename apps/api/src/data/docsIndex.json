@@ -117,9 +117,6 @@
       "`backup_test_restore`",
       "`backup_cleanup`",
       "Software Inventory",
-      "File Transfer",
-      "`file_transfer`",
-      "`cancel_transfer`",
       "User Helper Commands",
       "`notify_user`",
       "`tray_update`",
@@ -626,7 +623,7 @@
       "Sentry",
       "Rate Limiting",
       "Database",
-      "File Transfer & Remote Sessions",
+      "Remote Sessions & Storage",
       "Feature Flags",
       "MCP Server",
       "Cloudflare mTLS",
@@ -716,6 +713,23 @@
       "Pre-Release Testing"
     ],
     "section": "deploy"
+  },
+  {
+    "path": "/features/accounting-integrations/",
+    "title": "Accounting & Payments Integrations — QuickBooks & Stripe",
+    "description": "Connect QuickBooks Online and your Stripe account from the Accounting tab of the Integrations page to sync your books and collect card payments.",
+    "headings": [
+      "Connecting QuickBooks",
+      "What syncs",
+      "Invoice push mode",
+      "Importing customers",
+      "Reconnecting and disconnecting",
+      "Connecting Stripe",
+      "Connected view",
+      "What this enables",
+      "Related"
+    ],
+    "section": "features"
   },
   {
     "path": "/features/agent-diagnostics/",
@@ -890,6 +904,18 @@
       "Notification Routing Rules",
       "Escalation Policies",
       "Offline Duration for Configuration Policy Rules"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/approval-security/",
+    "title": "Approval Security",
+    "description": "Set how strongly a technician must prove who they are before approving a privileged action -- map each risk tier to a required Breeze Authenticator assurance level.",
+    "headings": [
+      "Risk tiers and assurance levels",
+      "Configuring approval assurance",
+      "How it interacts with PAM and Breeze Authenticator",
+      "Related"
     ],
     "section": "features"
   },
@@ -1378,6 +1404,16 @@
     "section": "features"
   },
   {
+    "path": "/features/distributor-integrations/",
+    "title": "Distributor Integrations — Pax8 & TD SYNNEX",
+    "description": "Connect Pax8 and TD SYNNEX from the Distributors tab to sync license subscriptions and pull live distributor pricing into your Product Catalog.",
+    "headings": [
+      "Connecting a distributor",
+      "Related"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/dns-security/",
     "title": "DNS Security",
     "description": "DNS filtering and threat prevention with policy-based blocking, threat categorization, and integration with third-party DNS providers.",
@@ -1541,6 +1577,24 @@
     "section": "features"
   },
   {
+    "path": "/features/identity-integrations/",
+    "title": "Identity Integrations — Google Workspace & Microsoft 365",
+    "description": "Connect Google Workspace and Microsoft 365 (Entra) tenants on the Integrations → Identity tab so Breeze and its AI assistant can administer users and groups.",
+    "headings": [
+      "Connecting a tenant",
+      "Credentials required",
+      "Connect",
+      "Domain-wide delegation scopes",
+      "Credentials required",
+      "Connect",
+      "Microsoft Graph permissions required",
+      "After connecting",
+      "Troubleshooting",
+      "Related"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/incident-response/",
     "title": "Incident Response",
     "description": "Create, investigate, contain, and close security incidents with automated evidence collection and AI-assisted response.",
@@ -1663,6 +1717,18 @@
       "IP history shows duplicate entries",
       "IP changes are delayed",
       "\"Invalid IP address format\" validation errors"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/linked-profiles/",
+    "title": "Linked Profiles",
+    "description": "Link the multiple OS installs of one physical machine (multi-boot) so their device records are managed as related boot profiles.",
+    "headings": [
+      "What the tab shows",
+      "Linking profiles",
+      "Unlinking and removing a link",
+      "Related"
     ],
     "section": "features"
   },
@@ -1907,6 +1973,23 @@
     "section": "features"
   },
   {
+    "path": "/features/monitoring-integrations/",
+    "title": "Monitoring & Observability Integrations",
+    "description": "Publish Breeze metrics and route alerts to Prometheus, Grafana, PagerDuty, OpsGenie, and outbound webhooks from the Integrations → Monitoring tab.",
+    "headings": [
+      "Prometheus scrape endpoint",
+      "Grafana",
+      "PagerDuty",
+      "OpsGenie",
+      "Wiring up PagerDuty or OpsGenie",
+      "Outbound webhooks",
+      "Metric selection",
+      "Saving and testing",
+      "Related"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/network-baselines/",
     "title": "Network Baselines",
     "description": "Establish subnet baselines and detect new, changed, disappeared, or rogue devices on your network.",
@@ -1927,6 +2010,20 @@
       "Network Changes",
       "Known Guests",
       "Troubleshooting"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/network-connections/",
+    "title": "Network Connections",
+    "description": "View a device's live network connections — local and remote address, port, protocol, state, and owning process — in a filterable, netstat-style table.",
+    "headings": [
+      "Columns",
+      "Filtering and refresh",
+      "Common uses",
+      "API",
+      "Troubleshooting",
+      "Related"
     ],
     "section": "features"
   },
@@ -2054,6 +2151,24 @@
     "section": "features"
   },
   {
+    "path": "/features/onedrive-helper/",
+    "title": "OneDrive Helper",
+    "description": "Silently sign users into OneDrive, enforce Files On-Demand and Known Folder Move, and auto-mount SharePoint libraries through a configuration policy.",
+    "headings": [
+      "Configure in a policy",
+      "Settings",
+      "Silent account configuration",
+      "Files On-Demand",
+      "Known Folder Move (KFM)",
+      "Restart OneDrive on change",
+      "SharePoint library auto-mount",
+      "Check status on a device",
+      "Troubleshooting",
+      "Related"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/online-payments/",
     "title": "Online Payments",
     "description": "Let your customers pay invoices by card online, settled directly into your own Stripe account -- Breeze takes no fee and never touches the funds.",
@@ -2126,6 +2241,21 @@
       "Creating a patch deployment job from a policy",
       "API Reference",
       "Troubleshooting"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/performance-metrics/",
+    "title": "Performance Metrics",
+    "description": "Read per-device CPU, memory, disk, and network time-series graphs on the device Performance tab.",
+    "headings": [
+      "What the graphs show",
+      "Time ranges",
+      "How collection cadence affects the graphs",
+      "Process drill-down",
+      "Performance metrics vs. reliability score",
+      "API reference",
+      "Related"
     ],
     "section": "features"
   },
@@ -2352,6 +2482,24 @@
     "section": "features"
   },
   {
+    "path": "/features/psa-integrations/",
+    "title": "PSA Integrations",
+    "description": "Connect Breeze to your PSA platform to sync tickets, encrypt credentials, and keep alerts and devices tied to external work items.",
+    "headings": [
+      "Supported Providers",
+      "Connecting a PSA Platform",
+      "Credentials You May Need",
+      "Testing a Connection",
+      "Managing Connections",
+      "Ticket Sync & Field Mappings",
+      "Sync direction",
+      "Ticket mappings",
+      "Troubleshooting",
+      "Related"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/quotes/",
     "title": "Quotes & Proposals",
     "description": "Build priced quotes from your catalog, present them with images and titles, take a deposit on acceptance, and turn accepted quotes straight into invoices and recurring contracts -- all inside Breeze.",
@@ -2413,7 +2561,7 @@
   {
     "path": "/features/remote-access/",
     "title": "Remote Access",
-    "description": "Remote Desktop, Remote Terminal, and File Transfer for managed devices over WebRTC.",
+    "description": "Remote Desktop and Remote Terminal for managed devices over WebRTC.",
     "headings": [
       "Remote Desktop",
       "Starting a desktop session",
@@ -2436,19 +2584,11 @@
       "Remote Terminal",
       "Starting a terminal session",
       "Connection flow",
-      "File Transfer",
-      "Direction convention",
-      "Initiating a transfer",
-      "Tracking progress",
-      "Downloading a completed file",
-      "Cancelling a transfer",
-      "Size limit",
       "Session Lifecycle",
       "Rate Limits",
       "Security",
       "API Reference",
       "Sessions",
-      "File Transfers",
       "Network Proxy Tunnels",
       "Wake-on-LAN & Remote-Desktop Launcher",
       "Events",
@@ -2614,6 +2754,10 @@
       "Security Dashboard",
       "Dashboard Response Fields",
       "Score Breakdown",
+      "Disk Encryption & Recovery Keys",
+      "Encryption overview",
+      "Recovery keys on a device",
+      "Recovery-key API",
       "Security Policies",
       "Policy Ownership: Organization vs. Partner-Wide",
       "API Reference",
@@ -2666,6 +2810,24 @@
       "Remediation",
       "Policies",
       "Troubleshooting"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/service-monitoring/",
+    "title": "Service & Process Monitoring",
+    "description": "Keep Windows services and processes running, alert on event-log activity and metric thresholds, and view per-device monitoring results.",
+    "headings": [
+      "Overview",
+      "Define monitors in a configuration policy",
+      "See results on a device",
+      "Troubleshooting",
+      "A device shows no monitoring rows",
+      "A watch stays `not_found`",
+      "Auto-restart isn't recovering a service",
+      "Alerts aren't firing",
+      "Partner-wide policy edits are greyed out",
+      "Related"
     ],
     "section": "features"
   },
@@ -2949,6 +3111,20 @@
     "section": "features"
   },
   {
+    "path": "/features/unifi-integration/",
+    "title": "UniFi Network Integration",
+    "description": "Discover your Ubiquiti UniFi fleet across every customer site through the Site Manager cloud or a self-hosted controller, with optional agent-collected deep telemetry.",
+    "headings": [
+      "Overview",
+      "Connecting UniFi",
+      "Deep telemetry (cloud connections)",
+      "What Breeze pulls from UniFi",
+      "Connection status and sync history",
+      "Related"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/update-rings/",
     "title": "Update Rings",
     "description": "Control patch rollout velocity with staged deployment rings, deferral periods, and per-category approval rules.",
@@ -3062,6 +3238,18 @@
       "How risk is scored",
       "Permissions",
       "With the AI agent"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/warranty-tracking/",
+    "title": "Warranty Tracking",
+    "description": "Configure warranty expiry alert thresholds so techs get warned before device warranties lapse.",
+    "headings": [
+      "Where warranty dates come from",
+      "Configure in a policy",
+      "What alerts fire",
+      "Related"
     ],
     "section": "features"
   },
@@ -3378,7 +3566,6 @@
       "Network Discovery",
       "SNMP",
       "Remote Access",
-      "File Transfers",
       "Network Proxy",
       "System Tools",
       "Maintenance Windows",
@@ -3593,6 +3780,18 @@
       "Slug Collision Handling",
       "Cleanup on Failure",
       "Troubleshooting"
+    ],
+    "section": "reference"
+  },
+  {
+    "path": "/reference/regional-settings/",
+    "title": "Regional Settings",
+    "description": "Partner-level localization defaults — timezone, date/time format, console language, and business hours — that cascade to new organizations and sites.",
+    "headings": [
+      "Regional Settings",
+      "Business Hours",
+      "How it cascades",
+      "Related"
     ],
     "section": "reference"
   },

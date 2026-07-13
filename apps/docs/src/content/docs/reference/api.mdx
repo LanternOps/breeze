@@ -546,18 +546,6 @@ A rule matches an elevation candidate on one or more of these fields (`POST`/`PA
 | `POST` | `/remote/sessions/:id/ice` | ICE candidate exchange |
 | `POST` | `/remote/sessions/:id/end` | End session |
 
-### File Transfers
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/remote/transfers` | List transfers |
-| `POST` | `/remote/transfers` | Initiate transfer |
-| `GET` | `/remote/transfers/:id` | Get transfer status |
-| `POST` | `/remote/transfers/:id/cancel` | Cancel transfer |
-| `POST` | `/remote/transfers/:id/chunks` | Upload chunk |
-| `GET` | `/remote/transfers/:id/download` | Download file |
-| `GET` | `/remote/transfers/:id/progress` | Transfer progress |
-
 ### Network Proxy
 
 Reach a discovered LAN device's web UI through a bridge agent. The proxy page first mints a one-time ticket, then all browser traffic flows through the reverse-proxy route (authenticated by a signed, path-scoped cookie — no bearer token on the proxied requests).

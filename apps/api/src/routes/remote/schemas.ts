@@ -55,21 +55,3 @@ export const iceCandidateSchema = z.object({
     usernameFragment: z.string().nullable().optional()
   })
 });
-
-// File transfer schemas
-export const createTransferSchema = z.object({
-  deviceId: z.string().guid(),
-  sessionId: z.string().guid().optional(),
-  direction: z.enum(['upload', 'download']),
-  remotePath: z.string().min(1),
-  localFilename: z.string().min(1),
-  sizeBytes: z.number().int().min(0)
-});
-
-export const listTransfersSchema = z.object({
-  page: z.string().optional(),
-  limit: z.string().optional(),
-  deviceId: z.string().guid().optional(),
-  status: z.enum(['pending', 'transferring', 'completed', 'failed']).optional(),
-  direction: z.enum(['upload', 'download']).optional()
-});

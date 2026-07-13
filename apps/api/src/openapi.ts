@@ -65,7 +65,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
     { name: 'Automations', description: 'Automation workflows and runs' },
     { name: 'Policies', description: 'Compliance policy definitions and evaluations' },
     { name: 'Reports', description: 'Reporting and data exports' },
-    { name: 'Remote', description: 'Remote access sessions and file transfers' },
+    { name: 'Remote', description: 'Remote access sessions' },
     { name: 'Agents', description: 'Agent enrollment and communication' },
     { name: 'Audit', description: 'Audit logging and activity tracking' }
   ],
@@ -568,25 +568,6 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           createdAt: { type: 'string', format: 'date-time' }
         }
       },
-      FileTransfer: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          sessionId: { type: 'string', format: 'uuid', nullable: true },
-          deviceId: { type: 'string', format: 'uuid' },
-          userId: { type: 'string', format: 'uuid' },
-          direction: { type: 'string', enum: ['upload', 'download'] },
-          remotePath: { type: 'string' },
-          localFilename: { type: 'string' },
-          sizeBytes: { type: 'integer' },
-          status: { type: 'string', enum: ['pending', 'transferring', 'completed', 'failed'] },
-          progressPercent: { type: 'integer' },
-          errorMessage: { type: 'string', nullable: true },
-          createdAt: { type: 'string', format: 'date-time' },
-          completedAt: { type: 'string', format: 'date-time', nullable: true }
-        }
-      },
-
       // Agent schemas
       EnrollmentRequest: {
         type: 'object',
@@ -3824,70 +3805,6 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
-    '/remote/transfers': {
-      get: {
-        operationId: 'listFileTransfers',
-        tags: ['Remote'],
-        summary: 'List file transfers',
-        parameters: [
-          { $ref: '#/components/parameters/pageParam' },
-          { $ref: '#/components/parameters/limitParam' },
-          { name: 'deviceId', in: 'query', schema: { type: 'string', format: 'uuid' } },
-          { name: 'status', in: 'query', schema: { type: 'string', enum: ['pending', 'transferring', 'completed', 'failed'] } },
-          { name: 'direction', in: 'query', schema: { type: 'string', enum: ['upload', 'download'] } }
-        ],
-        responses: {
-          '200': {
-            description: 'List of transfers',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    data: { type: 'array', items: { $ref: '#/components/schemas/FileTransfer' } },
-                    pagination: { $ref: '#/components/schemas/Pagination' }
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      post: {
-        operationId: 'initiateFileTransfer',
-        tags: ['Remote'],
-        summary: 'Initiate file transfer',
-        responses: {
-          '201': {
-            description: 'Transfer initiated',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/FileTransfer' }
-              }
-            }
-          }
-        }
-      }
-    },
-    '/remote/transfers/{id}/cancel': {
-      post: {
-        operationId: 'cancelFileTransfer',
-        tags: ['Remote'],
-        summary: 'Cancel file transfer',
-        parameters: [{ $ref: '#/components/parameters/idParam' }],
-        responses: {
-          '200': {
-            description: 'Transfer cancelled',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/FileTransfer' }
-              }
-            }
-          }
-        }
-      }
-    },
-
     // ============================================
     // AGENT ENDPOINTS
     // ============================================

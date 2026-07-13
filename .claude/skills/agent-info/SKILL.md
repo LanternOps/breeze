@@ -22,7 +22,6 @@ agent/
       tools/                   # Command handlers (processes, services, files, etc.)
       desktop/                 # WebRTC remote desktop
     terminal/                  # PTY management (per-platform)
-    filetransfer/              # File transfer manager
     updater/                   # Self-update mechanism
     scripts/                   # Script execution runner
   pkg/api/client.go            # HTTP client for enrollment
@@ -150,7 +149,6 @@ Terminal commands use `term-` prefix IDs and skip DB persistence.
 | `shutdown` | `Shutdown` | `{delay}` |
 | `lock` | `Lock` | `{}` |
 | `collect_software` | inline | `{}` |
-| `file_transfer` | `filetransfer.Manager` | `{transferId, ...}` |
 | `start_desktop` | `desktop.SessionManager` | `{sessionId, offer}` |
 | `stop_desktop` | `desktop.SessionManager` | `{sessionId}` |
 

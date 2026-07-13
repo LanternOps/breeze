@@ -30,7 +30,7 @@ import {
   getIceServers,
   getDeviceWithOrgCheck,
   getSessionWithOrgCheck,
-  hasSessionOrTransferOwnership,
+  hasSessionOwnership,
   checkSessionRateLimit,
   checkUserSessionRateLimit,
   logSessionAudit,
@@ -625,7 +625,7 @@ sessionRoutes.get(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+    if (!hasSessionOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
@@ -678,7 +678,7 @@ sessionRoutes.post(
     }
 
     const { session } = result;
-    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+    if (!hasSessionOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
@@ -726,7 +726,7 @@ sessionRoutes.post(
     }
 
     const { session } = result;
-    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+    if (!hasSessionOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
@@ -775,7 +775,7 @@ sessionRoutes.get(
       return c.json({ error: 'ICE servers are only available for desktop sessions' }, 400);
     }
 
-    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+    if (!hasSessionOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
@@ -825,7 +825,7 @@ sessionRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+    if (!hasSessionOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
@@ -1023,7 +1023,7 @@ sessionRoutes.post(
     }
 
     const { session, device } = result;
-    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+    if (!hasSessionOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
@@ -1112,7 +1112,7 @@ sessionRoutes.post(
     }
 
     const { session, device } = result;
-    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+    if (!hasSessionOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
@@ -1178,7 +1178,7 @@ sessionRoutes.post(
     }
 
     const { session } = result;
-    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+    if (!hasSessionOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
@@ -1231,7 +1231,7 @@ sessionRoutes.post(
     }
 
     const { session, device } = result;
-    if (!hasSessionOrTransferOwnership(auth, session.userId)) {
+    if (!hasSessionOwnership(auth, session.userId)) {
       return c.json({ error: 'Access denied' }, 403);
     }
 

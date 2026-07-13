@@ -28,7 +28,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/executor"
-	"github.com/breeze-rmm/agent/internal/filetransfer"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/httputil"
@@ -165,7 +164,6 @@ type Heartbeat struct {
 	bootCol               *collectors.BootPerformanceCollector
 	reliabilityCol        *collectors.ReliabilityCollector
 	agentVersion          string
-	fileTransferMgr       *filetransfer.Manager
 	desktopMgr            *desktop.SessionManager
 	wsDesktopMgr          *desktop.WsSessionManager
 	terminalMgr           *terminal.Manager
@@ -415,15 +413,9 @@ func newHeartbeatHTTPClient(tlsCfg *tls.Config) *http.Client {
 }
 
 func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString, tlsCfg *tls.Config) *Heartbeat {
-	ftToken := token
-	if ftToken == nil && cfg.AuthToken != "" {
-		ftToken = secmem.NewSecureString(cfg.AuthToken)
-	}
-
-	ftConfig := &filetransfer.Config{
-		ServerURL: cfg.ServerURL,
-		AuthToken: ftToken,
-		AgentID:   cfg.AgentID,
+	secToken := token
+	if secToken == nil && cfg.AuthToken != "" {
+		secToken = secmem.NewSecureString(cfg.AuthToken)
 	}
 
 	// Build HTTP client with optional mTLS transport
@@ -431,7 +423,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	h := &Heartbeat{
 		config:       cfg,
-		secureToken:  ftToken,
+		secureToken:  secToken,
 		client:       httpClient,
 		stopChan:     make(chan struct{}),
 		metricsCol:   collectors.NewMetricsCollector(),
@@ -452,7 +444,6 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		reliabilityCol:  collectors.NewReliabilityCollector(),
 		agentVersion:    version,
 		executor:        executor.New(cfg),
-		fileTransferMgr: filetransfer.NewManager(ftConfig),
 		desktopMgr:      desktop.NewSessionManager(),
 		wsDesktopMgr:    desktop.NewWsSessionManager(),
 		terminalMgr:     terminal.NewManager(),
@@ -507,7 +498,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	go func() { <-h.stopChan; helperCancel() }()
 
 	if runtime.GOOS == "windows" && cfg.IsService {
-		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
@@ -533,7 +524,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	} else if cfg.IsHeadless && h.sessionBroker != nil {
 		// macOS/Linux headless daemons: launch Breeze Helper via user-role
 		// IPC helper (LaunchAgent) so the Tauri app runs in the user session.
-		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
@@ -545,7 +536,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 			}),
 		)
 	} else {
-		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, ftToken, cfg.AgentID,
+		h.helperMgr = helper.New(helperCtx, cfg.ServerURL, secToken, cfg.AgentID,
 			helper.WithSessionEnumerator(helper.NewPlatformEnumerator()),
 			helper.WithAgentVersion(version),
 			helper.WithManifestKeys(cfg.PinnedManifestPubKeys),
@@ -2787,7 +2778,6 @@ func (h *Heartbeat) promoteBackupServerURL(probedURL string) {
 	h.config.BackupServerURL = oldPrimary
 	h.mu.Unlock()
 
-	h.fileTransferMgr.SetServerURL(newPrimary)
 	if h.wsClient != nil {
 		h.wsClient.SetServerURL(newPrimary)
 	}

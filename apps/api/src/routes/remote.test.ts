@@ -6,7 +6,6 @@ import { remoteRoutes } from './remote';
 // Valid UUIDs for test IDs
 const SESSION_UUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const DEVICE_UUID = '11111111-1111-1111-1111-111111111111';
-const TRANSFER_UUID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const USER_UUID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const ORG_UUID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
@@ -19,20 +18,10 @@ const mockAuthState = vi.hoisted(() => ({
 
 vi.mock('../services', () => ({}));
 
-vi.mock('../services/fileStorage', () => ({
-  saveChunk: vi.fn(async () => undefined),
-  assembleChunks: vi.fn(async () => undefined),
-  getFileStream: vi.fn(() => null),
-  getFileSize: vi.fn(() => 0),
-  hasAssembledFile: vi.fn(() => true),
-  getTotalBytesReceived: vi.fn(() => 0),
-  MAX_TRANSFER_SIZE_BYTES: 10 * 1024 * 1024
-}));
-
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
     REMOTE_ACCESS: { resource: 'remote', action: 'access' },
-    // sessions.ts/transfers.ts gained requirePermission(DEVICES_READ) — the mock
+    // sessions.ts gained requirePermission(DEVICES_READ) — the mock
     // must export it or the remote/ router fails to load here.
     DEVICES_READ: { resource: 'devices', action: 'read' }
   }
@@ -66,7 +55,6 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   remoteSessions: {},
-  fileTransfers: {},
   devices: {},
   organizations: {},
   users: {},
@@ -517,90 +505,6 @@ describe('remote routes', () => {
       const res = await app.request(`/remote/ice-servers?sessionId=${SESSION_UUID}`);
 
       expect(res.status).toBe(400);
-    });
-  });
-
-  describe('POST /remote/transfers/:id/chunks', () => {
-    it('should deny chunk upload when user does not own the transfer', async () => {
-      const transferResult = {
-        transfer: {
-          id: TRANSFER_UUID,
-          deviceId: DEVICE_UUID,
-          userId: 'other-user',
-          direction: 'download',
-          status: 'pending',
-          sizeBytes: BigInt(3),
-          progressPercent: 0
-        },
-        device: {
-          id: DEVICE_UUID,
-          orgId: 'org-123'
-        }
-      };
-
-      // getTransferWithOrgCheck
-      vi.mocked(db.select).mockReturnValueOnce(
-        mockSelectInnerJoinChain([transferResult])
-      );
-
-      const form = new FormData();
-      form.set('chunkIndex', '0');
-      form.set('data', new File([new Uint8Array([1, 2, 3])], 'chunk.bin'));
-
-      const res = await app.request(`/remote/transfers/${TRANSFER_UUID}/chunks`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' },
-        body: form
-      });
-
-      expect(res.status).toBe(403);
-      const body = await res.json();
-      expect(body.error).toBe('Access denied');
-    });
-
-    it('should accept chunk upload for transfer owner', async () => {
-      const transferResult = {
-        transfer: {
-          id: TRANSFER_UUID,
-          deviceId: DEVICE_UUID,
-          userId: 'user-123',
-          direction: 'download',
-          status: 'pending',
-          sizeBytes: BigInt(3),
-          progressPercent: 0
-        },
-        device: {
-          id: DEVICE_UUID,
-          orgId: 'org-123'
-        }
-      };
-
-      // getTransferWithOrgCheck
-      vi.mocked(db.select).mockReturnValueOnce(
-        mockSelectInnerJoinChain([transferResult])
-      );
-
-      // db.update for progress update (no returning)
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(undefined)
-        })
-      } as any);
-
-      const form = new FormData();
-      form.set('chunkIndex', '0');
-      form.set('data', new File([new Uint8Array([1, 2, 3])], 'chunk.bin'));
-
-      const res = await app.request(`/remote/transfers/${TRANSFER_UUID}/chunks`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' },
-        body: form
-      });
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.status).toBe('completed');
-      expect(body.progressPercent).toBe(100);
     });
   });
 

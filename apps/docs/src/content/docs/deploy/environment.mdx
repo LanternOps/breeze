@@ -197,14 +197,10 @@ Two rate-limit tiers protect the API. The generic per-user limit covers logged-i
 |---|---|---|
 | `DB_POOL_MAX` | `30` | Maximum postgres-js connection pool size. Tune up if you see cascading 504s during heartbeat storms; confirm Postgres `max_connections` has headroom (default 100 is fine for a single API replica). |
 
-## File Transfer & Remote Sessions
+## Remote Sessions & Storage
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRANSFER_STORAGE_PATH` | `./data/transfers` | File transfer storage directory |
-| `MAX_TRANSFER_SIZE_MB` | `100` | Max file transfer size |
-| `MAX_ACTIVE_TRANSFERS_PER_ORG` | `20` | Concurrent transfer limit per org |
-| `MAX_ACTIVE_TRANSFERS_PER_USER` | `10` | Concurrent transfer limit per user |
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG` | `10` | Concurrent remote sessions per org |
 | `MAX_ACTIVE_REMOTE_SESSIONS_PER_USER` | `5` | Concurrent remote sessions per user |
 | `PATCH_REPORT_STORAGE_PATH` | `./data/patch-reports` | Patch compliance report storage |

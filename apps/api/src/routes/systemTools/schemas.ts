@@ -135,8 +135,7 @@ export const fileTrashPurgeBodySchema = z.object({
 // read limit is sized from that cap (agent/internal/websocket/client.go
 // maxMessageSize, issue #2399) — an oversized frame is not gracefully
 // rejected, it kills the agent's WS connection. Enforce the same bound here so
-// the API never emits a file_write frame the agent cannot accept. Larger
-// transfers go through the chunked file-transfer endpoints instead.
+// the API never emits a file_write frame the agent cannot accept.
 export const AGENT_MAX_FILE_WRITE_BYTES = 4 * 1024 * 1024;
 // Mirrors Go's base64.StdEncoding.EncodedLen(n): ceil(n/3)*4, padding included.
 export const AGENT_MAX_FILE_WRITE_BASE64_CHARS =
@@ -152,7 +151,7 @@ export const fileUploadBodySchema = z
       .string()
       .min(0)
       .max(AGENT_MAX_FILE_WRITE_BASE64_CHARS, {
-        message: 'File too large (max 4MB); use file transfer for larger files',
+        message: 'File too large (max 4MB)',
       }),
     encoding: z.enum(['base64', 'text']).optional().default('text'),
   })
@@ -167,7 +166,7 @@ export const fileUploadBodySchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['content'],
-        message: `File too large (max ${AGENT_MAX_FILE_WRITE_BYTES / (1024 * 1024)}MB); use file transfer for larger files`,
+        message: `File too large (max ${AGENT_MAX_FILE_WRITE_BYTES / (1024 * 1024)}MB)`,
       });
     }
   });

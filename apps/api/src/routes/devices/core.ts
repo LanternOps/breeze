@@ -91,7 +91,7 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = ['tickets'] as const;
  * Tables intentionally excluded (no `org_id` column today):
  *   automation_policy_compliance, deployment_devices, deployment_results,
  *   device_commands (system-scoped per RLS policy), device_software,
- *   file_transfers, patch_job_results, patch_rollbacks,
+ *   patch_job_results, patch_rollbacks,
  *   psa_ticket_mappings, software_compliance_status
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
@@ -206,7 +206,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'deployment_devices', 'deployment_results', 'software_inventory',
   'software_compliance_status', 'software_policy_audit',
   // Remote access
-  'remote_sessions', 'file_transfers', 'tunnel_sessions',
+  'remote_sessions', 'tunnel_sessions',
   // Monitoring & logs
   'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
   'device_event_logs', 'automation_policy_compliance', 'backup_sla_events',

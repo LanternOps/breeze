@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
-	"github.com/breeze-rmm/agent/internal/filetransfer"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/tunnel"
@@ -44,7 +43,6 @@ func newFailoverTestHeartbeat(cfg *config.Config, transport http.RoundTripper) *
 		config:          cfg,
 		client:          &http.Client{Transport: transport},
 		healthMon:       health.NewMonitor(),
-		fileTransferMgr: filetransfer.NewManager(&filetransfer.Config{ServerURL: cfg.ServerURL}),
 		tunnelMgr:       &tunnel.Manager{},
 		retryCfg:        httputil.RetryConfig{MaxRetries: 0},
 	}

@@ -258,7 +258,6 @@ import { initializePolicyAlertBridge } from './services/policyAlertBridge';
 import { getWebhookWorker, initializeWebhookDelivery } from './workers/webhookDelivery';
 import { decryptForColumn } from './services/secretCrypto';
 import { decryptWebhookHeaders } from './services/notificationChannelSecrets';
-import { initializeTransferCleanup, stopTransferCleanup } from './workers/transferCleanup';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { getEventBus } from './services/eventBus';
@@ -1301,7 +1300,6 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   shutdownInProgress = true;
   console.log(`[shutdown] Received ${signal}, shutting down gracefully...`);
 
-  stopTransferCleanup();
   getWebhookWorker().stop();
   if (auditRetryInterval) {
     clearInterval(auditRetryInterval);
@@ -1615,7 +1613,6 @@ async function bootstrap(): Promise<void> {
   console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
 
   await initializeWorkers();
-  initializeTransferCleanup();
 
   // Periodically retry failed audit writes. The in-process queue is bounded
   // (10k entries) and per-entry attempts are capped (3) with exponential

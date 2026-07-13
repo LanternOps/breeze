@@ -126,7 +126,7 @@ vi.mock('./helpers', () => ({
   getIceServers: vi.fn(() => []),
   getDeviceWithOrgCheck,
   getSessionWithOrgCheck,
-  hasSessionOrTransferOwnership: vi.fn(() => true),
+  hasSessionOwnership: vi.fn(() => true),
   checkSessionRateLimit,
   checkUserSessionRateLimit,
   logSessionAudit: vi.fn(),

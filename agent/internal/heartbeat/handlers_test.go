@@ -37,7 +37,6 @@ var allCommandTypes = []string{
 	tools.CmdTerminalResize, tools.CmdTerminalStop,
 
 	// handlers_desktop.go init()
-	tools.CmdFileTransfer, tools.CmdCancelTransfer,
 	tools.CmdStartDesktop, tools.CmdStopDesktop,
 	tools.CmdDesktopStreamStart, tools.CmdDesktopStreamStop,
 	tools.CmdDesktopInput, tools.CmdDesktopConfig,

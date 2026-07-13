@@ -84,7 +84,6 @@ export type EventType =
   // Remote events
   | 'remote.session.started'
   | 'remote.session.ended'
-  | 'remote.file.transferred'
   // User events
   | 'user.login'
   | 'user.logout'
@@ -636,7 +635,6 @@ export const EVENT_TYPES = {
   // Remote
   REMOTE_SESSION_STARTED: 'remote.session.started' as const,
   REMOTE_SESSION_ENDED: 'remote.session.ended' as const,
-  REMOTE_FILE_TRANSFERRED: 'remote.file.transferred' as const,
   // User
   USER_LOGIN: 'user.login' as const,
   USER_LOGOUT: 'user.logout' as const,

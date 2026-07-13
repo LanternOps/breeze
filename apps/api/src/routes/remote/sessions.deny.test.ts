@@ -16,12 +16,12 @@ import { Hono } from 'hono';
 
 const {
   getSessionWithOrgCheck,
-  hasSessionOrTransferOwnership,
+  hasSessionOwnership,
   logSessionAudit,
   revokeViewerSession,
 } = vi.hoisted(() => ({
   getSessionWithOrgCheck: vi.fn(),
-  hasSessionOrTransferOwnership: vi.fn(() => true),
+  hasSessionOwnership: vi.fn(() => true),
   logSessionAudit: vi.fn(() => Promise.resolve()),
   revokeViewerSession: vi.fn(() => Promise.resolve()),
 }));
@@ -63,7 +63,7 @@ vi.mock('./helpers', () => ({
   getIceServers: vi.fn(() => []),
   getDeviceWithOrgCheck: vi.fn(),
   getSessionWithOrgCheck,
-  hasSessionOrTransferOwnership,
+  hasSessionOwnership,
   checkSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
   checkUserSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
   logSessionAudit,
@@ -144,7 +144,7 @@ describe('POST /remote/sessions/:id/deny', () => {
     vi.clearAllMocks();
     vi.mocked(db.update).mockReset();
     getSessionWithOrgCheck.mockReset();
-    hasSessionOrTransferOwnership.mockReturnValue(true);
+    hasSessionOwnership.mockReturnValue(true);
     logSessionAudit.mockResolvedValue(undefined);
     revokeViewerSession.mockResolvedValue(undefined);
     app = new Hono();
@@ -221,7 +221,7 @@ describe('POST /remote/sessions/:id/deny', () => {
 
   it('returns 403 when the caller does not own the session', async () => {
     getSessionWithOrgCheck.mockResolvedValue(sessionRow('connecting'));
-    hasSessionOrTransferOwnership.mockReturnValue(false);
+    hasSessionOwnership.mockReturnValue(false);
 
     const res = await app.request(denyReq('user'));
     expect(res.status).toBe(403);
