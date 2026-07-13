@@ -409,6 +409,11 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       partnerId: partner.id,
       scope: 'partner',
       mfa: true,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     const linkStartRes = await app.request(`/sso/link/start/${provider.id}`, {

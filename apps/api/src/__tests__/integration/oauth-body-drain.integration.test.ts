@@ -165,6 +165,11 @@ describe.skipIf(!SHOULD_RUN)('OAuth pre-handler body-drain regressions', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     // DCR
@@ -276,6 +281,11 @@ describe.skipIf(!SHOULD_RUN)('OAuth pre-handler body-drain regressions', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     const redirectUri = 'https://example.com/cb-revoke';
@@ -401,6 +411,11 @@ describe.skipIf(!SHOULD_RUN)('OAuth pre-handler body-drain regressions', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     const redirectUri = 'https://example.com/cb-jwt-revoke';

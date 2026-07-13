@@ -88,7 +88,12 @@ async function mintOrgScopedToken(opts: {
     orgId: opts.orgId,
     partnerId: opts.tokenPartnerId,
     scope: 'organization',
-    mfa: false
+    mfa: false,
+    // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+    // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+    aep: 1,
+    mep: 1,
+    sid: 'it-session'
   };
   return createAccessToken(payload);
 }
@@ -105,7 +110,12 @@ async function mintPartnerScopedToken(partnerId: string): Promise<string> {
     orgId: null,
     partnerId,
     scope: 'partner',
-    mfa: false
+    mfa: false,
+    // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+    // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+    aep: 1,
+    mep: 1,
+    sid: 'it-session'
   };
   return createAccessToken(payload);
 }

@@ -183,6 +183,11 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
       partnerId: envA.partner.id,
       scope: 'partner',
       mfa: true,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     const app = buildRingsApp();
@@ -247,6 +252,11 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
       partnerId: envB.partner.id,
       scope: 'partner',
       mfa: false,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     const app = buildRingsApp();
@@ -289,6 +299,11 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
       partnerId: envB.partner.id,
       scope: 'partner',
       mfa: true,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     const app = buildPatchesApp();
@@ -319,6 +334,11 @@ describe('update-rings routes — partner-scope + cross-partner denial', () => {
       partnerId: envA.partner.id,
       scope: 'partner',
       mfa: true,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     const app = buildPatchesApp();

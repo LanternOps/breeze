@@ -154,6 +154,11 @@ describe.skipIf(!SHOULD_RUN)('OAuth 2.1 code flow end-to-end', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     // ---- 1. DCR ----
@@ -359,6 +364,11 @@ describe.skipIf(!SHOULD_RUN)('OAuth 2.1 code flow end-to-end', () => {
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     const redirectUri = 'https://example.com/cb-grant';

@@ -129,6 +129,11 @@ async function mintMfaToken(env: Awaited<ReturnType<typeof setupTestEnvironment>
     partnerId: env.partner.id,
     scope: 'organization' as const,
     mfa: true, // satisfies requireMfa() on the remote route group
+    // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+    // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+    aep: 1,
+    mep: 1,
+    sid: 'it-session',
   });
 }
 

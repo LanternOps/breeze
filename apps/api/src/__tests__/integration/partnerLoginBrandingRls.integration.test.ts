@@ -193,6 +193,11 @@ describe('partner_login_branding RLS — partner-axis (2026-07-03 migration)', (
       partnerId: partner.id,
       scope: 'partner',
       mfa: false,
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
     const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 

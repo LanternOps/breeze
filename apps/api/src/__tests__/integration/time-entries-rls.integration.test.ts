@@ -596,6 +596,11 @@ describe('moveOrg org_id rewrite — real driver (spec §6)', () => {
       partnerId: partnerA.id,
       scope: 'partner',
       mfa: true,           // satisfies requireMfa() step-up
+      // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+      // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
     });
 
     const app = new Hono();

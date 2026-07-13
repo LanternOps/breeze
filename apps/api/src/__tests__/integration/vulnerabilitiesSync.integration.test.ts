@@ -31,6 +31,11 @@ async function adminHeaders(env: TestEnvironment): Promise<Record<string, string
     partnerId: env.partner.id,
     scope: 'organization',
     mfa: true,
+    // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
+    // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+    aep: 1,
+    mep: 1,
+    sid: 'it-session',
   });
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 }
