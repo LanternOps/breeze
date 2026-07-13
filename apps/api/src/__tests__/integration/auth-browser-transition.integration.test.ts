@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import './setup';
-import { getTestDb } from './setup';
+import { getTestDb, getTestRedis } from './setup';
 import {
   authBrowserTransitions,
   refreshTokenFamilies,
@@ -435,6 +436,19 @@ describe('terminal preparation against issuer finalization', () => {
     const issuedC = await issuer;
     const prepared = await prepare;
     expect(prepared.subjectIds).toEqual([fixture.userA.id]);
+    const [pending] = await getTestDb()
+      .select()
+      .from(authBrowserTransitions)
+      .where(eq(authBrowserTransitions.id, prepared.transitionId));
+    expect(pending).toMatchObject({
+      state: 'logout_pending',
+      generation: prepared.generation,
+      activeOperationId: null,
+      activeOperationExpiresAt: null,
+      logoutId: prepared.logoutId,
+      completionNonceDigest: createHash('sha256').update(prepared.nonce).digest('hex'),
+      logoutExpiresAt: prepared.expiresAt,
+    });
     const [linkedFamily] = await getTestDb()
       .select()
       .from(refreshTokenFamilies)
@@ -520,6 +534,48 @@ describe('terminal preparation against issuer finalization', () => {
         ...(prepare ? [prepare] : []),
         ...(issuer ? [issuer] : []),
       ]);
+    }
+  });
+
+  it('keeps PostgreSQL epochs and family revocation authoritative when Redis cleanup is denied', async () => {
+    const fixture = await terminalFixture();
+    const redis = getTestRedis();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await redis.call('ACL', 'SETUSER', 'default', '-set', '-setex');
+    try {
+      const prepared = await prepareTerminalLogout({
+        binding: fixture.bindingC,
+        access: {
+          userId: fixture.userA.id,
+          familyId: fixture.accessPayload.sid!,
+          authEpoch: fixture.accessPayload.ae,
+          mfaEpoch: fixture.accessPayload.me,
+        },
+        refreshToken: fixture.sessionA.tokens.refreshToken,
+      });
+
+      expect(prepared.cleanupStatus).toBe('partial');
+      expect(prepared.cleanupFailures).not.toHaveLength(0);
+      const [user] = await getTestDb()
+        .select({ authEpoch: users.authEpoch })
+        .from(users)
+        .where(eq(users.id, fixture.userA.id));
+      expect(user?.authEpoch).toBe(fixture.userA.authEpoch + 1);
+      const [family] = await getTestDb()
+        .select()
+        .from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.familyId, fixture.accessPayload.sid!));
+      expect(family).toMatchObject({
+        revokedReason: 'cf-access-terminal-logout',
+      });
+      expect(family?.revokedAt).toBeInstanceOf(Date);
+      await expect(isAccessSessionFamilyActive(
+        fixture.accessPayload.sid!,
+        fixture.userA.id,
+      )).resolves.toBe(false);
+    } finally {
+      await redis.call('ACL', 'SETUSER', 'default', '+set', '+setex');
+      errorSpy.mockRestore();
     }
   });
 });
