@@ -7,6 +7,8 @@ import { Hono } from 'hono';
 const granted = new Set<string>();
 // Mutable permissions object set by requirePermission (mirrors authMiddleware production behaviour).
 const permissionsState: { allowedSiteIds?: string[] } = {};
+// Rows returned by the db mock's `.orderBy(...)` terminal (GET /sync/status).
+const vulnSourceRows: Array<Record<string, unknown>> = [];
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: (c: any, next: any) => {
@@ -40,6 +42,7 @@ vi.mock('../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
+        orderBy: vi.fn(() => Promise.resolve(vulnSourceRows)),
       })),
     })),
     update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })) })),
@@ -52,6 +55,15 @@ vi.mock('../db/schema', () => ({
   deviceVulnerabilities: { id: 'dv.id', orgId: 'dv.orgId', deviceId: 'dv.deviceId', status: 'dv.status', acceptedUntil: 'dv.acceptedUntil' },
   devices: { id: 'd.id', orgId: 'd.orgId', siteId: 'd.siteId' },
   vulnerabilities: {},
+  vulnerabilitySources: {
+    source: 'vs.source',
+    lastSuccessfulSyncAt: 'vs.lastSuccessfulSyncAt',
+    lastSyncStatus: 'vs.lastSyncStatus',
+    lastSyncError: 'vs.lastSyncError',
+    lastSyncSkippedCount: 'vs.lastSyncSkippedCount',
+    cursor: 'vs.cursor',
+    updatedAt: 'vs.updatedAt',
+  },
 }));
 
 vi.mock('../services/vulnerabilityRemediation', () => ({
@@ -304,6 +316,88 @@ describe('POST /vulnerabilities/sync/correlate (admin manual trigger)', () => {
       expect.anything(),
       expect.objectContaining({ action: 'vulnerability.manual_correlate', resourceType: 'vulnerability_source' }),
     );
+  });
+});
+
+describe('GET /vulnerabilities/sync/status (admin sync health, #2427)', () => {
+  function syncApp() {
+    const a = new Hono();
+    a.route('/vulnerabilities/sync', vulnerabilitySyncRoutes);
+    return a;
+  }
+
+  // Columns the handler asked for, captured from the real `.select({...})` call.
+  let projection: string[] = [];
+
+  beforeEach(() => {
+    vulnSourceRows.length = 0;
+    projection = [];
+    // Earlier describes mockReset/mockReturnValue the shared db.select — install
+    // our own chain (with the orderBy terminal this route uses).
+    //
+    // Crucially this mock HONORS the projection: it returns only the columns the
+    // route actually selected. A mock that ignores `.select({...})` and echoes a
+    // canned row would pass even if the route never selected the new column at
+    // all — i.e. it would test the mock, not the code (that vacuous version of
+    // this test survived deleting lastSyncSkippedCount from the route).
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.select).mockImplementation(((cols: Record<string, unknown>) => {
+      projection = Object.keys(cols ?? {});
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
+          orderBy: vi.fn(() =>
+            Promise.resolve(
+              vulnSourceRows.map((row) =>
+                Object.fromEntries(projection.map((key) => [key, row[key]])),
+              ),
+            ),
+          ),
+        })),
+      };
+    }) as any);
+  });
+
+  it('selects lastSyncSkippedCount from vulnerability_sources', async () => {
+    await syncApp().request('/vulnerabilities/sync/status');
+    // Pins the projection itself: without this, dropping the column from the
+    // route's select() still returns 200 and the shape assertions below pass.
+    expect(projection).toContain('lastSyncSkippedCount');
+  });
+
+  it('returns per-source sync health including lastSyncSkippedCount', async () => {
+    vulnSourceRows.push({
+      source: 'msrc',
+      lastSuccessfulSyncAt: '2026-07-13T09:00:00.000Z',
+      lastSyncStatus: 'ok',
+      lastSyncError: null,
+      lastSyncSkippedCount: 3,
+      cursor: '2026-Jul',
+      updatedAt: '2026-07-13T09:00:00.000Z',
+    });
+
+    const res = await syncApp().request('/vulnerabilities/sync/status');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.sources).toHaveLength(1);
+    expect(body.sources[0]).toMatchObject({
+      source: 'msrc',
+      lastSyncStatus: 'ok',
+      lastSyncSkippedCount: 3,
+    });
+  });
+
+  it('reads vulnerability_sources under a system db context (forced RLS, no tenant policies)', async () => {
+    const { runOutsideDbContext, withSystemDbAccessContext } = await import('../db');
+    vi.mocked(runOutsideDbContext).mockClear();
+    vi.mocked(withSystemDbAccessContext).mockClear();
+
+    const res = await syncApp().request('/vulnerabilities/sync/status');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
   });
 });
 

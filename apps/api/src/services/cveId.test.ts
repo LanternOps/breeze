@@ -1,5 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { assertSomeValidCveIds, isValidCveId, warnMalformedCveIds } from './cveId';
+import {
+  assertSomeValidCveIds,
+  GROSS_LOSS_MIN_SKIPS,
+  isValidCveId,
+  MIN_ENTRIES_FOR_RATIO_WARN,
+  SKIP_ABSOLUTE_WARN_FLOOR,
+  SKIP_RATIO_WARN_THRESHOLD,
+  warnHighSkipRatio,
+  warnMalformedCveIds,
+} from './cveId';
+import { captureMessage } from './sentry';
+
+vi.mock('./sentry', () => ({
+  captureMessage: vi.fn(),
+}));
 
 describe('isValidCveId', () => {
   it.each([
@@ -62,6 +76,114 @@ describe('warnMalformedCveIds', () => {
     const message = warn.mock.calls[0]?.[0] as string;
     expect(message).toContain('Skipped 15 distinct malformed CVE id(s)');
     expect(message).toContain('+5 more');
+  });
+});
+
+describe('warnHighSkipRatio', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(captureMessage).mockClear();
+  });
+
+  it('is a no-op when nothing was skipped', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 0, 1000);
+    expect(error).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when entryCount is zero', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 5, 0);
+    expect(error).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet at exactly the threshold', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 1 of 100 = exactly SKIP_RATIO_WARN_THRESHOLD (1%)
+    expect(SKIP_RATIO_WARN_THRESHOLD).toBe(0.01);
+    warnHighSkipRatio('Test', 1, 100);
+    expect(error).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('escalates above the threshold via console.error and a Sentry warning event', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 20, 100);
+
+    expect(error).toHaveBeenCalledTimes(1);
+    const message = error.mock.calls[0]?.[0] as string;
+    expect(message).toContain('[Test]');
+    expect(message).toContain('20 of 100');
+    expect(message).toContain('20.0%');
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(message, 'warning', {
+      tag: 'Test',
+      skippedCount: 20,
+      entryCount: 100,
+      ratio: 0.2,
+      trigger: 'ratio',
+    });
+  });
+
+  // The #2427 regression class: a huge absolute drop whose RATIO is tiny because
+  // the feed is enormous. Ratio alone would stay silent on 5,000 missing CVEs.
+  it('escalates on the absolute floor even when the ratio is far below threshold', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 5_000, 1_000_000); // 0.5% — under the 1% ratio trigger
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning', {
+      tag: 'Test',
+      skippedCount: 5_000,
+      entryCount: 1_000_000,
+      ratio: 0.005,
+      trigger: 'absolute_floor',
+    });
+  });
+
+  it('escalates at exactly the absolute floor', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(SKIP_ABSOLUTE_WARN_FLOOR).toBe(100);
+    warnHighSkipRatio('Test', SKIP_ABSOLUTE_WARN_FLOOR, 1_000_000);
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a tiny feed page anyone on ratio alone (below the min-entries guard)', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(MIN_ENTRIES_FOR_RATIO_WARN).toBe(50);
+    // 1 of 3 = 33%, but 3 entries is statistically meaningless.
+    warnHighSkipRatio('Test', 1, 3);
+    expect(error).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  // The gap BETWEEN the ratio trigger and the absolute floor: a small feed that
+  // loses most of itself. 40 of 45 trips neither (45 < 50 entries; 40 < 100
+  // skips) and assertSomeValidCveIds only throws at 100% loss — so an 89% loss
+  // would have been stdout-only.
+  it('escalates gross loss on a small feed (below BOTH the ratio and floor triggers)', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 40, 45);
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning', {
+      tag: 'Test',
+      skippedCount: 40,
+      entryCount: 45,
+      ratio: 40 / 45,
+      trigger: 'gross_loss',
+    });
+  });
+
+  it('still ignores a trivial gross-loss case below the min-skips guard', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(GROSS_LOSS_MIN_SKIPS).toBe(5);
+    // 2 of 3 is 67% but only 2 entries — noise, not signal.
+    warnHighSkipRatio('Test', 2, 3);
+    expect(error).not.toHaveBeenCalled();
   });
 });
 
