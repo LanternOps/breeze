@@ -129,4 +129,52 @@ describe('FileManager uploads', () => {
     expect(screen.getByText(/may still be saved there/)).toBeInTheDocument();
     expect(screen.queryByText('Failed to upload')).not.toBeInTheDocument();
   });
+
+  it('surfaces the 120s watchdog timeout as unverified, not as a user cancel', async () => {
+    // The watchdog aborts the SAME controller as user cancel — this pins the
+    // distinction so a future "if AbortError then treat as cancel" refactor
+    // cannot silently eat real timeouts.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let uploadSignal: AbortSignal | undefined;
+      mockFetchWithAuth.mockImplementation((url: string, options?: { signal?: AbortSignal }) => {
+        if (url.includes('/files/upload')) {
+          uploadSignal = options?.signal;
+          return new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => {
+              reject(new DOMException('The user aborted a request.', 'AbortError'));
+            });
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => ({ data: [] }) });
+      });
+
+      const { container } = render(
+        <FileManager
+          deviceId="device-1"
+          deviceHostname="workstation-1"
+          initialPath="/"
+        />
+      );
+
+      const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+      const file = new File(['hello world'], 'big.bin', { type: 'application/octet-stream' });
+      fireEvent.change(input, { target: { files: [file] } });
+
+      await waitFor(() => expect(uploadSignal).toBeDefined());
+
+      // No user cancel — let the watchdog fire.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(uploadSignal?.aborted).toBe(true);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Upload timed out after 2 minutes/)).toBeInTheDocument();
+      });
+      // A timeout is not a user cancel — and not the browser's abort boilerplate.
+      expect(screen.queryByText('Cancelled')).not.toBeInTheDocument();
+      expect(screen.queryByText('The user aborted a request.')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

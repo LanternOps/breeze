@@ -159,6 +159,14 @@ const cleanupCategoryLabels: Record<string, string> = {
   trash: 'Trash'
 };
 
+// Fetch abort rejections are DOMExceptions named 'AbortError'. DOMException is
+// not `instanceof Error` in every runtime (Node/jsdom included), so match on
+// the name instead.
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null
+    && (error as { name?: unknown }).name === 'AbortError';
+}
+
 // Get file icon based on extension
 function getFileIcon(filename: string) {
   const ext = filename.split('.').pop()?.toLowerCase();
@@ -454,7 +462,11 @@ export default function FileManager({
     } catch (error) {
       if (cancelledTransfersRef.current.has(transferId)) {
         // Intentional user cancel — cancelTransfer already marked the row
-        // 'cancelled'; don't overwrite it with a generic failure.
+        // 'cancelled'; don't overwrite it with a generic failure. Preserve
+        // the diagnostic if a real failure raced the cancel.
+        if (!isAbortError(error)) {
+          console.error('[FileManager] Download failed after cancel:', error);
+        }
         return;
       }
       console.error('[FileManager] Download failed:', error);
@@ -546,11 +558,29 @@ export default function FileManager({
         // Refresh directory to show new file
         fetchDirectory(currentPath);
       } catch (error) {
+        const aborted = isAbortError(error);
         if (cancelledTransfersRef.current.has(transferId)) {
           // Intentional user cancel — the row is already marked 'cancelled'.
+          // Preserve the diagnostic if a real failure raced the cancel.
+          if (!aborted) {
+            console.error('[FileManager] Upload failed after cancel:', error);
+          }
           continue;
         }
         console.error('[FileManager] Upload failed:', error);
+        if (aborted) {
+          // Not user-cancelled, so the 120s watchdog fired. The write command
+          // may already have reached the device, so this is 'unverified', not
+          // a plain failure — and the browser's abort boilerplate ("The user
+          // aborted a request.") would be misleading here.
+          const timeoutMessage = t('fileManager.errors.uploadTimeout');
+          setTransfers(prev => prev.map(item =>
+            item.id === transferId
+              ? { ...item, status: 'unverified', error: timeoutMessage }
+              : item
+          ));
+          continue;
+        }
         const message = error instanceof Error ? error.message : t('fileManager.errors.upload');
         const status: TransferItem['status'] =
           error instanceof UnverifiedOperationError ? 'unverified' : 'failed';
@@ -589,10 +619,18 @@ export default function FileManager({
   // file_write path, so a write command that already reached the API may
   // still complete on the device (issue #2396).
   const cancelTransfer = useCallback((transferId: string) => {
-    cancelledTransfersRef.current.add(transferId);
-    transferControllersRef.current.get(transferId)?.abort();
+    // No live controller means the transfer already reached a terminal state
+    // (a stale click can land just before React swaps Cancel for Dismiss) —
+    // don't record a cancel that can't abort anything.
+    const controller = transferControllersRef.current.get(transferId);
+    if (controller) {
+      cancelledTransfersRef.current.add(transferId);
+      controller.abort();
+    }
     setTransfers(prev => prev.map(item => {
       if (item.id !== transferId) return item;
+      // Never relabel a row that already completed or failed.
+      if (item.status !== 'pending' && item.status !== 'transferring') return item;
       // Progress hits 40 right before the upload request is dispatched — from
       // then on the device may still write the file even though we aborted.
       const note = item.direction === 'upload' && item.progress >= 40

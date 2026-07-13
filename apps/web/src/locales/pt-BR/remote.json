@@ -239,7 +239,8 @@
       "loadDirectory": "Falha ao carregar a pasta",
       "move": "Falha ao mover",
       "readFile": "Falha ao ler o arquivo",
-      "upload": "Falha ao enviar"
+      "upload": "Falha ao enviar",
+      "uploadTimeout": "O envio expirou após 2 minutos. O arquivo ainda pode ser gravado no dispositivo — atualize para verificar."
     },
     "freeOf": "{{free}} livres de {{total}}",
     "goUp": "Subir",

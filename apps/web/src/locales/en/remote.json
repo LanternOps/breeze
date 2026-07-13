@@ -239,7 +239,8 @@
       "loadDirectory": "Failed to load directory",
       "move": "Failed to move",
       "readFile": "Failed to read file",
-      "upload": "Failed to upload"
+      "upload": "Failed to upload",
+      "uploadTimeout": "Upload timed out after 2 minutes. The file may still be written on the device — refresh to verify."
     },
     "freeOf": "{{free}} free of {{total}}",
     "goUp": "Go Up",
