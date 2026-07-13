@@ -1,0 +1,446 @@
+{
+  "$comment": [
+    "CONTRACT FIXTURE — backup file-mode exclusion globs (issue #2473).",
+    "",
+    "This table is the single definition of the exclusion-glob dialect. It is replayed against BOTH sides:",
+    "  Go  — agent/internal/backup/exclude_contract_test.go   (the REAL agent matcher, newExcludeMatcherForOS)",
+    "  TS  — packages/shared/src/utils/backupExclusionGlob.test.ts   (the API-side validator/matcher port)",
+    "If the two dialects ever drift apart, both suites go red. Do not edit one side's expectations to make a test pass.",
+    "",
+    "The dialect is Go stdlib path.Match applied PER SEGMENT — NOT doublestar, NOT minimatch, NOT bash.",
+    "Cases tagged \"divergence\" are where a generic glob library would give a different answer; they are the",
+    "reason this could not be a one-line zod refinement.",
+    "",
+    "validity[]  usable=true means the agent compiles and uses the pattern; usable=false means the agent",
+    "            silently DROPS it (logs 'ignoring invalid exclusion pattern'). The API rejects exactly the",
+    "            usable=false/problem=syntax set, and strips the problem=empty set.",
+    "matching[]  expected = does the agent's matcher exclude relPath given patterns?"
+  ],
+
+  "validity": [
+    { "pattern": "*.tmp", "usable": true, "problem": null, "note": "base-name glob" },
+    { "pattern": "Thumbs.db", "usable": true, "problem": null, "note": "literal base name" },
+    { "pattern": "node_modules/**", "usable": true, "problem": null, "note": "path glob with doublestar" },
+    { "pattern": "**/AppData/Local/Temp/**", "usable": true, "problem": null, "note": "leading doublestar" },
+    { "pattern": "[abc].txt", "usable": true, "problem": null, "note": "character class" },
+    { "pattern": "[a-z].txt", "usable": true, "problem": null, "note": "range" },
+    { "pattern": "[^a-z].txt", "usable": true, "problem": null, "note": "negation is '^' in path.Match" },
+    { "pattern": "?", "usable": true, "problem": null, "note": "single-char wildcard" },
+    { "pattern": "***", "usable": true, "problem": null, "note": "collapses to a star; legal" },
+    { "pattern": "abc]", "usable": true, "problem": null, "note": "unmatched ']' is a literal" },
+    { "pattern": "]abc", "usable": true, "problem": null, "note": "leading ']' is a literal" },
+    { "pattern": "[α-ω].txt", "usable": true, "problem": null, "note": "unicode range compares whole runes" },
+
+    {
+      "pattern": "[!a-z].txt",
+      "usable": true,
+      "problem": null,
+      "divergence": "minimatch/bash treat '[!...]' as NEGATION. path.Match treats '!' as a LITERAL class member. Syntactically fine either way, so we MUST accept it — but it means something different. See matching[] for the proof.",
+      "note": "accepted; semantics differ from minimatch"
+    },
+    {
+      "pattern": "[z-a]",
+      "usable": true,
+      "problem": null,
+      "divergence": "Reversed range. path.Match does NOT error on hi<lo; it just never matches. Almost certainly a typo, but the agent accepts it, so an over-strict API would break a save that works today. Deliberately let through.",
+      "note": "accepted; never matches"
+    },
+
+    {
+      "pattern": "[a-z0-9_-].log",
+      "usable": false,
+      "problem": "syntax",
+      "divergence": "HEADLINE CASE. The trailing-dash-means-literal-dash idiom is valid in bash/minimatch/doublestar and is extremely common. Go's path.Match rejects it (getEsc errors on ']' after '-'). Today the agent silently drops this pattern and backs up everything the tech thought was excluded.",
+      "note": "trailing '-' in class"
+    },
+    { "pattern": "[-a].log", "usable": false, "problem": "syntax", "divergence": "leading '-' in class: valid in bash, ErrBadPattern in Go", "note": "leading '-' in class" },
+    { "pattern": "[]]", "usable": false, "problem": "syntax", "divergence": "POSIX/bash allow ']' as the first class member ('[]]' matches ']'). Go rejects it.", "note": "']' first in class" },
+    { "pattern": "[]", "usable": false, "problem": "syntax", "note": "empty class" },
+    { "pattern": "[^]", "usable": false, "problem": "syntax", "note": "empty negated class" },
+    { "pattern": "[", "usable": false, "problem": "syntax", "note": "unclosed class" },
+    { "pattern": "a[bc", "usable": false, "problem": "syntax", "note": "unclosed class" },
+    { "pattern": "logs/[a-", "usable": false, "problem": "syntax", "note": "unclosed class in a path segment" },
+
+    {
+      "pattern": "a[x/y]b",
+      "usable": false,
+      "problem": "syntax",
+      "divergence": "Valid as ONE glob string, but the agent matches slash patterns PER SEGMENT, so this splits into the malformed segments 'a[x' and 'y]b' and is dropped. A whole-string validator would wrongly accept it.",
+      "note": "class split across a '/'"
+    },
+    { "pattern": "a//b", "usable": false, "problem": "syntax", "note": "empty interior segment can never match" },
+
+    {
+      "pattern": "temp\\",
+      "usable": true,
+      "problem": null,
+      "divergence": "A trailing backslash is a TRAILING-ESCAPE syntax error in raw path.Match. But the agent folds '\\'->'/' and trims separators BEFORE matching, so this is just the base-name pattern 'temp'. Validating the raw string with path.Match would wrongly reject it.",
+      "note": "normalizes to 'temp'"
+    },
+    {
+      "pattern": "AppData\\Local\\Temp",
+      "usable": true,
+      "problem": null,
+      "note": "Windows separators are folded to '/' — becomes the path pattern AppData/Local/Temp"
+    },
+    {
+      "pattern": "foo\\*bar",
+      "usable": true,
+      "problem": null,
+      "divergence": "In path.Match/minimatch, '\\*' is an ESCAPED literal star. Here the backslash is folded to '/' first, so this is the two-segment path pattern 'foo/*bar'. Backslash is NEVER an escape in this dialect.",
+      "note": "normalizes to 'foo/*bar'"
+    },
+
+    {
+      "pattern": "\\*",
+      "usable": true,
+      "problem": null,
+      "divergence": "FOOTGUN. In path.Match/minimatch, '\\*' is an ESCAPED LITERAL star. Here the backslash folds to '/', giving '/*', which trims to '*' — a base-name glob matching EVERY file. A tech escaping a star to exclude a file literally named '*' instead excludes the entire backup: it succeeds and protects nothing. Syntactically legal, so we accept it (see the matching[] case).",
+      "note": "normalizes to '*' — excludes everything"
+    },
+    {
+      "pattern": "!important.doc",
+      "usable": true,
+      "problem": null,
+      "divergence": "There is NO negation/un-exclude in this dialect. gitignore users write '!keep.doc' expecting to RE-INCLUDE a file; here it is a literal filename match, so it EXCLUDES a file called '!keep.doc' and does nothing else.",
+      "note": "'!' is literal, not a negation"
+    },
+    { "pattern": "[a]]", "usable": true, "problem": null, "note": "class [a] followed by a literal ']'" },
+    { "pattern": "[^]]", "usable": false, "problem": "syntax", "note": "']' cannot open a negated class" },
+    {
+      "pattern": "[\\]]",
+      "usable": false,
+      "problem": "syntax",
+      "divergence": "Would be an escaped ']' inside a class in path.Match/minimatch. Backslash folds to '/' first, so it splits into the malformed segments '[' and ']]'.",
+      "note": "not an escaped ']'"
+    },
+    { "pattern": "[--0]", "usable": false, "problem": "syntax", "note": "dash as range-lo" },
+    { "pattern": "a**b", "usable": true, "problem": null, "note": "'**' inside a segment is just a star" },
+
+    { "pattern": "", "usable": false, "problem": "empty", "note": "blank — agent skips; API strips rather than erroring" },
+    { "pattern": "   ", "usable": false, "problem": "empty", "note": "whitespace only" },
+    { "pattern": "/", "usable": false, "problem": "empty", "note": "separators only" },
+    { "pattern": "///", "usable": false, "problem": "empty", "note": "separators only" },
+    { "pattern": "\\", "usable": false, "problem": "empty", "note": "folds to '/', trims to empty" },
+    { "pattern": "  *.tmp  ", "usable": true, "problem": null, "note": "surrounding whitespace trimmed" },
+    { "pattern": "/var/log/**", "usable": true, "problem": null, "note": "leading '/' trimmed" }
+  ],
+
+  "matching": [
+    {
+      "note": "base-name pattern matches at any depth, files AND dirs",
+      "patterns": ["*.tmp"],
+      "relPath": "a/b/c/scratch.tmp",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "base-name pattern matches a DIRECTORY named like the glob (walker then skips the subtree)",
+      "patterns": ["*.tmp"],
+      "relPath": "a/cache.tmp",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "base-name pattern does not match a parent segment, only the base name",
+      "patterns": ["*.tmp"],
+      "relPath": "scratch.tmp/keep.txt",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "'*' does not cross a separator",
+      "patterns": ["a*c"],
+      "relPath": "a/c",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "'?' matches exactly one char",
+      "patterns": ["log?.txt"],
+      "relPath": "logs/log1.txt",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "'?' does not match two chars",
+      "patterns": ["log?.txt"],
+      "relPath": "logs/log12.txt",
+      "caseInsensitive": false,
+      "expected": false
+    },
+
+    {
+      "divergence": "IMPLICIT LEADING '**/'. A bare doublestar/minimatch Match('node_modules/**', 'app/node_modules/react/index.js') is FALSE — the pattern is anchored at the root. The agent prepends '**/' so exclusions are gitignore-style and match at ANY depth. This is the single biggest semantic divergence from a stock glob library.",
+      "patterns": ["node_modules/**"],
+      "relPath": "app/node_modules/react/index.js",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "divergence": "'dir/**' matches the DIRECTORY ITSELF, not just its contents (doublestar historically required 'dir' or 'dir/**' separately). Matters: the walker needs the hit on the dir to skip the whole subtree.",
+      "patterns": ["node_modules/**"],
+      "relPath": "node_modules",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "'dir/**' matches a nested occurrence of the directory itself",
+      "patterns": ["node_modules/**"],
+      "relPath": "app/node_modules",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "leading doublestar spans any number of segments",
+      "patterns": ["**/AppData/Local/Temp/**"],
+      "relPath": "alice/AppData/Local/Temp/x.dat",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "trailing '**' spans ZERO segments — matches the dir itself",
+      "patterns": ["**/AppData/Local/Temp/**"],
+      "relPath": "alice/AppData/Local/Temp",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "path pattern must still match every literal segment",
+      "patterns": ["node_modules/**"],
+      "relPath": "app/node_modules_old/x.js",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "multi-segment path pattern, non-matching middle segment",
+      "patterns": ["AppData/Local/Temp/**"],
+      "relPath": "alice/AppData/Roaming/Temp/x.dat",
+      "caseInsensitive": false,
+      "expected": false
+    },
+
+    {
+      "divergence": "'[!ab]' — path.Match reads '!' as a LITERAL class member, so this matches the file literally named '!x'. minimatch would read it as 'NOT a or b' and NOT match '!x'.",
+      "patterns": ["[!ab]x"],
+      "relPath": "dir/!x",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "divergence": "The same pattern under minimatch's negation semantics WOULD match 'cx' (c is not a or b). Under path.Match it does not — 'c' is not one of the literal class members {!, a, b}.",
+      "patterns": ["[!ab]x"],
+      "relPath": "dir/cx",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "'^' IS the negation character in path.Match",
+      "patterns": ["[^ab]x"],
+      "relPath": "dir/cx",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "'^' negation excludes the listed members",
+      "patterns": ["[^ab]x"],
+      "relPath": "dir/ax",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "divergence": "Reversed range never matches (but is NOT a syntax error — see validity[]).",
+      "patterns": ["[z-a].log"],
+      "relPath": "dir/m.log",
+      "caseInsensitive": false,
+      "expected": false
+    },
+
+    {
+      "divergence": "Backslash is folded to '/', NOT treated as an escape: 'foo\\*bar' behaves as the path pattern 'foo/*bar'.",
+      "patterns": ["foo\\*bar"],
+      "relPath": "x/foo/qbar",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "Windows-style pattern folds to a path pattern and matches at any depth",
+      "patterns": ["AppData\\Local\\Temp"],
+      "relPath": "users/bob/AppData/Local/Temp",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "trailing backslash normalizes to a plain base-name pattern",
+      "patterns": ["temp\\"],
+      "relPath": "a/temp",
+      "caseInsensitive": false,
+      "expected": true
+    },
+
+    {
+      "note": "case-SENSITIVE (linux/macos): pattern case must match",
+      "patterns": ["*.TMP"],
+      "relPath": "a/scratch.tmp",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "case-INSENSITIVE (windows): pattern case is folded",
+      "patterns": ["*.TMP"],
+      "relPath": "a/scratch.tmp",
+      "caseInsensitive": true,
+      "expected": true
+    },
+    {
+      "note": "case-INSENSITIVE path pattern",
+      "patterns": ["AppData/Local/Temp/**"],
+      "relPath": "users/bob/appdata/local/temp/x.dat",
+      "caseInsensitive": true,
+      "expected": true
+    },
+
+    {
+      "note": "invalid patterns are DROPPED, not fatal — the valid sibling still applies",
+      "patterns": ["[a-z0-9_-].log", "*.tmp"],
+      "relPath": "a/scratch.tmp",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "…and the dropped pattern excludes nothing (this is the bug #2473 makes visible at the API)",
+      "patterns": ["[a-z0-9_-].log"],
+      "relPath": "a/b.log",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "no usable patterns at all -> nil matcher -> nothing excluded",
+      "patterns": ["", "   "],
+      "relPath": "a/b.log",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "root itself is never excluded",
+      "patterns": ["**"],
+      "relPath": ".",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "bare '**' has no slash, so it is a BASE-NAME glob — and a trailing star matches any base name",
+      "patterns": ["**"],
+      "relPath": "a/b.log",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "leading '/' is trimmed, so an absolute-looking pattern still matches at any depth",
+      "patterns": ["/var/log/**"],
+      "relPath": "srv/var/log/syslog",
+      "caseInsensitive": false,
+      "expected": true
+    },
+
+    {
+      "divergence": "'\\*' excludes EVERYTHING. The backup then succeeds and protects nothing — the same silent-empty-backup class the profiles schema already guards against for `volumes`.",
+      "patterns": ["\\*"],
+      "relPath": "a/b",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "divergence": "'!' is a LITERAL, so a gitignore-style un-exclude actually excludes the file it names.",
+      "patterns": ["!important.doc"],
+      "relPath": "d/!important.doc",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "divergence": "…and it does NOT re-include (or otherwise affect) the file the author meant.",
+      "patterns": ["!important.doc"],
+      "relPath": "d/important.doc",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "'?' does not cross a separator either (the fixture previously only pinned '*')",
+      "patterns": ["a?c"],
+      "relPath": "a/c",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "an interior '**' spans ZERO segments",
+      "patterns": ["a/**/b"],
+      "relPath": "a/b",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "divergence": "On Windows the PATTERN is lowercased too, so an uppercase class silently becomes lowercase: '[A-Z]' matches 'a'. It does not on Linux/macOS (next case).",
+      "patterns": ["[A-Z].txt"],
+      "relPath": "d/a.txt",
+      "caseInsensitive": true,
+      "expected": true
+    },
+    {
+      "note": "case-sensitive platforms: '[A-Z]' does not match 'a'",
+      "patterns": ["[A-Z].txt"],
+      "relPath": "d/a.txt",
+      "caseInsensitive": false,
+      "expected": false
+    },
+    {
+      "note": "'?' matches one RUNE, not one UTF-16 code unit — pins the code-point decision (an astral char is a single '?')",
+      "patterns": ["?"],
+      "relPath": "d/😀",
+      "caseInsensitive": false,
+      "expected": true
+    },
+    {
+      "note": "an astral character class compares whole runes",
+      "patterns": ["[😀-😃]"],
+      "relPath": "d/😀",
+      "caseInsensitive": false,
+      "expected": true
+    }
+  ],
+
+  "$matcherPortLimitations": [
+    "KNOWN, DELIBERATE fidelity boundary of the TS matcher port — NOT of the validator.",
+    "",
+    "`describeExclusionPattern` (the only thing that gates an API save) is exhaustively exact: it was",
+    "differentially fuzzed against the real Go matcher over 177k+ patterns with zero divergences.",
+    "",
+    "`compileExcludeMatcher` is a different story. Go's path.Match advances the NAME by BYTES in its star",
+    "loop, and Go's strings.ToLower uses simple (not full Unicode) case mapping. A code-point-based JS port",
+    "cannot reproduce either without vendoring a UTF-8 byte matcher and Go's case tables. The cases below are",
+    "where the port KNOWINGLY disagrees with the agent. They are asserted by the Go test (proving the agent",
+    "really behaves this way, so this note cannot rot) and asserted-as-divergent by the TS test (so the",
+    "boundary cannot silently widen).",
+    "",
+    "Because of this, compileExcludeMatcher is NOT exported from the package barrel and must not be used to",
+    "show users a 'what would this exclude?' preview — it would lie about CJK/emoji filenames and Turkish 'İ'.",
+    "Making it exact means porting the matcher over UTF-8 bytes; see the PR discussion on #2473."
+  ],
+  "matcherPortLimitations": [
+    {
+      "note": "Go's star loop advances by BYTES, so '?' decodes RuneError one byte at a time at a mid-rune offset: '*??' matches any base name ending in a 3-byte rune. The code-point port says false.",
+      "patterns": ["*??"],
+      "relPath": "d/漢",
+      "caseInsensitive": false,
+      "go": true,
+      "tsPort": false
+    },
+    {
+      "note": "Go strings.ToLower('İ') is 'i' (simple mapping, one rune). JS toLowerCase() applies Unicode SpecialCasing and yields 'i' + U+0307 (two code points), so the lengths no longer line up.",
+      "patterns": ["i"],
+      "relPath": "İ",
+      "caseInsensitive": true,
+      "go": true,
+      "tsPort": false
+    }
+  ]
+}

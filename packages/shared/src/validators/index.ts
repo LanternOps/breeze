@@ -814,6 +814,7 @@ export * from './clientAiDlp';
 // ============================================
 
 export {
+  backupExcludePatternsSchema,
   fileTargetsSchema,
   hypervTargetsSchema,
   mssqlTargetsSchema,

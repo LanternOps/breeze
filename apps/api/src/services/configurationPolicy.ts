@@ -36,6 +36,7 @@ import { and, eq, desc, or, sql, inArray, asc, getTableColumns, SQL } from 'driz
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { z } from 'zod';
 import {
+  backupExcludePatternsSchema,
   eventLogInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
@@ -670,6 +671,31 @@ async function decomposeInlineSettings(
         }
       }
 
+      // #2473 backstop for file-mode exclusion globs.
+      //
+      // The HTTP routes validate inlineSettings with backupInlineSettingsSchema,
+      // but the AI/MCP `manage_policy_feature_link` tool takes inlineSettings as
+      // an unvalidated `z.record(z.string(), z.unknown())` and hands it straight
+      // to addFeatureLink/updateFeatureLink. Both land here, so this is the last
+      // chokepoint before a malformed glob is persisted and shipped to the
+      // agent (which would silently ignore it and back the files up anyway).
+      //
+      // Scoped deliberately to `excludes`: re-parsing the whole blob with
+      // backupInlineSettingsSchema would reject profile-linked links, whose
+      // targets are legitimately empty because "what to protect" lives on the
+      // linked profile.
+      const rawTargets = (s.targets ?? {}) as Record<string, unknown>;
+      let targets = rawTargets;
+      if (rawTargets.excludes !== undefined) {
+        const parsed = backupExcludePatternsSchema.safeParse(rawTargets.excludes);
+        if (!parsed.success) {
+          const detail = parsed.error.issues.map((i) => i.message).join('; ');
+          throw new Error(`Invalid backup exclusion pattern: ${detail}`);
+        }
+        // Persist the stripped/validated list, not the raw one.
+        targets = { ...rawTargets, excludes: parsed.data };
+      }
+
       await tx.insert(configPolicyBackupSettings).values({
         featureLinkId: linkId,
         orgId: policyRow.orgId,
@@ -678,7 +704,7 @@ async function decomposeInlineSettings(
         retention: (s.retention ?? {}) as Record<string, unknown>,
         paths: (Array.isArray(s.paths) ? s.paths : []) as unknown[],
         backupMode: (s.backupMode ?? 'file') as 'file' | 'hyperv' | 'mssql' | 'system_image',
-        targets: (s.targets ?? {}) as Record<string, unknown>,
+        targets,
         backupProfileId,
         destinationConfigId,
       });

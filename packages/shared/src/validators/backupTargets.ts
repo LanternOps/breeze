@@ -1,8 +1,82 @@
 import { z } from 'zod';
+import {
+  describeExclusionPattern,
+  sanitizeExclusionPatterns,
+} from '../utils/backupExclusionGlob';
+
+/**
+ * Only appended for a genuine SYNTAX error. A pattern rejected for length is one
+ * the agent would happily compile — telling the user "the agent would ignore
+ * this" would be a lie (the length cap is an API-side guard, nothing more).
+ */
+const AGENT_WOULD_IGNORE =
+  ' The backup agent would ignore this pattern, so it would silently exclude nothing.';
+
+/**
+ * Per-pattern validation. Runs on the RAW array, BEFORE blanks are stripped, so
+ * `path: [index]` still points at the row the user actually typed — a UI mapping
+ * an issue back to a textarea line would otherwise highlight the wrong one once
+ * a blank line precedes the offender.
+ */
+function refineExcludePatterns(patterns: string[], ctx: z.RefinementCtx) {
+  patterns.forEach((pattern, index) => {
+    const verdict = describeExclusionPattern(pattern);
+    if (verdict.usable) return;
+    // Blanks are stripped by the transform below, not rejected.
+    if (verdict.problem === 'empty') return;
+    const suffix = verdict.problem === 'syntax' ? AGENT_WOULD_IGNORE : '';
+    ctx.addIssue({
+      code: 'custom',
+      path: [index],
+      message: `${verdict.message}${suffix}`,
+    });
+  });
+}
+
+/**
+ * File-mode exclusion globs, validated against the Go agent's dialect (#2473).
+ *
+ * Before this, a malformed glob was accepted, persisted, and shipped to the
+ * fleet, where the agent logged "ignoring invalid exclusion pattern" and backed
+ * up everything the tech believed was excluded — with no feedback to whoever
+ * typed it.
+ *
+ * Two deliberate design choices, both aimed at NOT breaking working saves:
+ *
+ *  - **Blank entries are stripped, not rejected.** A textarea split on newlines
+ *    yields empty strings; failing the save over one would be an over-strict
+ *    regression. The agent skips them too.
+ *  - **Only definite syntax errors are rejected** — the ones the agent's own
+ *    matcher refuses to compile. Merely unusual patterns (`[z-a]`, `[!a-z]`)
+ *    are accepted, because the agent accepts them.
+ *
+ * The dialect is pinned by a cross-language contract fixture replayed against
+ * the real agent matcher — see packages/shared/src/utils/backupExclusionGlob.ts.
+ */
+export const backupExcludePatternsSchema = z
+  .array(z.string())
+  .superRefine(refineExcludePatterns)
+  .transform(sanitizeExclusionPatterns);
+
+/**
+ * Profiles variant. Keeps the `.max(64)` cap that shipped with the profiles
+ * schema in #2417 — deliberately NOT added to `backupExcludePatternsSchema`,
+ * because the legacy inline-settings `excludes` has always been uncapped and
+ * introducing a cap here would fail a save for an existing policy that exceeds
+ * it. That is the over-strict regression this feature exists to avoid.
+ */
+const backupProfileExcludePatternsSchema = z
+  .array(z.string())
+  .max(64)
+  .superRefine(refineExcludePatterns)
+  .transform(sanitizeExclusionPatterns);
 
 export const fileTargetsSchema = z.object({
   paths: z.array(z.string()).min(1),
-  excludes: z.array(z.string()).optional(),
+  // Stays OPTIONAL on purpose: omitted means "fall back to the agent's local
+  // excludes", whereas an explicit [] means "no exclusions this run". Do not
+  // collapse the two with a .default([]) — see backupWorker.resolveBackupTargets.
+  excludes: backupExcludePatternsSchema.optional(),
 });
 
 export const hypervTargetsSchema = z.object({
@@ -136,7 +210,10 @@ export const backupProfileSelectionsSchema = z
       .object({
         enabled: z.boolean().default(false),
         paths: z.array(z.string().trim().min(1)).max(64).default([]),
-        excludes: z.array(z.string().trim().min(1)).max(64).default([]),
+        // Was z.array(z.string().trim().min(1)) — which rejected a blank line
+        // outright. Blank entries are now stripped instead (see schema doc).
+        // Trimming is preserved by sanitizeExclusionPatterns.
+        excludes: backupProfileExcludePatternsSchema.default([]),
         // Reserved for drive-letter/volume selection once the agent reports
         // volume inventory (spec phase 3). Rejected until then (see
         // superRefine): job creation cannot expand volumes into paths yet,

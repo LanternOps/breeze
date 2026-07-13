@@ -318,3 +318,173 @@ describe('updateBackupProfileSchema', () => {
     expect(result.success).toBe(false);
   });
 });
+
+// ── Exclusion-glob validation at the API boundary (#2473) ───────────────────
+//
+// The dialect itself is pinned by the cross-language contract in
+// utils/backupExclusionGlob.test.ts (+ the Go half). These tests only assert
+// the WIRING: that both entry points reject what the agent would drop, strip
+// blank lines, and leave the optional/[] distinction intact.
+
+describe('backup exclusion glob validation (#2473)', () => {
+  describe('fileTargetsSchema.excludes', () => {
+    it('accepts the OS-preset patterns shipped by the UI', () => {
+      const result = fileTargetsSchema.safeParse({
+        paths: ['/data'],
+        excludes: ['*.tmp', 'Thumbs.db', 'node_modules/**', '**/AppData/Local/Temp/**'],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a glob the agent would silently ignore', () => {
+      // Valid in bash/minimatch; ErrBadPattern in the agent's path.Match dialect.
+      const result = fileTargetsSchema.safeParse({
+        paths: ['/data'],
+        excludes: ['[a-z0-9_-].log'],
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['excludes', 0]);
+      expect(result.error?.issues[0]?.message).toMatch(/silently exclude nothing/);
+    });
+
+    it('points at the offending index, not the whole array', () => {
+      const result = fileTargetsSchema.safeParse({
+        paths: ['/data'],
+        excludes: ['*.tmp', 'node_modules/**', 'logs/[a-'],
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['excludes', 2]);
+    });
+
+    it('strips blank entries instead of failing the save', () => {
+      // A textarea split on newlines produces these. Rejecting them would be an
+      // over-strict regression that breaks a working configuration.
+      const result = fileTargetsSchema.safeParse({
+        paths: ['/data'],
+        excludes: ['*.tmp', '', '   ', 'node_modules/**'],
+      });
+      expect(result.success).toBe(true);
+      expect(result.data?.excludes).toEqual(['*.tmp', 'node_modules/**']);
+    });
+
+    it('accepts merely-unusual patterns the agent accepts', () => {
+      // Over-strict validation is the worse failure mode: these all compile in
+      // the agent, so blocking them would break a save that works today.
+      const result = fileTargetsSchema.safeParse({
+        paths: ['/data'],
+        excludes: ['[z-a]', '[!a-z].txt', 'AppData\\Local\\Temp', 'temp\\'],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('keeps omitted distinct from empty', () => {
+      // undefined = fall back to agent-local excludes; [] = no exclusions.
+      expect(fileTargetsSchema.safeParse({ paths: ['/d'] }).data?.excludes).toBeUndefined();
+      expect(fileTargetsSchema.safeParse({ paths: ['/d'], excludes: [] }).data?.excludes).toEqual([]);
+    });
+  });
+
+  describe('backupProfileSelectionsSchema.file.excludes', () => {
+    it('rejects a malformed glob on a profile', () => {
+      const result = backupProfileSelectionsSchema.safeParse({
+        file: { enabled: true, paths: ['C:\\Users'], excludes: ['a[x/y]b'] },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.path).toEqual(['file', 'excludes', 0]);
+    });
+
+    it('strips blank entries on a profile too', () => {
+      const result = backupProfileSelectionsSchema.safeParse({
+        file: { enabled: true, paths: ['C:\\Users'], excludes: ['*.tmp', ''] },
+      });
+      expect(result.success).toBe(true);
+      expect(result.data?.file?.excludes).toEqual(['*.tmp']);
+    });
+  });
+});
+
+// Regressions caught in review of #2473.
+describe('backup exclusion glob — review regressions', () => {
+  it('reports the index in the USER-SUPPLIED array, not the blank-stripped one', () => {
+    // Blanks are stripped by a transform. If validation ran after the strip, the
+    // bad pattern below (raw index 2) would be reported at index 0, and a UI
+    // mapping the issue back to a textarea row would highlight the wrong line.
+    const result = fileTargetsSchema.safeParse({
+      paths: ['/data'],
+      excludes: ['', '  ', '[a-z0-9_-].log', '*.tmp'],
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(['excludes', 2]);
+  });
+
+  it('does not claim the agent would ignore an over-length pattern', () => {
+    // The length cap is an API-side guard; the agent has no length limit. Saying
+    // "the agent would ignore this" would be false.
+    const result = fileTargetsSchema.safeParse({
+      paths: ['/data'],
+      excludes: ['a'.repeat(600)],
+    });
+    expect(result.success).toBe(false);
+    const msg = result.error?.issues[0]?.message ?? '';
+    expect(msg).toMatch(/longer than/i);
+    expect(msg).not.toMatch(/silently exclude nothing/);
+  });
+
+  it('does not impose a new count cap on legacy inline-settings excludes', () => {
+    // This field has always been uncapped. Adding a cap would fail the save for
+    // an existing policy that exceeds it — the over-strict regression #2473 warns
+    // about. (Profiles keep the .max(64) they shipped with in #2417.)
+    const many = Array.from({ length: 200 }, (_, i) => `*.tmp${i}`);
+    expect(fileTargetsSchema.safeParse({ paths: ['/d'], excludes: many }).success).toBe(true);
+    expect(
+      backupProfileSelectionsSchema.safeParse({
+        file: { enabled: true, paths: ['C:\\Users'], excludes: many },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('trims stored profile patterns (preserving the pre-#2473 .trim() behavior)', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      file: { enabled: true, paths: ['C:\\Users'], excludes: ['  *.tmp  '] },
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.file?.excludes).toEqual(['*.tmp']);
+  });
+});
+
+describe('legacy configurations carrying a dead glob (#2473)', () => {
+  // A policy saved BEFORE this change can hold a malformed glob — that population
+  // is precisely what the issue says exists, because techs typed these and the
+  // agent silently dropped them.
+  //
+  // Such a policy now FAILS to save on the next edit, even if the tech only
+  // touched the schedule (BackupTab re-submits the whole inlineSettings blob).
+  // That is intentional: the pattern was already excluding nothing, and the
+  // alternative is to keep pretending it works. This test exists so the behavior
+  // is a recorded decision rather than a production surprise — and so the error
+  // is legible enough for the tech to fix.
+  it('fails the save, pointing at the exact offending pattern', () => {
+    const legacy = {
+      backupMode: 'file',
+      paths: ['/data'],
+      schedule: { frequency: 'daily', time: '03:00' },
+      targets: { paths: ['/data'], excludes: ['*.tmp', '[a-z0-9_-].log'] },
+    };
+    const result = backupInlineSettingsSchema.safeParse(legacy);
+    expect(result.success).toBe(false);
+    // Must point at the row, not the whole blob, so a UI can highlight it.
+    expect(result.error?.issues[0]?.path).toEqual(['targets', 'excludes', 1]);
+    // Must be actionable: name the real problem, not "invalid pattern".
+    expect(result.error?.issues[0]?.message).toMatch(/dash/i);
+  });
+
+  it('a legacy policy whose globs are all valid still saves untouched', () => {
+    const legacy = {
+      backupMode: 'file',
+      paths: ['/data'],
+      schedule: { frequency: 'daily', time: '03:00' },
+      targets: { paths: ['/data'], excludes: ['*.tmp', 'node_modules/**'] },
+    };
+    expect(backupInlineSettingsSchema.safeParse(legacy).success).toBe(true);
+  });
+});
