@@ -1062,7 +1062,7 @@ vulnerabilitySyncRoutes.use('*', requireMfa());
 // a global (non-tenant) catalog table with forced RLS and no tenant policies,
 // so the read must run under a system context, outside the request's ambient
 // org/partner db context.
-vulnerabilitySyncRoutes.get('/status', async (c) => {
+vulnerabilitySyncRoutes.get('/status', userRateLimit('vuln-sync-status', 120, 3600), async (c) => {
   const sources = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db

@@ -54,11 +54,13 @@ describe('parseCvrf', () => {
     it('drops the malformed record and keeps valid siblings', () => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      const { records, skippedCveIds } = parseCvrf(doc);
+      const { records, skippedCveIds, skippedCount, entryCount } = parseCvrf(doc);
 
       expect(records).toHaveLength(1);
       expect(records[0]?.cveId).toBe('CVE-2023-38040');
       expect(skippedCveIds).toEqual(new Set([malformedCveId]));
+      expect(skippedCount).toBe(1);
+      expect(entryCount).toBe(2);
     });
 
     it('warns once with the offending id', () => {
@@ -68,6 +70,27 @@ describe('parseCvrf', () => {
 
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0]?.[0]).toContain(malformedCveId);
+    });
+
+    // #2427: Microsoft ships the SAME bogus literal on every affected Mariner
+    // entry, so a distinct-id count would render a mass drop as 1 and keep the
+    // skip ratio at ~0. Count dropped ENTRIES.
+    it('counts a REPEATED malformed id once per dropped entry, not once per distinct id', () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const repeated = {
+        ...doc,
+        Vulnerability: [
+          ...Array.from({ length: 20 }, () => doc.Vulnerability[0]),
+          doc.Vulnerability[1],
+        ],
+      };
+
+      const { records, skippedCveIds, skippedCount, entryCount } = parseCvrf(repeated);
+
+      expect(records).toHaveLength(1);
+      expect(skippedCveIds.size).toBe(1);
+      expect(skippedCount).toBe(20);
+      expect(entryCount).toBe(21);
     });
 
     it('throws when EVERY CVE id is malformed (probable feed format change)', () => {

@@ -65,8 +65,19 @@ function flattenNodes(configurations: unknown): JsonObject[] {
 
 export interface NvdParseResult {
   records: NvdRecord[];
-  /** Distinct malformed CVE ids dropped at the parse boundary (#2427). */
+  /** Distinct malformed CVE ids dropped at the parse boundary — for log samples (#2427). */
   skippedCveIds: ReadonlySet<string>;
+  /**
+   * Number of upstream ENTRIES dropped, counting occurrences — not distinct ids
+   * (#2427). Upstream garbage is often a single repeated literal (Microsoft's
+   * Mariner record ships the SAME bogus id on every affected entry), so a
+   * distinct-id count collapses a mass drop to 1 and hides exactly the
+   * regression this instrumentation exists to catch. Includes entries dropped
+   * for a MISSING id, which never reach the malformed set at all.
+   */
+  skippedCount: number;
+  /** Total upstream entries considered (kept + skipped) — the honest ratio denominator. */
+  entryCount: number;
 }
 
 export function parseNvd(doc: unknown): NvdParseResult {
@@ -75,15 +86,21 @@ export function parseNvd(doc: unknown): NvdParseResult {
   const malformedCveIds = new Set<string>();
   const items = asArray(root?.vulnerabilities);
   let validCveIdCount = 0;
+  let skippedCount = 0;
 
   for (const item of items) {
     const cve = asObject(asObject(item)?.cve);
     const cveId = asString(cve?.id);
-    if (!cve || !cveId) continue;
+    if (!cve || !cveId) {
+      // A missing id is still a silently dropped CVE — count it (#2427).
+      skippedCount += 1;
+      continue;
+    }
     // Upstream garbage guard (#2261): drop records whose CVE id doesn't match
     // the canonical shape (would overflow varchar(32) and abort the sync).
     if (!isValidCveId(cveId)) {
       malformedCveIds.add(cveId);
+      skippedCount += 1;
       continue;
     }
     validCveIdCount += 1;
@@ -128,7 +145,7 @@ export function parseNvd(doc: unknown): NvdParseResult {
     malformedIds: malformedCveIds,
   });
   warnMalformedCveIds('NvdClient', malformedCveIds);
-  return { records, skippedCveIds: malformedCveIds };
+  return { records, skippedCveIds: malformedCveIds, skippedCount, entryCount: items.length };
 }
 
 export async function fetchNvdPage(params: FetchNvdPageParams): Promise<NvdResponse> {

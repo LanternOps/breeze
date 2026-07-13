@@ -33,8 +33,15 @@ function asString(value: unknown): string | null {
 
 export interface SofaParseResult {
   records: SofaRecord[];
-  /** Distinct malformed CVE ids dropped at the parse boundary (#2427). */
+  /** Distinct malformed CVE ids dropped at the parse boundary — for log samples (#2427). */
   skippedCveIds: ReadonlySet<string>;
+  /**
+   * Number of CVE ENTRIES dropped, counting occurrences rather than distinct
+   * ids (#2427) — a single repeated bogus id must not report a mass drop as 1.
+   */
+  skippedCount: number;
+  /** Total CVE entries considered (kept + skipped) — the ratio denominator. */
+  entryCount: number;
 }
 
 export function parseSofa(doc: unknown): SofaParseResult {
@@ -43,6 +50,7 @@ export function parseSofa(doc: unknown): SofaParseResult {
   const malformedCveIds = new Set<string>();
   let cveKeyCount = 0;
   let validCveIdCount = 0;
+  let skippedCount = 0;
 
   for (const osVersion of asArray(root?.OSVersions)) {
     const osNode = asObject(osVersion);
@@ -61,11 +69,15 @@ export function parseSofa(doc: unknown): SofaParseResult {
 
       for (const cveId of Object.keys(cves)) {
         cveKeyCount += 1;
-        if (!cveId) continue;
+        if (!cveId) {
+          skippedCount += 1;
+          continue;
+        }
         // Upstream garbage guard (#2261): drop records whose CVE id doesn't
         // match the canonical shape (would overflow varchar(32) and abort the sync).
         if (!isValidCveId(cveId)) {
           malformedCveIds.add(cveId);
+          skippedCount += 1;
           continue;
         }
         validCveIdCount += 1;
@@ -86,7 +98,7 @@ export function parseSofa(doc: unknown): SofaParseResult {
     malformedIds: malformedCveIds,
   });
   warnMalformedCveIds('SofaClient', malformedCveIds);
-  return { records, skippedCveIds: malformedCveIds };
+  return { records, skippedCveIds: malformedCveIds, skippedCount, entryCount: cveKeyCount };
 }
 
 export async function fetchSofa(): Promise<unknown> {
@@ -242,7 +254,11 @@ export async function syncSofa(
 ): Promise<{ vulns: number; osFacts: number; skipped: number }> {
   try {
     const fetchFeed = deps.fetchSofa ?? fetchSofa;
-    const { records: recs, skippedCveIds: parseSkippedCveIds } = parseSofa(await fetchFeed());
+    const {
+      records: recs,
+      skippedCount: parseSkippedCount,
+      entryCount,
+    } = parseSofa(await fetchFeed());
 
     return await withSystemDbAccessContext(async () => {
       const now = new Date();
@@ -285,11 +301,11 @@ export async function syncSofa(
       }
 
       warnMalformedCveIds('SofaClient/sync', skippedCveIds);
-      // Total skips for the run: parse-boundary drops plus the (normally empty)
-      // defense-in-depth re-check above. Disjoint by construction — the re-check
-      // only sees ids the parse boundary already validated — but union anyway.
-      const skipped = new Set([...parseSkippedCveIds, ...skippedCveIds]).size;
-      warnHighSkipRatio('SofaClient/sync', skipped, skipped + vulnerabilityIds.size);
+      // Dropped-ENTRY count (#2427), not distinct ids: parse-boundary drops plus
+      // the (normally empty) defense-in-depth re-check above. Denominator is the
+      // raw upstream CVE-entry count.
+      const skipped = parseSkippedCount + skippedCveIds.size;
+      warnHighSkipRatio('SofaClient/sync', skipped, entryCount);
       await upsertSofaSourceSuccess(now, skipped);
       return { vulns: vulnerabilityIds.size, osFacts, skipped };
     });

@@ -53,24 +53,56 @@ export function warnMalformedCveIds(tag: string, skippedIds: ReadonlySet<string>
 export const SKIP_RATIO_WARN_THRESHOLD = 0.01;
 
 /**
- * Escalate when the malformed-CVE skip ratio of a sync run exceeds
- * SKIP_RATIO_WARN_THRESHOLD (#2427): console.error + a Sentry warning event,
- * so a feed regression that mangles a chunk of ids (but not all of them —
- * that's assertSomeValidCveIds' job) is visible without tailing stdout.
- * `entryCount` is the number of distinct CVE ids considered (valid + skipped).
- * No-op below the threshold or when nothing was skipped.
+ * Absolute skip floor: escalate on this many dropped entries REGARDLESS of
+ * ratio. NVD ships ~250k CVEs, so a regression dropping 5,000 of them is only
+ * a 2% ratio — but on a big enough feed even a sub-threshold ratio can hide
+ * thousands of missing CVEs. Ratio alone is not a sufficient trigger.
+ */
+export const SKIP_ABSOLUTE_WARN_FLOOR = 100;
+
+/**
+ * Minimum entries before the RATIO trigger is trusted. On a 3-entry feed one
+ * skip is 33% — statistically meaningless and pure alert noise. Below this,
+ * only the absolute floor can escalate.
+ */
+export const MIN_ENTRIES_FOR_RATIO_WARN = 50;
+
+/**
+ * Escalate a sync run's malformed-CVE skips (#2427): console.error + a Sentry
+ * warning event, so a feed regression that mangles a chunk of ids (but not all
+ * of them — that's assertSomeValidCveIds' job) is visible without tailing
+ * stdout.
+ *
+ * `skippedCount` MUST be a count of dropped ENTRIES, not of distinct malformed
+ * ids: upstream garbage is typically one repeated literal (Microsoft's Mariner
+ * record ships an identical bogus id on every affected entry), so a distinct-id
+ * count would render a mass drop as `1` and never trip either trigger — the
+ * precise blind spot this function exists to close.
+ *
+ * Fires when EITHER the skip ratio exceeds SKIP_RATIO_WARN_THRESHOLD (on a feed
+ * large enough for a ratio to mean anything) OR the absolute count reaches
+ * SKIP_ABSOLUTE_WARN_FLOOR. No-op when nothing was skipped.
  */
 export function warnHighSkipRatio(tag: string, skippedCount: number, entryCount: number): void {
   if (skippedCount <= 0 || entryCount <= 0) return;
+
   const ratio = skippedCount / entryCount;
-  if (ratio <= SKIP_RATIO_WARN_THRESHOLD) return;
+  const ratioTrips = entryCount >= MIN_ENTRIES_FOR_RATIO_WARN && ratio > SKIP_RATIO_WARN_THRESHOLD;
+  const floorTrips = skippedCount >= SKIP_ABSOLUTE_WARN_FLOOR;
+  if (!ratioTrips && !floorTrips) return;
 
   const message =
-    `[${tag}] High malformed-CVE skip ratio: ${skippedCount} of ${entryCount} `
-    + `CVE ids (${(ratio * 100).toFixed(1)}%) were skipped this sync — `
+    `[${tag}] High malformed-CVE skip count: ${skippedCount} of ${entryCount} `
+    + `CVE entries (${(ratio * 100).toFixed(1)}%) were skipped this sync — `
     + 'probable upstream feed quality regression';
   console.error(message);
-  captureMessage(message, 'warning', { tag, skippedCount, entryCount, ratio });
+  captureMessage(message, 'warning', {
+    tag,
+    skippedCount,
+    entryCount,
+    ratio,
+    trigger: ratioTrips ? 'ratio' : 'absolute_floor',
+  });
 }
 
 /**

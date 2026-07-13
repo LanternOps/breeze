@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   assertSomeValidCveIds,
   isValidCveId,
+  MIN_ENTRIES_FOR_RATIO_WARN,
+  SKIP_ABSOLUTE_WARN_FLOOR,
   SKIP_RATIO_WARN_THRESHOLD,
   warnHighSkipRatio,
   warnMalformedCveIds,
@@ -120,7 +122,41 @@ describe('warnHighSkipRatio', () => {
       skippedCount: 20,
       entryCount: 100,
       ratio: 0.2,
+      trigger: 'ratio',
     });
+  });
+
+  // The #2427 regression class: a huge absolute drop whose RATIO is tiny because
+  // the feed is enormous. Ratio alone would stay silent on 5,000 missing CVEs.
+  it('escalates on the absolute floor even when the ratio is far below threshold', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 5_000, 1_000_000); // 0.5% — under the 1% ratio trigger
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning', {
+      tag: 'Test',
+      skippedCount: 5_000,
+      entryCount: 1_000_000,
+      ratio: 0.005,
+      trigger: 'absolute_floor',
+    });
+  });
+
+  it('escalates at exactly the absolute floor', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(SKIP_ABSOLUTE_WARN_FLOOR).toBe(100);
+    warnHighSkipRatio('Test', SKIP_ABSOLUTE_WARN_FLOOR, 1_000_000);
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a tiny feed page anyone on ratio alone (below the min-entries guard)', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(MIN_ENTRIES_FOR_RATIO_WARN).toBe(50);
+    // 1 of 3 = 33%, but 3 entries is statistically meaningless.
+    warnHighSkipRatio('Test', 1, 3);
+    expect(error).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
   });
 });
 
