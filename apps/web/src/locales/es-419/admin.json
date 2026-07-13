@@ -239,7 +239,7 @@
       "addPackage": "Agregar paquete",
       "searchPlaceholder": "Buscar por nombre, proveedor o ID de winget…",
       "breezeTestedOnly": "Solo probado por Breeze",
-      "breezeTested": "Breeze-tested",
+      "breezeTested": "Probado por Breeze",
       "dismiss": "Descartar",
       "loading": "Cargando catálogo…",
       "empty": "Ninguna entrada del catálogo coincide con los filtros actuales.",
@@ -310,7 +310,7 @@
         "vendor": "Proveedor",
         "friendlyName": "Nombre amigable",
         "defaultSeverity": "Gravedad predeterminada",
-        "breezeTested": "Breeze-tested",
+        "breezeTested": "Probado por Breeze",
         "homepageUrl": "Página de inicio URL",
         "notes": "Notas"
       },

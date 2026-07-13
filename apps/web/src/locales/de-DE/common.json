@@ -1439,7 +1439,7 @@
         "selectEntry": "Eintrag {{id}} auswählen",
         "noDescription": "Keine Beschreibung",
         "approved": "Genehmigt",
-        "nonBillable": "non-billable",
+        "nonBillable": "Nicht abrechenbar",
         "running": "läuft",
         "editEntry": "Eintrag {{id}} bearbeiten",
         "total": "Gesamt: {{duration}}",

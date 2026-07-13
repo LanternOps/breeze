@@ -109,7 +109,7 @@
     "password": "Mot de passe (authentification de base)",
     "notSet": "Non défini — les organisations se configurent individuellement",
     "endpointPlaceholder": "https://logs.example.com:9200",
-    "indexPlaceholder": "bûches de brise",
+    "indexPlaceholder": "breeze-logs",
     "description": "Lorsque cette option est activée, toutes les organisations enfants envoient leurs journaux d’événements au point de terminaison configuré. Fonctionne avec tout stockage compatible Elasticsearch/OpenSearch <bulk>_bulk</bulk> (Elasticsearch, OpenSearch, indexeur Wazuh, AWS OpenSearch Service). Laissez cette option désactivée pour permettre une configuration par organisation."
   },
   "agentVersionPins": {
@@ -761,7 +761,7 @@
       "endpointPlaceholder": "https://logs.example.com:9200",
       "endpointDescription": "Base URL d’un point de terminaison _bulk compatible Elasticsearch/OpenSearch. Doit utiliser HTTPS.",
       "indexPrefix": "Préfixe d’index",
-      "indexPlaceholder": "bûches de brise",
+      "indexPlaceholder": "breeze-logs",
       "indexDescription": "Les journaux sont écrits sur des indices nommés {{index}}."
     },
     "authentication": {
