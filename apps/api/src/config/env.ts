@@ -7,6 +7,22 @@ export function envFlag(name: string, fallback = false): boolean {
 
 export const MCP_OAUTH_ENABLED = envFlag('MCP_OAUTH_ENABLED');
 
+/**
+ * Fleet-wide rollout declaration for the durable browser-auth issuer guard.
+ * Issuer code remains fail-closed regardless; this flag is the operational
+ * readiness gate that may be enabled only after every API replica is on the
+ * guarded build and the legacy issuer export is absent.
+ */
+export function authBrowserTransitionsEnforced(): boolean {
+  return envFlag('AUTH_BROWSER_TRANSITIONS_ENFORCED', false);
+}
+
+/** Terminal ticket preparation opens only after the fleet readiness gate. */
+export function authBrowserTerminalPreparationEnabled(): boolean {
+  return authBrowserTransitionsEnforced()
+    && envFlag('AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', false);
+}
+
 // Google Workspace identity tools. Defaults OFF everywhere; an org must also
 // have an explicit google_workspace_connections row before any tool is usable.
 // Gates tool registration (aiAgentSdkTools.ts) and the connect routes.

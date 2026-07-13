@@ -40,10 +40,6 @@ vi.mock('../../services', () => ({
     expiresInSeconds: 900,
     familyId: 'family-id',
   })),
-  issueUserSessionLegacyDuringTransition: vi.fn(async () => ({
-    accessToken: 'access-token', refreshToken: 'refresh-token', refreshJti: 'refresh-jti',
-    expiresInSeconds: 900, familyId: 'family-id',
-  })),
   beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1, operationId: 'operation-1' })),
   cancelAuthIssuance: vi.fn(async () => true),
   finishAuthIssuance: vi.fn(async (_capability: unknown, fn: (tx: object) => Promise<unknown>) => fn({})),
@@ -60,15 +56,13 @@ vi.mock('../../services', () => ({
   RefreshTokenCurrentnessError: class RefreshTokenCurrentnessError extends Error {},
   digestRefreshTokenJti: vi.fn((jti: string) => `digest:${jti}`),
   getRefreshRotationGraceSeconds: vi.fn(() => 15),
-  decideAuthenticatedUserSession: vi.fn(async (input: Record<string, unknown>) => {
-    const { issueUserSessionLegacyDuringTransition } = await import('../../services');
-    const tokens = await issueUserSessionLegacyDuringTransition({
-      ...input,
-      mfa: false,
-      amr: ['password'],
-    } as never);
-    return { kind: 'issued', tokens };
-  }),
+  decideAuthenticatedUserSession: vi.fn(async () => ({
+    kind: 'issued',
+    tokens: {
+      accessToken: 'access-token', refreshToken: 'refresh-token', refreshJti: 'refresh-jti',
+      expiresInSeconds: 900, familyId: 'family-id',
+    },
+  })),
   getActiveRefreshTokenFamily: vi.fn(async () => ({
     familyId: 'family-42',
     userId: 'user-1',
@@ -193,9 +187,6 @@ vi.mock('./helpers', () => ({
   getClientIP: vi.fn(() => '203.0.113.10'),
   getClientRateLimitKey: vi.fn(() => 'test-client'),
   setRefreshTokenCookie: vi.fn(),
-  setCfAccessLogoutQuarantineCookie: vi.fn((c: { header: (name: string, value: string, options: { append: boolean }) => void }) => {
-    c.header('Set-Cookie', 'breeze_cf_logout_quarantine=1; Path=/api/v1; HttpOnly; SameSite=Strict; Max-Age=600', { append: true });
-  }),
   clearRefreshTokenCookie: vi.fn((c: { header: (name: string, value: string, options: { append: boolean }) => void }) => {
     c.header('Set-Cookie', 'breeze_refresh_token=; Path=/api/v1/auth; HttpOnly; SameSite=Strict; Max-Age=0', { append: true });
     c.header('Set-Cookie', 'breeze_csrf_token=; Path=/api/v1/auth; SameSite=Strict; Max-Age=0', { append: true });
@@ -271,7 +262,6 @@ import { db, withSystemDbAccessContext } from '../../db';
 import {
   getActiveRefreshTokenFamily,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   verifyToken,
   isRefreshTokenJtiRevoked,
   getRefreshTokenJtiRevocationState,
@@ -313,7 +303,6 @@ import {
   clearRefreshTokenCookie,
   clearRefreshCookieOnly,
   setRefreshTokenCookie,
-  setCfAccessLogoutQuarantineCookie,
   cacheRefreshTokenFamilyRevocation,
   getCookieValue,
   auditLogin,
@@ -363,6 +352,28 @@ describe('POST /cf-access-logout/prepare', () => {
     vi.mocked(validateTerminalCookieCsrfRequest).mockReturnValue(null);
     process.env.DASHBOARD_URL = 'https://breeze.example.com';
     delete process.env.PUBLIC_APP_URL;
+    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'true';
+    process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = 'true';
+  });
+
+  it('holds terminal ticket preparation closed during mixed-replica rollout', async () => {
+    process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = 'false';
+
+    const res = await loginRoutes.request('/cf-access-logout/prepare', {
+      method: 'POST',
+      headers: {
+        'cookie': `breeze_csrf_token=${'a'.repeat(64)}`,
+        'x-breeze-csrf': 'a'.repeat(64),
+        'origin': 'http://localhost:4321',
+        'sec-fetch-site': 'same-origin',
+      },
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Terminal logout is temporarily unavailable' });
+    expect(prepareTerminalLogout).not.toHaveBeenCalled();
+    expect(issueTerminalLogoutTicket).not.toHaveBeenCalled();
+    expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
   });
 
   it('prepares against the durable binding and clears only the refresh cookie after commit', async () => {
@@ -387,7 +398,6 @@ describe('POST /cf-access-logout/prepare', () => {
     });
     expect(clearRefreshCookieOnly).toHaveBeenCalledOnce();
     expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
-    expect(setCfAccessLogoutQuarantineCookie).toHaveBeenCalledOnce();
     expect(issueTerminalLogoutTicket).toHaveBeenCalledWith({
       transitionId: 'transition-1',
       logoutId: 'logout-1',
@@ -402,7 +412,7 @@ describe('POST /cf-access-logout/prepare', () => {
         'https://breeze.example.com/api/v1/auth/cf-access-logout?ticket=signed-terminal-ticket',
     });
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
-    expect(res.headers.get('set-cookie')).toContain('breeze_cf_logout_quarantine=1');
+    expect(res.headers.get('set-cookie')).not.toContain('breeze_cf_logout_quarantine');
     expect(res.headers.get('set-cookie')).not.toContain('breeze_csrf_token=');
     expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: 'auth.cf_access_terminal_logout.prepare',
@@ -451,7 +461,6 @@ describe('POST /cf-access-logout/prepare', () => {
     expect(res.headers.get('set-cookie')).toBeNull();
     expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
     expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
-    expect(setCfAccessLogoutQuarantineCookie).not.toHaveBeenCalled();
     expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: 'auth.cf_access_terminal_logout.prepare',
       result: 'failure',
@@ -484,7 +493,6 @@ describe('POST /cf-access-logout/prepare', () => {
 
     expect(res.status).toBe(503);
     expect(res.headers.get('set-cookie')).toBeNull();
-    expect(setCfAccessLogoutQuarantineCookie).not.toHaveBeenCalled();
     expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
       action: 'auth.cf_access_terminal_logout.prepare',
       resourceId: 'transition-1',
@@ -521,7 +529,6 @@ describe('POST /cf-access-logout/prepare', () => {
     expect(prepareTerminalLogout).not.toHaveBeenCalled();
     expect(issueTerminalLogoutTicket).not.toHaveBeenCalled();
     expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
-    expect(setCfAccessLogoutQuarantineCookie).not.toHaveBeenCalled();
   });
 
   it('never exposes cleanup subject or family identifiers at the route boundary', async () => {
@@ -856,10 +863,6 @@ describe('POST /login — IP allowlist', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { user: { isPlatformAdmin?: boolean } };
     expect(body.user.isPlatformAdmin).toBe(true);
-    expect(issueUserSessionLegacyDuringTransition).toHaveBeenCalledWith(expect.objectContaining({
-      mfa: false,
-      amr: ['password'],
-    }));
   });
 
   it('coerces a missing isPlatformAdmin to false in the success payload', async () => {

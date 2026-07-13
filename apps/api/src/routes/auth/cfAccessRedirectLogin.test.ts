@@ -185,18 +185,6 @@ vi.mock('../../services', () => ({
       };
     }
   ),
-  issueUserSessionLegacyDuringTransition: vi.fn(
-    async (identity: Record<string, unknown>) => {
-      servicesState.lastSessionIdentity = identity;
-      return {
-        accessToken: 'access-tok',
-        refreshToken: 'refresh-tok',
-        refreshJti: 'jti-new',
-        expiresInSeconds: 900,
-        familyId: 'fam-1',
-      };
-    }
-  ),
   revokeAllUserTokens: vi.fn(async (userId: string) => {
     servicesState.revokeAllCalls.push(userId);
   }),
@@ -221,8 +209,6 @@ vi.mock('../../services/auditService', () => ({
 const cookieState = vi.hoisted(() => ({
   set: null as string | null,
   cleared: false,
-  quarantineSet: false,
-  quarantineCleared: false,
   rotated: null as string | null,
 }));
 
@@ -247,14 +233,6 @@ vi.mock('./helpers', async () => {
       cookieState.set = null;
       cookieState.cleared = true;
       actual.clearRefreshTokenCookie(c as never);
-    }),
-    setCfAccessLogoutQuarantineCookie: vi.fn((c: unknown) => {
-      cookieState.quarantineSet = true;
-      actual.setCfAccessLogoutQuarantineCookie(c as never);
-    }),
-    clearCfAccessLogoutQuarantineCookie: vi.fn((c: unknown) => {
-      cookieState.quarantineCleared = true;
-      actual.clearCfAccessLogoutQuarantineCookie(c as never);
     }),
     rotateCsrfBindingCookie: vi.fn((c: unknown, value: string) => {
       cookieState.rotated = value;
@@ -306,8 +284,6 @@ describe('GET /cf-access-login', () => {
     auditState.loginFailures = [];
     cookieState.set = null;
     cookieState.cleared = false;
-    cookieState.quarantineSet = false;
-    cookieState.quarantineCleared = false;
     cookieState.rotated = null;
     ticketState.valid = true;
     ticketState.calls = [];
@@ -573,7 +549,6 @@ describe('GET /cf-access-login', () => {
     expect(res.headers.get('Location')).toBe('/login?signedOut=1&logoutError=1');
     expect(completionState.calls).toEqual([]);
     expect(cookieState.cleared).toBe(false);
-    expect(cookieState.quarantineSet).toBe(false);
     expect(res.headers.get('Set-Cookie')).toBeNull();
   });
 
@@ -594,7 +569,6 @@ describe('GET /cf-access-login', () => {
       'https://breeze.example.com/api/v1/auth/cf-access-logout/complete?ticket=signed-ticket',
     );
     expect(cookieState.cleared).toBe(false);
-    expect(cookieState.quarantineSet).toBe(false);
     expect(res.headers.get('Set-Cookie')).toBeNull();
     expect(completionState.pendingCalls).toEqual([{
       transitionId: verifiedTicket.transitionId,
@@ -613,7 +587,6 @@ describe('GET /cf-access-login', () => {
 
     expect(res.status).toBe(303);
     expect(res.headers.get('Location')).toBe('/login?signedOut=1&logoutError=1');
-    expect(cookieState.quarantineSet).toBe(false);
     expect(cookieState.cleared).toBe(false);
     expect(res.headers.get('Set-Cookie')).toBeNull();
   });
@@ -667,8 +640,6 @@ describe('GET /cf-access-login', () => {
     expect(completionState.pendingCalls).toEqual([]);
     expect(completionState.calls).toEqual([]);
     expect(cookieState.cleared).toBe(false);
-    expect(cookieState.quarantineSet).toBe(false);
-    expect(cookieState.quarantineCleared).toBe(false);
     expect(cookieState.rotated).toBeNull();
     expect(res.headers.get('Set-Cookie')).toBeNull();
     errorSpy.mockRestore();
@@ -702,7 +673,6 @@ describe('GET /cf-access-login', () => {
     }]);
     expect(cookieState.cleared).toBe(true);
     expect(cookieState.rotated).toBe('b'.repeat(64));
-    expect(cookieState.quarantineCleared).toBe(true);
     const cookies = res.headers.get('Set-Cookie') ?? '';
     expect(cookies).toContain('breeze_refresh_token=');
     expect(cookies).toContain(`breeze_csrf_token=${'b'.repeat(64)}`);
@@ -758,12 +728,8 @@ describe('GET /cf-access-login', () => {
     const completed = await callGet('/cf-access-logout/complete?ticket=signed-ticket');
     const replayed = await callGet('/cf-access-logout/complete?ticket=signed-ticket');
 
-    expect(completed.headers.get('Set-Cookie')).toContain(
-      'breeze_cf_logout_quarantine=; Path=/api/v1',
-    );
+    expect(completed.headers.get('Set-Cookie')).not.toContain('breeze_cf_logout_quarantine');
     expect(replayed.headers.get('Set-Cookie')).toBeNull();
-    expect(cookieState.quarantineSet).toBe(false);
-    expect(cookieState.quarantineCleared).toBe(true);
   });
 
   it('does not let a consumed ticket replay clear a newer refresh cookie or overwrite C3', async () => {
@@ -780,7 +746,6 @@ describe('GET /cf-access-login', () => {
     expect(res.headers.get('Location')).toBe('/login?signedOut=1');
     expect(cookieState.cleared).toBe(false);
     expect(cookieState.rotated).toBeNull();
-    expect(cookieState.quarantineCleared).toBe(false);
     expect(res.headers.get('Set-Cookie')).toBeNull();
     expect(auditState.audits.at(-1)).toMatchObject({
       action: 'auth.cf_access_terminal_logout.complete',
@@ -803,7 +768,6 @@ describe('GET /cf-access-login', () => {
     expect(res.headers.get('Location')).toBe('/login?signedOut=1&logoutError=1');
     expect(cookieState.cleared).toBe(false);
     expect(cookieState.rotated).toBeNull();
-    expect(cookieState.quarantineCleared).toBe(false);
     expect(res.headers.get('Set-Cookie')).toBeNull();
     expect(auditState.audits.at(-1)).toMatchObject({
       action: 'auth.cf_access_terminal_logout.complete',

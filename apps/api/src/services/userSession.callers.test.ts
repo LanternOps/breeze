@@ -14,8 +14,6 @@ import { describe, expect, it } from 'vitest';
 
 const SRC_DIR = join(__dirname, '..');
 
-const expectedLegacyIssuers = new Set<string>();
-
 const expectedCookieWriters = new Set([
   'middleware/cfAccessLogin.ts',
   'routes/auth/passkeys.ts',
@@ -62,7 +60,6 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
 
 const CANONICAL_PROTECTED_FILES: Record<string, string> = {
   issueUserSession: join(SRC_DIR, 'services/userSession.ts'),
-  issueUserSessionLegacyDuringTransition: join(SRC_DIR, 'services/userSession.ts'),
   setRefreshTokenCookie: join(SRC_DIR, 'routes/auth/helpers.ts'),
 };
 
@@ -1170,12 +1167,13 @@ describe('browser-auth issuer inventory (9 guarded issuances; 0 frozen legacy is
     }
   }, 15_000);
 
-  it('freezes the exact remaining migration-shim callers', () => {
-    const inventory = collectCallInventory('issueUserSessionLegacyDuringTransition');
-    expect(new Set(inventory.keys())).toEqual(expectedLegacyIssuers);
-    expect(Object.fromEntries([...inventory.entries()].sort())).toEqual({});
-    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(0);
-  }, 15_000);
+  it('has no legacy issuer shim export or optional capability bypass', () => {
+    const source = readFileSync(join(SRC_DIR, 'services/userSession.ts'), 'utf8');
+
+    expect(source).not.toContain('issueUserSessionLegacyDuringTransition');
+    expect(source).not.toMatch(/capability\s*\?:\s*AuthIssuanceCapability/);
+    expect(source).toMatch(/capability:\s*AuthIssuanceCapability/);
+  });
 
   it('freezes every production setRefreshTokenCookie call site', () => {
     const inventory = collectCallInventory('setRefreshTokenCookie');
@@ -1200,8 +1198,24 @@ describe('browser-auth issuer inventory (9 guarded issuances; 0 frozen legacy is
     expect(provesAuthorizedSsoExchangeCookieFlow(source)).toBe(true);
   });
 
-  it.skip('requires a guarded capability at every production issuer');
-  it.skip('allows refresh cookie installation only from an authorized session result');
+  it('requires a guarded capability at every production issuer', () => {
+    const inventory = collectCallInventory('issueUserSession');
+    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(9);
+    for (const [file, count] of inventory) {
+      const source = readFileSync(join(SRC_DIR, file), 'utf8');
+      expect(source.match(/finishAuthIssuance\(/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+      expect(source).not.toContain('issueUserSessionLegacyDuringTransition');
+    }
+  }, 15_000);
+
+  it('allows refresh cookie installation only from the frozen authorized writer inventory', () => {
+    const inventory = collectCallInventory('setRefreshTokenCookie');
+    expect(new Set(inventory.keys())).toEqual(expectedCookieWriters);
+    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(10);
+    expect(provesAuthorizedSsoExchangeCookieFlow(
+      readFileSync(join(SRC_DIR, 'routes/sso.ts'), 'utf8'),
+    )).toBe(true);
+  }, 15_000);
   it('keeps SSO exchange inside the durable binding generation', () => {
     const routeSource = readFileSync(join(SRC_DIR, 'routes/sso.ts'), 'utf8');
     const serviceSource = readFileSync(join(SRC_DIR, 'services/ssoBrowserTransition.ts'), 'utf8');

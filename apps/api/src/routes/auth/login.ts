@@ -69,7 +69,6 @@ import {
   userRequiresSetup,
   getCookieValue,
   rotateCsrfBindingCookie,
-  setCfAccessLogoutQuarantineCookie,
 } from './helpers';
 import {
   prepareTerminalLogout,
@@ -106,7 +105,10 @@ import {
 } from '../../services/authLifecycle';
 import { runPostCommitCleanup } from '../../services/postCommitCleanup';
 import { issueTerminalLogoutTicket } from '../../services/terminalLogoutTicket';
-import { authBrowserPublicOrigin } from '../../config/env';
+import {
+  authBrowserPublicOrigin,
+  authBrowserTerminalPreparationEnabled,
+} from '../../config/env';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -592,6 +594,11 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 // access token and the shared cookie may legitimately belong to different
 // accounts or different families.
 loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
+  if (!authBrowserTerminalPreparationEnabled()) {
+    console.warn('[cf-access-logout] Terminal ticket preparation is disabled by rollout configuration');
+    return c.json({ error: 'Terminal logout is temporarily unavailable' }, 503);
+  }
+
   const csrfError = validateTerminalCookieCsrfRequest(c);
   if (csrfError) return c.json({ error: csrfError }, 403);
 
@@ -704,10 +711,6 @@ loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
     result: 'success',
   });
 
-  // Install the legacy issuer barrier on this authoritative POST response.
-  // Top-level GETs must never install it: duplicated navigations can arrive
-  // after completion and would otherwise resurrect a stale quarantine cookie.
-  setCfAccessLogoutQuarantineCookie(c);
   clearRefreshCookieOnly(c);
   return c.json({
     success: true,

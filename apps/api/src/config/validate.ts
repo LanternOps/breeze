@@ -511,6 +511,8 @@ const envSchema = z
     CF_ACCESS_TRUSTS_MFA: z.string().optional(),
     DASHBOARD_URL: z.string().optional(),
     PUBLIC_APP_URL: z.string().optional(),
+    AUTH_BROWSER_TRANSITIONS_ENFORCED: z.string().optional(),
+    AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: z.string().optional(),
 
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
@@ -553,6 +555,36 @@ const envSchema = z
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
     const isProduction = data.NODE_ENV === 'production';
+    const booleanValues = new Set(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off']);
+    const truthyValues = new Set(['true', '1', 'yes', 'on']);
+    for (const key of [
+      'AUTH_BROWSER_TRANSITIONS_ENFORCED',
+      'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED',
+    ] as const) {
+      const raw = (data[key] ?? '').trim().toLowerCase();
+      if (raw && !booleanValues.has(raw)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} must be a boolean (true/false, 1/0, yes/no, on/off) when set.`,
+        });
+      }
+    }
+    const issuerEnforcementEnabled = truthyValues.has(
+      (data.AUTH_BROWSER_TRANSITIONS_ENFORCED ?? '').trim().toLowerCase(),
+    );
+    const terminalPreparationEnabled = truthyValues.has(
+      (data.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED ?? '').trim().toLowerCase(),
+    );
+    if (terminalPreparationEnabled && !issuerEnforcementEnabled) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AUTH_BROWSER_TRANSITIONS_ENFORCED'],
+        message:
+          'AUTH_BROWSER_TRANSITIONS_ENFORCED must be true before '
+          + 'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED can enable terminal ticket preparation.',
+      });
+    }
 
     // #2288 — instance-level backup control-plane URL pushed to agents.
     // Malformed value = refuse to boot; a silently-dropped backup URL would
@@ -1369,6 +1401,8 @@ export function validateConfig(): AppConfig {
     CF_ACCESS_TRUSTS_MFA: env.CF_ACCESS_TRUSTS_MFA,
     DASHBOARD_URL: env.DASHBOARD_URL,
     PUBLIC_APP_URL: env.PUBLIC_APP_URL,
+    AUTH_BROWSER_TRANSITIONS_ENFORCED: env.AUTH_BROWSER_TRANSITIONS_ENFORCED,
+    AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED,
     API_PORT: env.API_PORT,
     REDIS_URL: env.REDIS_URL,
     REDIS_HOST: env.REDIS_HOST,

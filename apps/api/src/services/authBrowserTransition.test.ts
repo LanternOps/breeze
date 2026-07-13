@@ -54,6 +54,11 @@ const harness = vi.hoisted(() => {
 
 type Predicate =
   | { eq: [string, unknown] }
+  | { lt: [string, unknown] }
+  | { lte: [string, unknown] }
+  | { inArray: [string, readonly unknown[]] }
+  | { isNull: string }
+  | { isNotNull: string }
   | { and: Predicate[] }
   | undefined;
 
@@ -68,6 +73,21 @@ function cloneRows(): Map<string, TransitionRow> {
 function evaluatePredicate(row: TransitionRow, predicate: Predicate): boolean {
   if (!predicate) return true;
   if ('and' in predicate) return predicate.and.every((clause) => evaluatePredicate(row, clause));
+  if ('isNull' in predicate) return row[predicate.isNull as keyof TransitionRow] === null;
+  if ('isNotNull' in predicate) return row[predicate.isNotNull as keyof TransitionRow] !== null;
+  if ('inArray' in predicate) {
+    const [column, values] = predicate.inArray;
+    return values.includes(row[column as keyof TransitionRow]);
+  }
+  if ('lt' in predicate || 'lte' in predicate) {
+    const [column, expectedValue] = 'lt' in predicate ? predicate.lt : predicate.lte;
+    const actualValue = row[column as keyof TransitionRow];
+    const expected = resolveSqlValue(expectedValue);
+    if (!(actualValue instanceof Date) || !(expected instanceof Date)) return false;
+    return 'lt' in predicate
+      ? actualValue.getTime() < expected.getTime()
+      : actualValue.getTime() <= expected.getTime();
+  }
   const [column, expected] = predicate.eq;
   const actual = row[column as keyof TransitionRow];
   if (actual instanceof Date && expected instanceof Date) {
@@ -79,7 +99,11 @@ function evaluatePredicate(row: TransitionRow, predicate: Predicate): boolean {
 function resolveSqlValue(value: unknown): unknown {
   if (!value || typeof value !== 'object' || !('sql' in value)) return value;
   const expression = String((value as { sql: string }).sql);
+  const sqlValues = (value as { values?: unknown[] }).values ?? [];
   if (expression.includes('interval')) {
+    if (expression.includes('-') && typeof sqlValues[0] === 'number') {
+      return new Date(harness.now.getTime() - sqlValues[0]);
+    }
     return new Date(harness.now.getTime() + 2 * 60 * 1000);
   }
   if (expression.includes('now()')) return new Date(harness.now);
@@ -136,11 +160,11 @@ function makeTransaction() {
           for() {
             return query;
           },
-          async limit() {
-            const row = [...harness.rows.values()].find((candidate) =>
+          async limit(count = 1) {
+            const rows = [...harness.rows.values()].filter((candidate) =>
               evaluatePredicate(candidate, predicate),
             );
-            return row ? [projectRow(row, fields)] : [];
+            return rows.slice(0, count).map((row) => projectRow(row, fields));
           },
         };
         return query;
@@ -150,16 +174,28 @@ function makeTransaction() {
       set: (values: Partial<TransitionRow>) => ({
         where: (predicate: Predicate) => ({
           returning: async (fields: Record<string, unknown>) => {
-            const row = [...harness.rows.values()].find((candidate) =>
+            const rows = [...harness.rows.values()].filter((candidate) =>
               evaluatePredicate(candidate, predicate),
             );
-            if (!row) return [];
-            for (const [key, value] of Object.entries(values)) {
-              (row as unknown as Record<string, unknown>)[key] = resolveSqlValue(value);
+            for (const row of rows) {
+              for (const [key, value] of Object.entries(values)) {
+                (row as unknown as Record<string, unknown>)[key] = resolveSqlValue(value);
+              }
             }
-            return [projectRow(row, fields)];
+            return rows.map((row) => projectRow(row, fields));
           },
         }),
+      }),
+    })),
+    delete: vi.fn(() => ({
+      where: (predicate: Predicate) => ({
+        returning: async (fields: Record<string, unknown>) => {
+          const rows = [...harness.rows.values()].filter((candidate) =>
+            evaluatePredicate(candidate, predicate),
+          );
+          for (const row of rows) harness.rows.delete(row.id);
+          return rows.map((row) => projectRow(row, fields));
+        },
       }),
     })),
   };
@@ -168,6 +204,11 @@ function makeTransaction() {
 vi.mock('drizzle-orm', () => ({
   and: (...clauses: Predicate[]) => ({ and: clauses }),
   eq: (left: string, right: unknown) => ({ eq: [left, right] }),
+  lt: (left: string, right: unknown) => ({ lt: [left, right] }),
+  lte: (left: string, right: unknown) => ({ lte: [left, right] }),
+  inArray: (left: string, right: readonly unknown[]) => ({ inArray: [left, right] }),
+  isNull: (column: string) => ({ isNull: column }),
+  isNotNull: (column: string) => ({ isNotNull: column }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     sql: Array.from(strings).join('?'),
     values,
@@ -205,6 +246,7 @@ import {
   beginAuthIssuance,
   beginAuthIssuanceForStoredTransition,
   cancelAuthIssuance,
+  cleanupAuthBrowserTransitions,
   completeTerminalLogout,
   isTerminalLogoutPending,
   finishAuthIssuance,
@@ -717,6 +759,77 @@ describe('binding rotation', () => {
     expect([...harness.rows.values()].some(
       (row) => row.bindingDigest === reopenedCurrentDigest,
     )).toBe(false);
+  });
+});
+
+describe('bounded transition cleanup', () => {
+  it('retires only expired pending rows and deletes only retired rows older than retention', async () => {
+    const active = seedTransition(browser(signedBinding(BINDING_KEY, '1'.repeat(32))), {
+      createdAt: new Date(harness.now.getTime() - 60 * 24 * 60 * 60 * 1000),
+    });
+    const livePending = seedTransition(browser(signedBinding(BINDING_KEY, '2'.repeat(32))), {
+      state: 'logout_pending',
+      logoutId: '20000000-0000-4000-8000-000000000011',
+      completionNonceDigest: '1'.repeat(64),
+      logoutExpiresAt: new Date(harness.now.getTime() + 1),
+    });
+    const expiredPending = seedTransition(browser(signedBinding(BINDING_KEY, '3'.repeat(32))), {
+      state: 'logout_pending',
+      activeOperationId: '20000000-0000-4000-8000-000000000012',
+      activeOperationExpiresAt: new Date(harness.now.getTime() - 1),
+      logoutId: '20000000-0000-4000-8000-000000000013',
+      completionNonceDigest: '2'.repeat(64),
+      logoutExpiresAt: new Date(harness.now.getTime() - 1),
+    });
+    const boundaryRetired = seedTransition(browser(signedBinding(BINDING_KEY, '4'.repeat(32))), {
+      state: 'retired',
+      retiredAt: new Date(harness.now.getTime() - 30 * 24 * 60 * 60 * 1000),
+    });
+    const oldRetired = seedTransition(browser(signedBinding(BINDING_KEY, '5'.repeat(32))), {
+      state: 'retired',
+      retiredAt: new Date(harness.now.getTime() - 30 * 24 * 60 * 60 * 1000 - 1),
+    });
+
+    await expect(cleanupAuthBrowserTransitions()).resolves.toEqual({
+      retiredPending: 1,
+      deletedRetired: 1,
+    });
+
+    expect(harness.rows.get(active.id)?.state).toBe('active');
+    expect(harness.rows.get(livePending.id)?.state).toBe('logout_pending');
+    expect(harness.rows.get(expiredPending.id)).toMatchObject({
+      state: 'retired',
+      activeOperationId: null,
+      activeOperationExpiresAt: null,
+      retiredAt: harness.now,
+    });
+    expect(harness.rows.has(boundaryRetired.id)).toBe(true);
+    expect(harness.rows.has(oldRetired.id)).toBe(false);
+  });
+
+  it('bounds each cleanup phase to the configured batch size', async () => {
+    const payloads = ['6', '7', '8', '9', 'a', 'b'];
+    for (let index = 0; index < 3; index += 1) {
+      seedTransition(browser(signedBinding(BINDING_KEY, payloads[index]!.repeat(32))), {
+        state: 'logout_pending',
+        logoutId: `20000000-0000-4000-8000-${String(index + 20).padStart(12, '0')}`,
+        completionNonceDigest: `${index + 3}`.repeat(64),
+        logoutExpiresAt: new Date(harness.now.getTime() - 1),
+      });
+      seedTransition(browser(signedBinding(BINDING_KEY, payloads[index + 3]!.repeat(32))), {
+        state: 'retired',
+        retiredAt: new Date(harness.now.getTime() - 31 * 24 * 60 * 60 * 1000),
+      });
+    }
+
+    await expect(cleanupAuthBrowserTransitions({ batchSize: 2 })).resolves.toEqual({
+      retiredPending: 2,
+      deletedRetired: 2,
+    });
+    expect([...harness.rows.values()].filter((row) => row.state === 'logout_pending')).toHaveLength(1);
+    expect([...harness.rows.values()].filter(
+      (row) => row.state === 'retired' && row.retiredAt!.getTime() < harness.now.getTime(),
+    )).toHaveLength(1);
   });
 });
 

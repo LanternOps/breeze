@@ -19,6 +19,7 @@ import {
   AuthBindingRotationRequiredError,
   AuthIssuanceConflictError,
   beginAuthIssuance,
+  cleanupAuthBrowserTransitions,
   completeTerminalLogout,
   createAuthBrowserTransitionService,
   finishAuthIssuance,
@@ -228,6 +229,50 @@ beforeEach(() => {
 });
 
 describe('auth browser transition leases against PostgreSQL', () => {
+  it('retires only expired pending rows and deletes only old retired diagnostics', async () => {
+    const db = getTestDb();
+    const activeId = '41000000-0000-4000-8000-000000000001';
+    const livePendingId = '41000000-0000-4000-8000-000000000002';
+    const expiredPendingId = '41000000-0000-4000-8000-000000000003';
+    const oldRetiredId = '41000000-0000-4000-8000-000000000004';
+
+    await db.execute(sql`
+      INSERT INTO auth_browser_transitions
+        (id, binding_digest, state, active_operation_id,
+         active_operation_expires_at, logout_id, completion_nonce_digest,
+         logout_expires_at, retired_at, created_at, updated_at)
+      VALUES
+        (${activeId}::uuid, ${'1'.repeat(64)}, 'active', NULL,
+         NULL, NULL, NULL, NULL, NULL, now() - interval '60 days', now() - interval '60 days'),
+        (${livePendingId}::uuid, ${'2'.repeat(64)}, 'logout_pending', ${'42000000-0000-4000-8000-000000000002'}::uuid,
+         now() + interval '30 minutes', ${'43000000-0000-4000-8000-000000000002'}::uuid, ${'a'.repeat(64)},
+         now() + interval '1 hour', NULL, now() - interval '1 hour', now()),
+        (${expiredPendingId}::uuid, ${'3'.repeat(64)}, 'logout_pending', ${'42000000-0000-4000-8000-000000000003'}::uuid,
+         now() - interval '30 minutes', ${'43000000-0000-4000-8000-000000000003'}::uuid, ${'b'.repeat(64)},
+         now() - interval '1 hour', NULL, now() - interval '2 hours', now() - interval '2 hours'),
+        (${oldRetiredId}::uuid, ${'4'.repeat(64)}, 'retired', NULL,
+         NULL, NULL, NULL, NULL, now() - interval '31 days', now() - interval '40 days', now() - interval '31 days')
+    `);
+
+    await expect(cleanupAuthBrowserTransitions({ batchSize: 10 })).resolves.toEqual({
+      retiredPending: 1,
+      deletedRetired: 1,
+    });
+
+    const rows = await db.select().from(authBrowserTransitions);
+    expect(rows.find((row) => row.id === activeId)?.state).toBe('active');
+    expect(rows.find((row) => row.id === livePendingId)).toMatchObject({
+      state: 'logout_pending',
+      activeOperationId: '42000000-0000-4000-8000-000000000002',
+    });
+    expect(rows.find((row) => row.id === expiredPendingId)).toMatchObject({
+      state: 'retired',
+      activeOperationId: null,
+      activeOperationExpiresAt: null,
+    });
+    expect(rows.some((row) => row.id === oldRetiredId)).toBe(false);
+  });
+
   it('finalizes a lease whose database timestamp contains sub-millisecond precision', async () => {
     const db = getTestDb();
     const binding = freshBrowserBinding();

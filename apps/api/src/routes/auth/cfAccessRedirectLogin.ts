@@ -23,7 +23,6 @@ import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import {
   auditUserLoginFailure,
-  clearCfAccessLogoutQuarantineCookie,
   clearRefreshTokenCookie,
   getCookieValue,
   getClientIP,
@@ -433,7 +432,6 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout/complete', async (c) => {
 
   clearRefreshTokenCookie(c);
   rotateCsrfBindingCookie(c, completed.replacement.value);
-  clearCfAccessLogoutQuarantineCookie(c);
   auditTerminalLogoutCompletion(c, verified, 'completed');
   return terminalLogoutRedirect(c, '/login?signedOut=1');
 });

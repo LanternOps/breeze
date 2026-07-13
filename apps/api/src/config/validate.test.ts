@@ -163,6 +163,53 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('durable browser-transition rollout ordering', () => {
+    it('rejects terminal ticket preparation while issuer enforcement is disabled', () => {
+      withEnv({
+        ...validEnv,
+        AUTH_BROWSER_TRANSITIONS_ENFORCED: 'false',
+        AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/AUTH_BROWSER_TRANSITIONS_ENFORCED/);
+      });
+    });
+
+    it('accepts the mixed-replica rollout stage with terminal preparation held off', () => {
+      withEnv({
+        ...validEnv,
+        AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true',
+        AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'false',
+      }, () => {
+        expect(validateConfig()).toMatchObject({
+          AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true',
+          AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'false',
+        });
+      });
+    });
+
+    it('accepts terminal preparation only after guarded issuer enforcement is declared', () => {
+      withEnv({
+        ...validEnv,
+        AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true',
+        AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true',
+      }, () => {
+        expect(validateConfig()).toMatchObject({
+          AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true',
+          AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true',
+        });
+      });
+    });
+
+    it.each([
+      ['AUTH_BROWSER_TRANSITIONS_ENFORCED', 'sometimes'],
+      ['AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', 'eventually'],
+    ])('rejects non-boolean %s', (key, value) => {
+      withEnv({ ...validEnv, [key]: value }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(key));
+      });
+    });
+  });
+
   it('accepts explicit production bootstrap admin credentials', () => {
     withEnv({
       ...validEnv,

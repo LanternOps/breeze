@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lt, lte, sql } from 'drizzle-orm';
 import { authBrowserTransitions } from '../db/schema/authBrowserTransitions';
 import {
   withAuthLifecycleSystemTransaction,
@@ -19,6 +19,9 @@ const AUTH_NATIVE_BINDING_VALUE_DOMAIN = 'auth-native-binding-value:v1:';
 const AUTH_BINDING_SUCCESSOR_DOMAIN = 'auth-browser-binding-successor:v1:';
 const AUTH_ISSUANCE_LEASE_MINUTES = 2;
 const AUTH_ISSUANCE_CAPABILITY: unique symbol = Symbol('AuthIssuanceCapability');
+
+export const AUTH_BROWSER_TRANSITION_DIAGNOSTIC_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const AUTH_BROWSER_TRANSITION_CLEANUP_BATCH_SIZE = 500;
 
 export const NATIVE_AUTH_BINDING_HEADER = 'x-breeze-native-auth-binding';
 
@@ -524,6 +527,92 @@ export function rotateExpiredBinding(source: AuthBindingSource): Promise<AuthBin
 /** Reserve one short database-time lease without spanning verification or network work. */
 export function beginAuthIssuance(source: AuthBindingSource): Promise<AuthIssuanceCapability> {
   return defaultAuthBrowserTransitionService.beginAuthIssuance(source);
+}
+
+export type AuthBrowserTransitionCleanupStats = Readonly<{
+  retiredPending: number;
+  deletedRetired: number;
+}>;
+
+/**
+ * Bound abandoned-flow recovery work so cleanup cannot hold the transition
+ * table for an unbounded pass. Admission remains the correctness path: this
+ * sweep only retires already-expired pending rows and later removes diagnostic
+ * rows after the maximum 30-day refresh-family lifetime has elapsed.
+ */
+export async function cleanupAuthBrowserTransitions(
+  options: Readonly<{ batchSize?: number }> = {},
+): Promise<AuthBrowserTransitionCleanupStats> {
+  const batchSize = Math.max(
+    1,
+    Math.min(options.batchSize ?? AUTH_BROWSER_TRANSITION_CLEANUP_BATCH_SIZE, 5_000),
+  );
+
+  return withAuthLifecycleSystemTransaction(async (tx) => {
+    const pendingCandidates = await tx
+      .select({ id: authBrowserTransitions.id })
+      .from(authBrowserTransitions)
+      .where(and(
+        eq(authBrowserTransitions.state, 'logout_pending'),
+        isNotNull(authBrowserTransitions.logoutExpiresAt),
+        lte(authBrowserTransitions.logoutExpiresAt, sql`now()`),
+      ))
+      .for('update', { skipLocked: true })
+      .limit(batchSize);
+
+    let retiredPending = 0;
+    if (pendingCandidates.length > 0) {
+      const retired = await tx
+        .update(authBrowserTransitions)
+        .set({
+          state: 'retired',
+          activeOperationId: null,
+          activeOperationExpiresAt: null,
+          retiredAt: sql`now()`,
+          updatedAt: sql`now()`,
+        })
+        .where(and(
+          inArray(authBrowserTransitions.id, pendingCandidates.map(({ id }) => id)),
+          eq(authBrowserTransitions.state, 'logout_pending'),
+          isNotNull(authBrowserTransitions.logoutExpiresAt),
+          lte(authBrowserTransitions.logoutExpiresAt, sql`now()`),
+        ))
+        .returning({ id: authBrowserTransitions.id });
+      retiredPending = retired.length;
+    }
+
+    const retentionCutoff = sql`now() - ${AUTH_BROWSER_TRANSITION_DIAGNOSTIC_RETENTION_MS} * interval '1 millisecond'`;
+    const retiredCandidates = await tx
+      .select({ id: authBrowserTransitions.id })
+      .from(authBrowserTransitions)
+      .where(and(
+        eq(authBrowserTransitions.state, 'retired'),
+        isNotNull(authBrowserTransitions.retiredAt),
+        lt(authBrowserTransitions.retiredAt, retentionCutoff),
+        isNull(authBrowserTransitions.activeOperationId),
+        isNull(authBrowserTransitions.activeOperationExpiresAt),
+      ))
+      .for('update', { skipLocked: true })
+      .limit(batchSize);
+
+    let deletedRetired = 0;
+    if (retiredCandidates.length > 0) {
+      const deleted = await tx
+        .delete(authBrowserTransitions)
+        .where(and(
+          inArray(authBrowserTransitions.id, retiredCandidates.map(({ id }) => id)),
+          eq(authBrowserTransitions.state, 'retired'),
+          isNotNull(authBrowserTransitions.retiredAt),
+          lt(authBrowserTransitions.retiredAt, retentionCutoff),
+          isNull(authBrowserTransitions.activeOperationId),
+          isNull(authBrowserTransitions.activeOperationExpiresAt),
+        ))
+        .returning({ id: authBrowserTransitions.id });
+      deletedRetired = deleted.length;
+    }
+
+    return Object.freeze({ retiredPending, deletedRetired });
+  });
 }
 
 export type StoredAuthTransitionIdentity = Readonly<{

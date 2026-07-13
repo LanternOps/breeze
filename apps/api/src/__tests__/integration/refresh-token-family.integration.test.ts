@@ -90,11 +90,7 @@ async function loginAndExtractSession(
   email: string,
   password: string
 ): Promise<{ cookies: RefreshCookies; accessToken: string }> {
-  const res = await app.request('/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password })
-  });
+  const { response: res } = await requestLoginWithBindingBootstrap(app, email, password);
   expect(res.status).toBe(200);
   const setCookie = res.headers.get('set-cookie') ?? '';
   const cookies = extractCookies(setCookie);
@@ -103,6 +99,28 @@ async function loginAndExtractSession(
   }
   const body = await res.json() as { tokens: { accessToken: string } };
   return { cookies, accessToken: body.tokens.accessToken };
+}
+
+async function requestLoginWithBindingBootstrap(
+  app: Hono,
+  email: string,
+  password: string,
+): Promise<{ response: Response; bindingCookie: string | null }> {
+  const init: RequestInit = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  };
+  const first = await app.request('/auth/login', init);
+  if (first.status !== 428) return { response: first, bindingCookie: null };
+  const replacement = extractCsrfCookie(first.headers.get('set-cookie') ?? '');
+  if (!replacement) throw new Error('Login 428 omitted replacement binding cookie');
+  const headers = new Headers(init.headers);
+  headers.set('cookie', replacement.csrfCookieValue);
+  return {
+    response: await app.request('/auth/login', { ...init, headers }),
+    bindingCookie: replacement.csrfCookieValue,
+  };
 }
 
 async function refreshWithCookies(
@@ -317,11 +335,11 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
       .where(eq(users.id, user.id));
 
     // Step 1: /login → mfaRequired=true + tempToken
-    const loginRes = await app.request('/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
+    const { response: loginRes, bindingCookie } = await requestLoginWithBindingBootstrap(
+      app,
+      email,
+      password,
+    );
     expect(loginRes.status).toBe(200);
     const loginBody = (await loginRes.json()) as { mfaRequired: boolean; tempToken: string };
     expect(loginBody.mfaRequired).toBe(true);
@@ -331,7 +349,10 @@ describe('Refresh-Token Family Revocation (Task 7)', () => {
     const totpCode = await generate({ secret: mfaSecret });
     const mfaRes = await app.request('/auth/mfa/verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(bindingCookie ? { Cookie: bindingCookie } : {}),
+      },
       body: JSON.stringify({ tempToken: loginBody.tempToken, code: totpCode }),
     });
     expect(mfaRes.status).toBe(200);
@@ -489,14 +510,11 @@ describe('Durable logout/refresh race (Task 6)', () => {
       password: 'FamilyPass123!',
     });
 
-    const loginRes = await app.request('/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: 'logout-race@example.com',
-        password: 'FamilyPass123!',
-      }),
-    });
+    const { response: loginRes } = await requestLoginWithBindingBootstrap(
+      app,
+      'logout-race@example.com',
+      'FamilyPass123!',
+    );
     expect(loginRes.status).toBe(200);
     const loginBody = await loginRes.json() as { tokens: { accessToken: string } };
     const originalCookies = extractCookies(loginRes.headers.get('set-cookie') ?? '');

@@ -4,18 +4,16 @@ import { Hono } from 'hono';
 import {
   clearRefreshCookieOnly,
   clearRefreshTokenCookie,
-  clearCfAccessLogoutQuarantineCookie,
   getAllowedOrigins,
   hashRecoveryCode,
   rotateCsrfBindingCookie,
-  setCfAccessLogoutQuarantineCookie,
   setRefreshTokenCookie,
   userRequiresSetup,
   validateTerminalCookieCsrfRequest,
 } from './helpers';
 
-describe('Cloudflare logout quarantine cookie', () => {
-  it('rejects every refresh-cookie writer while terminal logout is quarantined', async () => {
+describe('retired Cloudflare logout quarantine cookie', () => {
+  it('never treats the legacy response cookie as refresh issuance authority', async () => {
     const app = new Hono();
     app.get('/issue', (c) => {
       setRefreshTokenCookie(c, 'new-refresh-token');
@@ -26,30 +24,9 @@ describe('Cloudflare logout quarantine cookie', () => {
       headers: { cookie: 'breeze_cf_logout_quarantine=1' },
     });
 
-    expect(response.status).toBe(409);
-    expect(response.headers.get('set-cookie') ?? '').not.toContain('new-refresh-token');
-  });
-
-  it('sets an HttpOnly bounded barrier and clears it only at the explicit return boundary', async () => {
-    const app = new Hono();
-    app.get('/set', (c) => {
-      setCfAccessLogoutQuarantineCookie(c);
-      return c.json({ success: true });
-    });
-    app.get('/clear', (c) => {
-      clearCfAccessLogoutQuarantineCookie(c);
-      return c.json({ success: true });
-    });
-
-    const setResponse = await app.request('/set');
-    expect(setResponse.headers.get('set-cookie')).toMatch(
-      /breeze_cf_logout_quarantine=1; Path=\/api\/v1; HttpOnly; .*Max-Age=600/,
-    );
-    const clearResponse = await app.request('/clear');
-    expect(clearResponse.headers.get('set-cookie')).toContain(
-      'breeze_cf_logout_quarantine=; Path=/api/v1; HttpOnly',
-    );
-    expect(clearResponse.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('set-cookie') ?? '').toContain('new-refresh-token');
+    expect(response.headers.get('set-cookie') ?? '').not.toContain('breeze_cf_logout_quarantine');
   });
 });
 
@@ -73,7 +50,7 @@ describe('durable browser binding cookies', () => {
     expect(setCookie.match(/breeze_csrf_token=([0-9a-f]{64})/)?.[1]).toBe(csrf);
   });
 
-  it('keeps the legacy unguarded path functional with a fresh 256-bit CSRF value', async () => {
+  it('bootstraps a missing binding with a fresh 256-bit CSRF value', async () => {
     const app = new Hono();
     app.get('/issue', (c) => {
       setRefreshTokenCookie(c, 'new-refresh-token');

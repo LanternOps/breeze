@@ -154,6 +154,7 @@ import { captureException, flushSentry, initSentry } from './services/sentry';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 import { partnerGuard } from './middleware/partnerGuard';
 import { API_VERSION } from './version';
+import { assertAuthBrowserTransitionRolloutCompatible } from './services/authBrowserTransitionRollout';
 
 // Workers
 import { initializeAlertWorkers, shutdownAlertWorkers } from './jobs/alertWorker';
@@ -179,6 +180,10 @@ import {
   initializeEnrollmentKeyCleanupWorker,
   shutdownEnrollmentKeyCleanupWorker,
 } from './jobs/enrollmentKeyCleanup';
+import {
+  initializeAuthBrowserTransitionCleanupWorker,
+  shutdownAuthBrowserTransitionCleanupWorker,
+} from './jobs/authBrowserTransitionCleanup';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import {
   initializeAuditChainVerifyWorker,
@@ -1165,6 +1170,7 @@ async function initializeWorkers(): Promise<void> {
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
     ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
+    ['authBrowserTransitionCleanup', initializeAuthBrowserTransitionCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
     ['auditChainAnchor', initializeAuditChainAnchorWorker],
@@ -1357,6 +1363,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
     shutdownEnrollmentKeyCleanupWorker,
+    shutdownAuthBrowserTransitionCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownAuditChainVerifyWorker,
     shutdownAuditChainAnchorWorker,
@@ -1505,6 +1512,7 @@ async function bootstrap(): Promise<void> {
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().
   const config = validateConfig();
+  assertAuthBrowserTransitionRolloutCompatible();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);

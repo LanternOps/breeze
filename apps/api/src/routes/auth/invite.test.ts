@@ -54,7 +54,6 @@ vi.mock('../../services', () => ({
     expiresInSeconds: 900,
     familyId: 'family-1',
   })),
-  issueUserSessionLegacyDuringTransition: vi.fn(),
   rateLimiter: vi.fn(async () => ({ allowed: true })),
 }));
 

@@ -12,10 +12,8 @@ import {
   RefreshTokenCurrentnessError,
   rotateRefreshTokenFamilyCurrentJti,
 } from './refreshTokenFamily';
-import {
-  withAuthLifecycleSystemTransaction,
-  type AuthLifecycleTransaction,
-} from './authLifecycle';
+import type { AuthLifecycleTransaction } from './authLifecycle';
+
 import {
   assertAuthIssuanceCapability,
   bindAuthIssuanceSession,
@@ -68,20 +66,16 @@ type GuardedIssueOptions = {
   }>;
 };
 
-type LegacyIssueOptions = { tx?: AuthLifecycleTransaction };
-
 async function issueInTransaction(
   identity: UserSessionIdentity,
   options: {
     tx: AuthLifecycleTransaction;
-    capability?: AuthIssuanceCapability;
+    capability: AuthIssuanceCapability;
     familyId?: string;
     refreshRotation?: GuardedIssueOptions['refreshRotation'];
   },
 ): Promise<TokenPair & { familyId: string }> {
-  if (options.capability) {
-    await assertAuthIssuanceCapability(options.tx, options.capability);
-  }
+  await assertAuthIssuanceCapability(options.tx, options.capability);
 
   // Global order: transition (above), user, then family.
   const epochs = await lockUserSecurityEpochs(identity.userId, options.tx);
@@ -123,14 +117,12 @@ async function issueInTransaction(
     sid: familyId,
   }, { refreshFam: familyId, refreshJti });
 
-  if (options.capability) {
-    await bindAuthIssuanceSession(
-      options.tx,
-      options.capability,
-      identity.userId,
-      familyId,
-    );
-  }
+  await bindAuthIssuanceSession(
+    options.tx,
+    options.capability,
+    identity.userId,
+    familyId,
+  );
   return { ...tokens, familyId };
 }
 
@@ -143,23 +135,6 @@ export async function issueUserSession(
     throw new Error('Guarded user-session issuance requires a transaction and capability');
   }
   return issueInTransaction(identity, options);
-}
-
-/**
- * Temporary Tasks 4-9 migration seam. Its exact callers are frozen by the
- * source contract; refresh is forbidden from using it and Task 11 removes it.
- */
-export async function issueUserSessionLegacyDuringTransition(
-  identity: UserSessionIdentity,
-  existingOptions: LegacyIssueOptions = {},
-): Promise<TokenPair & { familyId: string }> {
-  if (existingOptions.tx) {
-    return issueInTransaction(identity, { tx: existingOptions.tx });
-  }
-  const issued = await withAuthLifecycleSystemTransaction((tx) =>
-    issueInTransaction(identity, { tx }));
-  await bindIssuedUserSession(issued);
-  return issued;
 }
 
 /** Populate the Redis JTI accelerator only after the authoritative commit. */

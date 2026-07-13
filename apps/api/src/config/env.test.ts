@@ -16,6 +16,8 @@ const OAUTH_ENV_KEYS = [
   'MFA_FORCE_FOR_PARTNER_ADMIN',
   'DASHBOARD_URL',
   'PUBLIC_APP_URL',
+  'AUTH_BROWSER_TRANSITIONS_ENFORCED',
+  'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED',
 ] as const;
 
 const clearOauthEnv = () => {
@@ -50,6 +52,33 @@ describe('config env', () => {
     process.env.MCP_OAUTH_ENABLED = 'foo';
     const mod = await loadEnv();
     expect(mod.MCP_OAUTH_ENABLED).toBe(false);
+  });
+
+  describe('durable browser-transition rollout', () => {
+    it('keeps issuer readiness and terminal preparation disabled by default', async () => {
+      const mod = await loadEnv();
+
+      expect(mod.authBrowserTransitionsEnforced()).toBe(false);
+      expect(mod.authBrowserTerminalPreparationEnabled()).toBe(false);
+    });
+
+    it.each(['true', '1', 'yes', 'on'])('enables both stages only for explicit truthy values (%s)', async (value) => {
+      process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = value;
+      process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = value;
+      const mod = await loadEnv();
+
+      expect(mod.authBrowserTransitionsEnforced()).toBe(true);
+      expect(mod.authBrowserTerminalPreparationEnabled()).toBe(true);
+    });
+
+    it('fails closed at runtime when terminal preparation is requested before issuer readiness', async () => {
+      process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'false';
+      process.env.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED = 'true';
+      const mod = await loadEnv();
+
+      expect(mod.authBrowserTransitionsEnforced()).toBe(false);
+      expect(mod.authBrowserTerminalPreparationEnabled()).toBe(false);
+    });
   });
 
   // Task 21 (May 2026): DCR now defaults OFF in every environment.

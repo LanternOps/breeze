@@ -17,7 +17,6 @@ import { digestRefreshTokenJti } from './refreshTokenFamily';
 import {
   bindIssuedUserSession,
   issueUserSession,
-  issueUserSessionLegacyDuringTransition,
   type UserSessionIdentity,
 } from './userSession';
 import type { AuthLifecycleTransaction } from './authLifecycle';
@@ -193,15 +192,4 @@ describe('issueUserSession', () => {
     expect(transitionMocks.bindAuthIssuanceSession).not.toHaveBeenCalled();
   });
 
-  it('keeps the named legacy seam buildable without accepting a capability', async () => {
-    const harness = transactionHarness([[{ authEpoch: 3, mfaEpoch: 5 }]]);
-    const session = await issueUserSessionLegacyDuringTransition(identity, { tx: harness.tx });
-    expect(session.familyId).toEqual(expect.any(String));
-    expect(transitionMocks.assertAuthIssuanceCapability).not.toHaveBeenCalled();
-    expect(harness.inserted[0]).toMatchObject({
-      currentRefreshJtiDigest: digestRefreshTokenJti(session.refreshJti),
-    });
-    await bindIssuedUserSession(session);
-    expect(revocationMocks.rememberJtiFamily).toHaveBeenCalledWith(session.refreshJti, session.familyId);
-  });
 });

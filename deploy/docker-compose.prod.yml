@@ -79,6 +79,8 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      AUTH_BROWSER_TRANSITIONS_ENFORCED: ${AUTH_BROWSER_TRANSITIONS_ENFORCED:-false}
+      AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: ${AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED:-false}
       AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
       # Backup control-plane URL pushed to agents via heartbeat (#2288);
       # see docs/deploy/agent-server-url-migration.md

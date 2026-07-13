@@ -53,7 +53,6 @@ vi.mock('../../services', () => ({
   hashPassword: vi.fn(async () => 'hashed'),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),
   issueUserSession: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', refreshJti: 'jti-mock', expiresInSeconds: 900, familyId: 'family-id-mock' })),
-  issueUserSessionLegacyDuringTransition: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', refreshJti: 'jti-mock', expiresInSeconds: 900, familyId: 'family-id-mock' })),
   rateLimiter: vi.fn(async () => ({ allowed: true })),
   getRedis: vi.fn(() => ({})),
 }));
