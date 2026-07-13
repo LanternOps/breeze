@@ -115,7 +115,7 @@ func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.CommandResult{
 			Status: "failed",
 			Error: fmt.Sprintf(
-				"capture_pprof rate-limited: at most one capture per %s (captures force a stop-the-world GC); retry later",
+				"capture_pprof rate-limited: at most one capture per %s (heap captures force a stop-the-world GC); retry later",
 				interval),
 		}
 	}

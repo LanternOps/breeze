@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,6 +209,58 @@ func TestHandleCapturePprofThrottled(t *testing.T) {
 	})
 	if res.Status != "completed" {
 		t.Fatalf("capture after interval elapsed: status = %q (error: %q), want completed", res.Status, res.Error)
+	}
+}
+
+// TestCapturePprofTryAcquireConcurrent verifies that overlapping pool
+// workers racing for one capture slot yield exactly one winner — the burst
+// scenario (#2422: up to 10 concurrent queued captures) the throttle exists
+// to prevent. Mirrors TestHeartbeatWatchdogTryAcquireDumpConcurrent; the CAS
+// loop is a separate copy, so the watchdog's test does not cover it.
+func TestCapturePprofTryAcquireConcurrent(t *testing.T) {
+	resetCapturePprofThrottle()
+	t.Cleanup(resetCapturePprofThrottle)
+
+	now := time.Now()
+	const n = 32
+	var winners atomic.Int64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if capturePprofTryAcquire(now, time.Hour) {
+				winners.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := winners.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 winner among %d concurrent acquisitions, got %d", n, got)
+	}
+}
+
+// TestCapturePprofTryAcquireInterval pins the interval boundary semantics
+// with injected times (no sleeps).
+func TestCapturePprofTryAcquireInterval(t *testing.T) {
+	resetCapturePprofThrottle()
+	t.Cleanup(resetCapturePprofThrottle)
+
+	base := time.Now()
+	interval := 30 * time.Second
+
+	if !capturePprofTryAcquire(base, interval) {
+		t.Fatal("first acquisition must succeed")
+	}
+	if capturePprofTryAcquire(base.Add(interval-time.Nanosecond), interval) {
+		t.Fatal("acquisition 1ns before the interval elapses must be rejected")
+	}
+	if !capturePprofTryAcquire(base.Add(interval), interval) {
+		t.Fatal("acquisition exactly at the interval must succeed")
 	}
 }
 
