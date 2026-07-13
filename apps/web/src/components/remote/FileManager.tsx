@@ -63,7 +63,7 @@ export type TransferItem = {
   id: string;
   filename: string;
   direction: 'upload' | 'download';
-  status: 'pending' | 'transferring' | 'completed' | 'failed' | 'unverified';
+  status: 'pending' | 'transferring' | 'completed' | 'failed' | 'unverified' | 'cancelled';
   progress: number;
   size: number;
   error?: string;
@@ -312,6 +312,14 @@ export default function FileManager({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // One AbortController per in-flight transfer so Cancel actually aborts the
+  // browser-side request instead of just hiding the row (issue #2396).
+  const transferControllersRef = useRef<Map<string, AbortController>>(new Map());
+  // Ids the user cancelled — lets the catch paths tell an intentional abort
+  // apart from a real failure (e.g. the upload watchdog timeout, which aborts
+  // the same controller but is NOT a user cancel).
+  const cancelledTransfersRef = useRef<Set<string>>(new Set());
+
   // Fetch directory contents
   const fetchDirectory = useCallback(async (path: string) => {
     setLoading(true);
@@ -400,6 +408,8 @@ export default function FileManager({
   // Initiate file download
   const initiateDownload = useCallback(async (entry: FileEntry) => {
     const transferId = crypto.randomUUID();
+    const controller = new AbortController();
+    transferControllersRef.current.set(transferId, controller);
 
     setTransfers(prev => [...prev, {
       id: transferId,
@@ -416,7 +426,9 @@ export default function FileManager({
       ));
 
       const params = new URLSearchParams({ path: entry.path });
-      const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/download?${params}`);
+      const response = await fetchWithAuth(`/system-tools/devices/${deviceId}/files/download?${params}`, {
+        signal: controller.signal,
+      });
       if (!response.ok) {
         const err = await response.json().catch(() => ({ error: t('fileManager.errors.download') }));
         throw new Error(err.error || t('fileManager.errors.download'));
@@ -440,6 +452,11 @@ export default function FileManager({
         t.id === transferId ? { ...t, status: 'completed', progress: 100 } : t
       ));
     } catch (error) {
+      if (cancelledTransfersRef.current.has(transferId)) {
+        // Intentional user cancel — cancelTransfer already marked the row
+        // 'cancelled'; don't overwrite it with a generic failure.
+        return;
+      }
       console.error('[FileManager] Download failed:', error);
       setTransfers(prev => prev.map(transfer =>
         transfer.id === transferId ? {
@@ -448,6 +465,9 @@ export default function FileManager({
           error: error instanceof Error ? error.message : t('fileManager.errors.download')
         } : transfer
       ));
+    } finally {
+      transferControllersRef.current.delete(transferId);
+      cancelledTransfersRef.current.delete(transferId);
     }
   }, [deviceId]);
 
@@ -462,6 +482,8 @@ export default function FileManager({
   const handleUpload = useCallback(async (files: FileList) => {
     for (const file of Array.from(files)) {
       const transferId = crypto.randomUUID();
+      const controller = new AbortController();
+      transferControllersRef.current.set(transferId, controller);
 
       setTransfers(prev => [...prev, {
         id: transferId,
@@ -490,6 +512,12 @@ export default function FileManager({
           reader.readAsDataURL(file);
         });
 
+        // Bail before dispatch if the user cancelled during the local read —
+        // the write command never reaches the API in that case.
+        if (controller.signal.aborted) {
+          throw new DOMException('The transfer was cancelled.', 'AbortError');
+        }
+
         setTransfers(prev => prev.map(t =>
           t.id === transferId ? { ...t, progress: 40 } : t
         ));
@@ -498,13 +526,14 @@ export default function FileManager({
         const remotePath = joinRemotePath(currentPath, file.name);
 
         // Large files transit API → DB → WS → agent → disk; allow up to 2 minutes.
-        const uploadController = new AbortController();
-        const uploadTimeout = setTimeout(() => uploadController.abort(), 120_000);
+        // The watchdog shares the transfer's controller so user cancel and
+        // timeout both abort the same request.
+        const uploadTimeout = setTimeout(() => controller.abort(), 120_000);
         try {
           await uploadFile(
             deviceId,
             { path: remotePath, content, encoding: 'base64' },
-            { signal: uploadController.signal },
+            { signal: controller.signal },
           );
         } finally {
           clearTimeout(uploadTimeout);
@@ -517,6 +546,10 @@ export default function FileManager({
         // Refresh directory to show new file
         fetchDirectory(currentPath);
       } catch (error) {
+        if (cancelledTransfersRef.current.has(transferId)) {
+          // Intentional user cancel — the row is already marked 'cancelled'.
+          continue;
+        }
         console.error('[FileManager] Upload failed:', error);
         const message = error instanceof Error ? error.message : t('fileManager.errors.upload');
         const status: TransferItem['status'] =
@@ -524,6 +557,9 @@ export default function FileManager({
         setTransfers(prev => prev.map(t =>
           t.id === transferId ? { ...t, status, error: message } : t
         ));
+      } finally {
+        transferControllersRef.current.delete(transferId);
+        cancelledTransfersRef.current.delete(transferId);
       }
     }
   }, [deviceId, currentPath, fetchDirectory]);
@@ -548,10 +584,23 @@ export default function FileManager({
     }
   }, [handleUpload]);
 
-  // Cancel transfer
-  const cancelTransfer = useCallback(async (transferId: string) => {
-    setTransfers(prev => prev.filter(t => t.id !== transferId));
-  }, []);
+  // Cancel an in-flight transfer. This aborts the browser-side request only:
+  // there is no device-side cancellation on the single-shot file_read /
+  // file_write path, so a write command that already reached the API may
+  // still complete on the device (issue #2396).
+  const cancelTransfer = useCallback((transferId: string) => {
+    cancelledTransfersRef.current.add(transferId);
+    transferControllersRef.current.get(transferId)?.abort();
+    setTransfers(prev => prev.map(item => {
+      if (item.id !== transferId) return item;
+      // Progress hits 40 right before the upload request is dispatched — from
+      // then on the device may still write the file even though we aborted.
+      const note = item.direction === 'upload' && item.progress >= 40
+        ? t('fileManager.cancelledUploadNote')
+        : undefined;
+      return { ...item, status: 'cancelled', error: note };
+    }));
+  }, [t]);
 
   // Remove completed transfer from list
   const dismissTransfer = useCallback((transferId: string) => {
@@ -1500,7 +1549,11 @@ export default function FileManager({
                   {transfer.error && (
                     <p className={cn(
                       'mt-1 text-xs',
-                      transfer.status === 'unverified' ? 'text-amber-500' : 'text-red-500',
+                      transfer.status === 'unverified'
+                        ? 'text-amber-500'
+                        : transfer.status === 'cancelled'
+                          ? 'text-muted-foreground'
+                          : 'text-red-500',
                     )}>
                       {transfer.error}
                     </p>
@@ -1515,6 +1568,11 @@ export default function FileManager({
                   )}
                   {transfer.status === 'unverified' && (
                     <AlertTriangle className="h-4 w-4 text-amber-500" />
+                  )}
+                  {transfer.status === 'cancelled' && (
+                    <span className="text-xs text-muted-foreground">
+                      {t('fileManager.cancelled')}
+                    </span>
                   )}
                   {transfer.status === 'transferring' && (
                     <span className="text-xs text-muted-foreground">
