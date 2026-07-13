@@ -566,6 +566,7 @@
     "noScanHistoryYet": "No scan history yet.",
     "quickScan": "Quick scan",
     "scanHistory": "Scan history",
+    "scanHistoryUnavailable": "Scan history couldn't be loaded.",
     "scanType": "Scan type",
     "scanTypeLabel": "{{type}} scan",
     "scansAreQueuedImmediatelyOnSelectedDevices": "Scans are queued immediately on selected devices.",

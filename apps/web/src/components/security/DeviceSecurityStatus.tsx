@@ -12,6 +12,8 @@ import {
 import { fetchWithAuth } from "@/stores/auth";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { friendlyFetchError } from "@/lib/utils";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 type DeviceSecurity = {
   deviceId: string;
   deviceName: string;
@@ -44,15 +46,18 @@ export default function DeviceSecurityStatus({
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const fetchStatus = useCallback(async () => {
     setLoading(true);
     setError(undefined);
+    setErrorKind("none");
     try {
       let resolvedDeviceId = deviceId;
       if (!resolvedDeviceId) {
         const listRes = await fetchWithAuth("/security/status?limit=1");
-        if (!listRes.ok)
-          throw new Error(`${listRes.status} ${listRes.statusText}`);
+        // HttpError (not a bare Error) so a 403 survives the throw and the render
+        // can tell "you may not see this" from "this broke, try again" (#2472).
+        throwIfNotOk(listRes);
         const listJson = await listRes.json();
         resolvedDeviceId = listJson.data?.[0]?.deviceId;
       }
@@ -63,12 +68,14 @@ export default function DeviceSecurityStatus({
       const statusRes = await fetchWithAuth(
         `/security/status/${resolvedDeviceId}`,
       );
-      if (!statusRes.ok)
-        throw new Error(`${statusRes.status} ${statusRes.statusText}`);
+      throwIfNotOk(statusRes);
       const statusJson = await statusRes.json();
       setData(statusJson.data ?? null);
     } catch (err) {
-      setError(friendlyFetchError(err));
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      // 'denied' renders AccessDenied, which supplies its own copy.
+      if (kind === "other") setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -86,8 +93,7 @@ export default function DeviceSecurityStatus({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scanType: "quick" }),
       });
-      if (!response.ok)
-        throw new Error(`${response.status} ${response.statusText}`);
+      throwIfNotOk(response);
       await fetchStatus();
     } catch (err) {
       setError(friendlyFetchError(err));
@@ -106,6 +112,17 @@ export default function DeviceSecurityStatus({
           <Loader2 className="h-4 w-4 animate-spin" />
           {t("securityDeviceSecurityStatus.loadingSecurityStatus")}
         </div>
+      </div>
+    );
+  }
+  // A 403 is terminal for this user — a retry hits the same permission gate. Stop
+  // before the protection panels: falling through would paint the "no device
+  // security data" empty state and tell someone who may not see the data that
+  // there's nothing to show. Fabricated emptiness is worse than an error. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
+        <AccessDenied testId="device-security-status-denied" />
       </div>
     );
   }

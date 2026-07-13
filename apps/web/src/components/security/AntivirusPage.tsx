@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { Loader2, Search, ShieldCheck, ShieldOff } from "lucide-react";
 import { cn, formatNumber, friendlyFetchError } from "@/lib/utils";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
+import AccessDenied from "../shared/AccessDenied";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 type DeviceStatus = {
@@ -63,6 +65,7 @@ export default function AntivirusPage() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -75,6 +78,7 @@ export default function AntivirusPage() {
   const fetchData = useCallback(
     async (page = 1) => {
       setError(undefined);
+      setErrorKind("none");
       setLoading(true);
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -90,7 +94,9 @@ export default function AntivirusPage() {
           }),
           fetchWithAuth("/security/dashboard", { signal: controller.signal }),
         ]);
-        if (!statusRes.ok) throw new Error(`${statusRes.status}`);
+        // HttpError (not a bare Error) so a 403 survives the throw and the render
+        // can tell "you may not see this" from "this broke, try again" (#2472).
+        throwIfNotOk(statusRes);
         const statusJson = await statusRes.json();
         if (!Array.isArray(statusJson.data))
           throw new Error(t("securityAntivirusPage.invalidResponseFromServer"));
@@ -108,7 +114,10 @@ export default function AntivirusPage() {
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         console.error("[AntivirusPage] fetch error:", err);
-        setError(friendlyFetchError(err));
+        const kind = errorKindOf(err);
+        setErrorKind(kind);
+        // 'denied' renders AccessDenied, which supplies its own copy.
+        if (kind === "other") setError(friendlyFetchError(err));
       } finally {
         setLoading(false);
       }
@@ -131,6 +140,23 @@ export default function AntivirusPage() {
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
+      </div>
+    );
+  }
+  // A 403 is terminal for this user — a retry hits the same permission gate. Stop
+  // before the summary tiles: falling through would paint the zeroed `dashboard`
+  // default and tell someone who may not see the data that 0 devices are
+  // protected. Fabricated zeros are worse than an error. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div className="space-y-6">
+        <SecurityPageHeader
+          title={t("securityAntivirusPage.antivirusCoverage")}
+          subtitle={t(
+            "securityAntivirusPage.endpointProtectionStatusAcrossAllDevices",
+          )}
+        />
+        <AccessDenied testId="security-antivirus-denied" />
       </div>
     );
   }

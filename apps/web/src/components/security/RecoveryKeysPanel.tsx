@@ -10,9 +10,11 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { cn, friendlyFetchError } from "@/lib/utils";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { fetchWithAuth } from "@/stores/auth";
 import { ActionError, handleActionError, runAction } from "@/lib/runAction";
+import AccessDenied from "../shared/AccessDenied";
 type KeyMeta = {
   id: string;
   keyType: "bitlocker_recovery_password" | "filevault_personal_recovery_key";
@@ -56,6 +58,7 @@ export default function RecoveryKeysPanel({
   const [data, setData] = useState<PanelData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [busyKeyId, setBusyKeyId] = useState<string | null>(null);
   const [rotateOpen, setRotateOpen] = useState(false);
@@ -75,17 +78,25 @@ export default function RecoveryKeysPanel({
     const controller = new AbortController();
     abortRef.current = controller;
     setError(undefined);
+    setErrorKind("none");
     try {
       const res = await fetchWithAuth(
         `/security/encryption/devices/${deviceId}/recovery-keys`,
         { signal: controller.signal },
       );
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      // HttpError (not a bare Error) so a 403 survives the throw and the render
+      // can tell "you may not see this" from "this broke, try again". Recovery
+      // keys are one of the most tightly gated reads in the product, so a 403
+      // here is an ordinary outcome, not a malfunction. (#2472)
+      throwIfNotOk(res);
       const json = await res.json();
       setData(json.data ?? null);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
-      setError(friendlyFetchError(err));
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      // 'denied' renders AccessDenied, which supplies its own copy.
+      if (kind === "other") setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -195,6 +206,11 @@ export default function RecoveryKeysPanel({
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     );
+  }
+  // Not an error state: this tech simply may not read recovery keys. A retry
+  // would hit the same gate, so show the denial instead of a red failure. (#2472)
+  if (errorKind === "denied") {
+    return <AccessDenied testId="recovery-keys-denied" />;
   }
   if (error) {
     return <p className="py-4 text-sm text-destructive">{error}</p>;

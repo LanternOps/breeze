@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Filter, Loader2, RefreshCw, Search } from "lucide-react";
 import { navigateTo } from "@/lib/navigation";
 import { cn, friendlyFetchError } from "../../lib/utils";
+import { errorKindOf, type LoadErrorKind } from "@/lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 import { handleActionError } from "../../lib/runAction";
 import {
   fetchS1Threats,
@@ -71,11 +73,13 @@ export default function S1ThreatList() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const [actingId, setActingId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const load = useCallback(async () => {
     setLoading(true);
     setError(undefined);
+    setErrorKind("none");
     try {
       const result = await fetchS1Threats({
         limit: 100,
@@ -88,7 +92,10 @@ export default function S1ThreatList() {
       setThreats(result.rows);
       setTotal(result.total);
     } catch (err) {
-      setError(friendlyFetchError(err));
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      // 'denied' renders AccessDenied, which supplies its own copy.
+      if (kind === "other") setError(friendlyFetchError(err));
       setThreats([]);
       setTotal(0);
     } finally {
@@ -186,6 +193,20 @@ export default function S1ThreatList() {
       </div>
     );
   };
+  // A 403 is terminal for this user — a retry hits the same permission gate. Stop
+  // before the table: `threats` was reset to [] on failure, so falling through
+  // would show a confident "no threats" all-clear to someone who simply is not
+  // allowed to see them. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div
+        className="rounded-lg border bg-card p-6 shadow-xs"
+        data-testid="s1-list"
+      >
+        <AccessDenied testId="s1-denied" />
+      </div>
+    );
+  }
   return (
     <div
       className="rounded-lg border bg-card p-6 shadow-xs"

@@ -12,6 +12,8 @@ import {
 import { fetchWithAuth } from "@/stores/auth";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { friendlyFetchError } from "@/lib/utils";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 import ProgressBar, {
   ProgressItemList,
   type ProgressItem,
@@ -54,6 +56,9 @@ export default function SecurityScanManager() {
     items: Map<string, "running" | "success" | "failed">;
   }>({ completed: 0, failed: 0, total: 0, items: new Map() });
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
+  // Distinguishes "this fleet has no scan history" from "we could not read it".
+  const [scanHistoryFailed, setScanHistoryFailed] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const selectedDevices = useMemo(
     () => devices.filter((device) => selectedIds.has(device.deviceId)),
@@ -81,7 +86,11 @@ export default function SecurityScanManager() {
         `/security/scans/${deviceId}?limit=10`,
         { signal },
       );
-      if (!response.ok) return [];
+      // Was `if (!response.ok) return []`, which silently turned a failed
+      // per-device scan fetch into "this device has no scan history". Throw so
+      // the settled-result handling below can distinguish a real empty list from
+      // a device whose scans we could not read. (#2472)
+      throwIfNotOk(response);
       const payload = await response.json();
       return Array.isArray(payload.data) ? payload.data : [];
     },
@@ -89,6 +98,7 @@ export default function SecurityScanManager() {
   );
   const fetchData = useCallback(async () => {
     setError(undefined);
+    setErrorKind("none");
     setLoading(true);
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -97,8 +107,9 @@ export default function SecurityScanManager() {
       const statusRes = await fetchWithAuth("/security/status?limit=100", {
         signal: controller.signal,
       });
-      if (!statusRes.ok)
-        throw new Error(`${statusRes.status} ${statusRes.statusText}`);
+      // HttpError (not a bare Error) so a 403 survives the throw and the render
+      // can tell "you may not see this" from "this broke, try again" (#2472).
+      throwIfNotOk(statusRes);
       const statusPayload = await statusRes.json();
       const nextDevices: DeviceStatus[] = Array.isArray(statusPayload.data)
         ? statusPayload.data.map((item: any) => ({
@@ -116,6 +127,19 @@ export default function SecurityScanManager() {
             fetchScansForDevice(device.deviceId, controller.signal),
           ),
       );
+      // A rejected per-device fetch is NOT "this device has no scans". Track it so
+      // an empty history renders as "couldn't be loaded" rather than a confident
+      // "No scan history yet." When some devices did return rows we still show
+      // them; the flag only changes the *empty* copy, which is exactly the case
+      // where "no scans" would be a lie. (#2472)
+      const rejected = scanResults.filter((r) => r.status === "rejected");
+      if (rejected.length > 0) {
+        console.error(
+          `[SecurityScanManager] ${rejected.length}/${scanResults.length} scan-history fetches failed:`,
+          (rejected[0] as PromiseRejectedResult).reason,
+        );
+      }
+      setScanHistoryFailed(rejected.length > 0);
       const nextScans = scanResults.flatMap((result) =>
         result.status === "fulfilled" ? result.value : [],
       );
@@ -130,7 +154,11 @@ export default function SecurityScanManager() {
       );
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
-      setError(friendlyFetchError(err));
+      console.error("[SecurityScanManager] fetch error:", err);
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      // 'denied' renders AccessDenied, which supplies its own copy.
+      if (kind === "other") setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -239,18 +267,31 @@ export default function SecurityScanManager() {
     if (!value) return "-";
     return formatDateTime(value, { fallback: "-" });
   };
+  const managerHeader = (
+    <div className="flex flex-col gap-2">
+      <h2 className="text-lg font-semibold">
+        {t("securitySecurityScanManager.securityScanManager")}
+      </h2>
+      <p className="text-sm text-muted-foreground">
+        {t("securitySecurityScanManager.startScansWatchProgressAndReviewScan")}
+      </p>
+    </div>
+  );
+  // The device list is the spine of this panel — without it there is nothing to
+  // scan and no history to show. A 403 is terminal, so stop here rather than
+  // rendering an empty device picker that implies the fleet has no devices.
+  // (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div className="space-y-6">
+        {managerHeader}
+        <AccessDenied testId="security-scan-manager-denied" />
+      </div>
+    );
+  }
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-2">
-        <h2 className="text-lg font-semibold">
-          {t("securitySecurityScanManager.securityScanManager")}
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          {t(
-            "securitySecurityScanManager.startScansWatchProgressAndReviewScan",
-          )}
-        </p>
-      </div>
+      {managerHeader}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
@@ -432,7 +473,10 @@ export default function SecurityScanManager() {
           <div className="mt-4 space-y-4">
             {activeScans.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                {t("securitySecurityScanManager.noActiveScans")}
+                {/* "No active scans" is only true if we actually read them. */}
+                {scanHistoryFailed
+                  ? t("securitySecurityScanManager.scanHistoryUnavailable")
+                  : t("securitySecurityScanManager.noActiveScans")}
               </p>
             ) : (
               activeScans.map((scan) => (
@@ -499,7 +543,10 @@ export default function SecurityScanManager() {
                       colSpan={5}
                       className="px-4 py-6 text-center text-sm text-muted-foreground"
                     >
-                      {t("securitySecurityScanManager.noScanHistoryYet")}
+                      {/* Empty vs unreadable are different facts — say which. */}
+                      {scanHistoryFailed
+                        ? t("securitySecurityScanManager.scanHistoryUnavailable")
+                        : t("securitySecurityScanManager.noScanHistoryYet")}
                     </td>
                   </tr>
                 ) : (

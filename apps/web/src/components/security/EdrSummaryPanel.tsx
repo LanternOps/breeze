@@ -3,6 +3,8 @@ import "@/lib/i18n";
 import { useEffect, useState } from "react";
 import { Activity, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 import SecurityStatCard from "./SecurityStatCard";
 interface S1Summary {
   totalAgents: number;
@@ -35,15 +37,31 @@ interface HuntressStatus {
 }
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetchWithAuth(url);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  // HttpError (not a bare Error) so a 403 survives the throw and the render can
+  // tell "you may not see this" from "this broke, try again" (#2472).
+  throwIfNotOk(res);
   return (await res.json()) as T;
+}
+
+/** Worst-case outcome across the two provider fetches. */
+function worstKind(...kinds: LoadErrorKind[]): LoadErrorKind {
+  if (kinds.includes("other")) return "other";
+  if (kinds.includes("denied")) return "denied";
+  return "none";
+}
+
+function settledKind(result: PromiseSettledResult<unknown>): LoadErrorKind {
+  return result.status === "rejected" ? errorKindOf(result.reason) : "none";
 }
 export default function EdrSummaryPanel() {
   const { t } = useTranslation("security");
   const [s1, setS1] = useState<S1Status | null>(null);
   const [huntress, setHuntress] = useState<HuntressStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [fetchFailed, setFetchFailed] = useState(false);
+  // Was a single `fetchFailed` boolean, which collapsed a 403 into the same bit
+  // as a 500 and reported a permission denial as "EDR status unavailable" — i.e.
+  // an outage. Keep the kind so the render can tell the two apart (#2472).
+  const [failureKind, setFailureKind] = useState<LoadErrorKind>("none");
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -58,9 +76,9 @@ export default function EdrSummaryPanel() {
       );
       // An unconfigured integration still resolves with { integration: null };
       // a rejected fetch is a real failure and must not look like "not configured".
-      setFetchFailed(
-        s1Res.status === "rejected" || huntressRes.status === "rejected",
-      );
+      // A transient failure outranks a denial: if either provider is genuinely
+      // broken, Retry/"unavailable" is still the honest message.
+      setFailureKind(worstKind(settledKind(s1Res), settledKind(huntressRes)));
       setLoading(false);
     })();
     return () => {
@@ -83,7 +101,19 @@ export default function EdrSummaryPanel() {
     );
   }
   if (!showS1 && !showHuntress) {
-    if (!fetchFailed) return null;
+    if (failureKind === "none") return null;
+    // A 403 is terminal for this user — a retry hits the same permission gate, and
+    // "EDR status unavailable" would misreport a permission denial as an outage.
+    if (failureKind === "denied") {
+      return (
+        <div
+          className="rounded-lg border bg-card p-6 shadow-xs"
+          data-testid="edr-summary-panel"
+        >
+          <AccessDenied testId="edr-summary-denied" />
+        </div>
+      );
+    }
     return (
       <div
         className="rounded-lg border bg-card p-6 shadow-xs"

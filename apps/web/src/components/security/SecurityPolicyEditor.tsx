@@ -5,6 +5,9 @@ import { CalendarClock, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { getJwtClaims } from "@/lib/authScope";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import { friendlyFetchError } from "@/lib/utils";
+import AccessDenied from "../shared/AccessDenied";
 type ToggleRowProps = {
   label: string;
   description: string;
@@ -79,6 +82,7 @@ export default function SecurityPolicyEditor({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const [policyName, setPolicyName] = useState("");
   const [description, setDescription] = useState("");
   const [realTimeEnabled, setRealTimeEnabled] = useState(true);
@@ -109,11 +113,12 @@ export default function SecurityPolicyEditor({
     if (!policyId) return;
     setLoading(true);
     setError(undefined);
+    setErrorKind("none");
     try {
       const response = await fetchWithAuth("/security/policies");
-      if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`);
-      }
+      // HttpError (not a bare Error) so a 403 survives the throw and the render
+      // can tell "you may not see this" from "this broke, try again" (#2472).
+      throwIfNotOk(response);
       const json = await response.json();
       const policies: SecurityPolicy[] = json.data || [];
       const policy = policies.find((p) => p.id === policyId);
@@ -126,11 +131,13 @@ export default function SecurityPolicyEditor({
         setScheduledEnabled(policy.scanSchedule !== "manual");
       }
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : t("securitySecurityPolicyEditor.failedToLoadPolicy"),
-      );
+      console.error("[SecurityPolicyEditor] fetch error:", err);
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      // 'denied' renders AccessDenied, which supplies its own copy. Previously the
+      // raw `err.message` was rendered, so a denied user was shown the literal
+      // string "403 Forbidden". (#2472)
+      if (kind === "other") setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -172,16 +179,18 @@ export default function SecurityPolicyEditor({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`);
-      }
+      // Preserves the status; also stops the raw "403 Forbidden" string from being
+      // rendered to the user as if it were a save error message. (#2472)
+      throwIfNotOk(response);
       const json = await response.json();
       onSave?.(json.data || json);
     } catch (err) {
+      console.error("[SecurityPolicyEditor] save error:", err);
+      // A save denial is not a page-level denial (the user could still read the
+      // policy), so this stays an inline message rather than an AccessDenied panel.
       setError(
-        err instanceof Error
-          ? err.message
-          : t("securitySecurityPolicyEditor.failedToSavePolicy"),
+        friendlyFetchError(err) ||
+          t("securitySecurityPolicyEditor.failedToSavePolicy"),
       );
     } finally {
       setSaving(false);
@@ -200,18 +209,32 @@ export default function SecurityPolicyEditor({
   const handleRemoveExclusion = (value: string) => {
     setExclusions((prev) => prev.filter((item) => item !== value));
   };
+  const editorHeader = (
+    <div className="flex flex-col gap-2">
+      <h2 className="text-lg font-semibold">
+        {t("securitySecurityPolicyEditor.securityPolicyEditor")}
+      </h2>
+      <p className="text-sm text-muted-foreground">
+        {t(
+          "securitySecurityPolicyEditor.tuneProtectionSettingsForDeviceGroups",
+        )}
+      </p>
+    </div>
+  );
+  // A 403 on the policy read is terminal. Stop before the form: falling through
+  // would render the editor pre-filled with empty/default toggle values, which a
+  // user could then "save" over a policy they were never allowed to see. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div className="space-y-6">
+        {editorHeader}
+        <AccessDenied testId="security-policy-editor-denied" />
+      </div>
+    );
+  }
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-2">
-        <h2 className="text-lg font-semibold">
-          {t("securitySecurityPolicyEditor.securityPolicyEditor")}
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          {t(
-            "securitySecurityPolicyEditor.tuneProtectionSettingsForDeviceGroups",
-          )}
-        </p>
-      </div>
+      {editorHeader}
 
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         {!policyId && isPartnerScope && (

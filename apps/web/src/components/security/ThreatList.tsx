@@ -9,8 +9,10 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { cn, friendlyFetchError } from "@/lib/utils";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
 import { formatDateTime } from "@/lib/dateTimeFormat";
+import AccessDenied from "../shared/AccessDenied";
 import {
   ResponsiveTable,
   DataCard,
@@ -61,9 +63,11 @@ export default function ThreatList({ timezone }: ThreatListProps) {
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const abortRef = useRef<AbortController | null>(null);
   const fetchThreats = useCallback(async () => {
     setError(undefined);
+    setErrorKind("none");
     setLoading(true);
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -83,8 +87,9 @@ export default function ThreatList({ timezone }: ThreatListProps) {
         `/security/threats?${params.toString()}`,
         { signal: controller.signal },
       );
-      if (!response.ok)
-        throw new Error(`${response.status} ${response.statusText}`);
+      // HttpError (not a bare Error) so a 403 survives the throw and the render
+      // can tell "you may not see this" from "this broke, try again" (#2472).
+      throwIfNotOk(response);
       const payload = await response.json();
       let nextThreats: Threat[] = Array.isArray(payload.data)
         ? payload.data
@@ -98,7 +103,10 @@ export default function ThreatList({ timezone }: ThreatListProps) {
       setSelectedIds(new Set());
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
-      setError(friendlyFetchError(err));
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      // 'denied' renders AccessDenied, which supplies its own copy.
+      if (kind === "other") setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -135,7 +143,7 @@ export default function ThreatList({ timezone }: ThreatListProps) {
       );
       const responses = await Promise.all(requests);
       const failed = responses.find((response) => !response.ok);
-      if (failed) throw new Error(`${failed.status} ${failed.statusText}`);
+      if (failed) throwIfNotOk(failed);
       await fetchThreats();
     } catch (err) {
       setError(friendlyFetchError(err));
@@ -143,6 +151,17 @@ export default function ThreatList({ timezone }: ThreatListProps) {
       setActing(false);
     }
   };
+  // A 403 is terminal for this user — a retry hits the same permission gate. Stop
+  // before the filter bar and table: falling through would paint an empty
+  // threats list and tell someone who may not see the data that there are no
+  // threats. Fabricated emptiness is worse than an error. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
+        <AccessDenied testId="security-threat-list-denied" />
+      </div>
+    );
+  }
   const allSelected =
     threats.length > 0 && threats.every((threat) => selectedIds.has(threat.id));
   const someSelected = threats.some((threat) => selectedIds.has(threat.id));

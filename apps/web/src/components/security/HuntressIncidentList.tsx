@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2, RefreshCw, Search } from "lucide-react";
 import { navigateTo } from "@/lib/navigation";
 import { cn, friendlyFetchError } from "../../lib/utils";
+import { errorKindOf, type LoadErrorKind } from "@/lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 import { fetchHuntressIncidents, type HuntressIncident } from "../../lib/edr";
 import {
   promoteToIncident,
@@ -55,10 +57,12 @@ export default function HuntressIncidentList() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const load = useCallback(async () => {
     setLoading(true);
     setError(undefined);
+    setErrorKind("none");
     try {
       const result = await fetchHuntressIncidents({
         limit: 100,
@@ -69,7 +73,10 @@ export default function HuntressIncidentList() {
       setIncidents(result.rows);
       setTotal(result.total);
     } catch (err) {
-      setError(friendlyFetchError(err));
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      // 'denied' renders AccessDenied, which supplies its own copy.
+      if (kind === "other") setError(friendlyFetchError(err));
       setIncidents([]);
       setTotal(0);
     } finally {
@@ -137,6 +144,20 @@ export default function HuntressIncidentList() {
       {t("securityHuntressIncidentList.promoteToIncident")}
     </button>
   );
+  // A 403 is terminal for this user — a retry hits the same permission gate. Stop
+  // before the table: `incidents` was reset to [] on failure, so falling through
+  // would show a confident "no incidents" all-clear to someone who simply is not
+  // allowed to see them. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div
+        className="rounded-lg border bg-card p-6 shadow-xs"
+        data-testid="huntress-list"
+      >
+        <AccessDenied testId="huntress-denied" />
+      </div>
+    );
+  }
   return (
     <div
       className="rounded-lg border bg-card p-6 shadow-xs"
