@@ -73,7 +73,10 @@ export interface EcWarehouseStock {
 }
 
 export interface TdSynnexEcProduct {
-  source: 'td_synnex_ec_express';
+  // 'td_synnex_price_file' rows come from the nightly SFTP snapshot and reuse
+  // this shape + import path. Provenance must survive: a nightly row records
+  // itself as such, never as a live EC Express lookup.
+  source: 'td_synnex_ec_express' | 'td_synnex_price_file';
   synnexSku: string;
   mfgPartNo: string | null;
   status: string | null;

@@ -13,7 +13,9 @@ export interface EcWarehouseStock {
 }
 
 export interface EcProduct {
-  source: 'td_synnex_ec_express';
+  // Nightly-file rows reuse this shape and this import path, but keep their own
+  // provenance — a snapshot must not read back as a live EC Express lookup.
+  source: 'td_synnex_ec_express' | 'td_synnex_price_file';
   synnexSku: string;
   mfgPartNo: string | null;
   status: string | null;
@@ -116,19 +118,39 @@ export interface SftpTestResult {
   error?: string | null;
 }
 
+/** One warehouse bucket inside the nightly file's `warehouses` jsonb. */
+export interface SftpWarehouseStock {
+  code?: string | null;
+  loc?: string | null;
+  city?: string | null;
+  state?: string | null;
+  available?: number | null;
+}
+
 /** One ingested price & availability row. Drizzle numerics arrive as strings. */
 export interface SftpProduct {
   id?: string;
   synnexSku: string;
   mfgPartNo: string | null;
+  tdPartNo?: string | null;
   name: string | null;
   description?: string | null;
+  manufacturer?: string | null;
   status?: string | null;
+  /** Spec field 40: A=Active, B=Special order, C=EOL, T=To be discontinued. */
+  abcCode?: string | null;
   currency: string | null;
   cost: string | number | null;
+  costWithoutPromo?: string | number | null;
   msrp: string | number | null;
+  mapPrice?: string | number | null;
   totalQty: number | null;
   warehouses?: unknown;
+  weight?: string | number | null;
+  upc?: string | null;
+  unspsc?: string | null;
+  etaDate?: string | null;
+  fileDate?: string | null;
   syncedAt?: string | null;
 }
 
@@ -153,12 +175,17 @@ export function tdSynnexSftpSync(): Promise<Response> {
   return fetchWithAuth(`${SFTP_BASE}/sync`, { method: 'POST', headers: JSON_HEADERS });
 }
 
-export function tdSynnexSftpProducts(opts: { q?: string; limit?: number; offset?: number } = {}): Promise<Response> {
+export function tdSynnexSftpProducts(
+  opts: { q?: string; limit?: number; offset?: number; inStockOnly?: boolean } = {},
+): Promise<Response> {
   const params = new URLSearchParams({
     limit: String(opts.limit ?? 50),
     offset: String(opts.offset ?? 0),
   });
   if (opts.q?.trim()) params.set('q', opts.q.trim());
+  // Only send the flag when it's on: `z.coerce.boolean()` on the API turns ANY
+  // non-empty string (including "false") into true.
+  if (opts.inStockOnly) params.set('inStockOnly', 'true');
   return fetchWithAuth(`${SFTP_BASE}/products?${params.toString()}`);
 }
 

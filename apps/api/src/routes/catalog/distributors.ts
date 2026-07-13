@@ -257,7 +257,11 @@ const ecLookupSchema = z.object({ q: z.string().min(1).max(40) });
 // productSchema above. Replaces the prior `z.record(z.string(), z.unknown())`
 // so the import endpoint validates shape and bounds the inbound payload size.
 const ecProductSchema = z.object({
-  source: z.literal('td_synnex_ec_express'),
+  // The nightly SFTP file carries the same product shape, so it reuses this
+  // import path — but it must record its OWN provenance. A catalog item sourced
+  // from a nightly snapshot must not claim it came from a live EC Express
+  // lookup: that is the field you check when a price looks stale.
+  source: z.enum(['td_synnex_ec_express', 'td_synnex_price_file']),
   synnexSku: z.string().min(1).max(64),
   mfgPartNo: z.string().max(255).nullable(),
   status: z.string().max(64).nullable(),
