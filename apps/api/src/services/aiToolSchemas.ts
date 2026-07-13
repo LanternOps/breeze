@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { INVOICE_STATUSES } from '@breeze/shared';
+import { backupProfileSelectionsSchema } from '@breeze/shared/validators';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import {
@@ -1153,6 +1154,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     ]).optional(),
     featurePolicyId: uuid.optional().nullable(),
     inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
+  }),
+
+  manage_backup_profiles: z.object({
+    action: z.enum(['list', 'get', 'create', 'update', 'delete']),
+    profileId: uuid.optional(),
+    name: z.string().min(1).max(255).optional(),
+    description: z.string().max(2000).optional(),
+    ownerScope: z.enum(['organization', 'partner']).optional(),
+    selections: backupProfileSelectionsSchema.optional(),
+    isActive: z.boolean().optional(),
   }),
 
   // Playbook tools

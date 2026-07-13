@@ -57,6 +57,7 @@ const TIER2_ACTIONS: Record<string, string[]> = {
   manage_software_policies: ['create', 'update'],
   manage_peripheral_policies: ['create', 'update'],
   manage_backup_configs: ['create', 'update'],
+  manage_backup_profiles: ['create', 'update', 'delete'],
   // Notification channel & saved filter tools — Tier 2 actions
   manage_notification_channels: ['test', 'create', 'update', 'delete'],
   manage_saved_filters: ['create', 'delete'],
@@ -368,6 +369,13 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     add: { resource: 'policies', action: 'write' },
     update: { resource: 'policies', action: 'write' },
     remove: { resource: 'policies', action: 'write' },
+  },
+  manage_backup_profiles: {
+    list: { resource: 'policies', action: 'read' },
+    get: { resource: 'policies', action: 'read' },
+    create: { resource: 'policies', action: 'write' },
+    update: { resource: 'policies', action: 'write' },
+    delete: { resource: 'policies', action: 'write' },
   },
   apply_configuration_policy: { resource: 'policies', action: 'write' },
   remove_configuration_policy_assignment: { resource: 'policies', action: 'write' },

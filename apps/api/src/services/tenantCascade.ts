@@ -93,6 +93,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'backup_configs',
   'backup_jobs',
   'backup_policies',
+  'backup_profiles',
   'backup_sla_configs',
   'backup_sla_events',
   'backup_snapshots',
