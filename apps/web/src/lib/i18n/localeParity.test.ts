@@ -528,7 +528,7 @@ describe('locale parity guard helpers', () => {
       1,
       0,
     ],
-  ])('rejects a changed %s', (_label, english, translated, token, expected, received, additionalMismatch) => {
+  ])('rejects a changed %s', (_label, english, translated, token, expected, received, additionalMismatch = undefined) => {
     const errors = protectedLiteralContractErrors(
       new Map([['example', english]]),
       new Map([['example', translated]]),
