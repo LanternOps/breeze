@@ -27,7 +27,16 @@ vi.mock('../services/secretCrypto', () => ({
   encryptSecret: vi.fn((value: string, options: { aad?: string }) => `encrypted:${options.aad}:${value}`),
   decryptForColumn: vi.fn((_table: string, _column: string, value: string) => value.split(':').at(-1)),
 }));
-vi.mock('../db', () => ({ db: { execute: vi.fn() } }));
+// Resolves to zero catalog rows by default: the scaffolded manifests declare no
+// tenancy tables and create none, so the tripwire finds nothing to complain
+// about. Tests that exercise the tripwire's verdicts stub rows per-case.
+//
+// These mocked verdict tests prove the BRANCHING, never the SQL — a mocked
+// db.execute will happily "return rows" for a query Postgres would reject
+// outright (that is exactly how a `= ANY(tuple)` bug once passed six green unit
+// tests). The real contract lives in
+// src/__tests__/integration/extensionTenancyRls.integration.test.ts.
+vi.mock('../db', () => ({ db: { execute: vi.fn().mockResolvedValue([]) } }));
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
 vi.mock('../services/clientIp', () => ({ getTrustedClientIp: () => 'extension-loader-test' }));
 
@@ -401,11 +410,106 @@ describe('mountExtensions', () => {
       expect(msg.match(/demo_items/g)).toHaveLength(1); // deduped across arrays
     });
 
-    it('skips the DB probe entirely when no tenancy tables are declared', async () => {
+    // Regression guard for #2466. This previously asserted the OPPOSITE — that a
+    // manifest declaring nothing skipped the DB probe entirely. That "no work to
+    // do" shortcut WAS the vulnerability: an extension whose migration created
+    // `demo_docs(org_id …)` and whose manifest simply omitted it took this exact
+    // branch and shipped with no RLS check whatsoever. The probe must always run,
+    // because the catalog — not the manifest — is what proves the table set.
+    it('still probes the catalog when the manifest declares NO tenancy tables (#2466)', async () => {
       scaffoldRuntimeExtension(root); // tenancy: {}
       const { db } = await import('../db');
       await mountExtensions(new Hono(), root);
-      expect(db.execute).not.toHaveBeenCalled();
+      expect(db.execute).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // #2466: the manifest is a claim by the policed party. These verdicts are what
+  // reconcile it against the live catalog. (SQL validity is proven only by the
+  // real-Postgres suite — see the mock's comment at the top of this file.)
+  describe('undeclared extension tables (#2466)', () => {
+    async function mockRlsCatalog(rows: unknown[]) {
+      const { db } = await import('../db');
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(rows);
+    }
+
+    const compliant = { rls_enabled: true, rls_forced: true, policy_count: 1 };
+
+    it('fails the boot on a prefixed table that exists but is declared nowhere', async () => {
+      scaffoldRuntimeExtension(root); // declares nothing
+      await mockRlsCatalog([
+        { table_name: 'demo_docs', ...compliant, tenant_column_count: 1 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_docs" exists and carries a tenant column.*declared in NO manifest tenancy array/s,
+      );
+    });
+
+    it('fails the boot on an undeclared table even when it happens to have RLS', async () => {
+      // RLS today is not the point — an undeclared table also gets no org-cascade
+      // and no device-move handling, and nothing stops a later migration dropping
+      // its policy with no tripwire watching.
+      scaffoldRuntimeExtension(root);
+      await mockRlsCatalog([
+        { table_name: 'demo_lookup', ...compliant, tenant_column_count: 0 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_lookup" exists but is declared nowhere.*nonTenantTables/s,
+      );
+    });
+
+    it('passes when the extension opts a genuinely global table out via nonTenantTables', async () => {
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_lookup'] } });
+      await mockRlsCatalog([
+        { table_name: 'demo_lookup', rls_enabled: false, rls_forced: false, policy_count: 0, tenant_column_count: 0 },
+      ]);
+      const app = new Hono();
+      await mountExtensions(app, root);
+      expect((await app.request('/api/v1/demo/health')).status).toBe(200);
+    });
+
+    // The opt-out must be VERIFIED, not trusted — otherwise it is a hole exactly
+    // as wide as the one #2466 closes: "just call your tenant table global".
+    it('fails the boot when a nonTenantTables entry actually carries a tenant column', async () => {
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_docs'] } });
+      await mockRlsCatalog([
+        { table_name: 'demo_docs', rls_enabled: false, rls_forced: false, policy_count: 0, tenant_column_count: 1 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_docs" is declared in tenancy.nonTenantTables but carries a tenant column/,
+      );
+    });
+
+    it('fails the boot when a nonTenantTables entry does not exist', async () => {
+      scaffoldRuntimeExtension(root, { tenancy: { nonTenantTables: ['demo_lookup'] } });
+      await mockRlsCatalog([]);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(
+        /"demo_lookup" is declared in tenancy.nonTenantTables but does not exist/,
+      );
+    });
+
+    it('does not blame the extension for CORE tables that share its name prefix', async () => {
+      // An extension may legally be named `device` — and core owns device_commands,
+      // device_disks, and ~30 more. Without the core-schema subtraction this
+      // extension would brick the boot over tables it never created, and the
+      // operator's only lever is BREEZE_EXTENSIONS_ENABLED=false, which switches
+      // off every tripwire including this one.
+      const dir = join(root, 'device');
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(
+        join(dir, 'breeze-extension.json'),
+        JSON.stringify({ name: 'device', routeNamespace: 'device-ext', entry: 'src/index.ts', tenancy: {} }),
+      );
+      writeFileSync(
+        join(dir, 'src', 'index.ts'),
+        'const ext = { register() {} };\nexport default ext;',
+      );
+      await mockRlsCatalog([
+        // Real core tables, returned by the prefix scan for prefix `device_`.
+        { table_name: 'device_commands', ...compliant, tenant_column_count: 1 },
+        { table_name: 'device_disks', ...compliant, tenant_column_count: 1 },
+      ]);
+      await expect(mountExtensions(new Hono(), root)).resolves.toBeUndefined();
     });
   });
 });
