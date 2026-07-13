@@ -11,11 +11,12 @@ import { pgErrorCode } from '../utils/pgErrors';
 import { patchPolicies } from '../db/schema/patches';
 import { softwarePolicies } from '../db/schema/softwarePolicies';
 import { peripheralPolicies } from '../db/schema/peripheralControl';
-import { backupConfigs } from '../db/schema/backup';
+import { backupConfigs, backupProfiles } from '../db/schema/backup';
+import { configPolicyBackupSettings } from '../db/schema/configurationPolicies';
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { ringAutoApproveSchema } from '@breeze/shared/validators';
+import { ringAutoApproveSchema, backupProfileSelectionsSchema } from '@breeze/shared/validators';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 
 /**
@@ -85,6 +86,16 @@ function softwarePolicyWhere(auth: AuthContext): SQL | undefined {
   // org-scope tokens even when they carry a partnerId.
   if (auth.scope === 'partner' && auth.partnerId) {
     return sql`(${oc} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`;
+  }
+  return oc;
+}
+
+// Mirrors profileAccessCondition in routes/backup/profiles.ts.
+function backupProfileWhere(auth: AuthContext): SQL | undefined {
+  const oc = orgWhere(auth, backupProfiles.orgId);
+  if (!oc) return undefined; // system scope
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return sql`(${oc} OR (${backupProfiles.orgId} IS NULL AND ${backupProfiles.partnerId} = ${auth.partnerId}))`;
   }
   return oc;
 }
@@ -531,6 +542,164 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
         await db.update(peripheralPolicies).set(updates).where(eq(peripheralPolicies.id, existing.id));
         return JSON.stringify({ success: true, message: `Peripheral policy "${existing.name}" updated` });
+      }
+
+      return JSON.stringify({ error: `Unknown action: ${action}` });
+    }),
+  });
+
+  // ============================================
+  // 3b. manage_backup_profiles — Backup Selection Profiles (spec 2026-07-13)
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'manage_backup_profiles',
+      description: 'Manage backup selection profiles — reusable "what to protect" bundles (file paths/excludes, System State, SQL Server, Hyper-V) for a device class, e.g. "Server". Link a profile to a configuration policy via manage_policy_feature_link with featureType "backup" and featurePolicyId = the profile id; the policy carries schedule/retention/destination. Profiles are org-owned or partner-wide ("all orgs"). Actions: list, get, create, update, delete.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          action: { type: 'string', enum: ['list', 'get', 'create', 'update', 'delete'], description: 'Action to perform' },
+          profileId: { type: 'string', description: 'Backup profile UUID (required for get/update/delete)' },
+          name: { type: 'string', description: 'Profile name (required for create)' },
+          description: { type: 'string', description: 'Optional description' },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: 'create only: "organization" (default, current org) or "partner" ("all orgs" — requires full partner access)' },
+          selections: { type: 'object', description: 'Data sources: { file?: { enabled, paths[], excludes[] }, system_image?: { enabled, includeSystemState? }, mssql?: { enabled, backupType?: "full"|"differential"|"log", excludeDatabases[] }, hyperv?: { enabled, consistencyType?: "application"|"crash", excludeVms[] } }. At least one source enabled; file requires paths.' },
+          isActive: { type: 'boolean', description: 'Active state' },
+        },
+        required: ['action'],
+      },
+    },
+    handler: safeHandler('manage_backup_profiles', async (input, auth) => {
+      const action = input.action as string;
+
+      if (action === 'list') {
+        const where = backupProfileWhere(auth);
+        const rows = await db
+          .select({
+            id: backupProfiles.id,
+            name: backupProfiles.name,
+            description: backupProfiles.description,
+            orgId: backupProfiles.orgId,
+            partnerId: backupProfiles.partnerId,
+            selections: backupProfiles.selections,
+            isActive: backupProfiles.isActive,
+          })
+          .from(backupProfiles)
+          .where(where)
+          .orderBy(desc(backupProfiles.updatedAt))
+          .limit(100);
+        return JSON.stringify({
+          profiles: rows.map((row) => ({
+            ...row,
+            scope: row.partnerId ? 'partner (all orgs)' : 'organization',
+          })),
+          hint: 'Link a profile with manage_policy_feature_link featureType "backup", featurePolicyId = profile id.',
+        });
+      }
+
+      if (action === 'get') {
+        if (!input.profileId) return JSON.stringify({ error: 'profileId is required' });
+        const conditions: SQL[] = [eq(backupProfiles.id, input.profileId as string)];
+        const where = backupProfileWhere(auth);
+        if (where) conditions.push(where);
+        const [profile] = await db.select().from(backupProfiles).where(and(...conditions)).limit(1);
+        if (!profile) return JSON.stringify({ error: 'Backup profile not found or access denied' });
+        const [usage] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(configPolicyBackupSettings)
+          .where(eq(configPolicyBackupSettings.backupProfileId, profile.id));
+        return JSON.stringify({ profile, inUseByPolicies: Number(usage?.count ?? 0) });
+      }
+
+      if (action === 'create') {
+        if (!input.name) return JSON.stringify({ error: 'name is required' });
+        if (!input.selections) return JSON.stringify({ error: 'selections is required' });
+        const parsed = backupProfileSelectionsSchema.safeParse(input.selections);
+        if (!parsed.success) {
+          return JSON.stringify({ error: 'Invalid selections', issues: parsed.error.issues });
+        }
+        let owner: { orgId: string | null; partnerId: string | null };
+        if (input.ownerScope === 'partner') {
+          if (!auth.partnerId || !canManagePartnerWidePolicies(auth)) {
+            return JSON.stringify({ error: 'Partner-wide backup profiles require full partner org access' });
+          }
+          owner = { orgId: null, partnerId: auth.partnerId };
+        } else {
+          const orgId = getOrgId(auth);
+          if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+          owner = { orgId, partnerId: null };
+        }
+        const [profile] = await db
+          .insert(backupProfiles)
+          .values({
+            orgId: owner.orgId,
+            partnerId: owner.partnerId,
+            name: input.name as string,
+            description: (input.description as string) ?? null,
+            selections: parsed.data,
+            isActive: input.isActive !== false,
+          })
+          .returning();
+        if (!profile) return JSON.stringify({ error: 'Failed to create backup profile' });
+        return JSON.stringify({
+          success: true,
+          profileId: profile.id,
+          scope: profile.partnerId ? 'partner (all orgs)' : 'organization',
+          hint: 'Link it with manage_policy_feature_link featureType "backup", featurePolicyId: "' + profile.id + '"',
+        });
+      }
+
+      if (action === 'update') {
+        if (!input.profileId) return JSON.stringify({ error: 'profileId is required' });
+        const conditions: SQL[] = [eq(backupProfiles.id, input.profileId as string)];
+        const where = backupProfileWhere(auth);
+        if (where) conditions.push(where);
+        const [existing] = await db.select().from(backupProfiles).where(and(...conditions)).limit(1);
+        if (!existing) return JSON.stringify({ error: 'Backup profile not found or access denied' });
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying a partner-wide backup profile requires full partner org access' });
+        }
+        const updateData: Record<string, unknown> = { updatedAt: new Date() };
+        if (input.name !== undefined) updateData.name = input.name;
+        if (input.description !== undefined) updateData.description = input.description;
+        if (input.isActive !== undefined) updateData.isActive = input.isActive;
+        if (input.selections !== undefined) {
+          const parsed = backupProfileSelectionsSchema.safeParse(input.selections);
+          if (!parsed.success) {
+            return JSON.stringify({ error: 'Invalid selections', issues: parsed.error.issues });
+          }
+          updateData.selections = parsed.data;
+        }
+        const [updated] = await db
+          .update(backupProfiles)
+          .set(updateData)
+          .where(eq(backupProfiles.id, existing.id))
+          .returning();
+        return JSON.stringify({ success: true, profile: updated });
+      }
+
+      if (action === 'delete') {
+        if (!input.profileId) return JSON.stringify({ error: 'profileId is required' });
+        const conditions: SQL[] = [eq(backupProfiles.id, input.profileId as string)];
+        const where = backupProfileWhere(auth);
+        if (where) conditions.push(where);
+        const [existing] = await db.select().from(backupProfiles).where(and(...conditions)).limit(1);
+        if (!existing) return JSON.stringify({ error: 'Backup profile not found or access denied' });
+        if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Deleting a partner-wide backup profile requires full partner org access' });
+        }
+        const [usage] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(configPolicyBackupSettings)
+          .where(eq(configPolicyBackupSettings.backupProfileId, existing.id));
+        const inUse = Number(usage?.count ?? 0);
+        if (inUse > 0) {
+          return JSON.stringify({ error: `Backup profile is in use by ${inUse} configuration polic${inUse === 1 ? 'y' : 'ies'} — unlink it first` });
+        }
+        await db.delete(backupProfiles).where(eq(backupProfiles.id, existing.id));
+        return JSON.stringify({ success: true, deleted: existing.name });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
