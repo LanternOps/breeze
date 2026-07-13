@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError, handleActionError } from '../../lib/runAction';
@@ -122,6 +122,8 @@ export default function TimesheetPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({ description: '', isBillable: true, hourlyRate: '' });
   const [loading, setLoading] = useState(true);
+  // Monotonic id of the newest in-flight timesheet request (see loadSheet).
+  const fetchSeq = useRef(0);
   const [loadError, setLoadError] = useState(false);
   const friendly = useCallback((code: string): string | undefined => {
     const key = FRIENDLY[code];
@@ -139,14 +141,23 @@ export default function TimesheetPage() {
     })();
   }, []);
 
-  // Load timesheet when week or tech changes
+  // Load timesheet when week or tech changes.
+  //
+  // Latest-request-wins. A deep-linked load (`/time#week=…&tech=…`) fires this
+  // twice — once with the SSR-safe defaults (current Monday, own sheet), then
+  // again once useHashState adopts the hash (#2421). The `weekStart !== loadWeek`
+  // check below only compares a response against its OWN request, so both pass;
+  // without a sequence guard the seed response could land last and paint the
+  // current week's own hours under a header naming another week and tech.
   const loadSheet = useCallback(async (loadWeek: string, loadTech: string | null) => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
     setLoadError(false);
     try {
       const params = new URLSearchParams({ weekStart: loadWeek });
       if (loadTech) params.set('userId', loadTech);
       const res = await fetchWithAuth(`/time-entries/timesheet?${params.toString()}`);
+      if (seq !== fetchSeq.current) return;
       if (!res.ok) {
         if (res.status === 403 && loadTech) {
           // No admin access to another tech's sheet — fall back to own
@@ -160,13 +171,15 @@ export default function TimesheetPage() {
         return;
       }
       const body = await res.json().catch(() => null) as { data?: TsSheet } | null;
+      if (seq !== fetchSeq.current) return;
       if (body?.data?.weekStart && body.data.weekStart !== loadWeek) return; // stale response from rapid navigation
       setSheet(body?.data ?? null);
       setSelected(new Set()); // clear selection on new load
     } catch {
+      if (seq !== fetchSeq.current) return;
       setLoadError(true);
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, []);
 

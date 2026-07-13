@@ -40,8 +40,15 @@ function calleeName(expr: ts.Expression): string | null {
   return null;
 }
 
-/** Names of functions declared in this file whose body reads location.hash. */
-function collectHashReadingHelpers(sf: ts.SourceFile): Set<string> {
+/**
+ * Names declared in this file that carry a `location.hash` read — both
+ * hash-reading *functions* (`function getTabFromHash() {…}`, `const readTab =
+ * () => …`) and plain *values* computed from the hash (`const initial =
+ * window.location.hash.slice(1)`). The latter matters because `const initial =
+ * …hash…; useState(initial)` is the most natural thing to write once the guard
+ * reds a PR, and it reintroduces exactly the same hydration bug.
+ */
+function collectHashReadingNames(sf: ts.SourceFile): Set<string> {
   const names = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name && node.body) {
@@ -50,9 +57,10 @@ function collectHashReadingHelpers(sf: ts.SourceFile): Set<string> {
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
       node.initializer &&
-      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+      LOCATION_HASH_RE.test(node.initializer.getText(sf))
     ) {
-      if (LOCATION_HASH_RE.test(node.initializer.getText(sf))) names.add(node.name.text);
+      // Covers both function-valued and plain-value initializers.
+      names.add(node.name.text);
     }
     ts.forEachChild(node, visit);
   };
@@ -96,25 +104,38 @@ function isExempt(src: string, node: ts.Node): boolean {
   return /hash-usestate-exempt/i.test(window);
 }
 
+// `useReducer(reducer, initialArg, init)` has the same lazy-init hazard as
+// useState, so both are checked. The initial value is the last argument.
+const INIT_HOOKS = new Set(['useState', 'useReducer']);
+
 export function findViolations(src: string, label = 'sample.tsx'): Violation[] {
   const sf = ts.createSourceFile(label, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const hashHelpers = collectHashReadingHelpers(sf);
+  const hashNames = collectHashReadingNames(sf);
   const violations: Violation[] = [];
 
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && calleeName(node.expression) === 'useState') {
-      const arg = node.arguments[0];
-      if (arg) {
+    if (ts.isCallExpression(node)) {
+      const callee = calleeName(node.expression);
+      if (!callee || !INIT_HOOKS.has(callee)) {
+        ts.forEachChild(node, visit);
+        return;
+      }
+      // useState(initial) / useReducer(reducer, initialArg, init?) — the state
+      // seed is everything after the reducer for useReducer, the sole arg for useState.
+      const seedArgs =
+        callee === 'useReducer' ? node.arguments.slice(1) : node.arguments.slice(0, 1);
+      for (const arg of seedArgs) {
         const direct = LOCATION_HASH_RE.test(arg.getText(sf));
-        // A bare same-file-helper reference (`useState(getTabFromHash)`) or a
-        // wrapped call (`useState(() => getTabFromHash())`) is just as unsafe.
-        const viaHelper = !direct && referencesAny(arg, hashHelpers);
-        if ((direct || viaHelper) && !isExempt(src, node)) {
+        // A bare same-file reference (`useState(getTabFromHash)`, `useState(initial)`)
+        // or a wrapped call (`useState(() => getTabFromHash())`) is just as unsafe.
+        const viaName = !direct && referencesAny(arg, hashNames);
+        if ((direct || viaName) && !isExempt(src, node)) {
           const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
           violations.push({
             line: line + 1,
             snippet: node.getText(sf).replace(/\s+/g, ' ').slice(0, 120),
           });
+          break;
         }
       }
     }
@@ -169,6 +190,19 @@ describe('guard self-checks (AST analyzer)', () => {
     expect(findViolations(src)).toHaveLength(1);
   });
 
+  it('flags a hash read hoisted into a local const (the natural way to dodge the guard)', () => {
+    const src = `
+      const initial = window.location.hash.slice(1);
+      const [tab] = useState(initial);
+    `;
+    expect(findViolations(src)).toHaveLength(1);
+  });
+
+  it('flags a lazy useReducer init reading location.hash', () => {
+    const src = `const [s, d] = useReducer(reducer, null, () => window.location.hash.slice(1));`;
+    expect(findViolations(src)).toHaveLength(1);
+  });
+
   it('does NOT flag a plain default initializer', () => {
     expect(findViolations(`const [tab] = useState('overview');`)).toHaveLength(0);
     expect(findViolations(`const [tab] = useState<string | null>(null);`)).toHaveLength(0);
@@ -206,6 +240,17 @@ describe('no location.hash reads in useState initializers (apps/web/src)', () =>
 
   it('finds a plausible number of source files to scan (glob is not broken)', () => {
     expect(files.length).toBeGreaterThan(200);
+  });
+
+  // The escape hatch is a free-form comment, so — unlike the runAction guard's
+  // reviewed allowlist module — nothing would otherwise stop someone silencing a
+  // real violation with CI still green. Pin the count at zero: adding the first
+  // legitimate exemption must be a deliberate, reviewed bump of this number.
+  it('nobody has silenced a violation with hash-usestate-exempt (expected: 0)', () => {
+    const exempted = files.filter((file) =>
+      /hash-usestate-exempt/i.test(readFileSync(file, 'utf8')),
+    );
+    expect(exempted).toEqual([]);
   });
 
   it('every hash-derived initial state goes through useHashState/useHashTab', () => {

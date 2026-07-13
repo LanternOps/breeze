@@ -209,6 +209,57 @@ describe('InvoicesPage', () => {
     expect(screen.getByTestId('invoices-filters-clear')).toBeInTheDocument();
   });
 
+  // #2421: useHashState starts at the SSR-safe default and adopts the hash
+  // post-mount, so a deep-linked load fires TWO list requests — the unfiltered
+  // seed and the filtered one. Without loadInvoices' fetchSeq guard, a slow seed
+  // response landing last repaints the grid with ALL invoices while the Status
+  // control still reads "overdue" — the wrong list under a filtered header.
+  it('deep-linked filter wins when the unfiltered seed response resolves last', async () => {
+    let releaseSeed!: () => void;
+    const seedGate = new Promise<void>((resolve) => { releaseSeed = resolve; });
+
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+      if (input.startsWith('/invoices')) {
+        // The seed request carries no status param — hold it open, and have it
+        // return the FULL list so a stale win would be unmistakable.
+        if (!input.includes('status=')) {
+          await seedGate;
+          return json({ data: INVOICES });
+        }
+        return json({ data: INVOICES.filter((i) => i.status === 'overdue') });
+      }
+      return json({}, false, 404);
+    });
+
+    window.location.hash = '#status=overdue';
+    render(<InvoicesPage />);
+
+    // The filtered response lands first and paints only the overdue invoice.
+    await screen.findByTestId('invoices-row-inv-1');
+    expect(screen.queryByTestId('invoices-row-inv-2')).not.toBeInTheDocument();
+
+    // Now let the stale seed response resolve — it must be dropped.
+    releaseSeed();
+    await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoices-row-inv-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoices-row-inv-1')).toBeInTheDocument();
+    // ...and the late response must not strand the page in a loading state.
+    expect(screen.getByTestId('invoices-filter-status')).toHaveValue('overdue');
+  });
+
+  // The `(h) => (h ? readFilters(h) : undefined)` parse is what keeps the
+  // EMPTY_FILTERS *reference* on the no-hash path. A bare `readFilters` returns
+  // a fresh object, whose new identity retriggers the load effect on every mount.
+  it('fetches the list exactly once when there is no hash', async () => {
+    wireDefault();
+    render(<InvoicesPage />);
+    await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+
+    const listCalls = fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/invoices'));
+    expect(listCalls).toHaveLength(1);
+  });
+
   it('shows a Clear control once a filter is active and resets all filters', async () => {
     wireDefault();
     render(<InvoicesPage />);

@@ -69,7 +69,12 @@ export default function ContractWorkspace({ contractId }: Props) {
           <a href="/contracts" className="text-xs text-muted-foreground hover:underline">{t('contracts.contractWorkspace.backToContracts')}</a>
           <h1 className="text-xl font-semibold" data-testid="contract-workspace-title">{t('contracts.contractWorkspace.newContract')}</h1>
         </div>
-        <ContractEditor presetOrgId={presetOrgId} />
+        {/* ContractEditor seeds its org select from presetOrgId in a useState
+            initializer, so it must remount when the hash-derived value arrives
+            post-mount (#2421) — otherwise the deep-linked org (the "New
+            contract" CTA on the org Contracts tab) is silently dropped and the
+            picker comes up empty. */}
+        <ContractEditor key={presetOrgId ?? 'new'} presetOrgId={presetOrgId} />
       </div>
     );
   }
