@@ -111,7 +111,8 @@ vi.mock('../../services/authLifecycle', () => ({
   revokeUserSessionFamilyForLogout: vi.fn(async () => ({ status: 'revoked' })),
 }));
 
-vi.mock('../../services/terminalLogout', () => ({
+vi.mock('../../services/terminalLogout', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../services/terminalLogout')>(),
   prepareTerminalLogout: vi.fn(async () => ({
     transitionId: 'transition-1', logoutId: 'logout-1', generation: 2,
     nonce: 'n'.repeat(64), expiresAt: new Date('2026-07-13T00:10:00Z'),
@@ -396,6 +397,37 @@ describe('POST /cf-access-logout/prepare', () => {
     expect(res.headers.get('set-cookie')).toBeNull();
     expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
     expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+  });
+
+  it('never exposes cleanup subject or family identifiers at the route boundary', async () => {
+    vi.mocked(prepareTerminalLogout).mockResolvedValueOnce({
+      transitionId: 'transition-1', logoutId: 'logout-1', generation: 2,
+      nonce: 'n'.repeat(64), expiresAt: new Date('2026-07-13T00:10:00Z'),
+      subjectIds: ['11111111-1111-4111-8111-111111111111'],
+      advancedUserCount: 1, revokedFamilyCount: 2,
+      cleanupStatus: 'partial',
+      cleanupFailures: [
+        'user:11111111-1111-4111-8111-111111111111',
+        'family:22222222-2222-4222-8222-222222222222',
+      ] as never,
+    });
+
+    const res = await loginRoutes.request('/cf-access-logout/prepare', {
+      method: 'POST',
+      headers: {
+        cookie: `breeze_csrf_token=${'a'.repeat(64)}`,
+        'x-breeze-csrf': 'a'.repeat(64),
+        origin: 'http://localhost:4321',
+        'sec-fetch-site': 'same-origin',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      cleanupStatus: 'partial',
+      cleanupFailures: ['user-token-cache', 'refresh-family-cache'],
+    });
   });
 });
 

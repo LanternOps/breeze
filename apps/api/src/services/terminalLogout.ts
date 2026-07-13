@@ -36,6 +36,35 @@ export type PrepareTerminalLogoutInput = Readonly<{
   refreshToken?: string | null;
 }>;
 
+export type TerminalCleanupFailureCategory =
+  | 'user-token-cache'
+  | 'refresh-family-cache'
+  | 'refresh-token-jti'
+  | 'other-cache';
+
+/**
+ * Collapse internal operation names before they can cross an HTTP boundary.
+ * Operation names deliberately contain durable subject/family identifiers for
+ * server-side diagnosis; clients only need an opaque retry category.
+ */
+export function toTerminalCleanupFailureCategories(
+  failures: readonly string[],
+): TerminalCleanupFailureCategory[] {
+  const categories = failures.map((failure): TerminalCleanupFailureCategory => {
+    if (failure.startsWith('user:')) return 'user-token-cache';
+    if (failure.startsWith('family:')) return 'refresh-family-cache';
+    if (failure === 'refresh-jti') return 'refresh-token-jti';
+    if (
+      failure === 'user-token-cache'
+      || failure === 'refresh-family-cache'
+      || failure === 'refresh-token-jti'
+      || failure === 'other-cache'
+    ) return failure;
+    return 'other-cache';
+  });
+  return [...new Set(categories)];
+}
+
 export type PreparedTerminalLogout = Readonly<{
   transitionId: string;
   logoutId: string;
@@ -46,7 +75,7 @@ export type PreparedTerminalLogout = Readonly<{
   advancedUserCount: number;
   revokedFamilyCount: number;
   cleanupStatus: 'complete' | 'partial';
-  cleanupFailures: readonly string[];
+  cleanupFailures: readonly TerminalCleanupFailureCategory[];
 }>;
 
 type LockedTransition = {
@@ -251,6 +280,6 @@ export async function prepareTerminalLogout(
     advancedUserCount: durable.advancedUserCount,
     revokedFamilyCount: durable.revokedFamilyCount,
     cleanupStatus: cleanup.cleanupStatus,
-    cleanupFailures: cleanup.cleanupFailures,
+    cleanupFailures: toTerminalCleanupFailureCategories(cleanup.cleanupFailures),
   };
 }

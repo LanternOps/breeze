@@ -214,12 +214,14 @@ describe('prepareTerminalLogout subject classification', () => {
   });
 
   it('reports Redis cleanup failure only after durable invalidation commits', async () => {
-    revocation.revokeUserTokens.mockRejectedValueOnce(new Error('redis unavailable'));
+    revocation.revokeUserTokens.mockRejectedValueOnce(new Error('user cache unavailable'));
+    revocation.cacheFamily.mockRejectedValueOnce(new Error('family cache unavailable'));
 
     const result = await prepareTerminalLogout({ binding: BINDING, access: ACCESS, refreshToken: 'refresh-b' });
 
     expect(result.cleanupStatus).toBe('partial');
-    expect(result.cleanupFailures).toContain('user:user-a');
+    expect(result.cleanupFailures).toEqual(['user-token-cache', 'refresh-family-cache']);
+    expect(result.cleanupFailures.join(',')).not.toMatch(/(?:user|family):/);
     expect(lifecycle.advanceUser).toHaveBeenCalledTimes(2);
     expect(lifecycle.revokeAllFamilies).toHaveBeenCalledTimes(2);
   });

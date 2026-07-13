@@ -66,7 +66,7 @@ async function waitForBlockedTransitionQueries(minimum = 1): Promise<void> {
 }
 
 async function waitForBlockedAppQuery(
-  tableName: 'auth_browser_transitions' | 'users',
+  tableName: 'auth_browser_transitions' | 'users' | 'refresh_token_families',
   settled?: () => unknown,
 ): Promise<void> {
   const db = getTestDb();
@@ -87,6 +87,29 @@ async function waitForBlockedAppQuery(
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   throw new Error(`Expected a breeze_app query blocked on ${tableName}`);
+}
+
+async function waitForBlockedQueryMarker(
+  marker: 'task7-earlier-user-probe' | 'task7-earlier-family-probe',
+  settled?: () => unknown,
+): Promise<void> {
+  const db = getTestDb();
+  for (let attempt = 0; attempt < 5_000; attempt += 1) {
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS blocked_count
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND cardinality(pg_blocking_pids(pid)) > 0
+        AND position(${marker} in query) > 0
+    `) as unknown as Array<{ blocked_count: number }>;
+    if (Number(rows[0]?.blocked_count ?? 0) > 0) return;
+    const outcome = settled?.();
+    if (outcome !== undefined) {
+      throw new Error(`Expected ${marker} to block, but it settled: ${String(outcome)}`);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`Expected blocked query marker ${marker}`);
 }
 
 function deferred() {
@@ -149,6 +172,51 @@ async function terminalFixture() {
   const bindingC = freshBrowserBinding();
   const capabilityC = await beginAuthIssuance(bindingC);
   return { partner, org, role, userA, userC, sessionA, accessPayload, bindingC, capabilityC };
+}
+
+async function terminalThreeSubjectFixture(refreshKind: 'current' | 'stale') {
+  const db = getTestDb();
+  if ((await db.select().from(roles)).length === 0) {
+    await db.insert(roles).values({
+      name: 'Partner Admin', scope: 'partner', isSystem: true, partnerId: null,
+    });
+  }
+  const partner = await createPartner({ name: `Terminal Three Subject ${refreshKind}` });
+  const org = await createOrganization({ partnerId: partner.id });
+  const role = await createRole({ scope: 'organization', partnerId: partner.id, orgId: org.id });
+  const [userA, userB, userC] = await Promise.all(['a', 'b', 'c'].map((label) => createUser({
+    partnerId: partner.id,
+    orgId: org.id,
+    email: `terminal-${refreshKind}-${label}-${crypto.randomUUID()}@example.com`,
+  })));
+  const [sessionA, sessionB, sessionC] = await Promise.all([
+    issueTestSession({ binding: freshBrowserBinding(), user: userA!, partnerId: partner.id, orgId: org.id, roleId: role.id }),
+    issueTestSession({ binding: freshBrowserBinding(), user: userB!, partnerId: partner.id, orgId: org.id, roleId: role.id }),
+    (() => {
+      const binding = freshBrowserBinding();
+      return issueTestSession({ binding, user: userC!, partnerId: partner.id, orgId: org.id, roleId: role.id })
+        .then((session) => ({ ...session, binding }));
+    })(),
+  ]);
+  const [accessPayloadA, refreshPayloadB] = await Promise.all([
+    verifyToken(sessionA.tokens.accessToken),
+    verifyToken(sessionB.tokens.refreshToken),
+  ]);
+  if (!accessPayloadA?.sid || !refreshPayloadB?.fam) {
+    throw new Error('Failed to mint three-subject terminal fixture');
+  }
+  if (refreshKind === 'stale') {
+    await db.update(refreshTokenFamilies)
+      .set({ currentRefreshJtiDigest: createHash('sha256').update(crypto.randomUUID()).digest('hex') })
+      .where(eq(refreshTokenFamilies.familyId, refreshPayloadB.fam));
+  }
+  return {
+    userA: userA!, userB: userB!, userC: userC!,
+    sessionA, sessionB, sessionC,
+    accessPayloadA,
+    accessFamilyIdA: accessPayloadA.sid,
+    refreshPayloadB,
+  };
 }
 
 beforeEach(() => {
@@ -399,6 +467,138 @@ describe('auth browser transition leases against PostgreSQL', () => {
 });
 
 describe('terminal preparation against issuer finalization', () => {
+  it.each(['current', 'stale'] as const)(
+    'locks real A/B/C users and families in UUID order and composes %s B authority correctly',
+    async (refreshKind) => {
+      const fixture = await terminalThreeSubjectFixture(refreshKind);
+      const db = getTestDb();
+      const userIds = [fixture.userA.id, fixture.userB.id, fixture.userC.id].sort();
+      const familyIds = [
+        fixture.sessionA.tokens.familyId,
+        fixture.sessionB.tokens.familyId,
+        fixture.sessionC.tokens.familyId,
+      ].sort();
+      const familyOwners = new Map([
+        [fixture.sessionA.tokens.familyId, fixture.userA.id],
+        [fixture.sessionB.tokens.familyId, fixture.userB.id],
+        [fixture.sessionC.tokens.familyId, fixture.userC.id],
+      ]);
+      expect(new Set(userIds).size).toBe(3);
+      expect(new Set(familyIds).size).toBe(3);
+
+      const releaseUserBlocker = deferred();
+      const releaseFamilyBlocker = deferred();
+      const userBlockerHeld = deferred();
+      const familyBlockerHeld = deferred();
+      const userBlocker = db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT id FROM users WHERE id = ${userIds[1]!}::uuid FOR UPDATE`);
+        userBlockerHeld.resolve();
+        await releaseUserBlocker.promise;
+      });
+      const familyBlocker = db.transaction(async (tx) => {
+        await tx.execute(sql`
+          SELECT family_id FROM refresh_token_families
+          WHERE family_id = ${familyIds[1]!}::uuid FOR UPDATE
+        `);
+        familyBlockerHeld.resolve();
+        await releaseFamilyBlocker.promise;
+      });
+      await Promise.all([userBlockerHeld.promise, familyBlockerHeld.promise]);
+
+      let prepare: ReturnType<typeof prepareTerminalLogout> | undefined;
+      let earlierUserProbe: Promise<unknown> | undefined;
+      let earlierFamilyProbe: Promise<unknown> | undefined;
+      try {
+        let prepareOutcome: unknown;
+        prepare = prepareTerminalLogout({
+          binding: fixture.sessionC.binding,
+          access: {
+            userId: fixture.userA.id,
+            familyId: fixture.accessFamilyIdA,
+            authEpoch: fixture.accessPayloadA.ae,
+            mfaEpoch: fixture.accessPayloadA.me,
+          },
+          refreshToken: fixture.sessionB.tokens.refreshToken,
+        });
+        void prepare.then(
+          () => { prepareOutcome = 'resolved'; },
+          (error) => { prepareOutcome = error; },
+        );
+        await waitForBlockedAppQuery('users', () => prepareOutcome);
+
+        let userProbeOutcome: unknown;
+        earlierUserProbe = db.transaction((tx) => tx.execute(sql`
+          /* task7-earlier-user-probe */
+          SELECT id FROM users WHERE id = ${userIds[0]!}::uuid FOR UPDATE
+        `));
+        void earlierUserProbe.then(
+          () => { userProbeOutcome = 'resolved'; },
+          (error) => { userProbeOutcome = error; },
+        );
+        await waitForBlockedQueryMarker('task7-earlier-user-probe', () => userProbeOutcome);
+
+        releaseUserBlocker.resolve();
+        await waitForBlockedAppQuery('refresh_token_families', () => prepareOutcome);
+
+        let familyProbeOutcome: unknown;
+        earlierFamilyProbe = db.transaction((tx) => tx.execute(sql`
+          /* task7-earlier-family-probe */
+          SELECT family_id FROM refresh_token_families
+          WHERE family_id = ${familyIds[0]!}::uuid FOR UPDATE
+        `));
+        void earlierFamilyProbe.then(
+          () => { familyProbeOutcome = 'resolved'; },
+          (error) => { familyProbeOutcome = error; },
+        );
+        await waitForBlockedQueryMarker('task7-earlier-family-probe', () => familyProbeOutcome);
+
+        releaseFamilyBlocker.resolve();
+        const prepared = await prepare;
+        await Promise.all([earlierUserProbe, earlierFamilyProbe]);
+
+        expect(prepared.subjectIds).toEqual(
+          (refreshKind === 'current'
+            ? [fixture.userA.id, fixture.userB.id]
+            : [fixture.userA.id]).sort(),
+        );
+        const lockedUsers = await db.select({
+          id: users.id,
+          authEpoch: users.authEpoch,
+        }).from(users);
+        const epochByUser = new Map(lockedUsers.map((user) => [user.id, user.authEpoch]));
+        expect(epochByUser.get(fixture.userA.id)).toBe(fixture.userA.authEpoch + 1);
+        expect(epochByUser.get(fixture.userB.id)).toBe(
+          fixture.userB.authEpoch + (refreshKind === 'current' ? 1 : 0),
+        );
+        expect(epochByUser.get(fixture.userC.id)).toBe(fixture.userC.authEpoch);
+
+        const families = await db.select().from(refreshTokenFamilies);
+        const familyById = new Map(families.map((family) => [family.familyId, family]));
+        for (const familyId of familyIds) {
+          expect(familyById.get(familyId)).toMatchObject({
+            revokedReason: 'cf-access-terminal-logout',
+          });
+        }
+        await Promise.all(familyIds.map((familyId) => expect(
+          isAccessSessionFamilyActive(familyId, familyOwners.get(familyId)!),
+        ).resolves.toBe(false)));
+        await expect(withAuthLifecycleSystemTransaction((tx) =>
+          classifyRefreshTokenAuthority(tx, fixture.sessionB.tokens.refreshToken)))
+          .resolves.toEqual({ kind: 'invalid' });
+      } finally {
+        releaseUserBlocker.resolve();
+        releaseFamilyBlocker.resolve();
+        await Promise.allSettled([
+          userBlocker,
+          familyBlocker,
+          ...(prepare ? [prepare] : []),
+          ...(earlierUserProbe ? [earlierUserProbe] : []),
+          ...(earlierFamilyProbe ? [earlierFamilyProbe] : []),
+        ]);
+      }
+    },
+  );
+
   it('waits behind an issuer that owns transition first, then revokes its linked C family', async () => {
     const fixture = await terminalFixture();
     const issuerEntered = deferred();

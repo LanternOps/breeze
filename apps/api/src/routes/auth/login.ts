@@ -68,7 +68,10 @@ import {
   getCookieValue,
   rotateCsrfBindingCookie,
 } from './helpers';
-import { prepareTerminalLogout } from '../../services/terminalLogout';
+import {
+  prepareTerminalLogout,
+  toTerminalCleanupFailureCategories,
+} from '../../services/terminalLogout';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
@@ -598,7 +601,7 @@ loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
   return c.json({
     success: true,
     cleanupStatus: prepared.cleanupStatus,
-    cleanupFailures: prepared.cleanupFailures,
+    cleanupFailures: toTerminalCleanupFailureCategories(prepared.cleanupFailures),
   });
 });
 
