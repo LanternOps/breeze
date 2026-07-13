@@ -145,7 +145,7 @@
     }
   },
   "alertList": {
-    "searchAlerts": "Alertes de recherche...",
+    "searchAlerts": "Rechercher des alertes...",
     "filters": "Filtres",
     "of": "de",
     "allStatus": "Tous les statuts",
@@ -796,7 +796,7 @@
     "notificationChannels": "Canaux de notification",
     "of": "de",
     "channels": "Chaînes",
-    "searchChannels": "Recherche de canaux...",
+    "searchChannels": "Rechercher des canaux...",
     "allTypes": "Tous types",
     "email": "E-mail",
     "slack": "Slack",
@@ -852,7 +852,7 @@
     "newChannel": "Nouvelle chaîne",
     "notificationRoutingRules": "Règles de routage des notifications",
     "routeAlertsToSpecificChannelsBasedOn": "Orientez les alertes vers des canaux spécifiques en fonction de la gravité. La première règle de correspondance l’emporte.",
-    "rule": "Règne",
+    "rule": "Règle",
     "noRoutingRulesConfiguredAllAlertsGo": "Aucune règle de routage configurée. Toutes les alertes sont envoyées à tous les canaux activés.",
     "addRoutingRule": "Ajouter une règle de routage",
     "partnerWideRuleRoutesAlertsFromEvery": "Règle à l’échelle des partenaires — achemine les alertes de chaque organisation",

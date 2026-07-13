@@ -1884,7 +1884,7 @@
     "sSOProviders": "Proveedores SSO",
     "of": "de",
     "providers": "proveedores",
-    "searchProviders": "Proveedores de búsqueda",
+    "searchProviders": "Buscar proveedores",
     "name": "Nombre",
     "type": "Tipo",
     "status": "Estado",
@@ -2662,7 +2662,7 @@
   "siteList": {
     "title": "Sitios",
     "count": "{{filtered}} de sitios {{total}}",
-    "searchPlaceholder": "Sitios de búsqueda",
+    "searchPlaceholder": "Buscar sitios",
     "actions": {
       "add": "Agregar sitio"
     },
@@ -2701,7 +2701,7 @@
   "customFieldsPage": {
     "title": "Campos personalizados",
     "description": "Defina atributos personalizados para rastrear información adicional en los dispositivos.",
-    "searchPlaceholder": "Campos de búsqueda...",
+    "searchPlaceholder": "Buscar campos...",
     "allTypes": "Todos los tipos",
     "actions": {
       "add": "Agregar campo personalizado",

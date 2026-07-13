@@ -1251,7 +1251,7 @@
     "aPIKeys": "API Clés",
     "of": "de",
     "keys": "Clés",
-    "searchByName": "Recherche par nom",
+    "searchByName": "Rechercher par nom",
     "name": "Nom",
     "keyPrefix": "Préfixe de tonalité",
     "scopes": "Champs d’action",
@@ -1369,7 +1369,7 @@
   },
   "catalogDistributorDrawer": {
     "importFromTDSYNNEX": "Importation depuis TD SYNNEX",
-    "searchECExpressBySKUOrMfgPartSetYourSellPriceAndAddItToT": "Cherchez EC Express par SKU ou la partie de fabrication #, fixez votre prix de vente, puis ajoutez-le au catalogue. L’IA remplit un nom propre et une description technique pour vous.",
+    "searchECExpressBySKUOrMfgPartSetYourSellPriceAndAddItToT": "Rechercher dans EC Express par SKU ou numéro de pièce du fabricant, définir votre prix de vente, puis ajouter le produit au catalogue. L’IA génère un nom clair et une description technique.",
     "close": "Fermer",
     "imported": "Importé « {{name}} » dans le catalogue",
     "importedWithoutCleanup": "Importé « {{name}} » — le nettoyage IA n’était pas disponible, j’ai gardé le titre original.",
@@ -1456,8 +1456,8 @@
     "itemArchived": "Article archivé",
     "itemRestored": "élément restauré",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Le catalogue de produits est disponible uniquement pour les comptes partenaires.",
-    "searchNameOrSKU": "Nom de recherche ou SKU",
-    "searchCatalog": "Catalogue de recherche",
+    "searchNameOrSKU": "Rechercher par nom ou SKU",
+    "searchCatalog": "Rechercher dans le catalogue",
     "filterByType": "Filtrer par type",
     "activeOrArchived": "Actif ou archivé",
     "importFromTDSYNNEX": "Importation depuis TD SYNNEX",
@@ -1624,7 +1624,7 @@
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importation depuis Pax8",
-    "searchThePax8CatalogPickATermSetYourSellPriceAndAddItToT": "Cherchez dans le catalogue Pax8, choisissez un terme, fixez votre prix de vente, puis ajoutez-le au catalogue.",
+    "searchThePax8CatalogPickATermSetYourSellPriceAndAddItToT": "Rechercher dans le catalogue Pax8, choisir une durée, définir votre prix de vente, puis ajouter le produit au catalogue.",
     "close": "Fermer",
     "imported": "Importé « {{name}} » dans le catalogue",
     "importedWithoutCleanup": "Importé « {{name}} » — le nettoyage IA n’était pas disponible, il a gardé le nom d’origine.",
@@ -1712,7 +1712,7 @@
     "roles": "Rôles",
     "of": "de",
     "roles2": "Rôles",
-    "searchRoles": "Rôles de recherche",
+    "searchRoles": "Rechercher des rôles",
     "allTypes": "Tous types",
     "systemRoles": "Rôles du système",
     "customRoles": "Rôles personnalisés",
@@ -1884,7 +1884,7 @@
     "sSOProviders": "SSO Prestataires",
     "of": "de",
     "providers": "Fournisseurs",
-    "searchProviders": "Fournisseurs de recherche",
+    "searchProviders": "Rechercher des fournisseurs",
     "name": "Nom",
     "type": "Type",
     "status": "Statut",
@@ -1972,7 +1972,7 @@
     "gET": "GET",
     "pOST": "POST",
     "enabled": "Activé",
-    "searchBySKUManufacturerPartNumberOrProductName": "Cherchez par SKU, numéro de pièce du fabricant ou nom du produit",
+    "searchBySKUManufacturerPartNumberOrProductName": "Rechercher par SKU, numéro de pièce du fabricant ou nom du produit",
     "product": "Produit",
     "sKU": "SKU",
     "cost": "Coût",
@@ -1985,7 +1985,7 @@
     "markupPercent": "Pourcentage de marge",
     "taxable": "Imposable",
     "cleanUpNameAmpDescriptionWithAI": "Nettoyage du nom et de la description avec l’IA",
-    "searchTheWebByProductNameOrSKUToRewriteTheRawDistributor": "Cherchez sur le web par nom de produit ou SKU pour réécrire le texte brut du distributeur. Les prix restent intacts.",
+    "searchTheWebByProductNameOrSKUToRewriteTheRawDistributor": "Rechercher sur le Web par nom de produit ou SKU afin de reformuler le texte brut du distributeur. Les prix restent inchangés.",
     "description": "Description",
     "cancel": "Annuler",
     "imported": "Importé {{name}}",
@@ -1999,7 +1999,7 @@
     "testing": "Test.",
     "testConnection": "Tester la connexion",
     "searching": "À la recherche.",
-    "searchProducts": "Produits de recherche",
+    "searchProducts": "Rechercher des produits",
     "unknownVendor": "Fournisseur inconnu",
     "nA": "N/A",
     "uSD": "USD",
@@ -2488,7 +2488,7 @@
   "organizationList": {
     "title": "Organisations",
     "count": "{{filtered}} de {{total}} organisations",
-    "searchPlaceholder": "Organisations de recherche",
+    "searchPlaceholder": "Rechercher des organisations",
     "allStatuses": "Tous les statuts",
     "status": {
       "active": "Active",
@@ -2530,7 +2530,7 @@
     "deviceCount": "{{count}} dispositifs",
     "list": {
       "title": "Organisations",
-      "searchPlaceholder": "Chercher...",
+      "searchPlaceholder": "Rechercher...",
       "empty": "Aucune organisation trouvée.",
       "noMatches": "Aucune organisation ne correspond à votre recherche.",
       "dragToReorder": "De la traînée à la réorganisation"
@@ -2662,7 +2662,7 @@
   "siteList": {
     "title": "Sites",
     "count": "{{filtered}} de {{total}} sites",
-    "searchPlaceholder": "Sites de recherche",
+    "searchPlaceholder": "Rechercher des sites",
     "actions": {
       "add": "Ajouter le site"
     },
@@ -2701,7 +2701,7 @@
   "customFieldsPage": {
     "title": "Champs personnalisés",
     "description": "Définissez des attributs personnalisés pour suivre des informations supplémentaires sur les appareils.",
-    "searchPlaceholder": "Champs de recherche...",
+    "searchPlaceholder": "Rechercher des champs...",
     "allTypes": "Tous types",
     "actions": {
       "add": "Ajouter un champ personnalisé",
@@ -2838,7 +2838,7 @@
       "selected": "Organisations spécifiques",
       "none": "Aucun accès à l’organisation",
       "organizations": "Organisations",
-      "searchPlaceholder": "Recherche d’organisations...",
+      "searchPlaceholder": "Rechercher des organisations...",
       "noOrganizations": "Aucune organisation disponible.",
       "noMatches": "Aucune organisation ne correspond à votre recherche.",
       "removeOrg": "Retirer {{name}}"
@@ -2854,7 +2854,7 @@
       "devices": "Dispositifs"
     },
     "searchLabel": "Rechercher des utilisateurs",
-    "searchPlaceholder": "Recherche par nom, email ou poste",
+    "searchPlaceholder": "Rechercher par nom, e-mail ou rôle",
     "count": "{{filtered}} d’utilisateurs {{total}}",
     "columns": {
       "email": "E-mail",

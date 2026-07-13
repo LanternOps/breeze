@@ -1127,7 +1127,7 @@
     "empty": "No se informaron conexiones de red activas.",
     "emptyFiltered": "Ninguna conexión coincide con sus filtros.",
     "loading": "Cargando conexiones de red...",
-    "searchPlaceholder": "Búsqueda por proceso, dirección, puerto...",
+    "searchPlaceholder": "Buscar por proceso, dirección o puerto...",
     "table": {
       "local": "Local",
       "pid": "Pid",
@@ -1522,7 +1522,7 @@
       "noUpdate": "No hay actualización disponible: este paquete está actualizado o no es rastreado por un administrador de paquetes.",
       "unsupportedOs": "Las acciones de software no son compatibles con {{os}}."
     },
-    "searchPlaceholder": "Búsqueda por nombre, editorial, versión...",
+    "searchPlaceholder": "Buscar por nombre, editor o versión...",
     "table": {
       "actions": "Acciones",
       "installed": "Instalado",
@@ -1735,7 +1735,7 @@
     "addFilter": "Agregar filtro",
     "newGroup": "Nuevo grupo…",
     "noMatchingFields": "No hay campos coincidentes",
-    "searchPlaceholder": "Campos de búsqueda...",
+    "searchPlaceholder": "Buscar campos...",
     "categories": {
       "core": "Núcleo",
       "os": "OS",
@@ -1968,7 +1968,7 @@
     "removeNamed": "Quitar {{name}}",
     "removeSoftware": "Quitar {{name}}",
     "searchNamed": "Buscar {{label}}…",
-    "searchSoftware": "Software de búsqueda...",
+    "searchSoftware": "Buscar software...",
     "sites": "Sitios",
     "value": "Valor"
   },

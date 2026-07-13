@@ -148,7 +148,7 @@
       "lastHour": "Dernière heure"
     },
     "recordId": "Enregistrement ID : {{id}}",
-    "searchPlaceholder": "Espace réservé de recherche",
+    "searchPlaceholder": "Rechercher dans les événements...",
     "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
     "time": {
       "daysAgo": "{{count}}d",
@@ -289,7 +289,7 @@
     "noMatches": "Pas de matchs",
     "processMemory": "Mémoire de processus",
     "processes": "Processus",
-    "searchPlaceholder": "Espace réservé de recherche",
+    "searchPlaceholder": "Rechercher un processus...",
     "showing": "Affichage de {{shown}} processus sur {{total}}",
     "status": {
       "idle": "Ralenti",
@@ -405,7 +405,7 @@
     "noSearchMatches": "Aucune correspondance de recherche",
     "openDeviceList": "Liste des appareils ouverts",
     "os": "SE",
-    "searchPlaceholder": "Espace réservé de recherche"
+    "searchPlaceholder": "Rechercher un appareil..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
@@ -533,7 +533,7 @@
     "programScript": "Programme/script",
     "runAs": "En As",
     "runNow": "Exécuter maintenant",
-    "searchPlaceholder": "Tâches de recherche...",
+    "searchPlaceholder": "Rechercher des tâches...",
     "startIn": "Démarrer dans",
     "startProgram": "Démarrer le programme",
     "status": {
@@ -601,7 +601,7 @@
     "page": "Page {{current}} de {{total}}",
     "refreshHint": "Astuce de rafraîchissement",
     "restartService": "Service de redémarrage",
-    "searchPlaceholder": "Espace réservé de recherche",
+    "searchPlaceholder": "Rechercher un service...",
     "serviceConfirm": "Voulez-vous vraiment {{action}} le service {{service}} ?",
     "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
     "startService": "Démarrer le service",
@@ -633,7 +633,7 @@
     },
     "noSessions": "Pas de sessions",
     "page": "Page {{current}} de {{total}}",
-    "searchPlaceholder": "Espace réservé de recherche",
+    "searchPlaceholder": "Rechercher dans les sessions...",
     "showing": "Affichage de {{start}} à {{end}} sur {{total}}",
     "stats": {
       "averageDuration": "Durée moyenne",

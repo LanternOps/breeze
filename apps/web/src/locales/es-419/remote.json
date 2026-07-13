@@ -148,7 +148,7 @@
       "lastHour": "Última hora"
     },
     "recordId": "Registro ID: {{id}}",
-    "searchPlaceholder": "Marcador de posición de búsqueda",
+    "searchPlaceholder": "Buscar eventos...",
     "showing": "Mostrando {{start}} a {{end}} de {{total}}",
     "time": {
       "daysAgo": "hace {{count}}d",
@@ -372,7 +372,7 @@
     "noValues": "Sin valores",
     "parentPath": "Ruta principal",
     "root": "Raíz",
-    "searchPlaceholder": "Marcador de posición de búsqueda",
+    "searchPlaceholder": "Buscar valores...",
     "title": "Editor de registro",
     "value": "Valor",
     "valueCount": "Recuento de valores",
@@ -405,7 +405,7 @@
     "noSearchMatches": "No hay coincidencias de búsqueda",
     "openDeviceList": "Abrir lista de dispositivos",
     "os": "os",
-    "searchPlaceholder": "Marcador de posición de búsqueda"
+    "searchPlaceholder": "Buscar dispositivos..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
@@ -601,7 +601,7 @@
     "page": "Página {{current}} de {{total}}",
     "refreshHint": "Actualizar sugerencia",
     "restartService": "Reiniciar servicio",
-    "searchPlaceholder": "Marcador de posición de búsqueda",
+    "searchPlaceholder": "Buscar servicios...",
     "serviceConfirm": "¿Está seguro de que desea {{action}} el servicio {{service}}?",
     "showing": "Mostrando {{start}} a {{end}} de {{total}}",
     "startService": "Iniciar servicio",
@@ -633,7 +633,7 @@
     },
     "noSessions": "Sin sesiones",
     "page": "Página {{current}} de {{total}}",
-    "searchPlaceholder": "Marcador de posición de búsqueda",
+    "searchPlaceholder": "Buscar sesiones...",
     "showing": "Mostrando {{start}} a {{end}} de {{total}}",
     "stats": {
       "averageDuration": "Duración promedio",

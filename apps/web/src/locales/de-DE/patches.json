@@ -42,7 +42,7 @@
   "patchComplianceView": {
     "unknownDevice": "Unbekannt",
     "emptyValue": "—",
-    "searchPlaceholder": "Geräte durchsuchen...",
+    "searchPlaceholder": "Geräte suchen...",
     "showing": "{{shown}} von {{total}} angezeigt",
     "empty": "Keine Geräte gefunden.",
     "emptyFiltered": "Keine Geräte entsprechen den Filtern.",
@@ -227,7 +227,7 @@
   "patchList": {
     "title": "Patches",
     "summary": "{{shown}} von {{total}} Patches",
-    "searchPlaceholder": "Patches durchsuchen...",
+    "searchPlaceholder": "Patches suchen...",
     "loading": "Patches werden geladen...",
     "empty": "Keine Patches gefunden. Suchbegriff oder Filter anpassen.",
     "vendorBy": "von {{vendor}}",
@@ -441,7 +441,7 @@
   "updateRingList": {
     "title": "Updateringe",
     "summary": "{{shown}} von {{total}} Ringen",
-    "searchPlaceholder": "Ringe durchsuchen...",
+    "searchPlaceholder": "Ringe suchen...",
     "empty": "Keine Updateringe gefunden.",
     "emptyValue": "—",
     "none": "Keine",

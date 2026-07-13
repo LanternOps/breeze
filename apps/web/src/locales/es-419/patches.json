@@ -441,7 +441,7 @@
   "updateRingList": {
     "title": "Actualizar anillos",
     "summary": "{{shown}} de anillos {{total}}",
-    "searchPlaceholder": "Anillos de búsqueda...",
+    "searchPlaceholder": "Buscar anillos...",
     "empty": "No se encontraron anillos de actualización.",
     "emptyValue": "—",
     "none": "Ninguno",

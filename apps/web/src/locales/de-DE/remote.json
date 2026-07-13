@@ -148,7 +148,7 @@
       "lastHour": "Letzte Stunde"
     },
     "recordId": "Datensatz-ID: {{id}}",
-    "searchPlaceholder": "Platzhalter suchen",
+    "searchPlaceholder": "Ereignisse suchen...",
     "showing": "Zeigt {{start}} bis {{end}} von {{total}}",
     "time": {
       "daysAgo": "Vor {{count}}d",
@@ -289,7 +289,7 @@
     "noMatches": "Keine Übereinstimmungen",
     "processMemory": "Prozess-Arbeitsspeicher",
     "processes": "Prozesse",
-    "searchPlaceholder": "Platzhalter suchen",
+    "searchPlaceholder": "Prozesse suchen...",
     "showing": "Zeigt {{shown}} von {{total}} Prozessen",
     "status": {
       "idle": "Leerlauf",
@@ -372,7 +372,7 @@
     "noValues": "Keine Werte",
     "parentPath": "Übergeordneter Pfad",
     "root": "Wurzel",
-    "searchPlaceholder": "Platzhalter suchen",
+    "searchPlaceholder": "Registrierungswerte suchen...",
     "title": "Registrierungseditor",
     "value": "Wert",
     "valueCount": "Wertanzahl",
@@ -405,7 +405,7 @@
     "noSearchMatches": "Keine Suchtreffer",
     "openDeviceList": "Öffnen Sie die Geräteliste",
     "os": "Os",
-    "searchPlaceholder": "Platzhalter suchen"
+    "searchPlaceholder": "Geräte suchen..."
   },
   "remoteFilesPage": {
     "breadcrumbs": {
@@ -533,7 +533,7 @@
     "programScript": "Programm/Skript",
     "runAs": "Ausführen als",
     "runNow": "Jetzt ausführen",
-    "searchPlaceholder": "Suchaufgaben...",
+    "searchPlaceholder": "Aufgaben suchen...",
     "startIn": "Beginnen Sie mit",
     "startProgram": "Programm starten",
     "status": {
@@ -601,7 +601,7 @@
     "page": "Seite {{current}} von {{total}}",
     "refreshHint": "Hinweis aktualisieren",
     "restartService": "Dienst neu starten",
-    "searchPlaceholder": "Platzhalter suchen",
+    "searchPlaceholder": "Dienste suchen...",
     "serviceConfirm": "Möchten Sie den Dienst {{service}} wirklich {{action}}?",
     "showing": "Zeigt {{start}} bis {{end}} von {{total}}",
     "startService": "Dienst starten",
@@ -633,7 +633,7 @@
     },
     "noSessions": "Keine Sitzungen",
     "page": "Seite {{current}} von {{total}}",
-    "searchPlaceholder": "Platzhalter suchen",
+    "searchPlaceholder": "Sitzungen suchen...",
     "showing": "Zeigt {{start}} bis {{end}} von {{total}}",
     "stats": {
       "averageDuration": "Durchschnittliche Dauer",

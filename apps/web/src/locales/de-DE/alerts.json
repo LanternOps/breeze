@@ -145,7 +145,7 @@
     }
   },
   "alertList": {
-    "searchAlerts": "Suchwarnungen...",
+    "searchAlerts": "Warnmeldungen suchen...",
     "filters": "Filter",
     "of": "von",
     "allStatus": "Alle Status",
@@ -796,7 +796,7 @@
     "notificationChannels": "Benachrichtigungskanäle",
     "of": "von",
     "channels": "Kanäle",
-    "searchChannels": "Kanäle durchsuchen...",
+    "searchChannels": "Kanäle suchen...",
     "allTypes": "Alle Typen",
     "email": "E-Mail",
     "slack": "Slack",

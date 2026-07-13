@@ -238,8 +238,8 @@
   },
   "vulnFilterBar": {
     "searchPlaceholder": {
-      "software": "Suchen Sie nach Software oder CVE…",
-      "cves": "Suche CVE ID…"
+      "software": "Nach Software oder CVE suchen…",
+      "cves": "Nach CVE-ID suchen…"
     },
     "labels": {
       "severity": "Schweregrad"

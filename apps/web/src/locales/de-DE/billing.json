@@ -228,8 +228,8 @@
       "filters": {
         "allStatuses": "Alle Status",
         "allOrganizations": "Alle Organisationen",
-        "searchPlaceholder": "Suchen Sie nach Name oder Organisation",
-        "searchAria": "Suchen Sie nach Verträgen"
+        "searchPlaceholder": "Nach Name oder Organisation suchen",
+        "searchAria": "Verträge suchen"
       },
       "stats": {
         "estimatedMonthlyRecurring": "Schätzung: monatlich wiederkehrend",
@@ -330,7 +330,7 @@
         "catalogItem": "Katalogartikel",
         "manualLine": "Manuelle Position",
         "searchDistributor": "Händler suchen",
-        "searchPax8": "Suchen Sie nach Pax8"
+        "searchPax8": "Pax8 durchsuchen"
       },
       "addSection": {
         "captionPlaceholder": "Bildunterschrift (optional)",
@@ -368,7 +368,7 @@
         "addSome": "Fügen Sie einige zum Produktkatalog hinzu",
         "empty": "Keine Katalogartikel.",
         "loadError": "Der Katalog konnte nicht geladen werden. Öffnen Sie den Editor erneut, um es noch einmal zu versuchen – Ihre vorhandenen Elemente sind sicher.",
-        "searchPlaceholder": "Durchsuchen Sie den Katalog nach Name oder SKU"
+        "searchPlaceholder": "Katalog nach Name oder SKU durchsuchen"
       },
       "categories": {
         "hardware": "Hardware",
@@ -691,7 +691,7 @@
         "allStatuses": "Alle Status",
         "organizationAria": "Nach Organisation filtern",
         "searchAria": "Angebote suchen",
-        "searchPlaceholder": "Suchnummer oder Org",
+        "searchPlaceholder": "Nach Nummer oder Organisation suchen",
         "statusAria": "Nach Status filtern"
       },
       "newQuote": "Neues Angebot",
@@ -797,7 +797,7 @@
       "clearSelection": "Auswahl aufheben",
       "manualLine": "Manuelle Position",
       "noCatalogItems": "Keine Katalogartikel.",
-      "searchCatalog": "Durchsuchen Sie den Katalog nach Name oder SKU",
+      "searchCatalog": "Katalog nach Name oder SKU durchsuchen",
       "sourceAria": "Positionsquelle hinzufügen"
     },
     "billTo": {
@@ -1096,7 +1096,7 @@
       "issuedTo": "Ausgestellt an",
       "organizationAria": "Nach Organisation filtern",
       "searchAria": "Rechnungen suchen",
-      "searchPlaceholder": "Suchnummer oder Org",
+      "searchPlaceholder": "Nach Nummer oder Organisation suchen",
       "statusAria": "Nach Status filtern"
     },
     "newInvoice": "Neue Rechnung",

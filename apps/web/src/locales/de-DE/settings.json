@@ -1039,8 +1039,8 @@
     "accessReviews": "Zugriffsüberprüfungen",
     "periodicallyReviewUserAccessAndPermissionsToMaintainSecu": "Überprüfen Sie regelmäßig den Benutzerzugriff und die Berechtigungen, um die Sicherheit zu gewährleisten.",
     "newReview": "Neue Überprüfung",
-    "searchReviews": "Überprüfungen durchsuchen",
-    "searchByNameOrDescription": "Suchen Sie nach Name oder Beschreibung",
+    "searchReviews": "Überprüfungen suchen",
+    "searchByNameOrDescription": "Nach Name oder Beschreibung suchen",
     "allStatuses": "Alle Status",
     "pending": "Ausstehend",
     "inProgress": "In Bearbeitung",
@@ -1251,7 +1251,7 @@
     "aPIKeys": "API-Schlüssel",
     "of": "von",
     "keys": "Schlüssel",
-    "searchByName": "Suche nach Namen",
+    "searchByName": "Nach Namen suchen",
     "name": "Name",
     "keyPrefix": "Schlüsselpräfix",
     "scopes": "Berechtigungen",
@@ -1369,7 +1369,7 @@
   },
   "catalogDistributorDrawer": {
     "importFromTDSYNNEX": "Import aus TD SYNNEX",
-    "searchECExpressBySKUOrMfgPartSetYourSellPriceAndAddItToT": "Suchen Sie EC Express nach SKU oder Hersteller-Teilenummer, legen Sie Ihren Verkaufspreis fest und fügen Sie es dem Katalog hinzu. AI trägt für Sie einen sauberen Namen und eine technische Beschreibung ein.",
+    "searchECExpressBySKUOrMfgPartSetYourSellPriceAndAddItToT": "Durchsuchen Sie EC Express nach SKU oder Hersteller-Teilenummer, legen Sie Ihren Verkaufspreis fest und fügen Sie es dem Katalog hinzu. AI trägt für Sie einen sauberen Namen und eine technische Beschreibung ein.",
     "close": "Schließen",
     "imported": "„{{name}}“ in den Katalog importiert",
     "importedWithoutCleanup": "Importiert „{{name}}“ – KI-Bereinigung war nicht verfügbar, der Originaltitel wurde beibehalten.",
@@ -1456,7 +1456,7 @@
     "itemArchived": "Element archiviert",
     "itemRestored": "Artikel wiederhergestellt",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Der Produktkatalog ist nur für Partnerkonten verfügbar.",
-    "searchNameOrSKU": "Suchen Sie nach Name oder SKU",
+    "searchNameOrSKU": "Nach Name oder SKU suchen",
     "searchCatalog": "Katalog durchsuchen",
     "filterByType": "Nach Typ filtern",
     "activeOrArchived": "Aktiv oder archiviert",
@@ -1884,7 +1884,7 @@
     "sSOProviders": "SSO Anbieter",
     "of": "von",
     "providers": "Anbieter",
-    "searchProviders": "Suchanbieter",
+    "searchProviders": "Anbieter suchen",
     "name": "Name",
     "type": "Typ",
     "status": "Status",
@@ -1972,7 +1972,7 @@
     "gET": "GET",
     "pOST": "POST",
     "enabled": "Aktiviert",
-    "searchBySKUManufacturerPartNumberOrProductName": "Suchen Sie nach SKU, Herstellerteilenummer oder Produktname",
+    "searchBySKUManufacturerPartNumberOrProductName": "Nach SKU, Herstellerteilenummer oder Produktnamen suchen",
     "product": "Produkt",
     "sKU": "SKU",
     "cost": "Kosten",
@@ -2488,7 +2488,7 @@
   "organizationList": {
     "title": "Organisationen",
     "count": "{{filtered}} von {{total}} Organisationen",
-    "searchPlaceholder": "Suchorganisationen",
+    "searchPlaceholder": "Organisationen suchen",
     "allStatuses": "Alle Status",
     "status": {
       "active": "Aktiv",
@@ -2662,7 +2662,7 @@
   "siteList": {
     "title": "Standorte",
     "count": "{{filtered}} von {{total}} Standorte",
-    "searchPlaceholder": "Standorte durchsuchen",
+    "searchPlaceholder": "Standorte suchen",
     "actions": {
       "add": "Standort hinzufügen"
     },
@@ -2701,7 +2701,7 @@
   "customFieldsPage": {
     "title": "Benutzerdefinierte Felder",
     "description": "Definieren Sie benutzerdefinierte Attribute, um zusätzliche Informationen zu Geräten zu verfolgen.",
-    "searchPlaceholder": "Suchfelder...",
+    "searchPlaceholder": "Felder suchen...",
     "allTypes": "Alle Typen",
     "actions": {
       "add": "Benutzerdefiniertes Feld hinzufügen",
@@ -2854,7 +2854,7 @@
       "devices": "Geräte"
     },
     "searchLabel": "Benutzer suchen",
-    "searchPlaceholder": "Suchen Sie nach Name, E-Mail oder Rolle",
+    "searchPlaceholder": "Nach Name, E-Mail oder Rolle suchen",
     "count": "{{filtered}} von {{total}} Benutzern",
     "columns": {
       "email": "E-Mail",

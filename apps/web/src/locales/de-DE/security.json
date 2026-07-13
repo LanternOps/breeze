@@ -276,7 +276,7 @@
     "refresh": "Aktualisieren",
     "reported": "Gemeldet",
     "resolved": "Gelöst",
-    "searchIncidents": "Suchvorfälle",
+    "searchIncidents": "Vorfälle suchen",
     "severity": "Schweregrad",
     "status": "Status",
     "title": "Titel"
@@ -397,7 +397,7 @@
     "quarantined": "Unter Quarantäne gestellt",
     "refresh": "Aktualisieren",
     "resolved": "Gelöst",
-    "searchThreats": "Suchbedrohungen",
+    "searchThreats": "Bedrohungen suchen",
     "sentineloneThreats": "SentinelOne-Bedrohungen",
     "severity": "Schweregrad",
     "startDate": "Startdatum",
@@ -627,7 +627,7 @@
     "refresh": "Aktualisieren",
     "removeSelected": "Ausgewählte entfernen",
     "removed": "Entfernt",
-    "searchByThreatName": "Suche nach Bedrohungsnamen",
+    "searchByThreatName": "Nach Bedrohungsnamen suchen",
     "selectedCount": "{{count}} ausgewählt",
     "severity": "Schweregrad",
     "status": "Status",
@@ -1160,7 +1160,7 @@
       "allTypes": "Alle Typen",
       "allRisks": "Alle Risiken",
       "allStatuses": "Alle Status",
-      "searchPlaceholder": "Dateipfade durchsuchen..."
+      "searchPlaceholder": "Nach Dateipfaden suchen..."
     },
     "actions": {
       "remediateSelected": "Beheben ({{count}})",

@@ -238,7 +238,7 @@
   },
   "vulnFilterBar": {
     "searchPlaceholder": {
-      "software": "Software de búsqueda o CVE…",
+      "software": "Buscar software o CVE…",
       "cves": "Buscar ID CVE..."
     },
     "labels": {

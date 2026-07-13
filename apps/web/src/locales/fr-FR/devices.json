@@ -315,7 +315,7 @@
     "retry": "Réessayer",
     "selectDevices24": "Sélectionner des appareils (2 à 4)",
     "chooseTheDevicesYouWantTo": "Choisissez les appareils que vous souhaitez comparer. Les URL partageables se mettent à jour automatiquement.",
-    "searchByHostname": "Recherche par nom d’hôte",
+    "searchByHostname": "Rechercher par nom d’hôte",
     "noDevicesMatchYourSearch": "Aucun appareil ne correspond à votre recherche.",
     "limitReached": "Limite atteinte",
     "add": "Ajouter",
@@ -571,7 +571,7 @@
     "retry": "Réessayer",
     "activities": "Activités",
     "total": "total)",
-    "searchActivities": "Activités de recherche...",
+    "searchActivities": "Rechercher des activités...",
     "all": "Tous",
     "success": "Succès",
     "failed": "Échec",
@@ -859,7 +859,7 @@
     "retry": "Réessayer",
     "ipAssignmentHistory": "IP Historique des devoirs",
     "refresh": "Actualiser",
-    "searchIpInterfaceGatewayDns": "Recherche IP, interface, passerelle, DNS...",
+    "searchIpInterfaceGatewayDns": "Rechercher une adresse IP, une interface, une passerelle ou un DNS...",
     "allAssignments": "Toutes les affectations",
     "allInterfaces": "Toutes les interfaces",
     "allIpTypes": "Tous les types IP",
@@ -1127,7 +1127,7 @@
     "empty": "Aucune connexion réseau active signalée.",
     "emptyFiltered": "Aucune connexion ne correspond à vos filtres.",
     "loading": "Chargement des connexions réseau...",
-    "searchPlaceholder": "Recherche par processus, adresse, port...",
+    "searchPlaceholder": "Rechercher par processus, adresse ou port...",
     "table": {
       "local": "Local",
       "pid": "Pid",
@@ -1522,7 +1522,7 @@
       "noUpdate": "Aucune mise à jour disponible — ce paquet est à jour ou non suivi par un gestionnaire de paquets.",
       "unsupportedOs": "Les actions logicielles ne sont pas prises en charge sur {{os}}."
     },
-    "searchPlaceholder": "Recherche par nom, éditeur, version...",
+    "searchPlaceholder": "Rechercher par nom, éditeur ou version...",
     "table": {
       "actions": "Actions",
       "installed": "Installé",
@@ -1735,7 +1735,7 @@
     "addFilter": "Ajouter un filtre",
     "newGroup": "Nouveau groupe...",
     "noMatchingFields": "Aucun champ d’appariement",
-    "searchPlaceholder": "Champs de recherche...",
+    "searchPlaceholder": "Rechercher des champs...",
     "categories": {
       "core": "Noyau",
       "os": "OS",
@@ -1967,8 +1967,8 @@
     "organizations": "Organisations",
     "removeNamed": "Retirer {{name}}",
     "removeSoftware": "Retirer {{name}}",
-    "searchNamed": "Cherche {{label}}...",
-    "searchSoftware": "Logiciel de recherche...",
+    "searchNamed": "Rechercher {{label}}...",
+    "searchSoftware": "Rechercher un logiciel...",
     "sites": "Sites",
     "value": "Valeur"
   },
@@ -2155,7 +2155,7 @@
     },
     "runOnDevice": "Exécutez un script sur {{hostname}}",
     "runScript": "Exécuter un script",
-    "searchPlaceholder": "Scripts de recherche...",
+    "searchPlaceholder": "Rechercher des scripts...",
     "title": "Sélectionner un script",
     "unnamedScript": "Script sans nom"
   }

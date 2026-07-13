@@ -300,7 +300,7 @@
     "activeConditionCount_one": "condición {{count}} activa",
     "activeConditionCount_other": "condiciones {{count}} activas",
     "selectField": "Seleccionar campo",
-    "searchFields": "Campos de búsqueda…",
+    "searchFields": "Buscar campos…",
     "noFields": "Ningún campo coincide con su búsqueda",
     "group": {
       "label": "Grupo",
@@ -320,7 +320,7 @@
       "descriptionPlaceholder": "Describa con qué coincide este filtro",
       "conditions": "Condiciones",
       "saveChanges": "Guardar cambios",
-      "search": "Filtros de búsqueda…",
+      "search": "Buscar filtros…",
       "noMatches": "Ningún filtro coincide con su búsqueda",
       "empty": "Aún no hay filtros guardados. Cree uno para reutilizarlo en todos los grupos e implementaciones.",
       "createFirst": "Cree su primer filtro",
@@ -1008,7 +1008,7 @@
           "ticket": "Ticket",
           "updated": "Actualizado"
         },
-        "searchPlaceholder": "buscar entradas",
+        "searchPlaceholder": "Buscar tickets",
         "status": {
           "closed": "Cerrado",
           "inProgress": "En curso",
@@ -1870,7 +1870,7 @@
             "description": "Sus herramientas más utilizadas siempre están visibles. Expanda secciones como Seguridad u Operaciones para encontrar más."
           },
           "search": {
-            "title": "buscar cualquier cosa",
+            "title": "Buscar cualquier cosa",
             "description": "Presione Cmd+K para buscar instantáneamente dispositivos, scripts, alertas, usuarios o configuraciones."
           },
           "switchOrgs": {

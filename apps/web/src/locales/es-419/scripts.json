@@ -197,7 +197,7 @@
     },
     "title": "Automatizaciones",
     "summary": "{{shown}} de automatizaciones {{total}}",
-    "searchPlaceholder": "Automatizaciones de búsqueda...",
+    "searchPlaceholder": "Buscar automatizaciones...",
     "filters": {
       "allTriggers": "Todos los desencadenantes",
       "allStatus": "Todo el estado"
@@ -556,7 +556,7 @@
     "notAvailable": "N/A",
     "title": "Políticas",
     "summary": "{{shown}} de políticas {{total}}",
-    "searchPlaceholder": "Políticas de búsqueda...",
+    "searchPlaceholder": "Buscar políticas...",
     "filters": {
       "allEnforcement": "Todo el cumplimiento",
       "allStatus": "Todo el estado"
@@ -1077,7 +1077,7 @@
     },
     "title": "Galería de plantillas",
     "description": "Explore plantillas de scripts reutilizables.",
-    "searchPlaceholder": "Plantillas de búsqueda",
+    "searchPlaceholder": "Buscar plantillas",
     "languages": {
       "powershell": "PowerShell",
       "bash": "Bash",
@@ -1155,7 +1155,7 @@
     "library": {
       "title": "Biblioteca de secuencias de comandos del sistema",
       "description": "Importe scripts a su organización",
-      "searchPlaceholder": "Scripts del sistema de búsqueda...",
+      "searchPlaceholder": "Buscar scripts del sistema...",
       "empty": "No hay scripts del sistema disponibles",
       "noMatches": "Ningún script coincide con su búsqueda",
       "imported": "Importado",

@@ -145,7 +145,7 @@
     }
   },
   "alertList": {
-    "searchAlerts": "Alertas de búsqueda...",
+    "searchAlerts": "Buscar alertas...",
     "filters": "Filtros",
     "of": "de",
     "allStatus": "Todo el estado",

@@ -197,7 +197,7 @@
     },
     "title": "Automatisierungen",
     "summary": "{{shown}} von {{total}} Automatisierungen",
-    "searchPlaceholder": "Suchautomatisierungen...",
+    "searchPlaceholder": "Automatisierungen suchen...",
     "filters": {
       "allTriggers": "Alle Auslöser",
       "allStatus": "Alle Status"
@@ -556,7 +556,7 @@
     "notAvailable": "N/A",
     "title": "Richtlinien",
     "summary": "{{shown}} von {{total}} Policen",
-    "searchPlaceholder": "Suchrichtlinien...",
+    "searchPlaceholder": "Richtlinien suchen...",
     "filters": {
       "allEnforcement": "Alle Durchsetzung",
       "allStatus": "Alle Status"
@@ -797,7 +797,7 @@
       "confirmExecute": "Bestätigen Sie Ausführen",
       "execute": "Ausführen"
     },
-    "searchPlaceholder": "Suche nach Hostname...",
+    "searchPlaceholder": "Nach Hostname suchen...",
     "filters": {
       "allSites": "Alle Standorte",
       "allStatus": "Alle Status"
@@ -1077,7 +1077,7 @@
     },
     "title": "Vorlagengalerie",
     "description": "Durchsuchen Sie wiederverwendbare Skriptvorlagen.",
-    "searchPlaceholder": "Suchvorlagen",
+    "searchPlaceholder": "Vorlagen suchen",
     "languages": {
       "powershell": "PowerShell",
       "bash": "Bash",
@@ -1155,7 +1155,7 @@
     "library": {
       "title": "Systemskriptbibliothek",
       "description": "Importieren Sie Skripte in Ihre Organisation",
-      "searchPlaceholder": "Systemskripte durchsuchen...",
+      "searchPlaceholder": "Systemskripte suchen...",
       "empty": "Keine Systemskripte verfügbar",
       "noMatches": "Keine Skripte entsprechen Ihrer Suche",
       "imported": "Importiert",

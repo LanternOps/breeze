@@ -718,7 +718,7 @@
       "importAndAdd": "Importer et ajouter",
       "option": "Option {{number}}",
       "placeholder": "Produit, éditeur ou SKU",
-      "searchFailed": "Recherche échouée.",
+        "searchFailed": "Échec de la recherche.",
       "searching": "Recherche…",
       "sellPrice": "Prix de vente",
       "term": "Terme"
