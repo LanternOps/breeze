@@ -2931,9 +2931,7 @@ func (h *Heartbeat) sendHeartbeat() {
 
 	// Agent's own runtime memory gauges (#2389), plus worker-pool wedge
 	// gauges (#2400) so in-flight/overdue commands are visible fleet-wide.
-	payload.AgentRuntime = collectors.CollectRuntimeStats()
-	payload.AgentRuntime.CommandsInFlight, payload.AgentRuntime.CommandsOverdue =
-		h.inFlightCommandStats(time.Now())
+	payload.AgentRuntime = h.collectAgentRuntime(time.Now())
 
 	// OneDrive helper state (Phase 2). Nil until a config has been applied on a
 	// Windows box — omitempty then drops the field entirely.
@@ -3562,7 +3560,7 @@ func (h *Heartbeat) sendHelperTokenUpdate(newToken string) {
 }
 
 func (h *Heartbeat) processCommand(cmd Command) {
-	result := h.executeCommand(cmd)
+	result := h.runTrackedCommand(cmd)
 
 	if result.Status == "duplicate" {
 		return
@@ -3651,7 +3649,7 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 
 	resultCh := make(chan tools.CommandResult, 1)
 	if !h.pool.Submit(func() {
-		resultCh <- h.executeCommand(cmd)
+		resultCh <- h.runTrackedCommand(cmd)
 	}) {
 		return tools.CommandResult{
 			Status: "failed",
@@ -3670,8 +3668,6 @@ func (h *Heartbeat) executeCommandViaPool(cmd Command) tools.CommandResult {
 	// get a much shorter tier (issue #2400) — still log-only.
 	warnAfter := h.commandWarnAfter(cmd.Type)
 	started := time.Now()
-	inFlightKey := h.trackInFlight(started, warnAfter)
-	defer h.untrackInFlight(inFlightKey)
 	watchdog := time.NewTimer(warnAfter)
 	defer watchdog.Stop()
 
@@ -3740,6 +3736,19 @@ type inFlightCommand struct {
 	warnAfter time.Duration
 }
 
+// runTrackedCommand executes cmd on the calling goroutine (a pool worker),
+// recording it in the in-flight wedge gauges for exactly the duration of its
+// execution. Both command-delivery channels go through here — the WebSocket
+// dispatch loop (executeCommandViaPool) and the heartbeat-response poll path
+// (processCommand) — so the gauges see every pool worker a command occupies,
+// and tracking starts when a worker picks the command up, not when it is
+// queued behind a backlog.
+func (h *Heartbeat) runTrackedCommand(cmd Command) tools.CommandResult {
+	key := h.trackInFlight(time.Now(), h.commandWarnAfter(cmd.Type))
+	defer h.untrackInFlight(key)
+	return h.executeCommand(cmd)
+}
+
 // trackInFlight records a command dispatch and returns the key to pass to
 // untrackInFlight when the dispatch loop exits.
 func (h *Heartbeat) trackInFlight(started time.Time, warnAfter time.Duration) uint64 {
@@ -3757,6 +3766,17 @@ func (h *Heartbeat) untrackInFlight(key uint64) {
 	h.inFlightMu.Lock()
 	defer h.inFlightMu.Unlock()
 	delete(h.inFlightCommands, key)
+}
+
+// collectAgentRuntime builds the heartbeat's agentRuntime gauge object: the
+// Go runtime memory stats (#2389) plus the worker-pool wedge gauges (#2400).
+// Extracted from sendHeartbeat so the gauge wiring itself is testable — if
+// this stops being called with live tracker data, the gauges silently report
+// a permanently-plausible 0/0.
+func (h *Heartbeat) collectAgentRuntime(now time.Time) *collectors.RuntimeStats {
+	rt := collectors.CollectRuntimeStats()
+	rt.CommandsInFlight, rt.CommandsOverdue = h.inFlightCommandStats(now)
+	return rt
 }
 
 // inFlightCommandStats returns how many pool-dispatched commands are

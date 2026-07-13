@@ -206,6 +206,154 @@ func TestEphemeralShortTierIsLogOnly(t *testing.T) {
 	}
 }
 
+// TestRunTrackedCommandTracksExecution verifies the shared tracking helper
+// used by BOTH delivery channels — the WebSocket dispatch loop
+// (executeCommandViaPool) and the heartbeat-response poll path
+// (processCommand) — registers the command for exactly the duration of its
+// execution. This is what keeps HTTP-poll-delivered commands (the degraded-WS
+// devices most likely to wedge) visible in the gauges.
+//
+// MUST NOT call t.Parallel(): mutates handlerRegistry.
+func TestRunTrackedCommandTracksExecution(t *testing.T) {
+	const blockType = "test_2400_tracked_direct"
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+
+	handlerRegistry[blockType] = func(h *Heartbeat, cmd Command) tools.CommandResult {
+		<-release
+		return tools.CommandResult{Status: "completed", Stdout: "tracked-ok"}
+	}
+	t.Cleanup(func() { delete(handlerRegistry, blockType) })
+
+	h := &Heartbeat{}
+	done := make(chan tools.CommandResult, 1)
+	go func() {
+		done <- h.runTrackedCommand(Command{
+			ID:      "tracked-direct-1",
+			Type:    blockType,
+			Payload: map[string]any{},
+		})
+	}()
+
+	waitForInFlight(t, h, 1)
+	unblock()
+	result := <-done
+	if result.Status != "completed" || result.Stdout != "tracked-ok" {
+		t.Fatalf("unexpected result: status=%q stdout=%q error=%q", result.Status, result.Stdout, result.Error)
+	}
+	waitForInFlight(t, h, 0)
+}
+
+// TestConcurrentDuplicateIDCommandsBothCounted guards the per-dispatch
+// sequence key: two commands with the SAME command ID executing concurrently
+// (legitimately possible — start_desktop/stop_desktop are exempt from
+// command-ID dedup, see executeCommand #434) must each hold their own gauge
+// entry, and completing one must not evict the other. If the tracker key were
+// ever "simplified" to cmd.ID, the survivor would go invisible — exactly the
+// wedged command the gauge exists to surface.
+//
+// MUST NOT call t.Parallel(): mutates handlerRegistry.
+func TestConcurrentDuplicateIDCommandsBothCounted(t *testing.T) {
+	firstRelease := make(chan struct{})
+	secondRelease := make(chan struct{})
+	var firstOnce, secondOnce sync.Once
+	unblockFirst := func() { firstOnce.Do(func() { close(firstRelease) }) }
+	unblockSecond := func() { secondOnce.Do(func() { close(secondRelease) }) }
+	t.Cleanup(unblockFirst)
+	t.Cleanup(unblockSecond)
+
+	invocation := make(chan int, 2)
+	var calls int
+	var callsMu sync.Mutex
+	orig, hadOrig := handlerRegistry[tools.CmdStartDesktop]
+	handlerRegistry[tools.CmdStartDesktop] = func(h *Heartbeat, cmd Command) tools.CommandResult {
+		callsMu.Lock()
+		calls++
+		n := calls
+		callsMu.Unlock()
+		invocation <- n
+		if n == 1 {
+			<-firstRelease
+		} else {
+			<-secondRelease
+		}
+		return tools.CommandResult{Status: "completed"}
+	}
+	t.Cleanup(func() {
+		if hadOrig {
+			handlerRegistry[tools.CmdStartDesktop] = orig
+		} else {
+			delete(handlerRegistry, tools.CmdStartDesktop)
+		}
+	})
+
+	h := &Heartbeat{
+		stopChan: make(chan struct{}),
+		pool:     workerpool.New(2, 2),
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		h.pool.Shutdown(ctx)
+	})
+
+	sameID := "duplicate-id-2400"
+	done := make(chan tools.CommandResult, 2)
+	for range 2 {
+		go func() {
+			done <- h.executeCommandViaPool(Command{
+				ID:      sameID,
+				Type:    tools.CmdStartDesktop,
+				Payload: map[string]any{},
+			})
+		}()
+	}
+
+	// Both handlers running concurrently under the same command ID.
+	<-invocation
+	<-invocation
+	waitForInFlight(t, h, 2)
+
+	// Completing the first must leave the second tracked.
+	unblockFirst()
+	<-done
+	waitForInFlight(t, h, 1)
+
+	unblockSecond()
+	<-done
+	waitForInFlight(t, h, 0)
+}
+
+// TestCollectAgentRuntimeCarriesWedgeGauges pins the sendHeartbeat wiring:
+// the agentRuntime payload object must carry live tracker values. If
+// collectAgentRuntime stopped consulting the tracker, the gauges would report
+// a permanently-plausible 0/0 with every other test still green.
+func TestCollectAgentRuntimeCarriesWedgeGauges(t *testing.T) {
+	t.Parallel()
+
+	h := &Heartbeat{}
+	now := time.Now()
+	h.trackInFlight(now.Add(-2*time.Minute), defaultEphemeralCommandInFlightWarnAfter) // overdue
+	h.trackInFlight(now.Add(-time.Minute), defaultCommandInFlightWarnAfter)            // in flight, not overdue
+
+	rt := h.collectAgentRuntime(now)
+	if rt == nil {
+		t.Fatal("collectAgentRuntime returned nil")
+	}
+	if rt.CommandsInFlight != 2 {
+		t.Errorf("CommandsInFlight = %d, want 2", rt.CommandsInFlight)
+	}
+	if rt.CommandsOverdue != 1 {
+		t.Errorf("CommandsOverdue = %d, want 1", rt.CommandsOverdue)
+	}
+	// And the memory gauges still ride along.
+	if rt.SysBytes == 0 || rt.Goroutines < 1 {
+		t.Errorf("memory gauges missing: sysBytes=%d goroutines=%d", rt.SysBytes, rt.Goroutines)
+	}
+}
+
 // waitForInFlight polls the in-flight gauge until it reports want, failing
 // the test after a generous deadline.
 func waitForInFlight(t *testing.T, h *Heartbeat, want int) {
