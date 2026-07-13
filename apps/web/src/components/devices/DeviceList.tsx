@@ -301,28 +301,31 @@ const statusFullLabelKeys: Record<DeviceStatus, string> = {
   pending: "deviceList.statuses.full.pending",
 };
 
-// Row-menu action gating (#2426). The two categories are NOT the same, and
-// conflating them is exactly the bug this fixes:
+// Row-menu action gating (#2426). Two categories, and conflating them is the
+// bug this fixes. In THIS menu the members are:
 //
-//   LIVE SESSION (Remote Terminal, Connect Desktop, Remote Tools) — needs an
-//   actively-connected agent to hand off a socket. `terminalWs`/`desktopWs`/
-//   `tunnelWs` reject anything but `online` with "Device is not online".
+//   LIVE SESSION — Remote Terminal. Hands off a socket, so it needs an
+//   actively-connected agent. `terminalWs` (and its desktop/tunnel siblings)
+//   reject anything but `online` with "Device is not online".
 //   → gate on `status !== 'online'`.
 //
-//   QUEUED COMMAND (Run Script, Reboot, Power, Refresh) — inserted as a
-//   `device_commands` row with `status:'pending'` and claimed on the agent's
-//   NEXT poll/heartbeat. The API gates these on `decommissioned` ONLY
-//   (`routes/devices/commands.ts`, `services/scriptExecution.ts:118`, which
-//   filters `status !== 'decommissioned'` and returns `status:'queued'`).
-//   Running a script against an OFFLINE device is a working, intentional
-//   feature: it executes on reconnect. Gating these on `!== 'online'` would
-//   REMOVE that capability.
+//   QUEUED COMMAND — Run Script, Reboot. Inserted as a `device_commands` row
+//   with `status:'pending'` (no TTL) and claimed on the agent's NEXT
+//   poll/heartbeat. The only status the API refuses is `decommissioned`:
+//   `routes/devices/commands.ts` (:89, :157, :268, :437) and the shared
+//   `executeScriptOnDevices` service (`services/scriptExecution.ts:118`, which
+//   drops `status === 'decommissioned'` devices from the target set and returns
+//   `status:'queued'` for the rest). Running a script against an OFFLINE device
+//   is a working, intentional feature: it executes on reconnect. Gating a
+//   queued command on `!== 'online'` does not prevent a doomed request, it
+//   REMOVES that capability.
 //   → gate on `status === 'decommissioned'` (an agent-less machine that can
-//     never claim the command — the one status the API genuinely rejects).
-const commandUnavailableTitleKeys: Record<
-  Exclude<DeviceStatus, "online">,
-  string
-> = {
+//     never claim the command).
+//
+// Reboot is a queued command but still carries the `!== 'online'` gate below —
+// pre-existing behaviour, deliberately not loosened here. See the note in
+// DeviceActions.tsx and PR #2457.
+const notOnlineTitleKeys: Record<Exclude<DeviceStatus, "online">, string> = {
   offline: "deviceActions.unavailable.offline",
   maintenance: "deviceActions.unavailable.maintenance",
   decommissioned: "deviceActions.unavailable.decommissioned",
@@ -333,28 +336,29 @@ const commandUnavailableTitleKeys: Record<
 
 type DeviceTranslation = ReturnType<typeof useTranslation<"devices">>["t"];
 
-// Tooltip for a live-session action disabled because the agent isn't connected.
-function liveSessionUnavailableTitle(
+// Status-accurate tooltip for anything gated on `!== 'online'`. Says only why
+// the device isn't online — it does NOT assert which category the action is.
+function notOnlineTitle(
   status: DeviceStatus,
   t: DeviceTranslation,
 ): string | undefined {
   return status === "online"
     ? undefined
-    : t(/* i18n-dynamic */ commandUnavailableTitleKeys[status]);
+    : t(/* i18n-dynamic */ notOnlineTitleKeys[status]);
 }
 
-// A queued command can only be refused outright for a decommissioned device.
+// A queued command is refused only for a decommissioned device.
 function isCommandQueueable(status: DeviceStatus): boolean {
   return status !== "decommissioned";
 }
 
-function queuedCommandUnavailableTitle(
+function notQueueableTitle(
   status: DeviceStatus,
   t: DeviceTranslation,
 ): string | undefined {
   return isCommandQueueable(status)
     ? undefined
-    : t("deviceActions.unavailable.decommissioned");
+    : t(/* i18n-dynamic */ notOnlineTitleKeys.decommissioned);
 }
 
 // Cap visible tag chips per row; the rest collapse into a +N chip, with the
@@ -2284,7 +2288,7 @@ export default function DeviceList({
                                   <button
                                     type="button"
                                     disabled={device.status !== "online"}
-                                    title={liveSessionUnavailableTitle(
+                                    title={notOnlineTitle(
                                       device.status,
                                       t,
                                     )}
@@ -2303,7 +2307,7 @@ export default function DeviceList({
                                   <button
                                     type="button"
                                     disabled={!isCommandQueueable(device.status)}
-                                    title={queuedCommandUnavailableTitle(
+                                    title={notQueueableTitle(
                                       device.status,
                                       t,
                                     )}
@@ -2317,15 +2321,14 @@ export default function DeviceList({
                                     {t("deviceList.runScript")}{" "}
                                   </button>
                                   {/* Reboot is ALSO a queued command, so this
-                                      `!== "online"` gate is arguably too strict
-                                      by the same argument. Left as-is
-                                      deliberately — pre-existing behaviour, and
-                                      loosening it is a maintainer call (see PR
-                                      #2457 discussion). */}
+                                      `!== "online"` gate is stricter than the
+                                      API requires. Left as-is deliberately —
+                                      pre-existing behaviour, and loosening it
+                                      is a maintainer call (PR #2457). */}
                                   <button
                                     type="button"
                                     disabled={device.status !== "online"}
-                                    title={liveSessionUnavailableTitle(
+                                    title={notOnlineTitle(
                                       device.status,
                                       t,
                                     )}

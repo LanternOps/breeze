@@ -33,24 +33,31 @@ import "../../lib/i18n";
 //   "Device is not online" comes ONLY from these routes (`terminalWs`,
 //   `desktopWs`, `tunnelWs`, `tunnels`, `bootMetrics`, `remote/sessions`).
 //
-//   QUEUED COMMAND — Run Script, Reboot, Shutdown, Refresh. These insert a
-//   `device_commands` row with `status:'pending'` (no TTL) and the agent claims
-//   it on its NEXT poll/heartbeat. The API gates them on `decommissioned` ONLY:
-//   `routes/devices/commands.ts` (:89, :157, :268, :437) and
-//   `services/scriptExecution.ts:118`, which filters `status !== 'decommissioned'`
-//   and returns `status:'queued'`. `routes/scripts.ts` has NO status gate at all.
-//   So a script queued against an offline device IS delivered — it runs when the
-//   machine comes back. That is a feature, not a doomed request.
+//   QUEUED COMMAND — Run Script, Reboot, Reboot to Safe Mode, Shutdown,
+//   Refresh. These insert a `device_commands` row with `status:'pending'` (no
+//   TTL) and the agent claims it on its NEXT poll/heartbeat. The only status
+//   the API refuses is `decommissioned`: `routes/devices/commands.ts` (:89,
+//   :157, :268, :437), and for scripts the shared `executeScriptOnDevices`
+//   service (`services/scriptExecution.ts:118`) — which drops decommissioned
+//   devices from the target set and returns `status:'queued'` for the rest.
+//   (The gate lives in that service, not in `routes/scripts.ts`.) So a script
+//   queued against an offline device IS delivered — it runs when the machine
+//   comes back. That is a feature, not a doomed request.
 //
 // Consequence: gating a queued command on `!== 'online'` does not prevent a
 // doomed request, it REMOVES working functionality. The only status that can
 // never service a queued command is `decommissioned` (agent-less by definition).
 //
-// The `!online` gates still applied to Run Script / Power / Refresh BELOW are
-// therefore stricter than the API requires. They are left in place pending a
-// maintainer decision (see PR #2457) rather than changed silently — but do not
-// copy them to new surfaces, and do not "fix" a missing gate by adding one.
-// Wake (Wake-on-LAN) targets offline devices by design and is never gated.
+// The `!online` gates BELOW on the queued commands — run-script (:261, :418),
+// refresh (:296, :520), reboot (:306, :474), reboot_safe_mode (:326, :484),
+// shutdown (:494), and the Power dropdown trigger (:459) — are therefore
+// stricter than the API requires. They are left in place pending a maintainer
+// decision (PR #2457) rather than changed silently. The `!online` gates on
+// Connect Desktop and Remote Tools are correct — those are live sessions.
+// Do not copy the queued-command gates to new surfaces, and do not "fix" a
+// missing gate by adding one; gate queued commands on `decommissioned`
+// (see DeviceList.tsx). Wake (Wake-on-LAN) targets offline devices by design
+// and is never gated.
 function isDeviceOnline(device: Device): boolean {
   return device.status === "online";
 }
@@ -188,8 +195,10 @@ export default function DeviceActions({
   const [modalType, setModalType] = useState<ModalType>("none");
   const [loading, setLoading] = useState(false);
 
-  // Session/command buttons are unavailable unless the agent is online. Wake
-  // (Wake-on-LAN) is intentionally exempt and gated on `=== 'offline'`.
+  // NOTE: `online` gates BOTH live-session buttons (correctly) and queued
+  // commands (more strictly than the API requires) — see the category note at
+  // the top of this file. It is not evidence that a queued command needs an
+  // online agent. Wake (Wake-on-LAN) is exempt and gated on `=== 'offline'`.
   const online = isDeviceOnline(device);
   const offlineTitle = online ? undefined : unavailableTitle(device.status, t);
 

@@ -97,7 +97,12 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       expect(power).toHaveAttribute('title', 'Device is offline');
     });
 
-    it('keeps Run Script and Remote Tools disabled with the offline tooltip (existing behavior)', () => {
+    // Remote Tools is a live session — disabled-when-offline is CORRECT.
+    // Run Script is a queued command and would be delivered on reconnect, so
+    // disabling it here is stricter than the API requires (#2426). That gate is
+    // deliberately deferred to a maintainer decision (PR #2457), not endorsed;
+    // this test pins the status quo so a change to it is a conscious one.
+    it('keeps Run Script and Remote Tools disabled with the offline tooltip (status quo — Run Script gate is stricter than the API, see #2426)', () => {
       render(<DeviceActions device={offlineDevice} />);
 
       const runScript = button(/run script/i);
@@ -118,11 +123,20 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
     });
   });
 
-  // Intermediate statuses (maintenance/updating/quarantined/decommissioned/pending)
-  // are NOT online, so the agent can't service a live session or command. Before
-  // #2078 the action bar gated on `=== 'offline'`, leaving these buttons enabled
-  // and firing requests the API rejects with "Device is not online". They must
-  // now be disabled — with a status-accurate tooltip, not the wrong "offline" copy.
+  // Intermediate statuses (maintenance/updating/quarantined/decommissioned/pending).
+  // Before #2078 the action bar gated on `=== 'offline'`, so these buttons stayed
+  // enabled AND showed the wrong "Device is offline" copy. They are now disabled
+  // with a status-accurate tooltip, which is what these tests pin.
+  //
+  // CORRECTION (#2426): an earlier version of this comment claimed the agent
+  // "can't service a live session or command" in these states and that the API
+  // "rejects [them] with 'Device is not online'". That is true of LIVE SESSIONS
+  // (Connect Desktop, Remote Terminal, Remote Tools) only. QUEUED COMMANDS
+  // (Run Script, Reboot, Shutdown, Refresh) are inserted as pending
+  // `device_commands` and claimed on the agent's next poll — the API refuses
+  // them only for `decommissioned`. So for the queued commands these gates are
+  // stricter than the API requires; the tests below pin existing behaviour, they
+  // do not certify it as correct. See the category note in DeviceActions.tsx.
   describe('intermediate (non-online, non-offline) statuses — issue #2078', () => {
     it('disables session/command buttons for a device in maintenance mode', () => {
       render(<DeviceActions device={maintenanceDevice} />);

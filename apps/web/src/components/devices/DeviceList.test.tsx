@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import DeviceList, { type Device } from './DeviceList';
@@ -1134,28 +1134,48 @@ describe('DeviceList — row-menu action gating (#2426)', () => {
 
   // Remote Terminal really IS a live session (terminalWs rejects anything but
   // online), so its `!== "online"` gate is correct. Reboot's identical gate is
-  // arguably too strict — it's a queued command — but that's pre-existing
-  // behaviour left for a maintainer call, so pin it as-is rather than leave it
-  // untested either way.
-  it('keeps the live-session gate on Remote Terminal (and the status-quo gate on Reboot) for an offline device', () => {
-    const device: Device = { ...baseDevice, status: 'offline' };
-    render(<DeviceList devices={[device]} />);
-    openRowMenu();
+  // stricter than the API requires — it's a queued command — but that's
+  // pre-existing behaviour left for a maintainer call, so pin it as-is rather
+  // than leave it untested either way.
+  //
+  // The per-status tooltip map is exercised across ALL six non-online statuses:
+  // it's new code mapping each to a distinct string, so a transposed entry
+  // (quarantined → "Device is updating") would otherwise ship silently.
+  it.each([
+    ['offline', 'Device is offline'],
+    ['maintenance', 'Device is in maintenance mode'],
+    ['decommissioned', 'Device is decommissioned'],
+    ['quarantined', 'Device is quarantined'],
+    ['updating', 'Device is updating'],
+    ['pending', 'Device is pending enrollment'],
+  ] as const)(
+    'disables Remote Terminal and Reboot for a %s device with the status-accurate tooltip',
+    (status, expectedTitle) => {
+      render(
+        <DeviceList devices={[{ ...baseDevice, status }]} includeDecommissioned />,
+      );
+      openRowMenu();
 
-    for (const name of [/remote terminal/i, /^reboot$/i]) {
-      const btn = screen.getByRole('button', { name });
-      expect(btn).toBeDisabled();
-      expect(btn).toHaveAttribute('title', 'Device is offline');
-    }
-  });
+      for (const name of [/remote terminal/i, /^reboot$/i]) {
+        const btn = screen.getByRole('button', { name });
+        expect(btn).toBeDisabled();
+        expect(btn).toHaveAttribute('title', expectedTitle);
+      }
+    },
+  );
 
   // Wake (Wake-on-LAN) is the deliberate exception — it exists precisely to
   // target an offline device. Guards against a future "gate every row-menu
   // action" sweep killing the one action that's only useful when offline.
-  it('leaves Wake enabled on an offline device', () => {
+  it('leaves Wake enabled on an offline device, and renders it only when offline', () => {
     render(<DeviceList devices={[{ ...baseDevice, status: 'offline' }]} />);
     openRowMenu();
-
     expect(screen.getByRole('button', { name: /^wake$/i })).toBeEnabled();
+
+    // Wake is offline-only by design — it must not appear on an online row.
+    cleanup();
+    render(<DeviceList devices={[baseDevice]} />);
+    openRowMenu();
+    expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
   });
 });
