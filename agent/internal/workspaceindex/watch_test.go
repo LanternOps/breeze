@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,7 +20,7 @@ type watchEventsPayload struct {
 	Deletes []string `json:"deletes"`
 }
 
-func TestWatchPathExcludedForUnknownDeleteType(t *testing.T) {
+func TestExcludedWalkPathHelperCoversHiddenAndGlobbedPaths(t *testing.T) {
 	globs := append(append([]string(nil), defaultExcludeGlobs...), "ignored/**")
 	tests := []struct {
 		path string
@@ -192,5 +194,78 @@ func TestStartWatchExcludedDirectoriesDoNotConsumeCap(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("excluded directory consumed watch cap and degraded watcher")
+	}
+}
+
+// TestStartWatchExcludesHiddenFilesFromUpserts drives the real fsnotify handler
+// to pin the #2425 privacy hole at the exact place it bit: the create/write
+// branch, where isDir is known. The old watch.go called the exclusion helper
+// with isDir=false for a hidden FILE, which skipped the dot-segment check
+// entirely, so .env — matched by none of the default globs — was uploaded via
+// PostEvents. A helper-level unit test cannot catch a re-introduced isDir gate
+// at this call site; only driving the watcher can.
+func TestStartWatchExcludesHiddenFilesFromUpserts(t *testing.T) {
+	const debounce = 250 * time.Millisecond
+	profileDir := filepath.Join(t.TempDir(), "alice")
+	documentsDir := filepath.Join(profileDir, "Documents")
+	if err := os.MkdirAll(documentsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	payloads := make(chan watchEventsPayload, 4)
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/workspace/agent/sources/source-watch/events" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var payload watchEventsPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		payloads <- payload
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop := startWatch(ctx, Deps{
+		Client:        client,
+		Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Enumerate:     func() []ProfileRoot { return []ProfileRoot{{Username: "alice", Dir: profileDir}} },
+		WatchDebounce: debounce,
+		WatchDirCap:   16,
+	}, SourceConfig{ID: "source-watch", Kind: "local_profile", Watch: true})
+	defer stop()
+
+	// Credential-bearing dotfiles, none of which any default glob matches.
+	for _, hidden := range []string{".env", ".npmrc", ".pgpass"} {
+		if err := os.WriteFile(filepath.Join(documentsDir, hidden), []byte("SECRET=1"), 0o600); err != nil {
+			t.Fatalf("create %s: %v", hidden, err)
+		}
+	}
+	// A visible file guarantees the watcher really is delivering events — without
+	// it, an exclusion assertion would pass vacuously on a dead watcher.
+	if err := os.WriteFile(filepath.Join(documentsDir, "visible.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatalf("create visible file: %v", err)
+	}
+
+	var payload watchEventsPayload
+	select {
+	case payload = <-payloads:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for debounced events request")
+	}
+
+	if len(payload.Upserts) != 1 {
+		t.Fatalf("upserts = %+v, want only the visible file (hidden files must not be indexed)", payload.Upserts)
+	}
+	if got := payload.Upserts[0].RelPath; got != "alice/Documents/visible.txt" {
+		t.Fatalf("upsert relPath = %q, want alice/Documents/visible.txt", got)
+	}
+	for _, upsert := range payload.Upserts {
+		if strings.HasPrefix(path.Base(upsert.RelPath), ".") {
+			t.Fatalf("hidden file %q was indexed and uploaded (#2425)", upsert.RelPath)
+		}
 	}
 }

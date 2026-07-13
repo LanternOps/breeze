@@ -770,11 +770,15 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		})
 		var workspaceIndexCtx context.Context
 		workspaceIndexCtx, workspaceIndexCancel = context.WithCancel(context.Background())
-		workspaceIndexDone = workspaceindex.StartLoop(workspaceIndexCtx, workspaceindex.Deps{
-			Client: workspaceClient,
-			// Device-audit trace for server-driven indexing activation (#2425).
-			Audit: hb.AuditLog(),
-		})
+		workspaceIndexDeps := workspaceindex.Deps{Client: workspaceClient}
+		// Device-audit trace for server-driven indexing activation (#2425).
+		// Assign only a non-nil logger: a nil *audit.Logger stored in the
+		// AuditLogger interface is a TYPED nil, which passes `!= nil` and would
+		// make the loop's audit guard silently decorative.
+		if auditLog := hb.AuditLog(); auditLog != nil {
+			workspaceIndexDeps.Audit = auditLog
+		}
+		workspaceIndexDone = workspaceindex.StartLoop(workspaceIndexCtx, workspaceIndexDeps)
 	}
 
 	// PAM Track 3: subscribe to Microsoft-Windows-LUA ETW provider for

@@ -184,3 +184,27 @@ func TestFetchConfigsFollowsAPIBaseURLProviderAcrossFailover(t *testing.T) {
 		t.Fatalf("promoted backup received %d requests, want 1 — deps still pinned to the old primary (#2423)", got)
 	}
 }
+
+// TestAgentBaseRejectsUnsetOrEmptyProvider pins the wiring-bug contract: an
+// unset APIBaseURL provider must surface as a named error, never a nil-func
+// panic that takes the agent process down from inside the collector goroutine.
+func TestAgentBaseRejectsUnsetOrEmptyProvider(t *testing.T) {
+	tests := []struct {
+		name string
+		deps CollectorDeps
+	}{
+		{name: "nil provider", deps: CollectorDeps{AgentID: "agent-1"}},
+		{name: "provider returns empty", deps: CollectorDeps{AgentID: "agent-1", APIBaseURL: func() string { return "" }}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := tt.deps.agentBase(); err == nil {
+				t.Fatal("agentBase() error = nil, want a named wiring error")
+			}
+			// fetchConfigs must propagate it rather than panicking.
+			if _, err := fetchConfigs(context.Background(), tt.deps); err == nil {
+				t.Fatal("fetchConfigs() error = nil, want the wiring error propagated")
+			}
+		})
+	}
+}

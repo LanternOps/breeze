@@ -3,10 +3,14 @@ package workspaceindex
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"reflect"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/audit"
@@ -15,6 +19,29 @@ import (
 )
 
 const moduleAbsentBackoff = 6 * time.Hour
+
+// indexingScopeSignature reduces the announced source set to a comparable
+// string so the consent signal re-fires when the server changes WHAT is
+// indexed, not only when it toggles indexing on. sources must already be
+// ordered deterministically (by source ID).
+//
+// excludeGlobs is part of the signature: DROPPING an exclusion (e.g. removing
+// `Finance/**`) widens what gets enumerated and uploaded just as surely as
+// adding a source, and must re-announce. cadenceMinutes is deliberately NOT
+// part of it — it changes how often the same scope is walked, not its extent.
+func indexingScopeSignature(sources []SourceConfig) string {
+	if len(sources) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(sources))
+	for _, src := range sources {
+		globs := slices.Clone(src.ExcludeGlobs)
+		slices.Sort(globs)
+		parts = append(parts, fmt.Sprintf("%s|%s|%s|%t|%s",
+			src.ID, src.Kind, src.RootPath, src.Watch, strings.Join(globs, ",")))
+	}
+	return strings.Join(parts, ";")
+}
 
 // AuditLogger records device-audit events for privacy-significant module
 // transitions. *audit.Logger satisfies it and is nil-receiver safe.
@@ -103,42 +130,67 @@ func StartLoop(ctx context.Context, deps Deps) <-chan struct{} {
 		watchers := make(map[string]watchRegistration)
 		var running *activeCrawl
 		var nextFetch time.Time
-		// indexingActive tracks the server-driven activation state so the
-		// consent signal (prominent log + device-audit event, #2425) fires on
-		// each off→on transition rather than on every poll.
-		indexingActive := false
+		// auditedScope is the signature of the source set last announced by the
+		// consent signal (prominent log + device-audit event, #2425). Tracking
+		// the SCOPE rather than a mere on/off bool means a server that widens
+		// indexing while it is already active — adding an SMB share, repointing
+		// a rootPath — re-announces instead of riding the first activation's
+		// trace silently. Empty means indexing is not active.
+		auditedScope := ""
 
 		markIndexingInactive := func(reason string) {
-			if indexingActive {
-				deps.Log.Info("workspace indexing deactivated", "reason", reason)
-				indexingActive = false
+			if auditedScope == "" {
+				return
+			}
+			auditedScope = ""
+			// Deactivation is half of the "when was this device indexed?"
+			// question, so it ships (Warn: the log shipper's MinLevel) and
+			// leaves its own audit entry — an activation trace with no
+			// closing bracket cannot bound the indexing window (#2425).
+			deps.Log.Warn("workspace indexing DEACTIVATED", "reason", reason)
+			if deps.Audit != nil {
+				deps.Audit.Log(audit.EventWorkspaceIndexDeactivated, "", map[string]any{
+					"reason": reason,
+				})
 			}
 		}
 		markIndexingActive := func(sources map[string]SourceConfig) {
-			if indexingActive {
+			ordered := make([]SourceConfig, 0, len(sources))
+			for _, id := range slices.Sorted(maps.Keys(sources)) {
+				ordered = append(ordered, sources[id])
+			}
+			scope := indexingScopeSignature(ordered)
+			if scope == auditedScope {
 				return
 			}
-			indexingActive = true
-			summaries := make([]map[string]any, 0, len(sources))
-			ids := make([]string, 0, len(sources))
-			for _, src := range sources {
+			summaries := make([]map[string]any, 0, len(ordered))
+			ids := make([]string, 0, len(ordered))
+			for _, src := range ordered {
 				summaries = append(summaries, map[string]any{
 					"id":             src.ID,
 					"kind":           src.Kind,
 					"rootPath":       src.RootPath,
 					"cadenceMinutes": src.CadenceMinutes,
 					"watch":          src.Watch,
+					"excludeGlobs":   src.ExcludeGlobs,
 				})
 				ids = append(ids, src.ID)
 			}
+			widened := auditedScope != ""
+			auditedScope = scope
+
 			// Enablement is a pure server-side flip with no local opt-in, so
 			// activation must be loud: Warn reaches the shipped agent logs and
 			// the audit entry leaves a local tamper-evident trace (#2425).
-			deps.Log.Warn("workspace indexing ACTIVATED by server configuration — filesystem metadata will be enumerated and uploaded",
-				"sourceCount", len(sources), "sourceIds", ids)
+			message := "workspace indexing ACTIVATED by server configuration — filesystem metadata will be enumerated and uploaded"
+			if widened {
+				message = "workspace indexing SCOPE CHANGED by server configuration — a different set of filesystem locations will be enumerated and uploaded"
+			}
+			deps.Log.Warn(message, "sourceCount", len(sources), "sourceIds", ids)
 			if deps.Audit != nil {
 				deps.Audit.Log(audit.EventWorkspaceIndexActivated, "", map[string]any{
-					"sources": summaries,
+					"sources":     summaries,
+					"scopeChange": widened,
 				})
 			}
 		}

@@ -522,28 +522,20 @@ func TestStartLoopAuditsActivationTransitions(t *testing.T) {
 		TickInterval: 5 * time.Millisecond,
 	})
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		types, _ := audit.snapshot()
-		if len(types) >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for 2 activation audit events, got %d (%v)", len(types), types)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// Expected trail: activated (fetch 1), deactivated (fetch 3), activated
+	// (fetch 4). Fetch 2 repeats the identical scope and must NOT duplicate.
+	waitForAuditEvents(t, audit, 3)
 	cancel()
 	<-done
 
 	types, details := audit.snapshot()
-	if len(types) != 2 {
-		t.Fatalf("audit events = %v, want exactly 2 activation transitions (no per-poll duplicates)", types)
+	wantTypes := []string{
+		"workspace_index_activated",
+		"workspace_index_deactivated",
+		"workspace_index_activated",
 	}
-	for i, eventType := range types {
-		if eventType != "workspace_index_activated" {
-			t.Fatalf("audit event %d type = %q, want workspace_index_activated", i, eventType)
-		}
+	if !reflect.DeepEqual(types, wantTypes) {
+		t.Fatalf("audit events = %v, want %v (transitions only, no per-poll duplicates)", types, wantTypes)
 	}
 	sources, ok := details[0]["sources"].([]map[string]any)
 	if !ok || len(sources) != 1 {
@@ -551,5 +543,93 @@ func TestStartLoopAuditsActivationTransitions(t *testing.T) {
 	}
 	if sources[0]["id"] != "source-docs" || sources[0]["rootPath"] != "/home" || sources[0]["kind"] != "local_profile" {
 		t.Fatalf("source summary = %#v", sources[0])
+	}
+	if details[0]["scopeChange"] != false {
+		t.Fatalf("first activation scopeChange = %v, want false", details[0]["scopeChange"])
+	}
+	if details[1]["reason"] == "" || details[1]["reason"] == nil {
+		t.Fatalf("deactivation details = %#v, want a reason", details[1])
+	}
+}
+
+// TestStartLoopAuditsScopeWideningWhileActive pins the harder half of #2425:
+// the consent trace must also fire when the server WIDENS indexing while it is
+// already active (adds a source / repoints a rootPath). A plain on/off latch
+// would let the new location be enumerated under the first activation's trace,
+// silently — which is the most privacy-significant case.
+func TestStartLoopAuditsScopeWideningWhileActive(t *testing.T) {
+	farFuture := time.Now().Add(100_000 * time.Hour)
+	var reqCount atomic.Int32
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/workspace/agent/crawl-config" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		docs := SourceConfig{
+			ID: "source-docs", Kind: "local_profile", RootPath: "/home",
+			CadenceMinutes: 60, LastCompleteRunAt: &farFuture,
+		}
+		config := CrawlConfig{Enabled: true, PollIntervalSeconds: 1, Sources: []SourceConfig{docs}}
+		// From the 3rd fetch on, the server also indexes an SMB share —
+		// indexing never went inactive, so a boolean latch would say nothing.
+		if reqCount.Add(1) >= 3 {
+			config.Sources = append(config.Sources, SourceConfig{
+				ID: "source-share", Kind: "smb_share", RootPath: `\\fileserver\finance`,
+				CadenceMinutes: 60, LastCompleteRunAt: &farFuture,
+			})
+		}
+		writeLoopConfig(t, w, config)
+	}))
+
+	base := time.Now()
+	var step atomic.Int64
+	audit := &recordingAuditLogger{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := StartLoop(ctx, Deps{
+		Client:       client,
+		Log:          loopTestLogger(),
+		Audit:        audit,
+		Now:          func() time.Time { return base.Add(time.Duration(step.Add(1)) * time.Hour) },
+		TickInterval: 5 * time.Millisecond,
+	})
+
+	waitForAuditEvents(t, audit, 2)
+	cancel()
+	<-done
+
+	types, details := audit.snapshot()
+	if len(types) != 2 || types[0] != "workspace_index_activated" || types[1] != "workspace_index_activated" {
+		t.Fatalf("audit events = %v, want exactly 2 activation events (initial + scope widening)", types)
+	}
+	if details[0]["scopeChange"] != false {
+		t.Fatalf("initial activation scopeChange = %v, want false", details[0]["scopeChange"])
+	}
+	if details[1]["scopeChange"] != true {
+		t.Fatalf("widening event scopeChange = %v, want true", details[1]["scopeChange"])
+	}
+	sources, ok := details[1]["sources"].([]map[string]any)
+	if !ok || len(sources) != 2 {
+		t.Fatalf("widening details = %#v, want two source summaries", details[1])
+	}
+	// Summaries are ordered by source ID: source-docs, source-share.
+	if sources[1]["id"] != "source-share" || sources[1]["rootPath"] != `\\fileserver\finance` {
+		t.Fatalf("newly added source summary = %#v, want the SMB share named", sources[1])
+	}
+}
+
+func waitForAuditEvents(t *testing.T, audit *recordingAuditLogger, count int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		types, _ := audit.snapshot()
+		if len(types) >= count {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d audit events, got %d (%v)", count, len(types), types)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

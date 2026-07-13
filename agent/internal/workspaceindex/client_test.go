@@ -280,10 +280,56 @@ func TestClientFollowsServerURLProviderAcrossFailover(t *testing.T) {
 	if _, err := client.FetchConfig(context.Background()); err != nil {
 		t.Fatalf("FetchConfig via promoted backup: %v", err)
 	}
+	// Batch upload is the path that actually matters for #2423 (it carries the
+	// crawl payload) and is the one place the base URL is re-resolved per retry
+	// attempt, so assert it follows the promotion too.
+	if err := client.PostBatch(context.Background(), "run-1", "", []Entry{{RelPath: "a"}}); err != nil {
+		t.Fatalf("PostBatch via promoted backup: %v", err)
+	}
 	if got := primaryHits.Load(); got != 1 {
 		t.Fatalf("primary received %d requests, want 1", got)
 	}
-	if got := backupHits.Load(); got != 1 {
-		t.Fatalf("promoted backup received %d requests, want 1 — client still pinned to the old primary (#2423)", got)
+	if got := backupHits.Load(); got != 2 {
+		t.Fatalf("promoted backup received %d requests, want 2 (config + batch) — client still pinned to the old primary (#2423)", got)
+	}
+}
+
+// TestClientFailsFastWithoutServerURL pins that a nil/empty ServerURL provider
+// (a wiring bug) surfaces as ErrNoServerURL immediately, rather than degrading
+// into a scheme-less relative request that fails forever as a cryptic
+// transport error and burns the batch retries.
+func TestClientFailsFastWithoutServerURL(t *testing.T) {
+	var hits atomic.Int32
+	token := secmem.NewSecureString("agent-secret")
+	defer token.Zero()
+	transport := handlerRoundTripper{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})}
+
+	for _, tt := range []struct {
+		name     string
+		provider func() string
+	}{
+		{name: "nil provider", provider: nil},
+		{name: "provider returns empty", provider: func() string { return "" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewClient(ClientConfig{
+				ServerURL:  tt.provider,
+				AuthToken:  token,
+				HTTPClient: &http.Client{Transport: transport},
+			})
+			if _, err := client.FetchConfig(context.Background()); !errors.Is(err, ErrNoServerURL) {
+				t.Fatalf("FetchConfig error = %v, want ErrNoServerURL", err)
+			}
+			// PostBatch would otherwise burn its retries on the bad URL.
+			if err := client.PostBatch(context.Background(), "run-1", "", []Entry{{RelPath: "a"}}); !errors.Is(err, ErrNoServerURL) {
+				t.Fatalf("PostBatch error = %v, want ErrNoServerURL", err)
+			}
+			if got := hits.Load(); got != 0 {
+				t.Fatalf("transport received %d requests, want 0 (must fail before dispatch)", got)
+			}
+		})
 	}
 }
