@@ -104,10 +104,18 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
   }
 
   const auth = c.get('auth');
-  const { phoneNumber, code, currentPassword } = c.req.valid('json');
+  const { phoneNumber, code, currentPassword, stepUpGrantId } = c.req.valid('json');
 
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
+
+  // SR2-20/C1: replacing/verifying the phone on an ALREADY-PROTECTED account is
+  // a factor-affecting change and must additionally prove an existing factor —
+  // otherwise a stolen access token + phished password could swap in the
+  // attacker's number (which then satisfies the SMS step-up). No-op for initial
+  // enrollment (no factor yet → password-only, per enforceExistingFactorStepUp).
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpError) return stepUpError;
 
   const twilio = getTwilioService();
   if (!twilio) {

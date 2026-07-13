@@ -658,7 +658,7 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
     userId: auth.user.id,
     orgId: auth.orgId ?? null,
     partnerId: auth.partnerId ?? null,
-  });
+  }, { failClosed: true });
 
   // This runs inside the DELETE handler's request (user-scoped) context, where
   // a bare `withSystemDbAccessContext` would be a no-op. Escape the active

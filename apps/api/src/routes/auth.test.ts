@@ -279,6 +279,7 @@ import { createAuditLogAsync } from '../services/auditService';
 import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
+import { getTwilioService } from '../services/twilio';
 
 // SR2-08: stub `db.transaction` so advanceUserEpochs/revokeAllRefreshFamilies
 // (kept REAL, see the authLifecycle mock above) run against a fake `tx`
@@ -2747,6 +2748,86 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body).toEqual({ stepUpGrantId: 'grant-totp' });
+    });
+
+    // C1 (exploit-chain half 1 — the SMS factor allowlist): the SMS branch must
+    // prove the account's OWN active SMS factor, not merely that some phone sits
+    // on the row. This is the check that defeats the takeover where an attacker
+    // swapped their own number in via /phone/confirm and then tries to mint a
+    // grant here. A TOTP-protected victim (mfaMethod !== 'sms') must be rejected
+    // 401 WITHOUT Twilio ever being consulted and WITHOUT a grant minted.
+    it('C1: SMS step-up rejects when the active factor is not SMS (swapped-in phone cannot mint a grant)', async () => {
+      const checkVerificationCode = vi.fn().mockResolvedValue({ valid: true });
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn().mockResolvedValue({ success: true }),
+        checkVerificationCode,
+      } as any);
+      // Victim's active factor is TOTP; an attacker-controlled phone was written
+      // to the row and is (per the schema) "verified".
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { phoneNumber: '+15550000001', mfaEnabled: true, mfaMethod: 'totp', phoneVerified: true }
+            ])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'sms', code: '123456' })
+      });
+
+      expect(res.status).toBe(401);
+      expect(checkVerificationCode).not.toHaveBeenCalled();
+      expect(mintStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    it('C1: SMS step-up mints a grant only for a genuine active SMS factor', async () => {
+      const checkVerificationCode = vi.fn().mockResolvedValue({ valid: true, serviceError: false });
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn().mockResolvedValue({ success: true }),
+        checkVerificationCode,
+      } as any);
+      vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-sms');
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { phoneNumber: '+15550000009', mfaEnabled: true, mfaMethod: 'sms', phoneVerified: true }
+            ])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'sms', code: '123456' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(checkVerificationCode).toHaveBeenCalledWith('+15550000009', '123456');
+      expect(await res.json()).toEqual({ stepUpGrantId: 'grant-sms' });
+    });
+
+    // I2: /mfa/step-up must be per-user rate-limited like every other MFA
+    // verification endpoint (previously only the 300/60s-per-IP global bound
+    // applied, leaving a 6-digit code brute-forceable to a grant).
+    it('I2: returns 429 without minting a grant when the per-user rate limit is exceeded', async () => {
+      vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 60_000) } as any);
+
+      const res = await app.request('/auth/mfa/step-up', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: 'totp', code: '123456' })
+      });
+
+      expect(res.status).toBe(429);
+      expect(mintStepUpGrant).not.toHaveBeenCalled();
+      expect(vi.mocked(rateLimiter).mock.calls.some(([, key]) => String(key) === 'mfa:stepup:user-123')).toBe(true);
     });
   });
 

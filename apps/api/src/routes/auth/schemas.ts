@@ -67,7 +67,13 @@ export const phoneVerifySchema = z.object({
 export const phoneConfirmSchema = z.object({
   phoneNumber: z.string().regex(/^\+[1-9]\d{6,14}$/),
   code: z.string().length(6),
-  currentPassword: z.string().min(1).max(256)
+  currentPassword: z.string().min(1).max(256),
+  // SR2-20/C1: an ALREADY-PROTECTED account cannot verify/replace its phone
+  // with a password alone — that would let a stolen-token + phished-password
+  // attacker swap in their own number and then pass the SMS step-up. Required
+  // (via enforceExistingFactorStepUp) only when a factor already exists; initial
+  // enrollment (no factor yet) still passes password-only.
+  stepUpGrantId: z.string().optional()
 });
 
 export const smsMfaEnableSchema = z.object({

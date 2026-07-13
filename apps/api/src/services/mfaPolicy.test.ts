@@ -120,6 +120,28 @@ describe('getEffectiveMfaPolicy', () => {
     expect(p.allowedMethods).toEqual({ totp: true, sms: true, passkey: true });
   });
 
+  // I5: control gates (self-disable, last-factor removal) pass { failClosed: true }
+  // so a transient settings-read error cannot relax org/partner-required MFA.
+  it('I5: fails CLOSED (required) on settings read error when opts.failClosed is set', async () => {
+    roleRows.push({ forceMfa: false });
+    effectiveThrows = true;
+    const p = await getEffectiveMfaPolicy(
+      { scope: 'organization', userId: 'u1', orgId: 'o1', partnerId: null },
+      { failClosed: true },
+    );
+    expect(p.required).toBe(true);
+  });
+
+  it('I5: failClosed does NOT force required when the settings read SUCCEEDS and requireMfa is false', async () => {
+    roleRows.push({ forceMfa: false });
+    effectiveSecurity = { requireMfa: false };
+    const p = await getEffectiveMfaPolicy(
+      { scope: 'organization', userId: 'u1', orgId: 'o1', partnerId: null },
+      { failClosed: true },
+    );
+    expect(p.required).toBe(false);
+  });
+
   describe('partner scope', () => {
     it('partner role force_mfa=true forces required (no partner settings requireMfa)', async () => {
       partnerRoleRows.push({ forceMfa: true });

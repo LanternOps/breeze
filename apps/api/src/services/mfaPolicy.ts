@@ -64,7 +64,20 @@ function methodsFromSettings(security: SecuritySettings | undefined): MfaAllowed
   };
 }
 
-export async function getEffectiveMfaPolicy(input: MfaPolicyInput): Promise<EffectiveMfaPolicy> {
+/**
+ * @param opts.failClosed  Login/enrollment gates FAIL OPEN on a settings-read
+ *   error (a transient blip must never mass-lock a tenant out of signing in).
+ *   CONTROL gates that *relax* protection on a false `required` — self-disable
+ *   (`/mfa/disable`) and last-factor removal (`DELETE /passkeys/:id`) — must
+ *   pass `failClosed: true` so a transient read error cannot let a user strip
+ *   org/partner-required MFA. On a read error under `failClosed`, `required`
+ *   is forced true (the role-force axis is unaffected — its join is outside
+ *   the settings try/catch and already enforces regardless).
+ */
+export async function getEffectiveMfaPolicy(
+  input: MfaPolicyInput,
+  opts?: { failClosed?: boolean },
+): Promise<EffectiveMfaPolicy> {
   const killSwitchOff = !mfaForcePartnerAdmin();
 
   if (input.scope === 'system') {
@@ -99,6 +112,7 @@ export async function getEffectiveMfaPolicy(input: MfaPolicyInput): Promise<Effe
 
       // --- effective settings (partner-inherited for org scope) ---
       let security: SecuritySettings | undefined;
+      let settingsReadFailed = false;
       try {
         if (input.scope === 'organization' && input.orgId) {
           const { effective } = await getEffectiveOrgSettings(input.orgId);
@@ -113,16 +127,22 @@ export async function getEffectiveMfaPolicy(input: MfaPolicyInput): Promise<Effe
           security = settings.security as SecuritySettings | undefined;
         }
       } catch (err) {
-        console.error('[mfa-policy] effective settings read failed — failing open (not required):', err);
+        const disposition = opts?.failClosed ? 'failing closed (required)' : 'failing open (not required)';
+        console.error(`[mfa-policy] effective settings read failed — ${disposition}:`, err);
         captureException(err instanceof Error ? err : new Error(String(err)));
         security = undefined;
+        settingsReadFailed = true;
       }
 
       const settingsRequireMfa = security?.requireMfa === true;
       // Kill switch suppresses ONLY the role-force component; settings-driven
       // requireMfa is enforced regardless (overseer hardening decision).
       const roleForceApplies = roleForceMfa && !killSwitchOff;
-      const required = roleForceApplies || settingsRequireMfa;
+      // Control gates (opts.failClosed) treat an unreadable settings row as
+      // "still required" so a transient blip can't strip org/partner-mandated
+      // MFA; login/enrollment gates leave failClosed unset and fail open.
+      const required =
+        roleForceApplies || settingsRequireMfa || (settingsReadFailed && opts?.failClosed === true);
 
       return {
         required,

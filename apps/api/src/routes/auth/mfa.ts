@@ -49,7 +49,7 @@ import {
   evaluatePendingMfa
 } from './helpers';
 
-const { db, withSystemDbAccessContext } = dbModule;
+const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
 
 // Body schemas that require a password re-prompt. A stolen access token
 // must not be sufficient to install/remove an MFA factor — these
@@ -396,6 +396,13 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   } catch {
     return c.json({ error: 'Invalid MFA setup data' }, 500);
   }
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor proof (no-op for initial enrollment).
+  // Gate BEFORE the consuming verifier (M10) so an unprotected-grant request
+  // 403s without burning the setup time-step — matches /mfa/enable's ordering.
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, c.req.valid('json').stepUpGrantId, { consume: true });
+  if (stepUpError) return stepUpError;
+
   // Consuming verifier: record the accepted time step so it cannot be replayed
   // at login within its ~90s validity window (SR2-24). Fails closed if Redis is
   // down (consumeMFAToken returns false).
@@ -415,28 +422,34 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
 
-  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
-  // requires a fresh existing-factor proof (no-op for initial enrollment).
-  const stepUpError = await enforceExistingFactorStepUp(c, auth, c.req.valid('json').stepUpGrantId, { consume: true });
-  if (stepUpError) return stepUpError;
-
   // SR2-07/SR2-19: fold the factor write into the atomic epoch-bump +
   // refresh-family-revoke transaction, then best-effort post-commit cleanup +
   // remote-session teardown — enabling MFA is a security-relevant factor
   // change and must invalidate any assurance minted before this factor
   // existed.
-  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-setup-confirm', async (tx) => {
-    await tx
-      .update(users)
-      .set({
-        mfaSecret: encryptMfaSecret(secret),
-        mfaEnabled: true,
-        mfaMethod: 'totp',
-        mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-        updatedAt: new Date()
+  //
+  // I3: unlike every other factor-change caller, this Case-2 path has NO
+  // ambient DB access context — the `await authMiddleware(c, async () => {})`
+  // idiom above tears the RLS context down when its empty `next` returns. So
+  // establish a real system context here; without it the invalidation
+  // transaction runs on the bare pool, forced RLS matches 0 rows, and
+  // advanceUserEpochs throws → hard 500 with the factor never enabled.
+  const result = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-setup-confirm', async (tx) => {
+        await tx
+          .update(users)
+          .set({
+            mfaSecret: encryptMfaSecret(secret),
+            mfaEnabled: true,
+            mfaMethod: 'totp',
+            mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id));
       })
-      .where(eq(users.id, auth.user.id));
-  });
+    )
+  );
 
   const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -478,7 +491,7 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
     userId: auth.user.id,
     orgId: auth.orgId ?? null,
     partnerId: auth.partnerId ?? null,
-  });
+  }, { failClosed: true });
   if (disablePolicy.required) {
     return c.json({ error: 'Your organization requires MFA. Contact your admin to change this policy.' }, 403);
   }
@@ -684,15 +697,45 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
   const auth = c.get('auth');
   const body = c.req.valid('json');
 
+  // Rate-limit per user (I2). Every other MFA-verification endpoint throttles
+  // per user; without this the only bound is the 300/60s-per-IP global limit,
+  // leaving a 6-digit TOTP / SMS code brute-forceable to a step-up grant across
+  // a handful of IPs. Fail closed (503) when Redis is unavailable.
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const stepUpRate = await rateLimiter(redis, `mfa:stepup:${auth.user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+  if (!stepUpRate.allowed) {
+    return c.json({ error: 'Too many attempts. Please try again later.' }, 429);
+  }
+
   let ok = false;
   if (body.method === 'totp') {
     const [u] = await db.select({ mfaSecret: users.mfaSecret }).from(users).where(eq(users.id, auth.user.id)).limit(1);
     const secret = u?.mfaSecret ? decryptMfaSecret(u.mfaSecret) : null;
     ok = !!secret && await consumeMFAToken(secret, body.code, auth.user.id);
   } else if (body.method === 'sms') {
-    const [u] = await db.select({ phoneNumber: users.phoneNumber }).from(users).where(eq(users.id, auth.user.id)).limit(1);
+    // Step-up must prove the account's OWN active SMS factor — not merely that
+    // some phone number sits on the row. Allowlist on mfaEnabled + mfaMethod +
+    // phoneVerified (mirrors requireFreshMfaStepUp's TOTP allowlist). Without
+    // this, an attacker who swapped in their own phone via /phone/confirm could
+    // mint a grant here without ever proving the victim's real factor (C1).
+    const [u] = await db
+      .select({
+        phoneNumber: users.phoneNumber,
+        mfaEnabled: users.mfaEnabled,
+        mfaMethod: users.mfaMethod,
+        phoneVerified: users.phoneVerified,
+      })
+      .from(users)
+      .where(eq(users.id, auth.user.id))
+      .limit(1);
+    if (!u?.mfaEnabled || u.mfaMethod !== 'sms' || u.phoneVerified !== true || !u.phoneNumber) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
     const twilio = getTwilioService();
-    if (!twilio || !u?.phoneNumber) return c.json({ error: 'SMS not available' }, 400);
+    if (!twilio) return c.json({ error: 'SMS not available' }, 400);
     const r = await twilio.checkVerificationCode(u.phoneNumber, body.code);
     if (r.serviceError) return c.json({ error: 'SMS verification temporarily unavailable' }, 502);
     ok = r.valid;

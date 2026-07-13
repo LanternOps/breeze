@@ -132,6 +132,10 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
   if (rel.startsWith('/auth/mfa/')) return true;
   // Phone verification is part of the MFA setup flow (SMS factor).
   if (rel.startsWith('/auth/phone/')) return true;
+  // Passkey registration is an enrollment action (passkey is the always-allowed,
+  // phishing-resistant factor). Without this, a policy-required-but-unenrolled
+  // user is 428'd on /auth/passkeys/register/* and can never enroll a passkey.
+  if (rel.startsWith('/auth/passkeys/')) return true;
   return false;
 }
 

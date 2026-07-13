@@ -328,5 +328,74 @@ describe('phone routes', () => {
         })
       );
     });
+
+    // C1 (exploit-chain half 2 — the /phone/confirm step-up gate). Before this
+    // fix, /phone/confirm swapped the phone behind a PASSWORD ONLY, letting a
+    // stolen-token + phished-password attacker plant their own number (which
+    // then satisfied the SMS step-up). It must now consume an existing-factor
+    // grant for an already-protected account, and block the phone write when
+    // no valid grant is presented.
+    it('C1: rejects a phone swap on an already-protected account when no step-up grant is presented — phone never written', async () => {
+      // Gate denies (no grant on a protected account).
+      vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }), {
+          status: 403,
+        }) as any
+      );
+      // Twilio would approve if ever reached — proving the block is the gate,
+      // not a bad code.
+      const checkVerificationCode = vi.fn().mockResolvedValue({ valid: true, serviceError: false });
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn(),
+        checkVerificationCode,
+      } as any);
+
+      const res = await app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+15555550999', // attacker's number
+          code: '123456',
+          currentPassword: 'correct-password',
+        }),
+      });
+
+      expect(res.status).toBe(403);
+      // The gate must run BEFORE the code check and BEFORE any write.
+      expect(checkVerificationCode).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        undefined,
+        { consume: true }
+      );
+    });
+
+    it('C1: allows a phone change on an already-protected account when a valid step-up grant is presented', async () => {
+      vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(null);
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      mockValidCode();
+
+      const res = await app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+15555550100',
+          code: '123456',
+          currentPassword: 'correct-password',
+          stepUpGrantId: 'grant-1',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: true }
+      );
+    });
   });
 });

@@ -487,6 +487,35 @@ describe('authMiddleware', () => {
     expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
   });
 
+  // I6: passkey registration is an enrollment action (passkey is the always-
+  // allowed, phishing-resistant factor). A policy-required-but-unenrolled user
+  // MUST be able to reach /auth/passkeys/register/* — otherwise the broadened
+  // 428 gate locks them out of the one factor the resolver always permits.
+  it('I6: allows an unenrolled user to reach /auth/passkeys/register/options (exempt from the 428 gate)', async () => {
+    const app = new Hono();
+    app.use(authMiddleware);
+    app.post('/api/v1/auth/passkeys/register/options', (c) => c.json({ challenge: 'abc' }));
+
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      scope: 'partner',
+      orgId: null
+    });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+
+    const res = await app.request('/api/v1/auth/passkeys/register/options', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).not.toBe(428);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
+  });
+
   it('permits an enrolled user without consulting the resolver at all', async () => {
     const app = new Hono();
     app.use(authMiddleware);

@@ -314,6 +314,11 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
 orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(), zValidator('json', createPartnerSchema), async (c) => {
   const auth = c.get('auth');
   const data = c.req.valid('json');
+  // M8: fold the legacy `security.allowedMfaMethods` alias into the canonical
+  // `security.allowedMethods` on CREATE too — the update paths already do, and
+  // without this a create carrying the alias persists a key the resolver ignores
+  // (silent no-op the alias-fold set out to kill).
+  data.settings = foldAllowedMfaMethodsAlias(data.settings);
 
   const clash = await db
     .select({ id: partners.id })
@@ -1164,6 +1169,8 @@ orgRoutes.patch(
 orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', createOrganizationSchema), async (c) => {
   const auth = c.get('auth');
   const data = c.req.valid('json');
+  // M8: canonicalize the MFA allowed-methods alias on CREATE (see /partners).
+  data.settings = foldAllowedMfaMethodsAlias(data.settings);
 
   let targetPartnerId: string | null = null;
 
