@@ -88,18 +88,30 @@ describe('durable browser binding cookies', () => {
   });
 
   it('can clear only the refresh cookie while preserving the transition binding', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalSameSite = process.env.AUTH_COOKIE_SAME_SITE;
+    process.env.NODE_ENV = 'production';
+    process.env.AUTH_COOKIE_SAME_SITE = 'Strict';
     const app = new Hono();
     app.get('/clear', (c) => {
       clearRefreshCookieOnly(c);
       return c.json({ success: true });
     });
 
-    const response = await app.request('/clear');
-    const setCookie = response.headers.get('set-cookie') ?? '';
+    try {
+      const response = await app.request('/clear');
+      const setCookie = response.headers.get('set-cookie') ?? '';
 
-    expect(setCookie).toContain('breeze_refresh_token=');
-    expect(setCookie).toContain('Max-Age=0');
-    expect(setCookie).not.toContain('breeze_csrf_token=');
+      expect(setCookie).toBe(
+        'breeze_refresh_token=; Path=/api/v1/auth; HttpOnly; SameSite=Strict; Secure; Max-Age=0',
+      );
+      expect(setCookie).not.toContain('breeze_csrf_token=');
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+      if (originalSameSite === undefined) delete process.env.AUTH_COOKIE_SAME_SITE;
+      else process.env.AUTH_COOKIE_SAME_SITE = originalSameSite;
+    }
   });
 
   it('keeps ordinary clearing behavior for non-terminal logout', async () => {
@@ -195,6 +207,16 @@ describe('strict terminal cookie CSRF validation', () => {
       origin: 'https://app.example.com',
       'sec-fetch-site': 'cross-site',
     }, 'Cross-site request blocked'],
+    ['missing origin', {
+      cookie: `breeze_csrf_token=${csrf}`,
+      'x-breeze-csrf': csrf,
+      'sec-fetch-site': 'same-origin',
+    }, 'Missing request origin'],
+    ['missing fetch metadata', {
+      cookie: `breeze_csrf_token=${csrf}`,
+      'x-breeze-csrf': csrf,
+      origin: 'https://app.example.com',
+    }, 'Missing Sec-Fetch-Site header'],
   ])('rejects %s', async (_label, headers, expectedError) => {
     const response = await terminalApp().request('/prepare', {
       method: 'POST',

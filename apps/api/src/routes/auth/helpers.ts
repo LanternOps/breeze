@@ -610,12 +610,18 @@ function validateCookieCsrfRequestInternal(
   }
 
   const origin = c.req.header('origin');
+  if (!allowHeaderOnlyCompatibility && !origin) {
+    return 'Missing request origin';
+  }
   if (origin && !isAllowedOrigin(origin)) {
     return 'Invalid request origin';
   }
 
   // Defense-in-depth: block cross-site requests when the browser provides Sec-Fetch-Site
   const fetchSite = c.req.header('sec-fetch-site');
+  if (!allowHeaderOnlyCompatibility && !fetchSite) {
+    return 'Missing Sec-Fetch-Site header';
+  }
   if (fetchSite) {
     const normalized = fetchSite.toLowerCase();
     if (normalized !== 'same-origin' && normalized !== 'same-site') {

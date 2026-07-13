@@ -37,6 +37,16 @@ export interface SecretCryptoOptions {
   strict?: boolean;
 }
 
+export interface SecretEncryptionKeyMaterial {
+  keyId: string | null;
+  key: Buffer;
+}
+
+export interface SecretEncryptionKeyMaterials {
+  active: SecretEncryptionKeyMaterial;
+  retained: SecretEncryptionKeyMaterial[];
+}
+
 let cachedEncryptionKey: Buffer | null = null;
 let cachedLegacyKeys: Buffer[] | null = null;
 let cachedKeyringRaw: string | undefined;
@@ -192,6 +202,28 @@ function getV2EncryptionKey(keyId: string): Buffer {
   }
 
   throw new Error('Unknown encrypted secret key ID');
+}
+
+/**
+ * Returns copy-isolated encryption key material for services that must derive
+ * their own domain-separated digests across a rolling key rotation. Callers
+ * never receive the mutable buffers cached by the encryption implementation.
+ */
+export function getSecretEncryptionKeyMaterials(): SecretEncryptionKeyMaterials {
+  const activeKeyId = getActiveKeyId();
+  const activeKey = activeKeyId ? getV2EncryptionKey(activeKeyId) : getEncryptionKey();
+  const retained: SecretEncryptionKeyMaterial[] = [...getEncryptionKeyring().entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([keyId, key]) => ({ keyId, key: Buffer.from(key) }));
+
+  if (!retained.some(({ keyId }) => keyId === activeKeyId)) {
+    retained.push({ keyId: activeKeyId, key: Buffer.from(activeKey) });
+  }
+
+  return {
+    active: { keyId: activeKeyId, key: Buffer.from(activeKey) },
+    retained,
+  };
 }
 
 function parseEncryptedPayload(encoded: string): {

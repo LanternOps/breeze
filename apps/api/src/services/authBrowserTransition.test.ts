@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type TransitionState = 'active' | 'logout_pending' | 'retired';
@@ -206,7 +206,21 @@ import {
 } from './authBrowserTransition';
 
 const BINDING_KEY = 'task-3-app-encryption-key-material-at-least-32-bytes';
-const C1 = 'a'.repeat(64);
+const OLD_BINDING_KEY = 'task-3-old-encryption-key-material-at-least-32-bytes';
+
+function derivedKey(source: string): Buffer {
+  return createHash('sha256').update(source).digest();
+}
+
+function signedBinding(keySource: string, payload = 'a'.repeat(32)): string {
+  const tag = createHmac('sha256', derivedKey(keySource))
+    .update(`auth-browser-binding-value:v1:browser:${payload}`)
+    .digest('hex')
+    .slice(0, 32);
+  return `${payload}${tag}`;
+}
+
+const C1 = signedBinding(BINDING_KEY);
 
 function browser(value = C1): AuthBindingSource {
   return { kind: 'browser', value };
@@ -244,7 +258,9 @@ function seedTransition(source: AuthBindingSource, overrides: Partial<Transition
 
 beforeEach(() => {
   process.env.NODE_ENV = 'test';
-  process.env.APP_ENCRYPTION_KEY = BINDING_KEY;
+  delete process.env.APP_ENCRYPTION_KEY;
+  process.env.APP_ENCRYPTION_KEY_ID = 'current';
+  process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: BINDING_KEY });
   harness.rows.clear();
   harness.now = new Date('2026-07-12T20:00:00.000Z');
   harness.authorityWrites.length = 0;
@@ -257,7 +273,7 @@ describe('auth browser binding', () => {
   it('uses a deterministic domain-separated HMAC and never returns the raw binding', () => {
     const first = resolveAuthBinding(browser());
     const second = resolveAuthBinding(browser());
-    const expected = createHmac('sha256', BINDING_KEY)
+    const expected = createHmac('sha256', derivedKey(BINDING_KEY))
       .update(`auth-browser-binding:v1:${C1}`)
       .digest('hex');
 
@@ -455,4 +471,74 @@ describe('binding rotation', () => {
       await expect(beginAuthIssuance(c2)).resolves.toMatchObject({ generation: 1 });
     },
   );
+
+  it('returns one deterministic C2 and creates exactly one active successor under concurrency', async () => {
+    seedTransition(browser(), {
+      state: 'retired',
+      generation: 3,
+      retiredAt: new Date(harness.now),
+    });
+
+    const [left, right] = await Promise.all([
+      rotateExpiredBinding(browser()),
+      rotateExpiredBinding(browser()),
+    ]);
+
+    expect(left).toEqual(right);
+    expect(left.value).not.toBe(C1);
+    expect([...harness.rows.values()].filter((row) => row.state === 'active')).toHaveLength(1);
+    expect(harness.rows).toHaveLength(2);
+  });
+
+  it('finds and retires an old-key C1 under a new active keyring without reopening it', async () => {
+    const oldValue = signedBinding(OLD_BINDING_KEY, 'b'.repeat(32));
+    process.env.APP_ENCRYPTION_KEY_ID = 'old';
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ old: OLD_BINDING_KEY });
+    const predecessor = seedTransition(browser(oldValue), {
+      state: 'logout_pending',
+      generation: 4,
+      logoutId: '20000000-0000-4000-8000-000000000004',
+      completionNonceDigest: 'e'.repeat(64),
+      logoutExpiresAt: new Date(harness.now.getTime() - 1),
+    });
+    const oldDigest = predecessor.bindingDigest;
+    process.env.APP_ENCRYPTION_KEY_ID = 'current';
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({
+      old: OLD_BINDING_KEY,
+      current: BINDING_KEY,
+    });
+
+    const successor = await rotateExpiredBinding(browser(oldValue));
+
+    expect(successor.value).not.toBe(oldValue);
+    expect(harness.rows.get(predecessor.id)).toMatchObject({
+      state: 'retired',
+      activeOperationId: null,
+      activeOperationExpiresAt: null,
+    });
+    expect([...harness.rows.values()].filter((row) => row.bindingDigest === oldDigest)).toHaveLength(1);
+    expect(harness.rows).toHaveLength(2);
+  });
+
+  it('fails closed instead of reopening an old C1 when its retired key is missing', async () => {
+    const oldValue = signedBinding(OLD_BINDING_KEY, 'c'.repeat(32));
+    process.env.APP_ENCRYPTION_KEY_ID = 'old';
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ old: OLD_BINDING_KEY });
+    const predecessor = seedTransition(browser(oldValue), {
+      state: 'retired',
+      retiredAt: new Date(harness.now),
+    });
+    process.env.APP_ENCRYPTION_KEY_ID = 'current';
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: BINDING_KEY });
+
+    await expect(beginAuthIssuance(browser(oldValue))).rejects.toMatchObject({
+      constructor: AuthBindingRotationRequiredError,
+      status: 428,
+    });
+    expect(harness.rows.get(predecessor.id)?.state).toBe('retired');
+    expect(harness.rows).toHaveLength(1);
+    expect([...harness.rows.values()].some(
+      (row) => row.bindingDigest === resolveAuthBinding(browser(oldValue)).bindingDigest,
+    )).toBe(false);
+  });
 });

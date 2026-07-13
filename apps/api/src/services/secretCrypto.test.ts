@@ -143,6 +143,32 @@ describe('secretCrypto', () => {
     expect(decryptSecret(encrypted)).toBe('keyring-secret');
   });
 
+  it('exposes copy-isolated active and retained key materials for domain-separated digests', async () => {
+    const crypto = await loadSecretCrypto({
+      APP_ENCRYPTION_KEY_ID: 'current',
+      APP_ENCRYPTION_KEYRING: JSON.stringify({
+        old: 'old-key-material',
+        current: 'current-key-material',
+      }),
+    });
+
+    const first = crypto.getSecretEncryptionKeyMaterials();
+    expect(first.active.keyId).toBe('current');
+    expect(first.active.key.toString('hex')).toBe(
+      'cf53e7723fe932c31b6378b3945359eaf54c933defd2a6ea28feac525918e27b',
+    );
+    expect(first.retained.map(({ keyId }) => keyId)).toEqual(['current', 'old']);
+
+    first.active.key.fill(0);
+    first.retained[1]!.key.fill(0);
+
+    const second = crypto.getSecretEncryptionKeyMaterials();
+    expect(second.active.key.toString('hex')).toBe(
+      'cf53e7723fe932c31b6378b3945359eaf54c933defd2a6ea28feac525918e27b',
+    );
+    expect(second.retained[1]!.key.toString('hex')).not.toBe('0'.repeat(64));
+  });
+
   it('decrypts v2 ciphertext by key id from the keyring', async () => {
     const oldCrypto = await loadSecretCrypto({
       APP_ENCRYPTION_KEY: 'old-key-material',
