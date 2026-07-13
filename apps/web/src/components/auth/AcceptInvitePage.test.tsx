@@ -7,6 +7,7 @@ const authMocks = vi.hoisted(() => ({
   fetchAndApplyPreferences: vi.fn(),
   login: vi.fn(),
   currentInstalledSession: vi.fn(() => true),
+  StaleWebSessionError: class StaleWebSessionError extends Error {},
 }));
 
 vi.mock('../../stores/auth', () => ({
@@ -14,6 +15,7 @@ vi.mock('../../stores/auth', () => ({
   apiAcceptInvite: authMocks.apiAcceptInvite,
   fetchAndApplyPreferences: authMocks.fetchAndApplyPreferences,
   isInstalledAuthSessionCurrent: authMocks.currentInstalledSession,
+  StaleWebSessionError: authMocks.StaleWebSessionError,
 }));
 
 vi.mock('../../lib/navigation', () => ({
@@ -84,6 +86,39 @@ describe('AcceptInvitePage', () => {
     await submitInvite();
 
     await waitFor(() => expect(authMocks.fetchAndApplyPreferences).toHaveBeenCalledOnce());
+    const { navigateTo } = await import('../../lib/navigation');
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('silently settles a stale invite issuance rejection and clears loading', async () => {
+    authMocks.apiAcceptInvite.mockRejectedValueOnce(new authMocks.StaleWebSessionError());
+    render(<AcceptInvitePage />);
+    await waitFor(() => expect(authMocks.apiPreviewInvite).toHaveBeenCalled());
+
+    await submitInvite();
+
+    await waitFor(() => expect(authMocks.apiAcceptInvite).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: /set password & sign in/i })).not.toBeDisabled());
+    expect(authMocks.fetchAndApplyPreferences).not.toHaveBeenCalled();
+    const { navigateTo } = await import('../../lib/navigation');
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('silently settles stale preferences and clears loading without navigation', async () => {
+    authMocks.apiAcceptInvite.mockResolvedValueOnce({
+      success: true,
+      user: { id: 'user-a' },
+      tokens: { accessToken: 'access-a' },
+      installedSession: { generation: 1, userId: 'user-a', accessToken: 'access-a' },
+    });
+    authMocks.fetchAndApplyPreferences.mockRejectedValueOnce(new authMocks.StaleWebSessionError());
+    render(<AcceptInvitePage />);
+    await waitFor(() => expect(authMocks.apiPreviewInvite).toHaveBeenCalled());
+
+    await submitInvite();
+
+    await waitFor(() => expect(authMocks.fetchAndApplyPreferences).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: /set password & sign in/i })).not.toBeDisabled());
     const { navigateTo } = await import('../../lib/navigation');
     expect(navigateTo).not.toHaveBeenCalled();
   });

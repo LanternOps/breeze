@@ -7,6 +7,7 @@ import {
   apiPreviewInvite,
   fetchAndApplyPreferences,
   isInstalledAuthSessionCurrent,
+  StaleWebSessionError,
 } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { scrubQueryParamsFromCurrentUrl } from '../../lib/sensitiveUrl';
@@ -86,6 +87,10 @@ export default function AcceptInvitePage() {
       } else {
         await navigateTo('/login', { replace: true });
         return;
+      }
+    } catch (caught) {
+      if (!(caught instanceof StaleWebSessionError)) {
+        setError(t('acceptInvite.errors.acceptFailed', { defaultValue: 'Failed to accept invite' }));
       }
     } finally {
       setLoading(false);
