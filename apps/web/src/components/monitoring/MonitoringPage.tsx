@@ -4,6 +4,10 @@ import MonitoringAssetsDashboard from './MonitoringAssetsDashboard';
 import NetworkMonitorList from '../monitors/NetworkMonitorList';
 import SNMPTemplateList from '../snmp/SNMPTemplateList';
 import SNMPTemplateEditor from '../snmp/SNMPTemplateEditor';
+// Initializes the shared i18next singleton. Islands hydrate independently, so
+// an island that hydrates before whichever other island happens to pull i18n in
+// would otherwise render raw keys (and mismatch the SSR markup).
+import '../../lib/i18n';
 
 const MONITORING_TABS = ['assets', 'checks', 'templates'] as const;
 type MonitoringTab = (typeof MONITORING_TABS)[number];

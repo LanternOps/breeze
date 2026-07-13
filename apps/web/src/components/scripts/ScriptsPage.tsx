@@ -13,6 +13,10 @@ import { showToast } from '../shared/Toast';
 import { PageScopeIndicator } from '../layout/PageScopeIndicator';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
+// Initializes the shared i18next singleton. Islands hydrate independently, so
+// an island that hydrates before whichever other island happens to pull i18n in
+// would otherwise render raw keys (and mismatch the SSR markup).
+import '../../lib/i18n';
 
 type ModalMode = 'closed' | 'execute' | 'delete' | 'execution-details' | 'import-library';
 

@@ -6,6 +6,10 @@ import SetupStepper from './SetupStepper';
 import AccountSetupStep from './AccountSetupStep';
 import OrganizationSetupStep from './OrganizationSetupStep';
 import EnrollDeviceStep from './EnrollDeviceStep';
+// Initializes the shared i18next singleton. Islands hydrate independently, so
+// an island that hydrates before whichever other island happens to pull i18n in
+// would otherwise render raw keys (and mismatch the SSR markup).
+import '../../lib/i18n';
 
 const STORAGE_KEY = 'breeze-setup-step';
 const SETUP_ORG_KEY = 'breeze-setup-org';

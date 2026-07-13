@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getLoginContext, type LoginContextBranding } from '../../lib/loginContext';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
+// Initializes the shared i18next singleton. Islands hydrate independently, so
+// an island that hydrates before whichever other island happens to pull i18n in
+// would otherwise render raw keys (and mismatch the SSR markup).
+import '../../lib/i18n';
 
 /**
  * The entire left branded panel of the auth shell, as a React island.

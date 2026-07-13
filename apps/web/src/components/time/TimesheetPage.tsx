@@ -5,6 +5,10 @@ import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { formatMinutes } from '../../lib/timeFormat';
 import { onTimerChanged } from '../../lib/timerActions';
+// Initializes the shared i18next singleton. Islands hydrate independently, so
+// an island that hydrates before whichever other island happens to pull i18n in
+// would otherwise render raw keys (and mismatch the SSR markup).
+import '../../lib/i18n';
 
 // ---------------------------------------------------------------------------
 // Types

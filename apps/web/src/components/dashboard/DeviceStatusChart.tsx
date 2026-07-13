@@ -6,6 +6,10 @@ import { useOrgStore } from '../../stores/orgStore';
 import { formatTimeAgo } from '@/lib/formatTime';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
+// Initializes the shared i18next singleton. Islands hydrate independently, so
+// an island that hydrates before whichever other island happens to pull i18n in
+// would otherwise render raw keys (and mismatch the SSR markup).
+import '../../lib/i18n';
 
 interface Device {
   id: string;

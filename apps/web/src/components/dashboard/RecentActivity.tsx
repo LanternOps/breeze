@@ -5,6 +5,10 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatTimeAgo } from '@/lib/formatTime';
 import { formatAuditAction, DEFAULT_DASHBOARD_EXCLUDE_ACTIONS } from '@/lib/auditFormat';
 import { useTranslation } from 'react-i18next';
+// Initializes the shared i18next singleton. Islands hydrate independently, so
+// an island that hydrates before whichever other island happens to pull i18n in
+// would otherwise render raw keys (and mismatch the SSR markup).
+import '../../lib/i18n';
 
 interface AuditLogEntry {
   id: string;

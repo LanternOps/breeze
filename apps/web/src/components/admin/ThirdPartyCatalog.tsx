@@ -4,6 +4,10 @@ import { Package, Search, ShieldCheck, AlertTriangle, RefreshCw, Plus, Pencil, T
 import { fetchWithAuth } from '@/stores/auth';
 import { getSafeExternalHref } from '@/lib/safeHref';
 import ThirdPartyCatalogEditor, { type CatalogEditorInitial } from './ThirdPartyCatalogEditor';
+// Initializes the shared i18next singleton. Islands hydrate independently, so
+// an island that hydrates before whichever other island happens to pull i18n in
+// would otherwise render raw keys (and mismatch the SSR markup).
+import '../../lib/i18n';
 
 const testResultStyles: Record<string, string> = {
   pass: 'bg-green-100 text-green-800',

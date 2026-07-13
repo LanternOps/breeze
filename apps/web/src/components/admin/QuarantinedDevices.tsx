@@ -2,6 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ShieldAlert, CheckCircle, XCircle, RefreshCw, AlertTriangle, X } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
+// Initializes the shared i18next singleton. Islands hydrate independently, so
+// an island that hydrates before whichever other island happens to pull i18n in
+// would otherwise render raw keys (and mismatch the SSR markup).
+import '../../lib/i18n';
 
 type QuarantinedDevice = {
   id: string;
