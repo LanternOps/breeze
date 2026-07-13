@@ -359,6 +359,42 @@ describe('AdminSessionManager scope switching (#2348 / #2429)', () => {
     expect(navigateToMock).toHaveBeenCalledWith('/login', { replace: true });
   });
 
+  it('does not RELAX a strict budget to the 60-minute default when the next lookup fails', async () => {
+    // Resetting to DEFAULT on scope change must not become a loophole: an org
+    // mandating a 5-minute idle timeout whose follow-up settings fetch blips
+    // would otherwise silently get a 60-minute window — a 12x loosening of a
+    // compliance control. The failure fallback clamps to the shortest budget we
+    // have evidence for.
+    setScope(ORG_ID);
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ effective: { security: { sessionTimeout: 5 } }, locked: [] })
+    );
+
+    const { rerender } = render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Switch scope; the new lookup fails outright.
+    setScope('org-other');
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 500));
+
+    rerender(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 5 minutes of idle must still log out — NOT be stretched to 60.
+    await act(async () => {
+      vi.advanceTimersByTime(6 * 60_000);
+      await Promise.resolve();
+    });
+
+    expect(apiLogoutMock).toHaveBeenCalledTimes(1);
+  });
+
   it('applies the newly selected org budget after switching All Organizations → org', async () => {
     // Partner scope allows 24h.
     setScope(null);

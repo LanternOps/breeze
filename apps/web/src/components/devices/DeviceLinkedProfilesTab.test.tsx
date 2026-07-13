@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceLinkedProfilesTab from './DeviceLinkedProfilesTab';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, handleActionError } from '../../lib/runAction';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock('../../lib/runAction', () => ({
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const runActionMock = vi.mocked(runAction);
 
 const jsonResponse = (payload: unknown, ok = true): Response =>
   ({ ok, status: ok ? 200 : 500, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -126,6 +128,29 @@ describe('DeviceLinkedProfilesTab', () => {
         '/devices/link-groups/g1',
         expect.objectContaining({ method: 'DELETE' }),
       );
+    });
+
+    it('closes the dialog on a FAILED dissolve so the error toast is not hidden behind it', async () => {
+      // The Toast island and the Dialog portal are both z-50 and the portal is
+      // appended later, so a modal left open paints over the only failure signal
+      // runAction gives the user. Leaving it open turns a failed destructive
+      // action into a silent no-op.
+      fetchWithAuthMock.mockResolvedValueOnce(jsonResponse(groupPayload)); // initial load
+      runActionMock.mockRejectedValueOnce(new Error('boom')); // DELETE fails
+
+      render(<DeviceLinkedProfilesTab deviceId="dev-1" />);
+      await waitFor(() => expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('linked-profiles-dissolve'));
+      fireEvent.click(await screen.findByTestId('linked-profiles-dissolve-confirm'));
+
+      // Dialog is gone (toast is visible), the failure was handled, and the
+      // group was NOT optimistically removed from the UI.
+      await waitFor(() =>
+        expect(screen.queryByTestId('linked-profiles-dissolve-confirm')).not.toBeInTheDocument(),
+      );
+      expect(handleActionError).toHaveBeenCalled();
+      expect(screen.getByTestId('linked-profiles-tab')).toBeInTheDocument();
     });
 
     it('DELETEs the group and reloads the panel once confirmed', async () => {

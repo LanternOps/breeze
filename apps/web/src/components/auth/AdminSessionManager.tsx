@@ -34,6 +34,9 @@ export default function AdminSessionManager() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const currentOrgId = useOrgStore((state) => state.currentOrgId);
   const [idleTimeoutMs, setIdleTimeoutMs] = useState(DEFAULT_IDLE_TIMEOUT_MS);
+  // Last budget we actually READ from the server, for any scope. Used only as a
+  // clamp when a later lookup fails — see settleTimeout.
+  const lastKnownBudgetMsRef = useRef<number | null>(null);
   const lastActivityAtRef = useRef<number>(Date.now());
   const lastRefreshAtRef = useRef<number>(0);
   const refreshInFlightRef = useRef(false);
@@ -87,14 +90,29 @@ export default function AdminSessionManager() {
 
     /**
      * Apply the timeout for this scope. `configuredMinutes` is null when the
-     * lookup failed, which leaves the frontend default in force — never the
-     * previous scope's value.
+     * lookup failed.
+     *
+     * On failure we do NOT simply leave the frontend default in force: that
+     * would RELAX a stricter policy (an org mandating a 5-minute idle timeout
+     * whose settings fetch blips would silently get a 60-minute window — a 12x
+     * loosening of a compliance control). Instead we clamp to the shortest
+     * budget we have any evidence for. Erring shorter logs a user out early at
+     * worst; erring longer leaves an unattended session open. (#2429)
      */
     const settleTimeout = (configuredMinutes: number | null) => {
       if (cancelled) return;
       if (configuredMinutes !== null && Number.isFinite(configuredMinutes) && configuredMinutes > 0) {
-        setIdleTimeoutMs(Math.max(1, configuredMinutes) * 60 * 1000);
+        const ms = Math.max(1, configuredMinutes) * 60 * 1000;
+        lastKnownBudgetMsRef.current = ms;
+        setIdleTimeoutMs(ms);
+        return;
       }
+      const lastKnown = lastKnownBudgetMsRef.current;
+      setIdleTimeoutMs(
+        lastKnown === null
+          ? DEFAULT_IDLE_TIMEOUT_MS
+          : Math.min(DEFAULT_IDLE_TIMEOUT_MS, lastKnown),
+      );
     };
 
     const loadSessionTimeout = async () => {

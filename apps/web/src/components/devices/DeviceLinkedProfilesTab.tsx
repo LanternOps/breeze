@@ -127,12 +127,17 @@ export default function DeviceLinkedProfilesTab({
         errorFallback: "Could not remove the link",
         successMessage: "Link removed",
       });
-      setConfirmDissolve(false);
       await load();
     } catch (err) {
       handleActionError(err, "Could not remove the link");
     } finally {
       setBusy(false);
+      // Close on FAILURE as well as success. runAction surfaces the failure as a
+      // toast, but the Toast island and the Dialog portal both sit at z-50 and
+      // the portal is appended later in the DOM — leaving the modal open would
+      // paint its backdrop straight over the only error signal the user gets,
+      // turning a failed dissolve into a silent no-op (#2429).
+      setConfirmDissolve(false);
     }
   };
 

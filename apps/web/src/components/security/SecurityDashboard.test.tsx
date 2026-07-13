@@ -212,6 +212,24 @@ describe('SecurityDashboard', () => {
           "Security data couldn't be loaded. Check your connection and retry."
         )
       ).toBeNull();
+      // The page-level Refresh is withheld too — it could only 403 again.
+      expect(screen.queryByRole('button', { name: /refresh/i })).toBeNull();
+    });
+
+    it('renders NO dashboard body behind the denied panel — never fabricated zeros', async () => {
+      route(forbidden(), forbidden());
+      render(<SecurityDashboard />);
+
+      await screen.findByTestId('security-dashboard-denied');
+
+      // A denied user must not be told, authoritatively, that they have zero
+      // vulnerabilities and zero AV coverage. `isEmptyTenant` cannot save us
+      // here (it requires overview !== null, and a 403 leaves it null), so the
+      // denied branch has to terminate the render.
+      expect(screen.queryByText('Security Score')).toBeNull();
+      expect(screen.queryByText(/open items/)).toBeNull();
+      expect(screen.queryByText(/devices tracked/)).toBeNull();
+      expect(screen.queryByText('No devices reporting yet')).toBeNull();
     });
 
     it('explains the denial without a Retry when only one axis is forbidden', async () => {
@@ -228,7 +246,7 @@ describe('SecurityDashboard', () => {
       expect(screen.getByText('62')).toBeInTheDocument();
     });
 
-    it('still offers Retry when a transient failure accompanies the denial', async () => {
+    it('still offers Retry when a transient failure accompanies the denial — and says so', async () => {
       route(new Error('network'), forbidden());
       render(<SecurityDashboard />);
 
@@ -237,6 +255,34 @@ describe('SecurityDashboard', () => {
         await screen.findByTestId('security-dashboard-retry')
       ).toBeInTheDocument();
       expect(screen.queryByTestId('security-dashboard-denied')).toBeNull();
+
+      // The copy must match the affordance: a Retry sitting under a pure
+      // "you lack permission" message reads as unmotivated.
+      expect(
+        screen.getByText(
+          "Some security data couldn't be loaded. Values shown may be incomplete."
+        )
+      ).toBeInTheDocument();
+    });
+
+    it('treats a malformed 200 body as a retryable failure, not an empty tenant', async () => {
+      // A truncated/HTML (proxy error page) body used to JSON.parse-fail, get
+      // swallowed into null, normalize to all-zeros, and render as a confident
+      // "No devices reporting yet" — a clean bill of health for a broken load.
+      const garbage = {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => '<html>502 Bad Gateway</html>'
+      } as Response;
+      route(garbage, garbage);
+      render(<SecurityDashboard />);
+
+      expect(
+        await screen.findByTestId('security-dashboard-load-error')
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('security-dashboard-retry')).toBeInTheDocument();
+      expect(screen.queryByText('No devices reporting yet')).toBeNull();
     });
 
     it('keeps the plain retryable banner for a non-403 failure', async () => {

@@ -170,6 +170,11 @@ export default function UserRiskPage() {
       setEvaluation(evaluationJson?.data ?? null);
       setSelected((current) => current ?? rows[0] ?? null);
     } catch (err) {
+      // Log on BOTH paths. A 'denied' render swallows the error object (the
+      // AccessDenied panel supplies its own copy), so without this a 403 caused
+      // by a bug — a bad orgId in the query, a mis-scoped token — would leave no
+      // artifact anywhere to debug from. (#2429)
+      console.error("[UserRiskPage] failed to load user risk scores:", err);
       const kind = errorKindOf(err);
       setErrorKind(kind);
       // 'denied' renders AccessDenied, which supplies its own copy.
@@ -228,6 +233,9 @@ export default function UserRiskPage() {
         if (active) setDetail(json?.data ?? null);
       })
       .catch((err) => {
+        // Logged unconditionally — see the note in loadScores: the 'denied'
+        // branch discards the error object, so this is the only artifact.
+        console.error("[UserRiskPage] failed to load user risk detail:", err);
         if (active) {
           setDetail(null);
           const kind = errorKindOf(err);

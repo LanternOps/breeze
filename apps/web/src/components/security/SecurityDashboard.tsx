@@ -486,8 +486,14 @@ const fetchJson = async (url: string) => {
   if (!text) return null;
   try {
     return JSON.parse(text);
-  } catch {
-    return null;
+  } catch (err) {
+    // Do NOT swallow this into `null`. A null payload normalizes to a fully
+    // zeroed overview, which the caller records as a SUCCESS and `isEmptyTenant`
+    // then renders as a confident "No devices reporting yet" — i.e. a truncated
+    // or HTML (proxy/error-page) body would be shown to the user as a clean bill
+    // of health. Surface it as a retryable failure instead. (#2429)
+    console.error(`[SecurityDashboard] invalid JSON from ${url}:`, err);
+    throw new Error(`Invalid JSON response from ${url}`);
   }
 };
 interface SecurityDashboardProps {
@@ -630,20 +636,23 @@ export default function SecurityDashboard({
     },
   ];
   const adminDevices = ovData.adminAudit.devices.slice(0, 3);
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="text-xl font-semibold">
-            {t("securitySecurityDashboard.security")}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              "securitySecurityDashboard.trackProtectionCoverageVulnerabilitiesAndPolicyCompliance",
-            )}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
+
+  const pageHeader = (
+    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <div>
+        <h1 className="text-xl font-semibold">
+          {t("securitySecurityDashboard.security")}
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          {t(
+            "securitySecurityDashboard.trackProtectionCoverageVulnerabilitiesAndPolicyCompliance",
+          )}
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Refresh is an error-recovery affordance here; on a fully-denied
+            dashboard it could only 403 again, so it is withheld. */}
+        {!bothDenied && (
           <button
             type="button"
             onClick={fetchSecurityData}
@@ -657,34 +666,56 @@ export default function SecurityDashboard({
             )}
             {t("securitySecurityDashboard.refresh")}
           </button>
-          {lastUpdated && (
-            <span className="text-xs text-muted-foreground">
-              {t("securitySecurityDashboard.updated", {
-                time: formatTime(lastUpdated, { timeZone: timezone }),
-              })}
-            </span>
-          )}
-        </div>
+        )}
+        {lastUpdated && !bothDenied && (
+          <span className="text-xs text-muted-foreground">
+            {t("securitySecurityDashboard.updated", {
+              time: formatTime(lastUpdated, { timeZone: timezone }),
+            })}
+          </span>
+        )}
       </div>
+    </div>
+  );
 
-      {bothDenied ? (
-        // Nothing on this dashboard is readable by this user. A retry would
-        // 403 again, so offer an explanation instead of a dead button.
+  // Nothing on this dashboard is readable by this user. Terminate the render
+  // here: falling through would paint the normal body from `defaultOverview` /
+  // `defaultVulnerabilities` and tell someone who is not allowed to see the data
+  // that they have 0 critical vulnerabilities and 0% AV coverage — exactly the
+  // fabricated-zeros hazard `isEmptyTenant` exists to prevent (it can't help
+  // here: it requires `overview !== null`, and a 403 leaves it null). (#2429)
+  if (bothDenied) {
+    return (
+      <div className="space-y-6">
+        {pageHeader}
         <AccessDenied
           testId="security-dashboard-denied"
           message={t("securitySecurityDashboard.accessDeniedMessage")}
         />
-      ) : (
-        anyLoadFailed && (
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {pageHeader}
+
+      {anyLoadFailed && (
           <div
             className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center"
             data-testid="security-dashboard-load-error"
             role="alert"
           >
             <p className="text-sm text-destructive">
-              {anyDenied
+              {/* Copy must match the affordance below it. The "everything is
+                  broken, check your connection" line is reserved for a purely
+                  transient total failure — a mixed denied+transient load is
+                  partial, and blaming the user's connection for a permission
+                  denial would be wrong. With nothing retryable, say so plainly
+                  and render no Retry. */}
+              {!anyTransient
                 ? t("securitySecurityDashboard.someSecurityDataPermissionDenied")
-                : bothFailed
+                : bothFailed && !anyDenied
                   ? t("securitySecurityDashboard.securityDataCouldNotBeLoaded")
                   : t(
                       "securitySecurityDashboard.someSecurityDataCouldNotBeLoaded",
@@ -702,7 +733,6 @@ export default function SecurityDashboard({
               </button>
             )}
           </div>
-        )
       )}
 
       {ENABLE_EDR_INTEGRATIONS && <EdrSummaryPanel />}
