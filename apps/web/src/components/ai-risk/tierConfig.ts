@@ -150,6 +150,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Logs & Audit
       { name: 'detect_log_correlations', description: 'Log correlation detection', category: 'Logs & Audit' },
       { name: 'set_agent_log_level', description: 'Set agent log level', category: 'Logs & Audit' },
+      { name: 'capture_agent_pprof', description: 'Capture agent pprof profiles', category: 'Logs & Audit' },
       // Configuration Policies
       { name: 'apply_configuration_policy', description: 'Assign config policy', category: 'Configuration Policies' },
       { name: 'remove_configuration_policy_assignment', description: 'Remove config assignment', category: 'Configuration Policies' },
@@ -274,6 +275,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'get_log_trends', limit: 20, windowSeconds: 300, tier: 1, permission: 'devices.read', category: 'Logs & Audit' },
   { toolName: 'detect_log_correlations', limit: 10, windowSeconds: 300, tier: 2, permission: 'devices.read', category: 'Logs & Audit' },
   { toolName: 'set_agent_log_level', limit: 5, windowSeconds: 600, tier: 2, permission: 'devices.execute', category: 'Logs & Audit' },
+  { toolName: 'capture_agent_pprof', limit: 3, windowSeconds: 600, tier: 2, permission: 'devices.execute', category: 'Logs & Audit' },
   // Configuration Policies
   { toolName: 'get_configuration_policy', limit: 30, windowSeconds: 300, tier: 1, permission: 'policies.read', category: 'Configuration Policies' },
   { toolName: 'manage_configuration_policy', limit: 20, windowSeconds: 300, tier: 1, permission: 'policies.write', category: 'Configuration Policies' },
@@ -360,6 +362,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   detect_log_correlations: 'devices.read',
   search_agent_logs: 'devices.read',
   set_agent_log_level: 'devices.execute',
+  capture_agent_pprof: 'devices.execute',
   // Screenshots
   take_screenshot: 'devices.execute',
   analyze_screen: 'devices.execute',

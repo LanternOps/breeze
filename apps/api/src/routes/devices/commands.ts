@@ -553,6 +553,8 @@ commandsRoutes.get(
       return c.json({ error: 'Command not found' }, 404);
     }
 
-    return c.json({ data: sanitizeCommandForHistory(command) });
+    // allowRawStdout only takes effect for artifact-bearing command types
+    // (capture_pprof profiles); everything else stays redacted (#2401).
+    return c.json({ data: sanitizeCommandForHistory(command, { allowRawStdout: true }) });
   }
 );

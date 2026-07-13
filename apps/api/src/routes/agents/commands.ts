@@ -30,6 +30,7 @@ import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../../services/agentCommandResultValidation';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
+import { isRawStdoutArtifactCommand } from '../../services/commandAudit';
 
 export const commandsRoutes = new Hono();
 const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
@@ -39,15 +40,24 @@ function commandResultToStdout(data: z.infer<typeof commandResultSchema>): strin
     (data.result !== undefined ? JSON.stringify(data.result) : undefined);
 }
 
-function buildStoredCommandResult(data: z.infer<typeof commandResultSchema>, stdout: string | undefined) {
+function buildStoredCommandResult(
+  commandType: string,
+  data: z.infer<typeof commandResultSchema>,
+  stdout: string | undefined,
+) {
   // Defense-in-depth: strip full PEM private-key blocks from agent output
   // before it is persisted and later shown to scripts:read users. Pre-update
   // agents don't redact server-side-visible output, so we redact here.
   // Preserve null/undefined (don't coerce to '') to keep the stored shape stable.
+  //
+  // Exception: artifact-bearing stdout (capture_pprof base64 profiles) must be
+  // stored byte-for-byte -- the redaction patterns statistically fire inside
+  // megabytes of random base64 and would silently corrupt the artifact (#2401).
+  const skipStdoutRedaction = isRawStdoutArtifactCommand(commandType);
   return {
     status: data.status,
     exitCode: data.exitCode,
-    stdout: stdout != null ? redactSecretsFromOutput(stdout) : stdout,
+    stdout: stdout != null && !skipStdoutRedaction ? redactSecretsFromOutput(stdout) : stdout,
     stderr: data.stderr != null ? redactSecretsFromOutput(data.stderr) : data.stderr,
     durationMs: data.durationMs,
     error: data.error != null ? redactSecretsFromOutput(data.error) : data.error,
@@ -250,7 +260,7 @@ commandsRoutes.post(
         .set({
           status: normalizedData.status === 'completed' ? 'completed' : 'failed',
           completedAt: new Date(),
-          result: buildStoredCommandResult(normalizedData, stdout),
+          result: buildStoredCommandResult(command.type, normalizedData, stdout),
           // Credentials ride the payload for some commands (e.g. FileVault
           // rotation); blank them once the command is terminal.
           ...(hasSensitivePayload(command.type) ? { payload: null } : {}),

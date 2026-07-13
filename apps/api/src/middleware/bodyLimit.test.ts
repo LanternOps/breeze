@@ -33,6 +33,22 @@ describe('bodyLimitForPath', () => {
     });
   });
 
+  // Regression for #2401: agent command results on the heartbeat/REST
+  // fallback leg can legitimately carry multi-MB stdout (capture_pprof
+  // profiles, big script output). commandResultSchema caps stdout/stderr at
+  // 5MB each; the body limit must not 413 a schema-valid result.
+  it('carves out agent command-result submissions at 12MB', () => {
+    expect(
+      bodyLimitForPath('/api/v1/agents/agent-1/commands/11111111-1111-4111-8111-111111111111/result'),
+    ).toEqual({
+      maxSize: 12 * MB,
+      error: 'Command result too large (max 12MB)',
+    });
+    // Sibling agent routes keep the default.
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/commands').maxSize).toBe(1 * MB);
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/heartbeat').maxSize).toBe(1 * MB);
+  });
+
   // Sized from the agent's 4MB file_write cap (~5.6MB base64 + JSON envelope);
   // the agent's WS read limit is derived from the same cap (issue #2399).
   it('carves out file-browser uploads at 8MB', () => {

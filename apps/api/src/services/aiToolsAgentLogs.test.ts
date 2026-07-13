@@ -12,11 +12,12 @@ vi.mock('../db', () => ({
 
 vi.mock('./commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
+  executeCommand: vi.fn(),
 }));
 
 import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { db } from '../db';
-import { queueCommandForExecution } from './commandQueue';
+import { queueCommandForExecution, executeCommand } from './commandQueue';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 
@@ -48,9 +49,10 @@ describe('aiToolsAgentLogs', () => {
     registerAgentLogTools(tools);
   });
 
-  it('should register search_agent_logs and set_agent_log_level', () => {
+  it('should register search_agent_logs, set_agent_log_level and capture_agent_pprof', () => {
     expect(tools.has('search_agent_logs')).toBe(true);
     expect(tools.has('set_agent_log_level')).toBe(true);
+    expect(tools.has('capture_agent_pprof')).toBe(true);
   });
 
   it('search_agent_logs should be tier 1', () => {
@@ -61,6 +63,12 @@ describe('aiToolsAgentLogs', () => {
   it('set_agent_log_level should be tier 2', () => {
     const tool = tools.get('set_agent_log_level')!;
     expect(tool.tier).toBe(2);
+  });
+
+  it('capture_agent_pprof should be tier 2 with deviceId device arg', () => {
+    const tool = tools.get('capture_agent_pprof')!;
+    expect(tool.tier).toBe(2);
+    expect(tool.deviceArgs).toEqual(['deviceId']);
   });
 
   describe('search_agent_logs', () => {
@@ -257,6 +265,181 @@ describe('aiToolsAgentLogs', () => {
         { level: 'info', durationMinutes: 60 },
         { userId: 'user-1' },
       );
+    });
+  });
+
+  describe('capture_agent_pprof', () => {
+    const capturedStdout = JSON.stringify({
+      capturedAt: '2026-07-12T10:00:00Z',
+      runtime: { heapAllocBytes: 1024, goroutines: 42 },
+      heapProfileBase64: 'aGVhcC1wcm9maWxlLWJ5dGVz',
+      heapProfileBytes: 2048,
+      goroutineProfileBase64: 'Z29yb3V0aW5lLXByb2ZpbGUtYnl0ZXM=',
+      goroutineProfileBytes: 512,
+    });
+
+    it('should return error without org context', async () => {
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler({ deviceId: 'dev-1' }, { user: { id: 'u1' } } as any);
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain('No organization context');
+    });
+
+    it('should return error without deviceId', async () => {
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler({}, makeAuth('org-1'));
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain('deviceId is required');
+      expect(executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('should reject an unknown profile without dispatching a command', async () => {
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler(
+        { deviceId: 'dev-1', profile: 'cpu' },
+        makeAuth('org-1'),
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain('Invalid profile "cpu"');
+      expect(executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('should execute the capture_pprof command type and default profile to all', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(executeCommand).mockResolvedValue({
+        status: 'completed',
+        stdout: capturedStdout,
+        commandId: 'cmd-pprof-1',
+      } as any);
+
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler({ deviceId: 'dev-1' }, makeAuth('org-1'));
+
+      expect(executeCommand).toHaveBeenCalledWith(
+        'dev-1',
+        'capture_pprof',
+        { profile: 'all' },
+        { userId: 'user-1', timeoutMs: 30000 },
+      );
+
+      const parsed = JSON.parse(result);
+      expect(parsed.status).toBe('completed');
+      expect(parsed.commandId).toBe('cmd-pprof-1');
+      expect(parsed.capturedAt).toBe('2026-07-12T10:00:00Z');
+      expect(parsed.runtime).toEqual({ heapAllocBytes: 1024, goroutines: 42 });
+      expect(parsed.profiles).toEqual({
+        heap: { sizeBytes: 2048 },
+        goroutine: { sizeBytes: 512 },
+      });
+    });
+
+    it('should pass an explicit profile through to the agent command', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(executeCommand).mockResolvedValue({
+        status: 'completed',
+        stdout: JSON.stringify({
+          capturedAt: '2026-07-12T10:00:00Z',
+          runtime: { goroutines: 7 },
+          goroutineProfileBase64: 'Zm9v',
+          goroutineProfileBytes: 3,
+        }),
+        commandId: 'cmd-pprof-2',
+      } as any);
+
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler(
+        { deviceId: 'dev-1', profile: 'goroutine' },
+        makeAuth('org-1'),
+      );
+
+      expect(executeCommand).toHaveBeenCalledWith(
+        'dev-1',
+        'capture_pprof',
+        { profile: 'goroutine' },
+        { userId: 'user-1', timeoutMs: 30000 },
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.profiles).toEqual({ goroutine: { sizeBytes: 3 } });
+    });
+
+    it('must NOT inline base64 profile data into the tool output', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(executeCommand).mockResolvedValue({
+        status: 'completed',
+        stdout: capturedStdout,
+        commandId: 'cmd-pprof-3',
+      } as any);
+
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler({ deviceId: 'dev-1' }, makeAuth('org-1'));
+
+      expect(result).not.toContain('aGVhcC1wcm9maWxlLWJ5dGVz');
+      expect(result).not.toContain('Z29yb3V0aW5lLXByb2ZpbGUtYnl0ZXM=');
+      // But it must tell the caller where to get the artifact.
+      const parsed = JSON.parse(result);
+      expect(parsed.retrieval).toContain('/devices/dev-1/commands/cmd-pprof-3');
+    });
+
+    it('should return error when device is not in the org', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      } as any);
+
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler({ deviceId: 'dev-other' }, makeAuth('org-1'));
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain('Device not found or access denied');
+      expect(executeCommand).not.toHaveBeenCalled();
+    });
+
+    it('should surface command failure', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(executeCommand).mockResolvedValue({
+        status: 'failed',
+        error: 'Device is offline, cannot execute command',
+      } as any);
+
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler({ deviceId: 'dev-1' }, makeAuth('org-1'));
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toBe('Device is offline, cannot execute command');
+    });
+
+    it('should handle unparseable agent output and still return the commandId', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(executeCommand).mockResolvedValue({
+        status: 'completed',
+        stdout: 'not-json',
+        commandId: 'cmd-pprof-4',
+      } as any);
+
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler({ deviceId: 'dev-1' }, makeAuth('org-1'));
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain('Failed to parse profile capture response');
+      expect(parsed.commandId).toBe('cmd-pprof-4');
+    });
+
+    it('should NOT report success when a completed result carries no profile data', async () => {
+      mockDeviceSelect('dev-1');
+      vi.mocked(executeCommand).mockResolvedValue({
+        status: 'completed',
+        // Valid JSON but no heapProfileBytes/goroutineProfileBytes fields
+        // (agent/API contract drift or stdout lost in transit).
+        stdout: JSON.stringify({ capturedAt: '2026-07-12T10:00:00Z' }),
+        commandId: 'cmd-pprof-5',
+      } as any);
+
+      const tool = tools.get('capture_agent_pprof')!;
+      const result = await tool.handler({ deviceId: 'dev-1' }, makeAuth('org-1'));
+      const parsed = JSON.parse(result);
+      expect(parsed.status).toBeUndefined();
+      expect(parsed.error).toContain('no profile data');
+      expect(parsed.commandId).toBe('cmd-pprof-5');
     });
   });
 });

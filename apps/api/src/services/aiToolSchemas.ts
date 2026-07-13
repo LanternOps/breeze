@@ -1043,6 +1043,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     durationMinutes: z.number().int().min(1).max(1440).optional(),
   }),
 
+  capture_agent_pprof: z.object({
+    deviceId: uuid,
+    profile: z.enum(['heap', 'goroutine', 'all']).optional(),
+  }),
+
   // Event log tools
   search_logs: z.object({
     query: z.string().max(500).optional(),

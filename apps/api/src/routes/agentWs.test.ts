@@ -497,6 +497,52 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
+  it('stores capture_pprof stdout byte-for-byte on the WS leg (secret redaction would corrupt the base64 profiles, #2401)', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        {
+          id: 'cmd-pprof',
+          type: 'capture_pprof',
+          payload: { profile: 'heap' },
+          deviceId: 'device-123'
+        }
+      ]) as any);
+
+    const updateChain = updateResult([{ id: 'cmd-pprof' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    // Contains substrings the redaction patterns fire on (case-insensitive
+    // AKIA + 16 alnum; token=...); must be persisted unmodified.
+    const pprofStdout = JSON.stringify({
+      capturedAt: '2026-07-12T10:00:00Z',
+      heapProfileBase64: `QUJDakiAABCDEF1234567890abToken=abcdefgh12345678REVG${'Zm9v'.repeat(100)}`,
+      heapProfileBytes: 4096,
+    });
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '22222222-2222-4222-8222-222222222222',
+        status: 'completed',
+        exitCode: 0,
+        stdout: pprofStdout,
+        stderr: 'password=supersecret123'
+      })
+    } as any, ws as any);
+
+    expect(db.update).toHaveBeenCalledTimes(1);
+    const stored = updateChain.set.mock.calls[0]![0] as { result: { stdout: string; stderr: string } };
+    expect(stored.result.stdout).toBe(pprofStdout);
+    // stderr is NOT exempt.
+    expect(stored.result.stderr).toContain('[REDACTED]');
+    expect(stored.result.stderr).not.toContain('supersecret123');
+  });
+
   it('rejects watchdog-targeted command results on the agent websocket', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
 
