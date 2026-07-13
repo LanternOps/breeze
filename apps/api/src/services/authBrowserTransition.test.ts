@@ -1,5 +1,10 @@
 import { createHash, createHmac } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as authBrowserTransitionModule from './authBrowserTransition';
+import {
+  getSecretDerivedKeyMaterials,
+  type SecretDerivedKeyMaterials,
+} from './secretCrypto';
 
 type TransitionState = 'active' | 'logout_pending' | 'retired';
 
@@ -209,7 +214,10 @@ const BINDING_KEY = 'task-3-app-encryption-key-material-at-least-32-bytes';
 const OLD_BINDING_KEY = 'task-3-old-encryption-key-material-at-least-32-bytes';
 
 function derivedKey(source: string): Buffer {
-  return createHash('sha256').update(source).digest();
+  const encryptionKey = createHash('sha256').update(source).digest();
+  return createHmac('sha256', encryptionKey)
+    .update('breeze-secret-derived-key:v1\0auth-browser-binding:v1')
+    .digest();
 }
 
 function signedBinding(keySource: string, payload = 'a'.repeat(32)): string {
@@ -298,6 +306,79 @@ describe('auth browser binding', () => {
       });
       expect((error as AuthBindingRotationRequiredError).replacement.value).not.toBe(C1);
     }
+  });
+
+  it('uses the unique retained signer key as the canonical digest key across active-key rotation', () => {
+    const oldValue = signedBinding(OLD_BINDING_KEY, 'd'.repeat(32));
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({
+      old: OLD_BINDING_KEY,
+      current: BINDING_KEY,
+    });
+
+    const resolved = resolveAuthBinding(browser(oldValue));
+    const expected = createHmac('sha256', derivedKey(OLD_BINDING_KEY))
+      .update(`auth-browser-binding:v1:${oldValue}`)
+      .digest('hex');
+
+    expect(resolved.bindingDigest).toBe(expected);
+  });
+
+  it('fails closed when no retained key validates the binding tag', () => {
+    expect(() => resolveAuthBinding(browser('f'.repeat(64)))).toThrowError(
+      expect.objectContaining({
+        constructor: AuthBindingRotationRequiredError,
+        status: 428,
+        reason: 'invalid',
+      }),
+    );
+  });
+
+  it('fails closed when multiple retained key IDs validate the binding tag', () => {
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({
+      current: BINDING_KEY,
+      duplicate: BINDING_KEY,
+    });
+
+    expect(() => resolveAuthBinding(browser())).toThrowError(
+      expect.objectContaining({
+        constructor: AuthBindingRotationRequiredError,
+        status: 428,
+        reason: 'invalid',
+      }),
+    );
+  });
+
+  it('creates isolated old-active and new-active services that resolve one signer digest', () => {
+    const factory = (authBrowserTransitionModule as typeof authBrowserTransitionModule & {
+      createAuthBrowserTransitionService: (
+        provider: () => SecretDerivedKeyMaterials,
+      ) => { resolveAuthBinding: typeof resolveAuthBinding };
+    }).createAuthBrowserTransitionService;
+    expect(factory).toBeTypeOf('function');
+
+    process.env.APP_ENCRYPTION_KEY_ID = 'old';
+    process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({
+      old: OLD_BINDING_KEY,
+      current: BINDING_KEY,
+    });
+    const oldActive = getSecretDerivedKeyMaterials('auth-browser-binding:v1');
+    process.env.APP_ENCRYPTION_KEY_ID = 'current';
+    const newActive = getSecretDerivedKeyMaterials('auth-browser-binding:v1');
+    const oldService = factory(() => oldActive);
+    const newService = factory(() => newActive);
+    const binding = (() => {
+      try {
+        oldService.resolveAuthBinding(undefined);
+      } catch (error) {
+        if (error instanceof AuthBindingRotationRequiredError) return error.replacement;
+        throw error;
+      }
+      throw new Error('Missing binding did not produce a replacement');
+    })();
+
+    expect(oldService.resolveAuthBinding(binding).bindingDigest).toBe(
+      newService.resolveAuthBinding(binding).bindingDigest,
+    );
   });
 });
 
@@ -537,8 +618,11 @@ describe('binding rotation', () => {
     });
     expect(harness.rows.get(predecessor.id)?.state).toBe('retired');
     expect(harness.rows).toHaveLength(1);
+    const reopenedCurrentDigest = createHmac('sha256', derivedKey(BINDING_KEY))
+      .update(`auth-browser-binding:v1:${oldValue}`)
+      .digest('hex');
     expect([...harness.rows.values()].some(
-      (row) => row.bindingDigest === resolveAuthBinding(browser(oldValue)).bindingDigest,
+      (row) => row.bindingDigest === reopenedCurrentDigest,
     )).toBe(false);
   });
 });

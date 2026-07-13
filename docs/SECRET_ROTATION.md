@@ -219,6 +219,38 @@ APP_ENCRYPTION_KEYRING='{"app-2026-05":"<new-key>","app-2025-11":"<previous-key>
 5. After backups and application checks pass, remove the old key material from
    the keyring/vault when no `enc:v1` or old-key `enc:v2` values remain.
 
+### Browser authentication binding key rotation
+
+The browser authentication transition service derives HMAC-only binding keys
+from the `APP_ENCRYPTION_KEYRING`; it never consumes the AES encryption keys
+directly. Browser C1 values are signed by the key that was active when the
+cookie was issued, and `auth_browser_transitions.binding_digest` is canonical
+to that signer key. Every replica therefore has to retain the signer key while
+that C1 can still arrive.
+
+Use this staged rollout for every binding-key activation:
+
+1. Add the new key to `APP_ENCRYPTION_KEYRING` while the old key remains the
+   `APP_ENCRYPTION_KEY_ID` active key.
+2. Deploy the old and new keys to every API replica. Verify that every replica
+   can resolve both key IDs before changing the active ID; a partial keyring
+   rollout is not safe.
+3. Only then switch `APP_ENCRYPTION_KEY_ID` to the new key across the API fleet.
+   New C1 cookies are signed by the new key. Old C1 cookies and transition rows
+   continue resolving through the retained old key.
+4. Keep the old key in every replica's keyring for the full lifetime of all C1
+   cookies it signed and every associated transition lineage. Never remove a retained binding key while
+   `auth_browser_transitions` rows or C1 cookies may exist for that key.
+5. Remove the old key only after both cookie traffic and transition-row
+   retention prove that no old-key binding remains. Perform removal as a
+   separate deployment after the activation rollout is stable.
+
+Removing a retained binding key early intentionally fails closed: the old C1
+cannot be resolved or reopened under the new key. In an emergency compromise,
+invalidate affected C1 cookies and retire/delete their transition state through
+the approved security workflow before removing the compromised key; do not
+silently skip the retention requirement.
+
 Emergency compromise response should prefer restoring from a known-good backup
 and reissuing affected integration credentials over ad hoc database rewrites.
 

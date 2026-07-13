@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'crypto';
 
 const ENCRYPTED_V1_PREFIX = 'enc:v1:';
 const ENCRYPTED_V2_PREFIX = 'enc:v2:';
@@ -37,14 +37,24 @@ export interface SecretCryptoOptions {
   strict?: boolean;
 }
 
-export interface SecretEncryptionKeyMaterial {
+interface SecretEncryptionKeyMaterial {
   keyId: string | null;
   key: Buffer;
 }
 
-export interface SecretEncryptionKeyMaterials {
+interface SecretEncryptionKeyMaterials {
   active: SecretEncryptionKeyMaterial;
   retained: SecretEncryptionKeyMaterial[];
+}
+
+export interface SecretDerivedKeyMaterial {
+  keyId: string | null;
+  key: Buffer;
+}
+
+export interface SecretDerivedKeyMaterials {
+  active: SecretDerivedKeyMaterial;
+  retained: SecretDerivedKeyMaterial[];
 }
 
 let cachedEncryptionKey: Buffer | null = null;
@@ -204,12 +214,8 @@ function getV2EncryptionKey(keyId: string): Buffer {
   throw new Error('Unknown encrypted secret key ID');
 }
 
-/**
- * Returns copy-isolated encryption key material for services that must derive
- * their own domain-separated digests across a rolling key rotation. Callers
- * never receive the mutable buffers cached by the encryption implementation.
- */
-export function getSecretEncryptionKeyMaterials(): SecretEncryptionKeyMaterials {
+/** Assemble copy-isolated master material for the public derivation boundary. */
+function getSecretEncryptionKeyMaterials(): SecretEncryptionKeyMaterials {
   const activeKeyId = getActiveKeyId();
   const activeKey = activeKeyId ? getV2EncryptionKey(activeKeyId) : getEncryptionKey();
   const retained: SecretEncryptionKeyMaterial[] = [...getEncryptionKeyring().entries()]
@@ -223,6 +229,25 @@ export function getSecretEncryptionKeyMaterials(): SecretEncryptionKeyMaterials 
   return {
     active: { keyId: activeKeyId, key: Buffer.from(activeKey) },
     retained,
+  };
+}
+
+/**
+ * Derive service-scoped key material without exposing encryption-at-rest keys.
+ * Different domains are cryptographically independent HMAC key namespaces.
+ */
+export function getSecretDerivedKeyMaterials(domain: string): SecretDerivedKeyMaterials {
+  if (!domain) throw new Error('Secret derived-key domain is required');
+  const materials = getSecretEncryptionKeyMaterials();
+  const derive = ({ keyId, key }: SecretEncryptionKeyMaterial): SecretDerivedKeyMaterial => ({
+    keyId,
+    key: createHmac('sha256', key)
+      .update(`breeze-secret-derived-key:v1\0${domain}`)
+      .digest(),
+  });
+  return {
+    active: derive(materials.active),
+    retained: materials.retained.map(derive),
   };
 }
 

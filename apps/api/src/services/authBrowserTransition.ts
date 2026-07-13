@@ -6,11 +6,13 @@ import {
   type AuthLifecycleTransaction,
 } from './authLifecycle';
 import {
-  getSecretEncryptionKeyMaterials,
-  type SecretEncryptionKeyMaterial,
+  getSecretDerivedKeyMaterials,
+  type SecretDerivedKeyMaterial,
+  type SecretDerivedKeyMaterials,
 } from './secretCrypto';
 
 const AUTH_BINDING_PATTERN = /^[0-9a-f]{64}$/;
+const AUTH_BINDING_DERIVATION_DOMAIN = 'auth-browser-binding:v1';
 const AUTH_BINDING_HMAC_DOMAIN = 'auth-browser-binding:v1:';
 const AUTH_BINDING_VALUE_DOMAIN = 'auth-browser-binding-value:v1:';
 const AUTH_BINDING_SUCCESSOR_DOMAIN = 'auth-browser-binding-successor:v1:';
@@ -76,11 +78,11 @@ export class AuthIssuanceCapabilityError extends Error {
   }
 }
 
-type BindingCandidate = SecretEncryptionKeyMaterial & { bindingDigest: string };
+type BindingCandidate = SecretDerivedKeyMaterial & { bindingDigest: string };
 
 type BindingResolution = Readonly<{
   kind: AuthBindingSource['kind'];
-  activeDigest: string;
+  canonicalDigest: string;
   candidates: readonly BindingCandidate[];
 }>;
 
@@ -101,8 +103,30 @@ function bindingValueTag(
     .slice(0, 32);
 }
 
-function bindingResolution(source: AuthBindingSource): BindingResolution {
-  const keyMaterials = getSecretEncryptionKeyMaterials();
+function bindingTagMatches(
+  source: AuthBindingSource,
+  material: SecretDerivedKeyMaterial,
+): boolean {
+  const payload = source.value.slice(0, 32);
+  const suppliedTag = Buffer.from(source.value.slice(32), 'hex');
+  const expectedTag = Buffer.from(bindingValueTag(source.kind, payload, material.key), 'hex');
+  return suppliedTag.length === expectedTag.length && timingSafeEqual(suppliedTag, expectedTag);
+}
+
+function bindingResolution(
+  source: AuthBindingSource,
+  keyMaterials: SecretDerivedKeyMaterials,
+): BindingResolution {
+  const validatingKeys = keyMaterials.retained.filter((material) =>
+    bindingTagMatches(source, material),
+  );
+  if (validatingKeys.length !== 1) {
+    throw new AuthBindingRotationRequiredError(
+      freshBinding(source.kind, keyMaterials),
+      'invalid',
+    );
+  }
+  const signer = validatingKeys[0]!;
   const byDigest = new Map<string, BindingCandidate>();
   for (const material of keyMaterials.retained) {
     const digest = bindingDigest(source.value, material.key);
@@ -110,51 +134,37 @@ function bindingResolution(source: AuthBindingSource): BindingResolution {
       byDigest.set(digest, { ...material, bindingDigest: digest });
     }
   }
-  const activeDigest = bindingDigest(source.value, keyMaterials.active.key);
-  if (!byDigest.has(activeDigest)) {
-    byDigest.set(activeDigest, { ...keyMaterials.active, bindingDigest: activeDigest });
-  }
   return Object.freeze({
     kind: source.kind,
-    activeDigest,
+    canonicalDigest: bindingDigest(source.value, signer.key),
     candidates: Object.freeze([...byDigest.values()]),
   });
 }
 
-function freshBinding(kind: AuthBindingSource['kind'] = 'browser'): AuthBindingSource {
+function freshBinding(
+  kind: AuthBindingSource['kind'],
+  keyMaterials: SecretDerivedKeyMaterials,
+): AuthBindingSource {
   const payload = randomBytes(16).toString('hex');
-  const { active } = getSecretEncryptionKeyMaterials();
   return Object.freeze({
     kind,
-    value: `${payload}${bindingValueTag(kind, payload, active.key)}`,
+    value: `${payload}${bindingValueTag(kind, payload, keyMaterials.active.key)}`,
   });
 }
 
-function isServerIssuedBinding(
-  source: AuthBindingSource,
-  candidates: readonly BindingCandidate[],
-): boolean {
-  const payload = source.value.slice(0, 32);
-  const suppliedTag = Buffer.from(source.value.slice(32), 'hex');
-  return candidates.some((candidate) => {
-    const expectedTag = Buffer.from(bindingValueTag(source.kind, payload, candidate.key), 'hex');
-    return suppliedTag.length === expectedTag.length && timingSafeEqual(suppliedTag, expectedTag);
-  });
-}
-
-/** Resolve a transport binding without persisting or returning the raw value. */
-export function resolveAuthBinding(
+function resolveAuthBindingWithMaterials(
   source: AuthBindingSource | null | undefined,
+  keyMaterials: SecretDerivedKeyMaterials,
 ): ResolvedAuthBinding {
   if (!source) {
-    throw new AuthBindingRotationRequiredError(freshBinding('browser'), 'missing');
+    throw new AuthBindingRotationRequiredError(freshBinding('browser', keyMaterials), 'missing');
   }
   if (!AUTH_BINDING_PATTERN.test(source.value)) {
-    throw new AuthBindingRotationRequiredError(freshBinding(source.kind), 'invalid');
+    throw new AuthBindingRotationRequiredError(freshBinding(source.kind, keyMaterials), 'invalid');
   }
 
-  const resolved = bindingResolution(source);
-  return Object.freeze({ kind: source.kind, bindingDigest: resolved.activeDigest });
+  const resolved = bindingResolution(source, keyMaterials);
+  return Object.freeze({ kind: source.kind, bindingDigest: resolved.canonicalDigest });
 }
 
 const lockedTransitionFields = {
@@ -195,8 +205,8 @@ async function lockTransitionByDigest(
 async function lockTransitionForResolution(
   tx: AuthLifecycleTransaction,
   resolution: BindingResolution,
-): Promise<{ transition: LockedTransition; matchedKey: SecretEncryptionKeyMaterial } | undefined> {
-  let match: { transition: LockedTransition; matchedKey: SecretEncryptionKeyMaterial } | undefined;
+): Promise<{ transition: LockedTransition; matchedKey: SecretDerivedKeyMaterial } | undefined> {
+  let match: { transition: LockedTransition; matchedKey: SecretDerivedKeyMaterial } | undefined;
   const candidates = [...resolution.candidates]
     .sort((left, right) => left.bindingDigest.localeCompare(right.bindingDigest));
   for (const candidate of candidates) {
@@ -260,11 +270,14 @@ async function retireExpiredTransition(
  * Retire an expired pending binding (or acknowledge an already-retired one)
  * and return a fresh transport value. The old digest is never reopened.
  */
-export async function rotateExpiredBinding(
+async function rotateExpiredBindingWithMaterials(
   source: AuthBindingSource,
+  keyMaterials: SecretDerivedKeyMaterials,
 ): Promise<AuthBindingSource> {
-  resolveAuthBinding(source);
-  const resolution = bindingResolution(source);
+  if (!AUTH_BINDING_PATTERN.test(source.value)) {
+    throw new AuthBindingRotationRequiredError(freshBinding(source.kind, keyMaterials), 'invalid');
+  }
+  const resolution = bindingResolution(source, keyMaterials);
   const replacement = await withAuthLifecycleSystemTransaction(async (tx) => {
     const locked = await lockTransitionForResolution(tx, resolution);
     if (!locked) {
@@ -273,7 +286,7 @@ export async function rotateExpiredBinding(
     const { transition, matchedKey } = locked;
 
     if (transition.state === 'retired') {
-      return ensureSuccessorTransition(tx, source.kind, transition, matchedKey);
+      return ensureSuccessorTransition(tx, source.kind, transition, matchedKey, keyMaterials);
     }
     if (
       transition.state === 'logout_pending'
@@ -281,7 +294,7 @@ export async function rotateExpiredBinding(
       && !isAfter(transition.logoutExpiresAt, transition.databaseNow)
     ) {
       await retireExpiredTransition(tx, transition);
-      return ensureSuccessorTransition(tx, source.kind, transition, matchedKey);
+      return ensureSuccessorTransition(tx, source.kind, transition, matchedKey, keyMaterials);
     }
 
     throw new AuthBindingUnavailableError(
@@ -294,7 +307,7 @@ export async function rotateExpiredBinding(
 function deterministicSuccessorBinding(
   kind: AuthBindingSource['kind'],
   transition: Pick<LockedTransition, 'id' | 'generation'>,
-  matchedKey: SecretEncryptionKeyMaterial,
+  matchedKey: SecretDerivedKeyMaterial,
 ): AuthBindingSource {
   const payload = createHmac('sha256', matchedKey.key)
     .update(`${AUTH_BINDING_SUCCESSOR_DOMAIN}${kind}:${transition.id}:${transition.generation}`)
@@ -310,15 +323,16 @@ async function ensureSuccessorTransition(
   tx: AuthLifecycleTransaction,
   kind: AuthBindingSource['kind'],
   predecessor: LockedTransition,
-  matchedKey: SecretEncryptionKeyMaterial,
+  matchedKey: SecretDerivedKeyMaterial,
+  keyMaterials: SecretDerivedKeyMaterials,
 ): Promise<AuthBindingSource> {
   const replacement = deterministicSuccessorBinding(kind, predecessor, matchedKey);
-  const resolution = bindingResolution(replacement);
+  const resolution = bindingResolution(replacement, keyMaterials);
   let successor = await lockTransitionForResolution(tx, resolution);
   if (!successor) {
     await tx
       .insert(authBrowserTransitions)
-      .values({ bindingDigest: resolution.activeDigest })
+      .values({ bindingDigest: resolution.canonicalDigest })
       .onConflictDoNothing({ target: authBrowserTransitions.bindingDigest });
     successor = await lockTransitionForResolution(tx, resolution);
   }
@@ -333,20 +347,20 @@ type AdmissionResult =
   | { kind: 'rotation'; replacement: AuthBindingSource; reason: 'expired' | 'retired' | 'invalid' };
 
 /** Reserve one short database-time lease without spanning verification or network work. */
-export async function beginAuthIssuance(
+async function beginAuthIssuanceWithMaterials(
   source: AuthBindingSource,
+  keyMaterials: SecretDerivedKeyMaterials,
 ): Promise<AuthIssuanceCapability> {
-  resolveAuthBinding(source);
-  const resolution = bindingResolution(source);
+  if (!AUTH_BINDING_PATTERN.test(source.value)) {
+    throw new AuthBindingRotationRequiredError(freshBinding(source.kind, keyMaterials), 'invalid');
+  }
+  const resolution = bindingResolution(source, keyMaterials);
   const result = await withAuthLifecycleSystemTransaction<AdmissionResult>(async (tx) => {
     let locked = await lockTransitionForResolution(tx, resolution);
     if (!locked) {
-      if (!isServerIssuedBinding(source, resolution.candidates)) {
-        return { kind: 'rotation', replacement: freshBinding(source.kind), reason: 'invalid' };
-      }
       await tx
         .insert(authBrowserTransitions)
-        .values({ bindingDigest: resolution.activeDigest })
+        .values({ bindingDigest: resolution.canonicalDigest })
         .onConflictDoNothing({ target: authBrowserTransitions.bindingDigest });
       locked = await lockTransitionForResolution(tx, resolution);
       if (!locked) {
@@ -358,7 +372,13 @@ export async function beginAuthIssuance(
     if (transition.state === 'retired') {
       return {
         kind: 'rotation',
-        replacement: await ensureSuccessorTransition(tx, source.kind, transition, matchedKey),
+        replacement: await ensureSuccessorTransition(
+          tx,
+          source.kind,
+          transition,
+          matchedKey,
+          keyMaterials,
+        ),
         reason: 'retired',
       };
     }
@@ -371,7 +391,13 @@ export async function beginAuthIssuance(
         await retireExpiredTransition(tx, transition);
         return {
           kind: 'rotation',
-          replacement: await ensureSuccessorTransition(tx, source.kind, transition, matchedKey),
+          replacement: await ensureSuccessorTransition(
+            tx,
+            source.kind,
+            transition,
+            matchedKey,
+            keyMaterials,
+          ),
           reason: 'expired',
         };
       }
@@ -421,6 +447,51 @@ export async function beginAuthIssuance(
     throw new AuthBindingRotationRequiredError(result.replacement, result.reason);
   }
   return result.capability;
+}
+
+export type AuthBindingKeyProvider = () => SecretDerivedKeyMaterials;
+
+export interface AuthBrowserTransitionService {
+  resolveAuthBinding(
+    source: AuthBindingSource | null | undefined,
+  ): ResolvedAuthBinding;
+  rotateExpiredBinding(source: AuthBindingSource): Promise<AuthBindingSource>;
+  beginAuthIssuance(source: AuthBindingSource): Promise<AuthIssuanceCapability>;
+}
+
+function defaultAuthBindingKeyProvider(): SecretDerivedKeyMaterials {
+  return getSecretDerivedKeyMaterials(AUTH_BINDING_DERIVATION_DOMAIN);
+}
+
+export function createAuthBrowserTransitionService(
+  keyProvider: AuthBindingKeyProvider = defaultAuthBindingKeyProvider,
+): AuthBrowserTransitionService {
+  return Object.freeze({
+    resolveAuthBinding: (source: AuthBindingSource | null | undefined) =>
+      resolveAuthBindingWithMaterials(source, keyProvider()),
+    rotateExpiredBinding: (source: AuthBindingSource) =>
+      rotateExpiredBindingWithMaterials(source, keyProvider()),
+    beginAuthIssuance: (source: AuthBindingSource) =>
+      beginAuthIssuanceWithMaterials(source, keyProvider()),
+  });
+}
+
+const defaultAuthBrowserTransitionService = createAuthBrowserTransitionService();
+
+/** Resolve a transport binding without persisting or returning the raw value. */
+export function resolveAuthBinding(
+  source: AuthBindingSource | null | undefined,
+): ResolvedAuthBinding {
+  return defaultAuthBrowserTransitionService.resolveAuthBinding(source);
+}
+
+export function rotateExpiredBinding(source: AuthBindingSource): Promise<AuthBindingSource> {
+  return defaultAuthBrowserTransitionService.rotateExpiredBinding(source);
+}
+
+/** Reserve one short database-time lease without spanning verification or network work. */
+export function beginAuthIssuance(source: AuthBindingSource): Promise<AuthIssuanceCapability> {
+  return defaultAuthBrowserTransitionService.beginAuthIssuance(source);
 }
 
 function assertCapabilityBrand(
