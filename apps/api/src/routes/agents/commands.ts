@@ -24,7 +24,8 @@ import { captureException } from '../../services/sentry';
 import { processCollectedAuditPolicyCommandResult } from '../../services/auditBaselineService';
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
-import { decryptCommandsForDelivery, hasSensitivePayload } from '../../services/sensitiveCommandPayload';
+import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { hasSensitivePayload } from '../../services/sensitiveCommandPayload';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -139,12 +140,11 @@ commandsRoutes.get('/:id/commands', async (c) => {
     )
   );
 
+  // #2414 — decrypt just-in-time; a command whose payload fails decryption is
+  // released back to `pending` (not stranded as `sent`) while its siblings
+  // still deliver.
   return c.json({
-    commands: decryptCommandsForDelivery(commands.map(cmd => ({
-      id: cmd.id,
-      type: cmd.type,
-      payload: cmd.payload,
-    }))),
+    commands: await decryptClaimedCommandsForDelivery(commands),
   });
 });
 

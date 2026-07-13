@@ -39,7 +39,7 @@ import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import { getActiveTrustKeyset, type ManifestTrustKey } from '../../services/manifestSigning';
-import { decryptCommandsForDelivery } from '../../services/sensitiveCommandPayload';
+import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -361,12 +361,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
 
+    // #2414 — decrypt just-in-time; a command whose payload fails decryption is
+    // released back to `pending` (not stranded as `sent`) while its siblings
+    // still deliver.
     return c.json({
-      commands: decryptCommandsForDelivery(watchdogCommands.map(cmd => ({
-        id: cmd.id,
-        type: cmd.type,
-        payload: cmd.payload,
-      }))),
+      commands: await decryptClaimedCommandsForDelivery(watchdogCommands),
       watchdogUpgradeTo,
       upgradeTo: agentUpgradeTo,
     });
@@ -947,6 +946,11 @@ if (latestHelper) {
     console.error('[heartbeat] Failed to resolve remote access policy:', err);
   }
 
+  // #2414 — decrypt just-in-time; a command whose payload fails decryption is
+  // released back to `pending` (not stranded as `sent`) while its siblings
+  // still deliver.
+  const deliverableCommands = await decryptClaimedCommandsForDelivery(commands);
+
   // Main-branch response payload — built inside the org context, but the
   // manifest-trust-keyset and policy probe config are fetched AFTER this
   // context closes (see below).
@@ -954,11 +958,7 @@ if (latestHelper) {
     deviceOrgId: device.orgId,
     deviceId: device.id,
     mainResponse: {
-      commands: decryptCommandsForDelivery(commands.map(cmd => ({
-        id: cmd.id,
-        type: cmd.type,
-        payload: cmd.payload
-      }))),
+      commands: deliverableCommands,
       configUpdate: mergedConfigUpdate,
       upgradeTo,
       helperUpgradeTo: helperUpgradeTo ?? undefined,

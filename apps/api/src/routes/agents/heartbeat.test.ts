@@ -136,8 +136,17 @@ vi.mock('../../services/deviceIpHistory', () => ({
   processDeviceIPHistoryUpdate: vi.fn(),
 }));
 
+const claimPendingCommandsForDeviceMock = vi.fn(async (): Promise<unknown[]> => []);
+const releaseClaimedCommandDeliveryMock = vi.fn(async () => undefined);
+
+// Only claim/release are mocked; the batch decrypt-and-release helper
+// (services/commandDelivery, #2414) runs for real so the heartbeat tests below
+// exercise the actual release-on-decrypt-failure behavior.
 vi.mock('../../services/commandDispatch', () => ({
-  claimPendingCommandsForDevice: vi.fn(async () => []),
+  claimPendingCommandsForDevice: (...args: unknown[]) =>
+    claimPendingCommandsForDeviceMock(...(args as [])),
+  releaseClaimedCommandDelivery: (...args: unknown[]) =>
+    releaseClaimedCommandDeliveryMock(...(args as [])),
 }));
 
 vi.mock('../../services/eventBus', () => ({
@@ -2396,5 +2405,139 @@ describe('POST /agents/:id/heartbeat — agentRuntime gauges (#2389)', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe('POST /agents/:id/heartbeat — undecryptable claimed commands are released, siblings deliver (#2414)', () => {
+  const claimedAt = new Date('2026-07-13T00:00:00Z');
+  const goodCommand = {
+    id: 'cmd-good',
+    type: 'run_script',
+    payload: { scriptId: 'script-1' },
+    executedAt: claimedAt,
+  };
+  // A well-formed-looking but undecryptable sensitive payload (e.g. after an
+  // APP_ENCRYPTION_KEY rotation) — the real services/commandDelivery +
+  // sensitiveCommandPayload modules run here, so decryption genuinely fails.
+  const undecryptableCommand = {
+    id: 'cmd-bad',
+    type: 'encryption_rotate_key',
+    payload: { password: 'enc:v3:deadbeef:not-real-ciphertext' },
+    executedAt: claimedAt,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    });
+  });
+
+  it('agent path: releases the undecryptable command back to pending and still delivers its sibling', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([goodCommand, undecryptableCommand]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { commands: Array<{ id: string }> };
+    // The decryptable sibling still delivers; the undecryptable one is dropped
+    // from the response...
+    expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-good']);
+    // ...and released back to pending (NOT stranded as 'sent' awaiting a
+    // misattributed agent-timeout reap).
+    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-bad', claimedAt);
+    const { captureException } = await import('../../services/sentry');
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('commandId=cmd-bad'),
+      }),
+    );
+  });
+
+  it('watchdog path: releases the undecryptable command back to pending and still delivers its sibling', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          lastSeenAt: new Date(),
+          mainAgentSilentSince: null,
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([goodCommand, undecryptableCommand]);
+
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentVersion: '0.65.15', role: 'watchdog', watchdogState: 'MONITORING' }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'watchdog');
+    const body = (await resp.json()) as { commands: Array<{ id: string }> };
+    expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-good']);
+    expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-bad', claimedAt);
+  });
+
+  it('agent path: normal delivery is untouched — every claimed command decrypts, nothing is released', async () => {
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([
+        {
+          id: 'device-1',
+          orgId: 'org-1',
+          siteId: 'site-1',
+          hostname: 'host-1',
+          osType: 'linux',
+          architecture: 'amd64',
+          agentVersion: '0.65.10',
+          agentTokenHash: 'hash',
+          tokenIssuedAt: new Date(),
+        },
+      ]),
+    );
+    selectMock.mockReturnValue(selectChainResolving([]));
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([goodCommand]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { commands: Array<{ id: string; type: string; payload: unknown }> };
+    expect(body.commands).toEqual([
+      { id: 'cmd-good', type: 'run_script', payload: { scriptId: 'script-1' } },
+    ]);
+    expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
   });
 });

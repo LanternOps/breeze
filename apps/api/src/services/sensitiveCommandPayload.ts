@@ -1,4 +1,5 @@
 import { decryptSecret, encryptSecret } from './secretCrypto';
+import { captureException } from './sentry';
 
 // device_commands is intentionally system-scoped (no RLS) and its payload
 // column is plaintext JSONB. Commands whose payload carries credentials are
@@ -57,17 +58,31 @@ export type DeliverableCommand = { id: string; type: string; payload: unknown };
  * decrypted, or `null` if decryption throws (a rotated/corrupted
  * `APP_ENCRYPTION_KEY`, an AAD mismatch, or corrupt ciphertext). Callers MUST
  * drop a `null` rather than deliver it: a single un-decryptable command must
- * never fail the whole batch or heartbeat response. For non-sensitive command
- * types this is a pure passthrough that cannot throw. Never logs ciphertext or
- * key material — only the command id/type.
+ * never fail the whole batch or heartbeat response. Callers that CLAIMED the
+ * command before decrypting must also release it back to `pending` (see
+ * `decryptClaimedCommandsForDelivery` in services/commandDelivery.ts, #2414) —
+ * otherwise it strands as `sent` and the eventual reaper timeout misattributes
+ * a server-side decrypt failure to agent unreachability. For non-sensitive
+ * command types this is a pure passthrough that cannot throw. Never logs
+ * ciphertext or key material — only the command id/type.
+ *
+ * A decrypt failure is reported to Sentry here (the single chokepoint every
+ * delivery path funnels through) so a mass decrypt-failure event — e.g. a
+ * rotated APP_ENCRYPTION_KEY — is distinguishable from agent flakiness.
  */
 export function decryptCommandForDelivery(cmd: DeliverableCommand): DeliverableCommand | null {
   try {
     return { id: cmd.id, type: cmd.type, payload: decryptSensitivePayloadFields(cmd.type, cmd.payload) };
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     console.error(
       '[sensitiveCommandPayload] failed to decrypt command payload for delivery; dropping this command only',
-      { commandId: cmd.id, type: cmd.type, error: err instanceof Error ? err.message : String(err) },
+      { commandId: cmd.id, type: cmd.type, error: message },
+    );
+    captureException(
+      new Error(
+        `[sensitiveCommandPayload] command payload decrypt failed (commandId=${cmd.id}, type=${cmd.type}): ${message}`,
+      ),
     );
     return null;
   }
