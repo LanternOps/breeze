@@ -298,6 +298,10 @@ function hasActiveCfAccessLogoutIntent(): boolean {
   }
 }
 
+function assertCfAccessLogoutAdmission(allowDuringCfLogout: boolean | undefined): void {
+  if (!allowDuringCfLogout && hasActiveCfAccessLogoutIntent()) throw new StaleWebSessionError();
+}
+
 export function clearCfAccessLogoutIntent(): void {
   try { localStorage.removeItem(CF_ACCESS_LOGOUT_INTENT_KEY); } catch { /* storage unavailable */ }
 }
@@ -332,27 +336,31 @@ export async function withAuthSessionTransition<T>(
   // back locally; once the callback begins, an operation failure must never be
   // replayed because auth mutations are not idempotent.
   return withLocalAuthSessionTransition(async () => {
-    if (!options.allowDuringCfLogout && hasActiveCfAccessLogoutIntent()) {
-      throw new StaleWebSessionError();
-    }
+    assertCfAccessLogoutAdmission(options.allowDuringCfLogout);
     let locks: LockManager | undefined;
     try {
       locks = typeof navigator !== 'undefined'
         ? (navigator as Navigator & { locks?: LockManager }).locks
         : undefined;
     } catch {
+      assertCfAccessLogoutAdmission(options.allowDuringCfLogout);
       return operation();
     }
-    if (typeof locks?.request !== 'function') return operation();
+    if (typeof locks?.request !== 'function') {
+      assertCfAccessLogoutAdmission(options.allowDuringCfLogout);
+      return operation();
+    }
 
     let callbackStarted = false;
     try {
       return await locks.request(AUTH_SESSION_TRANSITION_LOCK_NAME, async () => {
         callbackStarted = true;
+        assertCfAccessLogoutAdmission(options.allowDuringCfLogout);
         return operation();
       }) as T;
     } catch (error) {
       if (callbackStarted) throw error;
+      assertCfAccessLogoutAdmission(options.allowDuringCfLogout);
       return operation();
     }
   });
@@ -1208,11 +1216,12 @@ export async function apiCfAccessLogout(
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (tokens?.accessToken) headers.Authorization = `Bearer ${tokens.accessToken}`;
     try {
-      await fetch(buildApiUrl('/auth/logout'), {
+      const response = await fetch(buildApiUrl('/auth/cf-access-logout/prepare'), {
         method: 'POST',
         headers,
         credentials: 'include',
       });
+      if (!response.ok) throw new Error('CF logout preparation failed');
     } catch {
       // The redirect endpoint repeats the cookie clear and remains the
       // authoritative fallback when this best-effort preflight is offline.

@@ -63,6 +63,7 @@ async function fillAndSubmit(email = 'jane@example.com', password = 'Sup3rSecure
 describe('LoginPage passkey MFA', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    currentInstalledSessionMock.mockReturnValue(true);
   });
 
   it('uses a passkey assertion instead of the six-digit MFA form when login returns mfaMethod passkey', async () => {
@@ -85,7 +86,11 @@ describe('LoginPage passkey MFA', () => {
 
     await waitFor(() => expect(apiVerifyPasskeyMFAMock).toHaveBeenCalled());
     expect(apiVerifyPasskeyMFAMock).toHaveBeenCalledWith('temp-passkey');
-    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
+    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc', { guard: expect.any(Function) });
+    const guard = vi.mocked(navigateTo).mock.calls[0]?.[1]?.guard;
+    expect(guard?.()).toBe(true);
+    currentInstalledSessionMock.mockReturnValue(false);
+    expect(guard?.()).toBe(false);
   });
 
   // #2153: when the primary method is TOTP but the account also has a passkey,
@@ -112,7 +117,11 @@ describe('LoginPage passkey MFA', () => {
 
     await waitFor(() => expect(apiVerifyPasskeyMFAMock).toHaveBeenCalled());
     expect(apiVerifyPasskeyMFAMock).toHaveBeenCalledWith('temp-totp');
-    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
+    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc', { guard: expect.any(Function) });
+    const guard = vi.mocked(navigateTo).mock.calls[0]?.[1]?.guard;
+    expect(guard?.()).toBe(true);
+    currentInstalledSessionMock.mockReturnValue(false);
+    expect(guard?.()).toBe(false);
   });
 
   // Guard: no passkey alternate when the account has none.

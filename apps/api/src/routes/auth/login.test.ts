@@ -278,6 +278,48 @@ async function postLogout() {
   });
 }
 
+describe('POST /cf-access-logout/prepare', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+  });
+
+  it('revokes both the access subject and a different refresh-cookie subject before clearing', async () => {
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-b');
+    vi.mocked(verifyToken).mockResolvedValue({
+      type: 'refresh', sub: 'user-2', jti: 'jti-b', fam: 'family-b',
+    } as never);
+
+    const res = await loginRoutes.request('/cf-access-logout/prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breeze-csrf': '1' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(revokeAllUserTokens).toHaveBeenCalledTimes(2);
+    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
+    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-2');
+    expect(revokeRefreshTokenJti).toHaveBeenCalledWith('jti-b');
+    expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
+  });
+
+  it('deduplicates same-user access and refresh subjects', async () => {
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-a');
+    vi.mocked(verifyToken).mockResolvedValue({
+      type: 'refresh', sub: 'user-1', jti: 'jti-a', fam: 'family-refresh-b',
+    } as never);
+
+    const res = await loginRoutes.request('/cf-access-logout/prepare', {
+      method: 'POST', headers: { 'x-breeze-csrf': '1' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(revokeAllUserTokens).toHaveBeenCalledOnce();
+    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
+    expect(revokeRefreshTokenJti).toHaveBeenCalledWith('jti-a');
+  });
+});
+
 describe('POST /logout — durable current-family revocation', () => {
   beforeEach(() => {
     vi.clearAllMocks();

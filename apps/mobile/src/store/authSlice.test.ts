@@ -112,6 +112,33 @@ describe('authenticated-session persistence boundary', () => {
     expect(store.getState().auth.user).toEqual(userB);
   });
 
+  it('immediately resets and wipes when logout supersedes a hung login', async () => {
+    api.login.mockImplementationOnce(() => new Promise(() => undefined));
+    const store = makeStore();
+    const loginA = store.dispatch(loginAsync({ email: userA.email, password: 'password' }));
+    await vi.waitFor(() => expect(api.login).toHaveBeenCalledOnce());
+
+    const logout = store.dispatch(logoutAsync());
+    expect(store.getState().auth.user).toBeNull();
+    expect(store.getState().auth.token).toBeNull();
+    await vi.waitFor(() => expect(auth.clearAuthData).toHaveBeenCalledOnce());
+    await expect(logout).resolves.toMatchObject({ type: 'auth/logout/fulfilled' });
+    await expect(loginA).resolves.toMatchObject({ type: 'auth/login/rejected' });
+  });
+
+  it('immediately resets and wipes when logout supersedes hung MFA verification', async () => {
+    api.verifyMfa.mockImplementationOnce(() => new Promise(() => undefined));
+    const store = makeStore();
+    const mfaA = store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'temp', method: 'totp' }));
+    await vi.waitFor(() => expect(api.verifyMfa).toHaveBeenCalledOnce());
+
+    const logout = store.dispatch(logoutAsync());
+    await vi.waitFor(() => expect(auth.clearAuthData).toHaveBeenCalledOnce());
+    await logout;
+    await expect(mfaA).resolves.toMatchObject({ type: 'auth/verifyMfa/rejected' });
+    expect(store.getState().auth.user).toBeNull();
+  });
+
   it('compensates and rejects when logout lands between token and user writes', async () => {
     let releaseToken!: () => void;
     auth.storeToken.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseToken = resolve; }));

@@ -1,6 +1,9 @@
 let generation = 0;
+let terminalEpoch = 0;
 let storageTail: Promise<void> = Promise.resolve();
 let sessionTransitionTail: Promise<void> = Promise.resolve();
+let cancelActiveTransition: (() => void) | null = null;
+const activeRequestControllers = new Set<AbortController>();
 
 export class SessionGenerationStaleError extends Error {
   constructor() {
@@ -20,6 +23,19 @@ export function isCurrentSessionGeneration(candidate: number): boolean {
 export function advanceSessionGeneration(): number {
   generation += 1;
   return generation;
+}
+
+export function terminateSessionGeneration(): number {
+  generation += 1;
+  terminalEpoch += 1;
+  cancelActiveTransition?.();
+  for (const controller of activeRequestControllers) controller.abort();
+  return generation;
+}
+
+export function registerAuthRequestController(controller: AbortController): () => void {
+  activeRequestControllers.add(controller);
+  return () => { activeRequestControllers.delete(controller); };
 }
 
 /** Serialize writes and wipes of the shared SecureStore auth keys. */
@@ -42,13 +58,24 @@ export async function runAuthStorageExclusive<T>(operation: () => Promise<T>): P
  * prevents a late account-A writer from diverging from the cookie's account.
  */
 export async function runAuthSessionTransition<T>(operation: () => Promise<T>): Promise<T> {
+  const invocationTerminalEpoch = terminalEpoch;
   const previous = sessionTransitionTail;
   let release!: () => void;
   sessionTransitionTail = new Promise<void>((resolve) => { release = resolve; });
   await previous.catch(() => undefined);
+  if (invocationTerminalEpoch !== terminalEpoch) {
+    release();
+    throw new SessionGenerationStaleError();
+  }
+  let cancel!: () => void;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    cancel = () => reject(new SessionGenerationStaleError());
+  });
+  cancelActiveTransition = cancel;
   try {
-    return await operation();
+    return await Promise.race([operation(), cancelled]);
   } finally {
+    if (cancelActiveTransition === cancel) cancelActiveTransition = null;
     release();
   }
 }

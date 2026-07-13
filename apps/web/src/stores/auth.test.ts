@@ -79,6 +79,8 @@ describe('auth store fetchWithAuth', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.removeItem('breeze-auth');
+    clearCfAccessLogoutIntent();
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
     document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
     useAuthStore.setState({
       user: null,
@@ -901,6 +903,8 @@ describe('auth API helpers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.removeItem('breeze-auth');
+    clearCfAccessLogoutIntent();
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
     document.cookie = 'breeze_csrf_token=csrf-test-token; path=/';
     useAuthStore.setState({
       user: null,
@@ -920,7 +924,7 @@ describe('auth API helpers', () => {
     const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/auth/logout')) {
+      if (url.endsWith('/auth/cf-access-logout/prepare')) {
         events.push('logout-start');
         return new Promise<Response>((resolve) => { resolveLogout = resolve; });
       }
@@ -941,6 +945,50 @@ describe('auth API helpers', () => {
     await expect(loginB).rejects.toBeInstanceOf(StaleWebSessionError);
     expect(events).toEqual(['logout-start', 'cf-navigate']);
     expect(useAuthStore.getState().user).toBeNull();
+    clearCfAccessLogoutIntent();
+  });
+
+  it('rechecks CF logout intent only after a delayed Web Lock is acquired', async () => {
+    let enterLock!: () => Promise<unknown>;
+    let resolveLock!: (value: unknown) => void;
+    let rejectLock!: (error: unknown) => void;
+    const request = vi.fn((_name: string, callback: () => Promise<unknown>) => {
+      enterLock = async () => {
+        try {
+          const value = await callback();
+          resolveLock(value);
+          return value;
+        } catch (error) {
+          rejectLock(error);
+          throw error;
+        }
+      };
+      return new Promise((resolve, reject) => { resolveLock = resolve; rejectLock = reject; });
+    });
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: { request } });
+    const operation = vi.fn().mockResolvedValue('issued');
+    const transition = withAuthSessionTransition(operation);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    localStorage.setItem('breeze-cf-access-logout-pending', String(Date.now()));
+
+    const transitionRejection = expect(transition).rejects.toBeInstanceOf(StaleWebSessionError);
+    await expect(enterLock()).rejects.toBeInstanceOf(StaleWebSessionError);
+    expect(operation).not.toHaveBeenCalled();
+    await transitionRejection;
+    clearCfAccessLogoutIntent();
+  });
+
+  it('rechecks intent after a no-lock getter changes terminal state', async () => {
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      get: () => {
+        localStorage.setItem('breeze-cf-access-logout-pending', String(Date.now()));
+        return undefined;
+      },
+    });
+    const operation = vi.fn().mockResolvedValue('issued');
+    await expect(withAuthSessionTransition(operation)).rejects.toBeInstanceOf(StaleWebSessionError);
+    expect(operation).not.toHaveBeenCalled();
     clearCfAccessLogoutIntent();
   });
 

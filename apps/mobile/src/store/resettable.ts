@@ -1,5 +1,5 @@
 import type { Reducer, UnknownAction } from '@reduxjs/toolkit';
-import { advanceSessionGeneration } from '../services/sessionGeneration';
+import { terminateSessionGeneration } from '../services/sessionGeneration';
 
 /**
  * Action types emitted on sign-out. Must cover EVERY terminal sign-out state
@@ -42,7 +42,7 @@ export function withLogoutReset<S>(appReducer: Reducer<S>): Reducer<S> {
 
   return (state: S | undefined, action: UnknownAction) => {
     if (LOGOUT_ACTION_TYPES.has(action.type)) {
-      advanceSessionGeneration();
+      terminateSessionGeneration();
       generation += 1;
       return appReducer(undefined, action);
     }

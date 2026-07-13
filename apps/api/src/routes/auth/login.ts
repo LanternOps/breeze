@@ -28,6 +28,7 @@ import {
   decideAuthenticatedUserSession,
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
+  revokeAllUserTokens,
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import { createHash } from 'crypto';
@@ -547,6 +548,39 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     mfaRequired: false,
     requiresSetup
   });
+});
+
+// Cloudflare Access logout preflight. Unlike ordinary family-scoped logout,
+// this terminal flow must revoke every token for both independently verified
+// subjects before clearing the origin-wide refresh cookie: a stale tab's
+// access token and the shared cookie may legitimately belong to different
+// accounts or different families.
+loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
+  const csrfError = validateCookieCsrfRequest(c);
+  if (csrfError) return c.json({ error: csrfError }, 403);
+
+  const auth = c.get('auth');
+  const subjects = new Set<string>([auth.user.id]);
+  let refreshJti: string | undefined;
+  const refreshToken = resolveRefreshToken(c);
+  if (refreshToken) {
+    const refreshPayload = await verifyToken(refreshToken);
+    if (refreshPayload?.type === 'refresh' && refreshPayload.sub) {
+      subjects.add(refreshPayload.sub);
+      refreshJti = refreshPayload.jti;
+    }
+  }
+
+  try {
+    await Promise.all([...subjects].map((userId) => revokeAllUserTokens(userId)));
+    if (refreshJti) await revokeRefreshTokenJti(refreshJti);
+  } catch (error) {
+    console.error('[cf-access-logout] Refusing terminal logout preparation because revocation failed:', error);
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  clearRefreshTokenCookie(c);
+  return c.json({ success: true });
 });
 
 // Logout

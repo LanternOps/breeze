@@ -3,10 +3,11 @@ import * as SecureStore from 'expo-secure-store';
 import { getServerUrl } from './serverConfig';
 import { getOrCreateInstallationId } from './installationId';
 import {
-  advanceSessionGeneration,
   captureSessionGeneration,
   isCurrentSessionGeneration,
   runAuthSessionTransition,
+  registerAuthRequestController,
+  terminateSessionGeneration,
 } from './sessionGeneration';
 export { captureSessionGeneration, isCurrentSessionGeneration } from './sessionGeneration';
 
@@ -268,14 +269,23 @@ async function requestWithPrefix<T>(
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
   assertCurrent();
   const url = `${baseUrl}${prefix}${endpoint}`;
-  const response = await fetch(url, {
-    ...options,
-    headers,
-    credentials: 'include',
-  });
-  assertCurrent();
+  const controller = new AbortController();
+  const unregisterController = registerAuthRequestController(controller);
+  const suppliedSignal = options.signal;
+  const abortFromSupplied = () => controller.abort();
+  suppliedSignal?.addEventListener('abort', abortFromSupplied, { once: true });
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      signal: controller.signal,
+      credentials: 'include',
+    });
+    assertCurrent();
 
-  if (!response.ok) {
+    if (!response.ok) {
     const body = await response.json().catch(() => ({} as Record<string, unknown>));
     assertCurrent();
     const code = typeof body.code === 'string' ? body.code : undefined;
@@ -291,27 +301,30 @@ async function requestWithPrefix<T>(
       code,
       statusCode: response.status
     };
-    throw error;
-  }
+      throw error;
+    }
 
   // Handle empty responses
-  const text = await response.text();
-  assertCurrent();
-  if (!text) {
-    return {} as T;
-  }
+    const text = await response.text();
+    assertCurrent();
+    if (!text) return {} as T;
 
-  const parsed = JSON.parse(text) as T & { reauthenticate?: unknown };
-  if (parsed && typeof parsed === 'object' && parsed.reauthenticate === true) {
-    advanceSessionGeneration();
-    notifyReauthenticationRequired();
-    throw {
-      message: 'Your security settings changed. Sign in again to continue.',
-      code: 'reauthentication_required',
-      statusCode: 401,
-    } as ApiError;
+    const parsed = JSON.parse(text) as T & { reauthenticate?: unknown };
+    if (parsed && typeof parsed === 'object' && parsed.reauthenticate === true) {
+      terminateSessionGeneration();
+      notifyReauthenticationRequired();
+      throw {
+        message: 'Your security settings changed. Sign in again to continue.',
+        code: 'reauthentication_required',
+        statusCode: 401,
+      } as ApiError;
+    }
+    return parsed;
+  } finally {
+    clearTimeout(timeout);
+    suppliedSignal?.removeEventListener('abort', abortFromSupplied);
+    unregisterController();
   }
-  return parsed;
 }
 
 async function request<T>(

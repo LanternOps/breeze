@@ -12,6 +12,7 @@ import {
 import { storeToken, storeUser, clearAuthData } from '../services/auth';
 import {
   advanceSessionGeneration,
+  terminateSessionGeneration,
   isCurrentSessionGeneration,
   runAuthSessionTransition,
   runAuthStorageExclusive,
@@ -105,7 +106,13 @@ export const verifyMfaAsync = createAsyncThunk(
 export const logoutAsync = createAsyncThunk(
   'auth/logout',
   async (_, { rejectWithValue }) => {
-    advanceSessionGeneration();
+    terminateSessionGeneration();
+    let wipeErrorMessage: string | undefined;
+    try {
+      await runAuthStorageExclusive(clearAuthData);
+    } catch (error: unknown) {
+      wipeErrorMessage = (error as { message?: string }).message || 'Secure wipe failed';
+    }
     return runAuthSessionTransition(async () => {
       // Best-effort server logout; we tear down local state regardless of its
       // outcome so the user always leaves the authenticated surface.
@@ -117,14 +124,9 @@ export const logoutAsync = createAsyncThunk(
         Sentry.captureException(error, { tags: { area: 'auth-logout-api' } });
       }
 
-      try {
-        await runAuthStorageExclusive(clearAuthData);
-      } catch (error: unknown) {
-        const wipeMessage = (error as { message?: string }).message || 'Secure wipe failed';
-        return rejectWithValue(apiErrorMessage ? `${apiErrorMessage}; ${wipeMessage}` : wipeMessage);
+      if (apiErrorMessage || wipeErrorMessage) {
+        return rejectWithValue([apiErrorMessage, wipeErrorMessage].filter(Boolean).join('; '));
       }
-
-      if (apiErrorMessage) return rejectWithValue(apiErrorMessage);
     });
   }
 );
@@ -217,6 +219,9 @@ const authSlice = createSlice({
       })
       .addCase(logoutAsync.pending, (state) => {
         state.isLoading = true;
+        state.user = null;
+        state.token = null;
+        state.mfaChallenge = null;
       })
       .addCase(logoutAsync.fulfilled, (state) => {
         state.user = null;

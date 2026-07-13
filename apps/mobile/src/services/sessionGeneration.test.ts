@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { runAuthSessionTransition } from './sessionGeneration';
+import { runAuthSessionTransition, terminateSessionGeneration } from './sessionGeneration';
 
 describe('runAuthSessionTransition', () => {
   it('preserves FIFO ordering and releases after rejection', async () => {
@@ -22,5 +22,25 @@ describe('runAuthSessionTransition', () => {
     await expect(first).rejects.toThrow('expected');
     await expect(second).resolves.toBe(2);
     expect(events).toEqual(['first-start', 'first-end', 'second']);
+  });
+
+  it('cancels a hung operation at a terminal generation boundary and releases the queue', async () => {
+    let started = false;
+    const hung = runAuthSessionTransition(() => {
+      started = true;
+      return new Promise<never>(() => undefined);
+    });
+    while (!started) await Promise.resolve();
+    terminateSessionGeneration();
+    const hungOutcome = await Promise.race([
+      hung.then(() => 'resolved', (error) => (error as Error).name),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out-hung'), 100)),
+    ]);
+    expect(hungOutcome).toBe('SessionGenerationStaleError');
+    const nextOutcome = await Promise.race([
+      runAuthSessionTransition(async () => 'next'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out-next'), 100)),
+    ]);
+    expect(nextOutcome).toBe('next');
   });
 });
