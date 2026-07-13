@@ -211,7 +211,7 @@ describe('BackupTab', () => {
       />
     );
 
-    await screen.findByText('Primary S3 (Amazon S3)');
+    await screen.findByText('Primary S3');
     fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
     expect(await screen.findByText(/Add at least one backup path/i)).toBeTruthy();
@@ -235,7 +235,7 @@ describe('BackupTab', () => {
       />
     );
 
-    await screen.findByText('Primary S3 (Amazon S3)');
+    await screen.findByText('Primary S3');
     const pathInput = screen.getByPlaceholderText(/C:\\Users/i);
     fireEvent.change(pathInput, { target: { value: '/Users' } });
     fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
@@ -287,12 +287,16 @@ describe('BackupTab', () => {
       />
     );
 
-    await screen.findByText('Primary S3 (Amazon S3)');
+    await screen.findByText('Primary S3');
     fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
     expect(await screen.findByText(/Editing storage configuration/i)).toBeTruthy();
+    // The picker grid must be swapped out while editing so selection and the
+    // edit target cannot desync.
+    expect(screen.queryByRole('radio', { name: 'Primary S3' })).toBeNull();
 
     const regionInput = screen.getByPlaceholderText(/us-east-1/i);
     fireEvent.change(regionInput, { target: { value: 'us-west-004' } });
+    fireEvent.click(screen.getByRole('switch', { name: /Server-side encryption/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
     await waitFor(() => {
@@ -305,14 +309,77 @@ describe('BackupTab', () => {
       ([url, init]) => String(url) === '/backup/configs/config-1' && (init as RequestInit)?.method === 'PATCH',
     );
     const patchBody = JSON.parse(String((patchCall?.[1] as RequestInit).body));
+    expect(patchBody.encryption).toBe(true);
     expect(patchBody.details).toMatchObject({
       bucket: 'backups',
       region: 'us-west-004',
       endpoint: 's3.us-west-004.backblazeb2.com',
       accessKey: '********',
       secretKey: '********',
+      // Enabling encryption without a stored algorithm defaults to SSE-S3 so
+      // the API's assertBackupStorageEncryptionSupported accepts the config.
+      serverSideEncryption: 'AES256',
     });
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
+  });
+
+  it('preserves stored SSE settings through an unrelated edit', async () => {
+    const encryptedConfig = {
+      ...baseConfig,
+      encryption: { enabled: true, status: 'enforced', mode: 's3-sse-kms' },
+      details: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        serverSideEncryption: 'aws:kms',
+        kmsKeyId: 'key-1',
+        accessKey: { redacted: true, hasSecret: true, masked: '********' },
+        secretKey: { redacted: true, hasSecret: true, masked: '********' },
+      },
+    };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ data: [encryptedConfig] });
+      }
+      if (url === '/backup/configs/config-1' && method === 'PATCH') {
+        return makeJsonResponse(encryptedConfig);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={baseLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3');
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
+    const nameInput = await screen.findByPlaceholderText(/Production S3 Backups/i);
+    fireEvent.change(nameInput, { target: { value: 'Renamed S3' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/backup/configs/config-1',
+        expect.objectContaining({ method: 'PATCH' }),
+      );
+    });
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === '/backup/configs/config-1' && (init as RequestInit)?.method === 'PATCH',
+    );
+    const patchBody = JSON.parse(String((patchCall?.[1] as RequestInit).body));
+    // A rename must not strip SSE settings — the API's encryption re-check
+    // rejects an encrypted config whose algorithm/key went missing.
+    expect(patchBody.details).toMatchObject({
+      serverSideEncryption: 'aws:kms',
+      kmsKeyId: 'key-1',
+    });
+    expect(patchBody.encryption).toBe(true);
   });
 
   it('blocks s3 create when region is empty and not derivable from the endpoint', async () => {
@@ -382,5 +449,127 @@ describe('BackupTab', () => {
 
     const regionInput = screen.getByPlaceholderText(/us-east-1/i) as HTMLInputElement;
     expect(regionInput.value).toBe('us-west-004');
+  });
+
+  it('seeds paths and exclusions from an OS preset and saves them', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={{
+          ...baseLink,
+          inlineSettings: {
+            ...baseLink.inlineSettings,
+            targets: { paths: [], excludes: [] },
+            paths: [],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3');
+    fireEvent.click(screen.getByRole('button', { name: /Windows user data/i }));
+
+    // Preset lands as ordinary editable chips
+    expect(screen.getByText('C:\\Users')).toBeTruthy();
+    expect(screen.getByText('$RECYCLE.BIN/**')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(saveMock).toHaveBeenCalledWith(
+      'link-1',
+      expect.objectContaining({
+        inlineSettings: expect.objectContaining({
+          paths: ['C:\\Users'],
+          targets: expect.objectContaining({
+            paths: ['C:\\Users'],
+            excludes: expect.arrayContaining([
+              '**/AppData/Local/Temp/**',
+              '$RECYCLE.BIN/**',
+            ]),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('asks before discarding type-specific targets on a backup type switch', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={{
+          ...baseLink,
+          inlineSettings: {
+            ...baseLink.inlineSettings,
+            backupMode: 'hyperv',
+            targets: { consistencyType: 'crash' },
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3');
+    expect(screen.getByText(/Consistency Type/i)).toBeTruthy();
+
+    // Keep current cancels the switch
+    fireEvent.click(screen.getByRole('button', { name: /File Backup/i }));
+    expect(await screen.findByText(/Switch backup type\?/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Keep current/i }));
+    expect(screen.queryByText(/Switch backup type\?/i)).toBeNull();
+    expect(screen.getByText(/Consistency Type/i)).toBeTruthy();
+
+    // Switch and clear applies it
+    fireEvent.click(screen.getByRole('button', { name: /File Backup/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Switch and clear/i }));
+    expect(screen.queryByText(/Consistency Type/i)).toBeNull();
+    expect(screen.getByText('Exclusion Patterns')).toBeTruthy();
+  });
+
+  it('hides GFS and backup window behind the advanced disclosure by default', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={baseLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3');
+    expect(screen.queryByText('GFS Retention')).toBeNull();
+    expect(screen.queryByText('Backup Window')).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Advanced retention & timing/i }),
+    );
+    expect(screen.getByText('GFS Retention')).toBeTruthy();
+    expect(screen.getByText('Backup Window')).toBeTruthy();
+  });
+
+  it('auto-opens the advanced disclosure when saved settings use it', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={{
+          ...baseLink,
+          inlineSettings: {
+            ...baseLink.inlineSettings,
+            schedule: {
+              ...(baseLink.inlineSettings.schedule as Record<string, unknown>),
+              windowStart: '01:00',
+              windowEnd: '05:00',
+            },
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3');
+    expect(screen.getByText('Backup Window')).toBeTruthy();
   });
 });
