@@ -19,9 +19,11 @@ export function bodyLimitForPath(path: string): { maxSize: number; error: string
   if (path.match(/^\/api\/v1\/remote\/transfers\/[^/]+\/chunks$/)) {
     return { maxSize: 50 * 1024 * 1024, error: 'Chunk too large (max 50MB)' };
   }
-  // File browser uploads send base64-encoded content in JSON body (~33% overhead).
+  // File browser uploads send base64-encoded content in JSON body (~33%
+  // overhead). The agent caps file_write at 4MB decoded (~5.6MB base64, see
+  // fileUploadBodySchema); 8MB covers that plus JSON envelope/escaping.
   if (path.match(/^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/)) {
-    return { maxSize: 50 * 1024 * 1024, error: 'File too large (max ~37MB)' };
+    return { maxSize: 8 * 1024 * 1024, error: 'File too large (max 4MB); use file transfer for larger files' };
   }
   // Software package (installer) uploads are multipart and capped at 500MB by the
   // route's own MAX_UPLOAD_SIZE check; give the body limit headroom over that so the

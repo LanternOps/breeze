@@ -14,8 +14,16 @@ import (
 
 const (
 	// maxFileReadSize is the maximum file size for reading (1MB)
-	maxFileReadSize      = 1024 * 1024
-	maxFileWriteSize     = 4 * 1024 * 1024
+	maxFileReadSize = 1024 * 1024
+	// MaxFileWriteSize is the maximum decoded size a file_write command may
+	// carry (~5.46MB base64-encoded on the wire). Exported because the
+	// websocket read limit (websocket.maxMessageSize) is derived from it —
+	// bumping this constant forces reconsideration of that limit via
+	// TestMaxMessageSizeCoversLargestLegitimateFrame. The API-side upload
+	// schema (apps/api/src/routes/systemTools/schemas.ts fileUploadBodySchema)
+	// mirrors this cap; larger transfers use the chunked HTTP file-transfer
+	// endpoints instead.
+	MaxFileWriteSize     = 4 * 1024 * 1024
 	defaultFileListLimit = 1000
 	maxFileListLimit     = 5000
 	maxTrashListItems    = 500
@@ -345,8 +353,8 @@ func WriteFile(payload map[string]any) CommandResult {
 	// Decode content based on encoding
 	var data []byte
 	if encoding == "base64" {
-		if len(content) > base64.StdEncoding.EncodedLen(maxFileWriteSize) {
-			return NewErrorResult(fmt.Errorf("file write payload too large (max %d bytes decoded)", maxFileWriteSize), time.Since(start).Milliseconds())
+		if len(content) > base64.StdEncoding.EncodedLen(MaxFileWriteSize) {
+			return NewErrorResult(fmt.Errorf("file write payload too large (max %d bytes decoded)", MaxFileWriteSize), time.Since(start).Milliseconds())
 		}
 		var err error
 		data, err = base64.StdEncoding.DecodeString(content)
@@ -356,8 +364,8 @@ func WriteFile(payload map[string]any) CommandResult {
 	} else {
 		data = []byte(content)
 	}
-	if len(data) > maxFileWriteSize {
-		return NewErrorResult(fmt.Errorf("file write payload too large: %d bytes (max %d bytes)", len(data), maxFileWriteSize), time.Since(start).Milliseconds())
+	if len(data) > MaxFileWriteSize {
+		return NewErrorResult(fmt.Errorf("file write payload too large: %d bytes (max %d bytes)", len(data), MaxFileWriteSize), time.Since(start).Milliseconds())
 	}
 
 	// Write file

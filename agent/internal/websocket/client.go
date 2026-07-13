@@ -22,10 +22,21 @@ import (
 var log = logging.L("websocket")
 
 const (
-	writeWait      = 10 * time.Second
-	pongWait       = 60 * time.Second
-	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 64 * 1024 * 1024 // 64MB — file_write commands carry base64 content
+	writeWait  = 10 * time.Second
+	pongWait   = 60 * time.Second
+	pingPeriod = (pongWait * 9) / 10
+	// maxMessageSize bounds inbound WS frames via conn.SetReadLimit. Exceeding
+	// it is NOT a graceful rejection: gorilla returns ErrReadLimit and closes
+	// the connection, forcing a reconnect — so keep generous headroom over the
+	// largest legitimate frame. Audited 2026-07 (issue #2399): the largest
+	// legit server→agent frame is a file_write command at ~5.6MB (4MB decoded
+	// cap, tools.MaxFileWriteSize, base64-encoded + JSON envelope); the
+	// "connected" welcome frame's pending-command batch is budgeted
+	// server-side to 6MB of payloads. Everything else (http_request ~1.37MB,
+	// tunnel_data ~1.33MB, scripts 1MB, terminal input 256KB, desktop SDP
+	// 64KB) is far smaller. 16MB ≈ 2.8x the largest legit frame; the
+	// relationship is pinned by TestMaxMessageSizeCoversLargestLegitimateFrame.
+	maxMessageSize = 16 * 1024 * 1024
 	initialBackoff = 1 * time.Second
 	maxBackoff     = 60 * time.Second
 	backoffFactor  = 2.0

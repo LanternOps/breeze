@@ -270,7 +270,7 @@ func TestWriteFileRejectsOversizedTextPayload(t *testing.T) {
 
 	result := WriteFile(map[string]any{
 		"path":    target,
-		"content": strings.Repeat("x", maxFileWriteSize+1),
+		"content": strings.Repeat("x", MaxFileWriteSize+1),
 	})
 
 	if result.Status != "failed" {
@@ -284,7 +284,7 @@ func TestWriteFileRejectsOversizedTextPayload(t *testing.T) {
 func TestWriteFileRejectsOversizedBase64Payload(t *testing.T) {
 	tmpDir := t.TempDir()
 	target := filepath.Join(tmpDir, "too-large.bin")
-	data := make([]byte, maxFileWriteSize+1)
+	data := make([]byte, MaxFileWriteSize+1)
 
 	result := WriteFile(map[string]any{
 		"path":     target,

@@ -1612,6 +1612,15 @@ async function processCommandResult(
 }
 
 /**
+ * Cumulative serialized-payload budget for a pending-command batch delivered
+ * over the agent WebSocket in a single frame. The agent's WS read limit is
+ * 16MB and the largest single command payload is a file_write at ~5.6MB
+ * (base64 of the 4MB agent cap, see fileUploadBodySchema); 6MB of payloads
+ * plus JSON envelope keeps the worst-case frame comfortably under the limit.
+ */
+const WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES = 6 * 1024 * 1024;
+
+/**
  * Get pending commands for an agent
  */
 async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
@@ -1644,7 +1653,15 @@ async function getPendingCommands(agentId: string): Promise<AgentCommand[]> {
       return [];
     }
 
-    const commands = await claimPendingCommandsForDevice(device.id, 10);
+    // The claimed batch is delivered to the agent in a single WS frame
+    // (`connected` welcome / `heartbeat_ack`), which must stay under the
+    // agent's 16MB read limit — exceeding it kills the connection instead of
+    // rejecting the frame (agent/internal/websocket/client.go, issue #2399).
+    // Budget the batch's cumulative payload size; commands over budget stay
+    // pending and are picked up by a later heartbeat/claim cycle.
+    const commands = await claimPendingCommandsForDevice(device.id, 10, 'agent', {
+      maxTotalPayloadBytes: WS_PENDING_COMMAND_PAYLOAD_BUDGET_BYTES,
+    });
 
     // Decrypt sensitive command payloads (e.g. FileVault rotation credentials)
     // just-in-time. WS-connected agents receive pending commands through this
