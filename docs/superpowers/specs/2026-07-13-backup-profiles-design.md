@@ -1,6 +1,6 @@
 # Backup Profiles — Design Spec
 
-**Status:** Proposed (design confirmed with Todd 2026-07-13, not yet scheduled)
+**Status:** Implemented (branch `ToddHebebrand/backup-profiles`, 2026-07-13 — phases 1+2). Deviations: selection keys match backupModeEnum (`system_image`, not `system_state`); missing-destination job creation logs a loud worker error + UI warning instead of a failed job row (backup_jobs.config_id is NOT NULL); volumes/drive-letters remain phase 3.
 **Depends on:** PR #2415 (Backup tab redesign — four-group layout; the Source group is the swap point)
 **Related:** `2026-07-12-backup-tab-redesign-brief.md`, epic #2135 (partner-wide first)
 
