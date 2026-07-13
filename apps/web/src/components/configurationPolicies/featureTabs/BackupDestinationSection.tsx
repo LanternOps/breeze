@@ -12,6 +12,7 @@ import {
 import { deriveS3RegionFromEndpoint } from "@breeze/shared";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { i18n } from "@/lib/i18n";
+import { ToggleRow, FieldError } from "./backupTabPrimitives";
 
 // ── Shared types ───────────────────────────────────────────────────────────────
 export type BackupProvider = "s3" | "local";
@@ -53,6 +54,14 @@ export type ConfigFormState = {
   prefix: string;
   localPath: string;
   encryption: boolean;
+  // SSE settings carried through edits so a rename/region fix never strips
+  // serverSideEncryption/kmsKeyId from an encrypted config (the API's
+  // preserveSecretFields only re-merges secret keys, and its encryption
+  // re-check 400s when they go missing). Enabling encryption on a config
+  // without an algorithm defaults to SSE-S3 (AES256) — the only mode the
+  // API can enforce without a KMS key.
+  sseAlgorithm: string | null;
+  kmsKeyId: string | null;
 };
 
 export const emptyConfigForm: ConfigFormState = {
@@ -67,6 +76,8 @@ export const emptyConfigForm: ConfigFormState = {
   prefix: "",
   localPath: "/var/backups/breeze",
   encryption: false,
+  sseAlgorithm: null,
+  kmsKeyId: null,
 };
 
 export type DestinationMode = "select" | "create" | "edit";
@@ -125,12 +136,6 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 export function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
-}
-
-// ── Field primitives ───────────────────────────────────────────────────────────
-function FieldError({ message }: { message?: string }) {
-  if (!message) return null;
-  return <p className="mt-1 text-xs text-destructive">{message}</p>;
 }
 
 function objectLockText(config: BackupConfig): string {
@@ -206,7 +211,8 @@ function DestinationCard({
           <span className="truncate text-sm font-medium">{config.name}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {config.encryption?.enabled === true && (
+          {config.encryption?.enabled === true &&
+            config.encryption?.status !== "unsupported" && (
             <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
               <Lock className="h-3 w-3" />
               {i18n.t(
@@ -364,7 +370,10 @@ export default function BackupDestinationSection({
         </div>
       )}
 
-      {configs.length > 0 && (
+      {/* The picker and the create/edit form are mutually exclusive: leaving the
+          cards clickable while the form edits a specific config lets selection
+          and edit target silently desync. */}
+      {configs.length > 0 && !showForm && (
         <div className="grid gap-3 sm:grid-cols-2" role="radiogroup">
           {configs.map((config) => (
             <DestinationCard
@@ -377,18 +386,16 @@ export default function BackupDestinationSection({
               testStatus={config.id === selectedConfigId ? testStatus : "idle"}
             />
           ))}
-          {!showForm && (
-            <button
-              type="button"
-              onClick={onStartCreate}
-              className="flex min-h-24 flex-col items-center justify-center gap-1 rounded-md border border-dashed p-3 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-primary"
-            >
-              <Plus className="h-4 w-4" />
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.newDestination",
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onStartCreate}
+            className="flex min-h-24 flex-col items-center justify-center gap-1 rounded-md border border-dashed p-3 text-sm text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+          >
+            <Plus className="h-4 w-4" />
+            {i18n.t(
+              "policies:configurationPolicies.featureTabs.backupTab.newDestination",
+            )}
+          </button>
         </div>
       )}
 
@@ -707,34 +714,20 @@ export default function BackupDestinationSection({
             </div>
           )}
 
-          <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
-            <div>
-              <p className="text-sm font-medium">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.encryptionLabel",
-                )}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.encryptionDescription",
-                )}
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={form.encryption}
-              aria-label={i18n.t(
+          {/* Encryption is enforceable only for S3 (SSE); the API rejects it for
+              local paths, so don't offer a control that can never save. */}
+          {form.provider === "s3" && (
+            <ToggleRow
+              label={i18n.t(
                 "policies:configurationPolicies.featureTabs.backupTab.encryptionLabel",
               )}
-              onClick={() => onFormChange({ encryption: !form.encryption })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full border transition focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${form.encryption ? "bg-emerald-500/80" : "bg-muted"}`}
-            >
-              <span
-                className={`inline-block h-5 w-5 rounded-full bg-white transition ${form.encryption ? "translate-x-5" : "translate-x-1"}`}
-              />
-            </button>
-          </div>
+              description={i18n.t(
+                "policies:configurationPolicies.featureTabs.backupTab.encryptionDescription",
+              )}
+              checked={form.encryption}
+              onChange={(checked) => onFormChange({ encryption: checked })}
+            />
+          )}
         </div>
       )}
     </div>

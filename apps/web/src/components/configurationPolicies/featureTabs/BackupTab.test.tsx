@@ -290,10 +290,13 @@ describe('BackupTab', () => {
     await screen.findByText('Primary S3');
     fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
     expect(await screen.findByText(/Editing storage configuration/i)).toBeTruthy();
+    // The picker grid must be swapped out while editing so selection and the
+    // edit target cannot desync.
+    expect(screen.queryByRole('radio', { name: 'Primary S3' })).toBeNull();
 
     const regionInput = screen.getByPlaceholderText(/us-east-1/i);
     fireEvent.change(regionInput, { target: { value: 'us-west-004' } });
-    fireEvent.click(screen.getByRole('switch', { name: /Client-side encryption/i }));
+    fireEvent.click(screen.getByRole('switch', { name: /Server-side encryption/i }));
     fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
     await waitFor(() => {
@@ -313,8 +316,70 @@ describe('BackupTab', () => {
       endpoint: 's3.us-west-004.backblazeb2.com',
       accessKey: '********',
       secretKey: '********',
+      // Enabling encryption without a stored algorithm defaults to SSE-S3 so
+      // the API's assertBackupStorageEncryptionSupported accepts the config.
+      serverSideEncryption: 'AES256',
     });
     await waitFor(() => expect(saveMock).toHaveBeenCalled());
+  });
+
+  it('preserves stored SSE settings through an unrelated edit', async () => {
+    const encryptedConfig = {
+      ...baseConfig,
+      encryption: { enabled: true, status: 'enforced', mode: 's3-sse-kms' },
+      details: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        serverSideEncryption: 'aws:kms',
+        kmsKeyId: 'key-1',
+        accessKey: { redacted: true, hasSecret: true, masked: '********' },
+        secretKey: { redacted: true, hasSecret: true, masked: '********' },
+      },
+    };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ data: [encryptedConfig] });
+      }
+      if (url === '/backup/configs/config-1' && method === 'PATCH') {
+        return makeJsonResponse(encryptedConfig);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={baseLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3');
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
+    const nameInput = await screen.findByPlaceholderText(/Production S3 Backups/i);
+    fireEvent.change(nameInput, { target: { value: 'Renamed S3' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/backup/configs/config-1',
+        expect.objectContaining({ method: 'PATCH' }),
+      );
+    });
+    const patchCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === '/backup/configs/config-1' && (init as RequestInit)?.method === 'PATCH',
+    );
+    const patchBody = JSON.parse(String((patchCall?.[1] as RequestInit).body));
+    // A rename must not strip SSE settings — the API's encryption re-check
+    // rejects an encrypted config whose algorithm/key went missing.
+    expect(patchBody.details).toMatchObject({
+      serverSideEncryption: 'aws:kms',
+      kmsKeyId: 'key-1',
+    });
+    expect(patchBody.encryption).toBe(true);
   });
 
   it('blocks s3 create when region is empty and not derivable from the endpoint', async () => {

@@ -27,6 +27,7 @@ import type {
 } from "./BackupDestinationSection";
 import { createOsPresets, createExclusionGroups } from "./backupTabPresets";
 import type { BackupOsPreset } from "./backupTabPresets";
+import { ToggleRow, FieldError } from "./backupTabPrimitives";
 import { deriveS3RegionFromEndpoint } from "@breeze/shared";
 import { fetchWithAuth } from "../../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
@@ -288,39 +289,6 @@ function SectionGroup({
       </div>
       <div className="mt-4 space-y-5">{children}</div>
     </section>
-  );
-}
-
-function ToggleRow({
-  label,
-  description,
-  checked,
-  onChange,
-}: {
-  label: string;
-  description: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
-      <div>
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs text-muted-foreground">{description}</p>
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 items-center rounded-full border transition focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${checked ? "bg-emerald-500/80" : "bg-muted"}`}
-      >
-        <span
-          className={`inline-block h-5 w-5 rounded-full bg-white transition ${checked ? "translate-x-5" : "translate-x-1"}`}
-        />
-      </button>
-    </div>
   );
 }
 
@@ -603,12 +571,10 @@ export default function BackupTab({
       effectiveLink?.inlineSettings as Record<string, unknown> | null,
     ),
   );
+  // Initializer runs on mount only, when `settings` still holds the freshly
+  // inflated value from the line above.
   const [advancedOpen, setAdvancedOpen] = useState(() =>
-    hasAdvancedValues(
-      inflateSettings(
-        effectiveLink?.inlineSettings as Record<string, unknown> | null,
-      ),
-    ),
+    hasAdvancedValues(settings),
   );
 
   // Backup mode and targets
@@ -788,17 +754,24 @@ export default function BackupTab({
   };
 
   // ── Create / edit config via API ───────────────────────────────────────────
-  const buildProviderDetails = (): Record<string, unknown> =>
-    configForm.provider === "s3"
-      ? {
-          bucket: configForm.bucket,
-          region: configForm.region.trim(),
-          accessKey: configForm.accessKey,
-          secretKey: configForm.secretKey,
-          ...(configForm.endpoint ? { endpoint: configForm.endpoint } : {}),
-          ...(configForm.prefix ? { prefix: configForm.prefix } : {}),
-        }
-      : { path: configForm.localPath };
+  const buildProviderDetails = (): Record<string, unknown> => {
+    if (configForm.provider !== "s3") return { path: configForm.localPath };
+    // Carry stored SSE settings through every edit (the API drops non-secret
+    // keys missing from the payload, then 400s its encryption re-check).
+    // Enabling encryption without a stored algorithm defaults to SSE-S3.
+    const sseAlgorithm =
+      configForm.sseAlgorithm ?? (configForm.encryption ? "AES256" : null);
+    return {
+      bucket: configForm.bucket,
+      region: configForm.region.trim(),
+      accessKey: configForm.accessKey,
+      secretKey: configForm.secretKey,
+      ...(configForm.endpoint ? { endpoint: configForm.endpoint } : {}),
+      ...(configForm.prefix ? { prefix: configForm.prefix } : {}),
+      ...(sseAlgorithm ? { serverSideEncryption: sseAlgorithm } : {}),
+      ...(configForm.kmsKeyId ? { kmsKeyId: configForm.kmsKeyId } : {}),
+    };
+  };
 
   const createConfig = async (): Promise<string | null> => {
     setConfigError(undefined);
@@ -857,6 +830,11 @@ export default function BackupTab({
       localPath:
         typeof details.path === "string" ? details.path : "/var/backups/breeze",
       encryption: config.encryption?.enabled === true,
+      sseAlgorithm:
+        typeof details.serverSideEncryption === "string"
+          ? details.serverSideEncryption
+          : null,
+      kmsKeyId: typeof details.kmsKeyId === "string" ? details.kmsKeyId : null,
     });
     setConfigError(undefined);
     setFieldErrors({});
@@ -1085,10 +1063,9 @@ export default function BackupTab({
   ];
 
   const showPresetCards = backupMode === "file" && settings.paths.length === 0;
-  const compactPresets =
-    backupMode === "file" &&
-    settings.paths.length > 0 &&
-    osPresets.filter((p) => p.paths.some((x) => !settings.paths.includes(x)));
+  const remainingPresets = osPresets.filter((p) =>
+    p.paths.some((x) => !settings.paths.includes(x)),
+  );
 
   return (
     <FeatureTabShell
@@ -1429,20 +1406,16 @@ export default function BackupTab({
                       "policies:configurationPolicies.featureTabs.backupTab.noPathsConfigured",
                     )}
                   />
-                  {fieldErrors.paths && (
-                    <p className="mt-1 text-xs text-destructive">
-                      {fieldErrors.paths}
-                    </p>
-                  )}
+                  <FieldError message={fieldErrors.paths} />
                 </div>
-                {compactPresets && compactPresets.length > 0 && (
+                {settings.paths.length > 0 && remainingPresets.length > 0 && (
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
                     <span className="chart-legend-xs text-muted-foreground">
                       {i18n.t(
                         "policies:configurationPolicies.featureTabs.backupTab.addPreset",
                       )}
                     </span>
-                    {compactPresets.map((preset) => (
+                    {remainingPresets.map((preset) => (
                       <button
                         key={preset.id}
                         type="button"

@@ -29,4 +29,8 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   'apps/web/src/components/alerts/AlertTemplateList.tsx',
   // AlertsPage.tsx migrated to runAction (#1300) — now in TARGET_GLOBS.
   // CorrelatedAlertGroups.tsx migrated to runAction — now in TARGET_GLOBS.
+  // Backup feature tab: config create/update/test surface outcomes via the
+  // FeatureTabShell error banner + per-field errors (inline error UI), but the
+  // fetchWithAuth mutations are not yet routed through runAction.
+  'apps/web/src/components/configurationPolicies/featureTabs/BackupTab.tsx',
 ];
