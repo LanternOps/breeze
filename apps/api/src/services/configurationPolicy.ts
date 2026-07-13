@@ -2033,13 +2033,14 @@ export async function validateFeaturePolicyExists(
         return { valid: true };
       }
     }
-    if (owner.orgId) {
+    const ownerOrgId = owner.orgId;
+    if (ownerOrgId) {
       const [config] = await runOutsideDbContext(() =>
         withSystemDbAccessContext(() =>
           db
             .select({ id: backupConfigs.id })
             .from(backupConfigs)
-            .where(and(eq(backupConfigs.id, featurePolicyId), eq(backupConfigs.orgId, owner.orgId)))
+            .where(and(eq(backupConfigs.id, featurePolicyId), eq(backupConfigs.orgId, ownerOrgId)))
             .limit(1)
         )
       );

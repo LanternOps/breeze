@@ -408,4 +408,87 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     ]);
     expect(entry!.selectionError).toBeNull();
   });
+
+  // A partner-wide policy is visible to EVERY org under the partner, so its
+  // assignment can name a target in a different org. Resolving org A must never
+  // return org B's devices: the worker runs in a system context (no RLS
+  // backstop) and a partner-wide link has no pinned destination, so org B's
+  // devices would be backed up into ORG A's storage bucket, with the
+  // backup_jobs rows filed under org A for A's admins to see.
+  it('CROSS-ORG ISOLATION: an org-level assignment to org B contributes NO devices when resolving org A', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const profileId = await seedPartnerProfile(partner.id);
+    const { policy, link } = await seedPartnerPolicyWithLink(partner.id, profileId);
+
+    const { deviceB } = await withDbAccessContext(SYSTEM_CTX, async () => {
+      // Org A has a default destination — the bucket org B's data would land in.
+      const [configA] = await db
+        .insert(backupConfigs)
+        .values({
+          orgId: orgA.id,
+          name: 'Org A default',
+          type: 'file',
+          provider: 's3',
+          providerConfig: { bucket: 'org-a-bucket', region: 'us-east-1' },
+          isDefault: true,
+        })
+        .returning();
+      createdConfigs.push(configA!.id);
+
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: link.id,
+        orgId: null,
+        partnerId: partner.id,
+        schedule: { frequency: 'daily', time: '03:00' },
+        retention: { preset: 'standard' },
+        backupProfileId: profileId,
+      });
+
+      // The partner-wide policy is assigned at ORGANIZATION level to org B only.
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: policy.id,
+        level: 'organization',
+        targetId: orgB.id,
+        priority: 100,
+      });
+
+      const [siteB] = await db.insert(sites).values({ orgId: orgB.id, name: 'B HQ' }).returning();
+      createdSites.push(siteB!.id);
+      const [device] = await db
+        .insert(devices)
+        .values({
+          orgId: orgB.id,
+          siteId: siteB!.id,
+          agentId: `agent-${siteB!.id.slice(0, 18)}`,
+          hostname: 'orgb-srv',
+          osType: 'windows',
+          osVersion: '10.0',
+          architecture: 'x64',
+          agentVersion: '1.0.0',
+        })
+        .returning();
+      createdDevices.push(device!.id);
+      return { deviceB: device!.id };
+    });
+
+    // Resolve in a SYSTEM context — the scheduler's. This is the context that
+    // makes the bug exploitable (no RLS backstop), and running it here is what
+    // keeps the assertion honest: outside a context, RLS would deny the device
+    // reads and org A would come back empty for the wrong reason.
+    const { entriesForA, entriesForB } = await withDbAccessContext(SYSTEM_CTX, async () => ({
+      entriesForA: await resolveAllBackupAssignedDevices(orgA.id),
+      entriesForB: await resolveAllBackupAssignedDevices(orgB.id),
+    }));
+
+    // Org A: the policy matches (partner-wide) but its assignment targets org B,
+    // so it must contribute NO devices — least of all org B's.
+    expect(entriesForA.find((e) => e.deviceId === deviceB)).toBeUndefined();
+    expect(entriesForA).toEqual([]);
+
+    // Positive control: the same assignment DOES cover org B's own device, so
+    // the guard blocks the cross-org bleed without breaking the real fan-out.
+    expect(entriesForB.find((e) => e.deviceId === deviceB)).toBeTruthy();
+  });
 });

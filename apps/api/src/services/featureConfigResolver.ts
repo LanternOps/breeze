@@ -1490,16 +1490,35 @@ export async function resolveAllBackupAssignedDevices(
   for (const row of sorted) {
     let deviceIds: string[];
 
+    // EVERY branch must re-tenant to `orgId`. A partner-wide policy is visible
+    // to every org under the partner, so its assignment can name a target in a
+    // DIFFERENT org (e.g. an org-level assignment to org B, resolved here for
+    // org A). Returning that target's devices would attribute org B's devices
+    // to org A — and since a partner-wide link pins no destination, the worker
+    // would back them up into org A's storage bucket and file the backup_jobs
+    // rows under org A. The worker runs in a system context, so RLS is NOT a
+    // backstop here: this function must tenant itself.
     switch (row.assignmentLevel) {
       case 'device': {
-        deviceIds = [row.assignmentTargetId];
+        const [device] = await db
+          .select({ id: devices.id })
+          .from(devices)
+          .where(and(eq(devices.id, row.assignmentTargetId), eq(devices.orgId, orgId)))
+          .limit(1);
+        deviceIds = device ? [device.id] : [];
         break;
       }
       case 'device_group': {
         const members = await db
-          .select({ deviceId: deviceGroupMemberships.deviceId })
+          .select({ deviceId: devices.id })
           .from(deviceGroupMemberships)
-          .where(eq(deviceGroupMemberships.groupId, row.assignmentTargetId));
+          .innerJoin(devices, eq(devices.id, deviceGroupMemberships.deviceId))
+          .where(
+            and(
+              eq(deviceGroupMemberships.groupId, row.assignmentTargetId),
+              eq(devices.orgId, orgId)
+            )
+          );
         deviceIds = members.map((m) => m.deviceId);
         break;
       }
@@ -1512,10 +1531,15 @@ export async function resolveAllBackupAssignedDevices(
         break;
       }
       case 'organization': {
+        // An org-level assignment contributes devices ONLY to the org it names.
+        if (row.assignmentTargetId !== orgId) {
+          deviceIds = [];
+          break;
+        }
         const orgDevices = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(eq(devices.orgId, row.assignmentTargetId));
+          .where(eq(devices.orgId, orgId));
         deviceIds = orgDevices.map((d) => d.id);
         break;
       }
