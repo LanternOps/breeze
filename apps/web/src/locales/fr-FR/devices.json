@@ -647,7 +647,7 @@
     "noCandidatesAvailable": "Aucun candidat disponible."
   },
   "deviceFilterToolbar": {
-    "searchDevices": "Dispositifs de recherche",
+    "searchDevices": "Rechercher des appareils",
     "quickFilters": "Filtres rapides",
     "addFilter": "Ajouter un filtre",
     "advanced": "Avancé",

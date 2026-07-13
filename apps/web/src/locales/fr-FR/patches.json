@@ -42,7 +42,7 @@
   "patchComplianceView": {
     "unknownDevice": "Inconnu",
     "emptyValue": "—",
-    "searchPlaceholder": "Dispositifs de recherche...",
+    "searchPlaceholder": "Rechercher des appareils...",
     "showing": "Affichage de {{shown}} sur {{total}}",
     "empty": "Aucun appareil trouvé.",
     "emptyFiltered": "Aucun appareil ne correspond à vos filtres.",
@@ -227,7 +227,7 @@
   "patchList": {
     "title": "Correctifs",
     "summary": "{{shown}} de {{total}} patchs",
-    "searchPlaceholder": "Des patchs de recherche...",
+    "searchPlaceholder": "Rechercher des correctifs...",
     "loading": "Chargement des correctifs...",
     "empty": "Aucun patch trouvé. Essayez d’ajuster votre recherche ou vos filtres.",
     "vendorBy": "par {{vendor}}",
@@ -298,12 +298,12 @@
     "tabs": {
       "compliance": "Conformité",
       "patches": "Correctifs",
-      "updateRings": "Mettre à jour les anneaux"
+      "updateRings": "Anneaux de mise à jour"
     },
     "actions": {
       "runScan": "Lancer Scan",
       "scanning": "En train de scanner...",
-      "newRing": "Nouveau Ring",
+      "newRing": "Nouvel anneau",
       "tryAgain": "Réessayer",
       "scan": "Analyser",
       "close": "Fermer",
@@ -322,14 +322,14 @@
       "declineCount": "Impossible de refuser {{count}} correctifs",
       "loadDevicesForScan": "Impossible de charger les appareils pour le scan",
       "noDevicesForScan": "Aucun appareil disponible pour la balayage",
-      "updateRing": "Impossible de mettre à jour la bague",
+      "updateRing": "Impossible de mettre à jour l’anneau",
       "createRing": "Impossible de créer un anneau de mise à jour",
-      "deleteRing": "Impossible de supprimer Ring"
+      "deleteRing": "Impossible de supprimer l’anneau"
     },
     "toast": {
       "ringSaved": "Anneau de mise à jour enregistré",
       "ringCreated": "Anneau de mise à jour créé",
-      "ringDeleted": "Mise à jour de l’anneau supprimé",
+      "ringDeleted": "Anneau de mise à jour supprimé",
       "chooseDevicesForInstall": "Choisissez les appareils sur lesquels installer ce correctif depuis l’onglet Conformité."
     },
     "scan": {
@@ -350,12 +350,12 @@
       "queuedSuccess": "Scan de patch en file d’attente pour {{queued}} {{noun}}{{dispatchSuffix}}."
     },
     "ringModal": {
-      "editTitle": "Modifier la mise à jour de l’anneau",
+      "editTitle": "Modifier l’anneau de mise à jour",
       "createTitle": "Créer un anneau de mise à jour"
     }
   },
   "ringSelector": {
-    "label": "Mise à jour :",
+    "label": "Anneau de mise à jour :",
     "allRings": "Tous les anneaux",
     "ringOption": "{{name}} (Ordre {{order}}, +{{days}}d)"
   },
@@ -372,7 +372,7 @@
     "validation": {
       "selectCategory": "Sélectionnez une catégorie",
       "selectSeverity": "Sélectionnez au moins une sévérité pour l’approbation automatique.",
-      "nameRequired": "Un nom de ring est obligatoire"
+      "nameRequired": "Un nom d’anneau est requis"
     },
     "categories": {
       "security": "Mises à jour de sécurité",
@@ -406,7 +406,7 @@
     },
     "placeholders": {
       "name": "par exemple Pilot, Broad",
-      "description": "Optionnel — à quoi sert cette bague",
+      "description": "Facultatif — indiquez l’objectif de cet anneau",
       "noDeadline": "Pas de date limite"
     },
     "help": {
@@ -421,14 +421,14 @@
       "description": "Ce qui est approuvé automatiquement dans cet anneau, et combien de temps il faut conserver un patch après sa sortie chez le fabricant. Le principe par défaut s’applique à toutes les catégories ; Ajoutez une dérogation pour traiter un autre type différemment.",
       "allCategories": "Toutes les catégories",
       "default": "Par défaut",
-      "severityNote": "Les sévérités s’appliquent aux mises à jour du système d’exploitation. Les mises à jour d’applications tierces (winget, Homebrew) n’ont aucune sévérité du fournisseur — lorsqu’une politique permet à d’autres sources logicielles, elles approuvent automatiquement selon le rythme de ce ring, quel que soit le niveau de sévérité sélectionné ici.",
-      "manualDefault": "Chaque patch de cette bague nécessite une approbation manuelle.",
+      "severityNote": "Les sévérités s’appliquent aux mises à jour du système d’exploitation. Les mises à jour d’applications tierces (winget, Homebrew) n’ont aucune sévérité du fournisseur — lorsqu’une politique permet à d’autres sources logicielles, elles sont approuvées automatiquement selon le rythme de cet anneau, quel que soit le niveau de sévérité sélectionné ici.",
+      "manualDefault": "Chaque correctif de cet anneau nécessite une approbation manuelle.",
       "manualCategory": "Les correctifs de cette catégorie nécessitent une approbation manuelle.",
       "noOverrides": "Toutes les catégories suivent la norme par défaut. Ajoutez une dérogation pour traiter un autre type différemment."
     },
     "usage": {
-      "messageOne": "Cet anneau s’applique au dispositif {{count}}. Les changements entrent en vigueur lors de son prochain check-in.",
-      "messageMany": "Cet anneau s’applique aux dispositifs {{count}}. Les changements entrent en vigueur lors de leur prochaine visite."
+      "messageOne": "Cet anneau s’applique à {{count}} appareil. Les modifications prendront effet lors de son prochain check-in.",
+      "messageMany": "Cet anneau s’applique à {{count}} appareils. Les modifications prendront effet lors de leur prochain check-in."
     },
     "actions": {
       "addOverride": "Ajouter une dérogation",
@@ -439,10 +439,10 @@
     }
   },
   "updateRingList": {
-    "title": "Mettre à jour les anneaux",
+    "title": "Anneaux de mise à jour",
     "summary": "{{shown}} de {{total}} anneaux",
-    "searchPlaceholder": "Anneaux de recherche...",
-    "empty": "Aucune bague de mise à jour trouvée.",
+    "searchPlaceholder": "Rechercher des anneaux...",
+    "empty": "Aucun anneau de mise à jour trouvé.",
     "emptyValue": "—",
     "none": "Aucun",
     "days": "{{count}} jours",

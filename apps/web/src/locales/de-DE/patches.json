@@ -451,7 +451,7 @@
     "pageStatus": "Seite {{current}} von {{total}}",
     "table": {
       "order": "Reihenfolge",
-      "ring": "Klingeln",
+      "ring": "Updatering",
       "deferral": "Zurückstellung",
       "deadline": "Frist",
       "devices": "Geräte",

@@ -338,7 +338,7 @@
       "allManaged": "Cible tous les appareils gérés",
       "totalDevices": "{{count}} appareils au total",
       "selectedDevices": "{{count}} dispositifs sélectionnés",
-      "searchDevices": "Dispositifs de recherche...",
+      "searchDevices": "Rechercher des appareils...",
       "noDevices": "Aucun appareil trouvé",
       "selectedGroups": "{{count}} groupes sélectionnés",
       "noGroups": "Aucun groupe d’appareils disponible",
