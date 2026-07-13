@@ -389,18 +389,22 @@ export default function TicketFormsCard() {
       base.visibleOrgIds = d.limitOrgs ? d.visibleOrgIds : null;
     }
 
-    // CREATE also sends the immutable ownership axis; UPDATE (schema is
-    // .partial()) sends only the mutable base.
-    const request = isCreate
-      ? () => {
-          const body: Record<string, unknown> = { ...base, ownerScope: d.ownerScope };
-          if (d.ownerScope === 'organization') body.orgId = d.orgId;
-          return fetchWithAuth('/ticket-forms', { method: 'POST', body: JSON.stringify(body) });
-        }
-      : () => fetchWithAuth(`/ticket-forms/${editing.id}`, { method: 'PUT', body: JSON.stringify(base) });
     try {
       await runAction({
-        request,
+        // CREATE also sends the immutable ownership axis; UPDATE (schema is
+        // .partial()) sends only the mutable base.
+        //
+        // Kept inline rather than hoisted to a `const request`: the
+        // no-silent-mutations guard is a *lexical* AST check, so a thunk
+        // defined outside the runAction(...) call reads as an unwrapped
+        // mutation even though it is passed straight in (#2429).
+        request: isCreate
+          ? () => {
+              const body: Record<string, unknown> = { ...base, ownerScope: d.ownerScope };
+              if (d.ownerScope === 'organization') body.orgId = d.orgId;
+              return fetchWithAuth('/ticket-forms', { method: 'POST', body: JSON.stringify(body) });
+            }
+          : () => fetchWithAuth(`/ticket-forms/${editing.id}`, { method: 'PUT', body: JSON.stringify(base) }),
         successMessage: t('ticketFormsCard.formSaved'),
         errorFallback: t('ticketFormsCard.saveFailed'),
         onUnauthorized: UNAUTHORIZED

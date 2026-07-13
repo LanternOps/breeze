@@ -33,6 +33,7 @@ import { fetchWithAuth } from "../../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import AccessDenied from "../../shared/AccessDenied";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type ScheduleFrequency = "daily" | "weekly" | "monthly";
@@ -544,7 +545,13 @@ export default function BackupTab({
   const [configsLoaded, setConfigsLoaded] = useState(false);
   // ...and a FAILED fetch is neither. Without this, a transient 500 renders the
   // "create your first destination" form over an org that already has some.
-  const [configsFailed, setConfigsFailed] = useState(false);
+  //
+  // 'denied' (403) is split out from 'other': a permission denial is terminal
+  // for this user, so it gets a permissions panel and NO Retry — a retry could
+  // only 403 again. (#2429)
+  const [configsError, setConfigsError] = useState<"none" | "denied" | "other">(
+    "none",
+  );
   const [selectedConfigId, setSelectedConfigId] = useState<string>(() => {
     if (storedDestinationId) return storedDestinationId;
     // Legacy custom links stored the destination in featurePolicyId; profile
@@ -593,8 +600,15 @@ export default function BackupTab({
   const fetchConfigs = useCallback(async () => {
     if (!meta.fetchUrl) return;
     setConfigsLoading(true);
+    setConfigsError("none");
     try {
       const response = await fetchWithAuth(meta.fetchUrl);
+      // Terminal for this user — not something a Retry can clear. Kept out of
+      // the throw path so the status is not flattened into a message. (#2429)
+      if (response.status === 403) {
+        setConfigsError("denied");
+        return;
+      }
       if (!response.ok) {
         throw new Error(`Failed to load backup destinations (${response.status})`);
       }
@@ -606,13 +620,12 @@ export default function BackupTab({
             ? payload
             : [],
       );
-      setConfigsFailed(false);
       setConfigsLoaded(true);
     } catch (err) {
       // Never fall through to the empty state: the destination list is what the
       // whole tab keys off, and an empty one auto-opens the create form.
       console.error("Failed to load backup destinations", err);
-      setConfigsFailed(true);
+      setConfigsError("other");
     } finally {
       setConfigsLoading(false);
     }
@@ -1870,7 +1883,12 @@ export default function BackupTab({
                 "policies:configurationPolicies.featureTabs.backupTab.partnerDestinationNote",
               )}
             </div>
-          ) : configsFailed ? (
+          ) : configsError === "denied" ? (
+            // A permission denial is not a transient failure. Same "don't show
+            // the picker over a load we couldn't complete" rule as below, but
+            // with no Retry — it could only 403 again. (#2429)
+            <AccessDenied testId="backup-destinations-denied" />
+          ) : configsError === "other" ? (
             // Never show the destination picker (or its "create your first
             // destination" empty state) over a failed load — the org may well
             // have destinations we just couldn't fetch.

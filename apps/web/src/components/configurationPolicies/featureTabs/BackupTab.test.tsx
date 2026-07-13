@@ -724,4 +724,34 @@ describe('BackupTab', () => {
     // The create form must not auto-open over a load failure.
     expect(screen.queryByText(/Editing storage configuration/i)).toBeNull();
   });
+
+  it('destination 403: shows a permissions panel with NO retry, not the load-error banner (#2429)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ error: 'forbidden' }, false, 403);
+      }
+      if (url === '/backup/profiles' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    // A 403 is terminal for this user: the retryable banner (and its Retry
+    // button, which could only 403 again) must not be what they see.
+    expect(await screen.findByTestId('backup-destinations-denied')).toBeTruthy();
+    expect(screen.queryByTestId('backup-destinations-load-error')).toBeNull();
+    // Still never the create-first-destination form.
+    expect(screen.queryByText(/Editing storage configuration/i)).toBeNull();
+  });
 });

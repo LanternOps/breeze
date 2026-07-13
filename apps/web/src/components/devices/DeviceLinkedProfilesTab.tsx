@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link2, Link2Off, Circle } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, handleActionError } from "../../lib/runAction";
+import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -50,6 +51,9 @@ export default function DeviceLinkedProfilesTab({
     "none",
   );
   const [busy, setBusy] = useState(false);
+  // Dissolving the group is destructive and irreversible from this panel, so it
+  // gets the same confirm step as every other destructive device flow (#2429).
+  const [confirmDissolve, setConfirmDissolve] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -128,6 +132,12 @@ export default function DeviceLinkedProfilesTab({
       handleActionError(err, "Could not remove the link");
     } finally {
       setBusy(false);
+      // Close on FAILURE as well as success. runAction surfaces the failure as a
+      // toast, but the Toast island and the Dialog portal both sit at z-50 and
+      // the portal is appended later in the DOM — leaving the modal open would
+      // paint its backdrop straight over the only error signal the user gets,
+      // turning a failed dissolve into a silent no-op (#2429).
+      setConfirmDissolve(false);
     }
   };
 
@@ -233,7 +243,7 @@ export default function DeviceLinkedProfilesTab({
           <button
             type="button"
             disabled={busy}
-            onClick={() => void dissolveGroup()}
+            onClick={() => setConfirmDissolve(true)}
             data-testid="linked-profiles-dissolve"
             className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 disabled:opacity-50"
           >
@@ -241,6 +251,24 @@ export default function DeviceLinkedProfilesTab({
           </button>
         </div>
       </div>
+
+      {confirmDissolve && (
+        <ConfirmDialog
+          open
+          onClose={() => {
+            if (!busy) setConfirmDissolve(false);
+          }}
+          onConfirm={() => void dissolveGroup()}
+          title={t("deviceLinkedProfilesTab.confirmDissolve.title")}
+          message={t("deviceLinkedProfilesTab.confirmDissolve.message", {
+            count: members.length,
+          })}
+          confirmLabel={t("deviceLinkedProfilesTab.confirmDissolve.confirm")}
+          variant="destructive"
+          confirmTestId="linked-profiles-dissolve-confirm"
+          isLoading={busy}
+        />
+      )}
 
       <div className="overflow-hidden rounded-lg border">
         <table className="w-full text-sm">

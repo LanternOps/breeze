@@ -14,6 +14,8 @@ import {
 import { Loader2, TrendingDown, TrendingUp } from "lucide-react";
 import { cn, friendlyFetchError } from "@/lib/utils";
 import { fetchWithAuth } from "@/stores/auth";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 type TrendSummary = {
@@ -53,6 +55,7 @@ export default function TrendsPage() {
   const [data, setData] = useState<TrendsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const [period, setPeriod] = useState<Period>("30d");
   const [visibleLines, setVisibleLines] = useState<Set<string>>(
     new Set(["overall", "antivirus", "firewall", "encryption"]),
@@ -70,6 +73,7 @@ export default function TrendsPage() {
   };
   const fetchData = useCallback(async () => {
     setError(undefined);
+    setErrorKind("none");
     setLoading(true);
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -78,7 +82,9 @@ export default function TrendsPage() {
       const res = await fetchWithAuth(`/security/trends?period=${period}`, {
         signal: controller.signal,
       });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      // HttpError (not a bare Error) so a 403 survives the throw and the render
+      // can tell "you may not see this" from "this broke, try again" (#2429).
+      throwIfNotOk(res);
       const json = await res.json();
       if (!json.data)
         throw new Error(t("securityTrendsPage.invalidResponseFromServer"));
@@ -86,7 +92,9 @@ export default function TrendsPage() {
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       console.error("[TrendsPage] fetch error:", err);
-      setError(friendlyFetchError(err));
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      if (kind === "other") setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -116,6 +124,20 @@ export default function TrendsPage() {
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
+      </div>
+    );
+  }
+  // A 403 is terminal for this user — the permission gate will deny a retry too,
+  // so show the access-denied panel (no Retry button) instead of the transient
+  // failure banner below (#2429).
+  if (errorKind === "denied") {
+    return (
+      <div className="space-y-6">
+        <SecurityPageHeader
+          title={t("securityTrendsPage.securityTrends")}
+          subtitle={t("securityTrendsPage.scoreMovementOverTime")}
+        />
+        <AccessDenied testId="security-trends-denied" />
       </div>
     );
   }

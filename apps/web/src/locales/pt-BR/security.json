@@ -483,6 +483,8 @@
     "securityScore": "Pontuação de segurança",
     "securityScoreTrend": "Tendência da pontuação de segurança",
     "someSecurityDataCouldNotBeLoaded": "Não foi possível carregar parte dos dados de segurança. Os valores exibidos podem estar incompletos.",
+    "accessDeniedMessage": "Você não tem permissão para ver os dados de segurança desta organização.",
+    "someSecurityDataPermissionDenied": "Alguns dados de segurança não estão visíveis para você. Fale com um administrador se precisar de acesso.",
     "strong": "Forte",
     "trackProtectionCoverageVulnerabilitiesAndPolicyCompliance": "Acompanhe cobertura de proteção, vulnerabilidades e conformidade com políticas.",
     "trendInsights": "Insights de tendência",

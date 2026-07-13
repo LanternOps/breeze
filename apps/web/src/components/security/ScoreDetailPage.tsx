@@ -9,6 +9,8 @@ import {
   widthPercentClass,
 } from "@/lib/utils";
 import { fetchWithAuth } from "@/stores/auth";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 type ScoreComponent = {
@@ -38,9 +40,11 @@ export default function ScoreDetailPage() {
   const [data, setData] = useState<ScoreBreakdown | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const abortRef = useRef<AbortController | null>(null);
   const fetchData = useCallback(async () => {
     setError(undefined);
+    setErrorKind("none");
     setLoading(true);
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -49,7 +53,9 @@ export default function ScoreDetailPage() {
       const res = await fetchWithAuth("/security/score-breakdown", {
         signal: controller.signal,
       });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      // HttpError (not a bare Error) so a 403 survives the throw and the render
+      // can tell "you may not see this" from "this broke, try again" (#2429).
+      throwIfNotOk(res);
       const json = await res.json();
       if (!json.data)
         throw new Error(t("securityScoreDetailPage.invalidResponseFromServer"));
@@ -57,7 +63,9 @@ export default function ScoreDetailPage() {
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       console.error("[ScoreDetailPage] fetch error:", err);
-      setError(friendlyFetchError(err));
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      if (kind === "other") setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -76,6 +84,20 @@ export default function ScoreDetailPage() {
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
+      </div>
+    );
+  }
+  // A 403 is terminal for this user — the permission gate will deny a retry too,
+  // so show the access-denied panel (no Retry button) instead of the transient
+  // failure banner below (#2429).
+  if (errorKind === "denied") {
+    return (
+      <div className="space-y-6">
+        <SecurityPageHeader
+          title={t("securityScoreDetailPage.securityScore")}
+          subtitle={t("securityScoreDetailPage.scoreBreakdownByCategory")}
+        />
+        <AccessDenied testId="security-score-detail-denied" />
       </div>
     );
   }

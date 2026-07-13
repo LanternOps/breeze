@@ -900,6 +900,11 @@
     "profiles": "perfis",
     "unlinkThisDevice": "Desvincular este dispositivo",
     "removeLink": "Remover vínculo",
+    "confirmDissolve": {
+      "title": "Remover este vínculo?",
+      "message": "Isso desagrupa todos os {{count}} dispositivos vinculados. Cada um continua sendo um endpoint totalmente gerenciado, com inventário e histórico próprios — apenas o agrupamento é removido. Você pode vinculá-los novamente mais tarde na lista de dispositivos.",
+      "confirm": "Remover vínculo"
+    },
     "profile": "Perfil",
     "os": "OS",
     "status": "Status",
