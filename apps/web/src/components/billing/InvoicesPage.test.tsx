@@ -241,10 +241,12 @@ describe('InvoicesPage', () => {
 
     // Now let the stale seed response resolve — it must be dropped.
     releaseSeed();
+    // The table (not a spinner) is still rendered — the late response neither
+    // repaints the rows nor strands the page in a loading state...
     await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
     expect(screen.queryByTestId('invoices-row-inv-2')).not.toBeInTheDocument();
     expect(screen.getByTestId('invoices-row-inv-1')).toBeInTheDocument();
-    // ...and the late response must not strand the page in a loading state.
+    // ...and the list still agrees with the filter control.
     expect(screen.getByTestId('invoices-filter-status')).toHaveValue('overdue');
   });
 
