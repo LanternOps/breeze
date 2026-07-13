@@ -301,10 +301,24 @@ const statusFullLabelKeys: Record<DeviceStatus, string> = {
   pending: "deviceList.statuses.full.pending",
 };
 
-// Agent commands (Remote Terminal, Run Script, Reboot) require an
-// actively-connected agent — the API rejects them for any non-online status
-// with "Device is not online" (#2078), so there is no offline queuing to
-// preserve. Tooltip keys mirror unavailableTitle in DeviceActions.tsx (#2426).
+// Row-menu action gating (#2426). The two categories are NOT the same, and
+// conflating them is exactly the bug this fixes:
+//
+//   LIVE SESSION (Remote Terminal, Connect Desktop, Remote Tools) — needs an
+//   actively-connected agent to hand off a socket. `terminalWs`/`desktopWs`/
+//   `tunnelWs` reject anything but `online` with "Device is not online".
+//   → gate on `status !== 'online'`.
+//
+//   QUEUED COMMAND (Run Script, Reboot, Power, Refresh) — inserted as a
+//   `device_commands` row with `status:'pending'` and claimed on the agent's
+//   NEXT poll/heartbeat. The API gates these on `decommissioned` ONLY
+//   (`routes/devices/commands.ts`, `services/scriptExecution.ts:118`, which
+//   filters `status !== 'decommissioned'` and returns `status:'queued'`).
+//   Running a script against an OFFLINE device is a working, intentional
+//   feature: it executes on reconnect. Gating these on `!== 'online'` would
+//   REMOVE that capability.
+//   → gate on `status === 'decommissioned'` (an agent-less machine that can
+//     never claim the command — the one status the API genuinely rejects).
 const commandUnavailableTitleKeys: Record<
   Exclude<DeviceStatus, "online">,
   string
@@ -319,13 +333,28 @@ const commandUnavailableTitleKeys: Record<
 
 type DeviceTranslation = ReturnType<typeof useTranslation<"devices">>["t"];
 
-function commandUnavailableTitle(
+// Tooltip for a live-session action disabled because the agent isn't connected.
+function liveSessionUnavailableTitle(
   status: DeviceStatus,
   t: DeviceTranslation,
 ): string | undefined {
   return status === "online"
     ? undefined
     : t(/* i18n-dynamic */ commandUnavailableTitleKeys[status]);
+}
+
+// A queued command can only be refused outright for a decommissioned device.
+function isCommandQueueable(status: DeviceStatus): boolean {
+  return status !== "decommissioned";
+}
+
+function queuedCommandUnavailableTitle(
+  status: DeviceStatus,
+  t: DeviceTranslation,
+): string | undefined {
+  return isCommandQueueable(status)
+    ? undefined
+    : t("deviceActions.unavailable.decommissioned");
 }
 
 // Cap visible tag chips per row; the rest collapse into a +N chip, with the
@@ -2251,10 +2280,11 @@ export default function DeviceList({
                                   }}
                                   className="z-50 w-48 rounded-md border bg-card shadow-lg"
                                 >
+                                  {/* Live session — needs a connected agent. */}
                                   <button
                                     type="button"
                                     disabled={device.status !== "online"}
-                                    title={commandUnavailableTitle(
+                                    title={liveSessionUnavailableTitle(
                                       device.status,
                                       t,
                                     )}
@@ -2267,10 +2297,13 @@ export default function DeviceList({
                                     <Terminal className="h-4 w-4" />
                                     {t("deviceList.remoteTerminal")}{" "}
                                   </button>
+                                  {/* Queued command — an offline device runs it
+                                      on reconnect, so only a decommissioned
+                                      (agent-less) device is refused. */}
                                   <button
                                     type="button"
-                                    disabled={device.status !== "online"}
-                                    title={commandUnavailableTitle(
+                                    disabled={!isCommandQueueable(device.status)}
+                                    title={queuedCommandUnavailableTitle(
                                       device.status,
                                       t,
                                     )}
@@ -2283,10 +2316,16 @@ export default function DeviceList({
                                     <FileCode className="h-4 w-4" />
                                     {t("deviceList.runScript")}{" "}
                                   </button>
+                                  {/* Reboot is ALSO a queued command, so this
+                                      `!== "online"` gate is arguably too strict
+                                      by the same argument. Left as-is
+                                      deliberately — pre-existing behaviour, and
+                                      loosening it is a maintainer call (see PR
+                                      #2457 discussion). */}
                                   <button
                                     type="button"
                                     disabled={device.status !== "online"}
-                                    title={commandUnavailableTitle(
+                                    title={liveSessionUnavailableTitle(
                                       device.status,
                                       t,
                                     )}

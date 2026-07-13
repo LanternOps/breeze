@@ -1060,7 +1060,7 @@ describe('DeviceList — vm_host guest nesting (#2308)', () => {
   });
 });
 
-describe('DeviceList — row-menu agent commands gated on device status (#2426)', () => {
+describe('DeviceList — row-menu action gating (#2426)', () => {
   beforeEach(() => {
     window.localStorage?.clear();
   });
@@ -1069,56 +1069,93 @@ describe('DeviceList — row-menu agent commands gated on device status (#2426)'
     fireEvent.click(screen.getByRole('button', { name: 'Device actions' }));
   };
 
-  it('disables Run Script (and siblings) for an offline device with a status tooltip', () => {
-    const onAction = vi.fn();
-    const device: Device = { ...baseDevice, status: 'offline' };
-    render(<DeviceList devices={[device]} onAction={onAction} />);
-    openRowMenu();
+  const runScriptBtn = () => screen.getByRole('button', { name: /run script/i });
 
-    const runScript = screen.getByRole('button', { name: /run script/i });
-    expect(runScript).toBeDisabled();
-    expect(runScript).toHaveAttribute('title', 'Device is offline');
-    fireEvent.click(runScript);
-    expect(onAction).not.toHaveBeenCalled();
-
-    // The sibling agent commands carry the same gate AND the same tooltip —
-    // they were already disabled, so assert the title too or a dropped
-    // tooltip would go unnoticed.
-    for (const name of [/remote terminal/i, /^reboot$/i]) {
-      const sibling = screen.getByRole('button', { name });
-      expect(sibling).toBeDisabled();
-      expect(sibling).toHaveAttribute('title', 'Device is offline');
-    }
-
-    // Wake (Wake-on-LAN) is the deliberate exception: it exists precisely to
-    // target an offline device, so it must stay enabled. Guards against a
-    // future "gate every row-menu action on !== online" sweep silently killing
-    // the one action that is only useful when the device is offline.
-    expect(screen.getByRole('button', { name: /^wake$/i })).toBeEnabled();
-  });
-
-  it('disables Run Script for a decommissioned device with a decommissioned tooltip', () => {
+  // The headline bug: a decommissioned device is agent-less and can NEVER claim
+  // a queued command. It is the one status the API genuinely rejects
+  // (commands.ts, scriptExecution.ts:118). #2315's "show decommissioned" toggle
+  // made these rows trivially reachable from the list.
+  it('disables Run Script for a decommissioned device, with a tooltip saying why', () => {
     const onAction = vi.fn();
     const device: Device = { ...baseDevice, status: 'decommissioned' };
     render(<DeviceList devices={[device]} onAction={onAction} includeDecommissioned />);
     openRowMenu();
 
-    const runScript = screen.getByRole('button', { name: /run script/i });
-    expect(runScript).toBeDisabled();
-    expect(runScript).toHaveAttribute('title', 'Device is decommissioned');
-    fireEvent.click(runScript);
+    expect(runScriptBtn()).toBeDisabled();
+    expect(runScriptBtn()).toHaveAttribute('title', 'Device is decommissioned');
+    fireEvent.click(runScriptBtn());
     expect(onAction).not.toHaveBeenCalled();
   });
 
-  it('keeps Run Script enabled (no tooltip) for an online device and emits the action', () => {
+  // REGRESSION GUARD. Run Script is a QUEUED command: the API inserts a pending
+  // device_commands row and the agent claims it on its next poll, so running a
+  // script against an offline machine works — it executes on reconnect. An
+  // earlier cut of this fix gated Run Script on `!== "online"` (copying the
+  // live-session siblings, on the strength of a code comment that turned out to
+  // be false) and would have silently REMOVED that capability. This test fails
+  // if anyone re-introduces that gate.
+  it('keeps Run Script ENABLED for an offline device — the command queues and runs on reconnect', () => {
+    const onAction = vi.fn();
+    const device: Device = { ...baseDevice, status: 'offline' };
+    render(<DeviceList devices={[device]} onAction={onAction} />);
+    openRowMenu();
+
+    expect(runScriptBtn()).toBeEnabled();
+    expect(runScriptBtn()).not.toHaveAttribute('title');
+    fireEvent.click(runScriptBtn());
+    expect(onAction).toHaveBeenCalledWith('run-script', device);
+  });
+
+  // Same argument for the other non-online, non-decommissioned states: the agent
+  // may be unreachable right now, but the command is still deliverable later.
+  it.each(['maintenance', 'quarantined', 'updating', 'pending'] as const)(
+    'keeps Run Script enabled for a %s device (queued command, not a live session)',
+    (status) => {
+      const onAction = vi.fn();
+      const device: Device = { ...baseDevice, status };
+      render(<DeviceList devices={[device]} onAction={onAction} />);
+      openRowMenu();
+
+      expect(runScriptBtn()).toBeEnabled();
+      fireEvent.click(runScriptBtn());
+      expect(onAction).toHaveBeenCalledWith('run-script', device);
+    },
+  );
+
+  it('emits run-script for an online device', () => {
     const onAction = vi.fn();
     render(<DeviceList devices={[baseDevice]} onAction={onAction} />);
     openRowMenu();
 
-    const runScript = screen.getByRole('button', { name: /run script/i });
-    expect(runScript).toBeEnabled();
-    expect(runScript).not.toHaveAttribute('title');
-    fireEvent.click(runScript);
+    expect(runScriptBtn()).toBeEnabled();
+    fireEvent.click(runScriptBtn());
     expect(onAction).toHaveBeenCalledWith('run-script', baseDevice);
+  });
+
+  // Remote Terminal really IS a live session (terminalWs rejects anything but
+  // online), so its `!== "online"` gate is correct. Reboot's identical gate is
+  // arguably too strict — it's a queued command — but that's pre-existing
+  // behaviour left for a maintainer call, so pin it as-is rather than leave it
+  // untested either way.
+  it('keeps the live-session gate on Remote Terminal (and the status-quo gate on Reboot) for an offline device', () => {
+    const device: Device = { ...baseDevice, status: 'offline' };
+    render(<DeviceList devices={[device]} />);
+    openRowMenu();
+
+    for (const name of [/remote terminal/i, /^reboot$/i]) {
+      const btn = screen.getByRole('button', { name });
+      expect(btn).toBeDisabled();
+      expect(btn).toHaveAttribute('title', 'Device is offline');
+    }
+  });
+
+  // Wake (Wake-on-LAN) is the deliberate exception — it exists precisely to
+  // target an offline device. Guards against a future "gate every row-menu
+  // action" sweep killing the one action that's only useful when offline.
+  it('leaves Wake enabled on an offline device', () => {
+    render(<DeviceList devices={[{ ...baseDevice, status: 'offline' }]} />);
+    openRowMenu();
+
+    expect(screen.getByRole('button', { name: /^wake$/i })).toBeEnabled();
   });
 });
