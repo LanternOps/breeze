@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"runtime"
 	"runtime/pprof"
+	"sync/atomic"
 	"time"
 
-	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -26,7 +26,58 @@ import (
 // without allocating a gigantic heap.
 var maxProfileBytes = 1 << 20
 
-func handleCapturePprof(_ *Heartbeat, cmd Command) tools.CommandResult {
+// capturePprofMinIntervalNs rate-limits captures. capture_pprof is a
+// server-queued command (up to 10 concurrent, 100 queued) and every heap/all
+// capture forces a stop-the-world runtime.GC(), so without a floor a burst of
+// queued captures degenerates into back-to-back GC pauses (#2422). Same
+// pattern as the heartbeat watchdog dump throttle (#2392). Atomic so tests
+// can shrink it.
+var capturePprofMinIntervalNs atomic.Int64
+
+// capturePprofLastNs is the unix-nano timestamp of the last admitted capture
+// (0 = never).
+var capturePprofLastNs atomic.Int64
+
+func init() {
+	capturePprofMinIntervalNs.Store(int64(30 * time.Second))
+}
+
+// capturePprofMinInterval returns the current minimum interval between
+// admitted captures.
+func capturePprofMinInterval() time.Duration {
+	return time.Duration(capturePprofMinIntervalNs.Load())
+}
+
+// setCapturePprofMinInterval overrides the capture rate-limit interval and
+// returns the previous value. Intended for tests.
+func setCapturePprofMinInterval(d time.Duration) time.Duration {
+	return time.Duration(capturePprofMinIntervalNs.Swap(int64(d)))
+}
+
+// resetCapturePprofThrottle clears the cross-invocation rate-limit state.
+// Intended for tests.
+func resetCapturePprofThrottle() {
+	capturePprofLastNs.Store(0)
+}
+
+// capturePprofTryAcquire reports whether a capture may run now, atomically
+// claiming the slot if so. Safe for concurrent handler invocations
+// (overlapping pool workers race for one slot). The slot is consumed even if
+// the capture itself later fails — acceptable, because the expensive part
+// (runtime.GC + profile serialization) may already have run by then.
+func capturePprofTryAcquire(now time.Time, interval time.Duration) bool {
+	for {
+		last := capturePprofLastNs.Load()
+		if last != 0 && now.UnixNano()-last < int64(interval) {
+			return false
+		}
+		if capturePprofLastNs.CompareAndSwap(last, now.UnixNano()) {
+			return true
+		}
+	}
+}
+
+func handleCapturePprof(h *Heartbeat, cmd Command) tools.CommandResult {
 	// Strict payload validation: key absent → default "all"; key present but
 	// not a string → error (don't let a malformed payload silently force a
 	// GC + double capture the caller never asked for).
@@ -57,11 +108,27 @@ func handleCapturePprof(_ *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	// Rate-limit only after payload validation, so a malformed request is
+	// rejected on its own merits without burning the capture slot.
+	now := time.Now()
+	if interval := capturePprofMinInterval(); !capturePprofTryAcquire(now, interval) {
+		return tools.CommandResult{
+			Status: "failed",
+			Error: fmt.Sprintf(
+				"capture_pprof rate-limited: at most one capture per %s (captures force a stop-the-world GC); retry later",
+				interval),
+		}
+	}
+
 	result := map[string]any{
-		"capturedAt": time.Now().UTC().Format(time.RFC3339),
+		"capturedAt": now.UTC().Format(time.RFC3339),
 		// Snapshot of the runtime gauges at capture time, so the profile can
 		// be correlated with the heartbeat trend without a second command.
-		"runtime": collectors.CollectRuntimeStats(),
+		// Must go through h.collectAgentRuntime — the raw
+		// collectors.CollectRuntimeStats() never populates the worker-pool
+		// wedge gauges (commandsInFlight/commandsOverdue), which are exactly
+		// what an operator chasing an overdue-commands trend needs (#2422).
+		"runtime": h.collectAgentRuntime(now),
 	}
 
 	if wantHeap {

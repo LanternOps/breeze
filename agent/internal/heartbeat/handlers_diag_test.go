@@ -3,10 +3,22 @@ package heartbeat
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
 )
+
+// newTestHeartbeatForDiag returns a zero-value Heartbeat for exercising
+// handleCapturePprof and clears the package-level capture throttle so each
+// test starts with a fresh rate-limit slot.
+func newTestHeartbeatForDiag(t *testing.T) *Heartbeat {
+	t.Helper()
+	resetCapturePprofThrottle()
+	t.Cleanup(resetCapturePprofThrottle)
+	return &Heartbeat{}
+}
 
 // decodeDiagResult parses the JSON payload NewSuccessResult marshals into
 // Stdout.
@@ -38,7 +50,7 @@ func assertValidPprofBlob(t *testing.T, result map[string]any, field string) {
 }
 
 func TestHandleCapturePprofDefaultCapturesBoth(t *testing.T) {
-	res := handleCapturePprof(nil, Command{ID: "c1", Type: "capture_pprof"})
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{ID: "c1", Type: "capture_pprof"})
 	if res.Status != "completed" {
 		t.Fatalf("status = %q (error: %q), want completed", res.Status, res.Error)
 	}
@@ -59,7 +71,7 @@ func TestHandleCapturePprofDefaultCapturesBoth(t *testing.T) {
 }
 
 func TestHandleCapturePprofHeapOnly(t *testing.T) {
-	res := handleCapturePprof(nil, Command{
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{
 		ID: "c2", Type: "capture_pprof",
 		Payload: map[string]any{"profile": "heap"},
 	})
@@ -74,7 +86,7 @@ func TestHandleCapturePprofHeapOnly(t *testing.T) {
 }
 
 func TestHandleCapturePprofGoroutineOnly(t *testing.T) {
-	res := handleCapturePprof(nil, Command{
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{
 		ID: "c3", Type: "capture_pprof",
 		Payload: map[string]any{"profile": "goroutine"},
 	})
@@ -89,7 +101,7 @@ func TestHandleCapturePprofGoroutineOnly(t *testing.T) {
 }
 
 func TestHandleCapturePprofRejectsUnknownProfile(t *testing.T) {
-	res := handleCapturePprof(nil, Command{
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{
 		ID: "c4", Type: "capture_pprof",
 		Payload: map[string]any{"profile": "cpu"},
 	})
@@ -106,7 +118,7 @@ func TestHandleCapturePprofSizeCap(t *testing.T) {
 	maxProfileBytes = 1 // every real profile exceeds one byte
 	defer func() { maxProfileBytes = orig }()
 
-	res := handleCapturePprof(nil, Command{ID: "c5", Type: "capture_pprof"})
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{ID: "c5", Type: "capture_pprof"})
 	if res.Status != "failed" {
 		t.Fatalf("status = %q, want failed when profile exceeds size cap", res.Status)
 	}
@@ -116,7 +128,7 @@ func TestHandleCapturePprofSizeCap(t *testing.T) {
 }
 
 func TestHandleCapturePprofRejectsNonStringProfile(t *testing.T) {
-	res := handleCapturePprof(nil, Command{
+	res := handleCapturePprof(newTestHeartbeatForDiag(t), Command{
 		ID: "c6", Type: "capture_pprof",
 		Payload: map[string]any{"profile": 123},
 	})
@@ -125,6 +137,98 @@ func TestHandleCapturePprofRejectsNonStringProfile(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Error("expected a descriptive error for a non-string profile")
+	}
+}
+
+// TestHandleCapturePprofIncludesWedgeGauges verifies the runtime snapshot in
+// the capture result carries the worker-pool wedge gauges — i.e. that the
+// handler goes through h.collectAgentRuntime, not the raw collector, which
+// would report a permanently-plausible 0/0 (#2422).
+func TestHandleCapturePprofIncludesWedgeGauges(t *testing.T) {
+	h := newTestHeartbeatForDiag(t)
+	// One command that started an hour ago with a 1s watchdog tier:
+	// in flight AND overdue at capture time.
+	key := h.trackInFlight(time.Now().Add(-time.Hour), time.Second)
+	defer h.untrackInFlight(key)
+
+	res := handleCapturePprof(h, Command{
+		ID: "g1", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "goroutine"},
+	})
+	if res.Status != "completed" {
+		t.Fatalf("status = %q (error: %q), want completed", res.Status, res.Error)
+	}
+	result := decodeDiagResult(t, res.Stdout)
+	rt, ok := result["runtime"].(map[string]any)
+	if !ok {
+		t.Fatal("runtime stats snapshot missing")
+	}
+	if got, _ := rt["commandsInFlight"].(float64); got != 1 {
+		t.Errorf("runtime.commandsInFlight = %v, want 1", rt["commandsInFlight"])
+	}
+	if got, _ := rt["commandsOverdue"].(float64); got != 1 {
+		t.Errorf("runtime.commandsOverdue = %v, want 1", rt["commandsOverdue"])
+	}
+}
+
+// TestHandleCapturePprofThrottled verifies back-to-back captures are
+// rate-limited (each heap/all capture forces a stop-the-world GC) and that
+// the slot frees up once the interval elapses.
+func TestHandleCapturePprofThrottled(t *testing.T) {
+	h := newTestHeartbeatForDiag(t)
+
+	res := handleCapturePprof(h, Command{
+		ID: "t1", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "goroutine"},
+	})
+	if res.Status != "completed" {
+		t.Fatalf("first capture: status = %q (error: %q), want completed", res.Status, res.Error)
+	}
+
+	res = handleCapturePprof(h, Command{
+		ID: "t2", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "goroutine"},
+	})
+	if res.Status != "failed" {
+		t.Fatalf("second capture inside the interval: status = %q, want failed", res.Status)
+	}
+	if !strings.Contains(res.Error, "rate-limited") {
+		t.Errorf("rate-limit rejection error = %q, want it to mention rate-limited", res.Error)
+	}
+
+	// Shrink the interval below the elapsed time — the slot must free up.
+	prev := setCapturePprofMinInterval(time.Nanosecond)
+	t.Cleanup(func() { setCapturePprofMinInterval(prev) })
+	time.Sleep(time.Millisecond)
+
+	res = handleCapturePprof(h, Command{
+		ID: "t3", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "goroutine"},
+	})
+	if res.Status != "completed" {
+		t.Fatalf("capture after interval elapsed: status = %q (error: %q), want completed", res.Status, res.Error)
+	}
+}
+
+// TestHandleCapturePprofValidationDoesNotConsumeSlot verifies a malformed
+// payload is rejected without burning the capture rate-limit slot.
+func TestHandleCapturePprofValidationDoesNotConsumeSlot(t *testing.T) {
+	h := newTestHeartbeatForDiag(t)
+
+	res := handleCapturePprof(h, Command{
+		ID: "v1", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "cpu"},
+	})
+	if res.Status != "failed" {
+		t.Fatalf("invalid profile: status = %q, want failed", res.Status)
+	}
+
+	res = handleCapturePprof(h, Command{
+		ID: "v2", Type: "capture_pprof",
+		Payload: map[string]any{"profile": "goroutine"},
+	})
+	if res.Status != "completed" {
+		t.Fatalf("valid capture after validation failure: status = %q (error: %q), want completed", res.Status, res.Error)
 	}
 }
 
