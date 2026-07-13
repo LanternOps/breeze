@@ -30,6 +30,7 @@ import {
   revokePartnerTenantAccess,
 } from './tenantLifecycle';
 import { withAuthLifecycleSystemTransaction } from './authLifecycle';
+import { lockPartnerLifecycleRows } from './partnerLifecycleLock';
 
 interface DeleteTenantInput {
   tenant_id: string;
@@ -92,6 +93,7 @@ export async function runDeleteTenant(
 
   const now = new Date();
   const lifecycleSnapshot = await withAuthLifecycleSystemTransaction(async (tx) => {
+    const lifecycleRows = await lockPartnerLifecycleRows(tx, input.tenant_id);
     const updated = await tx
       .update(partners)
       .set({ status: 'churned', deletedAt: now, updatedAt: now })
@@ -100,7 +102,12 @@ export async function runDeleteTenant(
     if (updated.length === 0) {
       throw new Error(`Failed to soft-delete tenant ${input.tenant_id}`);
     }
-    return invalidatePartnerUsersInTransaction(tx as any, input.tenant_id, 'partner-deleted');
+    return invalidatePartnerUsersInTransaction(
+      tx as any,
+      input.tenant_id,
+      'partner-deleted',
+      lifecycleRows,
+    );
   });
 
   const cleanup = await revokePartnerTenantAccess(input.tenant_id, lifecycleSnapshot);

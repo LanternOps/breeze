@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const lifecycleMocks = vi.hoisted(() => ({
   withSystemTransaction: vi.fn(),
   invalidatePartner: vi.fn(async () => ({ userIds: ['user-1'], orgIds: ['org-1'] })),
+  lockPartner: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -44,6 +45,10 @@ vi.mock('./tenantLifecycle', () => ({
 
 vi.mock('./authLifecycle', () => ({
   withAuthLifecycleSystemTransaction: lifecycleMocks.withSystemTransaction,
+}));
+
+vi.mock('./partnerLifecycleLock', () => ({
+  lockPartnerLifecycleRows: lifecycleMocks.lockPartner,
 }));
 
 import { runDeleteTenant } from './deleteTenant';
@@ -104,6 +109,17 @@ beforeEach(() => {
     async (fn: (tx: unknown) => Promise<unknown>) => fn(db as any),
   );
   lifecycleMocks.invalidatePartner.mockResolvedValue({ userIds: ['user-1'], orgIds: ['org-1'] });
+  lifecycleMocks.lockPartner.mockResolvedValue({
+    orgIds: ['org-1'],
+    userIds: ['user-1'],
+    userRows: [{ id: 'user-1', isPlatformAdmin: false }],
+    partner: {
+      id: PARTNER_ID,
+      status: 'active',
+      emailVerifiedAt: null,
+      paymentMethodAttachedAt: null,
+    },
+  });
 });
 
 describe('delete_tenant', () => {
@@ -206,6 +222,13 @@ describe('delete_tenant', () => {
       expect.anything(),
       PARTNER_ID,
       'partner-deleted',
+      expect.anything(),
+    );
+    expect(lifecycleMocks.lockPartner.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(db.update).mock.invocationCallOrder[0]!,
+    );
+    expect(vi.mocked(db.update).mock.invocationCallOrder[0]).toBeLessThan(
+      lifecycleMocks.invalidatePartner.mock.invocationCallOrder[0]!,
     );
     expect(revokePartnerTenantAccess).toHaveBeenCalledWith(PARTNER_ID, {
       userIds: ['user-1'],

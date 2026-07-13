@@ -25,9 +25,14 @@ const txMockState = vi.hoisted(() => ({
 }));
 
 const lifecycleMocks = vi.hoisted(() => ({
-  advance: vi.fn(async () => ({ id: 'user', authEpoch: 2 })),
+  advance: vi.fn(async (_tx: unknown, userId: string) => ({ id: userId, authEpoch: 2 })),
   revokeFamilies: vi.fn(async (_tx: unknown, _userId: string, _reason: string) => 1),
   withSystemTransaction: vi.fn(),
+}));
+
+const lifecycleLockMocks = vi.hoisted(() => ({
+  lock: vi.fn(),
+  invalidate: vi.fn(),
 }));
 
 function makeTx() {
@@ -184,6 +189,11 @@ vi.mock('../../services/authLifecycle', () => ({
   withAuthLifecycleSystemTransaction: lifecycleMocks.withSystemTransaction,
 }));
 
+vi.mock('../../services/partnerLifecycleLock', () => ({
+  lockPartnerLifecycleRows: lifecycleLockMocks.lock,
+  invalidateLockedPartnerUsersInTransaction: lifecycleLockMocks.invalidate,
+}));
+
 vi.mock('../../services/remoteSessionTeardown', () => ({
   terminateUserRemoteSessions: vi.fn(async () => 0),
   TEARDOWN_FAILED: -1,
@@ -310,6 +320,20 @@ function resetState() {
       }
     },
   );
+  lifecycleLockMocks.lock.mockReset();
+  lifecycleLockMocks.lock.mockImplementation(async () => ({
+    orgIds: txMockState.partnerOrgs.map((org) => org.id),
+    userIds: txMockState.partnerUserRows.map((user) => user.id).sort(),
+    userRows: [...txMockState.partnerUserRows].sort((left, right) => left.id.localeCompare(right.id)),
+    partner: txMockState.partner,
+  }));
+  lifecycleLockMocks.invalidate.mockReset();
+  lifecycleLockMocks.invalidate.mockImplementation(async (tx, locked, reason, selected) => {
+    const ids = [...new Set(selected ?? locked.userIds)].sort() as string[];
+    for (const id of ids) await lifecycleMocks.advance(tx, id);
+    for (const id of ids) await lifecycleMocks.revokeFamilies(tx, id, reason);
+    return ids;
+  });
 }
 
 describe('admin/abuse — auth gate', () => {

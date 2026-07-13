@@ -63,6 +63,10 @@ import {
   cleanupMfaAssuranceUsers,
   invalidateMfaPolicyAssurance,
 } from '../services/mfaAssuranceMutation';
+import {
+  lockPartnerLifecycleRows,
+  lockPartnerMfaLifecycleRows,
+} from '../services/partnerLifecycleLock';
 
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -648,7 +652,7 @@ orgRoutes.patch(
       }
       // The current settings read, all compatibility reads, and the write must
       // observe one partner-key serialization order.
-      await lockMfaPolicyPartner(writeDb as any, partnerId);
+      await lockPartnerMfaLifecycleRows(writeDb as any, partnerId);
     }
 
   // Get current partner to merge settings
@@ -868,6 +872,7 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
 
   const data = c.req.valid('json');
   const updates: Record<string, unknown> = { ...data, updatedAt: new Date() };
+  const isMfaPolicyWrite = data.settings !== undefined && hasMfaPolicyInput(data.settings);
 
   if (Object.keys(data).length === 0) {
     return c.json({ error: 'No updates provided' }, 400);
@@ -934,7 +939,12 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   let lifecycleSnapshot: PartnerLifecycleSnapshot | undefined;
   let mfaPolicyInvalidation = { userIds: [] as string[], revokedFamilyCount: 0 };
   const updatePartner = async (tx: typeof db) => {
-    if (data.settings && hasMfaPolicyInput(data.settings)) {
+    const lifecycleRows = isMfaPolicyWrite
+      ? await lockPartnerMfaLifecycleRows(tx as any, id)
+      : data.status === undefined
+        ? undefined
+        : await lockPartnerLifecycleRows(tx as any, id);
+    if (isMfaPolicyWrite) {
       await validatePartnerMfaPolicySettingsWrite({
         tx: tx as any,
         partnerId: id,
@@ -960,36 +970,36 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
       }
       updates.settings = encryptColumnValueForWrite('partners', 'settings', updates.settings);
     }
-    const [before] = data.status === undefined
-      ? []
-      : await tx
-        .select({ status: partners.status })
-        .from(partners)
-        .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
-        .limit(1);
+    const beforeStatus = lifecycleRows?.partner?.status;
     const [updatedPartner] = await tx
       .update(partners)
       .set(updates)
       .where(and(eq(partners.id, id), isNull(partners.deletedAt)))
       .returning();
-    if (updatedPartner && data.settings && hasMfaPolicyInput(data.settings)) {
+    if (updatedPartner && isMfaPolicyWrite) {
       mfaPolicyInvalidation = await invalidateMfaPolicyAssurance(tx as any, {
         partnerId: id,
         reason: 'partner-mfa-policy-changed',
       });
     }
-    if (updatedPartner && data.status !== undefined && before?.status !== data.status) {
+    if (
+      updatedPartner
+      && lifecycleRows
+      && data.status !== undefined
+      && beforeStatus !== data.status
+    ) {
       lifecycleSnapshot = await invalidatePartnerUsersInTransaction(
         tx as any,
         id,
         'partner-status-changed',
+        lifecycleRows,
       );
     }
     return updatedPartner;
   };
   let partner;
   try {
-    partner = data.settings && hasMfaPolicyInput(data.settings)
+    partner = isMfaPolicyWrite
       ? await withMfaPolicySystemTransaction((tx) => updatePartner(tx as unknown as typeof db))
       : data.status === undefined
         ? await updatePartner(db)
@@ -1058,6 +1068,7 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
 
   let lifecycleSnapshot: PartnerLifecycleSnapshot | undefined;
   const partner = await withAuthLifecycleSystemTransaction(async (tx) => {
+    const lifecycleRows = await lockPartnerLifecycleRows(tx, id);
     const [updatedPartner] = await tx
       .update(partners)
       .set({ status: 'churned', deletedAt: new Date(), updatedAt: new Date() })
@@ -1068,6 +1079,7 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
         tx as any,
         id,
         'partner-deleted',
+        lifecycleRows,
       );
     }
     return updatedPartner;

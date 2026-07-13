@@ -1,18 +1,19 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { db } from '../db';
 import {
-  organizationUsers,
+  apiKeys,
+  deviceCommands,
+  devices,
   organizations,
   partners,
-  partnerUsers,
-  refreshTokenFamilies,
+  sessions,
   users,
 } from '../db/schema';
+import type { AuthLifecycleTransaction } from './authLifecycle';
 import {
-  advanceUserSecurityState,
-  revokeAllUserSessionFamilies,
-  type AuthLifecycleTransaction,
-} from './authLifecycle';
+  invalidateLockedPartnerUsersInTransaction,
+  lockPartnerLifecycleRows,
+} from './partnerLifecycleLock';
 
 /**
  * Partner activation reconciliation (issue #718).
@@ -161,6 +162,53 @@ export interface PartnerActivationResult {
   userIds: string[];
 }
 
+type PartnerLifecycleStatus = 'pending' | 'active' | 'suspended' | 'churned';
+
+/** Apply a delayed registration-hook status only while the partner is still in
+ * the state the hook request observed. Abuse suspension/deletion always wins a
+ * stale external response. */
+export async function applyRegistrationHookStatusTransition(
+  tx: AuthLifecycleTransaction,
+  input: {
+    partnerId: string;
+    expectedStatus: PartnerLifecycleStatus;
+    nextStatus: PartnerLifecycleStatus;
+    statusMetadata?: PartnerActivationStatusMetadata;
+  },
+): Promise<{ applied: boolean }> {
+  const locked = await lockPartnerLifecycleRows(tx, input.partnerId);
+  const updateSet: Record<string, unknown> = {
+    status: input.nextStatus,
+    updatedAt: new Date(),
+  };
+  const metadata = input.statusMetadata;
+  const statusSettings: Record<string, string> = {};
+  if (metadata?.message) statusSettings.statusMessage = metadata.message;
+  if (metadata?.actionUrl) statusSettings.statusActionUrl = metadata.actionUrl;
+  if (metadata?.actionLabel) statusSettings.statusActionLabel = metadata.actionLabel;
+  if (Object.keys(statusSettings).length > 0) {
+    updateSet.settings = sql`COALESCE(${partners.settings}, '{}'::jsonb) || ${JSON.stringify(statusSettings)}::jsonb`;
+  }
+
+  const updated = await tx
+    .update(partners)
+    .set(updateSet)
+    .where(and(
+      eq(partners.id, input.partnerId),
+      eq(partners.status, input.expectedStatus),
+      isNull(partners.deletedAt),
+    ))
+    .returning({ id: partners.id });
+  if (updated.length === 0) return { applied: false };
+
+  await invalidateLockedPartnerUsersInTransaction(
+    tx,
+    locked,
+    'registration-hook-status-changed',
+  );
+  return { applied: true };
+}
+
 /**
  * Activate one pending partner and invalidate every session that was minted
  * while that tenant was inactive. The caller must supply the active system
@@ -173,65 +221,15 @@ export async function activatePendingPartnerAndInvalidateSessions(
   now: Date = new Date(),
   statusMetadata?: PartnerActivationStatusMetadata,
 ): Promise<PartnerActivationResult> {
-  // Discover the affected population before taking locks, then obey the
-  // browser-auth global lock order: transition (owned by the caller), every
-  // user in UUID order, every family in UUID order, and only then the
-  // route-specific partner row. Holding all user locks prevents a concurrent
-  // issuer from inserting a new family after the family snapshot.
-  const orgRows = await tx
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(eq(organizations.partnerId, partnerId));
-  const orgIds = orgRows.map((row) => row.id);
-  const partnerMemberships = await tx
-    .select({ userId: partnerUsers.userId })
-    .from(partnerUsers)
-    .where(eq(partnerUsers.partnerId, partnerId));
-  const orgMemberships = orgIds.length === 0
-    ? []
-    : await tx
-      .select({ userId: organizationUsers.userId })
-      .from(organizationUsers)
-      .where(inArray(organizationUsers.orgId, orgIds));
-  const userIds = [...new Set([
-    ...partnerMemberships.map((row) => row.userId),
-    ...orgMemberships.map((row) => row.userId),
-  ])].sort();
-
-  if (userIds.length > 0) {
-    const lockedUsers = await tx
-      .select({ id: users.id })
-      .from(users)
-      .where(inArray(users.id, userIds))
-      .orderBy(users.id)
-      .for('update');
-    if (lockedUsers.length !== userIds.length) {
-      throw new Error('Failed to lock every partner user for activation');
-    }
-
-    await tx
-      .select({ familyId: refreshTokenFamilies.familyId })
-      .from(refreshTokenFamilies)
-      .where(and(
-        inArray(refreshTokenFamilies.userId, userIds),
-        isNull(refreshTokenFamilies.revokedAt),
-      ))
-      .orderBy(refreshTokenFamilies.familyId)
-      .for('update');
-  }
+  const locked = await lockPartnerLifecycleRows(tx, partnerId);
 
   if (!(await activatePartnerRow(tx, partnerId, now, statusMetadata))) {
     return { activated: false, userIds: [] };
   }
 
-  for (const userId of userIds) {
-    await advanceUserSecurityState(tx, userId);
-  }
-  for (const userId of userIds) {
-    await revokeAllUserSessionFamilies(tx, userId, 'partner-activated');
-  }
+  await invalidateLockedPartnerUsersInTransaction(tx, locked, 'partner-activated');
 
-  return { activated: true, userIds };
+  return { activated: true, userIds: locked.userIds };
 }
 
 /**
@@ -244,31 +242,14 @@ export async function restoreSuspendedPartnerInTransaction(
   tx: AuthLifecycleTransaction,
   partnerId: string,
 ) {
-  const [partner] = await tx
-    .select({
-      id: partners.id,
-      status: partners.status,
-      emailVerifiedAt: partners.emailVerifiedAt,
-      paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
-    })
-    .from(partners)
-    .where(eq(partners.id, partnerId))
-    .limit(1)
-    .for('update');
+  const locked = await lockPartnerLifecycleRows(tx, partnerId);
+  const partner = locked.partner;
 
   // Deliberately use the same response shape for missing and ineligible rows:
   // callers must not be able to use this endpoint as a partner-status oracle.
   if (!partner || partner.status !== 'suspended') {
     return { notFound: true as const };
   }
-
-  // Snapshot the whole partner population before changing any user rows. Auth
-  // invalidation is based on tenant membership, not on which accounts happen
-  // to carry the partner_suspended marker.
-  const partnerUserRows = await tx
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.partnerId, partnerId));
 
   const newStatus: 'active' | 'pending' = shouldActivatePendingPartner({
     status: 'pending',
@@ -288,18 +269,125 @@ export async function restoreSuspendedPartnerInTransaction(
   // a concurrent legacy/membership repair cannot leave a restored user out.
   const reEnabled = await reEnableSuspensionDisabledUsers(tx, partnerId);
   const affectedUserIds = [...new Set([
-    ...partnerUserRows.map((user) => user.id),
+    ...locked.userIds,
     ...reEnabled.map((user) => user.id),
-  ])];
-  for (const userId of affectedUserIds) {
-    await advanceUserSecurityState(tx, userId);
-    await revokeAllUserSessionFamilies(tx, userId, 'partner-reactivated');
-  }
+  ])].sort();
+  await invalidateLockedPartnerUsersInTransaction(
+    tx,
+    locked,
+    'partner-reactivated',
+    affectedUserIds,
+  );
 
   return {
     notFound: false as const,
     status: newStatus,
     userCount: reEnabled.length,
+    affectedUserIds,
+  };
+}
+
+/**
+ * Mark only currently active, non-platform users as suspension-disabled.
+ * Existing disabled users retain their independent reason and invited users
+ * remain invited, so restore cannot resurrect an unrelated disabled identity
+ * or promote an unaccepted invite.
+ */
+export function disablePartnerUsersForSuspension(
+  tx: AuthLifecycleTransaction,
+  partnerId: string,
+) {
+  return tx
+    .update(users)
+    .set({
+      status: 'disabled',
+      disabledReason: PARTNER_SUSPENSION_DISABLED_REASON,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(users.partnerId, partnerId),
+      eq(users.isPlatformAdmin, false),
+      eq(users.status, 'active'),
+    ))
+    .returning({ id: users.id });
+}
+
+/** Abuse suspension transaction core. Post-commit Redis/OAuth/remote cleanup
+ * remains route-owned; every durable partner/user/family/credential mutation
+ * stays atomic here under the shared lifecycle lock order. */
+export async function suspendPartnerForAbuseInTransaction(
+  tx: AuthLifecycleTransaction,
+  partnerId: string,
+  callerId: string,
+) {
+  const locked = await lockPartnerLifecycleRows(tx, partnerId);
+  if (!locked.partner) return { notFound: true as const };
+
+  await tx
+    .update(partners)
+    .set({ status: 'suspended', updatedAt: new Date() })
+    .where(eq(partners.id, partnerId));
+
+  const partnerDevices = await tx
+    .select({ id: devices.id })
+    .from(devices)
+    .innerJoin(organizations, eq(devices.orgId, organizations.id))
+    .where(eq(organizations.partnerId, partnerId));
+  const deviceIds = partnerDevices.map((device) => device.id);
+  if (deviceIds.length > 0) {
+    await tx.insert(deviceCommands).values(deviceIds.map((deviceId) => ({
+      deviceId,
+      type: 'self_uninstall' as const,
+      payload: { removeConfig: true },
+      status: 'pending' as const,
+      targetRole: 'agent' as const,
+      createdBy: callerId,
+    })));
+    await tx
+      .update(deviceCommands)
+      .set({
+        status: 'cancelled',
+        completedAt: new Date(),
+        result: { reason: 'partner_suspended_for_abuse' },
+      })
+      .where(and(
+        inArray(deviceCommands.deviceId, deviceIds),
+        ne(deviceCommands.type, 'self_uninstall'),
+        inArray(deviceCommands.status, ['pending', 'sent']),
+      ));
+  }
+
+  const sessionTargets = locked.userIds.filter((id) => id !== callerId);
+  if (sessionTargets.length > 0) {
+    await tx.delete(sessions).where(inArray(sessions.userId, sessionTargets));
+  }
+  const disabled = await disablePartnerUsersForSuspension(tx, partnerId);
+
+  let apiKeyCount = 0;
+  if (locked.orgIds.length > 0) {
+    const revokedKeys = await tx
+      .update(apiKeys)
+      .set({ status: 'revoked', updatedAt: new Date() })
+      .where(and(inArray(apiKeys.orgId, locked.orgIds), ne(apiKeys.status, 'revoked')))
+      .returning({ id: apiKeys.id });
+    apiKeyCount = revokedKeys.length;
+  }
+
+  const affectedUserIds = locked.userRows
+    .filter((user) => !(user.isPlatformAdmin && user.id === callerId))
+    .map((user) => user.id);
+  await invalidateLockedPartnerUsersInTransaction(
+    tx,
+    locked,
+    'partner-suspended',
+    affectedUserIds,
+  );
+
+  return {
+    notFound: false as const,
+    deviceCount: deviceIds.length,
+    userCount: disabled.length,
+    apiKeyCount,
     affectedUserIds,
   };
 }

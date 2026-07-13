@@ -134,16 +134,22 @@ describe('activatePartnerRow', () => {
         }),
       }),
       select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([]),
-        }),
+        from: vi.fn((table: unknown) => ({
+          where: vi.fn().mockReturnValue(table === partners
+            ? {
+                limit: vi.fn().mockReturnValue({
+                  for: vi.fn().mockResolvedValue([{ id: 'p-1', status: 'pending' }]),
+                }),
+              }
+            : Promise.resolve([])),
+        })),
       }),
     } as any;
 
     await expect(
       activatePendingPartnerAndInvalidateSessions(tx, 'p-1'),
     ).resolves.toEqual({ activated: false, userIds: [] });
-    expect(tx.select).toHaveBeenCalledTimes(2);
+    expect(tx.select).toHaveBeenCalledTimes(4);
     expect(advanceUserSecurityState).not.toHaveBeenCalled();
     expect(revokeAllUserSessionFamilies).not.toHaveBeenCalled();
   });
@@ -181,6 +187,7 @@ describe('activatePartnerRow', () => {
       [partnerUsers, [{ userId: 'user-1' }, { userId: 'user-2' }]],
       [organizationUsers, [{ userId: 'user-2' }, { userId: 'user-3' }]],
     ]);
+    let userSelectCount = 0;
     const tx = {
       update: vi.fn((table: unknown) => {
         expect(table).toBe(partners);
@@ -194,7 +201,24 @@ describe('activatePartnerRow', () => {
       }),
       select: vi.fn().mockReturnValue({
         from: vi.fn((table: unknown) => {
-          if (table === users || table === refreshTokenFamilies) {
+          if (table === users) {
+            userSelectCount += 1;
+            if (userSelectCount === 1) {
+              return { where: vi.fn().mockResolvedValue([]) };
+            }
+            const lockedRows = ['user-1', 'user-2', 'user-3'].map((id) => ({
+              id,
+              isPlatformAdmin: false,
+            }));
+            return {
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  for: vi.fn().mockResolvedValue(lockedRows),
+                }),
+              }),
+            };
+          }
+          if (table === refreshTokenFamilies) {
             const lockedRows = table === users
               ? ['user-1', 'user-2', 'user-3'].map((id) => ({ id }))
               : [];
@@ -202,6 +226,15 @@ describe('activatePartnerRow', () => {
               where: vi.fn().mockReturnValue({
                 orderBy: vi.fn().mockReturnValue({
                   for: vi.fn().mockResolvedValue(lockedRows),
+                }),
+              }),
+            };
+          }
+          if (table === partners) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  for: vi.fn().mockResolvedValue([{ id: 'p-1', status: 'pending' }]),
                 }),
               }),
             };
@@ -252,22 +285,49 @@ describe('activatePartnerRow', () => {
       [partnerUsers, [{ userId: '00000000-0000-4000-8000-000000000003' }, { userId: '00000000-0000-4000-8000-000000000001' }]],
       [organizationUsers, [{ userId: '00000000-0000-4000-8000-000000000002' }]],
     ]);
+    let userSelectCount = 0;
     const tx = {
       select: vi.fn().mockReturnValue({
         from: vi.fn((table: unknown) => {
-          if (table === users || table === refreshTokenFamilies) {
+          if (table === users) {
+            userSelectCount += 1;
+            if (userSelectCount === 1) {
+              return { where: vi.fn().mockResolvedValue([]) };
+            }
             return {
               where: vi.fn().mockReturnValue({
                 orderBy: vi.fn().mockReturnValue({
                   for: vi.fn(async () => {
-                    events.push(table === users ? 'lock:users' : 'lock:families');
-                    return table === users
-                      ? [
+                    events.push('lock:users');
+                    return [
                         { id: '00000000-0000-4000-8000-000000000001' },
                         { id: '00000000-0000-4000-8000-000000000002' },
                         { id: '00000000-0000-4000-8000-000000000003' },
-                      ]
-                      : [];
+                      ];
+                  }),
+                }),
+              }),
+            };
+          }
+          if (table === refreshTokenFamilies) {
+            return {
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  for: vi.fn(async () => {
+                    events.push('lock:families');
+                    return [];
+                  }),
+                }),
+              }),
+            };
+          }
+          if (table === partners) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  for: vi.fn(async () => {
+                    events.push('lock:partner');
+                    return [{ id: 'p-1', status: 'pending' }];
                   }),
                 }),
               }),
@@ -279,7 +339,6 @@ describe('activatePartnerRow', () => {
         }),
       }),
       update: vi.fn((table: unknown) => {
-        if (table === partners) events.push('lock:partner');
         return {
           set: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -315,6 +374,7 @@ describe('activatePartnerRow', () => {
 
   it('propagates lifecycle failure so the caller transaction rolls back activation', async () => {
     vi.mocked(revokeAllUserSessionFamilies).mockRejectedValueOnce(new Error('family write failed'));
+    let userSelectCount = 0;
     const tx = {
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({
@@ -330,6 +390,21 @@ describe('activatePartnerRow', () => {
           }
           if (table === partnerUsers) {
             return { where: vi.fn().mockResolvedValue([{ userId: 'user-1' }]) };
+          }
+          if (table === users) {
+            userSelectCount += 1;
+            if (userSelectCount === 1) {
+              return { where: vi.fn().mockResolvedValue([]) };
+            }
+          }
+          if (table === partners) {
+            return {
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  for: vi.fn().mockResolvedValue([{ id: 'p-1', status: 'pending' }]),
+                }),
+              }),
+            };
           }
           const lockedRows = table === users ? [{ id: 'user-1' }] : [];
           return {

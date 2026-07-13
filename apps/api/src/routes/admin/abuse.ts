@@ -1,16 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, eq, inArray, ne } from 'drizzle-orm';
-import {
-  partners,
-  organizations,
-  devices,
-  deviceCommands,
-  users,
-  sessions,
-  apiKeys,
-} from '../../db/schema';
 import { createAuditLog } from '../../services/auditService';
 import { revokeAllUserTokens } from '../../services/tokenRevocation';
 import { revokeAllPartnerOauthArtifacts } from '../../oauth/grantRevocation';
@@ -19,55 +9,18 @@ import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../../services/rem
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
-import type { Database } from '../../db';
+import { withAuthLifecycleSystemTransaction } from '../../services/authLifecycle';
 import {
-  advanceUserSecurityState,
-  revokeAllUserSessionFamilies,
-  withAuthLifecycleSystemTransaction,
-} from '../../services/authLifecycle';
-import {
-  PARTNER_SUSPENSION_DISABLED_REASON,
   restoreSuspendedPartnerInTransaction,
+  suspendPartnerForAbuseInTransaction,
 } from '../../services/partnerActivation';
 
-export { reEnableSuspensionDisabledUsers } from '../../services/partnerActivation';
+export {
+  disablePartnerUsersForSuspension,
+  reEnableSuspensionDisabledUsers,
+} from '../../services/partnerActivation';
 
 export const abuseRoutes = new Hono();
-
-// The `users.disabled_reason` marker written by partner suspension. Unsuspend
-// re-enables exactly the users carrying it, leaving users disabled for any other
-// reason (compromise, off-boarding, manual admin action → NULL) untouched.
-// See #917 (L-5).
-type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
-
-/**
- * Disable the currently-active non-platform-admin users under a partner as part
- * of suspension, stamping the suspension marker so unsuspend restores exactly
- * these (back to 'active'). We deliberately only touch `status='active'` users:
- *  - already-`disabled` users keep their existing reason (e.g. compromise), so
- *    unsuspend won't resurrect them; and
- *  - `invited` users are left invited rather than disabled — the partner-level
- *    suspension gate already blocks them, and stamping them would make unsuspend
- *    silently promote an unaccepted invite into a full 'active' account.
- * Returns the ids actually disabled by this call.
- */
-export function disablePartnerUsersForSuspension(tx: Tx, partnerId: string) {
-  return tx
-    .update(users)
-    .set({
-      status: 'disabled',
-      disabledReason: PARTNER_SUSPENSION_DISABLED_REASON,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(users.partnerId, partnerId),
-        eq(users.isPlatformAdmin, false),
-        eq(users.status, 'active'),
-      ),
-    )
-    .returning({ id: users.id });
-}
 
 // confirmEmail must match the caller's account email on suspend — same
 // anti-typo gate as POST /admin/tenant-erasure. Suspend queues
@@ -99,119 +52,9 @@ abuseRoutes.post(
     const partnerId = c.req.param('id');
     const callerId = auth.user.id;
 
-    const result = await withAuthLifecycleSystemTransaction(async (tx) => {
-        const [partner] = await tx
-          .select({ id: partners.id, status: partners.status })
-          .from(partners)
-          .where(eq(partners.id, partnerId))
-          .limit(1);
-
-        if (!partner) {
-          return { notFound: true as const };
-        }
-
-        await tx
-          .update(partners)
-          .set({ status: 'suspended', updatedAt: new Date() })
-          .where(eq(partners.id, partnerId));
-
-        // Collect device IDs under this partner (one query, used for both queueing
-        // uninstalls and cancelling other pending commands).
-        const partnerDevices = await tx
-          .select({ id: devices.id })
-          .from(devices)
-          .innerJoin(organizations, eq(devices.orgId, organizations.id))
-          .where(eq(organizations.partnerId, partnerId));
-        const deviceIds = partnerDevices.map((d) => d.id);
-        const deviceCount = deviceIds.length;
-
-        if (deviceCount > 0) {
-          // Queue a self_uninstall for every device in one INSERT (multi-row VALUES).
-          await tx.insert(deviceCommands).values(
-            deviceIds.map((id) => ({
-              deviceId: id,
-              type: 'self_uninstall',
-              payload: { removeConfig: true },
-              status: 'pending',
-              targetRole: 'agent',
-              createdBy: callerId,
-            }))
-          );
-
-          // Cancel any other pending/sent commands for those devices.
-          await tx
-            .update(deviceCommands)
-            .set({
-              status: 'cancelled',
-              completedAt: new Date(),
-              result: { reason: 'partner_suspended_for_abuse' },
-            })
-            .where(
-              and(
-                inArray(deviceCommands.deviceId, deviceIds),
-                ne(deviceCommands.type, 'self_uninstall'),
-                inArray(deviceCommands.status, ['pending', 'sent'])
-              )
-            );
-        }
-
-        // Collect users for revocation BEFORE deleting sessions.
-        const partnerUserRows = await tx
-          .select({ id: users.id, isPlatformAdmin: users.isPlatformAdmin })
-          .from(users)
-          .where(eq(users.partnerId, partnerId));
-        const partnerUserIds = partnerUserRows.map((u) => u.id);
-
-        // Delete sessions for all partner users EXCEPT the calling platform
-        // admin if they happen to be a member. We also skip them in the JWT
-        // revocation step below — keeps the responder logged in mid-incident.
-        const sessionTargets = partnerUserIds.filter((id) => id !== callerId);
-        if (sessionTargets.length > 0) {
-          await tx.delete(sessions).where(inArray(sessions.userId, sessionTargets));
-        }
-
-        // Disable users — but never disable the calling platform admin if
-        // they happen to be a member of the partner being suspended. Already-
-        // disabled users keep their existing disabled_reason so unsuspend can
-        // tell suspension-disabled users apart from the rest (#917 L-5). Token/
-        // session revocation below still covers ALL partner users via
-        // affectedUserIds, independent of this set.
-        const disableResult = await disablePartnerUsersForSuspension(tx, partnerId);
-        const userCount = disableResult.length;
-
-        // Revoke API keys for orgs under this partner.
-        const partnerOrgs = await tx
-          .select({ id: organizations.id })
-          .from(organizations)
-          .where(eq(organizations.partnerId, partnerId));
-        const orgIds = partnerOrgs.map((o) => o.id);
-
-        let apiKeyCount = 0;
-        if (orgIds.length > 0) {
-          const apiKeyResult = await tx
-            .update(apiKeys)
-            .set({ status: 'revoked', updatedAt: new Date() })
-            .where(and(inArray(apiKeys.orgId, orgIds), ne(apiKeys.status, 'revoked')))
-            .returning({ id: apiKeys.id });
-          apiKeyCount = apiKeyResult.length;
-        }
-
-        const affectedUserIds = partnerUserRows
-          .filter((u) => !(u.isPlatformAdmin && u.id === callerId))
-          .map((u) => u.id);
-        for (const userId of affectedUserIds) {
-          await advanceUserSecurityState(tx, userId);
-          await revokeAllUserSessionFamilies(tx, userId, 'partner-suspended');
-        }
-
-        return {
-          notFound: false as const,
-          deviceCount,
-          userCount,
-          apiKeyCount,
-          affectedUserIds,
-        };
-    });
+    const result = await withAuthLifecycleSystemTransaction((tx) =>
+      suspendPartnerForAbuseInTransaction(tx, partnerId, callerId)
+    );
 
     if (result.notFound) {
       return c.json({ error: 'partner not found' }, 404);

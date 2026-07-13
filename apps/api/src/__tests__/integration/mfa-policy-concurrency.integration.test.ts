@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import './setup';
 import { getTestDb } from './setup';
 import {
@@ -19,6 +19,9 @@ import {
   validateOrganizationMfaPolicySettingsWrite,
   validatePartnerMfaPolicySettingsWrite,
 } from '../../services/mfaPolicy';
+import { lockMfaAssuranceState } from '../../services/mfaAssuranceLocks';
+import { lockPartnerMfaLifecycleRows } from '../../services/partnerLifecycleLock';
+import { withAuthLifecycleSystemTransaction } from '../../services/authLifecycle';
 
 function deferred() {
   let resolve!: () => void;
@@ -107,6 +110,57 @@ describe('MFA policy serialization against real PostgreSQL', () => {
     expect(organization?.settings).toEqual({
       security: { allowedMethods: { totp: true, passkey: true } },
     });
+  });
+
+  it('takes the MFA advisory lock before partner lifecycle user locks', async () => {
+    const tdb = getTestDb();
+    const user = await createUser({ partnerId });
+    const role = await createRole({ scope: 'partner', partnerId });
+    await assignUserToPartner(user.id, partnerId, role.id, 'all');
+
+    const advisoryHeld = deferred();
+    const releaseFactor = deferred();
+    const factorMutation = tdb.transaction(async (tx) => {
+      await lockMfaPolicyPartner(tx, partnerId);
+      advisoryHeld.resolve();
+      await releaseFactor.promise;
+      await lockMfaAssuranceState(tx, { partnerId, userId: user.id });
+    });
+    await advisoryHeld.promise;
+
+    const partnerMutation = withAuthLifecycleSystemTransaction((tx) =>
+      lockPartnerMfaLifecycleRows(tx, partnerId)
+    );
+    void partnerMutation.catch(() => undefined);
+    try {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const rows = await tdb.execute(sql`
+          SELECT count(*)::int AS blocked_count
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND usename = 'breeze_app'
+            AND wait_event_type = 'Lock'
+            AND position('pg_advisory_xact_lock' in lower(query)) > 0
+        `) as unknown as Array<{ blocked_count: number }>;
+        if (Number(rows[0]?.blocked_count ?? 0) >= 1) break;
+        if (attempt === 199) throw new Error('partner MFA lifecycle did not block on advisory lock');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      // The combined partner mutation must not hold the user while waiting on
+      // the advisory lock. Under users -> advisory, this probe times out and
+      // releasing the factor creates the exact two-edge deadlock.
+      await tdb.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '500ms'`);
+        await tx.execute(sql`SELECT id FROM users WHERE id = ${user.id}::uuid FOR UPDATE`);
+      });
+
+      releaseFactor.resolve();
+      await expect(Promise.all([factorMutation, partnerMutation])).resolves.toBeTruthy();
+    } finally {
+      releaseFactor.resolve();
+      await Promise.allSettled([factorMutation, partnerMutation]);
+    }
   });
 });
 

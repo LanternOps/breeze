@@ -8,6 +8,10 @@ const tenantLifecycleTxMocks = vi.hoisted(() => ({
   withSystemTransaction: vi.fn(),
 }));
 
+const lifecycleLockMocks = vi.hoisted(() => ({
+  lock: vi.fn(),
+}));
+
 const lifecycleAuthorizationMocks = vi.hoisted(() => ({
   authorizeOrganizationWrite: vi.fn(),
 }));
@@ -76,6 +80,11 @@ vi.mock('../services/tenantLifecycle', () => ({
 
 vi.mock('../services/authLifecycle', () => ({
   withAuthLifecycleSystemTransaction: tenantLifecycleTxMocks.withSystemTransaction,
+}));
+
+vi.mock('../services/partnerLifecycleLock', () => ({
+  lockPartnerLifecycleRows: lifecycleLockMocks.lock,
+  lockPartnerMfaLifecycleRows: lifecycleLockMocks.lock,
 }));
 
 vi.mock('../services/lifecycleAuthorization', () => ({
@@ -280,6 +289,17 @@ describe('org routes', () => {
     );
     tenantLifecycleTxMocks.invalidatePartner.mockClear();
     tenantLifecycleTxMocks.invalidateOrganization.mockClear();
+    lifecycleLockMocks.lock.mockResolvedValue({
+      orgIds: ['org-1'],
+      userIds: ['user-1'],
+      userRows: [{ id: 'user-1', isPlatformAdmin: false }],
+      partner: {
+        id: 'partner-123',
+        status: 'active',
+        emailVerifiedAt: null,
+        paymentMethodAttachedAt: null,
+      },
+    });
     lifecycleAuthorizationMocks.authorizeOrganizationWrite.mockReset();
     lifecycleAuthorizationMocks.authorizeOrganizationWrite.mockResolvedValue({
       authorized: true,
@@ -601,6 +621,13 @@ describe('org routes', () => {
         expect.anything(),
         'partner-1',
         'partner-status-changed',
+        expect.anything(),
+      );
+      expect(lifecycleLockMocks.lock.mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(db.update).mock.invocationCallOrder[0]!,
+      );
+      expect(vi.mocked(db.update).mock.invocationCallOrder[0]).toBeLessThan(
+        tenantLifecycleTxMocks.invalidatePartner.mock.invocationCallOrder[0]!,
       );
       expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1', {
         userIds: ['user-1'],
@@ -669,6 +696,7 @@ describe('org routes', () => {
         expect.anything(),
         'partner-1',
         'partner-status-changed',
+        expect.anything(),
       );
       expect(revokePartnerTenantAccess).not.toHaveBeenCalled();
       expect(restorePartnerTenantAccess).not.toHaveBeenCalled();
@@ -849,6 +877,7 @@ describe('org routes', () => {
         partnerId: 'partner-1',
         reason: 'partner-mfa-policy-changed',
       });
+      expect(tenantLifecycleTxMocks.invalidatePartner).not.toHaveBeenCalled();
       });
     });
 
@@ -1126,6 +1155,7 @@ describe('org routes', () => {
         expect.anything(),
         'partner-1',
         'partner-deleted',
+        expect.anything(),
       );
       expect(revokePartnerTenantAccess).toHaveBeenCalledWith('partner-1', {
         userIds: ['user-1'],

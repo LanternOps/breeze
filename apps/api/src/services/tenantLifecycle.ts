@@ -12,6 +12,11 @@ import {
   type AuthLifecycleTransaction,
 } from './authLifecycle';
 import { runPostCommitCleanup } from './postCommitCleanup';
+import {
+  invalidateLockedPartnerUsersInTransaction,
+  lockPartnerLifecycleRows,
+  type LockedPartnerLifecycleRows,
+} from './partnerLifecycleLock';
 
 export interface TenantRevocationResult {
   apiKeysRevoked: number;
@@ -179,27 +184,18 @@ export async function invalidatePartnerUsersInTransaction(
   tx: TenantLifecycleTransaction,
   partnerId: string,
   reason: string,
+  prelocked?: LockedPartnerLifecycleRows,
 ): Promise<{ orgIds: string[]; userIds: string[] }> {
-  const orgRows = await tx
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(eq(organizations.partnerId, partnerId));
-  const orgIds = orgRows.map((row) => row.id);
-  const partnerMemberships = await tx
-    .select({ userId: partnerUsers.userId })
-    .from(partnerUsers)
-    .where(eq(partnerUsers.partnerId, partnerId));
-  const orgMemberships = orgIds.length === 0
-    ? []
-    : await tx
-      .select({ userId: organizationUsers.userId })
-      .from(organizationUsers)
-      .where(inArray(organizationUsers.orgId, orgIds));
-  const userIds = await revokeUsersDurably(tx, [
-    ...partnerMemberships.map((row) => row.userId),
-    ...orgMemberships.map((row) => row.userId),
-  ], reason);
-  return { orgIds, userIds };
+  const locked = prelocked ?? await lockPartnerLifecycleRows(
+    tx as unknown as AuthLifecycleTransaction,
+    partnerId,
+  );
+  const userIds = await invalidateLockedPartnerUsersInTransaction(
+    tx as unknown as AuthLifecycleTransaction,
+    locked,
+    reason,
+  );
+  return { orgIds: locked.orgIds, userIds };
 }
 
 export async function revokeOrganizationTenantAccess(

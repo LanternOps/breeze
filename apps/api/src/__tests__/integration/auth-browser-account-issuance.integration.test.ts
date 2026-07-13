@@ -38,7 +38,12 @@ import {
 } from '../../services/authLifecycle';
 import { createRegisteredPartnerSession } from '../../routes/auth/register';
 import { activateInvitedUserSession } from '../../routes/auth/invite';
-import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
+import {
+  applyRegistrationHookStatusTransition,
+  activatePendingPartnerAndInvalidateSessions,
+  restoreSuspendedPartnerInTransaction,
+  suspendPartnerForAbuseInTransaction,
+} from '../../services/partnerActivation';
 import { issueUserSession } from '../../services/userSession';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
 import {
@@ -640,5 +645,158 @@ describe('registration and invite issuance against terminal logout', () => {
         ...(verification ? [verification] : []),
       ]);
     }
+  });
+});
+
+describe('partner lifecycle writers share the browser-auth lock order', () => {
+  async function expectPartnerRowStillLockable(partnerId: string) {
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL lock_timeout = '500ms'`);
+      await tx.execute(sql`
+        SELECT id FROM partners WHERE id = ${partnerId}::uuid FOR UPDATE
+      `);
+    });
+  }
+
+  it('serializes activation against abuse suspension without a partner-to-user deadlock', async () => {
+    const db = getTestDb();
+    const partner = await createPartner({ name: 'Activation Suspension Lock Partner' });
+    await db.update(partners).set({ status: 'pending' }).where(eq(partners.id, partner.id));
+    const user = await createUser({
+      partnerId: partner.id,
+      email: 'activation-suspension-lock@example.com',
+      withMembership: true,
+    });
+    await withAuthLifecycleSystemTransaction((tx) => mintRefreshTokenFamily(user.id, { tx }));
+
+    const userLockHeld = deferred();
+    const releaseUserLock = deferred();
+    const blocker = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM users WHERE id = ${user.id}::uuid FOR UPDATE`);
+      userLockHeld.resolve();
+      await releaseUserLock.promise;
+    });
+    await userLockHeld.promise;
+
+    const activation = withAuthLifecycleSystemTransaction((tx) =>
+      activatePendingPartnerAndInvalidateSessions(tx, partner.id)
+    );
+    void activation.catch(() => undefined);
+    let suspension!: Promise<Awaited<ReturnType<typeof suspendPartnerForAbuseInTransaction>>>;
+    try {
+      await waitForBlockedActivationLock('users', 1);
+      suspension = withAuthLifecycleSystemTransaction((tx) =>
+        suspendPartnerForAbuseInTransaction(tx, partner.id, crypto.randomUUID())
+      );
+      void suspension.catch(() => undefined);
+      await waitForBlockedActivationLock('users', 2);
+
+      // Neither contender may own the later partner row while waiting for the
+      // first user. A partner-first suspension fails this probe and forms the
+      // inverse edge needed for a real PostgreSQL deadlock after release.
+      await expectPartnerRowStillLockable(partner.id);
+
+      releaseUserLock.resolve();
+      await blocker;
+      await expect(Promise.all([activation, suspension])).resolves.toBeTruthy();
+      const [after] = await db.select({ status: partners.status }).from(partners)
+        .where(eq(partners.id, partner.id));
+      expect(after?.status).toBe('suspended');
+    } finally {
+      releaseUserLock.resolve();
+      await Promise.allSettled([blocker, activation, ...(suspension ? [suspension] : [])]);
+    }
+  });
+
+  it('serializes activation against restore without a partner-to-user deadlock', async () => {
+    const db = getTestDb();
+    const partner = await createPartner({ name: 'Activation Restore Lock Partner' });
+    await db.update(partners).set({
+      status: 'suspended',
+      emailVerifiedAt: new Date(),
+      paymentMethodAttachedAt: new Date(),
+    }).where(eq(partners.id, partner.id));
+    const user = await createUser({
+      partnerId: partner.id,
+      email: 'activation-restore-lock@example.com',
+      withMembership: true,
+    });
+    await db.update(users).set({
+      status: 'disabled',
+      disabledReason: 'partner_suspended',
+    }).where(eq(users.id, user.id));
+    await withAuthLifecycleSystemTransaction((tx) => mintRefreshTokenFamily(user.id, { tx }));
+
+    const userLockHeld = deferred();
+    const releaseUserLock = deferred();
+    const blocker = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM users WHERE id = ${user.id}::uuid FOR UPDATE`);
+      userLockHeld.resolve();
+      await releaseUserLock.promise;
+    });
+    await userLockHeld.promise;
+
+    const activation = withAuthLifecycleSystemTransaction((tx) =>
+      activatePendingPartnerAndInvalidateSessions(tx, partner.id)
+    );
+    void activation.catch(() => undefined);
+    let restore!: Promise<Awaited<ReturnType<typeof restoreSuspendedPartnerInTransaction>>>;
+    try {
+      await waitForBlockedActivationLock('users', 1);
+      restore = withAuthLifecycleSystemTransaction((tx) =>
+        restoreSuspendedPartnerInTransaction(tx, partner.id)
+      );
+      void restore.catch(() => undefined);
+      await waitForBlockedActivationLock('users', 2);
+      await expectPartnerRowStillLockable(partner.id);
+
+      releaseUserLock.resolve();
+      await blocker;
+      const [activationResult, restoreResult] = await Promise.all([activation, restore]);
+      expect(activationResult.activated).toBe(false);
+      expect(restoreResult).toMatchObject({ notFound: false, status: 'active' });
+      const [after] = await db.select({ status: partners.status }).from(partners)
+        .where(eq(partners.id, partner.id));
+      expect(after?.status).toBe('active');
+    } finally {
+      releaseUserLock.resolve();
+      await Promise.allSettled([blocker, activation, ...(restore ? [restore] : [])]);
+    }
+  });
+
+  it('keeps a committed abuse suspension authoritative over a delayed registration hook', async () => {
+    const db = getTestDb();
+    const partner = await createPartner({ name: 'Delayed Registration Hook Partner' });
+    const user = await createUser({
+      partnerId: partner.id,
+      email: 'delayed-registration-hook@example.com',
+      withMembership: true,
+    });
+    const familyId = await withAuthLifecycleSystemTransaction((tx) =>
+      mintRefreshTokenFamily(user.id, { tx })
+    );
+
+    await withAuthLifecycleSystemTransaction((tx) =>
+      suspendPartnerForAbuseInTransaction(tx, partner.id, crypto.randomUUID())
+    );
+    const staleHook = await withAuthLifecycleSystemTransaction((tx) =>
+      applyRegistrationHookStatusTransition(tx, {
+        partnerId: partner.id,
+        expectedStatus: 'active',
+        nextStatus: 'pending',
+      })
+    );
+
+    expect(staleHook).toEqual({ applied: false });
+    const [partnerAfter] = await db.select({ status: partners.status }).from(partners)
+      .where(eq(partners.id, partner.id));
+    const [userAfter] = await db.select({ status: users.status }).from(users)
+      .where(eq(users.id, user.id));
+    const [familyAfter] = await db.select({
+      revokedReason: refreshTokenFamilies.revokedReason,
+    }).from(refreshTokenFamilies).where(eq(refreshTokenFamilies.familyId, familyId));
+    expect(partnerAfter?.status).toBe('suspended');
+    expect(userAfter?.status).toBe('disabled');
+    expect(familyAfter?.revokedReason).toBe('partner-suspended');
   });
 });

@@ -71,6 +71,7 @@ vi.mock('../../services/partnerActivation', () => ({
     activated: true,
     userIds: ['u-1'],
   })),
+  applyRegistrationHookStatusTransition: vi.fn(async () => ({ applied: true })),
 }));
 
 vi.mock('../../services/authLifecycle', () => ({

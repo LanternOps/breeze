@@ -29,7 +29,10 @@ import { captureException } from '../../services/sentry';
 import { generateVerificationToken } from '../../services/emailVerification';
 import { getEmailService } from '../../services/email';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
+import {
+  activatePendingPartnerAndInvalidateSessions,
+  applyRegistrationHookStatusTransition,
+} from '../../services/partnerActivation';
 import type { AuthIssuanceCapability } from '../../services/authBrowserTransition';
 import type { AuthLifecycleTransaction } from '../../services/authLifecycle';
 import {
@@ -379,22 +382,20 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
                   { tx, capability: hookAdmission });
                 return { status: 'active' as PartnerStatus, replacement };
               }
-              const updateSet: Record<string, unknown> = {
-                status: hookResponse.status as typeof committed.newPartner.status,
+              const statusMetadata = {
+                ...(hookResponse.message ? { message: hookResponse.message } : {}),
+                ...(hookResponse.actionUrl ? { actionUrl: hookResponse.actionUrl } : {}),
+                ...(hookResponse.actionLabel ? { actionLabel: hookResponse.actionLabel } : {}),
               };
-
-              // Apply optional status message fields from hook response
-              if (hookResponse.message || hookResponse.actionUrl || hookResponse.actionLabel) {
-                const msgSettings: Record<string, string | null> = {};
-                if (hookResponse.message) msgSettings.statusMessage = hookResponse.message;
-                if (hookResponse.actionUrl) msgSettings.statusActionUrl = hookResponse.actionUrl;
-                if (hookResponse.actionLabel) msgSettings.statusActionLabel = hookResponse.actionLabel;
-                updateSet.settings = sql`COALESCE(${partners.settings}, '{}'::jsonb) || ${JSON.stringify(msgSettings)}::jsonb`;
+              const transition = await applyRegistrationHookStatusTransition(tx, {
+                partnerId: committed.newPartner.id,
+                expectedStatus: committed.newPartner.status,
+                nextStatus: hookResponse.status as PartnerStatus,
+                statusMetadata,
+              });
+              if (!transition.applied) {
+                throw new Error('Registration hook status response became stale');
               }
-              await tx
-                .update(partners)
-                .set(updateSet)
-                .where(eq(partners.id, committed.newPartner.id));
               return { status: hookResponse.status as PartnerStatus };
             });
             effectiveStatus = hookResult.status;
