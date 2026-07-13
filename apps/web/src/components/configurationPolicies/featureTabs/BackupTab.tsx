@@ -1,33 +1,43 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   HardDrive,
-  Loader2,
-  Pencil,
   Plus,
   Trash2,
-  CheckCircle2,
-  XCircle,
-  Cloud,
-  FolderOpen,
-  Server,
+  ChevronDown,
   Clock,
-  Shield,
+  FolderOpen,
+  Laptop,
+  Command,
+  Terminal,
 } from "lucide-react";
-import { deriveS3RegionFromEndpoint } from "@breeze/shared";
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import BackupDestinationSection, {
+  emptyConfigForm,
+  capabilitySummary,
+  supportsProviderImmutability,
+} from "./BackupDestinationSection";
+import type {
+  BackupConfig,
+  ConfigFormState,
+  DestinationMode,
+  TestStatus,
+} from "./BackupDestinationSection";
+import { createOsPresets, createExclusionGroups } from "./backupTabPresets";
+import type { BackupOsPreset } from "./backupTabPresets";
+import { deriveS3RegionFromEndpoint } from "@breeze/shared";
 import { fetchWithAuth } from "../../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
-import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 type ScheduleFrequency = "daily" | "weekly" | "monthly";
 type RetentionPreset = "standard" | "extended" | "compliance" | "custom";
-type BackupProvider = "s3" | "local";
 type ImmutabilityMode = "none" | "application" | "provider";
+
 type BackupScheduleSettings = {
   scheduleFrequency: ScheduleFrequency;
   scheduleTime: string;
@@ -36,14 +46,8 @@ type BackupScheduleSettings = {
   retentionPreset: RetentionPreset;
   retentionDays: number;
   retentionVersions: number;
-  compression: boolean;
-  encryption: boolean;
   paths: string[];
   excludePatterns: string[];
-  notifyOnFailure: boolean;
-  notifyOnSuccess: boolean;
-  notifyOnMissed: boolean;
-  s3Prefix: string;
   gfsDailyRetention: number;
   gfsWeeklyRetention: number;
   gfsMonthlyRetention: number;
@@ -55,25 +59,8 @@ type BackupScheduleSettings = {
   immutableDays: number;
   backupWindowStart: string;
   backupWindowEnd: string;
-  bandwidthLimitMbps: number;
-  priority: number;
 };
-type BackupConfig = {
-  id: string;
-  name: string;
-  provider: string;
-  enabled: boolean;
-  details: Record<string, unknown>;
-  providerCapabilities?: {
-    objectLock: {
-      supported: boolean;
-      checkedAt: string;
-      error: string | null;
-    };
-  } | null;
-  createdAt: string;
-  updatedAt: string;
-};
+
 type BackupInlineSettingsPayload = {
   schedule: {
     frequency: ScheduleFrequency;
@@ -102,9 +89,11 @@ type BackupInlineSettingsPayload = {
   backupMode: string;
   targets: Record<string, unknown>;
 };
+
 // ── Constants ──────────────────────────────────────────────────────────────────
 // Matches the API's redaction sentinel: sending it back on PATCH keeps the stored secret.
 const MASKED_SECRET = "********";
+
 function hasStoredSecret(value: unknown): boolean {
   if (typeof value === "string") return value.length > 0;
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -113,6 +102,7 @@ function hasStoredSecret(value: unknown): boolean {
   }
   return false;
 }
+
 const scheduleDefaults: BackupScheduleSettings = {
   scheduleFrequency: "daily",
   scheduleTime: "03:00",
@@ -121,14 +111,8 @@ const scheduleDefaults: BackupScheduleSettings = {
   retentionPreset: "standard",
   retentionDays: 30,
   retentionVersions: 5,
-  compression: true,
-  encryption: true,
   paths: [],
   excludePatterns: [],
-  notifyOnFailure: true,
-  notifyOnSuccess: false,
-  notifyOnMissed: true,
-  s3Prefix: "",
   gfsDailyRetention: 7,
   gfsWeeklyRetention: 4,
   gfsMonthlyRetention: 12,
@@ -140,9 +124,8 @@ const scheduleDefaults: BackupScheduleSettings = {
   immutableDays: 30,
   backupWindowStart: "",
   backupWindowEnd: "",
-  bandwidthLimitMbps: 0,
-  priority: 50,
 };
+
 const createScheduleOptions = (): {
   value: ScheduleFrequency;
   label: string;
@@ -164,6 +147,7 @@ const createScheduleOptions = (): {
     ),
   },
 ];
+
 const createRetentionPresets = (): {
   value: RetentionPreset;
   label: string;
@@ -203,6 +187,7 @@ const createRetentionPresets = (): {
     versions: 0,
   },
 ];
+
 const createDayOfWeekOptions = () => [
   {
     value: 0,
@@ -247,6 +232,7 @@ const createDayOfWeekOptions = () => [
     ),
   },
 ];
+
 const createShortDayOfWeekOptions = () => [
   {
     value: 0,
@@ -277,76 +263,34 @@ const createShortDayOfWeekOptions = () => [
     label: i18n.t("policies:configurationPolicies.featureTabs.backupTab.sat"),
   },
 ];
-const createProviderOptions = (): {
-  value: BackupProvider;
-  label: string;
-  description: string;
-  icon: typeof Cloud;
-}[] => [
-  {
-    value: "s3",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.amazonS3S3Compatible",
-    ),
-    description: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.aWSS3MinIOWasabiBackblazeB2",
-    ),
-    icon: Cloud,
-  },
-  {
-    value: "local",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.localNetworkPath",
-    ),
-    description: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.localDiskNASOrUNCShare",
-    ),
-    icon: Server,
-  },
-];
-const createProviderLabels = (): Record<string, string> => ({
-  s3: "Amazon S3",
-  local: "Local / NAS",
-});
-const createCommonExclusions = () => [
-  {
-    pattern: "*.tmp",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.tempFiles",
-    ),
-  },
-  {
-    pattern: "*.log",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.logFiles",
-    ),
-  },
-  {
-    pattern: "node_modules/**",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.nodeModules",
-    ),
-  },
-  {
-    pattern: "$RECYCLE.BIN/**",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.recycleBin",
-    ),
-  },
-  {
-    pattern: "*.swp",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.swapFiles",
-    ),
-  },
-  {
-    pattern: "Thumbs.db",
-    label: i18n.t(
-      "policies:configurationPolicies.featureTabs.backupTab.thumbsDb",
-    ),
-  },
-];
+
+const PRESET_ICONS = {
+  windows: Laptop,
+  macos: Command,
+  linux: Terminal,
+} as const;
+
 // ── Subcomponents ──────────────────────────────────────────────────────────────
+function SectionGroup({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="border-t pt-6 first:border-t-0 first:pt-0">
+      <div>
+        <h3 className="text-sm font-semibold">{title}</h3>
+        <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
+      </div>
+      <div className="mt-4 space-y-5">{children}</div>
+    </section>
+  );
+}
+
 function ToggleRow({
   label,
   description,
@@ -366,8 +310,11 @@ function ToggleRow({
       </div>
       <button
         type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${checked ? "bg-emerald-500/80" : "bg-muted"}`}
+        className={`relative inline-flex h-6 w-11 items-center rounded-full border transition focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${checked ? "bg-emerald-500/80" : "bg-muted"}`}
       >
         <span
           className={`inline-block h-5 w-5 rounded-full bg-white transition ${checked ? "translate-x-5" : "translate-x-1"}`}
@@ -376,12 +323,13 @@ function ToggleRow({
     </div>
   );
 }
+
 function PathList({
   items,
   onAdd,
   onRemove,
   placeholder,
-  label,
+  emptyLabel,
   pendingValue,
   onPendingChange,
 }: {
@@ -389,7 +337,7 @@ function PathList({
   onAdd: (value: string) => void;
   onRemove: (value: string) => void;
   placeholder: string;
-  label: string;
+  emptyLabel: string;
   /** Optional controlled pending input so the parent can flush a typed-but-not-added value on save. */
   pendingValue?: string;
   onPendingChange?: (value: string) => void;
@@ -435,6 +383,7 @@ function PathList({
               <button
                 type="button"
                 onClick={() => onRemove(item)}
+                aria-label={i18n.t("common:actions.remove")}
                 className="ml-2 rounded p-1 hover:bg-muted"
               >
                 <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
@@ -444,33 +393,39 @@ function PathList({
         </div>
       )}
       {items.length === 0 && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          {i18n.t("common:labels.no")}
-          {label}
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.configured",
-          )}
-        </p>
+        <p className="mt-2 text-xs text-muted-foreground">{emptyLabel}</p>
       )}
     </div>
   );
 }
+
 function scheduleDescription(s: BackupScheduleSettings): string {
   const time = s.scheduleTime || "03:00";
-  const dayName =
-    createDayOfWeekOptions().find((d) => d.value === s.scheduleDayOfWeek)?.label ??
-    "Sunday";
   switch (s.scheduleFrequency) {
     case "daily":
-      return `Every day at ${time} in the device's effective timezone`;
-    case "weekly":
-      return `Every ${dayName} at ${time} in the device's effective timezone`;
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.scheduleDaily",
+        { time },
+      );
+    case "weekly": {
+      const dayName =
+        createDayOfWeekOptions().find((d) => d.value === s.scheduleDayOfWeek)
+          ?.label ?? "";
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.scheduleWeekly",
+        { time, day: dayName },
+      );
+    }
     case "monthly":
-      return `Day ${s.scheduleDayOfMonth} of each month at ${time} in the device's effective timezone`;
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.scheduleMonthly",
+        { time, day: s.scheduleDayOfMonth },
+      );
     default:
       return "";
   }
 }
+
 function inflateSettings(
   stored?: Record<string, unknown> | null,
 ): BackupScheduleSettings {
@@ -528,6 +483,21 @@ function inflateSettings(
       (schedule.windowEnd as string) ?? scheduleDefaults.backupWindowEnd,
   };
 }
+
+// True when settings deviate from defaults in the advanced (GFS / window)
+// controls — used to auto-open the disclosure so saved values are never hidden.
+function hasAdvancedValues(s: BackupScheduleSettings): boolean {
+  return (
+    s.gfsDailyRetention !== scheduleDefaults.gfsDailyRetention ||
+    s.gfsWeeklyRetention !== scheduleDefaults.gfsWeeklyRetention ||
+    s.gfsMonthlyRetention !== scheduleDefaults.gfsMonthlyRetention ||
+    s.gfsYearlyRetention !== scheduleDefaults.gfsYearlyRetention ||
+    s.gfsWeeklyDayOfWeek !== scheduleDefaults.gfsWeeklyDayOfWeek ||
+    s.backupWindowStart !== "" ||
+    s.backupWindowEnd !== ""
+  );
+}
+
 function buildInlineSettings(
   settings: BackupScheduleSettings,
   backupMode: string,
@@ -584,29 +554,7 @@ function buildInlineSettings(
     targets: normalizedTargets,
   };
 }
-function getObjectLockCapability(config?: BackupConfig | null) {
-  return config?.providerCapabilities?.objectLock ?? null;
-}
-function supportsProviderImmutability(config?: BackupConfig | null): boolean {
-  return (
-    config?.provider === "s3" &&
-    getObjectLockCapability(config)?.supported === true
-  );
-}
-function capabilitySummary(config?: BackupConfig | null): string {
-  if (!config) return "Select a storage config to check provider immutability.";
-  const capability = getObjectLockCapability(config);
-  if (config.provider !== "s3") {
-    return "Provider-enforced WORM is only available for S3-backed configs.";
-  }
-  if (!capability) {
-    return "Run Test to verify that the selected bucket has object lock enabled.";
-  }
-  if (capability.supported) {
-    return `Object lock verified on ${formatDateTime(capability.checkedAt)}.`;
-  }
-  return capability.error ?? "Object lock is not available for this config.";
-}
+
 // ── Main Component ─────────────────────────────────────────────────────────────
 export default function BackupTab({
   policyId,
@@ -620,49 +568,49 @@ export default function BackupTab({
   const retentionPresets = createRetentionPresets();
   const dayOfWeekOptions = createDayOfWeekOptions();
   const shortDayOfWeekOptions = createShortDayOfWeekOptions();
-  const providerOptions = createProviderOptions();
-  const providerLabels = createProviderLabels();
-  const commonExclusions = createCommonExclusions();
+  const osPresets = createOsPresets();
+  const exclusionGroups = createExclusionGroups();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
   const meta = FEATURE_META.backup;
-  // Config selection / creation
+
+  // Destination state
   const [configs, setConfigs] = useState<BackupConfig[]>([]);
   const [configsLoading, setConfigsLoading] = useState(false);
+  // Distinguishes "fetch not done yet" from "fetched, zero configs" so the
+  // create form only auto-opens once we know the org truly has none.
+  const [configsLoaded, setConfigsLoaded] = useState(false);
   const [selectedConfigId, setSelectedConfigId] = useState<string>(
     () => effectiveLink?.featurePolicyId ?? "",
   );
-  const [mode, setMode] = useState<"select" | "create" | "edit">("select");
-  // New / edited config fields
+  const [mode, setMode] = useState<DestinationMode>("select");
   const [editingConfigId, setEditingConfigId] = useState<string | null>(null);
-  const [newConfigName, setNewConfigName] = useState("");
-  const [newProvider, setNewProvider] = useState<BackupProvider>("s3");
-  const [s3Bucket, setS3Bucket] = useState("");
-  const [s3Region, setS3Region] = useState("us-east-1");
-  const [s3RegionTouched, setS3RegionTouched] = useState(false);
-  const [s3AccessKey, setS3AccessKey] = useState("");
-  const [s3SecretKey, setS3SecretKey] = useState("");
-  const [s3Endpoint, setS3Endpoint] = useState("");
-  const [localPath, setLocalPath] = useState("/var/backups/breeze");
+  const [configForm, setConfigForm] =
+    useState<ConfigFormState>(emptyConfigForm);
   const [configSaving, setConfigSaving] = useState(false);
   const [configError, setConfigError] = useState<string>();
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [testStatus, setTestStatus] = useState<TestStatus>("idle");
   const [testMessage, setTestMessage] = useState<string>();
+
   // Typed-but-not-added backup path, flushed on save (controlled PathList input)
   const [pendingPath, setPendingPath] = useState("");
-  // Connection test
-  const [testStatus, setTestStatus] = useState<
-    "idle" | "testing" | "success" | "failed"
-  >("idle");
+
   // Schedule/retention inline settings
-  const [settings, setSettings] = useState<BackupScheduleSettings>(() => {
-    return inflateSettings(
-      effectiveLink?.inlineSettings as
-        | Record<string, unknown>
-        | null
-        | undefined,
-    );
-  });
+  const [settings, setSettings] = useState<BackupScheduleSettings>(() =>
+    inflateSettings(
+      effectiveLink?.inlineSettings as Record<string, unknown> | null,
+    ),
+  );
+  const [advancedOpen, setAdvancedOpen] = useState(() =>
+    hasAdvancedValues(
+      inflateSettings(
+        effectiveLink?.inlineSettings as Record<string, unknown> | null,
+      ),
+    ),
+  );
+
   // Backup mode and targets
   const [backupMode, setBackupMode] = useState<string>(
     ((effectiveLink?.inlineSettings as Record<string, unknown>)
@@ -672,6 +620,9 @@ export default function BackupTab({
     ((effectiveLink?.inlineSettings as Record<string, unknown>)
       ?.targets as Record<string, unknown>) ?? {},
   );
+  // Set while a type switch would discard edited mode-specific targets
+  const [pendingMode, setPendingMode] = useState<string | null>(null);
+
   // ── Fetch existing configs ─────────────────────────────────────────────────
   const fetchConfigs = useCallback(async () => {
     if (!meta.fetchUrl) return;
@@ -692,36 +643,61 @@ export default function BackupTab({
       // Silently fail
     } finally {
       setConfigsLoading(false);
+      setConfigsLoaded(true);
     }
   }, [meta.fetchUrl]);
+
   useEffect(() => {
     fetchConfigs();
   }, [fetchConfigs]);
+
   useEffect(() => {
     const link = existingLink ?? parentLink;
     if (link?.featurePolicyId) setSelectedConfigId(link.featurePolicyId);
     if (link?.inlineSettings) {
       const stored = link.inlineSettings as Record<string, unknown>;
-      setSettings(inflateSettings(stored));
+      const next = inflateSettings(stored);
+      setSettings(next);
+      if (hasAdvancedValues(next)) setAdvancedOpen(true);
       if (stored.backupMode) setBackupMode(stored.backupMode as string);
       if (stored.targets) setTargets(stored.targets as Record<string, unknown>);
     }
   }, [existingLink, parentLink]);
+
   useEffect(() => {
-    if (!configsLoading && configs.length === 0 && !selectedConfigId) {
+    if (configsLoaded && configs.length === 0 && !selectedConfigId) {
       setMode("create");
     }
-  }, [configsLoading, configs.length, selectedConfigId]);
+  }, [configsLoaded, configs.length, selectedConfigId]);
+
   // Reset test status when config changes
   useEffect(() => {
     setTestStatus("idle");
     setTestMessage(undefined);
   }, [selectedConfigId]);
+
   // ── Helpers ────────────────────────────────────────────────────────────────
   const update = <K extends keyof BackupScheduleSettings>(
     key: K,
     value: BackupScheduleSettings[K],
   ) => setSettings((prev) => ({ ...prev, [key]: value }));
+
+  const clearFieldError = (key: string) =>
+    setFieldErrors((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+
+  const updateConfigForm = (patch: Partial<ConfigFormState>) => {
+    setConfigForm((prev) => ({ ...prev, ...patch }));
+    if ("name" in patch) clearFieldError("configName");
+    if ("bucket" in patch) clearFieldError("bucket");
+    if ("region" in patch || "endpoint" in patch) clearFieldError("region");
+    if ("localPath" in patch) clearFieldError("localPath");
+  };
+
   const handleRetentionPreset = (preset: RetentionPreset) => {
     update("retentionPreset", preset);
     const p = retentionPresets.find((r) => r.value === preset);
@@ -730,6 +706,47 @@ export default function BackupTab({
       update("retentionVersions", p.versions);
     }
   };
+
+  const applyOsPreset = (preset: BackupOsPreset) => {
+    clearFieldError("paths");
+    setSettings((prev) => ({
+      ...prev,
+      paths: [
+        ...prev.paths,
+        ...preset.paths.filter((p) => !prev.paths.includes(p)),
+      ],
+      excludePatterns: [
+        ...prev.excludePatterns,
+        ...preset.excludes.filter((p) => !prev.excludePatterns.includes(p)),
+      ],
+    }));
+  };
+
+  // Switching type discards mode-specific target edits (Hyper-V consistency,
+  // SQL excludes, ...). File paths/excludes persist across switches, so only
+  // a non-empty `targets` needs the inline confirmation.
+  const requestModeSwitch = (nextMode: string) => {
+    if (nextMode === backupMode) {
+      setPendingMode(null);
+      return;
+    }
+    // File selections live in `settings.paths`/`excludePatterns` and survive a
+    // switch; only non-file target edits are actually discarded.
+    if (backupMode !== "file" && Object.keys(targets).length > 0) {
+      setPendingMode(nextMode);
+      return;
+    }
+    setBackupMode(nextMode);
+    setTargets({});
+  };
+
+  const confirmModeSwitch = () => {
+    if (!pendingMode) return;
+    setBackupMode(pendingMode);
+    setTargets({});
+    setPendingMode(null);
+  };
+
   // ── Test connection ────────────────────────────────────────────────────────
   const handleTestConnection = async () => {
     if (!selectedConfigId) return;
@@ -769,18 +786,20 @@ export default function BackupTab({
       );
     }
   };
-  // ── Create config via API ──────────────────────────────────────────────────
+
+  // ── Create / edit config via API ───────────────────────────────────────────
   const buildProviderDetails = (): Record<string, unknown> =>
-    newProvider === "s3"
+    configForm.provider === "s3"
       ? {
-          bucket: s3Bucket,
-          region: s3Region.trim(),
-          accessKey: s3AccessKey,
-          secretKey: s3SecretKey,
-          ...(s3Endpoint ? { endpoint: s3Endpoint } : {}),
-          ...(settings.s3Prefix ? { prefix: settings.s3Prefix } : {}),
+          bucket: configForm.bucket,
+          region: configForm.region.trim(),
+          accessKey: configForm.accessKey,
+          secretKey: configForm.secretKey,
+          ...(configForm.endpoint ? { endpoint: configForm.endpoint } : {}),
+          ...(configForm.prefix ? { prefix: configForm.prefix } : {}),
         }
-      : { path: localPath };
+      : { path: configForm.localPath };
+
   const createConfig = async (): Promise<string | null> => {
     setConfigError(undefined);
     setConfigSaving(true);
@@ -789,9 +808,10 @@ export default function BackupTab({
       const response = await fetchWithAuth("/backup/configs", {
         method: "POST",
         body: JSON.stringify({
-          name: newConfigName,
-          provider: newProvider,
+          name: configForm.name,
+          provider: configForm.provider,
           enabled: true,
+          encryption: configForm.encryption,
           details,
         }),
       });
@@ -819,26 +839,45 @@ export default function BackupTab({
       setConfigSaving(false);
     }
   };
-  // ── Edit existing config ───────────────────────────────────────────────────
+
   const beginEditConfig = (config: BackupConfig) => {
     const details = config.details ?? {};
-    setEditingConfigId(config.id);
-    setNewConfigName(config.name);
-    setNewProvider(config.provider === "local" ? "local" : "s3");
-    setS3Bucket(typeof details.bucket === "string" ? details.bucket : "");
     const region = typeof details.region === "string" ? details.region : "";
-    setS3Region(region);
-    setS3RegionTouched(Boolean(region.trim()));
-    setS3Endpoint(typeof details.endpoint === "string" ? details.endpoint : "");
-    update("s3Prefix", typeof details.prefix === "string" ? details.prefix : "");
-    setS3AccessKey(hasStoredSecret(details.accessKey) ? MASKED_SECRET : "");
-    setS3SecretKey(hasStoredSecret(details.secretKey) ? MASKED_SECRET : "");
-    setLocalPath(
-      typeof details.path === "string" ? details.path : "/var/backups/breeze",
-    );
+    setEditingConfigId(config.id);
+    setConfigForm({
+      name: config.name,
+      provider: config.provider === "local" ? "local" : "s3",
+      bucket: typeof details.bucket === "string" ? details.bucket : "",
+      region,
+      regionTouched: Boolean(region.trim()),
+      accessKey: hasStoredSecret(details.accessKey) ? MASKED_SECRET : "",
+      secretKey: hasStoredSecret(details.secretKey) ? MASKED_SECRET : "",
+      endpoint: typeof details.endpoint === "string" ? details.endpoint : "",
+      prefix: typeof details.prefix === "string" ? details.prefix : "",
+      localPath:
+        typeof details.path === "string" ? details.path : "/var/backups/breeze",
+      encryption: config.encryption?.enabled === true,
+    });
     setConfigError(undefined);
+    setFieldErrors({});
     setMode("edit");
   };
+
+  const startCreateConfig = () => {
+    setEditingConfigId(null);
+    setConfigForm(emptyConfigForm);
+    setConfigError(undefined);
+    setFieldErrors({});
+    setMode("create");
+  };
+
+  const cancelConfigForm = () => {
+    setEditingConfigId(null);
+    setConfigError(undefined);
+    setFieldErrors({});
+    setMode("select");
+  };
+
   const updateConfig = async (): Promise<string | null> => {
     if (!editingConfigId) return null;
     setConfigError(undefined);
@@ -849,7 +888,8 @@ export default function BackupTab({
         {
           method: "PATCH",
           body: JSON.stringify({
-            name: newConfigName,
+            name: configForm.name,
+            encryption: configForm.encryption,
             details: buildProviderDetails(),
           }),
         },
@@ -879,12 +919,45 @@ export default function BackupTab({
       setConfigSaving(false);
     }
   };
+
   // ── Save feature link ──────────────────────────────────────────────────────
+  const validateConfigForm = (): boolean => {
+    const errors: Record<string, string> = {};
+    if (!configForm.name.trim()) {
+      errors.configName = i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.configNameIsRequired",
+      );
+    }
+    if (configForm.provider === "s3") {
+      if (!configForm.bucket.trim()) {
+        errors.bucket = i18n.t(
+          "policies:configurationPolicies.featureTabs.backupTab.s3BucketNameIsRequired",
+        );
+      }
+      if (
+        !configForm.region.trim() &&
+        !deriveS3RegionFromEndpoint(configForm.endpoint)
+      ) {
+        errors.region = i18n.t(
+          "policies:configurationPolicies.featureTabs.backupTab.s3RegionIsRequired",
+        );
+      }
+    }
+    if (configForm.provider === "local" && !configForm.localPath.trim()) {
+      errors.localPath = i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.backupPathIsRequired",
+      );
+    }
+    setFieldErrors((prev) => ({ ...prev, ...errors }));
+    return Object.keys(errors).length === 0;
+  };
+
   const handleSave = async (options?: {
     downgradeInvalidProvider?: boolean;
   }) => {
     clearError();
     setConfigError(undefined);
+    setFieldErrors({});
     // File mode: commit a typed-but-not-added path, then require at least one.
     let pathsForSave = settings.paths;
     if (backupMode === "file") {
@@ -895,52 +968,17 @@ export default function BackupTab({
         setPendingPath("");
       }
       if (pathsForSave.length === 0) {
-        setConfigError(
-          i18n.t(
+        setFieldErrors({
+          paths: i18n.t(
             "policies:configurationPolicies.featureTabs.backupTab.addAtLeastOneBackupPath",
           ),
-        );
+        });
         return;
       }
     }
     let configId = selectedConfigId;
     if (mode === "create" || mode === "edit") {
-      if (!newConfigName.trim()) {
-        setConfigError(
-          i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.configNameIsRequired",
-          ),
-        );
-        return;
-      }
-      if (newProvider === "s3" && !s3Bucket.trim()) {
-        setConfigError(
-          i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.s3BucketNameIsRequired",
-          ),
-        );
-        return;
-      }
-      if (
-        newProvider === "s3" &&
-        !s3Region.trim() &&
-        !deriveS3RegionFromEndpoint(s3Endpoint)
-      ) {
-        setConfigError(
-          i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.s3RegionIsRequired",
-          ),
-        );
-        return;
-      }
-      if (newProvider === "local" && !localPath.trim()) {
-        setConfigError(
-          i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.backupPathIsRequired",
-          ),
-        );
-        return;
-      }
+      if (!validateConfigForm()) return;
       const savedId = mode === "create" ? await createConfig() : await updateConfig();
       if (!savedId) return;
       configId = savedId;
@@ -985,11 +1023,13 @@ export default function BackupTab({
       onLinkChanged(result, "backup");
     }
   };
+
   const handleRemove = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "backup");
   };
+
   const handleOverride = async () => {
     clearError();
     const result = await save(null, {
@@ -999,11 +1039,13 @@ export default function BackupTab({
     });
     if (result) onLinkChanged(result, "backup");
   };
+
   const handleRevert = async () => {
     if (!existingLink) return;
     const ok = await remove(existingLink.id);
     if (ok) onLinkChanged(null, "backup");
   };
+
   const selectedConfig = configs.find((c) => c.id === selectedConfigId);
   const isSaving = saving || configSaving;
   const combinedError = configError || error;
@@ -1014,7 +1056,40 @@ export default function BackupTab({
     supportsProviderImmutability(selectedConfig);
   const invalidSavedProviderMode =
     settings.immutabilityMode === "provider" && !selectedConfigSupportsProvider;
-  const selectedCapability = getObjectLockCapability(selectedConfig);
+
+  const backupTypeOptions = [
+    {
+      value: "file",
+      label: i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.fileBackup",
+      ),
+    },
+    {
+      value: "hyperv",
+      label: i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.hyperVVMs",
+      ),
+    },
+    {
+      value: "mssql",
+      label: i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.sQLServer",
+      ),
+    },
+    {
+      value: "system_image",
+      label: i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.systemState",
+      ),
+    },
+  ];
+
+  const showPresetCards = backupMode === "file" && settings.paths.length === 0;
+  const compactPresets =
+    backupMode === "file" &&
+    settings.paths.length > 0 &&
+    osPresets.filter((p) => p.paths.some((x) => !settings.paths.includes(x)));
+
   return (
     <FeatureTabShell
       title={meta.label}
@@ -1033,1291 +1108,975 @@ export default function BackupTab({
           : undefined
       }
     >
-      {/* ══════════════════════════════════════════════════════════════════════
-              SECTION 0: Backup Type
-              ══════════════════════════════════════════════════════════════════════ */}
-      <div className="space-y-3">
-        <label className="text-sm font-medium text-foreground">
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.backupType",
+      <div className="space-y-6">
+        {/* ════════════════════════════════════════════════════════════════════
+                GROUP 1: Source — what to back up
+                ════════════════════════════════════════════════════════════════ */}
+        <SectionGroup
+          title={i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.sourceTitle",
           )}
-        </label>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {[
-            {
-              value: "file",
-              label: i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.fileBackup",
-              ),
-            },
-            {
-              value: "hyperv",
-              label: i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.hyperVVMs",
-              ),
-            },
-            {
-              value: "mssql",
-              label: i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.sQLServer",
-              ),
-            },
-            {
-              value: "system_image",
-              label: i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.systemState",
-              ),
-            },
-          ].map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => {
-                setBackupMode(opt.value);
-                setTargets({});
-              }}
-              className={`rounded-md border px-3 py-2 text-sm ${
-                backupMode === opt.value
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-muted text-muted-foreground hover:border-muted-foreground/30"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
+          subtitle={i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.sourceSubtitle",
+          )}
+        >
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {backupTypeOptions.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                aria-pressed={backupMode === opt.value}
+                onClick={() => requestModeSwitch(opt.value)}
+                className={`rounded-md border px-3 py-2 text-sm transition focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${
+                  backupMode === opt.value
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-muted text-muted-foreground hover:border-muted-foreground/30"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
 
-      {/* ── Mode-specific target fields ──────────────────────────────────────── */}
-      {backupMode === "hyperv" && (
-        <div className="mt-4 space-y-4 rounded-md border bg-muted/30 p-4">
-          <p className="text-xs text-muted-foreground">
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.allDiscoveredVMsAreBackedUpAutomatically",
-            )}
-          </p>
-          <p className="text-xs text-muted-foreground/70">
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.backupsAreStoredInTheConfiguredStorage",
-            )}
-          </p>
-          <div>
-            <label className="text-sm font-medium text-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.consistencyType",
-              )}
-            </label>
-            <select
-              value={(targets.consistencyType as string) ?? "application"}
-              onChange={(e) =>
-                setTargets({ ...targets, consistencyType: e.target.value })
-              }
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            >
-              <option value="application">
+          {pendingMode && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm text-amber-800">
+              <p className="font-medium">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.applicationConsistentVSS",
-                )}
-              </option>
-              <option value="crash">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.crashConsistent",
-                )}
-              </option>
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.excludeVMs",
-              )}
-            </label>
-            <input
-              value={
-                Array.isArray(targets.excludeVms)
-                  ? (targets.excludeVms as string[]).join(", ")
-                  : ""
-              }
-              onChange={(e) =>
-                setTargets({
-                  ...targets,
-                  excludeVms: e.target.value
-                    .split(",")
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                })
-              }
-              placeholder={i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.vMDev01VMTest02",
-              )}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            />
-            <p className="mt-1 chart-legend-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.commaSeparatedVMNamesToSkip",
-              )}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {backupMode === "mssql" && (
-        <div className="mt-4 space-y-4 rounded-md border bg-muted/30 p-4">
-          <p className="text-xs text-muted-foreground">
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.allDiscoveredDatabasesAreBackedUpAutomatically",
-            )}
-          </p>
-          <p className="text-xs text-muted-foreground/70">
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.backupsAreStoredInTheConfiguredStorage2",
-            )}
-          </p>
-          <div>
-            <label className="text-sm font-medium text-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.backupType2",
-              )}
-            </label>
-            <select
-              value={(targets.backupType as string) ?? "full"}
-              onChange={(e) =>
-                setTargets({ ...targets, backupType: e.target.value })
-              }
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            >
-              <option value="full">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.full",
-                )}
-              </option>
-              <option value="differential">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.differential",
-                )}
-              </option>
-              <option value="log">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.transactionLog",
-                )}
-              </option>
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.excludeDatabases",
-              )}
-            </label>
-            <input
-              value={
-                Array.isArray(targets.excludeDatabases)
-                  ? (targets.excludeDatabases as string[]).join(", ")
-                  : ""
-              }
-              onChange={(e) =>
-                setTargets({
-                  ...targets,
-                  excludeDatabases: e.target.value
-                    .split(",")
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                })
-              }
-              placeholder={i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.tempdbModel",
-              )}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            />
-            <p className="mt-1 chart-legend-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.commaSeparatedDatabaseNamesToSkip",
-              )}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {backupMode === "system_image" && (
-        <div className="mt-4 rounded-md border bg-muted/30 p-4">
-          <div className="flex items-center justify-between rounded-md border bg-background px-4 py-3">
-            <div>
-              <p className="text-sm font-medium">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.includeSystemState",
+                  "policies:configurationPolicies.featureTabs.backupTab.switchTypeTitle",
                 )}
               </p>
-              <p className="text-xs text-muted-foreground">
+              <p className="mt-0.5 text-xs text-amber-900/80">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.captureRegistryBootFilesAndSystemComponents",
+                  "policies:configurationPolicies.featureTabs.backupTab.switchTypeBody",
                 )}
               </p>
-            </div>
-            <button
-              type="button"
-              onClick={() =>
-                setTargets({
-                  ...targets,
-                  includeSystemState: !targets.includeSystemState,
-                })
-              }
-              className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${targets.includeSystemState ? "bg-emerald-500/80" : "bg-muted"}`}
-            >
-              <span
-                className={`inline-block h-5 w-5 rounded-full bg-white transition ${targets.includeSystemState ? "translate-x-5" : "translate-x-1"}`}
-              />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ══════════════════════════════════════════════════════════════════════
-              SECTION 1: Storage Configuration
-              ══════════════════════════════════════════════════════════════════════ */}
-      <div>
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.storageConfiguration",
-            )}
-          </h3>
-          {configs.length > 0 && (
-            <button
-              type="button"
-              onClick={() => {
-                if (mode === "select") {
-                  setMode("create");
-                } else {
-                  setEditingConfigId(null);
-                  setMode("select");
-                }
-              }}
-              className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
-            >
-              {mode === "edit" ? (
-                i18n.t("common:actions.cancel")
-              ) : mode === "create" ? (
-                i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.useExistingConfig",
-                )
-              ) : (
-                <>
-                  <Plus className="h-3.5 w-3.5" />
-                  {i18n.t(
-                    "policies:configurationPolicies.featureTabs.backupTab.createNew",
-                  )}
-                </>
-              )}
-            </button>
-          )}
-        </div>
-
-        {mode === "select" ? (
-          <div className="mt-2">
-            {configsLoading ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.loadingBackupConfigs",
-                )}
-              </div>
-            ) : configs.length === 0 ? (
-              <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.noBackupConfigurationsYet",
-                )}{" "}
+              <div className="mt-2 flex gap-2">
                 <button
                   type="button"
-                  onClick={() => setMode("create")}
-                  className="text-primary underline underline-offset-2"
+                  onClick={confirmModeSwitch}
+                  className="rounded-md border border-amber-600/40 bg-amber-600/10 px-3 py-1.5 text-xs font-medium text-amber-900"
                 >
                   {i18n.t(
-                    "policies:configurationPolicies.featureTabs.backupTab.createOneNow",
+                    "policies:configurationPolicies.featureTabs.backupTab.switchTypeConfirm",
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingMode(null)}
+                  className="rounded-md border border-amber-600/40 bg-background px-3 py-1.5 text-xs font-medium text-amber-900"
+                >
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.switchTypeCancel",
                   )}
                 </button>
               </div>
-            ) : (
-              <>
-                <select
-                  value={selectedConfigId}
-                  onChange={(e) => setSelectedConfigId(e.target.value)}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                >
-                  <option value="">
-                    {i18n.t(
-                      "policies:configurationPolicies.featureTabs.backupTab.selectABackupConfig",
-                    )}
-                  </option>
-                  {configs.map((cfg) => (
-                    <option key={cfg.id} value={cfg.id}>
-                      {cfg.name} ({providerLabels[cfg.provider] ?? cfg.provider}
-                      )
-                      {!cfg.enabled
-                        ? i18n.t(
-                            "policies:configurationPolicies.featureTabs.backupTab.disabled",
-                          )
-                        : ""}
-                    </option>
-                  ))}
-                </select>
+            </div>
+          )}
 
-                {/* Config summary card */}
-                {selectedConfig && (
-                  <div className="mt-3 rounded-md border bg-muted/20 p-4">
-                    <div className="flex items-start justify-between">
-                      <div className="space-y-1.5">
-                        <div className="flex items-center gap-2">
-                          {selectedConfig.provider === "s3" ? (
-                            <Cloud className="h-4 w-4 text-blue-500" />
-                          ) : (
-                            <Server className="h-4 w-4 text-slate-500" />
-                          )}
-                          <span className="text-sm font-medium">
-                            {providerLabels[selectedConfig.provider] ??
-                              selectedConfig.provider}
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                              selectedConfig.enabled
-                                ? "bg-emerald-500/15 text-emerald-700"
-                                : "bg-yellow-500/15 text-yellow-700"
-                            }`}
-                          >
-                            {selectedConfig.enabled
-                              ? i18n.t("common:states.active")
-                              : i18n.t("common:states.disabled")}
-                          </span>
-                        </div>
-                        {/* Show provider-specific details */}
-                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                          {selectedConfig.provider === "s3" &&
-                            !!selectedConfig.details.bucket && (
-                              <span>
-                                {i18n.t(
-                                  "policies:configurationPolicies.featureTabs.backupTab.bucket",
-                                )}
-                                <span className="font-mono text-foreground">
-                                  {String(selectedConfig.details.bucket)}
-                                </span>
-                              </span>
-                            )}
-                          {selectedConfig.provider === "s3" &&
-                            !!selectedConfig.details.region && (
-                              <span>
-                                {i18n.t(
-                                  "policies:configurationPolicies.featureTabs.backupTab.region",
-                                )}
-                                <span className="font-mono text-foreground">
-                                  {String(selectedConfig.details.region)}
-                                </span>
-                              </span>
-                            )}
-                          {selectedConfig.provider === "s3" &&
-                            !!selectedConfig.details.endpoint && (
-                              <span>
-                                {i18n.t(
-                                  "policies:configurationPolicies.featureTabs.backupTab.endpoint",
-                                )}
-                                <span className="font-mono text-foreground">
-                                  {String(selectedConfig.details.endpoint)}
-                                </span>
-                              </span>
-                            )}
-                          {selectedConfig.provider === "local" &&
-                            !!selectedConfig.details.path && (
-                              <span>
-                                {i18n.t(
-                                  "policies:configurationPolicies.featureTabs.backupTab.path",
-                                )}
-                                <span className="font-mono text-foreground">
-                                  {String(selectedConfig.details.path)}
-                                </span>
-                              </span>
-                            )}
-                          <span>
-                            {i18n.t(
-                              "policies:configurationPolicies.featureTabs.backupTab.objectLock",
-                            )}{" "}
-                            <span className="font-mono text-foreground">
-                              {selectedConfig.provider !== "s3"
-                                ? i18n.t(
-                                    "policies:configurationPolicies.featureTabs.backupTab.notSupported",
-                                  )
-                                : selectedCapability
-                                  ? selectedCapability.supported
-                                    ? i18n.t(
-                                        "policies:configurationPolicies.featureTabs.backupTab.verified",
-                                      )
-                                    : i18n.t(
-                                        "policies:configurationPolicies.featureTabs.backupTab.unavailable",
-                                      )
-                                  : i18n.t(
-                                      "policies:configurationPolicies.featureTabs.backupTab.untested",
-                                    )}
-                            </span>
-                          </span>
-                        </div>
-                        {capabilitySummary(selectedConfig) !== testMessage && (
-                          <p className="text-xs text-muted-foreground">
-                            {capabilitySummary(selectedConfig)}
-                          </p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                      {/* Edit config button */}
-                      <button
-                        type="button"
-                        onClick={() => beginEditConfig(selectedConfig)}
-                        className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        {i18n.t("common:actions.edit")}
-                      </button>
-                      {/* Test connection button */}
-                      <button
-                        type="button"
-                        onClick={handleTestConnection}
-                        disabled={testStatus === "testing"}
-                        className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted disabled:opacity-50"
-                      >
-                        {testStatus === "testing" && (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        )}
-                        {testStatus === "success" && (
-                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                        )}
-                        {testStatus === "failed" && (
-                          <XCircle className="h-3.5 w-3.5 text-destructive" />
-                        )}
-                        {testStatus === "idle" && (
-                          <Shield className="h-3.5 w-3.5" />
-                        )}
-                        {testStatus === "testing"
-                          ? i18n.t(
-                              "policies:configurationPolicies.featureTabs.backupTab.testing2",
-                            )
-                          : testStatus === "success"
-                            ? i18n.t(
-                                "policies:configurationPolicies.featureTabs.backupTab.connected",
-                              )
-                            : testStatus === "failed"
-                              ? i18n.t(
-                                  "policies:configurationPolicies.featureTabs.backupTab.failed2",
-                                )
-                              : i18n.t(
-                                  "policies:configurationPolicies.featureTabs.backupTab.test",
-                                )}
-                      </button>
-                      </div>
-                    </div>
-                    {testMessage && (
-                      <div
-                        className={`mt-3 rounded-md border px-3 py-2 text-xs ${
-                          testStatus === "failed"
-                            ? "border-destructive/40 bg-destructive/10 text-destructive"
-                            : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700"
-                        }`}
-                      >
-                        {testMessage}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        ) : (
-          /* ── Create / edit config ─────────────────────────────────────── */
-          <div className="mt-2 space-y-4 rounded-md border bg-muted/10 p-4">
-            {mode === "edit" && (
-              <p className="text-xs font-medium text-primary">
+          {/* ── Mode-specific target fields ─────────────────────────────────── */}
+          {backupMode === "hyperv" && (
+            <div className="space-y-4 rounded-md border bg-muted/30 p-4">
+              <p className="text-xs text-muted-foreground">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.editingStorageConfiguration",
+                  "policies:configurationPolicies.featureTabs.backupTab.allDiscoveredVMsAreBackedUpAutomatically",
                 )}
               </p>
-            )}
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">
+              <p className="text-xs text-muted-foreground/70">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.configurationName",
+                  "policies:configurationPolicies.featureTabs.backupTab.backupsAreStoredInTheConfiguredStorage",
                 )}
-              </label>
-              <input
-                value={newConfigName}
-                onChange={(e) => setNewConfigName(e.target.value)}
-                placeholder={i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.eGProductionS3Backups",
-                )}
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              />
-            </div>
-
-            {/* Provider is immutable once created — hide the picker while editing */}
-            {mode !== "edit" && (
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.provider",
-                )}
-              </label>
-              <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                {providerOptions.map((opt) => {
-                  const Icon = opt.icon;
-                  return (
-                    <label
-                      key={opt.value}
-                      className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm transition ${
-                        newProvider === opt.value
-                          ? "border-primary/40 bg-primary/10"
-                          : "border-muted hover:border-muted-foreground/30"
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="backupProvider"
-                        value={opt.value}
-                        checked={newProvider === opt.value}
-                        onChange={() => setNewProvider(opt.value)}
-                        className="hidden"
-                      />
-                      <Icon
-                        className={`mt-0.5 h-5 w-5 shrink-0 ${newProvider === opt.value ? "text-primary" : "text-muted-foreground"}`}
-                      />
-                      <div>
-                        <span className="font-medium text-foreground">
-                          {opt.label}
-                        </span>
-                        <p className="text-xs text-muted-foreground">
-                          {opt.description}
-                        </p>
-                      </div>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-            )}
-
-            {newProvider === "s3" && (
-              <div className="space-y-3">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="text-xs text-muted-foreground">
-                      {i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.bucketName",
-                      )}
-                    </label>
-                    <input
-                      value={s3Bucket}
-                      onChange={(e) => setS3Bucket(e.target.value)}
-                      placeholder={i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.myBackupBucket",
-                      )}
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground">
-                      {i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.region2",
-                      )}
-                    </label>
-                    <input
-                      value={s3Region}
-                      onChange={(e) => {
-                        setS3Region(e.target.value);
-                        setS3RegionTouched(true);
-                      }}
-                      placeholder={i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.usEast1",
-                      )}
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                  </div>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="text-xs text-muted-foreground">
-                      {i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.accessKeyID",
-                      )}
-                    </label>
-                    <input
-                      value={s3AccessKey}
-                      onChange={(e) => setS3AccessKey(e.target.value)}
-                      placeholder={i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.aKIA",
-                      )}
-                      autoComplete="off"
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground">
-                      {i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.secretAccessKey",
-                      )}
-                    </label>
-                    <input
-                      type="password"
-                      value={s3SecretKey}
-                      onChange={(e) => setS3SecretKey(e.target.value)}
-                      placeholder={i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.secretKey",
-                      )}
-                      autoComplete="off"
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                  </div>
-                </div>
-                {mode === "edit" && (
-                  <p className="chart-legend-xs text-muted-foreground">
-                    {i18n.t(
-                      "policies:configurationPolicies.featureTabs.backupTab.secretsUnchangedHint",
-                    )}
-                  </p>
-                )}
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="text-xs text-muted-foreground">
-                      {i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.pathPrefix",
-                      )}
-                      <span className="text-muted-foreground/60">
-                        {i18n.t(
-                          "policies:configurationPolicies.featureTabs.backupTab.optional",
-                        )}
-                      </span>
-                    </label>
-                    <input
-                      value={settings.s3Prefix}
-                      onChange={(e) => update("s3Prefix", e.target.value)}
-                      placeholder={i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.backupsBreeze",
-                      )}
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <p className="mt-1 chart-legend-xs text-muted-foreground">
-                      {i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.keyPrefixForOrganizingObjectsInThe",
-                      )}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground">
-                      {i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.customEndpoint",
-                      )}
-                      <span className="text-muted-foreground/60">
-                        {i18n.t(
-                          "policies:configurationPolicies.featureTabs.backupTab.optional2",
-                        )}
-                      </span>
-                    </label>
-                    <input
-                      value={s3Endpoint}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        setS3Endpoint(value);
-                        // Providers like Backblaze B2 encode the signing region
-                        // in the endpoint — fill it in unless the user set one.
-                        const derived = deriveS3RegionFromEndpoint(value);
-                        if (derived && (!s3RegionTouched || !s3Region.trim())) {
-                          setS3Region(derived);
-                        }
-                      }}
-                      placeholder={i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.httpsS3UsWest002Backblazeb2Com",
-                      )}
-                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <p className="mt-1 chart-legend-xs text-muted-foreground">
-                      {i18n.t(
-                        "policies:configurationPolicies.featureTabs.backupTab.forMinIOWasabiBackblazeB2Etc",
-                      )}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-            {newProvider === "local" && (
+              </p>
               <div>
-                <label className="text-xs text-muted-foreground">
+                <label className="text-sm font-medium text-foreground">
                   {i18n.t(
-                    "policies:configurationPolicies.featureTabs.backupTab.backupPath",
+                    "policies:configurationPolicies.featureTabs.backupTab.consistencyType",
+                  )}
+                </label>
+                <select
+                  value={(targets.consistencyType as string) ?? "application"}
+                  onChange={(e) =>
+                    setTargets({ ...targets, consistencyType: e.target.value })
+                  }
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                >
+                  <option value="application">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.applicationConsistentVSS",
+                    )}
+                  </option>
+                  <option value="crash">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.crashConsistent",
+                    )}
+                  </option>
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium text-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.excludeVMs",
                   )}
                 </label>
                 <input
-                  value={localPath}
-                  onChange={(e) => setLocalPath(e.target.value)}
+                  value={
+                    Array.isArray(targets.excludeVms)
+                      ? (targets.excludeVms as string[]).join(", ")
+                      : ""
+                  }
+                  onChange={(e) =>
+                    setTargets({
+                      ...targets,
+                      excludeVms: e.target.value
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                    })
+                  }
                   placeholder={i18n.t(
-                    "policies:configurationPolicies.featureTabs.backupTab.varBackupsBreezeOrNasBackups",
+                    "policies:configurationPolicies.featureTabs.backupTab.vMDev01VMTest02",
                   )}
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <p className="mt-1 chart-legend-xs text-muted-foreground">
                   {i18n.t(
-                    "policies:configurationPolicies.featureTabs.backupTab.localDiskPathMountedNASOrUNC",
+                    "policies:configurationPolicies.featureTabs.backupTab.commaSeparatedVMNamesToSkip",
                   )}
                 </p>
               </div>
-            )}
-          </div>
-        )}
-      </div>
+            </div>
+          )}
 
-      {/* ══════════════════════════════════════════════════════════════════════
-              SECTION 2: What to Back Up (file mode only)
-              ══════════════════════════════════════════════════════════════════════ */}
-      {backupMode === "file" && (
-        <>
-          <div className="mt-6">
-            <h3 className="text-sm font-semibold flex items-center gap-2">
-              <FolderOpen className="h-4 w-4" />
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.backupPaths",
-              )}
-            </h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.directoriesAndFilesToIncludeInBackups",
-              )}
-            </p>
-            <div className="mt-3">
-              <PathList
-                items={settings.paths}
-                onAdd={(v) => update("paths", [...settings.paths, v])}
-                onRemove={(v) =>
-                  update(
-                    "paths",
-                    settings.paths.filter((p) => p !== v),
-                  )
-                }
-                pendingValue={pendingPath}
-                onPendingChange={setPendingPath}
-                placeholder={i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.cUsersOrHomeOrEtc",
+          {backupMode === "mssql" && (
+            <div className="space-y-4 rounded-md border bg-muted/30 p-4">
+              <p className="text-xs text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.allDiscoveredDatabasesAreBackedUpAutomatically",
                 )}
+              </p>
+              <p className="text-xs text-muted-foreground/70">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.backupsAreStoredInTheConfiguredStorage2",
+                )}
+              </p>
+              <div>
+                <label className="text-sm font-medium text-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.backupType2",
+                  )}
+                </label>
+                <select
+                  value={(targets.backupType as string) ?? "full"}
+                  onChange={(e) =>
+                    setTargets({ ...targets, backupType: e.target.value })
+                  }
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                >
+                  <option value="full">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.full",
+                    )}
+                  </option>
+                  <option value="differential">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.differential",
+                    )}
+                  </option>
+                  <option value="log">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.transactionLog",
+                    )}
+                  </option>
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium text-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.excludeDatabases",
+                  )}
+                </label>
+                <input
+                  value={
+                    Array.isArray(targets.excludeDatabases)
+                      ? (targets.excludeDatabases as string[]).join(", ")
+                      : ""
+                  }
+                  onChange={(e) =>
+                    setTargets({
+                      ...targets,
+                      excludeDatabases: e.target.value
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                    })
+                  }
+                  placeholder={i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.tempdbModel",
+                  )}
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                />
+                <p className="mt-1 chart-legend-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.commaSeparatedDatabaseNamesToSkip",
+                  )}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {backupMode === "system_image" && (
+            <div className="rounded-md border bg-muted/30 p-4">
+              <ToggleRow
                 label={i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.paths",
+                  "policies:configurationPolicies.featureTabs.backupTab.includeSystemState",
                 )}
+                description={i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.captureRegistryBootFilesAndSystemComponents",
+                )}
+                checked={targets.includeSystemState === true}
+                onChange={(checked) =>
+                  setTargets({ ...targets, includeSystemState: checked })
+                }
               />
             </div>
-          </div>
+          )}
 
-          {/* ── Exclusion patterns ──────────────────────────────────────────── */}
-          <div className="mt-6">
-            <h3 className="text-sm font-semibold">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.exclusionPatterns",
+          {backupMode === "file" && (
+            <>
+              {/* OS quick-start presets */}
+              {showPresetCards && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.quickStartLabel",
+                    )}
+                  </p>
+                  <div className="mt-2 grid gap-3 sm:grid-cols-3">
+                    {osPresets.map((preset) => {
+                      const Icon = PRESET_ICONS[preset.id];
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => applyOsPreset(preset)}
+                          className="flex flex-col gap-1.5 rounded-md border border-muted p-3 text-left transition hover:border-primary/40 hover:bg-primary/5 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <span className="flex items-center gap-2 text-sm font-medium">
+                            <Icon className="h-4 w-4 text-muted-foreground" />
+                            {preset.title}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {preset.summary}
+                          </span>
+                          <span className="mt-auto flex flex-wrap gap-1 pt-1">
+                            {preset.paths.map((p) => (
+                              <span
+                                key={p}
+                                className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground/80"
+                              >
+                                {p}
+                              </span>
+                            ))}
+                            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              {i18n.t(
+                                "policies:configurationPolicies.featureTabs.backupTab.presetExclusionCount",
+                                { count: preset.excludes.length },
+                              )}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.mixedFleetHint",
+                    )}
+                  </p>
+                </div>
               )}
-            </h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.globPatternsToSkipDuringBackupClick",
-              )}
-            </p>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {commonExclusions
-                .filter((e) => !settings.excludePatterns.includes(e.pattern))
-                .map((e) => (
-                  <button
-                    key={e.pattern}
-                    type="button"
-                    onClick={() =>
+
+              <div>
+                <h4 className="flex items-center gap-2 text-xs font-medium">
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.backupPaths",
+                  )}
+                </h4>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.directoriesAndFilesToIncludeInBackups",
+                  )}
+                </p>
+                <div className="mt-3">
+                  <PathList
+                    items={settings.paths}
+                    onAdd={(v) => {
+                      clearFieldError("paths");
+                      update("paths", [...settings.paths, v]);
+                    }}
+                    onRemove={(v) =>
+                      update(
+                        "paths",
+                        settings.paths.filter((p) => p !== v),
+                      )
+                    }
+                    pendingValue={pendingPath}
+                    onPendingChange={setPendingPath}
+                    placeholder={i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.cUsersOrHomeOrEtc",
+                    )}
+                    emptyLabel={i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.noPathsConfigured",
+                    )}
+                  />
+                  {fieldErrors.paths && (
+                    <p className="mt-1 text-xs text-destructive">
+                      {fieldErrors.paths}
+                    </p>
+                  )}
+                </div>
+                {compactPresets && compactPresets.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span className="chart-legend-xs text-muted-foreground">
+                      {i18n.t(
+                        "policies:configurationPolicies.featureTabs.backupTab.addPreset",
+                      )}
+                    </span>
+                    {compactPresets.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => applyOsPreset(preset)}
+                        className="rounded-full border px-2.5 py-1 chart-legend-xs text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+                      >
+                        + {preset.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ── Exclusion patterns ─────────────────────────────────────── */}
+              <div>
+                <h4 className="text-xs font-medium">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.exclusionPatterns",
+                  )}
+                </h4>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.globPatternsToSkipDuringBackupClick",
+                  )}
+                </p>
+                <div className="mt-2 space-y-1.5">
+                  {exclusionGroups.map((group) => {
+                    const remaining = group.items.filter(
+                      (item) =>
+                        !settings.excludePatterns.includes(item.pattern),
+                    );
+                    if (remaining.length === 0) return null;
+                    return (
+                      <div
+                        key={group.id}
+                        className="flex flex-wrap items-center gap-1.5"
+                      >
+                        <span className="w-14 shrink-0 chart-legend-xs text-muted-foreground">
+                          {group.label}
+                        </span>
+                        {remaining.map((item) => (
+                          <button
+                            key={item.pattern}
+                            type="button"
+                            title={item.pattern}
+                            onClick={() =>
+                              update("excludePatterns", [
+                                ...settings.excludePatterns,
+                                item.pattern,
+                              ])
+                            }
+                            className="rounded-full border px-2.5 py-1 chart-legend-xs text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+                          >
+                            + {item.label}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-3">
+                  <PathList
+                    items={settings.excludePatterns}
+                    onAdd={(v) =>
                       update("excludePatterns", [
                         ...settings.excludePatterns,
-                        e.pattern,
+                        v,
                       ])
                     }
-                    className="rounded-full border px-2.5 py-1 chart-legend-xs text-muted-foreground transition hover:border-primary/40 hover:text-primary"
+                    onRemove={(v) =>
+                      update(
+                        "excludePatterns",
+                        settings.excludePatterns.filter((p) => p !== v),
+                      )
+                    }
+                    placeholder={i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.tmpOrLogs",
+                    )}
+                    emptyLabel={i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.noExclusionsConfigured",
+                    )}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+        </SectionGroup>
+
+        {/* ════════════════════════════════════════════════════════════════════
+                GROUP 2: Destination — where backups are stored
+                ════════════════════════════════════════════════════════════════ */}
+        <SectionGroup
+          title={i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.destinationTitle",
+          )}
+          subtitle={i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.destinationSubtitle",
+          )}
+        >
+          <BackupDestinationSection
+            configs={configs}
+            configsLoading={configsLoading}
+            selectedConfigId={selectedConfigId}
+            onSelect={setSelectedConfigId}
+            mode={mode}
+            onStartCreate={startCreateConfig}
+            onCancelForm={cancelConfigForm}
+            onBeginEdit={beginEditConfig}
+            form={configForm}
+            onFormChange={updateConfigForm}
+            fieldErrors={fieldErrors}
+            testStatus={testStatus}
+            testMessage={testMessage}
+            onTest={handleTestConnection}
+          />
+        </SectionGroup>
+
+        {/* ════════════════════════════════════════════════════════════════════
+                GROUP 3: Schedule & retention
+                ════════════════════════════════════════════════════════════════ */}
+        <SectionGroup
+          title={i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.scheduleRetentionTitle",
+          )}
+          subtitle={i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.scheduleRetentionSubtitle",
+          )}
+        >
+          <div>
+            <h4 className="flex items-center gap-2 text-xs font-medium">
+              <Clock className="h-3.5 w-3.5" />
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.backupTab.backupSchedule",
+              )}
+            </h4>
+            <div className="mt-2 grid gap-4 sm:grid-cols-3">
+              <div>
+                <label className="text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.frequency",
+                  )}
+                </label>
+                <select
+                  value={settings.scheduleFrequency}
+                  onChange={(e) =>
+                    update(
+                      "scheduleFrequency",
+                      e.target.value as ScheduleFrequency,
+                    )
+                  }
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  {scheduleOptions.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.time",
+                  )}
+                </label>
+                <input
+                  type="time"
+                  value={settings.scheduleTime}
+                  onChange={(e) => update("scheduleTime", e.target.value)}
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                />
+              </div>
+              {settings.scheduleFrequency === "weekly" && (
+                <div>
+                  <label className="text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.dayOfWeek",
+                    )}
+                  </label>
+                  <select
+                    value={settings.scheduleDayOfWeek}
+                    onChange={(e) =>
+                      update("scheduleDayOfWeek", Number(e.target.value))
+                    }
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
                   >
-                    + {e.label}
-                  </button>
-                ))}
+                    {dayOfWeekOptions.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {settings.scheduleFrequency === "monthly" && (
+                <div>
+                  <label className="text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.dayOfMonth",
+                    )}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={28}
+                    value={settings.scheduleDayOfMonth}
+                    onChange={(e) =>
+                      update("scheduleDayOfMonth", Number(e.target.value) || 1)
+                    }
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  />
+                </div>
+              )}
             </div>
-            <div className="mt-3">
-              <PathList
-                items={settings.excludePatterns}
-                onAdd={(v) =>
-                  update("excludePatterns", [...settings.excludePatterns, v])
-                }
-                onRemove={(v) =>
-                  update(
-                    "excludePatterns",
-                    settings.excludePatterns.filter((p) => p !== v),
-                  )
-                }
+            <p className="mt-2 text-xs text-muted-foreground">
+              {scheduleDescription(settings)}
+            </p>
+          </div>
+
+          <div>
+            <h4 className="text-xs font-medium">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.backupTab.retentionPolicy",
+              )}
+            </h4>
+            <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {retentionPresets.map((preset) => (
+                <label
+                  key={preset.value}
+                  className={`flex cursor-pointer flex-col gap-1 rounded-md border p-3 text-sm transition has-focus-visible:ring-2 has-focus-visible:ring-ring ${
+                    settings.retentionPreset === preset.value
+                      ? "border-primary/40 bg-primary/10 text-primary"
+                      : "border-muted text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="retentionPreset"
+                    value={preset.value}
+                    checked={settings.retentionPreset === preset.value}
+                    onChange={() => handleRetentionPreset(preset.value)}
+                    className="sr-only"
+                  />
+                  <span className="font-medium text-foreground">
+                    {preset.label}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {preset.value === "custom"
+                      ? i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.setYourOwnValues",
+                        )
+                      : i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.retentionSummary",
+                          { days: preset.days, versions: preset.versions },
+                        )}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {settings.retentionPreset === "custom" && (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.retentionDays",
+                    )}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={settings.retentionDays}
+                    onChange={(e) =>
+                      update("retentionDays", Number(e.target.value) || 30)
+                    }
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.maxVersions",
+                    )}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={settings.retentionVersions}
+                    onChange={(e) =>
+                      update("retentionVersions", Number(e.target.value) || 5)
+                    }
+                    className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  />
+                </div>
+              </div>
+            )}
+            {settings.retentionPreset !== "custom" && retentionInfo && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.retentionReadback",
+                  {
+                    days: retentionInfo.days,
+                    versions: retentionInfo.versions,
+                  },
+                )}
+              </p>
+            )}
+          </div>
+
+          {/* ── Advanced retention & timing (GFS + backup window) ───────────── */}
+          <div className="rounded-md border">
+            <button
+              type="button"
+              aria-expanded={advancedOpen}
+              onClick={() => setAdvancedOpen((v) => !v)}
+              className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left transition hover:bg-muted/40 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span>
+                <span className="block text-xs font-medium">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.advancedRetentionTiming",
+                  )}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.advancedRetentionTimingSummary",
+                  )}
+                </span>
+              </span>
+              <ChevronDown
+                className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${advancedOpen ? "rotate-180" : ""}`}
+                aria-hidden
+              />
+            </button>
+            {advancedOpen && (
+              <div className="space-y-5 border-t px-4 py-4">
+                <div>
+                  <h4 className="text-xs font-medium">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.gFSRetention",
+                    )}
+                  </h4>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.keepLongerRunningRestorePointsForGrandfather",
+                    )}
+                  </p>
+                  <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+                    <div>
+                      <label className="text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.daily2",
+                        )}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={365}
+                        value={settings.gfsDailyRetention}
+                        onChange={(e) =>
+                          update(
+                            "gfsDailyRetention",
+                            Number(e.target.value) || 7,
+                          )
+                        }
+                        className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.weekly2",
+                        )}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={260}
+                        value={settings.gfsWeeklyRetention}
+                        onChange={(e) =>
+                          update(
+                            "gfsWeeklyRetention",
+                            Number(e.target.value) || 4,
+                          )
+                        }
+                        className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.monthly2",
+                        )}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={120}
+                        value={settings.gfsMonthlyRetention}
+                        onChange={(e) =>
+                          update(
+                            "gfsMonthlyRetention",
+                            Number(e.target.value) || 12,
+                          )
+                        }
+                        className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.yearly",
+                        )}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={25}
+                        value={settings.gfsYearlyRetention}
+                        onChange={(e) =>
+                          update(
+                            "gfsYearlyRetention",
+                            Number(e.target.value) || 3,
+                          )
+                        }
+                        className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.weeklyBackupDay",
+                        )}
+                      </label>
+                      <select
+                        value={settings.gfsWeeklyDayOfWeek}
+                        onChange={(e) =>
+                          update("gfsWeeklyDayOfWeek", Number(e.target.value))
+                        }
+                        className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      >
+                        {shortDayOfWeekOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-xs font-medium">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.backupWindow",
+                    )}
+                  </h4>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.leaveBlankToAllowBackupsAtAny",
+                    )}
+                  </p>
+                  <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.startTime",
+                        )}
+                      </label>
+                      <input
+                        type="time"
+                        value={settings.backupWindowStart}
+                        onChange={(e) =>
+                          update("backupWindowStart", e.target.value)
+                        }
+                        className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">
+                        {i18n.t(
+                          "policies:configurationPolicies.featureTabs.backupTab.endTime",
+                        )}
+                      </label>
+                      <input
+                        type="time"
+                        value={settings.backupWindowEnd}
+                        onChange={(e) =>
+                          update("backupWindowEnd", e.target.value)
+                        }
+                        className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </SectionGroup>
+
+        {/* ════════════════════════════════════════════════════════════════════
+                GROUP 4: Protection — compliance guarantees
+                ════════════════════════════════════════════════════════════════ */}
+        <SectionGroup
+          title={i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.snapshotProtection",
+          )}
+          subtitle={i18n.t(
+            "policies:configurationPolicies.featureTabs.backupTab.theseSettingsStampFutureSnapshotsAtCreation",
+          )}
+        >
+          {invalidSavedProviderMode && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm text-amber-800">
+              <p>
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.providerImmutabilityIsConfiguredButTheSelected",
+                )}
+              </p>
+              <p className="mt-1 text-xs text-amber-900/80">
+                {capabilitySummary(selectedConfig)}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  disabled={!selectedConfigId || testStatus === "testing"}
+                  className="rounded-md border border-amber-600/40 bg-background px-3 py-1.5 text-xs font-medium text-amber-900 disabled:opacity-50"
+                >
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.retestConfig",
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleSave({ downgradeInvalidProvider: true })
+                  }
+                  disabled={isSaving}
+                  className="rounded-md border border-amber-600/40 bg-amber-600/10 px-3 py-1.5 text-xs font-medium text-amber-900 disabled:opacity-50"
+                >
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.backupTab.saveWithApplicationProtection",
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <ToggleRow
+            label={i18n.t(
+              "policies:configurationPolicies.featureTabs.backupTab.legalHold",
+            )}
+            description={i18n.t(
+              "policies:configurationPolicies.featureTabs.backupTab.preventRetentionCleanupFromDeletingFutureSnapshots",
+            )}
+            checked={settings.legalHoldEnabled}
+            onChange={(checked) => {
+              update("legalHoldEnabled", checked);
+              if (!checked) update("legalHoldReason", "");
+            }}
+          />
+          {settings.legalHoldEnabled && (
+            <div>
+              <label className="text-xs text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.legalHoldReason",
+                )}
+              </label>
+              <input
+                value={settings.legalHoldReason}
+                onChange={(e) => update("legalHoldReason", e.target.value)}
                 placeholder={i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.tmpOrLogs",
+                  "policies:configurationPolicies.featureTabs.backupTab.reasonForPreservingFutureSnapshots",
                 )}
-                label={i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.exclusions",
-                )}
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
               />
             </div>
-          </div>
-        </>
-      )}
-
-      {/* ══════════════════════════════════════════════════════════════════════
-              SECTION 3: Schedule
-              ══════════════════════════════════════════════════════════════════════ */}
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold flex items-center gap-2">
-          <Clock className="h-4 w-4" />
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.backupSchedule",
           )}
-        </h3>
-        <div className="mt-2 grid gap-4 sm:grid-cols-3">
+
           <div>
             <label className="text-xs text-muted-foreground">
               {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.frequency",
+                "policies:configurationPolicies.featureTabs.backupTab.immutability",
               )}
             </label>
             <select
-              value={settings.scheduleFrequency}
+              value={settings.immutabilityMode}
               onChange={(e) =>
-                update("scheduleFrequency", e.target.value as ScheduleFrequency)
+                update("immutabilityMode", e.target.value as ImmutabilityMode)
               }
               className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
-              {scheduleOptions.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.time",
-              )}
-            </label>
-            <input
-              type="time"
-              value={settings.scheduleTime}
-              onChange={(e) => update("scheduleTime", e.target.value)}
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-          {settings.scheduleFrequency === "weekly" && (
-            <div>
-              <label className="text-xs text-muted-foreground">
+              <option value="none">{i18n.t("common:labels.none")}</option>
+              <option value="application">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.dayOfWeek",
+                  "policies:configurationPolicies.featureTabs.backupTab.applicationLevelProtection",
                 )}
-              </label>
-              <select
-                value={settings.scheduleDayOfWeek}
-                onChange={(e) =>
-                  update("scheduleDayOfWeek", Number(e.target.value))
-                }
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+              </option>
+              <option
+                value="provider"
+                disabled={!selectedConfigSupportsProvider}
               >
-                {dayOfWeekOptions.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          {settings.scheduleFrequency === "monthly" && (
-            <div>
-              <label className="text-xs text-muted-foreground">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.dayOfMonth",
+                  "policies:configurationPolicies.featureTabs.backupTab.providerEnforcedWORM",
                 )}
-              </label>
-              <input
-                type="number"
-                min={1}
-                max={28}
-                value={settings.scheduleDayOfMonth}
-                onChange={(e) =>
-                  update("scheduleDayOfMonth", Number(e.target.value) || 1)
-                }
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-              />
-            </div>
-          )}
-        </div>
-        <p className="mt-2 text-xs text-muted-foreground">
-          {scheduleDescription(settings)}
-        </p>
-      </div>
-
-      {/* ══════════════════════════════════════════════════════════════════════
-              SECTION 4: Retention
-              ══════════════════════════════════════════════════════════════════════ */}
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold">
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.retentionPolicy",
-          )}
-        </h3>
-        <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {retentionPresets.map((preset) => (
-            <label
-              key={preset.value}
-              className={`flex cursor-pointer flex-col gap-1 rounded-md border p-3 text-sm transition ${
-                settings.retentionPreset === preset.value
-                  ? "border-primary/40 bg-primary/10 text-primary"
-                  : "border-muted text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <input
-                type="radio"
-                name="retentionPreset"
-                value={preset.value}
-                checked={settings.retentionPreset === preset.value}
-                onChange={() => handleRetentionPreset(preset.value)}
-                className="hidden"
-              />
-              <span className="font-medium text-foreground">
-                {preset.label}
-              </span>
-              <span className="text-xs text-muted-foreground">
-                {preset.value === "custom"
-                  ? i18n.t(
-                      "policies:configurationPolicies.featureTabs.backupTab.setYourOwnValues",
-                    )
-                  : i18n.t("policies:configurationPolicies.featureTabs.backupTab.retentionSummary", { days: preset.days, versions: preset.versions })}
-              </span>
-            </label>
-          ))}
-        </div>
-        {settings.retentionPreset === "custom" && (
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              </option>
+            </select>
+            <p className="mt-1 chart-legend-xs text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.backupTab.applicationLevelProtectionBlocksDeletionInBreeze",
+              )}
+            </p>
+          </div>
+          {settings.immutabilityMode !== "none" && (
             <div>
               <label className="text-xs text-muted-foreground">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.retentionDays",
+                  "policies:configurationPolicies.featureTabs.backupTab.immutableForDays",
                 )}
               </label>
               <input
                 type="number"
                 min={1}
                 max={3650}
-                value={settings.retentionDays}
+                value={settings.immutableDays}
                 onChange={(e) =>
-                  update("retentionDays", Number(e.target.value) || 30)
+                  update("immutableDays", Number(e.target.value) || 30)
                 }
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
               />
             </div>
-            <div>
-              <label className="text-xs text-muted-foreground">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.maxVersions",
-                )}
-              </label>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={settings.retentionVersions}
-                onChange={(e) =>
-                  update("retentionVersions", Number(e.target.value) || 5)
-                }
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-              />
-            </div>
-          </div>
-        )}
-        {settings.retentionPreset !== "custom" && retentionInfo && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.keepBackupsFor",
-            )}
-            {retentionInfo.days}
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.daysWithUpTo",
-            )}
-            {retentionInfo.versions}
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.versionsPerDevice",
-            )}
-          </p>
-        )}
-      </div>
-
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold">
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.gFSRetention",
           )}
-        </h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.keepLongerRunningRestorePointsForGrandfather",
-          )}
-        </p>
-        <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.daily2",
-              )}
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={365}
-              value={settings.gfsDailyRetention}
-              onChange={(e) =>
-                update("gfsDailyRetention", Number(e.target.value) || 7)
-              }
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.weekly2",
-              )}
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={260}
-              value={settings.gfsWeeklyRetention}
-              onChange={(e) =>
-                update("gfsWeeklyRetention", Number(e.target.value) || 4)
-              }
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.monthly2",
-              )}
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={120}
-              value={settings.gfsMonthlyRetention}
-              onChange={(e) =>
-                update("gfsMonthlyRetention", Number(e.target.value) || 12)
-              }
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.yearly",
-              )}
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={25}
-              value={settings.gfsYearlyRetention}
-              onChange={(e) =>
-                update("gfsYearlyRetention", Number(e.target.value) || 3)
-              }
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.weeklyBackupDay",
-              )}
-            </label>
-            <select
-              value={settings.gfsWeeklyDayOfWeek}
-              onChange={(e) =>
-                update("gfsWeeklyDayOfWeek", Number(e.target.value))
-              }
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            >
-              {shortDayOfWeekOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-6 space-y-4">
-        <h3 className="text-sm font-semibold">
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.snapshotProtection",
-          )}
-        </h3>
-        <p className="text-xs text-muted-foreground">
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.theseSettingsStampFutureSnapshotsAtCreation",
-          )}
-        </p>
-        {invalidSavedProviderMode && (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm text-amber-800">
-            <p>
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.providerImmutabilityIsConfiguredButTheSelected",
-              )}
-            </p>
-            <p className="mt-1 text-xs text-amber-900/80">
-              {capabilitySummary(selectedConfig)}
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={handleTestConnection}
-                disabled={!selectedConfigId || testStatus === "testing"}
-                className="rounded-md border border-amber-600/40 bg-background px-3 py-1.5 text-xs font-medium text-amber-900 disabled:opacity-50"
-              >
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.retestConfig",
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  void handleSave({ downgradeInvalidProvider: true })
-                }
-                disabled={isSaving}
-                className="rounded-md border border-amber-600/40 bg-amber-600/10 px-3 py-1.5 text-xs font-medium text-amber-900 disabled:opacity-50"
-              >
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.backupTab.saveWithApplicationProtection",
-                )}
-              </button>
-            </div>
-          </div>
-        )}
-        <ToggleRow
-          label={i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.legalHold",
-          )}
-          description={i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.preventRetentionCleanupFromDeletingFutureSnapshots",
-          )}
-          checked={settings.legalHoldEnabled}
-          onChange={(checked) => {
-            update("legalHoldEnabled", checked);
-            if (!checked) update("legalHoldReason", "");
-          }}
-        />
-        {settings.legalHoldEnabled && (
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.legalHoldReason",
-              )}
-            </label>
-            <input
-              value={settings.legalHoldReason}
-              onChange={(e) => update("legalHoldReason", e.target.value)}
-              placeholder={i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.reasonForPreservingFutureSnapshots",
-              )}
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-        )}
-
-        <div>
-          <label className="text-xs text-muted-foreground">
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.immutability",
-            )}
-          </label>
-          <select
-            value={settings.immutabilityMode}
-            onChange={(e) =>
-              update("immutabilityMode", e.target.value as ImmutabilityMode)
-            }
-            className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-          >
-            <option value="none">{i18n.t("common:labels.none")}</option>
-            <option value="application">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.applicationLevelProtection",
-              )}
-            </option>
-            <option value="provider" disabled={!selectedConfigSupportsProvider}>
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.providerEnforcedWORM",
-              )}
-            </option>
-          </select>
-          <p className="mt-1 chart-legend-xs text-muted-foreground">
-            {i18n.t(
-              "policies:configurationPolicies.featureTabs.backupTab.applicationLevelProtectionBlocksDeletionInBreeze",
-            )}
-          </p>
-        </div>
-        {settings.immutabilityMode !== "none" && (
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.immutableForDays",
-              )}
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={3650}
-              value={settings.immutableDays}
-              onChange={(e) =>
-                update("immutableDays", Number(e.target.value) || 30)
-              }
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-        )}
-      </div>
-
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold">
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.backupWindow",
-          )}
-        </h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {i18n.t(
-            "policies:configurationPolicies.featureTabs.backupTab.leaveBlankToAllowBackupsAtAny",
-          )}
-        </p>
-        <div className="mt-3 grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.startTime",
-              )}
-            </label>
-            <input
-              type="time"
-              value={settings.backupWindowStart}
-              onChange={(e) => update("backupWindowStart", e.target.value)}
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">
-              {i18n.t(
-                "policies:configurationPolicies.featureTabs.backupTab.endTime",
-              )}
-            </label>
-            <input
-              type="time"
-              value={settings.backupWindowEnd}
-              onChange={(e) => update("backupWindowEnd", e.target.value)}
-              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
-            />
-          </div>
-        </div>
+        </SectionGroup>
       </div>
     </FeatureTabShell>
   );

@@ -12,6 +12,8 @@ const files = [
   'WarrantyTab.tsx',
   'PatchTab.tsx',
   'BackupTab.tsx',
+  'BackupDestinationSection.tsx',
+  'backupTabPresets.ts',
 ];
 
 describe('configuration policy structural values', () => {
