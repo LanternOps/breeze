@@ -72,127 +72,274 @@ const CANONICAL_PROTECTED_FILES: Record<string, string> = {
   setRefreshTokenCookie: join(SRC_DIR, 'routes/auth/helpers.ts'),
 };
 
-const moduleResolutionCache = new Map<string, string | null>();
-const canonicalExportCache = new Map<string, ReadonlySet<string>>();
-
 function normalizeFileName(fileName: string): string {
   const absolute = resolve(fileName);
   return ts.sys.fileExists(absolute) && ts.sys.realpath ? ts.sys.realpath(absolute) : absolute;
 }
 
-function resolveModuleFile(specifier: string, containingFile: string): string | null {
-  const key = `${normalizeFileName(containingFile)}::${specifier}`;
-  const cached = moduleResolutionCache.get(key);
-  if (cached !== undefined) return cached;
-  const result = ts.resolveModuleName(
-    specifier,
-    containingFile,
-    {
-      module: ts.ModuleKind.ESNext,
-      moduleResolution: ts.ModuleResolutionKind.NodeJs,
-      target: ts.ScriptTarget.Latest,
-    },
-    ts.sys,
-  ).resolvedModule?.resolvedFileName;
-  const normalized = result ? normalizeFileName(result) : null;
-  moduleResolutionCache.set(key, normalized);
-  return normalized;
-}
+const ANALYSIS_COMPILER_OPTIONS: ts.CompilerOptions = {
+  module: ts.ModuleKind.ESNext,
+  moduleResolution: ts.ModuleResolutionKind.NodeJs,
+  target: ts.ScriptTarget.ESNext,
+  noEmit: true,
+  noLib: true,
+  skipLibCheck: true,
+  types: [],
+};
 
-interface ImportedBinding {
-  importedName: string;
-  targetFile: string;
-}
-
-function canonicalExportNames(
-  moduleFile: string,
-  canonicalFile: string,
-  canonicalName: string,
-  visiting: Set<string> = new Set(),
-): ReadonlySet<string> {
-  const normalizedModule = normalizeFileName(moduleFile);
-  const normalizedCanonical = normalizeFileName(canonicalFile);
-  const cacheKey = `${normalizedCanonical}::${canonicalName}::${normalizedModule}`;
-  const cached = canonicalExportCache.get(cacheKey);
-  if (cached) return cached;
-  if (normalizedModule === normalizedCanonical) {
-    const names = new Set([canonicalName]);
-    canonicalExportCache.set(cacheKey, names);
-    return names;
-  }
-  if (visiting.has(cacheKey) || !ts.sys.fileExists(normalizedModule)) return new Set();
-  visiting.add(cacheKey);
-
-  const sourceFile = ts.createSourceFile(
-    normalizedModule,
-    readFileSync(normalizedModule, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
+function createAnalysisProgram(
+  rootNames: string[],
+  virtualSources: ReadonlyMap<string, string> = new Map(),
+  noResolve = false,
+): ts.Program {
+  const normalizedVirtualSources = new Map(
+    [...virtualSources].map(([fileName, source]) => [normalizeFileName(fileName), source]),
   );
-  const importedBindings = new Map<string, ImportedBinding>();
-  for (const statement of sourceFile.statements) {
-    if (
-      !ts.isImportDeclaration(statement)
-      || !ts.isStringLiteral(statement.moduleSpecifier)
-      || !statement.importClause?.namedBindings
-      || !ts.isNamedImports(statement.importClause.namedBindings)
-    ) continue;
-    const targetFile = resolveModuleFile(statement.moduleSpecifier.text, normalizedModule);
-    if (!targetFile) continue;
-    for (const element of statement.importClause.namedBindings.elements) {
-      importedBindings.set(element.name.text, {
-        importedName: element.propertyName?.text ?? element.name.text,
-        targetFile,
-      });
+  const compilerOptions = { ...ANALYSIS_COMPILER_OPTIONS, noResolve };
+  const host = ts.createCompilerHost(compilerOptions, true);
+  const defaultFileExists = host.fileExists.bind(host);
+  const defaultReadFile = host.readFile.bind(host);
+  const defaultGetSourceFile = host.getSourceFile.bind(host);
+  const defaultRealpath = host.realpath?.bind(host);
+  host.fileExists = (fileName) => normalizedVirtualSources.has(normalizeFileName(fileName))
+    || defaultFileExists(fileName);
+  host.readFile = (fileName) => normalizedVirtualSources.get(normalizeFileName(fileName))
+    ?? defaultReadFile(fileName);
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+    const virtual = normalizedVirtualSources.get(normalizeFileName(fileName));
+    return virtual === undefined
+      ? defaultGetSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
+      : ts.createSourceFile(fileName, virtual, languageVersion, true, ts.ScriptKind.TS);
+  };
+  if (defaultRealpath) {
+    host.realpath = (fileName) => normalizedVirtualSources.has(normalizeFileName(fileName))
+      ? normalizeFileName(fileName)
+      : defaultRealpath(fileName);
+  }
+  return ts.createProgram({
+    rootNames: rootNames.map(normalizeFileName),
+    options: compilerOptions,
+    host,
+  });
+}
+
+function resolveAliasedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
+  let current = symbol;
+  const seen = new Set<ts.Symbol>();
+  while ((current.flags & ts.SymbolFlags.Alias) !== 0 && !seen.has(current)) {
+    seen.add(current);
+    const resolved = checker.getAliasedSymbol(current);
+    if (resolved === current) break;
+    current = resolved;
+  }
+  return current;
+}
+
+function getCanonicalSymbol(
+  program: ts.Program,
+  canonicalFile: string,
+  functionName: string,
+): ts.Symbol {
+  const checker = program.getTypeChecker();
+  const sourceFile = program.getSourceFile(normalizeFileName(canonicalFile));
+  const moduleSymbol = sourceFile && checker.getSymbolAtLocation(sourceFile);
+  const exported = moduleSymbol
+    && checker.getExportsOfModule(moduleSymbol).find((symbol) => symbol.name === functionName);
+  if (!exported) throw new Error(`Unable to resolve canonical ${functionName} export`);
+  const canonical = resolveAliasedSymbol(checker, exported);
+  const declaredInCanonicalFile = canonical.declarations?.some(
+    (declaration) => normalizeFileName(declaration.getSourceFile().fileName)
+      === normalizeFileName(canonicalFile),
+  );
+  if (!declaredInCanonicalFile) {
+    throw new Error(`Canonical ${functionName} export did not resolve to ${canonicalFile}`);
+  }
+  return canonical;
+}
+
+function symbolContainsCanonical(
+  checker: ts.TypeChecker,
+  symbol: ts.Symbol | undefined,
+  canonical: ts.Symbol,
+  visiting: Set<ts.Symbol> = new Set(),
+): boolean {
+  if (!symbol) return false;
+  const resolved = resolveAliasedSymbol(checker, symbol);
+  if (resolved === canonical) return true;
+  if (visiting.has(resolved)) return false;
+  visiting.add(resolved);
+  if ((resolved.flags & (ts.SymbolFlags.Module | ts.SymbolFlags.NamespaceModule)) !== 0) {
+    for (const exported of checker.getExportsOfModule(resolved)) {
+      if (symbolContainsCanonical(checker, exported, canonical, visiting)) {
+        visiting.delete(resolved);
+        return true;
+      }
     }
   }
-
-  const exportedNames = new Set<string>();
-  for (const statement of sourceFile.statements) {
-    if (!ts.isExportDeclaration(statement)) continue;
-    if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
-      const targetFile = resolveModuleFile(statement.moduleSpecifier.text, normalizedModule);
-      if (!targetFile) continue;
-      const targetNames = canonicalExportNames(
-        targetFile,
-        normalizedCanonical,
-        canonicalName,
-        visiting,
-      );
-      if (!statement.exportClause) {
-        for (const name of targetNames) exportedNames.add(name);
-      } else if (ts.isNamedExports(statement.exportClause)) {
-        for (const element of statement.exportClause.elements) {
-          const sourceName = element.propertyName?.text ?? element.name.text;
-          if (targetNames.has(sourceName)) exportedNames.add(element.name.text);
-        }
-      }
-      continue;
-    }
-    if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
-      for (const element of statement.exportClause.elements) {
-        const localName = element.propertyName?.text ?? element.name.text;
-        const imported = importedBindings.get(localName);
-        if (!imported) continue;
-        const targetNames = canonicalExportNames(
-          imported.targetFile,
-          normalizedCanonical,
-          canonicalName,
-          visiting,
-        );
-        if (targetNames.has(imported.importedName)) exportedNames.add(element.name.text);
-      }
-    }
-  }
-
-  visiting.delete(cacheKey);
-  canonicalExportCache.set(cacheKey, exportedNames);
-  return exportedNames;
+  visiting.delete(resolved);
+  return false;
 }
 
 function protectedConventionError(functionName: string, detail: string): Error {
   return new Error(`Protected symbol convention violation for ${functionName}: ${detail}`);
+}
+
+function isBindingDeclarationIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  return (ts.isParameter(parent) && parent.name === node)
+    || (ts.isVariableDeclaration(parent) && parent.name === node)
+    || (ts.isBindingElement(parent) && parent.name === node)
+    || (ts.isFunctionDeclaration(parent) && parent.name === node)
+    || (ts.isClassDeclaration(parent) && parent.name === node);
+}
+
+function analyzeTrackedSymbolCalls(
+  program: ts.Program,
+  fileName: string,
+  functionName: string,
+  canonicalFile: string,
+): number {
+  const checker = program.getTypeChecker();
+  const sourceFile = program.getSourceFile(normalizeFileName(fileName));
+  if (!sourceFile) throw new Error(`Unable to load analysis source ${fileName}`);
+  const canonical = getCanonicalSymbol(program, canonicalFile, functionName);
+  const protectedBindings = new Map<ts.Symbol, { exact: boolean; reExported: boolean }>();
+
+  const inspectDynamicImports = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node)
+      && node.expression.kind === ts.SyntaxKind.ImportKeyword
+      && node.arguments[0]
+      && ts.isStringLiteral(node.arguments[0])
+    ) {
+      const moduleSymbol = checker.getSymbolAtLocation(node.arguments[0]);
+      if (!symbolContainsCanonical(checker, moduleSymbol, canonical)) {
+        ts.forEachChild(node, inspectDynamicImports);
+        return;
+      }
+      const awaited = ts.isAwaitExpression(node.parent) ? node.parent : undefined;
+      const declaration = awaited && ts.isVariableDeclaration(awaited.parent)
+        ? awaited.parent
+        : undefined;
+      const elements = declaration && ts.isObjectBindingPattern(declaration.name)
+        ? declaration.name.elements
+        : undefined;
+      const destructuresOnlyUnrelatedExports = !!elements
+        && elements.length > 0
+        && elements.every((element) => {
+          if (
+            element.dotDotDotToken
+            || (element.propertyName && ts.isComputedPropertyName(element.propertyName))
+          ) return false;
+          const importedName = element.propertyName
+            ? ts.isIdentifier(element.propertyName) || ts.isStringLiteral(element.propertyName)
+              ? element.propertyName.text
+              : undefined
+            : ts.isIdentifier(element.name) ? element.name.text : undefined;
+          if (!importedName) return false;
+          const exported = checker.getExportsOfModule(resolveAliasedSymbol(checker, moduleSymbol!))
+            .find((symbol) => symbol.name === importedName);
+          return !symbolContainsCanonical(checker, exported, canonical);
+        });
+      if (destructuresOnlyUnrelatedExports) {
+        ts.forEachChild(node, inspectDynamicImports);
+        return;
+      }
+      throw protectedConventionError(functionName, 'dynamic imports are forbidden');
+    }
+    ts.forEachChild(node, inspectDynamicImports);
+  };
+
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isImportDeclaration(statement)
+      && ts.isStringLiteral(statement.moduleSpecifier)
+      && statement.importClause
+    ) {
+      const bindings = statement.importClause.namedBindings;
+      if (statement.importClause.name) {
+        const moduleSymbol = checker.getSymbolAtLocation(statement.moduleSpecifier);
+        if (symbolContainsCanonical(checker, moduleSymbol, canonical)) {
+          throw protectedConventionError(functionName, 'default imports are forbidden');
+        }
+      }
+      if (bindings && ts.isNamespaceImport(bindings)) {
+        const localSymbol = checker.getSymbolAtLocation(bindings.name);
+        if (symbolContainsCanonical(checker, localSymbol, canonical)) {
+          throw protectedConventionError(functionName, 'namespace imports are forbidden');
+        }
+      }
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          const importedName = element.propertyName?.text ?? element.name.text;
+          const localSymbol = checker.getSymbolAtLocation(element.name);
+          if (!localSymbol || !symbolContainsCanonical(checker, localSymbol, canonical)) continue;
+          protectedBindings.set(localSymbol, {
+            exact: importedName === functionName
+              && element.name.text === functionName
+              && !element.propertyName,
+            reExported: false,
+          });
+        }
+      }
+    }
+  }
+  if (sourceFile.text.includes('import(')) inspectDynamicImports(sourceFile);
+
+  if (protectedBindings.size === 0) return 0;
+
+  let count = 0;
+  const inspectReferences = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) {
+      const localSymbol = ts.isShorthandPropertyAssignment(node.parent)
+        ? checker.getShorthandAssignmentValueSymbol(node.parent)
+          ?? checker.getSymbolAtLocation(node)
+        : checker.getSymbolAtLocation(node);
+      const binding = localSymbol && protectedBindings.get(localSymbol);
+      if (ts.isImportSpecifier(node.parent)) return;
+      if (
+        ts.isExportSpecifier(node.parent)
+        && symbolContainsCanonical(checker, localSymbol, canonical)
+      ) {
+        if (binding) binding.reExported = true;
+        return;
+      }
+      if (
+        binding
+        && ts.isTypeQueryNode(node.parent)
+        && node.parent.exprName === node
+        && binding.exact
+      ) return;
+      if (binding && ts.isCallExpression(node.parent) && node.parent.expression === node) {
+        if (!binding.exact) {
+          throw protectedConventionError(functionName, 'named import aliases are forbidden');
+        }
+        count += 1;
+        return;
+      }
+      if (binding || symbolContainsCanonical(checker, localSymbol, canonical)) {
+        throw protectedConventionError(
+          functionName,
+          'only a direct CallExpression identifier may reference the imported symbol',
+        );
+      }
+      if (
+        protectedBindings.size > 0
+        && node.text === functionName
+        && isBindingDeclarationIdentifier(node)
+      ) {
+        throw protectedConventionError(functionName, 'shadowing is forbidden');
+      }
+    }
+    ts.forEachChild(node, inspectReferences);
+  };
+  inspectReferences(sourceFile);
+  for (const binding of protectedBindings.values()) {
+    if (!binding.exact && !binding.reExported) {
+      throw protectedConventionError(functionName, 'named import aliases are forbidden');
+    }
+  }
+  return count;
 }
 
 function countTrackedSymbolCalls(
@@ -201,133 +348,39 @@ function countTrackedSymbolCalls(
   fileName = join(SRC_DIR, '__session_inventory_fixture.ts'),
   canonicalFile = CANONICAL_PROTECTED_FILES[functionName],
 ): number {
-  const sourceFile = ts.createSourceFile(
-    'session-inventory.ts',
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
   if (!canonicalFile) throw new Error(`Unknown protected symbol: ${functionName}`);
-  const protectedBindings = new Map<string, { importedName: string; reExported: boolean }>();
-
-  const inspectImports = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node)
-      && node.expression.kind === ts.SyntaxKind.ImportKeyword
-      && node.arguments[0]
-      && ts.isStringLiteral(node.arguments[0])
-    ) {
-      const awaited = ts.isAwaitExpression(node.parent) ? node.parent : undefined;
-      const declaration = awaited && ts.isVariableDeclaration(awaited.parent)
-        ? awaited.parent
-        : undefined;
-      const elements = declaration && ts.isObjectBindingPattern(declaration.name)
-        ? declaration.name.elements
-        : undefined;
-      const targetFile = resolveModuleFile(node.arguments[0].text, fileName);
-      const targetNames = targetFile
-        ? canonicalExportNames(targetFile, canonicalFile, functionName)
-        : new Set<string>();
-      if (targetNames.size === 0) {
-        ts.forEachChild(node, inspectImports);
-        return;
-      }
-      const destructuresOnlyUnrelatedExports = !!elements
-        && elements.length > 0
-        && elements.every((element) => {
-          if (element.dotDotDotToken) return false;
-          const importedName = element.propertyName && ts.isIdentifier(element.propertyName)
-            ? element.propertyName.text
-            : ts.isIdentifier(element.name) ? element.name.text : undefined;
-          return !!importedName && !targetNames.has(importedName);
-        });
-      if (destructuresOnlyUnrelatedExports) {
-        ts.forEachChild(node, inspectImports);
-        return;
-      }
-      throw protectedConventionError(functionName, 'dynamic imports are forbidden');
-    }
-    if (
-      ts.isImportDeclaration(node)
-      && ts.isStringLiteral(node.moduleSpecifier)
-      && node.importClause
-    ) {
-      const bindings = node.importClause.namedBindings;
-      const targetFile = resolveModuleFile(node.moduleSpecifier.text, fileName);
-      const targetNames = targetFile
-        ? canonicalExportNames(targetFile, canonicalFile, functionName)
-        : new Set<string>();
-      if (targetNames.size === 0) {
-        ts.forEachChild(node, inspectImports);
-        return;
-      }
-      if (node.importClause.name) {
-        throw protectedConventionError(functionName, 'default imports are forbidden');
-      }
-      if (bindings && ts.isNamespaceImport(bindings)) {
-        throw protectedConventionError(functionName, 'namespace imports are forbidden');
-      }
-      if (bindings && ts.isNamedImports(bindings)) {
-        for (const element of bindings.elements) {
-          const importedName = element.propertyName?.text ?? element.name.text;
-          if (!targetNames.has(importedName)) continue;
-          protectedBindings.set(element.name.text, {
-            importedName,
-            reExported: false,
-          });
-        }
-      }
-    }
-    ts.forEachChild(node, inspectImports);
-  };
-  inspectImports(sourceFile);
-
-  // Same-named exports from unrelated modules are outside this contract.
-  if (protectedBindings.size === 0) return 0;
-
-  let count = 0;
-  const inspectReferences = (node: ts.Node): void => {
-    if (ts.isIdentifier(node) && protectedBindings.has(node.text)) {
-      const binding = protectedBindings.get(node.text)!;
-      if (ts.isImportSpecifier(node.parent)) return;
-      if (ts.isExportSpecifier(node.parent)) {
-        binding.reExported = true;
-        return;
-      }
-      if (
-        ts.isTypeQueryNode(node.parent)
-        && node.parent.exprName === node
-        && node.text === functionName
-        && binding.importedName === functionName
-      ) return;
-      if (ts.isCallExpression(node.parent) && node.parent.expression === node) {
-        if (node.text !== functionName || binding.importedName !== functionName) {
-          throw protectedConventionError(functionName, 'named import aliases are forbidden');
-        }
-        count += 1;
-        return;
-      }
-      throw protectedConventionError(
-        functionName,
-        'only a direct CallExpression identifier may reference the imported symbol',
-      );
-    }
-    ts.forEachChild(node, inspectReferences);
-  };
-  inspectReferences(sourceFile);
-  for (const [localName, binding] of protectedBindings) {
-    if ((localName !== functionName || binding.importedName !== functionName) && !binding.reExported) {
-      throw protectedConventionError(functionName, 'named import aliases are forbidden');
-    }
+  const normalizedFile = normalizeFileName(fileName);
+  const onDiskSource = ts.sys.fileExists(normalizedFile) ? ts.sys.readFile(normalizedFile) : undefined;
+  const virtualSources = new Map<string, string>();
+  if (onDiskSource !== source) {
+    virtualSources.set(normalizedFile, source);
+    // Isolated source fixtures need symbol identity, not the canonical files'
+    // production dependency graphs. A virtual definition preserves identity
+    // while keeping each fixture program deterministic and small.
+    virtualSources.set(normalizeFileName(canonicalFile), `export function ${functionName}() {}`);
   }
-  return count;
+  const program = createAnalysisProgram([normalizedFile, canonicalFile], virtualSources);
+  return analyzeTrackedSymbolCalls(program, normalizedFile, functionName, canonicalFile);
 }
 
+let repositoryProgram: ts.Program | undefined;
+
 function collectCallInventory(functionName: string): Map<string, number> {
+  const files = walkProductionTypeScript(SRC_DIR);
+  // Every API source is already a root; noResolve prevents the compiler from
+  // pulling the full monorepo/node_modules graph while still binding imports
+  // and re-exports between these root source files.
+  repositoryProgram ??= createAnalysisProgram(files, new Map(), true);
+  const canonicalFile = CANONICAL_PROTECTED_FILES[functionName];
+  if (!canonicalFile) throw new Error(`Unknown protected symbol: ${functionName}`);
   const inventory = new Map<string, number>();
-  for (const file of walkProductionTypeScript(SRC_DIR)) {
-    const count = countTrackedSymbolCalls(readFileSync(file, 'utf8'), functionName, file);
+  for (const file of files) {
+    const count = analyzeTrackedSymbolCalls(
+      repositoryProgram,
+      file,
+      functionName,
+      canonicalFile,
+    );
     if (count > 0) inventory.set(relative(SRC_DIR, file), count);
   }
   return inventory;
@@ -382,10 +435,12 @@ function isFalsyGuard(statement: ts.Statement, variableName: string): boolean {
   ) {
     return false;
   }
-  return ts.isReturnStatement(statement.thenStatement)
-    || (ts.isBlock(statement.thenStatement)
-      && statement.thenStatement.statements.length === 1
-      && ts.isReturnStatement(statement.thenStatement.statements[0]));
+  if (ts.isReturnStatement(statement.thenStatement)) return true;
+  if (!ts.isBlock(statement.thenStatement)) return false;
+  const onlyStatement = statement.thenStatement.statements[0];
+  return !!onlyStatement
+    && statement.thenStatement.statements.length === 1
+    && ts.isReturnStatement(onlyStatement);
 }
 
 function cookieUsesGrantRefreshToken(
@@ -516,6 +571,61 @@ describe('session inventory analyzer fixtures', () => {
     });
   });
 
+  it('resolves both entry orders through a cyclic barrel component', () => {
+    withModuleGraph({
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'services/a.ts': "export * from './b';",
+      'services/b.ts': "export * from './a'; export * from './userSession';",
+      'routes/from-a.ts': "import { issueUserSession } from '../services/a'; issueUserSession();",
+      'routes/from-b.ts': "import { issueUserSession } from '../services/b'; issueUserSession();",
+    }, (root) => {
+      const canonical = join(root, 'services/userSession.ts');
+      for (const consumerName of ['from-b.ts', 'from-a.ts']) {
+        const consumer = join(root, 'routes', consumerName);
+        expect(analyzeFixture(
+          readFileSync(consumer, 'utf8'),
+          'issueUserSession',
+          consumer,
+          canonical,
+        )).toBe(1);
+      }
+    });
+  });
+
+  it('rejects a protected function exposed through a namespace re-export', () => {
+    withModuleGraph({
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'services/barrel.ts': "export * as sessions from './userSession';",
+      'routes/consumer.ts': "import { sessions } from '../services/barrel'; sessions.issueUserSession();",
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(() => analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+      )).toThrow(/protected symbol convention/i);
+    });
+  });
+
+  it.each([
+    ["a quoted property", "const { 'issueUserSession': issue } = await import('../services/userSession'); issue();"],
+    ['a computed property', "const key = 'issueUserSession'; const { [key]: issue } = await import('../services/userSession'); issue();"],
+  ])('rejects dynamic protected destructuring through %s', (_name, body) => {
+    withModuleGraph({
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'routes/consumer.ts': `async function run() { ${body} }`,
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(() => analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+      )).toThrow(/protected symbol convention/i);
+    });
+  });
+
   it('recognizes a named alias re-export and still rejects alias consumption', () => {
     withModuleGraph({
       'services/userSession.ts': 'export function issueUserSession() {}',
@@ -554,6 +664,13 @@ describe('session inventory analyzer fixtures', () => {
       'auth/barrel.ts': "import { setRefreshTokenCookie as local } from './helpers'; export { local as setRefreshTokenCookie };",
       'routes/consumer.ts': "import { setRefreshTokenCookie } from '../auth/barrel'; setRefreshTokenCookie();",
     }, (root) => {
+      const barrel = join(root, 'auth/barrel.ts');
+      expect(analyzeFixture(
+        readFileSync(barrel, 'utf8'),
+        'setRefreshTokenCookie',
+        barrel,
+        join(root, 'auth/helpers.ts'),
+      )).toBe(0);
       const consumer = join(root, 'routes/consumer.ts');
       expect(analyzeFixture(
         readFileSync(consumer, 'utf8'),
