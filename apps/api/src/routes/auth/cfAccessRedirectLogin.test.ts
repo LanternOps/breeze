@@ -78,7 +78,7 @@ const servicesState = vi.hoisted(() => ({
 }));
 
 vi.mock('../../services', () => ({
-  issueUserSession: vi.fn(
+  issueUserSessionLegacyDuringTransition: vi.fn(
     async (identity: Record<string, unknown>) => {
       servicesState.lastSessionIdentity = identity;
       return {
@@ -98,13 +98,6 @@ vi.mock('../../services', () => ({
     return true;
   }),
   verifyToken: vi.fn(async () => servicesState.verifyResult),
-}));
-
-vi.mock('../../services/terminalLogout', () => ({
-  revokeTerminalLogoutSubjects: vi.fn(async (input: { subjectIds: string[]; refreshJti?: string }) => {
-    servicesState.revokeAllCalls.push(...input.subjectIds);
-    if (input.refreshJti) servicesState.revokeJtiCalls.push(input.refreshJti);
-  }),
 }));
 
 const auditState = vi.hoisted(() => ({
@@ -412,7 +405,7 @@ describe('GET /cf-access-login', () => {
     expect(cookieState.cleared).toBe(true);
   });
 
-  it('logout revokes all user tokens + the refresh jti when a valid refresh cookie is present', async () => {
+  it('top-level GET never lets a refresh cookie select a global revocation subject', async () => {
     envState.enabled = true;
     servicesState.verifyResult = {
       type: 'refresh', sub: 'user-1', jti: 'jti-current', ae: 1, me: 1, fam: 'family-1',
@@ -425,8 +418,10 @@ describe('GET /cf-access-login', () => {
       },
     });
     expect(res.status).toBe(302);
-    expect(servicesState.revokeAllCalls).toEqual(['user-1']);
-    expect(servicesState.revokeJtiCalls).toEqual(['jti-current']);
+    expect(servicesState.revokeAllCalls).toEqual([]);
+    expect(servicesState.revokeJtiCalls).toEqual([]);
+    const services = await import('../../services');
+    expect(services.verifyToken).not.toHaveBeenCalled();
     expect(cookieState.cleared).toBe(true);
   });
 
@@ -456,27 +451,6 @@ describe('GET /cf-access-login', () => {
     expect(servicesState.revokeAllCalls).toEqual([]);
     expect(servicesState.revokeJtiCalls).toEqual([]);
     expect(cookieState.cleared).toBe(true);
-  });
-
-  it('logout still clears + 302s when revocation throws (e.g. Redis down)', async () => {
-    envState.enabled = true;
-    servicesState.verifyResult = {
-      type: 'refresh', sub: 'user-1', jti: 'jti-current', ae: 1, me: 1, fam: 'family-1',
-    };
-    const terminalLogout = await import('../../services/terminalLogout');
-    vi.mocked(terminalLogout.revokeTerminalLogoutSubjects).mockRejectedValueOnce(new Error('redis down'));
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const res = await cfAccessRedirectLoginRoutes.request('http://api.example/cf-access-logout', {
-      method: 'GET',
-      headers: {
-        host: 'breeze.example.com',
-        cookie: 'breeze_refresh_token=refresh-cookie-tok',
-      },
-    });
-    expect(res.status).toBe(302);
-    expect(cookieState.cleared).toBe(true);
-    expect(errSpy).toHaveBeenCalled();
-    errSpy.mockRestore();
   });
 
   it('logout builds the redirect origin from DASHBOARD_URL, ignoring a spoofed Host header', async () => {

@@ -2,7 +2,18 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import './setup';
 import { getTestDb } from './setup';
-import { authBrowserTransitions } from '../../db/schema';
+import {
+  authBrowserTransitions,
+  refreshTokenFamilies,
+  roles,
+  users,
+} from '../../db/schema';
+import {
+  createOrganization,
+  createPartner,
+  createRole,
+  createUser,
+} from './db-utils';
 import {
   AuthBindingRotationRequiredError,
   AuthIssuanceConflictError,
@@ -14,6 +25,14 @@ import {
   type AuthBindingSource,
 } from '../../services/authBrowserTransition';
 import { getSecretDerivedKeyMaterials } from '../../services/secretCrypto';
+import { issueUserSession } from '../../services/userSession';
+import { prepareTerminalLogout } from '../../services/terminalLogout';
+import { verifyToken } from '../../services/jwt';
+import {
+  classifyRefreshTokenAuthority,
+  isAccessSessionFamilyActive,
+} from '../../services/tokenRevocation';
+import { withAuthLifecycleSystemTransaction } from '../../services/authLifecycle';
 
 const CURRENT_KEY = 'integration-browser-binding-current-key-material';
 const OLD_KEY = 'integration-browser-binding-old-key-material';
@@ -43,6 +62,92 @@ async function waitForBlockedTransitionQueries(minimum = 1): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Expected ${minimum} blocked auth-browser transition queries`);
+}
+
+async function waitForBlockedAppQuery(
+  tableName: 'auth_browser_transitions' | 'users',
+  settled?: () => unknown,
+): Promise<void> {
+  const db = getTestDb();
+  for (let attempt = 0; attempt < 5_000; attempt += 1) {
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS blocked_count
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND usename = 'breeze_app'
+        AND cardinality(pg_blocking_pids(pid)) > 0
+        AND position(${tableName} in lower(query)) > 0
+    `) as unknown as Array<{ blocked_count: number }>;
+    if (Number(rows[0]?.blocked_count ?? 0) > 0) return;
+    const outcome = settled?.();
+    if (outcome !== undefined) {
+      throw new Error(`Expected a breeze_app query blocked on ${tableName}, but it settled: ${String(outcome)}`);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`Expected a breeze_app query blocked on ${tableName}`);
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function issueTestSession(input: {
+  binding: AuthBindingSource;
+  user: Awaited<ReturnType<typeof createUser>>;
+  partnerId: string;
+  orgId: string;
+  roleId: string;
+}) {
+  const capability = await beginAuthIssuance(input.binding);
+  const tokens = await finishAuthIssuance(capability, (tx) => issueUserSession({
+    userId: input.user.id,
+    email: input.user.email,
+    roleId: input.roleId,
+    orgId: input.orgId,
+    partnerId: input.partnerId,
+    scope: 'organization',
+    mfa: false,
+    amr: ['password'],
+  }, { tx, capability }));
+  return { capability, tokens };
+}
+
+async function terminalFixture() {
+  const db = getTestDb();
+  if ((await db.select().from(roles)).length === 0) {
+    await db.insert(roles).values({
+      name: 'Partner Admin', scope: 'partner', isSystem: true, partnerId: null,
+    });
+  }
+  const partner = await createPartner({ name: 'Terminal Transition Partner' });
+  const org = await createOrganization({ partnerId: partner.id });
+  const role = await createRole({ scope: 'organization', partnerId: partner.id, orgId: org.id });
+  const userA = await createUser({
+    partnerId: partner.id,
+    orgId: org.id,
+    email: `terminal-a-${crypto.randomUUID()}@example.com`,
+  });
+  const userC = await createUser({
+    partnerId: partner.id,
+    orgId: org.id,
+    email: `terminal-c-${crypto.randomUUID()}@example.com`,
+  });
+  const bindingA = freshBrowserBinding();
+  const sessionA = await issueTestSession({
+    binding: bindingA,
+    user: userA,
+    partnerId: partner.id,
+    orgId: org.id,
+    roleId: role.id,
+  });
+  const accessPayload = await verifyToken(sessionA.tokens.accessToken);
+  if (!accessPayload?.sid) throw new Error('Failed to mint access authority fixture');
+  const bindingC = freshBrowserBinding();
+  const capabilityC = await beginAuthIssuance(bindingC);
+  return { partner, org, role, userA, userC, sessionA, accessPayload, bindingC, capabilityC };
 }
 
 beforeEach(() => {
@@ -289,5 +394,132 @@ describe('auth browser transition leases against PostgreSQL', () => {
       activeOperationId: null,
       activeOperationExpiresAt: null,
     });
+  });
+});
+
+describe('terminal preparation against issuer finalization', () => {
+  it('waits behind an issuer that owns transition first, then revokes its linked C family', async () => {
+    const fixture = await terminalFixture();
+    const issuerEntered = deferred();
+    const releaseIssuer = deferred();
+    const issuer = finishAuthIssuance(fixture.capabilityC, async (tx) => {
+      issuerEntered.resolve();
+      await releaseIssuer.promise;
+      return issueUserSession({
+        userId: fixture.userC.id,
+        email: fixture.userC.email,
+        roleId: fixture.role.id,
+        orgId: fixture.org.id,
+        partnerId: fixture.partner.id,
+        scope: 'organization',
+        mfa: false,
+        amr: ['password'],
+      }, { tx, capability: fixture.capabilityC });
+    });
+    await issuerEntered.promise;
+
+    const prepare = prepareTerminalLogout({
+      binding: fixture.bindingC,
+      access: {
+        userId: fixture.userA.id,
+        familyId: fixture.accessPayload.sid!,
+        authEpoch: fixture.accessPayload.ae,
+        mfaEpoch: fixture.accessPayload.me,
+      },
+      refreshToken: fixture.sessionA.tokens.refreshToken,
+    });
+    void prepare.catch(() => undefined);
+    await waitForBlockedAppQuery('auth_browser_transitions');
+    releaseIssuer.resolve();
+
+    const issuedC = await issuer;
+    const prepared = await prepare;
+    expect(prepared.subjectIds).toEqual([fixture.userA.id]);
+    const [linkedFamily] = await getTestDb()
+      .select()
+      .from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, issuedC.familyId));
+    expect(linkedFamily).toMatchObject({
+      userId: fixture.userC.id,
+      revokedReason: 'cf-access-terminal-logout',
+    });
+    await expect(isAccessSessionFamilyActive(
+      fixture.accessPayload.sid!,
+      fixture.userA.id,
+    )).resolves.toBe(false);
+    await expect(withAuthLifecycleSystemTransaction((tx) =>
+      classifyRefreshTokenAuthority(tx, issuedC.refreshToken)))
+      .resolves.toEqual({ kind: 'invalid' });
+  });
+
+  it('wins transition first so a waiting issuer rejects without family writes', async () => {
+    const fixture = await terminalFixture();
+    // Before issuer finalization, C is not yet linked to the transition. The
+    // prepare candidate set therefore contains only bearer/refresh user A.
+    const firstUserId = fixture.userA.id;
+    const blockerHeld = deferred();
+    const releaseBlocker = deferred();
+    const blocker = getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM users WHERE id = ${firstUserId}::uuid FOR UPDATE`);
+      blockerHeld.resolve();
+      await releaseBlocker.promise;
+    });
+    await blockerHeld.promise;
+
+    let prepare: ReturnType<typeof prepareTerminalLogout> | undefined;
+    let issuer: ReturnType<typeof finishAuthIssuance> | undefined;
+    try {
+      let prepareOutcome: unknown;
+      prepare = prepareTerminalLogout({
+        binding: fixture.bindingC,
+        access: {
+          userId: fixture.userA.id,
+          familyId: fixture.accessPayload.sid!,
+          authEpoch: fixture.accessPayload.ae,
+          mfaEpoch: fixture.accessPayload.me,
+        },
+        refreshToken: fixture.sessionA.tokens.refreshToken,
+      });
+      void prepare.then(
+        () => { prepareOutcome = 'resolved'; },
+        (error) => { prepareOutcome = error; },
+      );
+      await waitForBlockedAppQuery('users', () => prepareOutcome);
+
+      issuer = finishAuthIssuance(fixture.capabilityC, (tx) => issueUserSession({
+        userId: fixture.userC.id,
+        email: fixture.userC.email,
+        roleId: fixture.role.id,
+        orgId: fixture.org.id,
+        partnerId: fixture.partner.id,
+        scope: 'organization',
+        mfa: false,
+        amr: ['password'],
+      }, { tx, capability: fixture.capabilityC }));
+      void issuer.catch(() => undefined);
+      await waitForBlockedAppQuery('auth_browser_transitions');
+      releaseBlocker.resolve();
+
+      await expect(prepare).resolves.toMatchObject({ subjectIds: [fixture.userA.id] });
+      await expect(issuer).rejects.toThrow('capability is no longer valid');
+      expect(await getTestDb()
+        .select()
+        .from(refreshTokenFamilies)
+        .where(eq(refreshTokenFamilies.userId, fixture.userC.id))).toHaveLength(0);
+      await expect(isAccessSessionFamilyActive(
+        fixture.accessPayload.sid!,
+        fixture.userA.id,
+      )).resolves.toBe(false);
+      await expect(withAuthLifecycleSystemTransaction((tx) =>
+        classifyRefreshTokenAuthority(tx, fixture.sessionA.tokens.refreshToken)))
+        .resolves.toEqual({ kind: 'invalid' });
+    } finally {
+      releaseBlocker.resolve();
+      await Promise.allSettled([
+        blocker,
+        ...(prepare ? [prepare] : []),
+        ...(issuer ? [issuer] : []),
+      ]);
+    }
   });
 });

@@ -15,9 +15,7 @@ import {
 } from '../../services/cfAccessJwt';
 import {
   issueUserSessionLegacyDuringTransition,
-  verifyToken,
 } from '../../services';
-import { revokeTerminalLogoutSubjects } from '../../services/terminalLogout';
 import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { ENABLE_2FA } from './schemas';
@@ -28,7 +26,6 @@ import {
   getClientIP,
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
-  resolveRefreshToken,
   setCfAccessLogoutQuarantineCookie,
   setRefreshTokenCookie,
 } from './helpers';
@@ -249,30 +246,9 @@ cfAccessRedirectLoginRoutes.get('/cf-access-logout', async (c) => {
   // Client-side storage and Web Locks disappear when the document navigates;
   // this cookie remains visible to every Breeze refresh-cookie writer.
   setCfAccessLogoutQuarantineCookie(c);
-  // Server-side revocation, mirroring POST /logout (login.ts): identify the
-  // session from the refresh cookie (no Bearer token on a top-level GET),
-  // then revoke ALL of the user's tokens plus the specific refresh jti.
-  // Without this, "Sign out" via CF Access only cleared the cookie — the
-  // access + refresh tokens stayed live until natural expiry. Best-effort:
-  // a missing/invalid cookie or a Redis error still clears + redirects.
-  try {
-    const refreshToken = resolveRefreshToken(c);
-    if (refreshToken) {
-      const payload = await verifyToken(refreshToken);
-      if (payload && payload.type === 'refresh' && payload.sub) {
-        await revokeTerminalLogoutSubjects({
-          subjectIds: [payload.sub],
-          refreshJti: payload.jti,
-        });
-      }
-    }
-  } catch (error) {
-    console.error(
-      '[cf-access-logout] Failed to revoke tokens during logout — clearing cookie anyway:',
-      error
-    );
-  }
-
+  // This unauthenticated navigation endpoint cannot choose a global subject.
+  // Durable revocation belongs exclusively to strict-CSRF POST preparation;
+  // a stale refresh cookie here is ignored as authority.
   clearRefreshTokenCookie(c);
 
   if (!cfAccessTrustEnabled()) {

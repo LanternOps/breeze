@@ -50,6 +50,7 @@ import {
   isFamilyRevoked,
   isAccessSessionFamilyActive,
   classifyRefreshTokenAuthority,
+  cacheRefreshTokenFamilyRevocation,
   revokeFamily,
 } from './tokenRevocation';
 import type { AuthLifecycleTransaction } from './authLifecycle';
@@ -154,6 +155,27 @@ describe('tokenRevocation', () => {
   });
 
   describe('revokeFamily', () => {
+    it('surfaces family-sentinel cache failure to post-commit callers', async () => {
+      mockGetRedis.mockReturnValue(null as unknown as Redis);
+
+      await expect(cacheRefreshTokenFamilyRevocation('family-1'))
+        .rejects.toThrow('Redis unavailable while caching refresh family revocation');
+    });
+
+    it('publishes the cache-only family sentinel without a database write', async () => {
+      const { redis } = createMockRedis();
+      mockGetRedis.mockReturnValue(redis);
+
+      await cacheRefreshTokenFamilyRevocation('family-1');
+
+      expect(redis.setex).toHaveBeenCalledWith(
+        'refresh-fam-revoked:family-1',
+        7 * 24 * 60 * 60 + 15 * 60,
+        '1',
+      );
+      expect(dbMocks.update).not.toHaveBeenCalled();
+    });
+
     it('propagates a durable write failure and never publishes a Redis sentinel', async () => {
       const { redis } = createMockRedis();
       mockGetRedis.mockReturnValue(redis);

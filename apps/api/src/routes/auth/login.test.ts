@@ -112,7 +112,12 @@ vi.mock('../../services/authLifecycle', () => ({
 }));
 
 vi.mock('../../services/terminalLogout', () => ({
-  revokeTerminalLogoutSubjects: vi.fn(async () => undefined),
+  prepareTerminalLogout: vi.fn(async () => ({
+    transitionId: 'transition-1', logoutId: 'logout-1', generation: 2,
+    nonce: 'n'.repeat(64), expiresAt: new Date('2026-07-13T00:10:00Z'),
+    subjectIds: ['user-1'], advancedUserCount: 1, revokedFamilyCount: 1,
+    cleanupStatus: 'complete', cleanupFailures: [],
+  })),
 }));
 
 vi.mock('../../services/anomalyMetrics', () => ({
@@ -181,6 +186,10 @@ vi.mock('./helpers', () => ({
   rotateCsrfBindingCookie: vi.fn(),
   resolveRefreshToken: vi.fn(() => null),
   validateCookieCsrfRequest: vi.fn(() => null),
+  validateTerminalCookieCsrfRequest: vi.fn(() => null),
+  clearRefreshCookieOnly: vi.fn((c: { header: (name: string, value: string, options: { append: boolean }) => void }) => {
+    c.header('Set-Cookie', 'breeze_refresh_token=; Path=/api/v1/auth; HttpOnly; SameSite=Strict; Max-Age=0', { append: true });
+  }),
   toPublicTokens: vi.fn((tokens: { accessToken: string; expiresInSeconds: number }) => ({
     accessToken: tokens.accessToken,
     expiresInSeconds: tokens.expiresInSeconds,
@@ -274,13 +283,15 @@ import {
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { getMfaAssuranceFailure } from '../../services/mfaPolicy';
-import { revokeTerminalLogoutSubjects } from '../../services/terminalLogout';
+import { prepareTerminalLogout } from '../../services/terminalLogout';
 import {
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   resolveRefreshToken,
   validateCookieCsrfRequest,
+  validateTerminalCookieCsrfRequest,
   clearRefreshTokenCookie,
+  clearRefreshCookieOnly,
   setRefreshTokenCookie,
   setCfAccessLogoutQuarantineCookie,
   cacheRefreshTokenFamilyRevocation,
@@ -326,63 +337,65 @@ async function postLogout() {
 describe('POST /cf-access-logout/prepare', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+    vi.mocked(validateTerminalCookieCsrfRequest).mockReturnValue(null);
   });
 
-  it('revokes both the access subject and a different refresh-cookie subject before clearing', async () => {
+  it('prepares against the durable binding and clears only the refresh cookie after commit', async () => {
     vi.mocked(resolveRefreshToken).mockReturnValue('refresh-b');
-    vi.mocked(verifyToken).mockResolvedValue({
-      type: 'refresh', sub: 'user-2', jti: 'jti-b', fam: 'family-b',
-    } as never);
 
     const res = await loginRoutes.request('/cf-access-logout/prepare', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-breeze-csrf': '1' },
+      headers: {
+        'content-type': 'application/json',
+        'cookie': `breeze_csrf_token=${'a'.repeat(64)}; breeze_refresh_token=refresh-b`,
+        'x-breeze-csrf': 'a'.repeat(64),
+        'origin': 'http://localhost:4321',
+        'sec-fetch-site': 'same-origin',
+      },
     });
 
     expect(res.status).toBe(200);
-    expect(revokeTerminalLogoutSubjects).toHaveBeenCalledWith({
-      subjectIds: ['user-1', 'user-2'],
-      refreshJti: 'jti-b',
+    expect(prepareTerminalLogout).toHaveBeenCalledWith({
+      binding: { kind: 'browser', value: 'a'.repeat(64) },
+      access: { userId: 'user-1', familyId: 'family-access', authEpoch: 4, mfaEpoch: 7 },
+      refreshToken: 'refresh-b',
     });
-    expect(setCfAccessLogoutQuarantineCookie).toHaveBeenCalledOnce();
+    expect(clearRefreshCookieOnly).toHaveBeenCalledOnce();
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(setCfAccessLogoutQuarantineCookie).not.toHaveBeenCalled();
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
-    expect(res.headers.get('set-cookie')).toContain('breeze_cf_logout_quarantine=1');
+    expect(res.headers.get('set-cookie')).not.toContain('breeze_csrf_token=');
   });
 
-  it('deduplicates same-user access and refresh subjects', async () => {
-    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-a');
-    vi.mocked(verifyToken).mockResolvedValue({
-      type: 'refresh', sub: 'user-1', jti: 'jti-a', fam: 'family-refresh-b',
-    } as never);
+  it('uses strict browser CSRF and rejects the header-only compatibility path', async () => {
+    vi.mocked(validateTerminalCookieCsrfRequest).mockReturnValue('Invalid CSRF token');
 
     const res = await loginRoutes.request('/cf-access-logout/prepare', {
       method: 'POST', headers: { 'x-breeze-csrf': '1' },
     });
 
-    expect(res.status).toBe(200);
-    expect(revokeTerminalLogoutSubjects).toHaveBeenCalledWith({
-      subjectIds: ['user-1'],
-      refreshJti: 'jti-a',
-    });
+    expect(res.status).toBe(403);
+    expect(prepareTerminalLogout).not.toHaveBeenCalled();
+    expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
   });
 
-  it('does not let an inactive or replayed refresh credential name another subject', async () => {
-    vi.mocked(resolveRefreshToken).mockReturnValue('stale-refresh-b');
-    vi.mocked(verifyToken).mockResolvedValue({
-      type: 'refresh', sub: 'user-2', jti: 'stale-jti', fam: 'stale-family',
-    } as never);
-    vi.mocked(getActiveRefreshTokenFamily).mockResolvedValueOnce(null);
+  it('returns 503 without clearing the retry binding when durable preparation fails', async () => {
+    vi.mocked(prepareTerminalLogout).mockRejectedValueOnce(new Error('postgres unavailable'));
 
     const res = await loginRoutes.request('/cf-access-logout/prepare', {
-      method: 'POST', headers: { 'x-breeze-csrf': '1' },
+      method: 'POST',
+      headers: {
+        'cookie': `breeze_csrf_token=${'a'.repeat(64)}`,
+        'x-breeze-csrf': 'a'.repeat(64),
+        'origin': 'http://localhost:4321',
+        'sec-fetch-site': 'same-origin',
+      },
     });
 
-    expect(res.status).toBe(200);
-    expect(revokeTerminalLogoutSubjects).toHaveBeenCalledWith({
-      subjectIds: ['user-1'],
-      refreshJti: undefined,
-    });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(clearRefreshCookieOnly).not.toHaveBeenCalled();
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
   });
 });
 

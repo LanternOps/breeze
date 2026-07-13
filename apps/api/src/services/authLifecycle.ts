@@ -3,7 +3,7 @@ import {
   withSystemDbAccessTransaction,
   type Database,
 } from '../db';
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 import { users } from '../db/schema/users';
 
@@ -16,12 +16,97 @@ export interface SecurityStateAdvance {
   passwordReset?: boolean;
 }
 
+export type TerminalLockedUser = {
+  id: string;
+  status: string;
+  authEpoch: number;
+  mfaEpoch: number;
+};
+
+export type TerminalLockedFamily = {
+  familyId: string;
+  userId: string;
+  revokedAt: Date | null;
+  absoluteExpiresAt: Date;
+  currentRefreshJtiDigest: string | null;
+};
+
+export type TerminalLogoutAuthorityLocks = {
+  users: Map<string, TerminalLockedUser>;
+  families: Map<string, TerminalLockedFamily>;
+  databaseNow: Date;
+};
+
 export function withAuthLifecycleSystemTransaction<T>(
   fn: (tx: AuthLifecycleTransaction) => Promise<T>,
 ): Promise<T> {
   return runOutsideDbContext(() =>
     withSystemDbAccessTransaction(fn)
   );
+}
+
+/**
+ * Acquire every user lock before every family lock for terminal preparation.
+ * All families owned by candidate users are included so later user-wide
+ * revocation never discovers a lower-sorting family after a higher one is
+ * already held. Explicit family IDs additionally cover a signed wrong-owner
+ * candidate and the transition-linked just-issued family.
+ */
+export async function lockTerminalLogoutAuthority(
+  tx: AuthLifecycleTransaction,
+  input: { userIds: readonly string[]; familyIds: readonly string[] },
+): Promise<TerminalLogoutAuthorityLocks> {
+  const userIds = [...new Set(input.userIds.filter(Boolean))].sort();
+  const familyIds = [...new Set(input.familyIds.filter(Boolean))].sort();
+  if (userIds.length === 0) {
+    throw new Error('Terminal logout requires at least one candidate user');
+  }
+
+  const lockedUsers = await tx
+    .select({
+      id: users.id,
+      status: users.status,
+      authEpoch: users.authEpoch,
+      mfaEpoch: users.mfaEpoch,
+      databaseNow: sql<Date>`clock_timestamp()`,
+    })
+    .from(users)
+    .where(inArray(users.id, userIds))
+    .orderBy(asc(users.id))
+    .for('update');
+
+  const familyPredicate = familyIds.length === 0
+    ? inArray(refreshTokenFamilies.userId, userIds)
+    : or(
+      inArray(refreshTokenFamilies.userId, userIds),
+      inArray(refreshTokenFamilies.familyId, familyIds),
+    );
+  const lockedFamilies = await tx
+    .select({
+      familyId: refreshTokenFamilies.familyId,
+      userId: refreshTokenFamilies.userId,
+      revokedAt: refreshTokenFamilies.revokedAt,
+      absoluteExpiresAt: refreshTokenFamilies.absoluteExpiresAt,
+      currentRefreshJtiDigest: refreshTokenFamilies.currentRefreshJtiDigest,
+    })
+    .from(refreshTokenFamilies)
+    .where(familyPredicate)
+    .orderBy(asc(refreshTokenFamilies.familyId))
+    .for('update');
+
+  const databaseNowValue = lockedUsers[0]?.databaseNow;
+  const databaseNow = databaseNowValue instanceof Date
+    ? databaseNowValue
+    : new Date(databaseNowValue ?? Number.NaN);
+  if (!Number.isFinite(databaseNow.getTime())) {
+    throw new Error('Terminal logout could not read authoritative database time');
+  }
+
+  return {
+    users: new Map(lockedUsers.map(({ databaseNow: _databaseNow, ...user }) => [user.id, user])),
+    families: new Map(lockedFamilies.map((family) => [family.familyId, family])),
+    databaseNow,
+  };
 }
 
 export async function advanceUserSecurityState(

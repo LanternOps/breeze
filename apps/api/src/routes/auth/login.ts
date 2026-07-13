@@ -12,7 +12,6 @@ import {
   rateLimiter,
   loginLimiter,
   getRedis,
-  isRefreshTokenJtiRevoked,
   getRefreshTokenJtiRevocationState,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
@@ -53,13 +52,14 @@ import {
   getClientRateLimitKey,
   setRefreshTokenCookie,
   clearRefreshTokenCookie,
+  clearRefreshCookieOnly,
   resolveRefreshToken,
   validateCookieCsrfRequest,
+  validateTerminalCookieCsrfRequest,
   toPublicTokens,
   genericAuthError,
   isTokenRevokedForUser,
   cacheRefreshTokenFamilyRevocation,
-  setCfAccessLogoutQuarantineCookie,
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   auditUserLoginFailure,
@@ -68,7 +68,7 @@ import {
   getCookieValue,
   rotateCsrfBindingCookie,
 } from './helpers';
-import { revokeTerminalLogoutSubjects } from '../../services/terminalLogout';
+import { prepareTerminalLogout } from '../../services/terminalLogout';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
@@ -567,50 +567,39 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 // access token and the shared cookie may legitimately belong to different
 // accounts or different families.
 loginRoutes.post('/cf-access-logout/prepare', authMiddleware, async (c) => {
-  const csrfError = validateCookieCsrfRequest(c);
+  const csrfError = validateTerminalCookieCsrfRequest(c);
   if (csrfError) return c.json({ error: csrfError }, 403);
 
   const auth = c.get('auth');
-  const subjects = new Set<string>([auth.user.id]);
-  let refreshJti: string | undefined;
-  const refreshToken = resolveRefreshToken(c);
-  if (refreshToken) {
-    const refreshPayload = await verifyToken(refreshToken);
-    if (
-      refreshPayload?.type === 'refresh'
-      && refreshPayload.sub
-      && refreshPayload.jti
-      && refreshPayload.fam
-    ) {
-      try {
-        const [activeFamily, jtiRevoked] = await Promise.all([
-          getActiveRefreshTokenFamily(refreshPayload.fam, refreshPayload.sub),
-          isRefreshTokenJtiRevoked(refreshPayload.jti),
-        ]);
-        if (activeFamily && !jtiRevoked) {
-          subjects.add(refreshPayload.sub);
-          refreshJti = refreshPayload.jti;
-        }
-      } catch (error) {
-        console.error('[cf-access-logout] Refresh subject verification failed closed:', error);
-        return c.json({ error: 'Service temporarily unavailable' }, 503);
-      }
-    }
+  const bindingValue = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
+  if (!bindingValue || !auth.token.sid) {
+    return c.json({ error: 'Invalid authentication binding' }, 403);
   }
+  const refreshToken = resolveRefreshToken(c);
 
+  let prepared;
   try {
-    await revokeTerminalLogoutSubjects({
-      subjectIds: [...subjects],
-      refreshJti,
+    prepared = await prepareTerminalLogout({
+      binding: { kind: 'browser', value: bindingValue },
+      access: {
+        userId: auth.user.id,
+        familyId: auth.token.sid,
+        authEpoch: auth.token.ae,
+        mfaEpoch: auth.token.me,
+      },
+      refreshToken,
     });
   } catch (error) {
-    console.error('[cf-access-logout] Refusing terminal logout preparation because revocation failed:', error);
+    console.error('[cf-access-logout] Refusing terminal logout preparation because the authoritative transaction failed:', error);
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
-  setCfAccessLogoutQuarantineCookie(c);
-  clearRefreshTokenCookie(c);
-  return c.json({ success: true });
+  clearRefreshCookieOnly(c);
+  return c.json({
+    success: true,
+    cleanupStatus: prepared.cleanupStatus,
+    cleanupFailures: prepared.cleanupFailures,
+  });
 });
 
 // Logout

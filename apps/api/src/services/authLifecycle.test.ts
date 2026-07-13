@@ -54,9 +54,11 @@ vi.mock('../db', () => ({
 
 vi.mock('drizzle-orm', () => ({
   and: vi.fn((...clauses: unknown[]) => ({ and: clauses })),
+  asc: vi.fn((column: unknown) => ({ asc: column })),
   eq: vi.fn((left: unknown, right: unknown) => ({ eq: [left, right] })),
   isNull: vi.fn((column: unknown) => ({ isNull: column })),
   inArray: vi.fn((column: unknown, values: unknown[]) => ({ inArray: [column, values] })),
+  or: vi.fn((...clauses: unknown[]) => ({ or: clauses })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
     sql: Array.from(strings).join('?'),
     values,
@@ -66,6 +68,7 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('../db/schema/users', () => ({
   users: {
     id: 'users.id',
+    status: 'users.status',
     authEpoch: 'users.authEpoch',
     mfaEpoch: 'users.mfaEpoch',
     emailEpoch: 'users.emailEpoch',
@@ -77,6 +80,8 @@ vi.mock('../db/schema/refreshTokenFamilies', () => ({
   refreshTokenFamilies: {
     familyId: 'refreshTokenFamilies.familyId',
     userId: 'refreshTokenFamilies.userId',
+    absoluteExpiresAt: 'refreshTokenFamilies.absoluteExpiresAt',
+    currentRefreshJtiDigest: 'refreshTokenFamilies.currentRefreshJtiDigest',
     revokedAt: 'refreshTokenFamilies.revokedAt',
     revokedReason: 'refreshTokenFamilies.revokedReason',
   },
@@ -147,6 +152,57 @@ describe('authLifecycle transaction primitives', () => {
 
     expect(result).toBe('committed');
     expect(contextState.observations).toEqual(['outside', 'system-tx-from-none']);
+  });
+
+  it('locks terminal candidates as sorted users before sorted families', async () => {
+    const lockAuthority = (authLifecycle as Record<string, unknown>).lockTerminalLogoutAuthority;
+    expect(lockAuthority).toEqual(expect.any(Function));
+    const events: string[] = [];
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn((table: unknown) => ({
+          where: vi.fn((where: unknown) => ({
+            orderBy: vi.fn((order: unknown) => ({
+              for: vi.fn(async () => {
+                events.push(`${String(table)}:${JSON.stringify(where)}:${JSON.stringify(order)}`);
+                return table === users
+                  ? [
+                    { id: 'user-a', status: 'active', authEpoch: 1, mfaEpoch: 2, databaseNow: new Date('2026-07-13T00:00:00Z') },
+                    { id: 'user-b', status: 'active', authEpoch: 3, mfaEpoch: 4, databaseNow: new Date('2026-07-13T00:00:00Z') },
+                  ]
+                  : [
+                    {
+                      familyId: 'family-a', userId: 'user-a', revokedAt: null,
+                      absoluteExpiresAt: new Date('2099-01-01'), currentRefreshJtiDigest: 'a'.repeat(64),
+                    },
+                    {
+                      familyId: 'family-z', userId: 'user-b', revokedAt: null,
+                      absoluteExpiresAt: new Date('2099-01-01'), currentRefreshJtiDigest: 'b'.repeat(64),
+                    },
+                  ];
+              }),
+            })),
+          })),
+        })),
+      })),
+      execute: vi.fn(async () => [{ databaseNow: new Date('2026-07-13T00:00:00Z') }]),
+    } as unknown as AuthLifecycleTransaction;
+
+    const result = await (lockAuthority as (
+      tx: AuthLifecycleTransaction,
+      input: { userIds: string[]; familyIds: string[] },
+    ) => Promise<{ users: Map<string, unknown>; families: Map<string, unknown> }>)(tx, {
+      userIds: ['user-b', 'user-a', 'user-a'],
+      familyIds: ['family-z', 'family-a', 'family-z'],
+    });
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toContain('users.id');
+    expect(events[0]).toContain('["user-a","user-b"]');
+    expect(events[1]).toContain('refreshTokenFamilies.familyId');
+    expect(events[1]).toContain('["family-a","family-z"]');
+    expect([...result.users.keys()]).toEqual(['user-a', 'user-b']);
+    expect([...result.families.keys()]).toEqual(['family-a', 'family-z']);
   });
 
   it('increments requested epochs in one user update and returns the updated state', async () => {

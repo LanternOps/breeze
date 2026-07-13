@@ -458,14 +458,23 @@ export async function revokeFamily(familyId: string, reason: string): Promise<vo
   const redis = getRedis();
   if (!redis) return;
   try {
-    await redis.setex(
-      getRevokedFamilyKey(familyId),
-      REFRESH_FAMILY_REVOCATION_TTL_SECONDS,
-      '1'
-    );
+    await cacheRefreshTokenFamilyRevocation(familyId);
   } catch (error) {
     console.error('[token-revocation] Failed to write family-revoked sentinel to Redis:', error);
   }
+}
+
+/** Publish only the post-commit family sentinel and surface cache failures. */
+export async function cacheRefreshTokenFamilyRevocation(familyId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) {
+    throw new Error('Redis unavailable while caching refresh family revocation');
+  }
+  await redis.setex(
+    getRevokedFamilyKey(familyId),
+    REFRESH_FAMILY_REVOCATION_TTL_SECONDS,
+    '1',
+  );
 }
 
 /**

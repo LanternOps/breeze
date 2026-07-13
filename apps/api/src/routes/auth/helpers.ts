@@ -7,6 +7,7 @@ import {
   verifyToken,
   isUserTokenRevoked,
   revokeRefreshTokenJti,
+  cacheRefreshTokenFamilyRevocation as cacheRefreshTokenFamilyRevocationService,
   getTrustedClientIp,
   getRedis,
   rateLimiter,
@@ -767,18 +768,7 @@ export async function revokeCurrentRefreshTokenJti(c: Context, expectedUserId?: 
  * failures so committed mutations can report partial cleanup truthfully.
  */
 export async function cacheRefreshTokenFamilyRevocation(familyId: string): Promise<void> {
-  const redis = getRedis();
-  if (!redis) {
-    throw new Error('Redis unavailable while caching refresh family revocation');
-  }
-
-  // Keep the sentinel alive for the refresh-cookie lifetime plus one access
-  // token lifetime, matching tokenRevocation.ts's durable-family cache window.
-  await redis.setex(
-    `refresh-fam-revoked:${familyId}`,
-    REFRESH_COOKIE_MAX_AGE_SECONDS + (15 * 60),
-    '1',
-  );
+  await cacheRefreshTokenFamilyRevocationService(familyId);
 }
 
 // ============================================
