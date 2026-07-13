@@ -22,6 +22,7 @@ import {
 import { requireMfa, requirePermission } from '../../middleware/auth';
 import type { AuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { PERMISSIONS } from '../../services/permissions';
 import {
   canManagePartnerWidePolicies,
@@ -226,7 +227,9 @@ profilesRoutes.patch(
       .set(updateData)
       .where(eq(backupProfiles.id, id))
       .returning();
-    if (!updated) return c.json({ error: 'Failed to update backup profile' }, 500);
+    // 0 rows means RLS hid the row from the write (the read above uses the
+    // app-layer condition, which is looser than the policy) — a 404, not a 500.
+    if (!updated) return c.json({ error: 'Profile not found' }, 404);
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
@@ -268,7 +271,33 @@ profilesRoutes.delete(
       );
     }
 
-    await db.delete(backupProfiles).where(eq(backupProfiles.id, id));
+    // Check the rowcount: under forced RLS a DELETE that matches nothing is a
+    // silent no-op, not an error — reporting success would be a lie.
+    let deleted: { id: string }[];
+    try {
+      deleted = await db
+        .delete(backupProfiles)
+        .where(eq(backupProfiles.id, id))
+        .returning({ id: backupProfiles.id });
+    } catch (err) {
+      // A policy can link this profile between the check above and here; the
+      // RESTRICT FK then fires. Re-read and return the same friendly 409.
+      if (pgErrorCode(err) === '23503') {
+        const stillReferencing = await referencingPolicies(id);
+        return c.json(
+          {
+            error: 'Backup profile is in use by configuration policies',
+            referencingPolicies: stillReferencing,
+          },
+          409
+        );
+      }
+      throw err;
+    }
+
+    if (deleted.length === 0) {
+      return c.json({ error: 'Profile not found' }, 404);
+    }
 
     writeRouteAudit(c, {
       orgId: existing.orgId,

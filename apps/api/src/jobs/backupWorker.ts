@@ -187,6 +187,28 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
       const entries = await resolveAllBackupAssignedDevices(orgId);
 
       for (const entry of entries) {
+        // Broken profile link (deleted/RLS-hidden/empty/malformed selections):
+        // skip loudly. Falling through would dispatch the legacy settings row,
+        // which on a profile link carries no paths — a backup that protects
+        // nothing while reporting success.
+        //
+        // The resolver flags this in selectionError, but re-derive it here too:
+        // this is the last checkpoint before a backup runs, so it must not
+        // depend on an upstream flag being set. A link that names a profile and
+        // has no specs NEVER falls back to legacy dispatch.
+        const profileId = entry.settings?.backupProfileId ?? null;
+        const brokenProfileLink =
+          entry.selectionError ??
+          (profileId && !entry.selectionSpecs
+            ? `Backup profile ${profileId} could not be resolved into any data source`
+            : null);
+        if (brokenProfileLink) {
+          console.error(
+            `[BackupWorker] Device ${entry.deviceId} (org ${orgId}, link ${entry.featureLinkId}): ${brokenProfileLink} — no backup scheduled`
+          );
+          continue;
+        }
+
         // Destination chain already resolved (explicit → legacy → org
         // default). Nothing resolved = loud skip, never silent: a partner
         // policy hit an org with no default destination.
@@ -786,3 +808,9 @@ export async function shutdownBackupWorker(): Promise<void> {
 
   console.log('[BackupWorker] Backup worker shut down');
 }
+
+// Exported for unit tests of the schedule fan-out (profile expansion + loud
+// skips). Internal helper, not part of the worker's public surface.
+export const __testOnly = {
+  processCheckSchedules,
+};

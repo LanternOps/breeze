@@ -197,6 +197,19 @@ jobsRoutes.post(
   let configId = resolved?.configId ?? null;
   let featureLinkId = resolved?.featureLinkId ?? null;
 
+  // Broken profile link — refuse loudly. Falling through to the legacy fallback
+  // below would run a single empty file job and report success, so the tech
+  // would believe the server was backed up.
+  if (resolved?.selectionError) {
+    console.error(
+      `[BackupJobs] Manual run for device ${deviceId} (link ${resolved.featureLinkId}): ${resolved.selectionError}`
+    );
+    return c.json(
+      { error: 'The backup profile linked to this device\'s policy has no usable data sources. Fix the profile before running a backup.' },
+      400
+    );
+  }
+
   if (resolved && !configId) {
     return c.json({ error: 'Backup policy assigned but no backup config linked. Update the configuration policy.' }, 400);
   }
@@ -219,6 +232,16 @@ jobsRoutes.post(
   // device+mode). Legacy custom links create a single NULL-mode job as before.
   const specs = resolved?.selectionSpecs ?? [undefined];
   const createdJobs: Array<NonNullable<Awaited<ReturnType<typeof createManualBackupJobIfIdle>>>['job']> = [];
+
+  // A job row that is created but never enqueued sits `pending` forever, and
+  // its device+mode idle check then blocks every future manual run of that
+  // mode. Whenever we bail out mid-fan-out, fail the rows we already created.
+  const failCreatedJobs = async (error: string): Promise<void> => {
+    for (const job of createdJobs) {
+      await markBackupJobDispatchFailed(job.id, error);
+    }
+  };
+
   for (const spec of specs) {
     const result = await createManualBackupJobIfIdle({
       orgId,
@@ -228,7 +251,9 @@ jobsRoutes.post(
       ...(spec ? { backupMode: spec.backupMode, modeTargets: spec.targets } : {}),
     });
     if (!result) {
-      return c.json({ error: 'Failed to create backup job' }, 500);
+      const error = 'Failed to create backup job';
+      await failCreatedJobs(error);
+      return c.json({ error }, 500);
     }
     if (result.created) {
       createdJobs.push(result.job);
@@ -243,14 +268,17 @@ jobsRoutes.post(
   const { enqueueBackupDispatch } = await import(
     '../../jobs/backupWorker'
   );
-  for (const row of createdJobs) {
+  for (const [index, row] of createdJobs.entries()) {
     try {
       await enqueueBackupDispatch(row.id, row.configId, orgId, deviceId);
     } catch (err) {
       const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
       console.error('[BackupJobs] Failed to enqueue dispatch:', err);
       recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
-      await markBackupJobDispatchFailed(row.id, error);
+      // This job and every one after it in the fan-out never reached the queue.
+      for (const stranded of createdJobs.slice(index)) {
+        await markBackupJobDispatchFailed(stranded.id, error);
+      }
       writeRouteAudit(c, {
         orgId,
         action: 'backup.job.run',

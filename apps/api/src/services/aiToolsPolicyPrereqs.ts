@@ -677,6 +677,12 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           .set(updateData)
           .where(eq(backupProfiles.id, existing.id))
           .returning();
+        // Under forced RLS a write that matches nothing is a silent no-op, not
+        // a throw — safeHandler would never see it. Never tell the model the
+        // update landed when it didn't.
+        if (!updated) {
+          return JSON.stringify({ error: 'Backup profile not found or access denied' });
+        }
         return JSON.stringify({ success: true, profile: updated });
       }
 
@@ -698,7 +704,13 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (inUse > 0) {
           return JSON.stringify({ error: `Backup profile is in use by ${inUse} configuration polic${inUse === 1 ? 'y' : 'ies'} — unlink it first` });
         }
-        await db.delete(backupProfiles).where(eq(backupProfiles.id, existing.id));
+        const deleted = await db
+          .delete(backupProfiles)
+          .where(eq(backupProfiles.id, existing.id))
+          .returning({ id: backupProfiles.id });
+        if (deleted.length === 0) {
+          return JSON.stringify({ error: 'Backup profile not found or access denied' });
+        }
         return JSON.stringify({ success: true, deleted: existing.name });
       }
 

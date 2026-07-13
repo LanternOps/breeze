@@ -91,8 +91,9 @@ export const backupInlineSettingsSchema = z
     schedule: backupScheduleSchema.optional(),
     retention: backupRetentionSchema.optional(),
     paths: z.array(z.string()).optional(),
-    // Explicit destination (backup_configs id). Omitted/null = resolve the
-    // device org's default destination at job time.
+    // Explicit destination (backup_configs id). Omitted/null on a LEGACY link
+    // falls back to the link's featurePolicyId destination first, then the
+    // device org's default (see the destination chain in featureConfigResolver).
     destinationConfigId: z.string().nullish(),
   })
   .superRefine((data, ctx) => {
@@ -137,8 +138,10 @@ export const backupProfileSelectionsSchema = z
         paths: z.array(z.string().trim().min(1)).max(64).default([]),
         excludes: z.array(z.string().trim().min(1)).max(64).default([]),
         // Reserved for drive-letter/volume selection once the agent reports
-        // volume inventory (spec phase 3). Accepted and stored, not yet
-        // honored by job creation.
+        // volume inventory (spec phase 3). Rejected until then (see
+        // superRefine): job creation cannot expand volumes into paths yet,
+        // so accepting the field would fan out a file job with empty paths —
+        // a green backup that protects nothing.
         volumes: z
           .union([z.literal('all_fixed'), z.array(z.string().trim().min(1)).max(26)])
           .optional(),
@@ -178,11 +181,14 @@ export const backupProfileSelectionsSchema = z
         message: 'At least one data source must be enabled',
       });
     }
-    if (
-      data.file?.enabled &&
-      data.file.paths.length === 0 &&
-      data.file.volumes === undefined
-    ) {
+    if (data.file?.volumes !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['file', 'volumes'],
+        message: 'Volume selection is not supported yet — list explicit paths instead',
+      });
+    }
+    if (data.file?.enabled && data.file.paths.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['file', 'paths'],
@@ -193,7 +199,13 @@ export const backupProfileSelectionsSchema = z
 
 export type BackupProfileSelections = z.infer<typeof backupProfileSelectionsSchema>;
 
-/** Source types enabled in a selections object, in fan-out order. */
+/**
+ * Source types enabled in a selections object, in fan-out order.
+ *
+ * Must stay in sync with `backupSelectionSpecs` (apps/api featureConfigResolver),
+ * which emits the actual job specs in this same order — if the two disagree, the
+ * UI's source count and the jobs that really run diverge silently.
+ */
 export function enabledBackupSelections(
   selections: BackupProfileSelections,
 ): BackupMode[] {

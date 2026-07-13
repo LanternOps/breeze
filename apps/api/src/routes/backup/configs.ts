@@ -236,31 +236,35 @@ configsRoutes.post(
     }
 
     const now = new Date();
-    // Setting a new default demotes the previous one (partial unique index on
-    // (org_id) WHERE is_default enforces at most one).
-    if (payload.isDefault === true) {
-      await db
-        .update(backupConfigs)
-        .set({ isDefault: false, updatedAt: now })
-        .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isDefault, true)));
-    }
-    const [row] = await db
-      .insert(backupConfigs)
-      .values({
-        orgId,
-        name: payload.name,
-        type: 'file',
-        provider: payload.provider,
-        providerConfig: details,
-        providerCapabilities: null,
-        providerCapabilitiesCheckedAt: null,
-        encryption,
-        isActive: payload.enabled ?? true,
-        isDefault: payload.isDefault ?? false,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+    // Demote + insert atomically: a failed insert must not leave the org with
+    // its previous default already cleared and no new one to replace it (the
+    // org default is the destination every partner-wide backup resolves to).
+    // The partial unique index on (org_id) WHERE is_default enforces at most one.
+    const [row] = await db.transaction(async (tx) => {
+      if (payload.isDefault === true) {
+        await tx
+          .update(backupConfigs)
+          .set({ isDefault: false, updatedAt: now })
+          .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isDefault, true)));
+      }
+      return tx
+        .insert(backupConfigs)
+        .values({
+          orgId,
+          name: payload.name,
+          type: 'file',
+          provider: payload.provider,
+          providerConfig: details,
+          providerCapabilities: null,
+          providerCapabilitiesCheckedAt: null,
+          encryption,
+          isActive: payload.enabled ?? true,
+          isDefault: payload.isDefault ?? false,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+    });
 
     if (!row) {
       return c.json({ error: 'Failed to create config' }, 500);
@@ -316,32 +320,28 @@ configsRoutes.patch(
     const { id: configId } = c.req.valid('param');
     const payload = c.req.valid('json');
 
+    // Every validation and existence check runs BEFORE any write. Demoting the
+    // org's current default and then bailing out with a 400/404 would leave the
+    // org with NO default destination — and the org default is what every
+    // partner-wide and profile-linked backup resolves to, so their scheduled
+    // backups would start skipping with no obvious cause.
+    const [current] = await db
+      .select()
+      .from(backupConfigs)
+      .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
+      .limit(1);
+
+    if (!current) {
+      return c.json({ error: 'Config not found' }, 404);
+    }
+
     const updateData: Record<string, unknown> = { updatedAt: new Date() };
     if (payload.name !== undefined) updateData.name = payload.name;
     if (payload.enabled !== undefined) updateData.isActive = payload.enabled;
     if (payload.encryption !== undefined) updateData.encryption = payload.encryption;
-    if (payload.isDefault !== undefined) {
-      updateData.isDefault = payload.isDefault;
-      // Promoting a new default demotes the previous one (partial unique
-      // index on (org_id) WHERE is_default enforces at most one per org).
-      if (payload.isDefault === true) {
-        await db
-          .update(backupConfigs)
-          .set({ isDefault: false, updatedAt: new Date() })
-          .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isDefault, true)));
-      }
-    }
+    if (payload.isDefault !== undefined) updateData.isDefault = payload.isDefault;
+
     if (payload.details !== undefined || payload.encryption !== undefined) {
-      const [current] = await db
-        .select()
-        .from(backupConfigs)
-        .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
-        .limit(1);
-
-      if (!current) {
-        return c.json({ error: 'Config not found' }, 404);
-      }
-
       const nextProviderConfig = payload.details !== undefined
         ? preserveSecretFields(payload.details, current.providerConfig)
         : current.providerConfig;
@@ -371,13 +371,22 @@ configsRoutes.patch(
       }
     }
 
-    const [row] = await db
-      .update(backupConfigs)
-      .set(updateData)
-      .where(
-        and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId))
-      )
-      .returning();
+    // Demote + promote atomically: the partial unique index on (org_id) WHERE
+    // is_default allows at most one default, so a concurrent promote must not
+    // see a half-applied swap.
+    const [row] = await db.transaction(async (tx) => {
+      if (payload.isDefault === true) {
+        await tx
+          .update(backupConfigs)
+          .set({ isDefault: false, updatedAt: new Date() })
+          .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isDefault, true)));
+      }
+      return tx
+        .update(backupConfigs)
+        .set(updateData)
+        .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
+        .returning();
+    });
 
     if (!row) {
       return c.json({ error: 'Config not found' }, 404);

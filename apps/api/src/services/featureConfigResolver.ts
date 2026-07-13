@@ -1,4 +1,9 @@
-import { db } from '../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+} from '../db';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -513,6 +518,29 @@ export async function resolvePatchConfigDetailsForDevice(
 }
 
 /**
+ * Runs a backup POLICY lookup where partner-wide rows must be visible.
+ *
+ * `configuration_policies` and `backup_profiles` rows owned by a partner have
+ * `org_id NULL`, and an org-scoped token never passes `breeze_has_partner_access`
+ * — so under a request's RLS context those rows simply do not exist. A backup
+ * reader that runs there silently reports "no policy" for partner-linked
+ * devices: manual runs fall back to a legacy single-mode job, dashboards call
+ * protected devices unprotected. Same trap the heartbeat probe-config hit
+ * (#1105); the playbook's answer is a system context.
+ *
+ * Only the policy/profile joins go through here — they are self-tenanted by the
+ * caller-supplied orgId or the device's own hierarchy. Device expansion stays in
+ * the caller's context so RLS keeps guarding which devices a caller may see.
+ *
+ * No-ops when already system-scoped (the scheduler), so the worker doesn't open
+ * a second transaction per resolve.
+ */
+async function withPartnerWideVisibility<T>(fn: () => Promise<T>): Promise<T> {
+  if (getCurrentDbAccessContext()?.scope === 'system') return fn();
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
+/**
  * Resolves backup settings for a device via the hierarchy.
  * Returns the single backup settings row + metadata from the WINNING assignment, or null.
  */
@@ -524,6 +552,8 @@ export async function resolveBackupConfigForDevice(
   /** Resolved storage destination — see BackupAssignedDevice.configId. */
   configId: string | null;
   selectionSpecs: BackupSelectionSpec[] | null;
+  /** Broken profile link — see BackupAssignedDevice.selectionError. */
+  selectionError: string | null;
   inlineSettings: Record<string, unknown> | null;
   resolvedTimezone: string;
 } | null> {
@@ -533,61 +563,71 @@ export async function resolveBackupConfigForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      backupSettings: configPolicyBackupSettings,
-      featureLinkId: configPolicyFeatureLinks.id,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
-      profileSelections: backupProfiles.selections,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-      assignmentId: configPolicyAssignments.id,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // Partner-wide policies + profiles are RLS-invisible to org tokens — resolve
+  // them in a system context (self-tenanted by this device's hierarchy).
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        backupSettings: configPolicyBackupSettings,
+        featureLinkId: configPolicyFeatureLinks.id,
+        featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+        inlineSettings: configPolicyFeatureLinks.inlineSettings,
+        profileSelections: backupProfiles.selections,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+        assignmentId: configPolicyAssignments.id,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'backup')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configPolicyFeatureLinks.featureType, 'backup')
+        )
       )
-    )
-    .leftJoin(
-      configPolicyBackupSettings,
-      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
-    )
-    .leftJoin(
-      backupProfiles,
-      eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId)
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt
-    );
+      .leftJoin(
+        configPolicyBackupSettings,
+        eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .leftJoin(
+        backupProfiles,
+        eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId)
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt
+      )
+  );
 
   if (rows.length === 0) return null;
 
   const sorted = sortByHierarchy(rows);
   const winner = sorted[0]!;
-  const selectionSpecs = winner.backupSettings?.backupProfileId
-    ? backupSelectionSpecs(winner.profileSelections)
+  const profileId = winner.backupSettings?.backupProfileId ?? null;
+  const selectionSpecs = profileId
+    ? backupSelectionSpecs(winner.profileSelections, { profileId })
     : null;
+  // A profile link whose profile yields no usable selection is BROKEN, not
+  // legacy — surface it instead of falling through to the settings row (which
+  // for a profile link has no paths and would back up nothing).
+  const selectionError =
+    profileId && !selectionSpecs
+      ? `Backup profile ${profileId} could not be resolved into any data source`
+      : null;
   // Destination chain: explicit link destination → legacy featurePolicyId
   // (pre-profile links stored the destination there) → org default.
-  const legacyDestination = winner.backupSettings?.backupProfileId
-    ? null
-    : winner.featurePolicyId;
+  const legacyDestination = profileId ? null : winner.featurePolicyId;
   const configId =
     winner.backupSettings?.destinationConfigId ??
     legacyDestination ??
@@ -597,6 +637,7 @@ export async function resolveBackupConfigForDevice(
     featureLinkId: winner.featureLinkId,
     configId,
     selectionSpecs,
+    selectionError,
     inlineSettings: winner.inlineSettings as Record<string, unknown> | null,
     resolvedTimezone: await resolveDeviceTimezone(deviceId),
   };
@@ -1194,12 +1235,19 @@ export interface BackupAssignedDevice {
   featureLinkId: string;
   /** Resolved storage destination (backup_configs id): explicit link
    *  destination → legacy featurePolicyId destination → org default. NULL
-   *  when none resolves (job creation must fail loudly, never skip silently). */
+   *  when none resolves — job creation then skips the device LOUDLY (worker
+   *  error log + policy-UI warning); it never creates a job row, because
+   *  backup_jobs.config_id is NOT NULL. */
   configId: string | null;
   settings: typeof configPolicyBackupSettings.$inferSelect | null;
   /** One spec per enabled profile selection; null for legacy custom links
    *  (dispatch falls back to the settings row's backupMode/targets). */
   selectionSpecs: BackupSelectionSpec[] | null;
+  /** Set when the winning link points at a profile that could not be resolved
+   *  into any usable selection (RLS-hidden, deleted, or malformed selections).
+   *  Job creation MUST skip the device loudly: the legacy settings row on a
+   *  profile link carries no paths, so falling through would back up nothing. */
+  selectionError: string | null;
   resolvedTimezone: string;
 }
 
@@ -1212,23 +1260,45 @@ export type BackupSelectionSpec = {
 
 /**
  * Maps a backup profile's `selections` jsonb to per-mode job specs, in
- * fan-out order. Returns null when nothing is enabled (treat as legacy).
+ * fan-out order (must stay in sync with `enabledBackupSelections` in
+ * @breeze/shared). Returns null when nothing usable is enabled.
+ *
+ * A caller holding a backupProfileId MUST treat null as a BROKEN link and skip
+ * the device loudly — never fall through to the legacy settings row, which for
+ * a profile link carries no paths and would dispatch a backup that reports
+ * success while protecting nothing.
+ *
  * Keys match backup_mode_enum by design (see backupProfileSelectionsSchema).
  */
 export function backupSelectionSpecs(
-  selections: unknown
+  selections: unknown,
+  context?: { profileId?: string | null }
 ): BackupSelectionSpec[] | null {
   if (!selections || typeof selections !== 'object' || Array.isArray(selections)) return null;
   const s = selections as Record<string, Record<string, unknown> | undefined>;
   const specs: BackupSelectionSpec[] = [];
   if (s.file?.enabled === true) {
-    specs.push({
-      backupMode: 'file',
-      targets: {
-        paths: Array.isArray(s.file.paths) ? s.file.paths : [],
-        excludes: Array.isArray(s.file.excludes) ? s.file.excludes : [],
-      },
-    });
+    const paths = Array.isArray(s.file.paths)
+      ? s.file.paths.filter((p): p is string => typeof p === 'string' && p.trim() !== '')
+      : [];
+    // An enabled file selection with no paths dispatches an empty backup that
+    // completes green. `volumes` is rejected at the validator until job
+    // creation can expand it into paths (spec phase 3), so this only fires on
+    // pre-validator or hand-forged rows: drop the selection, never protect
+    // nothing silently.
+    if (paths.length === 0) {
+      console.error(
+        `[BackupResolver] Profile ${context?.profileId ?? '(unknown)'} has an enabled file selection with no paths — dropping it (drive/volume selection is not honored yet)`
+      );
+    } else {
+      specs.push({
+        backupMode: 'file',
+        targets: {
+          paths,
+          excludes: Array.isArray(s.file.excludes) ? s.file.excludes : [],
+        },
+      });
+    }
   }
   if (s.system_image?.enabled === true) {
     specs.push({
@@ -1261,13 +1331,18 @@ export function backupSelectionSpecs(
 /**
  * Effective backup modes for a resolved entry — a profile's enabled
  * selections, or the legacy settings row's single backupMode. Mode-filtered
- * readers (Hyper-V / SQL views, SLA, readiness) must use this instead of
- * `settings.backupMode === X`, which is blind to profiles.
+ * readers (currently the Hyper-V and MSSQL views) must use this instead of
+ * `settings.backupMode === X`, which is blind to profiles. SLA and readiness
+ * consume the resolver but are mode-agnostic today.
  */
 export function effectiveBackupModes(entry: {
   selectionSpecs: BackupSelectionSpec[] | null;
   settings: { backupMode: string } | null;
+  selectionError?: string | null;
 }): string[] {
+  // A broken profile link protects nothing — don't report the legacy row's
+  // stale mode as if it were live.
+  if (entry.selectionError) return [];
   if (entry.selectionSpecs) return entry.selectionSpecs.map((spec) => spec.backupMode);
   return entry.settings ? [entry.settings.backupMode] : [];
 }
@@ -1349,39 +1424,43 @@ export async function resolveAllBackupAssignedDevices(
   // 1. Load all active backup feature links + settings + assignments for this org
   // LEFT JOIN backup settings so devices are still found even when the
   // normalized settings row is missing (e.g. feature link predates migration).
-  const rows = await db
-    .select({
-      backupSettings: configPolicyBackupSettings,
-      featureLinkId: configPolicyFeatureLinks.id,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
-      profileSelections: backupProfiles.selections,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentTargetId: configPolicyAssignments.targetId,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-    })
-    .from(configPolicyFeatureLinks)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        ownershipCondition
+  // Runs in a system context: partner-wide policies/profiles (org_id NULL) are
+  // RLS-invisible to org tokens, and this query is self-tenanted by ownershipCondition.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        backupSettings: configPolicyBackupSettings,
+        featureLinkId: configPolicyFeatureLinks.id,
+        featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+        profileSelections: backupProfiles.selections,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentTargetId: configPolicyAssignments.targetId,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+      })
+      .from(configPolicyFeatureLinks)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          ownershipCondition
+        )
       )
-    )
-    .innerJoin(
-      configPolicyAssignments,
-      eq(configPolicyAssignments.configPolicyId, configurationPolicies.id)
-    )
-    .leftJoin(
-      configPolicyBackupSettings,
-      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
-    )
-    .leftJoin(
-      backupProfiles,
-      eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId)
-    )
-    .where(eq(configPolicyFeatureLinks.featureType, 'backup'));
+      .innerJoin(
+        configPolicyAssignments,
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id)
+      )
+      .leftJoin(
+        configPolicyBackupSettings,
+        eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .leftJoin(
+        backupProfiles,
+        eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId)
+      )
+      .where(eq(configPolicyFeatureLinks.featureType, 'backup'))
+  );
 
   if (rows.length === 0) return [];
 
@@ -1447,12 +1526,18 @@ export async function resolveAllBackupAssignedDevices(
     }
 
     // First assignment wins per device (sorted is already highest-priority-first)
-    const selectionSpecs = row.backupSettings?.backupProfileId
-      ? backupSelectionSpecs(row.profileSelections)
+    const profileId = row.backupSettings?.backupProfileId ?? null;
+    const selectionSpecs = profileId
+      ? backupSelectionSpecs(row.profileSelections, { profileId })
       : null;
-    const legacyDestination = row.backupSettings?.backupProfileId
-      ? null
-      : row.featurePolicyId;
+    // Broken profile link: keep the device in `seen` (the winning policy still
+    // governs it — a lower-priority policy must not silently take over) but
+    // carry the error so job creation skips it loudly.
+    const selectionError =
+      profileId && !selectionSpecs
+        ? `Backup profile ${profileId} could not be resolved into any data source`
+        : null;
+    const legacyDestination = profileId ? null : row.featurePolicyId;
     const configId =
       row.backupSettings?.destinationConfigId ?? legacyDestination ?? orgDefaultConfigId;
     for (const deviceId of deviceIds) {
@@ -1463,6 +1548,7 @@ export async function resolveAllBackupAssignedDevices(
           configId,
           settings: row.backupSettings,
           selectionSpecs,
+          selectionError,
           resolvedTimezone: 'UTC',
         });
       }

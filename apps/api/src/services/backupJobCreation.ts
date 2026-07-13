@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import type { BackupMode } from '@breeze/shared';
 import { db } from '../db';
 import { backupJobs } from '../db/schema';
 
@@ -8,7 +9,8 @@ type Row = typeof backupJobs.$inferSelect;
 /** Drizzle transaction handle — extracted from db.transaction callback parameter. */
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-type BackupModeValue = 'file' | 'hyperv' | 'mssql' | 'system_image';
+// Single source of truth for the mode union (mirrors backup_mode_enum).
+type BackupModeValue = BackupMode;
 
 type CreateManualBackupJobInput = {
   orgId: string;

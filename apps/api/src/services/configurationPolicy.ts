@@ -1,4 +1,4 @@
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -1935,16 +1935,26 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
  * True when featurePolicyId references a backup_profiles row (vs a legacy
  * backup_configs destination id). Routes use this to pick the right inline
  * settings schema for backup links.
+ *
+ * Pure existence probe, deliberately run in a system context: a PARTNER-WIDE
+ * profile is RLS-invisible to an org-scoped token, so under the caller's context
+ * an org admin linking one would have it misclassified as a legacy destination
+ * id and rejected with a nonsense error. Tenancy of the link is enforced
+ * separately by validateFeaturePolicyExists, which matches on the owner axis.
  */
 export async function isBackupProfileReference(
   featurePolicyId: string | null | undefined
 ): Promise<boolean> {
   if (!featurePolicyId) return false;
-  const [row] = await db
-    .select({ id: backupProfiles.id })
-    .from(backupProfiles)
-    .where(eq(backupProfiles.id, featurePolicyId))
-    .limit(1);
+  const [row] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: backupProfiles.id })
+        .from(backupProfiles)
+        .where(eq(backupProfiles.id, featurePolicyId))
+        .limit(1)
+    )
+  );
   return !!row;
 }
 
@@ -2005,22 +2015,34 @@ export async function validateFeaturePolicyExists(
         sql`(${backupProfiles.orgId} IS NULL AND ${backupProfiles.partnerId} = ${partnerId})`
       );
     }
+    // Both lookups are self-tenanted by the owner axis above, and run in a
+    // system context: a partner-wide profile (org_id NULL) is RLS-invisible to
+    // an org-scoped token, so validating in the caller's context would reject a
+    // legitimate org-policy → partner-wide-profile link as "not found".
     if (profileConditions.length > 0) {
-      const [profile] = await db
-        .select({ id: backupProfiles.id })
-        .from(backupProfiles)
-        .where(and(eq(backupProfiles.id, featurePolicyId), or(...profileConditions)))
-        .limit(1);
+      const [profile] = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({ id: backupProfiles.id })
+            .from(backupProfiles)
+            .where(and(eq(backupProfiles.id, featurePolicyId), or(...profileConditions)))
+            .limit(1)
+        )
+      );
       if (profile) {
         return { valid: true };
       }
     }
     if (owner.orgId) {
-      const [config] = await db
-        .select({ id: backupConfigs.id })
-        .from(backupConfigs)
-        .where(and(eq(backupConfigs.id, featurePolicyId), eq(backupConfigs.orgId, owner.orgId)))
-        .limit(1);
+      const [config] = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({ id: backupConfigs.id })
+            .from(backupConfigs)
+            .where(and(eq(backupConfigs.id, featurePolicyId), eq(backupConfigs.orgId, owner.orgId)))
+            .limit(1)
+        )
+      );
       if (config) {
         return { valid: true };
       }

@@ -243,18 +243,28 @@ describe('backupProfileSelectionsSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects file selection without paths or volumes', () => {
+  it('rejects file selection without paths', () => {
     const result = backupProfileSelectionsSchema.safeParse({
       file: { enabled: true, paths: [] },
     });
     expect(result.success).toBe(false);
   });
 
-  it('accepts file selection with volumes but no paths (reserved field)', () => {
+  // volumes is reserved for spec phase 3 (needs agent volume inventory). Until
+  // job creation can expand it into paths, accepting it would fan out a file
+  // job with zero paths — a backup that reports success and protects nothing.
+  it('rejects volumes until job creation honors it', () => {
     const result = backupProfileSelectionsSchema.safeParse({
       file: { enabled: true, paths: [], volumes: 'all_fixed' },
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects volumes even alongside explicit paths', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      file: { enabled: true, paths: ['C:\\Users'], volumes: ['C:'] },
+    });
+    expect(result.success).toBe(false);
   });
 });
 

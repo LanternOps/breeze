@@ -5,7 +5,7 @@
 -- with per-source options). The config-policy backup feature link references
 -- a profile, and job creation fans out one job per enabled selection from the
 -- single winning link — fixing the silent multi-mode shadowing where a server
--- assigned file + system_state + mssql policies got only one of them.
+-- assigned file + system_image + mssql policies got only one of them.
 --
 -- Ownership is dual-axis per epic #2135 (partner-wide first): org_id XOR
 -- partner_id, so an MSP defines "Server" once and applies it across every
@@ -67,10 +67,12 @@ CREATE POLICY backup_profiles_isolation
 -- ============================================
 -- backup_profile_id: RESTRICT — deleting a profile still referenced by a
 -- feature link is blocked (the API surfaces a friendly 409 listing the
--- referencing policies, matching update-ring behavior).
+-- referencing policies, as scripts.ts does on scope narrowing).
 -- destination_config_id: SET NULL — a deleted destination falls back to
--- "resolve org default at job time"; job creation fails loudly when no
--- default exists (never a silent skip).
+-- "resolve org default at job time". When no default exists, job creation
+-- SKIPS the device loudly (worker error log + policy-UI warning) and creates
+-- no job row — backup_jobs.config_id is NOT NULL, so a failed-job row is not
+-- representable. Never a silent skip.
 
 ALTER TABLE config_policy_backup_settings
   ADD COLUMN IF NOT EXISTS backup_profile_id uuid;

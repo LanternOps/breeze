@@ -98,8 +98,9 @@ export const backupConfigs = pgTable(
 // Cove-style entity from docs/superpowers/specs/2026-07-13-backup-profiles-design.md.
 // Dual-ownership per epic #2135: org_id XOR partner_id (CHECK + dual-axis RLS
 // live in 2026-07-13-backup-profiles.sql). `selections` enables any subset of
-// source types (file / system_state / mssql / hyperv), each with per-source
-// options; shape validated by backupProfileSelectionsSchema in @breeze/shared.
+// source types — keys match backup_mode_enum (file / system_image / mssql /
+// hyperv), each with per-source options; shape validated by
+// backupProfileSelectionsSchema in @breeze/shared.
 export const backupProfiles = pgTable(
   'backup_profiles',
   {
