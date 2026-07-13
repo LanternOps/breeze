@@ -7,6 +7,7 @@ import {
   createPartner,
   createRole,
   createUser,
+  assignUserToPartner,
   assignUserToOrganization,
 } from './db-utils';
 import {
@@ -14,8 +15,11 @@ import {
   auditLogs,
   emailVerificationTokens,
   organizations,
+  organizationUsers,
+  partnerUsers,
   partners,
   refreshTokenFamilies,
+  rolePermissions,
   roles,
   sites,
   users,
@@ -34,6 +38,9 @@ import {
 } from '../../services/authLifecycle';
 import { createRegisteredPartnerSession } from '../../routes/auth/register';
 import { activateInvitedUserSession } from '../../routes/auth/invite';
+import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
+import { issueUserSession } from '../../services/userSession';
+import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
 
 const CURRENT_KEY = 'integration-account-issuance-browser-binding-key';
 
@@ -87,6 +94,48 @@ async function beginLogoutAndRevokeLinkedFamily(transitionId: string) {
   });
 }
 
+async function waitForBlockedTransitionQueries(minimum: number): Promise<void> {
+  const db = getTestDb();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS blocked_count
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND usename = 'breeze_app'
+        AND wait_event_type = 'Lock'
+        AND position('auth_browser_transitions' in lower(query)) > 0
+    `) as unknown as Array<{ blocked_count: number }>;
+    if (Number(rows[0]?.blocked_count ?? 0) >= minimum) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Expected ${minimum} blocked auth-browser transition queries`);
+}
+
+async function queueTransitionRacers<TFirst, TSecond>(
+  transitionId: string,
+  first: () => Promise<TFirst>,
+  second: () => Promise<TSecond>,
+): Promise<[Promise<TFirst>, Promise<TSecond>]> {
+  const db = getTestDb();
+  let firstPromise!: Promise<TFirst>;
+  let secondPromise!: Promise<TSecond>;
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT id
+      FROM auth_browser_transitions
+      WHERE id = ${transitionId}::uuid
+      FOR UPDATE
+    `);
+    firstPromise = first();
+    void firstPromise.catch(() => undefined);
+    await waitForBlockedTransitionQueries(1);
+    secondPromise = second();
+    void secondPromise.catch(() => undefined);
+    await waitForBlockedTransitionQueries(2);
+  });
+  return [firstPromise, secondPromise];
+}
+
 beforeEach(async () => {
   delete process.env.APP_ENCRYPTION_KEY;
   process.env.APP_ENCRYPTION_KEY_ID = 'current';
@@ -111,29 +160,41 @@ describe('registration and invite issuance against terminal logout', () => {
       organizations: (await db.select().from(organizations)).length,
       sites: (await db.select().from(sites)).length,
       users: (await db.select().from(users)).length,
+      roles: (await db.select().from(roles)).length,
+      partnerUsers: (await db.select().from(partnerUsers)).length,
+      organizationUsers: (await db.select().from(organizationUsers)).length,
+      rolePermissions: (await db.select().from(rolePermissions)).length,
       families: (await db.select().from(refreshTokenFamilies)).length,
       verificationTokens: (await db.select().from(emailVerificationTokens)).length,
       audits: (await db.select().from(auditLogs)).length,
     };
     const binding = freshBrowserBinding();
     const capability = await beginAuthIssuance(binding);
-    await beginLogoutAndRevokeLinkedFamily(capability.transitionId);
-
-    await expect(finishAuthIssuance(capability, (tx) =>
-      createRegisteredPartnerSession({
-        tx,
-        capability,
-        companyName: 'Terminal First Registration',
-        email: 'terminal-first-registration@example.com',
-        name: 'Terminal First',
-        passwordHash: 'new-password-hash',
-        status: 'active',
-      }))).rejects.toBeInstanceOf(AuthIssuanceCapabilityError);
+    const [logout, issuance] = await queueTransitionRacers(
+      capability.transitionId,
+      () => beginLogoutAndRevokeLinkedFamily(capability.transitionId),
+      () => finishAuthIssuance(capability, (tx) =>
+        createRegisteredPartnerSession({
+          tx,
+          capability,
+          companyName: 'Terminal First Registration',
+          email: 'terminal-first-registration@example.com',
+          name: 'Terminal First',
+          passwordHash: 'new-password-hash',
+          status: 'active',
+        })),
+    );
+    await expect(logout).resolves.toBeTruthy();
+    await expect(issuance).rejects.toBeInstanceOf(AuthIssuanceCapabilityError);
 
     expect(await db.select().from(partners)).toHaveLength(before.partners);
     expect(await db.select().from(organizations)).toHaveLength(before.organizations);
     expect(await db.select().from(sites)).toHaveLength(before.sites);
     expect(await db.select().from(users)).toHaveLength(before.users);
+    expect(await db.select().from(roles)).toHaveLength(before.roles);
+    expect(await db.select().from(partnerUsers)).toHaveLength(before.partnerUsers);
+    expect(await db.select().from(organizationUsers)).toHaveLength(before.organizationUsers);
+    expect(await db.select().from(rolePermissions)).toHaveLength(before.rolePermissions);
     expect(await db.select().from(refreshTokenFamilies)).toHaveLength(before.families);
     expect(await db.select().from(emailVerificationTokens)).toHaveLength(before.verificationTokens);
     expect(await db.select().from(auditLogs)).toHaveLength(before.audits);
@@ -144,17 +205,22 @@ describe('registration and invite issuance against terminal logout', () => {
     const binding = freshBrowserBinding();
     const capability = await beginAuthIssuance(binding);
 
-    const committed = await finishAuthIssuance(capability, (tx) =>
-      createRegisteredPartnerSession({
-        tx,
-        capability,
-        companyName: 'Issuance First Registration',
-        email: 'issuance-first-registration@example.com',
-        name: 'Issuance First',
-        passwordHash: 'new-password-hash',
-        status: 'active',
-      }));
-    const linked = await beginLogoutAndRevokeLinkedFamily(capability.transitionId);
+    const [issuance, logout] = await queueTransitionRacers(
+      capability.transitionId,
+      () => finishAuthIssuance(capability, (tx) =>
+        createRegisteredPartnerSession({
+          tx,
+          capability,
+          companyName: 'Issuance First Registration',
+          email: 'issuance-first-registration@example.com',
+          name: 'Issuance First',
+          passwordHash: 'new-password-hash',
+          status: 'active',
+        })),
+      () => beginLogoutAndRevokeLinkedFamily(capability.transitionId),
+    );
+    const committed = await issuance;
+    const linked = await logout;
 
     expect(linked).toMatchObject({
       currentUserId: committed.newUser.id,
@@ -185,14 +251,19 @@ describe('registration and invite issuance against terminal logout', () => {
 
     const binding = freshBrowserBinding();
     const capability = await beginAuthIssuance(binding);
-    await beginLogoutAndRevokeLinkedFamily(capability.transitionId);
-    await expect(finishAuthIssuance(capability, (tx) =>
-      activateInvitedUserSession({
-        tx,
-        capability,
-        userId: invited.id,
-        passwordHash: 'replacement-password-hash',
-      }))).rejects.toBeInstanceOf(AuthIssuanceCapabilityError);
+    const [logout, issuance] = await queueTransitionRacers(
+      capability.transitionId,
+      () => beginLogoutAndRevokeLinkedFamily(capability.transitionId),
+      () => finishAuthIssuance(capability, (tx) =>
+        activateInvitedUserSession({
+          tx,
+          capability,
+          userId: invited.id,
+          passwordHash: 'replacement-password-hash',
+        })),
+    );
+    await expect(logout).resolves.toBeTruthy();
+    await expect(issuance).rejects.toBeInstanceOf(AuthIssuanceCapabilityError);
 
     const [unchanged] = await db.select().from(users).where(eq(users.id, invited.id));
     expect(unchanged).toMatchObject({
@@ -221,14 +292,19 @@ describe('registration and invite issuance against terminal logout', () => {
 
     const binding = freshBrowserBinding();
     const capability = await beginAuthIssuance(binding);
-    const committed = await finishAuthIssuance(capability, (tx) =>
-      activateInvitedUserSession({
-        tx,
-        capability,
-        userId: invited.id,
-        passwordHash: 'replacement-password-hash',
-      }));
-    const linked = await beginLogoutAndRevokeLinkedFamily(capability.transitionId);
+    const [issuance, logout] = await queueTransitionRacers(
+      capability.transitionId,
+      () => finishAuthIssuance(capability, (tx) =>
+        activateInvitedUserSession({
+          tx,
+          capability,
+          userId: invited.id,
+          passwordHash: 'replacement-password-hash',
+        })),
+      () => beginLogoutAndRevokeLinkedFamily(capability.transitionId),
+    );
+    const committed = await issuance;
+    const linked = await logout;
 
     expect(linked).toMatchObject({
       currentUserId: invited.id,
@@ -242,5 +318,80 @@ describe('registration and invite issuance against terminal logout', () => {
       .from(refreshTokenFamilies)
       .where(eq(refreshTokenFamilies.familyId, committed.tokens.familyId));
     expect(family?.revokedReason).toBe('terminal-logout');
+  });
+
+  it('activates a hosted partner with multiple users in one guarded invalidation sequence', async () => {
+    const db = getTestDb();
+    const partner = await createPartner({ name: 'Hosted Activation Partner' });
+    await db.update(partners).set({ status: 'pending' }).where(eq(partners.id, partner.id));
+    const org = await createOrganization({ partnerId: partner.id });
+    const partnerRole = await createRole({ scope: 'partner', partnerId: partner.id });
+    const orgRole = await createRole({ scope: 'organization', partnerId: partner.id, orgId: org.id });
+    const admin = await createUser({
+      partnerId: partner.id,
+      orgId: org.id,
+      email: 'hosted-activation-admin@example.com',
+    });
+    const member = await createUser({
+      partnerId: partner.id,
+      orgId: org.id,
+      email: 'hosted-activation-member@example.com',
+    });
+    await assignUserToPartner(admin.id, partner.id, partnerRole.id, 'all');
+    await assignUserToOrganization(member.id, org.id, orgRole.id);
+    const [adminOldFamily, memberOldFamily] = await withAuthLifecycleSystemTransaction(async (tx) => [
+      await mintRefreshTokenFamily(admin.id, { tx }),
+      await mintRefreshTokenFamily(member.id, { tx }),
+    ]);
+
+    const binding = freshBrowserBinding();
+    const capability = await beginAuthIssuance(binding);
+    const committed = await finishAuthIssuance(capability, async (tx) => {
+      const activation = await activatePendingPartnerAndInvalidateSessions(
+        tx,
+        partner.id,
+        new Date(),
+      );
+      const tokens = await issueUserSession({
+        userId: admin.id,
+        email: admin.email,
+        roleId: partnerRole.id,
+        orgId: null,
+        partnerId: partner.id,
+        scope: 'partner',
+        mfa: false,
+        amr: ['password'],
+      }, { tx, capability });
+      return { activation, tokens };
+    });
+
+    expect(committed.activation).toEqual({
+      activated: true,
+      userIds: [admin.id, member.id].sort(),
+    });
+    const [activatedPartner] = await db.select().from(partners).where(eq(partners.id, partner.id));
+    expect(activatedPartner?.status).toBe('active');
+    const activatedUsers = await db
+      .select({ id: users.id, authEpoch: users.authEpoch })
+      .from(users)
+      .where(sql`${users.id} IN (${admin.id}::uuid, ${member.id}::uuid)`);
+    expect(Object.fromEntries(activatedUsers.map((row) => [row.id, row.authEpoch]))).toEqual({
+      [admin.id]: admin.authEpoch + 1,
+      [member.id]: member.authEpoch + 1,
+    });
+    const familyRows = await db
+      .select()
+      .from(refreshTokenFamilies)
+      .where(sql`${refreshTokenFamilies.familyId} IN (
+        ${adminOldFamily}::uuid,
+        ${memberOldFamily}::uuid,
+        ${committed.tokens.familyId}::uuid
+      )`);
+    expect(familyRows.find((row) => row.familyId === adminOldFamily)?.revokedReason)
+      .toBe('partner-activated');
+    expect(familyRows.find((row) => row.familyId === memberOldFamily)?.revokedReason)
+      .toBe('partner-activated');
+    expect(familyRows.find((row) => row.familyId === committed.tokens.familyId)?.revokedAt)
+      .toBeNull();
   });
 });

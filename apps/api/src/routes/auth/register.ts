@@ -34,7 +34,6 @@ import type { AuthIssuanceCapability } from '../../services/authBrowserTransitio
 import type { AuthLifecycleTransaction } from '../../services/authLifecycle';
 import {
   getCookieValue,
-  runWithSystemDbAccess,
   getClientRateLimitKey,
   rotateCsrfBindingCookie,
   setRefreshTokenCookie,
@@ -175,19 +174,20 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
   const { companyName, email, password, name, acceptTerms } = c.req.valid('json');
   const rateLimitClient = getClientRateLimitKey(c);
 
-  return runWithSystemDbAccess(async () => {
+  {
     // Self-hosted single-tenant installs need the seeded admin to finish
     // setup before strangers can create partners. SaaS deployments
     // (IS_HOSTED=true) skip the gate so the partner table can
     // bootstrap from an empty state.
     const hosted = isHosted();
     if (!hosted) {
-      const [setupAdmin] = await db
-        .select({ setupCompletedAt: users.setupCompletedAt })
-        .from(users)
-        .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
-        .where(sql`${users.setupCompletedAt} IS NOT NULL`)
-        .limit(1);
+      const [setupAdmin] = await withSystemDbAccessContext(async () =>
+        db
+          .select({ setupCompletedAt: users.setupCompletedAt })
+          .from(users)
+          .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+          .where(sql`${users.setupCompletedAt} IS NOT NULL`)
+          .limit(1));
 
       if (!setupAdmin) {
         return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
@@ -211,11 +211,12 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
     }
 
     // Check if user exists
-    const existingUser = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, email.toLowerCase()))
-      .limit(1);
+    const existingUser = await withSystemDbAccessContext(async () =>
+      db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, email.toLowerCase()))
+        .limit(1));
 
     if (existingUser.length > 0) {
       return c.json({ success: true, message: 'If registration can proceed, you will receive next steps shortly.' });
@@ -481,5 +482,5 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       });
       return c.json({ error: 'Registration failed. Please try again.' }, 500);
     }
-  });
+  }
 });

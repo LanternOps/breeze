@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const dbContextState = vi.hoisted(() => ({ active: false }));
+
+async function runTrackedDbContext<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = dbContextState.active;
+  dbContextState.active = true;
+  try {
+    return await fn();
+  } finally {
+    dbContextState.active = previous;
+  }
+}
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
@@ -7,7 +19,7 @@ vi.mock('../../db', () => ({
       set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
     })),
   },
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(runTrackedDbContext),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
@@ -97,7 +109,7 @@ vi.mock('./helpers', async () => {
   const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
   return {
     ...actual,
-    runWithSystemDbAccess: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    runWithSystemDbAccess: vi.fn(runTrackedDbContext),
     setRefreshTokenCookie: vi.fn(),
     toPublicTokens: vi.fn((t: { accessToken: string; expiresInSeconds: number }) => ({
       accessToken: t.accessToken,
@@ -133,9 +145,11 @@ import {
   finishAuthIssuance,
   issueUserSession,
   bindIssuedUserSession,
+  hashPassword,
 } from '../../services';
 import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
 import { setRefreshTokenCookie } from './helpers';
+import { generateVerificationToken } from '../../services/emailVerification';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -197,6 +211,40 @@ describe('/register-partner durable issuance ordering', () => {
     expect(setRefreshTokenCookie).not.toHaveBeenCalled();
     expect(createAuditLog).not.toHaveBeenCalled();
     expect(dispatchHook).not.toHaveBeenCalled();
+  });
+
+  it('does not hold a database context across hashing, token delivery, or webhook I/O', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending',
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+      }]) as any);
+
+    const observed: Array<[string, boolean]> = [];
+    vi.mocked(hashPassword).mockImplementationOnce(async () => {
+      observed.push(['hash', dbContextState.active]);
+      return 'hashed';
+    });
+    vi.mocked(generateVerificationToken).mockImplementationOnce(async () => {
+      observed.push(['verification-token', dbContextState.active]);
+      return 'verify-token';
+    });
+    vi.mocked(dispatchHook).mockImplementationOnce(async () => {
+      observed.push(['webhook', dbContextState.active]);
+      return null;
+    });
+
+    const res = await postRegisterPartner(validBody);
+
+    expect(res.status).toBe(200);
+    expect(observed).toEqual([
+      ['hash', false],
+      ['verification-token', false],
+      ['webhook', false],
+    ]);
   });
 });
 

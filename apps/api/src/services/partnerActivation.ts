@@ -1,6 +1,13 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { db } from '../db';
-import { organizationUsers, organizations, partners, partnerUsers, users } from '../db/schema';
+import {
+  organizationUsers,
+  organizations,
+  partners,
+  partnerUsers,
+  refreshTokenFamilies,
+  users,
+} from '../db/schema';
 import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
@@ -166,10 +173,11 @@ export async function activatePendingPartnerAndInvalidateSessions(
   now: Date = new Date(),
   statusMetadata?: PartnerActivationStatusMetadata,
 ): Promise<PartnerActivationResult> {
-  if (!(await activatePartnerRow(tx, partnerId, now, statusMetadata))) {
-    return { activated: false, userIds: [] };
-  }
-
+  // Discover the affected population before taking locks, then obey the
+  // browser-auth global lock order: transition (owned by the caller), every
+  // user in UUID order, every family in UUID order, and only then the
+  // route-specific partner row. Holding all user locks prevents a concurrent
+  // issuer from inserting a new family after the family snapshot.
   const orgRows = await tx
     .select({ id: organizations.id })
     .from(organizations)
@@ -188,10 +196,38 @@ export async function activatePendingPartnerAndInvalidateSessions(
   const userIds = [...new Set([
     ...partnerMemberships.map((row) => row.userId),
     ...orgMemberships.map((row) => row.userId),
-  ])];
+  ])].sort();
+
+  if (userIds.length > 0) {
+    const lockedUsers = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(inArray(users.id, userIds))
+      .orderBy(users.id)
+      .for('update');
+    if (lockedUsers.length !== userIds.length) {
+      throw new Error('Failed to lock every partner user for activation');
+    }
+
+    await tx
+      .select({ familyId: refreshTokenFamilies.familyId })
+      .from(refreshTokenFamilies)
+      .where(and(
+        inArray(refreshTokenFamilies.userId, userIds),
+        isNull(refreshTokenFamilies.revokedAt),
+      ))
+      .orderBy(refreshTokenFamilies.familyId)
+      .for('update');
+  }
+
+  if (!(await activatePartnerRow(tx, partnerId, now, statusMetadata))) {
+    return { activated: false, userIds: [] };
+  }
 
   for (const userId of userIds) {
     await advanceUserSecurityState(tx, userId);
+  }
+  for (const userId of userIds) {
     await revokeAllUserSessionFamilies(tx, userId, 'partner-activated');
   }
 

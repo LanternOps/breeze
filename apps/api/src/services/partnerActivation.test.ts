@@ -14,7 +14,14 @@ import {
   advanceUserSecurityState,
   revokeAllUserSessionFamilies,
 } from './authLifecycle';
-import { organizationUsers, organizations, partners, partnerUsers } from '../db/schema';
+import {
+  organizationUsers,
+  organizations,
+  partners,
+  partnerUsers,
+  refreshTokenFamilies,
+  users,
+} from '../db/schema';
 
 describe('shouldActivatePendingPartner (#718 reconciliation predicate)', () => {
   const verified = new Date('2026-06-13T00:00:00Z');
@@ -126,13 +133,17 @@ describe('activatePartnerRow', () => {
           where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
         }),
       }),
-      select: vi.fn(),
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      }),
     } as any;
 
     await expect(
       activatePendingPartnerAndInvalidateSessions(tx, 'p-1'),
     ).resolves.toEqual({ activated: false, userIds: [] });
-    expect(tx.select).not.toHaveBeenCalled();
+    expect(tx.select).toHaveBeenCalledTimes(2);
     expect(advanceUserSecurityState).not.toHaveBeenCalled();
     expect(revokeAllUserSessionFamilies).not.toHaveBeenCalled();
   });
@@ -182,9 +193,23 @@ describe('activatePartnerRow', () => {
         };
       }),
       select: vi.fn().mockReturnValue({
-        from: vi.fn((table: unknown) => ({
-          where: vi.fn().mockResolvedValue(rowsByTable.get(table) ?? []),
-        })),
+        from: vi.fn((table: unknown) => {
+          if (table === users || table === refreshTokenFamilies) {
+            const lockedRows = table === users
+              ? ['user-1', 'user-2', 'user-3'].map((id) => ({ id }))
+              : [];
+            return {
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  for: vi.fn().mockResolvedValue(lockedRows),
+                }),
+              }),
+            };
+          }
+          return {
+            where: vi.fn().mockResolvedValue(rowsByTable.get(table) ?? []),
+          };
+        }),
       }),
     } as any;
 
@@ -211,6 +236,83 @@ describe('activatePartnerRow', () => {
     }
   });
 
+  it('locks every user and family in stable global order before the partner row and mutations', async () => {
+    const events: string[] = [];
+    vi.mocked(advanceUserSecurityState).mockImplementation(async (_tx, userId) => {
+      events.push(`advance:${userId}`);
+      return { authEpoch: 2 } as any;
+    });
+    vi.mocked(revokeAllUserSessionFamilies).mockImplementation(async (_tx, userId) => {
+      events.push(`revoke:${userId}`);
+      return 1;
+    });
+
+    const membershipRows = new Map<unknown, unknown[]>([
+      [organizations, [{ id: 'org-1' }]],
+      [partnerUsers, [{ userId: '00000000-0000-4000-8000-000000000003' }, { userId: '00000000-0000-4000-8000-000000000001' }]],
+      [organizationUsers, [{ userId: '00000000-0000-4000-8000-000000000002' }]],
+    ]);
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn((table: unknown) => {
+          if (table === users || table === refreshTokenFamilies) {
+            return {
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  for: vi.fn(async () => {
+                    events.push(table === users ? 'lock:users' : 'lock:families');
+                    return table === users
+                      ? [
+                        { id: '00000000-0000-4000-8000-000000000001' },
+                        { id: '00000000-0000-4000-8000-000000000002' },
+                        { id: '00000000-0000-4000-8000-000000000003' },
+                      ]
+                      : [];
+                  }),
+                }),
+              }),
+            };
+          }
+          return {
+            where: vi.fn().mockResolvedValue(membershipRows.get(table) ?? []),
+          };
+        }),
+      }),
+      update: vi.fn((table: unknown) => {
+        if (table === partners) events.push('lock:partner');
+        return {
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'p-1' }]),
+            }),
+          }),
+        };
+      }),
+    } as any;
+
+    await expect(
+      activatePendingPartnerAndInvalidateSessions(tx, 'p-1'),
+    ).resolves.toEqual({
+      activated: true,
+      userIds: [
+        '00000000-0000-4000-8000-000000000001',
+        '00000000-0000-4000-8000-000000000002',
+        '00000000-0000-4000-8000-000000000003',
+      ],
+    });
+    expect(events).toEqual([
+      'lock:users',
+      'lock:families',
+      'lock:partner',
+      'advance:00000000-0000-4000-8000-000000000001',
+      'advance:00000000-0000-4000-8000-000000000002',
+      'advance:00000000-0000-4000-8000-000000000003',
+      'revoke:00000000-0000-4000-8000-000000000001',
+      'revoke:00000000-0000-4000-8000-000000000002',
+      'revoke:00000000-0000-4000-8000-000000000003',
+    ]);
+  });
+
   it('propagates lifecycle failure so the caller transaction rolls back activation', async () => {
     vi.mocked(revokeAllUserSessionFamilies).mockRejectedValueOnce(new Error('family write failed'));
     const tx = {
@@ -221,15 +323,24 @@ describe('activatePartnerRow', () => {
           }),
         }),
       }),
-      select: vi.fn()
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
-        })
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ userId: 'user-1' }]),
-          }),
+      select: vi.fn().mockReturnValue({
+        from: vi.fn((table: unknown) => {
+          if (table === organizations) {
+            return { where: vi.fn().mockResolvedValue([]) };
+          }
+          if (table === partnerUsers) {
+            return { where: vi.fn().mockResolvedValue([{ userId: 'user-1' }]) };
+          }
+          const lockedRows = table === users ? [{ id: 'user-1' }] : [];
+          return {
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                for: vi.fn().mockResolvedValue(lockedRows),
+              }),
+            }),
+          };
         }),
+      }),
     } as any;
 
     await expect(
