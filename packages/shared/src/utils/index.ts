@@ -9,3 +9,4 @@ export * from './depositMath';
 export * from './csvExport';
 export * from './reportSchedule';
 export * from './s3Region';
+export * from './backupExclusionGlob';

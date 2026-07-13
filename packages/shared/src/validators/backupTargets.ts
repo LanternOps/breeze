@@ -1,8 +1,54 @@
 import { z } from 'zod';
+import {
+  describeExclusionPattern,
+  stripEmptyExclusionPatterns,
+} from '../utils/backupExclusionGlob';
+
+/** Same ceiling the profiles schema already applied to paths/excludes. */
+const MAX_EXCLUDE_PATTERNS = 64;
+
+/**
+ * File-mode exclusion globs, validated against the Go agent's dialect (#2473).
+ *
+ * Before this, a malformed glob was accepted, persisted, and shipped to the
+ * fleet, where the agent logged "ignoring invalid exclusion pattern" and backed
+ * up everything the tech believed was excluded — with no feedback to whoever
+ * typed it.
+ *
+ * Two deliberate design choices, both aimed at NOT breaking working saves:
+ *
+ *  - **Blank entries are stripped, not rejected.** A textarea split on newlines
+ *    yields empty strings; failing the save over one would be an over-strict
+ *    regression. The agent skips them too.
+ *  - **Only definite syntax errors are rejected** — the ones the agent's own
+ *    matcher refuses to compile. Merely unusual patterns (`[z-a]`, `[!a-z]`)
+ *    are accepted, because the agent accepts them.
+ *
+ * The dialect is pinned by a cross-language contract fixture replayed against
+ * the real agent matcher — see packages/shared/src/utils/backupExclusionGlob.ts.
+ */
+export const backupExcludePatternsSchema = z
+  .array(z.string())
+  .max(MAX_EXCLUDE_PATTERNS)
+  .transform(stripEmptyExclusionPatterns)
+  .superRefine((patterns, ctx) => {
+    patterns.forEach((pattern, index) => {
+      const verdict = describeExclusionPattern(pattern);
+      if (verdict.usable) return;
+      ctx.addIssue({
+        code: 'custom',
+        path: [index],
+        message: `${verdict.message} The backup agent would ignore this pattern, so it would silently exclude nothing.`,
+      });
+    });
+  });
 
 export const fileTargetsSchema = z.object({
   paths: z.array(z.string()).min(1),
-  excludes: z.array(z.string()).optional(),
+  // Stays OPTIONAL on purpose: omitted means "fall back to the agent's local
+  // excludes", whereas an explicit [] means "no exclusions this run". Do not
+  // collapse the two with a .default([]) — see backupWorker.resolveBackupTargets.
+  excludes: backupExcludePatternsSchema.optional(),
 });
 
 export const hypervTargetsSchema = z.object({
@@ -136,7 +182,9 @@ export const backupProfileSelectionsSchema = z
       .object({
         enabled: z.boolean().default(false),
         paths: z.array(z.string().trim().min(1)).max(64).default([]),
-        excludes: z.array(z.string().trim().min(1)).max(64).default([]),
+        // Was z.array(z.string().trim().min(1)) — which rejected a blank line
+        // outright. Blank entries are now stripped instead (see schema doc).
+        excludes: backupExcludePatternsSchema.default([]),
         // Reserved for drive-letter/volume selection once the agent reports
         // volume inventory (spec phase 3). Rejected until then (see
         // superRefine): job creation cannot expand volumes into paths yet,
