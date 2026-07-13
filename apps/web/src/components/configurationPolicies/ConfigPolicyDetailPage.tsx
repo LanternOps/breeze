@@ -27,6 +27,7 @@ import {
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { cn } from "@/lib/utils";
 import { extractApiError } from "@/lib/apiError";
+import { useHashTab } from "@/lib/useHashState";
 import { OverflowTabs } from "../shared/OverflowTabs";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
@@ -136,12 +137,6 @@ const VALID_TABS: Tab[] = [
   "assignments",
 ];
 
-function tabFromHash(): Tab {
-  if (typeof window === "undefined") return "overview";
-  const hash = window.location.hash.replace(/^#/, "");
-  return (VALID_TABS as string[]).includes(hash) ? (hash as Tab) : "overview";
-}
-
 type ConfigPolicyDetailPageProps = {
   policyId?: string;
 };
@@ -150,20 +145,21 @@ export default function ConfigPolicyDetailPage({
 }: ConfigPolicyDetailPageProps) {
   useTranslation("policies");
   const statusConfig = createStatusConfig();
-  const [activeTab, setActiveTab] = useState<Tab>(tabFromHash);
+  // The hash is not available during SSR, so the tab starts at the
+  // server-rendered default and adopts the hash post-mount (pre-paint) —
+  // reading it in the useState initializer caused a hydration mismatch on
+  // every deep link (#2421).
+  const [activeTab, setActiveTab] = useHashTab<Tab>(VALID_TABS, "overview");
 
   // Reflect the active tab in the URL hash so tabs are deep-linkable and the
   // contextual help button resolves to the right per-feature doc.
-  const selectTab = useCallback((id: Tab) => {
-    if (typeof window !== "undefined") window.location.hash = id;
-    setActiveTab(id);
-  }, []);
-
-  useEffect(() => {
-    const onHashChange = () => setActiveTab(tabFromHash());
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
+  const selectTab = useCallback(
+    (id: Tab) => {
+      if (typeof window !== "undefined") window.location.hash = id;
+      setActiveTab(id);
+    },
+    [setActiveTab],
+  );
   const [policy, setPolicy] = useState<PolicyDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
