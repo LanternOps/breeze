@@ -60,9 +60,29 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
         }
         // Update auth store so downstream requests use new email
         useAuthStore.getState().updateUser({ email });
+
+        // #2428: an email change now advances auth_epoch and revokes every
+        // refresh family — this wizard's OWN session included. The access token
+        // we just used is dead and the refresh cookie's family is revoked, so
+        // without re-authenticating here the next request (the password change
+        // below, or the wizard's next step) 401s and ejects the user mid-setup
+        // — after we already told them it succeeded. The password is unchanged
+        // at this point, so `currentPassword` still authenticates; it is
+        // guaranteed present because the email step-up above requires it.
+        const emailRelogin = await apiLogin(email, currentPassword);
+        if (emailRelogin.success && emailRelogin.user && emailRelogin.tokens) {
+          useAuthStore.getState().login(emailRelogin.user, emailRelogin.tokens);
+        } else {
+          // Distinct from the password-change relogin copy: no password was
+          // changed here, and the user must sign in with their NEW address.
+          setError(t('setup.account.errors.emailReloginFailed'));
+          setLoading(false);
+          return;
+        }
       }
 
-      // Change password if provided
+      // Change password if provided. Runs on the session re-established above
+      // when the email also changed, so it authenticates against a live token.
       if (newPassword && currentPassword) {
         const pwRes = await fetchWithAuth('/auth/change-password', {
           method: 'POST',
