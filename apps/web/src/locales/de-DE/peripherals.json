@@ -1,0 +1,104 @@
+{
+  "peripheralPage": {
+    "title": "Peripheriegerätesteuerung",
+    "tabs": {
+      "policies": "Richtlinien",
+      "activity": "Aktivitätsprotokoll"
+    }
+  },
+  "peripheralActivityLog": {
+    "errors": {
+      "fetch": "Aktivitätsdaten konnten nicht abgerufen werden",
+      "generic": "Ein Fehler ist aufgetreten"
+    },
+    "allEvents": "Alle Ereignisse",
+    "events": {
+      "connected": "Verbunden",
+      "disconnected": "Getrennt",
+      "blocked": "Blockiert",
+      "mounted_read_only": "Schreibgeschützt eingebunden",
+      "policy_override": "Richtlinienübersteuerung"
+    },
+    "peripheralType": "Peripheriegerätetyp",
+    "vendor": "Hersteller",
+    "empty": "Keine Aktivitäten von Peripheriegeräten gefunden.",
+    "columns": {
+      "occurredAt": "Zeitpunkt",
+      "eventType": "Ereignistyp",
+      "product": "Produkt",
+      "serialNumber": "Seriennummer",
+      "device": "Gerät",
+      "policy": "Richtlinie"
+    },
+    "pagination": "{{from}}–{{to}} von {{total}}",
+    "prev": "Zurück"
+  },
+  "peripheralPoliciesList": {
+    "errors": {
+      "fetch": "Richtlinien konnten nicht abgerufen werden",
+      "generic": "Ein Fehler ist aufgetreten"
+    },
+    "allClasses": "Alle Geräteklassen",
+    "classes": {
+      "storage": "Speichergeräte",
+      "all_usb": "Alle USB-Geräte",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Blitz"
+    },
+    "allActions": "Alle Aktionen",
+    "actions": {
+      "allow": "Zulassen",
+      "block": "Blockieren",
+      "read_only": "Schreibgeschützt",
+      "alert": "Warnen"
+    },
+    "allStatus": "Alle Statuswerte",
+    "createPolicy": "Richtlinie erstellen",
+    "empty": "Keine Peripheriegeräterichtlinien gefunden. Zunächst eine Richtlinie erstellen.",
+    "columns": {
+      "deviceClass": "Geräteklasse",
+      "action": "Aktion",
+      "exceptions": "Ausnahmen",
+      "created": "Erstellt"
+    },
+    "partnerWideTitle": "Partnerweite Richtlinie — wird auf Geräten in allen Organisationen erzwungen",
+    "allOrgs": "Alle Organisationen"
+  },
+  "peripheralPolicyForm": {
+    "errors": {
+      "save": "Richtlinie konnte nicht gespeichert werden",
+      "generic": "Ein Fehler ist aufgetreten"
+    },
+    "editTitle": "Peripheriegeräterichtlinie bearbeiten",
+    "createTitle": "Peripheriegeräterichtlinie erstellen",
+    "scope": "Geltungsbereich",
+    "allOrganizations": "Alle Organisationen",
+    "partnerWide": "(partnerweite Richtlinie)",
+    "thisOrganization": "Nur diese Organisation",
+    "deviceClass": "Geräteklasse",
+    "classes": {
+      "storage": "Speichergeräte",
+      "all_usb": "Alle USB-Geräte",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Blitz"
+    },
+    "action": "Aktion",
+    "actions": {
+      "allow": "Zulassen",
+      "block": "Blockieren",
+      "read_only": "Schreibgeschützt",
+      "alert": "Warnen"
+    },
+    "exceptions": "Ausnahmen",
+    "addException": "Ausnahme hinzufügen",
+    "noExceptions": "Keine Ausnahmen konfiguriert.",
+    "exceptionNumber": "Ausnahme {{number}}",
+    "vendor": "Hersteller",
+    "product": "Produkt",
+    "serialNumber": "Seriennummer",
+    "allow": "Zulassen:",
+    "reason": "Grund",
+    "updatePolicy": "Richtlinie aktualisieren",
+    "createPolicy": "Richtlinie erstellen"
+  }
+}

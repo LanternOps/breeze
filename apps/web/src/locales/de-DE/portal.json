@@ -1,0 +1,101 @@
+{
+  "assetCheckout": {
+    "expectedReturnDate": "Voraussichtliches Rückgabedatum",
+    "notes": "Hinweise (optional)",
+    "notesPlaceholder": "Abhol- oder Lieferdetails hinzufügen",
+    "requesting": "Ausleihe von: {{assetName}}",
+    "submit": "Ausleihe beantragen",
+    "submitting": "Anfrage wird gesendet...",
+    "title": "Asset-Ausleihe",
+    "validation": {
+      "expectedReturnDate": "Voraussichtliches Rückgabedatum auswählen"
+    }
+  },
+  "assetHistory": {
+    "actions": {
+      "check-in": "Zurückgegeben",
+      "check-out": "Ausgegeben"
+    },
+    "description": "Letzte Ausgaben und Rückgaben",
+    "title": "Asset-Verlauf"
+  },
+  "branding": {
+    "defaultName": "Breeze-Portal"
+  },
+  "customerDeviceList": {
+    "deviceCount": "{{count}} mit Ihrem Konto verknüpfte Geräte",
+    "deviceCount_one": "{{count}} mit Ihrem Konto verknüpftes Gerät",
+    "deviceCount_other": "{{count}} mit Ihrem Konto verknüpfte Geräte",
+    "title": "Meine Geräte"
+  },
+  "deviceStatus": {
+    "lastSeen": "Zuletzt gesehen: {{lastSeen}}",
+    "status": {
+      "maintenance": "Wartung",
+      "offline": "Offline",
+      "online": "Online"
+    },
+    "unknown": "Unbekannt"
+  },
+  "header": {
+    "customerPortal": "Kundenportal",
+    "profile": "Profil",
+    "signOut": "Abmelden"
+  },
+  "login": {
+    "email": "E-Mail-Adresse",
+    "emailPlaceholder": "you@company.com",
+    "forgotPassword": "Passwort vergessen?",
+    "lookup": "Suchen",
+    "needHelp": "Hilfe benötigt?",
+    "organization": "Organisation",
+    "organizationPlaceholder": "Acme Corp oder ORG-123",
+    "password": "Passwort",
+    "passwordPlaceholder": "Passwort eingeben",
+    "signingIn": "Anmeldung läuft...",
+    "submit": "Anmelden",
+    "validation": {
+      "email": "Gültige E-Mail-Adresse eingeben",
+      "organization": "Namen oder Code der Organisation eingeben",
+      "passwordLength": "Das Passwort muss mindestens 8 Zeichen lang sein"
+    }
+  },
+  "passwordReset": {
+    "confirm": {
+      "code": "Code zum Zurücksetzen",
+      "codePlaceholder": "123456",
+      "confirmPassword": "Passwort bestätigen",
+      "confirmPasswordPlaceholder": "Neues Passwort erneut eingeben",
+      "newPassword": "Neues Passwort",
+      "newPasswordPlaceholder": "Neues Passwort eingeben",
+      "resetting": "Passwort wird zurückgesetzt...",
+      "submit": "Passwort zurücksetzen"
+    },
+    "email": "E-Mail-Adresse",
+    "emailPlaceholder": "you@company.com",
+    "rememberedPassword": "Kennen Sie Ihr Passwort noch?",
+    "request": {
+      "sending": "E-Mail wird gesendet...",
+      "submit": "Link zum Zurücksetzen senden"
+    },
+    "signIn": "Anmelden",
+    "validation": {
+      "code": "6-stelligen Code zum Zurücksetzen eingeben",
+      "email": "Gültige E-Mail-Adresse eingeben",
+      "passwordLength": "Das Passwort muss mindestens 8 Zeichen lang sein",
+      "passwordsMatch": "Die Passwörter stimmen nicht überein"
+    }
+  },
+  "sidebar": {
+    "collapse": "Portalnavigation einklappen",
+    "expand": "Portalnavigation ausklappen",
+    "items": {
+      "assetCheckout": "Asset-Ausleihe",
+      "helpCenter": "Hilfe-Center",
+      "myDevices": "Meine Geräte",
+      "overview": "Übersicht",
+      "supportTickets": "Support-Tickets"
+    },
+    "navigation": "Portalnavigation"
+  }
+}

@@ -1,0 +1,474 @@
+{
+  "slaChip": {
+    "pausedLeft": "Pausiert · {{relative}} übrig",
+    "left": "{{relative}} übrig",
+    "breached": "Durchbrochen"
+  },
+  "slaTimers": {
+    "title": "SLA",
+    "firstResponse": "Erste Antwort",
+    "resolution": "Auflösung",
+    "state": {
+      "met": "Getroffen",
+      "notMet": "Nicht erfüllt",
+      "breached": "Durchbrochen",
+      "pausedLeft": "Pausiert · {{relative}} übrig",
+      "left": "{{relative}} übrig"
+    },
+    "clockPaused": "Die Uhr wurde angehalten, während das Ticket {{status}} kostet.",
+    "status": {
+      "onHold": "in der Warteschleife",
+      "pending": "ausstehend"
+    }
+  },
+  "cannedResponsePicker": {
+    "button": "Vorgefertigte Antwort"
+  },
+  "deviceTicketsTab": {
+    "loading": "Tickets werden geladen...",
+    "loadFailed": "Die Tickets konnten nicht geladen werden.",
+    "empty": "Keine Tickets für dieses Gerät.",
+    "status": {
+      "new": "Neu",
+      "open": "Offen",
+      "pending": "Ausstehend",
+      "on_hold": "In der Warteschleife",
+      "resolved": "Gelöst",
+      "closed": "Geschlossen"
+    },
+    "priority": {
+      "urgent": "Dringend",
+      "high": "Hoch",
+      "normal": "Normal",
+      "low": "Niedrig"
+    }
+  },
+  "ticketQueueList": {
+    "empty": "Es stimmen keine Tickets überein.",
+    "clearFilters": "Filter zurücksetzen",
+    "ariaLabel": "Ticketwarteschlange",
+    "selectTicket": "Wählen Sie {{ticket}}",
+    "timeAgo": {
+      "minutes": "Vor {{count}}m",
+      "minutes_one": "Vor {{count}}m",
+      "minutes_other": "Vor {{count}}m",
+      "hours": "Vor {{count}}h",
+      "hours_one": "Vor {{count}}h",
+      "hours_other": "Vor {{count}}h",
+      "days": "Vor {{count}}d",
+      "days_one": "Vor {{count}}d",
+      "days_other": "Vor {{count}}d"
+    },
+    "status": {
+      "new": "Neu",
+      "open": "Offen",
+      "pending": "Ausstehend",
+      "on_hold": "In der Warteschleife",
+      "resolved": "Gelöst",
+      "closed": "Geschlossen"
+    },
+    "priority": {
+      "urgent": "Dringend",
+      "high": "Hoch",
+      "normal": "Normal",
+      "low": "Niedrig"
+    }
+  },
+  "ticketArchivedList": {
+    "emptyTitle": "Keine archivierten Tickets.",
+    "emptyDescription": "Gelöschte Tickets landen hier. Stellen Sie einen wieder her, um ihn wieder in die Live-Warteschlangen aufzunehmen.",
+    "ariaLabel": "Archivierte Tickets",
+    "deleted": "gelöscht {{relative}}",
+    "restore": "Wiederherstellen",
+    "restoring": "Wiederherstellung…",
+    "timeAgo": {
+      "minutes": "Vor {{count}}m",
+      "minutes_one": "Vor {{count}}m",
+      "minutes_other": "Vor {{count}}m",
+      "hours": "Vor {{count}}h",
+      "hours_one": "Vor {{count}}h",
+      "hours_other": "Vor {{count}}h",
+      "days": "Vor {{count}}d",
+      "days_one": "Vor {{count}}d",
+      "days_other": "Vor {{count}}d"
+    },
+    "status": {
+      "new": "Neu",
+      "open": "Offen",
+      "pending": "Ausstehend",
+      "on_hold": "In der Warteschleife",
+      "resolved": "Gelöst",
+      "closed": "Geschlossen"
+    },
+    "priority": {
+      "urgent": "Dringend",
+      "high": "Hoch",
+      "normal": "Normal",
+      "low": "Niedrig"
+    }
+  },
+  "ticketComposer": {
+    "reply": "Antwort",
+    "internalNote": "Interner Hinweis",
+    "internalBanner": "Intern: für den Anforderer nicht sichtbar",
+    "replyPlaceholder": "Antwort auf {{requester}}…",
+    "requesterFallback": "Anforderer",
+    "internalPlaceholder": "Eine interne Notiz hinzufügen…",
+    "sending": "Senden",
+    "sendReply": "Antwort senden",
+    "addInternalNote": "Interne Notiz hinzufügen"
+  },
+  "ticketFeed": {
+    "empty": "Noch keine Aktivität.",
+    "commentDeleted": "{{author}} – gelöscht",
+    "commentFallback": "Ein Kommentar",
+    "requester": "Anforderer",
+    "technician": "Techniker",
+    "internal": "Intern",
+    "edited": "bearbeitet",
+    "system": {
+      "systemAuthor": "System",
+      "technicianAuthor": "Techniker",
+      "statusChanged": "{{author}} geänderter Status: {{from}} zu {{to}}",
+      "assigned": "{{author}} hat dieses Ticket zugewiesen",
+      "unassigned": "{{author}} hat die Zuweisung dieses Tickets aufgehoben",
+      "loggedTime": "{{author}} protokollierte Zeit",
+      "systemEvent": "Systemereignis",
+      "collapsed": "{{count}} Änderungen. Zeigen",
+      "collapsed_one": "{{count}} Wechselgeld. Zeigen",
+      "collapsed_other": "{{count}} Änderungen. Zeigen"
+    },
+    "status": {
+      "new": "Neu",
+      "open": "Offen",
+      "pending": "Ausstehend",
+      "on_hold": "In der Warteschleife",
+      "resolved": "Gelöst",
+      "closed": "Geschlossen"
+    },
+    "deleteDialog": {
+      "title": "Kommentar löschen",
+      "message": "Sind Sie sicher, dass Sie diesen Kommentar löschen möchten? Diese Aktion kann nicht rückgängig gemacht werden."
+    }
+  },
+  "ticketPartsCard": {
+    "title": "Teile",
+    "empty": "Keine Teile.",
+    "nonBillableSuffix": "· nicht abrechenbar",
+    "marginTitle": "Marge",
+    "deletePrompt": "Löschen?",
+    "addPart": "Teil hinzufügen",
+    "fromCatalogPrefix": "Aus Katalog:",
+    "unlink": "Verknüpfung aufheben",
+    "catalogPlaceholder": "Aus Katalog hinzufügen (optional)",
+    "quantity": "Menge",
+    "unitPrice": "Stückpreis",
+    "costPlaceholder": "Kosten (optional)",
+    "cost": "Kosten",
+    "billable": "Abrechnungsfähig",
+    "update": "Aktualisieren",
+    "toast": {
+      "updateFailed": "Teil konnte nicht aktualisiert werden",
+      "updated": "Teil aktualisiert",
+      "addFailed": "Teil konnte nicht hinzugefügt werden",
+      "added": "Teil hinzugefügt",
+      "updateFailedSentence": "Teil konnte nicht aktualisiert werden.",
+      "addFailedSentence": "Teil konnte nicht hinzugefügt werden.",
+      "deleteFailed": "Teil konnte nicht gelöscht werden",
+      "deleted": "Teil gelöscht",
+      "deleteFailedSentence": "Teil konnte nicht gelöscht werden."
+    }
+  },
+  "ticketTimeBilling": {
+    "title": "Zeit und Abrechnung",
+    "totalTime": "Gesamtzeit",
+    "billable": "Abrechnungsfähig",
+    "timeAmount": "Zeitbetrag",
+    "partsCount": "Teile ({{count}})",
+    "partsCount_one": "Teile ({{count}})",
+    "partsCount_other": "Teile ({{count}})",
+    "starting": "Beginnend mit …",
+    "startTimer": "Timer starten",
+    "logTime": "Protokollzeit",
+    "minutes": "Minuten",
+    "descriptionPlaceholder": "Beschreibung (optional)",
+    "techFallback": "Techn",
+    "running": "läuft",
+    "toast": {
+      "startTimerFailed": "Der Timer konnte nicht gestartet werden.",
+      "logFailed": "Protokollierung der Zeit fehlgeschlagen",
+      "logged": "Zeit protokolliert",
+      "logFailedSentence": "Protokollierung der Zeit fehlgeschlagen."
+    }
+  },
+  "inboundReviewQueue": {
+    "title": "Prüfwarteschlange",
+    "description": "Unter Quarantäne gestellte (unbekannter Absender) und fehlgeschlagene eingehende E-Mails. In ein Ticket umwandeln oder verwerfen.",
+    "loading": "Laden.",
+    "loadFailed": "Die Prüfwarteschlange konnte nicht geladen werden.",
+    "adminsOnly": "Die Prüfwarteschlange steht nur Administratoren zur Verfügung.",
+    "empty": "Nichts zu überprüfen.",
+    "unknownSender": "(unbekannter Absender)",
+    "noSubject": "(kein Thema)",
+    "selectOrganization": "Organisation auswählen…",
+    "createTicket": "Ticket erstellen",
+    "convertToTicket": "In Ticket umwandeln",
+    "dismiss": "Verwerfen",
+    "prev": "Vorher",
+    "pageOf": "Seite {{page}} von {{totalPages}}",
+    "pickOrgFirst": "Wählen Sie zunächst eine Organisation aus.",
+    "convertFailed": "Die Konvertierung in ein Ticket ist fehlgeschlagen. Wiederholen.",
+    "ticketCreated": "Ticket aus E-Mail erstellt",
+    "dismissFailed": "Verwerfen fehlgeschlagen. Erneut versuchen.",
+    "dismissed": "Eingehende E-Mail verworfen",
+    "parseStatus": {
+      "quarantined": "unter Quarantäne gestellt",
+      "failed": "gescheitert"
+    },
+    "friendly": {
+      "orgNotAccessible": "Diese Organisation ist bei Ihrem Partner nicht verfügbar.",
+      "rowNotFound": "Diese eingehende E-Mail ist nicht mehr verfügbar.",
+      "rowAlreadyResolved": "Diese eingehende E-Mail wurde bereits bearbeitet. Aktualisierung der Liste.",
+      "noSender": "Diese E-Mail hat keine verwendbare Absenderadresse und kann daher nicht zu einem Ticket werden. Verwerfen Sie es oder verfolgen Sie es außerhalb des Bandes."
+    }
+  },
+  "createTicketPage": {
+    "title": "Ticket erstellen",
+    "orgsLoadFailed": "Die Organisationen konnten nicht geladen werden.",
+    "selectOrganization": "Organisation auswählen",
+    "subject": "Betreff",
+    "requesterOptional": "Anforderer (optional)",
+    "defaultYou": "Standard (Sie)",
+    "someoneElse": "Jemand anderes…",
+    "requesterName": "Name des Antragstellers",
+    "emailOptional": "E-Mail (optional)",
+    "requesterEmail": "E-Mail des Antragstellers",
+    "deviceOptional": "Gerät (optional)",
+    "category": "Kategorie",
+    "priority": "Priorität",
+    "creating": "Erstellen",
+    "createTicket": "Ticket erstellen",
+    "creationFailed": "Die Ticketerstellung ist fehlgeschlagen. Wiederholen.",
+    "createdToast": "Ticket {{number}} erstellt",
+    "startFromForm": "Beginnen Sie mit einem Formular (optional)",
+    "blankTicketOption": "Leeres Ticket",
+    "priorityOptions": {
+      "low": "Niedrig",
+      "normal": "Normal",
+      "high": "Hoch",
+      "urgent": "Dringend"
+    }
+  },
+  "ticketFormFields": {
+    "selectPlaceholder": "Wählen Sie…"
+  },
+  "ticketsPage": {
+    "title": "Tickets",
+    "createTicket": "Ticket erstellen",
+    "reviewQueue": "Prüfwarteschlange",
+    "archived": "Archiviert",
+    "searchPlaceholder": "Tickets suchen",
+    "filterByOrganization": "Nach Organisation filtern",
+    "allOrganizations": "Alle Organisationen",
+    "filterByPriority": "Nach Priorität filtern",
+    "allPriorities": "Alle Prioritäten",
+    "filterByCategory": "Nach Kategorie filtern",
+    "allCategories": "Alle Kategorien",
+    "assigneeLockedTitle": "Die Registerkarte filtert bereits nach Beauftragtem",
+    "filterByAssignee": "Nach Beauftragtem filtern",
+    "allAssignees": "Alle Beauftragten",
+    "sortTickets": "Tickets sortieren",
+    "loadFailed": "Die Tickets konnten nicht geladen werden.",
+    "selectAll": "Alles auswählen",
+    "selectedCount": "{{count}} ausgewählt",
+    "selectedCount_one": "{{count}} ausgewählt",
+    "selectedCount_other": "{{count}} ausgewählt",
+    "clearSelection": "Auswahl aufheben",
+    "noSelection": "Wählen Sie ein Ticket aus. Verwenden Sie j/k zum Verschieben, Enter zum Erweitern.",
+    "ticketingSettings": "Ticketing-Einstellungen",
+    "assignFailed": "Zuweisung fehlgeschlagen. Wiederholen.",
+    "assignedToYou": "Ihnen zugewiesen",
+    "restoreFailed": "Wiederherstellung fehlgeschlagen. Wiederholen.",
+    "ticketRestored": "Ticket wiederhergestellt",
+    "tabs": {
+      "mine": "Meine Tickets",
+      "unassigned": "Nicht zugewiesen",
+      "open": "Alles offen",
+      "breaching": "Bald ein Verstoß",
+      "closed": "Geschlossen"
+    },
+    "sort": {
+      "triage": "Triage-Anordnung",
+      "newest": "Das Neueste zuerst",
+      "oldest": "Älteste zuerst",
+      "due": "Fälligkeitsdatum"
+    },
+    "priority": {
+      "urgent": "Dringend",
+      "high": "Hoch",
+      "normal": "Normal",
+      "low": "Niedrig"
+    },
+    "status": {
+      "new": "Neu",
+      "open": "Offen",
+      "pending": "Ausstehend",
+      "on_hold": "In der Warteschleife",
+      "resolved": "Gelöst",
+      "closed": "Geschlossen"
+    },
+    "empty": {
+      "title": "Noch keine Tickets",
+      "description": "Tickets kommen vom Kundenportal, von Alarmregeln und von Technikern. Erstellen Sie das erste oder verknüpfen Sie eine Benachrichtigungsregel, um Tickets automatisch zu öffnen."
+    },
+    "bulk": {
+      "assignToAria": "Massenzuweisung an",
+      "assignTo": "Zuordnen zu…",
+      "unassign": "Zuweisung aufheben",
+      "setStatusAria": "Bulk-Set-Status",
+      "setStatus": "Status setzen…",
+      "updateFailed": "Die Massenaktualisierung ist fehlgeschlagen. Wiederholen.",
+      "deleteFailed": "Massenlöschung fehlgeschlagen. Wiederholen.",
+      "updatedPast": "aktualisiert",
+      "deletedPast": "gelöscht",
+      "reasonCount": "{{count}} {{reason}}",
+      "reasonCount_one": "{{count}} {{reason}}",
+      "reasonCount_other": "{{count}} {{reason}}",
+      "partialToast": "{{updated}} {{verb}}, {{skipped}} übersprungen{{failedSuffix}}{{reasonsSuffix}}",
+      "successToast": "{{updated}} {{verb}}",
+      "failedSuffix": ", {{failed}} fehlgeschlagen",
+      "reasonsSuffix": "— {{reasons}}",
+      "reason": {
+        "outOfScope": "außerhalb Ihres Geltungsbereichs",
+        "invalidTransition": "Ungültige Statusänderung",
+        "assigneeNotFound": "Bevollmächtigter nicht gefunden",
+        "assigneeWrongPartner": "Der Beauftragte gehört einem anderen Partner",
+        "concurrentModification": "von jemand anderem geändert",
+        "ticketPartnerUnresolvable": "Ticketpartner unlösbar",
+        "other": "andere Fehler"
+      }
+    },
+    "bulkDeleteDialog": {
+      "title": "{{count}}-Ticket löschen?",
+      "title_one": "{{count}}-Ticket löschen?",
+      "title_other": "{{count}} Tickets löschen?",
+      "message": "Dadurch werden sie aus allen Warteschlangen ausgeblendet. Ein Administrator kann sie aus dem Archiv wiederherstellen.",
+      "confirm": "Tickets löschen"
+    }
+  },
+  "ticketWorkbench": {
+    "notFound": "Ticket nicht gefunden. Möglicherweise wurde es gelöscht oder Sie haben keinen Zugriff darauf.",
+    "loadFailed": "Das Laden des Tickets ist fehlgeschlagen.",
+    "backToQueue": "Zurück zur Warteschlange",
+    "ticketSubject": "Betreff des Tickets",
+    "openFullPage": "Ganze Seite öffnen",
+    "priorityLabel": "Priorität",
+    "categoryLabel": "Kategorie",
+    "noCategory": "Keine Kategorie",
+    "currentCategory": "Aktuelle Kategorie",
+    "assignee": "Bevollmächtigter",
+    "unassigned": "Nicht zugewiesen",
+    "mspStaff": "MSP Personal",
+    "assigneeValue": "Bevollmächtigter: {{assignee}} ✕",
+    "source": "Quelle",
+    "dueDate": "Fälligkeitsdatum",
+    "waitingOn": "Warten weiter",
+    "resolution": "Auflösung",
+    "linkedAlerts": "Verknüpfte Warnungen",
+    "status": {
+      "new": "Neu",
+      "open": "Offen",
+      "pending": "Ausstehend",
+      "on_hold": "In der Warteschleife",
+      "resolved": "Gelöst",
+      "closed": "Geschlossen"
+    },
+    "priority": {
+      "urgent": "Dringend",
+      "high": "Hoch",
+      "normal": "Normal",
+      "low": "Niedrig"
+    },
+    "tags": {
+      "label": "Schlagworte",
+      "removeTag": "Tag {{tag}} entfernen",
+      "addTag": "Tag hinzufügen…",
+      "addTagAria": "Tag hinzufügen"
+    },
+    "invoice": {
+      "create": "Rechnung erstellen",
+      "creating": "Erstellen…",
+      "createFailed": "Aus diesem Ticket konnte keine Rechnung erstellt werden.",
+      "created": "Rechnungsentwurf erstellt"
+    },
+    "move": {
+      "open": "In eine andere Organisation verschieben …",
+      "label": "In Organisation verschieben",
+      "selectOrganization": "Organisation auswählen…",
+      "confirm": "Verschieben",
+      "failed": "Verschieben fehlgeschlagen. Erneut versuchen."
+    },
+    "triage": {
+      "title": "Empfohlene Triage",
+      "checking": "Ticketsignale prüfen…",
+      "priority": "Priorität: {{priority}}",
+      "category": "Kategorie: {{category}}",
+      "confidence": "{{percent}} % Konfidenz",
+      "notRight": "Nicht richtig",
+      "applying": "Wird angewendet…",
+      "suggestedCategory": "Vorgeschlagene Kategorie",
+      "applyFailed": "Ticket-Triage-Vorschlag konnte nicht angewendet werden.",
+      "applied": "Ticket-Triage-Vorschlag angewendet",
+      "feedbackFailed": "Ticket-Triage-Feedback konnte nicht gespeichert werden.",
+      "feedbackSaved": "Ticket-Triage-Feedback gespeichert"
+    },
+    "resolve": {
+      "noteLabel": "Lösungsvermerk (sichtbar für den Antragsteller)",
+      "submit": "Ticket lösen"
+    },
+    "pending": {
+      "reasonLabel": "Wartegrund (optional)",
+      "setPending": "Ausstehend festlegen",
+      "putOnHold": "In die Warteschleife legen"
+    },
+    "description": {
+      "empty": "Keine Beschreibung.",
+      "add": "Beschreibung hinzufügen"
+    },
+    "requester": {
+      "label": "Anforderer",
+      "someoneElse": "Jemand anderes…",
+      "nameAria": "Name des Antragstellers",
+      "emailPlaceholder": "E-Mail (optional)",
+      "emailAria": "E-Mail des Antragstellers"
+    },
+    "device": {
+      "none": "Kein Gerät",
+      "unlink": "Verknüpfung aufheben"
+    },
+    "toast": {
+      "statusUpdated": "Status aktualisiert",
+      "statusUpdateFailed": "Die Statusaktualisierung ist fehlgeschlagen. Wiederholen.",
+      "ticketResolved": "Ticket gelöst",
+      "resolveFailed": "Lösung fehlgeschlagen. Wiederholen.",
+      "replyFailed": "Antwort fehlgeschlagen. Wiederholen.",
+      "updateFailed": "Update fehlgeschlagen. Wiederholen.",
+      "commentEditFailed": "Die Bearbeitung des Kommentars ist fehlgeschlagen. Wiederholen.",
+      "commentDeleteFailed": "Das Löschen des Kommentars ist fehlgeschlagen. Wiederholen.",
+      "priorityUpdateFailed": "Das Prioritätsupdate ist fehlgeschlagen. Wiederholen.",
+      "categoryUpdateFailed": "Die Kategorieaktualisierung ist fehlgeschlagen. Wiederholen.",
+      "assigned": "Zugewiesen",
+      "unassigned": "Nicht zugewiesen",
+      "assignFailed": "Zuweisung fehlgeschlagen. Wiederholen."
+    },
+    "delete": {
+      "failed": "Das Löschen ist fehlgeschlagen. Wiederholen.",
+      "deleted": "Ticket gelöscht"
+    },
+    "deleteDialog": {
+      "title": "Dieses Ticket löschen?",
+      "message": "Dadurch wird das Ticket aus allen Warteschlangen ausgeblendet. Ein Administrator kann es aus der Warteschlange „Archiviert“ wiederherstellen.",
+      "confirm": "Ticket löschen"
+    }
+  }
+}
