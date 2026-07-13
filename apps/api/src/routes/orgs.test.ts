@@ -28,8 +28,8 @@ const mfaPolicyMocks = vi.hoisted(() => ({
 const mfaInvalidationMocks = vi.hoisted(() => ({
   invalidatePolicy: vi.fn(async () => ({ userIds: ['user-1'], revokedFamilyCount: 1 })),
   cleanupUsers: vi.fn(async () => ({
-    cleanupStatus: 'complete' as const,
-    cleanupFailures: [],
+    cleanupStatus: 'complete' as 'complete' | 'partial',
+    cleanupFailures: [] as string[],
     failures: [],
   })),
 }));
