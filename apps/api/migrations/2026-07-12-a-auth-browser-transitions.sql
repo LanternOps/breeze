@@ -44,8 +44,10 @@ CREATE TABLE IF NOT EXISTS sso_token_exchange_grants (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Composite keys make generation and family ownership impossible to mix and
--- match across otherwise-valid rows.
+-- Family/user composite keys prevent ownership mix-and-match. Transition
+-- generation is intentionally a child snapshot, not part of the FK: advancing
+-- the parent generation must leave admitted SSO rows stale rather than either
+-- blocking the advance or cascading authority into them.
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -69,19 +71,6 @@ BEGIN
     ALTER TABLE auth_browser_transitions
       ADD CONSTRAINT auth_browser_transitions_binding_digest_unique
       UNIQUE (binding_digest);
-  END IF;
-END $$;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'auth_browser_transitions_id_generation_unique'
-      AND conrelid = 'auth_browser_transitions'::regclass
-  ) THEN
-    ALTER TABLE auth_browser_transitions
-      ADD CONSTRAINT auth_browser_transitions_id_generation_unique
-      UNIQUE (id, generation);
   END IF;
 END $$;
 
@@ -212,13 +201,12 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
-    WHERE conname = 'sso_sessions_browser_transition_generation_fk'
+    WHERE conname = 'sso_sessions_browser_generation_chk'
       AND conrelid = 'sso_sessions'::regclass
   ) THEN
     ALTER TABLE sso_sessions
-      ADD CONSTRAINT sso_sessions_browser_transition_generation_fk
-      FOREIGN KEY (browser_transition_id, browser_generation)
-      REFERENCES auth_browser_transitions (id, generation);
+      ADD CONSTRAINT sso_sessions_browser_generation_chk
+      CHECK (browser_generation IS NULL OR browser_generation >= 1);
   END IF;
 END $$;
 
@@ -226,13 +214,27 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
-    WHERE conname = 'sso_token_exchange_grants_transition_generation_fk'
+    WHERE conname = 'sso_sessions_browser_transition_fk'
+      AND conrelid = 'sso_sessions'::regclass
+  ) THEN
+    ALTER TABLE sso_sessions
+      ADD CONSTRAINT sso_sessions_browser_transition_fk
+      FOREIGN KEY (browser_transition_id)
+      REFERENCES auth_browser_transitions (id);
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'sso_token_exchange_grants_transition_fk'
       AND conrelid = 'sso_token_exchange_grants'::regclass
   ) THEN
     ALTER TABLE sso_token_exchange_grants
-      ADD CONSTRAINT sso_token_exchange_grants_transition_generation_fk
-      FOREIGN KEY (browser_transition_id, browser_generation)
-      REFERENCES auth_browser_transitions (id, generation);
+      ADD CONSTRAINT sso_token_exchange_grants_transition_fk
+      FOREIGN KEY (browser_transition_id)
+      REFERENCES auth_browser_transitions (id);
   END IF;
 END $$;
 

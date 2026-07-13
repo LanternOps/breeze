@@ -46,10 +46,6 @@ export const authBrowserTransitions = pgTable(
     bindingDigestUnique: unique('auth_browser_transitions_binding_digest_unique').on(
       table.bindingDigest,
     ),
-    idGenerationUnique: unique('auth_browser_transitions_id_generation_unique').on(
-      table.id,
-      table.generation,
-    ),
     currentFamilyOwnerFk: foreignKey({
       columns: [table.currentFamilyId, table.currentUserId],
       foreignColumns: [refreshTokenFamilies.familyId, refreshTokenFamilies.userId],
@@ -124,10 +120,10 @@ export const ssoTokenExchangeGrants = pgTable(
     codeDigestUnique: unique('sso_token_exchange_grants_code_digest_unique').on(
       table.codeDigest,
     ),
-    transitionGenerationFk: foreignKey({
-      columns: [table.browserTransitionId, table.browserGeneration],
-      foreignColumns: [authBrowserTransitions.id, authBrowserTransitions.generation],
-      name: 'sso_token_exchange_grants_transition_generation_fk',
+    transitionFk: foreignKey({
+      columns: [table.browserTransitionId],
+      foreignColumns: [authBrowserTransitions.id],
+      name: 'sso_token_exchange_grants_transition_fk',
     }),
     familyOwnerFk: foreignKey({
       columns: [table.familyId, table.userId],

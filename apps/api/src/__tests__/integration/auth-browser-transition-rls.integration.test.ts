@@ -56,7 +56,7 @@ describe('durable browser transition schema contract', () => {
     expect(transitionSchema).toContain('auth_browser_transitions_binding_digest_unique');
   });
 
-  it('keeps rollout columns nullable and binds SSO state to a transition generation', () => {
+  it('keeps rollout columns nullable and binds SSO state to a transition ID', () => {
     expect(refreshFamilySchema).toContain(
       "currentRefreshJtiDigest: varchar('current_refresh_jti_digest', { length: 64 })",
     );
@@ -65,7 +65,8 @@ describe('durable browser transition schema contract', () => {
     );
     expect(ssoSchema).toContain("browserTransitionId: uuid('browser_transition_id')");
     expect(ssoSchema).toContain("browserGeneration: bigint('browser_generation', { mode: 'number' })");
-    expect(ssoSchema).toContain('sso_sessions_browser_transition_generation_fk');
+    expect(ssoSchema).toContain('sso_sessions_browser_transition_fk');
+    expect(ssoSchema).not.toContain('sso_sessions_browser_transition_generation_fk');
   });
 
   it('stores durable SSO exchange authority as a digest and never as a raw code', () => {
@@ -100,6 +101,7 @@ describe('durable browser transition schema contract', () => {
       /ALTER TABLE sso_sessions\s+ADD COLUMN IF NOT EXISTS browser_generation/i,
     );
     expect(migrationSql).not.toMatch(/^\s*(BEGIN|COMMIT)\s*;/im);
+    expect(migrationSql).not.toMatch(/ON UPDATE CASCADE/i);
   });
 });
 
@@ -170,7 +172,7 @@ describe.runIf(runDb)('durable browser transition migration and RLS', () => {
     }
 
     const constraints = await admin!`
-      SELECT conname
+      SELECT conname, pg_get_constraintdef(oid, true) AS definition
       FROM pg_constraint
       WHERE conrelid IN (
         'auth_browser_transitions'::regclass,
@@ -186,12 +188,19 @@ describe.runIf(runDb)('durable browser transition migration and RLS', () => {
         'auth_browser_transitions_state_chk',
         'auth_browser_transitions_operation_pair_chk',
         'auth_browser_transitions_current_family_owner_fk',
-        'sso_token_exchange_grants_transition_generation_fk',
+        'sso_token_exchange_grants_transition_fk',
         'sso_token_exchange_grants_family_owner_fk',
-        'sso_sessions_browser_transition_generation_fk',
+        'sso_sessions_browser_transition_fk',
         'sso_sessions_browser_transition_pair_chk',
+        'sso_sessions_browser_generation_chk',
       ]),
     );
+    expect(
+      constraints.find((row) => row.conname === 'sso_sessions_browser_transition_fk')?.definition,
+    ).toMatch(/^FOREIGN KEY \(browser_transition_id\) REFERENCES auth_browser_transitions\(id\)$/);
+    expect(
+      constraints.find((row) => row.conname === 'sso_token_exchange_grants_transition_fk')?.definition,
+    ).toMatch(/^FOREIGN KEY \(browser_transition_id\) REFERENCES auth_browser_transitions\(id\)$/);
 
     const indexes = await admin!`
       SELECT indexname
@@ -219,26 +228,238 @@ describe.runIf(runDb)('durable browser transition migration and RLS', () => {
   });
 
   it('reapplies the migration twice without changing the catalog contract', async () => {
+    async function catalogSnapshot() {
+      const [columns, constraints, indexes, policies, rls] = await Promise.all([
+        admin!`
+          SELECT table_name, column_name, data_type, udt_name, is_nullable, column_default
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name IN (
+              'auth_browser_transitions',
+              'sso_token_exchange_grants',
+              'sso_sessions',
+              'refresh_token_families'
+            )
+          ORDER BY table_name, ordinal_position
+        `,
+        admin!`
+          SELECT conrelid::regclass::text AS table_name,
+                 conname,
+                 pg_get_constraintdef(oid, true) AS definition
+          FROM pg_constraint
+          WHERE conrelid IN (
+            'auth_browser_transitions'::regclass,
+            'sso_token_exchange_grants'::regclass,
+            'sso_sessions'::regclass,
+            'refresh_token_families'::regclass
+          )
+          ORDER BY table_name, conname
+        `,
+        admin!`
+          SELECT tablename, indexname, indexdef
+          FROM pg_indexes
+          WHERE schemaname = 'public'
+            AND tablename IN (
+              'auth_browser_transitions',
+              'sso_token_exchange_grants',
+              'sso_sessions',
+              'refresh_token_families'
+            )
+          ORDER BY tablename, indexname
+        `,
+        admin!`
+          SELECT tablename, policyname, permissive, roles, cmd, qual, with_check
+          FROM pg_policies
+          WHERE schemaname = 'public'
+            AND tablename IN ('auth_browser_transitions', 'sso_token_exchange_grants')
+          ORDER BY tablename, policyname
+        `,
+        admin!`
+          SELECT relname, relrowsecurity, relforcerowsecurity
+          FROM pg_class
+          WHERE relname IN ('auth_browser_transitions', 'sso_token_exchange_grants')
+          ORDER BY relname
+        `,
+      ]);
+      return { columns, constraints, indexes, policies, rls };
+    }
+
     expect(migrationSql).not.toBe('');
     await admin!.unsafe(migrationSql);
-    const before = await admin!`
-      SELECT count(*)::int AS count
-      FROM pg_constraint
-      WHERE conname LIKE 'auth_browser_transitions_%'
-         OR conname LIKE 'sso_token_exchange_grants_%'
-         OR conname = 'sso_sessions_browser_transition_generation_fk'
-         OR conname = 'sso_sessions_browser_transition_pair_chk'
-    `;
+    const before = await catalogSnapshot();
     await admin!.unsafe(migrationSql);
-    const after = await admin!`
-      SELECT count(*)::int AS count
-      FROM pg_constraint
-      WHERE conname LIKE 'auth_browser_transitions_%'
-         OR conname LIKE 'sso_token_exchange_grants_%'
-         OR conname = 'sso_sessions_browser_transition_generation_fk'
-         OR conname = 'sso_sessions_browser_transition_pair_chk'
-    `;
+    const after = await catalogSnapshot();
     expect(after).toEqual(before);
+  });
+
+  it('advances a transition generation while SSO children retain their admitted generation', async () => {
+    const suffix = randomUUID();
+    const partnerId = randomUUID();
+    const userId = randomUUID();
+    const familyId = randomUUID();
+    const providerId = randomUUID();
+    const transitionId = randomUUID();
+    const sessionId = randomUUID();
+    const grantId = randomUUID();
+
+    await admin!`
+      INSERT INTO partners (id, name, slug)
+      VALUES (${partnerId}, 'Generation advance fixture', ${`generation-advance-${suffix}`})
+    `;
+    await admin!`
+      INSERT INTO users (id, partner_id, email, name, status)
+      VALUES (${userId}, ${partnerId}, ${`generation-advance-${suffix}@example.test`}, 'Generation fixture', 'active')
+    `;
+    await admin!`
+      INSERT INTO refresh_token_families (family_id, user_id, absolute_expires_at)
+      VALUES (${familyId}, ${userId}, now() + interval '1 day')
+    `;
+    await admin!`
+      INSERT INTO sso_providers (id, partner_id, name, type, status)
+      VALUES (${providerId}, ${partnerId}, 'Generation fixture', 'oidc', 'active')
+    `;
+
+    try {
+      await app!.begin(async (sql) => {
+        await sql`SELECT set_config('breeze.scope', 'system', true)`;
+        await sql`
+          INSERT INTO auth_browser_transitions (id, binding_digest)
+          VALUES (${transitionId}, ${'1'.repeat(64)})
+        `;
+      });
+      await expect(app!.begin(async (sql) => {
+        await sql`SELECT set_config('breeze.scope', 'system', true)`;
+        await sql`
+          INSERT INTO sso_sessions
+            (provider_id, state, nonce, browser_transition_id, browser_generation, expires_at)
+          VALUES (${providerId}, ${`invalid-state-${suffix}`}, ${`invalid-nonce-${suffix}`}, ${transitionId}, 0, now() + interval '5 minutes')
+        `;
+      })).rejects.toThrow(/sso_sessions_browser_generation_chk/);
+
+      const result = await app!.begin(async (sql) => {
+        await sql`SELECT set_config('breeze.scope', 'system', true)`;
+        await sql`
+          INSERT INTO sso_sessions
+            (id, provider_id, state, nonce, browser_transition_id, browser_generation, expires_at)
+          VALUES (${sessionId}, ${providerId}, ${`state-${suffix}`}, ${`nonce-${suffix}`}, ${transitionId}, 1, now() + interval '5 minutes')
+        `;
+        await sql`
+          INSERT INTO sso_token_exchange_grants
+            (id, code_digest, browser_transition_id, browser_generation, user_id, family_id, expires_at)
+          VALUES (${grantId}, ${'2'.repeat(64)}, ${transitionId}, 1, ${userId}, ${familyId}, now() + interval '5 minutes')
+        `;
+
+        const [transition] = await sql`
+          UPDATE auth_browser_transitions
+          SET generation = 2, updated_at = now()
+          WHERE id = ${transitionId}
+          RETURNING generation
+        `;
+        const [session] = await sql`
+          SELECT browser_generation FROM sso_sessions WHERE id = ${sessionId}
+        `;
+        const [grant] = await sql`
+          SELECT browser_generation FROM sso_token_exchange_grants WHERE id = ${grantId}
+        `;
+        return { transition, session, grant };
+      });
+
+      expect(result.transition?.generation).toBe('2');
+      expect(result.session?.browser_generation).toBe('1');
+      expect(result.grant?.browser_generation).toBe('1');
+    } finally {
+      await admin!`DELETE FROM sso_token_exchange_grants WHERE id = ${grantId}`;
+      await admin!`DELETE FROM sso_sessions WHERE id = ${sessionId}`;
+      await admin!`DELETE FROM auth_browser_transitions WHERE id = ${transitionId}`;
+      await admin!`DELETE FROM sso_providers WHERE id = ${providerId}`;
+      await admin!`DELETE FROM refresh_token_families WHERE family_id = ${familyId}`;
+      await admin!`DELETE FROM users WHERE id = ${userId}`;
+      await admin!`DELETE FROM partners WHERE id = ${partnerId}`;
+    }
+  });
+
+  it('enforces transition and grant coherence constraints behaviorally', async () => {
+    const suffix = randomUUID();
+    const partnerId = randomUUID();
+    const userAId = randomUUID();
+    const userBId = randomUUID();
+    const familyAId = randomUUID();
+    const familyBId = randomUUID();
+    const transitionId = randomUUID();
+    const validGrantId = randomUUID();
+
+    await admin!`
+      INSERT INTO partners (id, name, slug)
+      VALUES (${partnerId}, 'Constraint fixture', ${`constraint-fixture-${suffix}`})
+    `;
+    await admin!`
+      INSERT INTO users (id, partner_id, email, name, status)
+      VALUES
+        (${userAId}, ${partnerId}, ${`constraint-a-${suffix}@example.test`}, 'Constraint A', 'active'),
+        (${userBId}, ${partnerId}, ${`constraint-b-${suffix}@example.test`}, 'Constraint B', 'active')
+    `;
+    await admin!`
+      INSERT INTO refresh_token_families (family_id, user_id, absolute_expires_at)
+      VALUES
+        (${familyAId}, ${userAId}, now() + interval '1 day'),
+        (${familyBId}, ${userBId}, now() + interval '1 day')
+    `;
+
+    const systemStatement = async (statement: (sql: postgres.TransactionSql) => Promise<unknown>) =>
+      app!.begin(async (sql) => {
+        await sql`SELECT set_config('breeze.scope', 'system', true)`;
+        return statement(sql);
+      });
+
+    try {
+      await expect(systemStatement((sql) => sql`
+        INSERT INTO auth_browser_transitions (binding_digest, logout_id)
+        VALUES (${'3'.repeat(64)}, ${randomUUID()})
+      `)).rejects.toThrow(/auth_browser_transitions_state_chk/);
+
+      await expect(systemStatement((sql) => sql`
+        INSERT INTO auth_browser_transitions (binding_digest, active_operation_id)
+        VALUES (${'4'.repeat(64)}, ${randomUUID()})
+      `)).rejects.toThrow(/auth_browser_transitions_operation_pair_chk/);
+
+      await expect(systemStatement((sql) => sql`
+        INSERT INTO auth_browser_transitions
+          (binding_digest, current_user_id, current_family_id)
+        VALUES (${'5'.repeat(64)}, ${userAId}, ${familyBId})
+      `)).rejects.toThrow(/auth_browser_transitions_current_family_owner_fk/);
+
+      await systemStatement((sql) => sql`
+        INSERT INTO auth_browser_transitions
+          (id, binding_digest, current_user_id, current_family_id,
+           active_operation_id, active_operation_expires_at)
+        VALUES (${transitionId}, ${'6'.repeat(64)}, ${userAId}, ${familyAId},
+                ${randomUUID()}, now() + interval '1 minute')
+      `);
+
+      await expect(systemStatement((sql) => sql`
+        INSERT INTO sso_token_exchange_grants
+          (code_digest, browser_transition_id, browser_generation, user_id, family_id, expires_at)
+        VALUES (${'7'.repeat(64)}, ${transitionId}, 1, ${userAId}, ${familyAId}, now() - interval '1 minute')
+      `)).rejects.toThrow(/sso_token_exchange_grants_lifecycle_chk/);
+
+      await expect(systemStatement((sql) => sql`
+        INSERT INTO sso_token_exchange_grants
+          (code_digest, browser_transition_id, browser_generation, user_id, family_id, expires_at)
+        VALUES (${'8'.repeat(64)}, ${transitionId}, 1, ${userAId}, ${familyBId}, now() + interval '1 minute')
+      `)).rejects.toThrow(/sso_token_exchange_grants_family_owner_fk/);
+
+      await systemStatement((sql) => sql`
+        INSERT INTO sso_token_exchange_grants
+          (id, code_digest, browser_transition_id, browser_generation, user_id, family_id, expires_at)
+        VALUES (${validGrantId}, ${'9'.repeat(64)}, ${transitionId}, 1, ${userAId}, ${familyAId}, now() + interval '1 minute')
+      `);
+    } finally {
+      await admin!`DELETE FROM sso_token_exchange_grants WHERE id = ${validGrantId}`;
+      await admin!`DELETE FROM auth_browser_transitions WHERE id = ${transitionId}`;
+      await admin!`DELETE FROM refresh_token_families WHERE family_id IN (${familyAId}, ${familyBId})`;
+      await admin!`DELETE FROM users WHERE id IN (${userAId}, ${userBId})`;
+      await admin!`DELETE FROM partners WHERE id = ${partnerId}`;
+    }
   });
 
   it('denies non-system SELECT, INSERT, and UPDATE while system scope succeeds', async () => {

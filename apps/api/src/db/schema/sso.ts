@@ -123,10 +123,14 @@ export const ssoSessions = pgTable(
       'sso_sessions_browser_transition_pair_chk',
       sql`(${table.browserTransitionId} IS NULL) = (${table.browserGeneration} IS NULL)`,
     ),
-    browserTransitionGenerationFk: foreignKey({
-      columns: [table.browserTransitionId, table.browserGeneration],
-      foreignColumns: [authBrowserTransitions.id, authBrowserTransitions.generation],
-      name: 'sso_sessions_browser_transition_generation_fk',
+    browserGenerationCheck: check(
+      'sso_sessions_browser_generation_chk',
+      sql`${table.browserGeneration} IS NULL OR ${table.browserGeneration} >= 1`,
+    ),
+    browserTransitionFk: foreignKey({
+      columns: [table.browserTransitionId],
+      foreignColumns: [authBrowserTransitions.id],
+      name: 'sso_sessions_browser_transition_fk',
     }),
   }),
 );
