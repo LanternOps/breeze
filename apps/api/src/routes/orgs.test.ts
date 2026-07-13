@@ -2453,46 +2453,49 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/me', () => {
-    it('accepts pt-BR as the partner default language', async () => {
-      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
-      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([currentPartner]),
-            }),
-          }),
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([{ id: 'org-1' }]),
+    it.each(['pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const)(
+      'accepts %s as the partner default language',
+      async (language) => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([currentPartner]),
               }),
+            }),
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([{ id: 'org-1' }]),
+                }),
+              }),
+            }),
+          } as any);
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                ...currentPartner,
+                settings: { language },
+              }]),
             }),
           }),
         } as any);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{
-              ...currentPartner,
-              settings: { language: 'pt-BR' },
-            }]),
-          }),
-        }),
-      } as any);
 
-      const res = await app.request('/orgs/partners/me', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ settings: { language: 'pt-BR' } }),
-      });
+        const res = await app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { language } }),
+        });
 
-      expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({ settings: { language: 'pt-BR' } });
-    });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ settings: { language } });
+      },
+    );
 
     it('rejects an unsupported partner default language', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });

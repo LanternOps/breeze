@@ -5,7 +5,13 @@
     "englishLabel": "English",
     "englishDescription": "English (United States)",
     "ptBRLabel": "Português (Brasil)",
-    "ptBRDescription": "Portuguese (Brazil)"
+    "ptBRDescription": "Portuguese (Brazil)",
+    "es419Label": "Español (Latinoamérica)",
+    "es419Description": "Spanish (Latin America)",
+    "frFRLabel": "Français (France)",
+    "frFRDescription": "French (France)",
+    "deDELabel": "Deutsch (Deutschland)",
+    "deDEDescription": "German (Germany)"
   },
   "partner": {
     "regional": {

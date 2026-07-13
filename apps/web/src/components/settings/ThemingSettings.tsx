@@ -54,6 +54,9 @@ const timeFormatOptions = [
 const localeOptions = [
   { value: 'en' as const, labelKey: 'language.englishLabel', defaultLabel: 'English', descriptionKey: 'language.englishDescription', defaultDescription: 'English (United States)' },
   { value: 'pt-BR' as const, labelKey: 'language.ptBRLabel', defaultLabel: 'Português (Brasil)', descriptionKey: 'language.ptBRDescription', defaultDescription: 'Portuguese (Brazil)' },
+  { value: 'es-419' as const, labelKey: 'language.es419Label', defaultLabel: 'Español (Latinoamérica)', descriptionKey: 'language.es419Description', defaultDescription: 'Spanish (Latin America)' },
+  { value: 'fr-FR' as const, labelKey: 'language.frFRLabel', defaultLabel: 'Français (France)', descriptionKey: 'language.frFRDescription', defaultDescription: 'French (France)' },
+  { value: 'de-DE' as const, labelKey: 'language.deDELabel', defaultLabel: 'Deutsch (Deutschland)', descriptionKey: 'language.deDEDescription', defaultDescription: 'German (Germany)' },
 ];
 
 function resolveAppearance(preferences?: UserPreferences | null): Required<UserPreferences> {

@@ -11,7 +11,7 @@ import {
   setLocale,
   syncDocumentLocaleMetadata,
 } from './index';
-import { LOCALE_STORAGE_KEY } from '../appearance';
+import { LOCALE_STORAGE_KEY, type LocalePreference } from '../appearance';
 
 describe('i18n runtime (namespaced, lazy locales)', () => {
   beforeEach(async () => {
@@ -94,7 +94,7 @@ describe('i18n runtime (namespaced, lazy locales)', () => {
     });
     const changeLanguage = vi.fn(async () => undefined);
     const dependencies = {
-      loadLocale: vi.fn((locale: 'en' | 'pt-BR') =>
+      loadLocale: vi.fn((locale: LocalePreference) =>
         locale === 'pt-BR' ? portugueseLoad : Promise.resolve()
       ),
       changeLanguage,
@@ -120,7 +120,7 @@ describe('i18n runtime (namespaced, lazy locales)', () => {
     });
     const changeLanguage = vi.fn(async () => undefined);
     const dependencies = {
-      loadLocale: vi.fn((locale: 'en' | 'pt-BR') =>
+      loadLocale: vi.fn((locale: LocalePreference) =>
         locale === 'pt-BR' ? portugueseLoad : Promise.resolve()
       ),
       changeLanguage,
@@ -142,7 +142,7 @@ describe('i18n runtime (namespaced, lazy locales)', () => {
     const changeLanguage = vi.fn(async () => undefined);
     const reportError = vi.fn();
     const dependencies = {
-      loadLocale: vi.fn((locale: 'en' | 'pt-BR') =>
+      loadLocale: vi.fn((locale: LocalePreference) =>
         locale === 'pt-BR'
           ? Promise.reject(new Error('chunk unavailable'))
           : Promise.resolve()
@@ -176,7 +176,7 @@ describe('i18n runtime (namespaced, lazy locales)', () => {
     const changeLanguage = vi.fn(async () => undefined);
     const reportError = vi.fn();
     const dependencies = {
-      loadLocale: vi.fn((locale: 'en' | 'pt-BR') =>
+      loadLocale: vi.fn((locale: LocalePreference) =>
         Promise.reject(new Error(`${locale} chunk unavailable`))
       ),
       changeLanguage,

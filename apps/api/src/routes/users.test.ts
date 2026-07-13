@@ -829,52 +829,55 @@ describe('user routes', () => {
       });
       expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error).toBe('Invalid locale value. Must be en or pt-BR.');
+      expect(body.error).toBe(
+        'Invalid locale value. Must be en, pt-BR, es-419, fr-FR, or de-DE.'
+      );
     });
 
-    it('accepts and merges a valid locale preference', async () => {
-      const existingPreferences = { theme: 'dark' };
-      const mergedPreferences = { ...existingPreferences, locale: 'pt-BR' };
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
+    it.each(['es-419', 'fr-FR', 'de-DE'] as const)(
+      'accepts and merges the %s locale preference',
+      async (locale) => {
+        const existingPreferences = { theme: 'dark' };
+        const mergedPreferences = { ...existingPreferences, locale };
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                email: 'test@example.com',
+                passwordHash: 'hash',
+                preferences: existingPreferences,
+              }]),
+            }),
+          }),
+        } as any);
+        const setMock = vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
+            returning: vi.fn().mockResolvedValue([{
+              id: 'user-123',
               email: 'test@example.com',
-              passwordHash: 'hash',
-              preferences: existingPreferences
-            }])
-          })
-        })
-      } as any);
+              name: 'Test User',
+              avatarUrl: null,
+              status: 'active',
+              mfaEnabled: false,
+              preferences: mergedPreferences,
+            }]),
+          }),
+        });
+        vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-      const setMock = vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{
-            id: 'user-123',
-            email: 'test@example.com',
-            name: 'Test User',
-            avatarUrl: null,
-            status: 'active',
-            mfaEnabled: false,
-            preferences: mergedPreferences
-          }])
-        })
-      });
-      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+        const res = await app.request('/users/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ preferences: { locale } }),
+        });
 
-      const res = await app.request('/users/me', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ preferences: { locale: 'pt-BR' } })
-      });
-
-      expect(res.status).toBe(200);
-      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
-        preferences: mergedPreferences
-      }));
-      const body = await res.json();
-      expect(body.preferences).toMatchObject({ locale: 'pt-BR' });
-    });
+        expect(res.status).toBe(200);
+        expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+          preferences: mergedPreferences,
+        }));
+        expect(await res.json()).toMatchObject({ preferences: { locale } });
+      },
+    );
 
     it('merges partial preference updates instead of clobbering existing keys', async () => {
       const existingPreferences = {

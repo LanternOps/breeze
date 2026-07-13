@@ -49,11 +49,14 @@ describe('ThemingSettings language fieldset', () => {
     );
   });
 
-  it('renders both supported language options', () => {
+  it('renders all supported language options', () => {
     render(<ThemingSettings />);
     expect(screen.getByText('Language')).toBeInTheDocument();
     expect(screen.getByText('English')).toBeInTheDocument();
     expect(screen.getByText('Português (Brasil)')).toBeInTheDocument();
+    expect(screen.getByText('Español (Latinoamérica)')).toBeInTheDocument();
+    expect(screen.getByText('Français (France)')).toBeInTheDocument();
+    expect(screen.getByText('Deutsch (Deutschland)')).toBeInTheDocument();
   });
 
   it('applies and persists pt-BR when selected', async () => {

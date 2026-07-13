@@ -38,6 +38,7 @@ import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remote
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from '../services/authLifecycle';
 
 export const userRoutes = new Hono();
+const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const satisfies readonly SupportedLocale[];
 
 userRoutes.use('*', authMiddleware);
 userRoutes.use('*', async (c, next) => {
@@ -491,7 +492,11 @@ userRoutes.get('/me', async (c) => {
       )
     );
     const language = (partner?.settings as { language?: unknown } | null | undefined)?.language;
-    partnerDefaultLocale = language === 'en' || language === 'pt-BR' ? language : null;
+    partnerDefaultLocale =
+      typeof language === 'string'
+      && (supportedLocales as readonly string[]).includes(language)
+        ? language as SupportedLocale
+        : null;
   }
 
   // Surface the user's effective permission grants so the web app can hide nav
@@ -616,7 +621,12 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
         )
         ?? validatePreferenceEnum(prefs, 'font', ['breeze', 'system'], 'breeze or system')
         ?? validatePreferenceEnum(prefs, 'timeFormat', ['12h', '24h'], '12h or 24h')
-        ?? validatePreferenceEnum(prefs, 'locale', ['en', 'pt-BR'], 'en or pt-BR');
+        ?? validatePreferenceEnum(
+          prefs,
+          'locale',
+          supportedLocales,
+          'en, pt-BR, es-419, fr-FR, or de-DE'
+        );
       if (validationError) {
         return c.json({ error: validationError }, 400);
       }

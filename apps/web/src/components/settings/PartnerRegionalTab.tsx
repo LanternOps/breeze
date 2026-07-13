@@ -109,6 +109,9 @@ export default function PartnerRegionalTab({
               className="h-10 w-full rounded-md border bg-background px-3 text-sm">
               <option value="en">{t('language.englishLabel')}</option>
               <option value="pt-BR">{t('language.ptBRLabel')}</option>
+              <option value="es-419">{t('language.es419Label')}</option>
+              <option value="fr-FR">{t('language.frFRLabel')}</option>
+              <option value="de-DE">{t('language.deDELabel')}</option>
             </select>
             <p className="text-xs text-muted-foreground">{t('partner.regional.languageDescription')}</p>
           </div>
