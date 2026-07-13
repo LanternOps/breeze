@@ -1213,6 +1213,12 @@ export default function BackupTab({
     },
   ];
 
+  // A partner-wide policy can only link partner-wide profiles (an org
+  // profile has no meaning across orgs and the API rejects it).
+  const linkableProfiles = isPartnerWide
+    ? profiles.filter((profile) => profile.partnerId)
+    : profiles;
+
   const showPresetCards = backupMode === "file" && settings.paths.length === 0;
   const remainingPresets = osPresets.filter((p) =>
     p.paths.some((x) => !settings.paths.includes(x)),
@@ -1301,7 +1307,7 @@ export default function BackupTab({
                     />
                   ))}
                 </div>
-              ) : profiles.length === 0 ? (
+              ) : linkableProfiles.length === 0 ? (
                 <div className="rounded-md border border-dashed p-4 text-sm">
                   <p className="font-medium">
                     {i18n.t(
@@ -1325,7 +1331,7 @@ export default function BackupTab({
               ) : (
                 <>
                   <div className="grid gap-3 sm:grid-cols-2" role="radiogroup">
-                    {profiles.map((profile) => (
+                    {linkableProfiles.map((profile) => (
                       <label
                         key={profile.id}
                         className={`relative flex cursor-pointer flex-col gap-1.5 rounded-md border p-3 transition ${

@@ -90,6 +90,10 @@ describe('BackupTab', () => {
         });
       }
 
+      if (url === '/backup/profiles' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
       if (url === '/backup/configs/config-1/test' && method === 'POST') {
         return makeJsonResponse({
           id: 'config-1',
@@ -571,5 +575,82 @@ describe('BackupTab', () => {
 
     await screen.findByText('Primary S3');
     expect(screen.getByText('Backup Window')).toBeTruthy();
+  });
+
+  it('profile mode: save links the profile and sends schedule/retention/destination inline', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ data: [baseConfig] });
+      }
+      if (url === '/backup/profiles' && method === 'GET') {
+        return makeJsonResponse({
+          data: [
+            {
+              id: 'prof-1',
+              name: 'Server',
+              partnerId: null,
+              selections: { file: { enabled: true, paths: ['C:\\Users'] } },
+              isActive: true,
+            },
+          ],
+        });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    // Profiles exist and there's no link yet → profile mode is the default
+    const profileCard = await screen.findByRole('radio', { name: 'Server' });
+    fireEvent.click(profileCard);
+    fireEvent.click(screen.getByRole('radio', { name: 'Primary S3' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [linkId, payload] = saveMock.mock.calls[0]!;
+    expect(linkId).toBeNull();
+    expect(payload.featurePolicyId).toBe('prof-1');
+    expect(payload.inlineSettings.destinationConfigId).toBe('config-1');
+    expect(payload.inlineSettings.schedule).toBeTruthy();
+    expect(payload.inlineSettings.retention).toBeTruthy();
+    // "What to protect" lives on the profile, not the link
+    expect(payload.inlineSettings.backupMode).toBeUndefined();
+    expect(payload.inlineSettings.targets).toBeUndefined();
+  });
+
+  it('custom mode: save clears featurePolicyId and carries the destination inline', async () => {
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={baseLink}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByText('Primary S3');
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(saveMock).toHaveBeenCalledWith(
+      'link-1',
+      expect.objectContaining({
+        // Legacy featurePolicyId-as-destination is migrated on save
+        featurePolicyId: null,
+        inlineSettings: expect.objectContaining({
+          destinationConfigId: 'config-1',
+          backupMode: 'file',
+        }),
+      }),
+    );
   });
 });
