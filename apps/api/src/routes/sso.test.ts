@@ -121,7 +121,14 @@ vi.mock('../db/schema', () => ({
     authorizationUrl: 'authorizationUrl',
     tokenUrl: 'tokenUrl',
     userInfoUrl: 'userInfoUrl',
-    jwksUrl: 'jwksUrl'
+    jwksUrl: 'jwksUrl',
+    // SR2-11 (config generation) + SR2-10 (default-role delegation) columns —
+    // kept in the mock so any eq()/set() reference on them resolves to a real
+    // key instead of `undefined`.
+    configVersion: 'configVersion',
+    createdBy: 'createdBy',
+    defaultRoleId: 'defaultRoleId',
+    defaultRoleConfiguredBy: 'defaultRoleConfiguredBy'
   },
   ssoSessions: {
     id: 'id',
@@ -1034,7 +1041,8 @@ describe('sso routes', () => {
           state: 'state',
           nonce: 'nonce',
           codeVerifier: 'verifier',
-          redirectUrl: '/dashboard'
+          redirectUrl: '/dashboard',
+          providerVersion: 1
         }])
       })
     } as any);
@@ -1047,6 +1055,8 @@ describe('sso routes', () => {
               id: PROVIDER_UUID,
               orgId: ORG_UUID,
               type: 'oidc',
+              status: 'active',
+              configVersion: 1,
               issuer: 'https://issuer.example.com',
               authorizationUrl: 'https://issuer.example.com/auth',
               tokenUrl: 'https://issuer.example.com/token',
@@ -1172,7 +1182,8 @@ describe('sso routes', () => {
           state: 'state',
           nonce: 'nonce',
           codeVerifier: 'verifier',
-          redirectUrl: '/'
+          redirectUrl: '/',
+          providerVersion: 1
         }])
       })
     } as any);
@@ -1185,6 +1196,8 @@ describe('sso routes', () => {
               id: PROVIDER_UUID,
               orgId: ORG_UUID,
               type: 'oidc',
+              status: 'active',
+              configVersion: 1,
               issuer: 'https://issuer.example.com',
               authorizationUrl: 'https://issuer.example.com/auth',
               tokenUrl: 'https://issuer.example.com/token',
@@ -1289,7 +1302,8 @@ describe('sso routes', () => {
                 state: 'state',
                 nonce: 'nonce',
                 codeVerifier: 'verifier',
-                redirectUrl: '/dashboard'
+                redirectUrl: '/dashboard',
+                providerVersion: 1
               }]
             : [])
         })
@@ -1303,6 +1317,8 @@ describe('sso routes', () => {
                 id: PROVIDER_UUID,
                 orgId: ORG_UUID,
                 type: 'oidc',
+                status: 'active',
+                configVersion: 1,
                 issuer: 'https://issuer.example.com',
                 authorizationUrl: 'https://issuer.example.com/auth',
                 tokenUrl: 'https://issuer.example.com/token',
@@ -1502,7 +1518,7 @@ describe('sso routes', () => {
       from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }) })
     } as any);
     const PROVIDER_ROW = [{
-      id: PROVIDER_UUID, orgId: ORG_UUID, type: 'oidc',
+      id: PROVIDER_UUID, orgId: ORG_UUID, type: 'oidc', status: 'active', configVersion: 1,
       issuer: 'https://issuer.example.com', authorizationUrl: 'https://issuer.example.com/auth',
       tokenUrl: 'https://issuer.example.com/token', userInfoUrl: 'https://issuer.example.com/userinfo',
       jwksUrl: 'https://issuer.example.com/jwks', clientId: 'client-id', clientSecret: 'client-secret',
@@ -1514,7 +1530,7 @@ describe('sso routes', () => {
       vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'test@example.com', name: 'Test User' } as any);
       vi.mocked(mapUserAttributes).mockReturnValue({ email: 'test@example.com', name: 'Test User' } as any);
       vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-z', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/dashboard' }]) })
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-z', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/dashboard', providerVersion: 1 }]) })
       } as any);
     };
     const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
@@ -2160,6 +2176,7 @@ describe('sso routes', () => {
     partnerId: PARTNER_UUID as string | null,
     type: 'oidc',
     status: 'active',
+    configVersion: 4,
     issuer: 'https://issuer.example.com',
     authorizationUrl: 'https://issuer.example.com/auth',
     tokenUrl: 'https://issuer.example.com/token',
@@ -2196,7 +2213,9 @@ describe('sso routes', () => {
       expect(res.headers.get('location')).toBe('https://idp.example.com/auth');
       expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
         providerId: PROVIDER_UUID,
-        redirectUrl: '/dashboard'
+        redirectUrl: '/dashboard',
+        // SR2-11: the session snapshots the provider's LIVE generation.
+        providerVersion: ACTIVE_OIDC_PROVIDER_ROW.configVersion
       }));
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_sso_state=');
@@ -2263,7 +2282,9 @@ describe('sso routes', () => {
       expect(res.headers.get('location')).toBe('https://idp.example.com/auth');
       expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
         providerId: PROVIDER_UUID,
-        redirectUrl: '/dashboard'
+        redirectUrl: '/dashboard',
+        // SR2-11: the session snapshots the provider's LIVE generation.
+        providerVersion: ACTIVE_OIDC_PROVIDER_ROW.configVersion
       }));
       expect(res.headers.get('set-cookie') ?? '').toContain('breeze_sso_state=');
     });
@@ -2317,6 +2338,8 @@ describe('sso routes', () => {
       orgId: null,
       partnerId: PARTNER_UUID,
       type: 'oidc',
+      status: 'active',
+      configVersion: 1,
       issuer: 'https://issuer.example.com',
       authorizationUrl: 'https://issuer.example.com/auth',
       tokenUrl: 'https://issuer.example.com/token',
@@ -2350,7 +2373,7 @@ describe('sso routes', () => {
       vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'tech@msp.example', name: 'Tech' } as any);
       vi.mocked(mapUserAttributes).mockReturnValue({ email: 'tech@msp.example', name: 'Tech' } as any);
       vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-p', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/dashboard' }]) })
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-p', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/dashboard', providerVersion: 1 }]) })
       } as any);
     };
     const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
@@ -2617,7 +2640,7 @@ describe('sso routes', () => {
     } as any);
 
     const ORG_PROVIDER = {
-      id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, status: 'active', type: 'oidc',
+      id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, status: 'active', configVersion: 1, type: 'oidc',
       name: 'Okta', issuer: 'https://issuer.example.com',
       authorizationUrl: 'https://issuer.example.com/auth', tokenUrl: 'https://issuer.example.com/token',
       userInfoUrl: 'https://issuer.example.com/userinfo', jwksUrl: 'https://issuer.example.com/jwks',
@@ -2721,7 +2744,7 @@ describe('sso routes', () => {
       vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'tech@example.com', name: 'Tech' } as any);
       vi.mocked(mapUserAttributes).mockReturnValue({ email: 'tech@example.com', name: 'Tech' } as any);
       vi.mocked(db.delete).mockReturnValueOnce({
-        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-link', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/settings/profile', linkUserId }]) })
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sso-session-link', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/settings/profile', linkUserId, providerVersion: 1 }]) })
       } as any);
     };
     const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
@@ -2769,6 +2792,154 @@ describe('sso routes', () => {
       expect(res.headers.get('location')).toContain('ssoLinkError=identity_in_use');
       expect(db.insert).not.toHaveBeenCalled();
       expect(createTokenPair).not.toHaveBeenCalled();
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SR2-11: provider config generation + status/version gate in the callback.
+  //
+  // The vulnerability: nothing bumped a generation on config/status writes,
+  // nothing snapshotted it at session creation, and the callback never
+  // re-checked provider.status or any version — so a provider disabled (or
+  // reconfigured) during the <=10-minute state TTL still completed a full
+  // login or link.
+  // ══════════════════════════════════════════════════════════════════════════
+  describe('SSO provider generation gate (SR2-11)', () => {
+    const sel = (rows: unknown[]) => ({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) })
+    } as any);
+    const doCallback = () => app.request('/sso/callback?code=oidc-code&state=state', { method: 'GET', headers: { cookie: ssoStateCookieHeader('state') } });
+    // Minimal org-axis provider shape: enough to pass the org-XOR-partner
+    // guard and reach the generation gate, which runs BEFORE anything that
+    // would need type/issuer/clientId (getOIDCConfig, default-role lookup).
+    const GEN_PROVIDER = { id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, type: 'oidc', defaultRoleId: null };
+    const claimSession = (overrides: Record<string, unknown>) => {
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'sso-session-gen', providerId: PROVIDER_UUID, state: 'state', nonce: 'nonce',
+            codeVerifier: 'verifier', redirectUrl: '/dashboard', linkUserId: null,
+            ...overrides
+          }])
+        })
+      } as any);
+    };
+
+    it('rejects a provider disabled mid-flow (login mode)', async () => {
+      claimSession({ providerVersion: 3 });
+      vi.mocked(db.select).mockReturnValueOnce(sel([{ ...GEN_PROVIDER, status: 'inactive', configVersion: 3 }]));
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=sso_provider_inactive');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('rejects a config change mid-flow (login mode)', async () => {
+      claimSession({ providerVersion: 3 });
+      vi.mocked(db.select).mockReturnValueOnce(sel([{ ...GEN_PROVIDER, status: 'active', configVersion: 4 }]));
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=sso_config_changed');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('rejects a NULL providerVersion (pre-deploy row) — fail closed, never a pass', async () => {
+      claimSession({ providerVersion: null });
+      vi.mocked(db.select).mockReturnValueOnce(sel([{ ...GEN_PROVIDER, status: 'active', configVersion: 1 }]));
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=sso_config_changed');
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    it('rejects an inactive provider in LINK mode', async () => {
+      claimSession({ providerVersion: 2, linkUserId: USER_UUID });
+      vi.mocked(db.select).mockReturnValueOnce(sel([{ ...GEN_PROVIDER, status: 'inactive', configVersion: 2 }]));
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=provider_inactive');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    // Mirrors link-start's OWN gate (status !== 'inactive'): a `testing`
+    // provider must still be linkable, or the link round-trip it started
+    // itself would be impossible to complete — hardening, not a new bug.
+    it('ACCEPTS a testing provider in LINK mode (mirrors link-start’s own gate)', async () => {
+      vi.mocked(exchangeCodeForTokens).mockResolvedValue({ access_token: 'a', refresh_token: 'r', expires_in: 3600, id_token: 'h.p.s' } as any);
+      vi.mocked(getUserInfo).mockResolvedValue({ sub: 'external-user-1', email: 'tech@example.com', name: 'Tech' } as any);
+      vi.mocked(mapUserAttributes).mockReturnValue({ email: 'tech@example.com', name: 'Tech' } as any);
+      claimSession({ providerVersion: 2, linkUserId: USER_UUID });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([{
+          ...GEN_PROVIDER, status: 'testing', configVersion: 2,
+          issuer: 'https://issuer.example.com', clientId: 'client-id', clientSecret: 'client-secret',
+          jwksUrl: 'https://issuer.example.com/jwks'
+        }])) // provider by id
+        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'tech@example.com', name: 'Tech' }])) // linking user
+        .mockReturnValueOnce(sel([])); // (provider, sub) not in use
+      const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as any);
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinked=1');
+      expect(insertValues).toHaveBeenCalled();
+    });
+
+    it('PATCH /providers/:id bumps config_version in the same UPDATE as the change', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(sel([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }]));
+      const setSpy = vi.fn((_values: Record<string, unknown>) => ({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, name: 'Okta Updated' }])
+        })
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Okta Updated' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledTimes(1);
+      const setPayload = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+      expect(Object.keys(setPayload)).toContain('configVersion');
+      // A SQL expression object, not a literal number — the bump happens in
+      // Postgres against the live value, never a value computed in-process.
+      expect(typeof setPayload.configVersion).not.toBe('number');
+    });
+
+    it('POST /providers/:id/status bumps config_version on every status transition', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(sel([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }]));
+      const setSpy = vi.fn((_values: Record<string, unknown>) => ({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, name: 'Okta', status: 'inactive' }])
+        })
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'inactive' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledTimes(1);
+      const setPayload = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+      expect(Object.keys(setPayload)).toContain('configVersion');
+      expect(typeof setPayload.configVersion).not.toBe('number');
     });
   });
 
@@ -3062,6 +3233,8 @@ describe('sso routes', () => {
       partnerId: null,
       name: 'Okta',
       type: 'oidc',
+      status: 'active',
+      configVersion: 1,
       issuer: 'https://issuer.example.com',
       authorizationUrl: 'https://issuer.example.com/auth',
       tokenUrl: 'https://issuer.example.com/token',
@@ -3102,7 +3275,7 @@ describe('sso routes', () => {
         where: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{
             id: 'sso-session-jit', providerId: PROVIDER_UUID, state: 'state',
-            nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/'
+            nonce: 'nonce', codeVerifier: 'verifier', redirectUrl: '/', providerVersion: 1
           }])
         })
       } as any);

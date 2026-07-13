@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { eq, and, gt, ne, isNull } from 'drizzle-orm';
+import { eq, and, gt, ne, isNull, inArray, sql } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
@@ -513,6 +513,48 @@ async function revalidateSsoDefaultRole(params: {
     : { ok: true, roleId: role.id, orgPartnerId };
 }
 
+type SsoCallbackMode = 'login' | 'link';
+
+/**
+ * SR2-11: a pending SSO transaction is valid only against the provider
+ * GENERATION it was created under, and only while the provider is still usable
+ * for its own mode.
+ *
+ * Status per mode mirrors each mode's INIT gate: /login/* requires
+ * status='active', /link/start requires status!=='inactive' (a `testing`
+ * provider may be linked). Neither was checked at the callback before this
+ * change — a provider disabled inside the <=10-minute state TTL still completed
+ * a full login or link.
+ *
+ * A NULL providerVersion (a row written before the column existed) is a REJECT,
+ * not a pass: those are exactly the unbound sessions this change invalidates.
+ *
+ * PURE function over already-fetched rows — adds NO db access. Called from the
+ * callback right after the org-XOR-partner axis guard and before any
+ * default-role work, so a stale/disabled transaction never reaches JIT logic.
+ */
+function checkProviderGeneration(
+  provider: typeof ssoProviders.$inferSelect,
+  session: typeof ssoSessions.$inferSelect,
+  mode: SsoCallbackMode,
+):
+  | { ok: true }
+  | { ok: false; reason: 'provider_inactive' | 'provider_not_usable' | 'provider_version_missing' | 'provider_version_mismatch' } {
+  if (provider.status === 'inactive') {
+    return { ok: false, reason: 'provider_inactive' };
+  }
+  if (mode === 'login' && provider.status !== 'active') {
+    return { ok: false, reason: 'provider_not_usable' };
+  }
+  if (session.providerVersion == null) {
+    return { ok: false, reason: 'provider_version_missing' };
+  }
+  if (session.providerVersion !== provider.configVersion) {
+    return { ok: false, reason: 'provider_version_mismatch' };
+  }
+  return { ok: true };
+}
+
 function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
   const decryptedClientSecret = decryptForColumn('sso_providers', 'client_secret', provider.clientSecret);
 
@@ -874,6 +916,10 @@ ssoRoutes.patch(
     ...(body.defaultRoleId !== undefined
       ? { defaultRoleConfiguredBy: body.defaultRoleId ? auth.user.id : null }
       : {}),
+    // SR2-11: any config change starts a new generation. Every pending
+    // sso_session snapshotted the OLD version and is now dead at the callback.
+    // Bumped in the same UPDATE as the change, so the two can never diverge.
+    configVersion: sql`${ssoProviders.configVersion} + 1` as unknown as number,
   };
 
   if (body.clientSecret !== undefined) {
@@ -1010,7 +1056,14 @@ ssoRoutes.post(
 
   const [updated] = await db
     .update(ssoProviders)
-    .set({ status, updatedAt: new Date() })
+    .set({
+      status,
+      updatedAt: new Date(),
+      // SR2-11: a status change is a config change. Disabling a provider must
+      // kill its outstanding sessions, and re-enabling must not resurrect them
+      // (two writes, two bumps).
+      configVersion: sql`${ssoProviders.configVersion} + 1` as unknown as number,
+    })
     .where(eq(ssoProviders.id, providerId))
     .returning();
 
@@ -1378,6 +1431,8 @@ ssoRoutes.post(
           codeVerifier: pkce.codeVerifier,
           redirectUrl: '/settings/profile',
           linkUserId: auth.user.id,
+          // SR2-11: snapshot the generation this session was created under.
+          providerVersion: provider.configVersion,
           expiresAt: new Date(Date.now() + 10 * 60 * 1000)
         })
       )
@@ -1506,6 +1561,8 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
       nonce,
       codeVerifier: pkce.codeVerifier,
       redirectUrl,
+      // SR2-11: snapshot the generation this session was created under.
+      providerVersion: provider.configVersion,
       expiresAt
     })
   );
@@ -1601,6 +1658,8 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
       nonce,
       codeVerifier: pkce.codeVerifier,
       redirectUrl,
+      // SR2-11: snapshot the generation this session was created under.
+      providerVersion: provider.configVersion,
       expiresAt
     })
   );
@@ -1713,6 +1772,45 @@ ssoRoutes.get('/callback', async (c) => {
   if (!providerOrgId && !provider.partnerId) {
     clearStateCookie();
     return c.redirect('/login?error=provider_not_found');
+  }
+
+  // SR2-11: reject a transaction whose provider is no longer usable for THIS
+  // mode, or whose snapshot no longer matches the provider's live generation.
+  // Runs BEFORE any default-role/ceiling work below — a stale or disabled
+  // transaction must never reach JIT logic at all.
+  const callbackMode: SsoCallbackMode = session.linkUserId ? 'link' : 'login';
+
+  const generation = checkProviderGeneration(provider, session, callbackMode);
+  if (!generation.ok) {
+    writeRouteAudit(c, {
+      orgId: provider.orgId,
+      action: 'sso.callback.rejected',
+      resourceType: 'sso_provider',
+      resourceId: provider.id,
+      resourceName: provider.name,
+      result: 'denied',
+      details: {
+        mode: callbackMode,
+        phase: 'provider_generation',
+        reason: generation.reason,
+        partnerId: provider.partnerId,
+        sessionVersion: session.providerVersion,
+        providerVersion: provider.configVersion,
+      },
+    });
+    clearStateCookie();
+    if (callbackMode === 'link') {
+      return c.redirect(
+        generation.reason === 'provider_inactive' || generation.reason === 'provider_not_usable'
+          ? '/settings/profile?ssoLinkError=provider_inactive'
+          : '/settings/profile?ssoLinkError=config_changed',
+      );
+    }
+    return c.redirect(
+      generation.reason === 'provider_inactive' || generation.reason === 'provider_not_usable'
+        ? '/login?error=sso_provider_inactive'
+        : '/login?error=sso_config_changed',
+    );
   }
 
   // Default-role validation is axis-aware: partner-axis providers require a
