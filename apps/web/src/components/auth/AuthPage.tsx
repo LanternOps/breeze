@@ -3,6 +3,10 @@ import { useTranslation } from 'react-i18next';
 import LoginPage from './LoginPage';
 import PartnerRegisterPage from './PartnerRegisterPage';
 import { useRegistrationGate } from '../../stores/featuresStore';
+// Initializes the shared i18next singleton. This page's layout has no Sidebar
+// (which is what pulls i18n in elsewhere), so without this every t() call here
+// renders its raw key.
+import '../../lib/i18n';
 
 interface AuthPageProps {
   next?: string;

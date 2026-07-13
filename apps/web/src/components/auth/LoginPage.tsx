@@ -15,6 +15,10 @@ import type { MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
 import { getLoginContext } from '../../lib/loginContext';
+// Initializes the shared i18next singleton. This page's layout has no Sidebar
+// (which is what pulls i18n in elsewhere), so without this every t() call here
+// renders its raw key.
+import '../../lib/i18n';
 
 function getRegistrationDisabledNotice(t: ReturnType<typeof useTranslation<'auth'>>['t']): string | undefined {
   if (typeof window === 'undefined') return undefined;

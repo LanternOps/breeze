@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+// Initializes the shared i18next singleton. This page's layout has no Sidebar
+// (which is what pulls i18n in elsewhere), so without this every t() call here
+// renders its raw key.
+import '../../lib/i18n';
 
 interface PartnerOption {
   partnerId: string;

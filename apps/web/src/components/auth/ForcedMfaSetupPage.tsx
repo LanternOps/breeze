@@ -9,6 +9,10 @@ import {
 } from '../../stores/auth';
 import { extractApiError } from '../../lib/apiError';
 import { navigateTo } from '../../lib/navigation';
+// Initializes the shared i18next singleton. This page's layout has no Sidebar
+// (which is what pulls i18n in elsewhere), so without this every t() call here
+// renders its raw key.
+import '../../lib/i18n';
 
 type Step = 'password' | 'enroll' | 'done';
 

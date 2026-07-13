@@ -10,6 +10,10 @@ import {
 } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { scrubQueryParamsFromCurrentUrl } from '../../lib/sensitiveUrl';
+// Initializes the shared i18next singleton. This page's layout has no Sidebar
+// (which is what pulls i18n in elsewhere), so without this every t() call here
+// renders its raw key.
+import '../../lib/i18n';
 
 type TokenState =
   | { phase: 'loading' }

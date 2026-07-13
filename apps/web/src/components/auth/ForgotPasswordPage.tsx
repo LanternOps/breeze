@@ -3,6 +3,10 @@ import { useTranslation } from 'react-i18next';
 import ForgotPasswordForm from './ForgotPasswordForm';
 import StatusIcon from './StatusIcon';
 import { apiForgotPassword } from '../../stores/auth';
+// Initializes the shared i18next singleton. This page's layout has no Sidebar
+// (which is what pulls i18n in elsewhere), so without this every t() call here
+// renders its raw key.
+import '../../lib/i18n';
 
 export default function ForgotPasswordPage() {
   const { t } = useTranslation('auth');
