@@ -35,8 +35,11 @@ func newServerURLProvider(startupURL string) *serverURLProvider {
 }
 
 // Bind re-points the provider at the heartbeat's promoted-URL getter. Call it
-// before starting the heartbeat. A nil fn is ignored, so a caller that has no
-// heartbeat keeps the startup value rather than getting an empty URL.
+// before starting the heartbeat.
+//
+// A nil fn is ignored rather than stored: storing it would panic the shipper's
+// goroutine on the next flush (it has no recover()), and there is no
+// legitimate caller — do not read this guard as license to pass nil.
 func (p *serverURLProvider) Bind(fn func() string) {
 	if fn == nil {
 		return

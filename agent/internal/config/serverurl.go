@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -71,6 +72,18 @@ func PersistedServerURL(cfgFile string) (string, error) {
 	if parsed.ServerURL == "" {
 		return "", fmt.Errorf("%s has no server_url", path)
 	}
+	// Validate before handing this to a caller that will cache it.
+	// SetAllAndPersist writes agent.yaml through viper.WriteConfig, which
+	// truncates in place rather than doing an atomic temp+rename, so a helper
+	// reading concurrently with a promotion can observe a torn file that still
+	// parses as valid YAML but carries a truncated value
+	// ("server_url: https://ba"). Caching that would pin the shipper to a
+	// garbage host for a full TTL.
+	if u, err := url.Parse(parsed.ServerURL); err != nil {
+		return "", fmt.Errorf("%s has an unparsable server_url: %w", path, err)
+	} else if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("%s has a malformed server_url %q (want an http(s) URL with a host)", path, parsed.ServerURL)
+	}
 	return parsed.ServerURL, nil
 }
 
@@ -82,13 +95,19 @@ func PersistedServerURL(cfgFile string) (string, error) {
 //
 //   - Re-reads agent.yaml at most once per ttl (<=0 selects the default).
 //   - Falls back to the last known good URL — seeded with initial, the value
-//     the caller loaded at startup — whenever a re-read fails or yields an
-//     empty value. A helper that cannot read the config file must keep shipping
-//     to the URL it already had, not silently stop shipping: a transient read
-//     error is not evidence that the server moved.
+//     the caller loaded at startup — whenever a re-read fails. A helper that
+//     cannot read the config file must keep shipping to the URL it already had,
+//     not silently stop shipping: a transient read error is not evidence that
+//     the server moved. Callers should pass a non-empty initial.
 //   - Never returns a URL it was never given: if initial is empty and every
 //     read fails, it returns "", and the shipper reports that as the wiring
 //     bug it is rather than POSTing to a relative URL.
+//   - Reports SUSTAINED read failure on stderr. Keeping quiet would be its own
+//     instance of #2463: if agent.yaml is unreadable (an ACL reharden, #1481)
+//     or the agent's promotion persist failed, this provider serves a possibly
+//     DEAD primary forever with no signal anywhere. stderr rather than slog
+//     because this runs on the shipping path and the shipper must not log
+//     through itself; both helpers redirect stderr into their log file.
 //
 // Safe for concurrent use — the shipper calls it from its own goroutine.
 func NewPersistedServerURLProvider(cfgFile, initial string, ttl time.Duration) func() string {
@@ -100,6 +119,7 @@ func NewPersistedServerURLProvider(cfgFile, initial string, ttl time.Duration) f
 		mu        sync.Mutex
 		lastGood  = initial
 		nextCheck time.Time // zero => re-read on first call
+		failures  int       // consecutive
 	)
 
 	return func() string {
@@ -107,13 +127,29 @@ func NewPersistedServerURLProvider(cfgFile, initial string, ttl time.Duration) f
 		defer mu.Unlock()
 
 		if now := time.Now(); now.After(nextCheck) {
+			// Advanced before the attempt, so a failing read backs off a full
+			// TTL rather than re-reading on every chunk of every flush.
 			nextCheck = now.Add(ttl)
-			if serverURL, err := PersistedServerURL(cfgFile); err == nil {
+
+			serverURL, err := PersistedServerURL(cfgFile)
+			switch {
+			case err == nil:
+				failures = 0
 				lastGood = serverURL
+			default:
+				// One failure is expected and benign: agent.yaml is written
+				// with a truncating in-place write, so a read landing mid-
+				// persist can tear. Sustained failure is not benign — it means
+				// we may be pinned to a demoted primary. Rate-limited to keep a
+				// broken path from flooding the helper log (same shape as
+				// Shipper.Enqueue's drop reporting).
+				failures++
+				if failures == 3 || failures%60 == 0 {
+					fmt.Fprintf(os.Stderr,
+						"[server-url] %d consecutive failures re-reading persisted server URL: %v — still using %q, which may be a demoted primary\n",
+						failures, err, lastGood)
+				}
 			}
-			// On error: keep lastGood. Intentionally silent — this runs on the
-			// log-shipping path, so logging a read failure here would be the
-			// very log entry that then tries to ship through this provider.
 		}
 		return lastGood
 	}

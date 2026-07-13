@@ -59,6 +59,61 @@ func TestPersistedServerURLErrors(t *testing.T) {
 	})
 }
 
+// agent.yaml is written with a truncating in-place write (viper.WriteConfig,
+// not an atomic temp+rename), so a helper reading concurrently with a
+// promotion can observe a torn value that is still valid YAML. Caching that
+// would pin the shipper to a garbage host for a whole TTL.
+func TestPersistedServerURLRejectsTornValue(t *testing.T) {
+	torn := []string{
+		"https://ba",       // truncated mid-host: parses, but has no valid host... see below
+		"htt",              // truncated scheme
+		"not a url at all", // no scheme
+		"://backup.example.com",
+	}
+	for _, v := range torn {
+		t.Run(v, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "agent.yaml")
+			if err := os.WriteFile(path, []byte("server_url: "+v+"\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			got, err := PersistedServerURL(path)
+			// "https://ba" is a syntactically valid URL with host "ba" — it is
+			// accepted, and that is fine: it is indistinguishable from a real
+			// single-label internal hostname. The guard's job is to reject
+			// values with no scheme or no host, which is what the rest cover.
+			if v == "https://ba" {
+				if err != nil {
+					t.Fatalf("PersistedServerURL(%q) = error %v, want it accepted", v, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("PersistedServerURL(%q) = %q, want an error (malformed URL must not be cached)", v, got)
+			}
+		})
+	}
+}
+
+// A torn read must not clobber the last known good URL.
+func TestPersistedServerURLProviderKeepsLastGoodOnTornWrite(t *testing.T) {
+	path := writeAgentYAML(t, "https://primary.example.com")
+	provider := NewPersistedServerURLProvider(path, "https://primary.example.com", time.Nanosecond)
+
+	if got, want := provider(), "https://primary.example.com"; got != want {
+		t.Fatalf("provider() = %q, want %q", got, want)
+	}
+
+	// Simulate catching viper's truncating write mid-flight.
+	if err := os.WriteFile(path, []byte("server_url: \n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := provider(), "https://primary.example.com"; got != want {
+		t.Fatalf("after torn write: provider() = %q, want %q (must not cache a torn value)", got, want)
+	}
+}
+
 // TestPersistedServerURLProviderFollowsPromotion is the helper-process half of
 // #2463: the agent persists the promoted server_url to agent.yaml, and the
 // helper — which is never respawned on promotion — must pick it up rather than

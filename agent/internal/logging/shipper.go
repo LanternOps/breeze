@@ -76,7 +76,11 @@ type Shipper struct {
 	minLevel     slog.Level
 	mu           sync.RWMutex // protects minLevel
 	droppedCount atomic.Int64
-	authMon      AuthSkipper
+	// urlErrCount rate-limits the unresolvable-server-URL report. That state
+	// never self-heals, so an unguarded stderr write would emit a line on every
+	// flush for the process lifetime.
+	urlErrCount atomic.Int64
+	authMon     AuthSkipper
 }
 
 // ShipperConfig configures the log shipper.
@@ -369,6 +373,31 @@ func (s *Shipper) shipBatch(entries []LogEntry) {
 // rest of the batch. Chunk-local outcomes (success, or a non-retried
 // non-auth 4xx that drops only this chunk) return true.
 func (s *Shipper) shipChunk(entries []LogEntry) bool {
+	// Resolved here, on every flush, rather than captured once at init: after a
+	// backup-server-URL promotion (#2323) the next flush must go to the
+	// promoted primary. The retry attempts below deliberately keep the URL this
+	// flush started with — a promotion landing inside a single chunk's ~3s
+	// retry window is picked up by the next batch (<=60s), which is what
+	// matters; the bug being fixed was a URL frozen for the process lifetime
+	// (#2463).
+	//
+	// Resolved BEFORE the marshal+gzip below so a wiring bug doesn't burn a
+	// compression pass over 200 entries before discovering it has nowhere to
+	// send them.
+	baseURL, err := s.resolveServerURL()
+	if err != nil {
+		// Terminal for the whole batch: every remaining chunk would hit the
+		// same wiring bug, so shipBatch must not burn a request per chunk.
+		// Rate-limited — this state does not self-heal, so an unguarded write
+		// would emit a line on every flush forever.
+		dropped := s.droppedCount.Add(int64(len(entries)))
+		if s.urlErrCount.Add(1)%10 == 1 {
+			fmt.Fprintf(os.Stderr, "[log-shipper] %v — dropped %d entries (%d total)\n", err, len(entries), dropped)
+		}
+		return false
+	}
+	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", baseURL, s.agentID)
+
 	payload, err := json.Marshal(map[string]any{
 		"logs": entries,
 	})
@@ -392,23 +421,6 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 		return true
 	}
 	compressedBytes := compressed.Bytes()
-
-	// Resolved here, on every flush, rather than captured once at init: after a
-	// backup-server-URL promotion (#2323) the next flush must go to the
-	// promoted primary. The retry attempts below deliberately keep the URL this
-	// flush started with — a promotion landing inside a single chunk's ~3s
-	// retry window is picked up by the next batch (<=60s), which is what
-	// matters; the bug being fixed was a URL frozen for the process lifetime
-	// (#2463).
-	baseURL, err := s.resolveServerURL()
-	if err != nil {
-		// Terminal for the whole batch: every remaining chunk would hit the
-		// same wiring bug, so shipBatch must not burn a request per chunk.
-		fmt.Fprintf(os.Stderr, "[log-shipper] %v — dropping %d entries\n", err, len(entries))
-		s.droppedCount.Add(int64(len(entries)))
-		return false
-	}
-	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", baseURL, s.agentID)
 
 	// nextSleepOverride, if non-zero, replaces the default fixed-jitter sleep
 	// for the next retry. Set when the server sends Retry-After on 429/503.

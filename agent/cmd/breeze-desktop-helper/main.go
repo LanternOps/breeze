@@ -80,6 +80,11 @@ func runDesktopHelper() {
 	// heartbeat, and nothing respawns it on a backup-server-URL promotion
 	// (#2323) — so its shipper reads the persisted server URL on a TTL instead
 	// of freezing the startup copy at the dead primary (#2463).
+	//
+	// Also like the user-helper, this gate is only reachable when config.Load
+	// above succeeded, which it does not in a user context (it reads root-only
+	// secrets.yaml) — see #2483. Reachable today on Windows, where the
+	// desktop-helper runs as SYSTEM.
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
 		cfg.HelperAuthToken = ""

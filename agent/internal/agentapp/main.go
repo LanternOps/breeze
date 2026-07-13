@@ -1481,6 +1481,14 @@ func runHelperProcess(name, role, context, binaryKind string) {
 	// (#2463). The agent persists the promotion swap to agent.yaml, which is
 	// world-readable precisely so the helper can read its server URL, so the
 	// provider re-reads it there on a TTL.
+	//
+	// NOTE: this whole block is currently reachable only in a SYSTEM/root-context
+	// helper. config.Load above returns an error in a user-context helper —
+	// it unconditionally reads root-only secrets.yaml — so cfg falls back to
+	// config.Default(), whose empty AgentID/ServerURL fail this gate and leave
+	// the user helper with no shipper at all. That is a separate, pre-existing
+	// bug (#2483); the provider below is what the SYSTEM-context helpers that
+	// DO ship today need.
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
 		cfg.AuthToken = ""
