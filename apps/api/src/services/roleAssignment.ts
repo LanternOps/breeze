@@ -97,6 +97,61 @@ export async function getScopedRole(roleId: string, scopeContext: ScopeContext):
   return null;
 }
 
+/**
+ * SR2-10 Fix 1: the STRICT role resolver shared by SSO config-time
+ * (`routes/sso.ts` `validateProviderDefaultRole`) and SSO JIT-time
+ * (`routes/sso.ts` callback pre-check and `revalidateSsoDefaultRole`).
+ * Deliberately the SAME query as `getScopedRole` above, MINUS its
+ * `if (role.isSystem) return role;` escape hatch: the role must carry a real,
+ * exact `roles.orgId` / `roles.partnerId` equal to the provider's own axis. A
+ * built-in system role always has `org_id` AND `partner_id` NULL (seed.ts), so
+ * it can never satisfy this — which is intentional: SSO JIT-provisioning
+ * inserts the id straight into `organization_users.role_id` for the
+ * PROVIDER'S org, and a role that isn't actually scoped to that org has no
+ * business being a standing SSO delegation, `isSystem` or not.
+ *
+ * `getScopedRole`'s permissiveness IS correct for its own caller
+ * (`routes/users.ts`'s ordinary role-assignment flow, where "isSystem" means
+ * "usable in any tenant") and must not be tightened — that would silently
+ * break ordinary user/role administration. SSO uses this function instead, at
+ * every site that resolves a provider's `defaultRoleId`, so config time and
+ * JIT time can never disagree about which roles are resolvable again.
+ *
+ * The org/partner-equality check is done here in application code (not left
+ * to the SQL `WHERE`) for the same defense-in-depth reason `getScopedRole`
+ * does it this way: correctness doesn't depend on trusting a query string.
+ */
+export async function getProviderAxisRole(roleId: string, scopeContext: ScopeContext): Promise<AssignableRoleRow | null> {
+  const [role] = await db
+    .select({
+      id: roles.id,
+      scope: roles.scope,
+      name: roles.name,
+      description: roles.description,
+      isSystem: roles.isSystem,
+      parentRoleId: roles.parentRoleId,
+      partnerId: roles.partnerId,
+      orgId: roles.orgId
+    })
+    .from(roles)
+    .where(eq(roles.id, roleId))
+    .limit(1);
+
+  if (!role || role.scope !== scopeContext.scope) {
+    return null;
+  }
+
+  if (scopeContext.scope === 'partner' && role.partnerId === scopeContext.partnerId) {
+    return role as AssignableRoleRow;
+  }
+
+  if (scopeContext.scope === 'organization' && role.orgId === scopeContext.orgId) {
+    return role as AssignableRoleRow;
+  }
+
+  return null;
+}
+
 export async function getEffectiveRolePermissions(
   roleId: string,
   visited: Set<string> = new Set()
@@ -142,35 +197,6 @@ export async function getCallerPermissions(
     partnerId: auth.partnerId || undefined,
     orgId: auth.orgId || undefined
   });
-}
-
-/**
- * Caller-INDEPENDENT structural checks: a custom role may not carry wildcard
- * permissions, and every permission must be a known one. This is the subset of
- * the ceiling check that can still be applied when no caller identity is
- * available (SSO JIT against a provider with no resolvable configurer).
- */
-export async function checkRoleStructure(
-  role: Pick<AssignableRoleRow, 'id' | 'isSystem'>
-): Promise<string | null> {
-  const rolePermissionsForAssignment = await getEffectiveRolePermissions(role.id);
-  if (rolePermissionsForAssignment.length === 0) {
-    return null;
-  }
-
-  for (const permission of rolePermissionsForAssignment) {
-    if (permission.resource === '*' || permission.action === '*') {
-      if (!role.isSystem) {
-        return 'Custom roles with wildcard permissions cannot be assigned';
-      }
-      continue;
-    }
-    if (!isAssignablePermission(permission)) {
-      return `Role contains unknown permission: ${permission.resource}:${permission.action}`;
-    }
-  }
-
-  return null;
 }
 
 /**

@@ -94,7 +94,15 @@ vi.mock('../db', () => ({
     }))
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  // SR2-10 Fix 2: revalidateSsoDefaultRole asserts the ambient context is
+  // 'system' before doing anything else. withSystemDbAccessContext above is a
+  // dumb passthrough (it does not actually track ambient state the way the
+  // real AsyncLocalStorage-backed implementation does), so this mock is what
+  // stands in for "the wrap really ran" — default it to 'system' so every
+  // existing test (which relies on the wrap being effective) stays green. The
+  // dedicated Fix 2 test below overrides this to prove the guard bites.
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' as const }))
 }));
 
 vi.mock('../db/schema', () => ({
@@ -270,7 +278,7 @@ vi.mock('../middleware/auth', () => ({
   })
 }));
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
 import { createTokenPair, rateLimiter } from '../services';
 import { authMiddleware } from '../middleware/auth';
 import {
@@ -2826,9 +2834,12 @@ describe('sso routes', () => {
       orgId: null
     };
     // The trap (binding decision A): a SYSTEM role carrying the `*:*` wildcard.
-    // checkRoleStructure() returns null (= "assignable") for exactly this row —
-    // so a structural fallback would JIT-provision every SSO user at FULL
-    // WILDCARD. Only a real permission ceiling against a real principal stops it.
+    // A caller-independent structural check would return null (= "assignable")
+    // for exactly this row — so a structural fallback would JIT-provision every
+    // SSO user at FULL WILDCARD. Only a real permission ceiling against a real
+    // principal stops it. (This same row also matches Fix 1's config-time gap:
+    // `isSystem: true` with `orgId: null` is exactly what getProviderAxisRole
+    // must refuse that the old getScopedRole call would have accepted.)
     const SYSTEM_WILDCARD_ROLE_ROW = {
       id: ROLE_UUID,
       scope: 'organization',
@@ -2854,7 +2865,7 @@ describe('sso routes', () => {
     it('POST /providers (org axis) rejects a defaultRoleId above the caller ceiling', async () => {
       permissionsByUser[USER_UUID] = { permissions: [{ resource: 'devices', action: 'read' }] };
       vi.mocked(db.select)
-        .mockReturnValueOnce(selLimit([ORG_ROLE_ROW]))               // getScopedRole
+        .mockReturnValueOnce(selLimit([ORG_ROLE_ROW]))               // getProviderAxisRole
         .mockReturnValueOnce(selLimit([{ parentRoleId: null }]))     // effective perms: role row
         .mockReturnValueOnce(selJoin([{ resource: 'users', action: 'write' }])); // role's perms
 
@@ -2872,7 +2883,32 @@ describe('sso routes', () => {
 
     it('POST /providers (org axis) rejects an unknown defaultRoleId', async () => {
       permissionsByUser[USER_UUID] = { permissions: [{ resource: '*', action: '*' }] };
-      vi.mocked(db.select).mockReturnValueOnce(selLimit([])); // getScopedRole → null
+      vi.mocked(db.select).mockReturnValueOnce(selLimit([])); // getProviderAxisRole → null
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: createBody({ ownerScope: 'organization' })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error)
+        .toBe('defaultRoleId must be an organization-scoped role belonging to this organization');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // SR2-10 Fix 1: config time must reject a defaultRoleId the JIT resolver
+    // could NEVER resolve — a built-in system role, whose org_id/partner_id are
+    // always NULL. The caller holds `*:*` (would sail through the ceiling), so
+    // this proves the axis check runs BEFORE/INDEPENDENT of the ceiling, not as
+    // a side effect of it. Before Fix 1, `getScopedRole`'s isSystem shortcut
+    // would have accepted this row and 201'd — the exact drift the reviewer
+    // caught: a provider saved with this defaultRoleId would then die at
+    // `invalid_provider_configuration` on every future SSO sign-in, because the
+    // JIT resolver applies strict axis equality and a system role never matches.
+    it('POST /providers (org axis) rejects a SYSTEM role not scoped to this org (config/JIT drift gap)', async () => {
+      permissionsByUser[USER_UUID] = { permissions: [{ resource: '*', action: '*' }] };
+      vi.mocked(db.select).mockReturnValueOnce(selLimit([SYSTEM_WILDCARD_ROLE_ROW]));
 
       const res = await app.request('/sso/providers', {
         method: 'POST',
@@ -3073,7 +3109,7 @@ describe('sso routes', () => {
 
       vi.mocked(db.select)
         .mockReturnValueOnce(selLimit([provider]))              // 1. provider
-        .mockReturnValueOnce(selLimit([{ id: ROLE_UUID }]))     // 2. legacy axis/scope check
+        .mockReturnValueOnce(selLimit([ORG_ROLE_ROW]))          // 2. pre-JIT axis check (getProviderAxisRole)
         .mockReturnValueOnce(selLimit([]))                      // 3. (provider, sub) → unlinked
         .mockReturnValueOnce(selLimit([]));                     // 4. users by email → none
       for (const t of tail) vi.mocked(db.select).mockReturnValueOnce(t);
@@ -3088,7 +3124,7 @@ describe('sso routes', () => {
       permissionsByUser[CONFIGURER_UUID] = { permissions: [{ resource: 'devices', action: 'read' }] };
       primeJitCallback(
         jitProvider(),
-        selLimit([ORG_ROLE_ROW]),                                  // 5. getScopedRole (live)
+        selLimit([ORG_ROLE_ROW]),                                  // 5. getProviderAxisRole (live)
         selLimit([{ id: CONFIGURER_UUID, status: 'active' }]),     // 6. configurer live status
         selLimit([{ partnerId: PARTNER_UUID }]),                   // 7. org's owning partner
         selLimit([{ parentRoleId: null }]),                        // 8. role's effective perms
@@ -3128,8 +3164,9 @@ describe('sso routes', () => {
     });
 
     // Binding decision (A): the unknowable-configurer fallback FAILS CLOSED.
-    // A structural check (checkRoleStructure) returns null for a SYSTEM wildcard
-    // role — using it here would JIT every user at full wildcard.
+    // A caller-independent structural check would return null (= assignable)
+    // for a SYSTEM wildcard role — using it here would JIT every user at full
+    // wildcard.
     it('refuses JIT when NO configurer can be resolved (fails closed, never structural)', async () => {
       primeJitCallback(
         jitProvider({ defaultRoleConfiguredBy: null, createdBy: null }),
@@ -3147,21 +3184,24 @@ describe('sso routes', () => {
       }));
     });
 
-    // THE WILDCARD TRAP (binding decision A). The provider's default role is the
-    // built-in SYSTEM super-admin role (`*:*`). checkRoleStructure() would say
-    // "assignable". The real ceiling must refuse it because the configuring org
-    // admin does not hold `*:*`.
-    it('refuses to JIT-provision at the SYSTEM WILDCARD role when the configurer does not hold the wildcard', async () => {
+    // THE WILDCARD TRAP (binding decision A), SR2-10 Fix 1 revision. The
+    // provider's default role is the built-in SYSTEM super-admin role (`*:*`).
+    // A caller-independent structural check would say "assignable" — the real
+    // defense is that `getProviderAxisRole` (used here too, not just at config
+    // time) has no `isSystem` escape hatch at all, so a role whose `orgId` is
+    // NULL (every seeded system role) can never resolve on the provider's org
+    // axis. Before Fix 1 this was refused one step later, by the permission
+    // ceiling specifically because the configurer didn't hold `*:*` — which
+    // meant a configurer who DID hold `*:*` (a genuine platform super-admin)
+    // could have slipped a system role through. The axis check now refuses it
+    // unconditionally, regardless of the configurer's own permissions.
+    it('refuses to JIT-provision at the SYSTEM WILDCARD role — it can never resolve on the provider axis', async () => {
       permissionsByUser[CONFIGURER_UUID] = {
-        permissions: [{ resource: 'users', action: 'write' }, { resource: 'sso', action: 'admin' }]
+        permissions: [{ resource: '*', action: '*' }] // even a configurer WITH the wildcard is refused
       };
       primeJitCallback(
         jitProvider(),
-        selLimit([SYSTEM_WILDCARD_ROLE_ROW]),
-        selLimit([{ id: CONFIGURER_UUID, status: 'active' }]),
-        selLimit([{ partnerId: PARTNER_UUID }]),
-        selLimit([{ parentRoleId: null }]),
-        selJoin([{ resource: '*', action: '*' }])   // the built-in super-admin grant
+        selLimit([SYSTEM_WILDCARD_ROLE_ROW])
       );
 
       const res = await doJitCallback();
@@ -3172,7 +3212,7 @@ describe('sso routes', () => {
       expect(createTokenPair).not.toHaveBeenCalled();
       expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         result: 'denied',
-        details: expect.objectContaining({ reason: 'default_role_exceeds_configurer_permissions' })
+        details: expect.objectContaining({ reason: 'default_role_not_on_provider_axis' })
       }));
     });
 
@@ -3187,12 +3227,15 @@ describe('sso routes', () => {
 
       primeJitCallback(
         jitProvider(),
-        selLimit([ORG_ROLE_ROW]),                              // 5. getScopedRole
+        selLimit([ORG_ROLE_ROW]),                              // 5. getProviderAxisRole
         selLimit([{ id: CONFIGURER_UUID, status: 'active' }]), // 6. configurer status
         selLimit([{ partnerId: PARTNER_UUID }]),               // 7. org's owning partner (partner axis!)
         selLimit([{ parentRoleId: null }]),                    // 8. effective perms: role row
         selJoin([{ resource: 'users', action: 'write' }]),     // 9. in-ceiling
-        selLimit([{ partnerId: PARTNER_UUID }]),               // 10. provisioning: org partner
+        // SR2-10 Fix 4: no separate "provisioning: org partner" select here —
+        // the provisioning block now reuses the org's partnerId that #7 (the
+        // ceiling's own resolution above) already fetched, instead of
+        // re-querying `organizations` for the identical row.
         selJoinLimit([{ orgId: ORG_UUID, roleId: ROLE_UUID, roleName: 'Support', roleScope: 'organization' }]), // membership
         selLimit([])                                           // existing identity → none
       );
@@ -3244,7 +3287,7 @@ describe('sso routes', () => {
       permissionsByUser[CONFIGURER_UUID] = { permissions: [{ resource: '*', action: '*' }] };
       primeJitCallback(
         jitProvider(),
-        selLimit([])   // getScopedRole → role deleted / re-scoped
+        selLimit([])   // getProviderAxisRole → role deleted / re-scoped
       );
 
       const res = await doJitCallback();
@@ -3256,6 +3299,60 @@ describe('sso routes', () => {
         result: 'denied',
         details: expect.objectContaining({ reason: 'default_role_not_on_provider_axis' })
       }));
+    });
+
+    // SR2-10 Fix 2. `revalidateSsoDefaultRole` MUST run inside
+    // withSystemDbAccessContext — outside it, `role_permissions` (FORCE RLS)
+    // 0-rows and `applyCeiling` treats "no permissions" as "assignable",
+    // fail-OPEN for ANY role (not just a system one — `getProviderAxisRole`'s
+    // own axis check independently blocks system roles regardless of DB
+    // context, so this scenario is built around an ORDINARY org-scoped custom
+    // role to isolate the ceiling's own fail-open mode specifically). The mock
+    // queues a role that DOES resolve (ORG_ROLE_ROW) but an EMPTY
+    // role_permissions join (position 9) — exactly what force-RLS returns with
+    // no context — and a configurer who holds none of the role's (real, but
+    // invisible-to-this-read) permissions, plus full provisioning mocks. If the
+    // invariant is missing, this data is shaped to let JIT actually provision
+    // the user (proving fail-open, not just "some other reason it fails
+    // closed"); manually inverting the guard and re-running this test (see the
+    // fix report) showed exactly that — `db.insert` WAS called.
+    //
+    // `getCurrentDbAccessContext` stands in for "did withSystemDbAccessContext
+    // actually take effect" (the db mock makes the real wrap a pass-through,
+    // so it can't detect a dropped wrap itself). Every other test in this file
+    // defaults it to 'system'; this test alone overrides it to prove the throw
+    // fires before any of the fail-open-shaped data below is ever touched.
+    it('throws (fails closed) if revalidateSsoDefaultRole ever runs outside a system DB context', async () => {
+      permissionsByUser[CONFIGURER_UUID] = { permissions: [{ resource: 'devices', action: 'read' }] };
+      vi.mocked(getCurrentDbAccessContext).mockReturnValueOnce({ scope: 'organization' } as any);
+      primeJitCallback(
+        jitProvider(),
+        selLimit([ORG_ROLE_ROW]),                              // 5. getProviderAxisRole
+        selLimit([{ id: CONFIGURER_UUID, status: 'active' }]), // 6. configurer status
+        selLimit([{ partnerId: PARTNER_UUID }]),                // 7. org's owning partner
+        selLimit([{ parentRoleId: null }]),                     // 8. effective perms: role row
+        selJoin([]),                                            // 9. role_permissions — 0-rows w/o system ctx
+        selJoinLimit([{ orgId: ORG_UUID, roleId: ROLE_UUID, roleName: 'Support', roleScope: 'organization' }]), // membership
+        selLimit([])                                            // existing identity → none
+      );
+      const usersInsertValues = vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue([{
+          id: NEW_USER_UUID, email: 'new@example.com', name: 'New User', orgId: ORG_UUID, partnerId: PARTNER_UUID
+        }])
+      }));
+      const orgUsersInsertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
+      vi.mocked(db.insert)
+        .mockReturnValueOnce({ values: usersInsertValues } as any)
+        .mockReturnValueOnce({ values: orgUsersInsertValues } as any);
+
+      const res = await doJitCallback();
+
+      // Caught by the callback's top-level catch (same as any other
+      // unexpected error) and redirected — NOT silently provisioned, even
+      // though every downstream mock was primed to let provisioning succeed.
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toContain('/login?error=sso_error');
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 });

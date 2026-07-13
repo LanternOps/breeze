@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { eq, and, gt, ne, isNull } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
 import {
   ssoProviders,
   ssoSessions,
@@ -41,7 +41,7 @@ import { captureException } from '../services/sentry';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS, getUserPermissions } from '../services/permissions';
 import {
-  getScopedRole,
+  getProviderAxisRole,
   validateAssignableRole,
   checkRolePermissionCeiling,
   type ScopeContext,
@@ -334,11 +334,13 @@ function buildSsoCallbackUri(): string {
 //      have been months ago, and that admin may since have been demoted or
 //      offboarded.
 //
-// FAIL CLOSED. `checkRoleStructure` is deliberately NOT used as a fallback
-// ceiling anywhere in this file: it returns null (= assignable) for a SYSTEM
-// role carrying `*:*`, so a provider whose default role is the built-in
-// super-admin role would JIT every user at FULL WILDCARD — the exact
-// vulnerability this code exists to close. If a ceiling cannot be established
+// FAIL CLOSED. A caller-independent STRUCTURAL check is deliberately NOT used
+// as a fallback ceiling anywhere in this file (an earlier `checkRoleStructure`
+// helper that did exactly this — return null/"assignable" for a SYSTEM role
+// carrying `*:*` — was deleted (SR2-10 Fix 3) once it had no remaining
+// caller): a provider whose default role is the built-in super-admin role
+// would JIT every user at FULL WILDCARD — the exact vulnerability this code
+// exists to close. If a ceiling cannot be established
 // against a real principal's live permissions, the role is NOT assignable and
 // JIT provisioning is refused.
 
@@ -366,6 +368,18 @@ function providerScopeContext(p: { orgId: string | null; partnerId: string | nul
  * a caller who reaches this route body provably HAS a resolved permission set
  * (requirePermission 403s "No permissions found" otherwise), so there is no
  * principal here for whom a structural-only check would be the only option.
+ *
+ * ROLE RESOLUTION: uses `getProviderAxisRole` (services/roleAssignment), the
+ * SAME strict resolver the JIT re-validation below and the pre-JIT axis check
+ * in the callback use — never `getScopedRole`. `getScopedRole` waves through
+ * ANY `isSystem` role regardless of its org/partner columns (correct for
+ * routes/users.ts's ordinary role assignment, where that's the point of
+ * `isSystem`); seeded system roles carry `org_id`/`partner_id` = NULL
+ * (db/seed.ts), so a role admitted here via that escape hatch could NEVER be
+ * resolved by the JIT axis-equality check — every future SSO sign-in on the
+ * provider would 201 at config time and then die forever at
+ * `invalid_provider_configuration`. Tightening this to `getProviderAxisRole`
+ * closes that gap; it does not loosen anything JIT-side.
  */
 async function validateProviderDefaultRole(
   c: any,
@@ -373,7 +387,7 @@ async function validateProviderDefaultRole(
   defaultRoleId: string,
   scopeContext: ScopeContext,
 ): Promise<string | null> {
-  const role = await getScopedRole(defaultRoleId, scopeContext);
+  const role = await getProviderAxisRole(defaultRoleId, scopeContext);
   if (!role) {
     return scopeContext.scope === 'partner'
       ? 'defaultRoleId must be a partner-scoped role belonging to your partner'
@@ -411,13 +425,41 @@ async function validateProviderDefaultRole(
  * means "role not found" / "configurer has no permissions", i.e. it fails closed
  * rather than open — but it would brick every SSO login, so the wrap is
  * mandatory, not cosmetic.
+ *
+ * INVARIANT (SR2-10 Fix 2): the line above is a doc comment, not an
+ * enforcement mechanism — a future refactor could drop the wrap and no unit
+ * test would catch it (the db mock makes `withSystemDbAccessContext` a
+ * pass-through, so a missing wrap is invisible there). `role_permissions` is
+ * FORCE-RLS: a read OUTSIDE a system context 0-rows under `breeze_app`, and
+ * `applyCeiling` (services/roleAssignment) treats an empty effective-
+ * permission set as "no permissions to exceed" → assignable. So a silently
+ * dropped wrap doesn't error, it fails OPEN — greenlighting ANY role. Assert
+ * the ambient context is really `'system'` at entry and throw otherwise, so
+ * the failure is loud and immediate instead of a silent privilege escalation.
  */
 async function revalidateSsoDefaultRole(params: {
   roleId: string;
   scopeContext: ScopeContext;
   configuredByUserId: string | null;
-}): Promise<{ ok: true; roleId: string } | { ok: false; reason: string }> {
-  const role = await getScopedRole(params.roleId, params.scopeContext);
+}): Promise<
+  | { ok: true; roleId: string; orgPartnerId: string | null }
+  | { ok: false; reason: string }
+> {
+  const ambientContext = getCurrentDbAccessContext();
+  if (ambientContext?.scope !== 'system') {
+    throw new Error(
+      'revalidateSsoDefaultRole must run inside withSystemDbAccessContext — the '
+      + 'permission-subset ceiling reads role_permissions (FORCE RLS); outside a '
+      + 'system context it 0-rows and the ceiling fails OPEN instead of refusing.'
+    );
+  }
+
+  // SR2-10 Fix 1: getProviderAxisRole, not getScopedRole — the strict resolver
+  // shared with config time (validateProviderDefaultRole above) and the
+  // pre-JIT axis check in the callback. See getProviderAxisRole's docstring
+  // (services/roleAssignment) for why getScopedRole's isSystem escape hatch
+  // must never be used on this path.
+  const role = await getProviderAxisRole(params.roleId, params.scopeContext);
   if (!role) {
     return { ok: false, reason: 'default_role_not_on_provider_axis' };
   }
@@ -443,6 +485,10 @@ async function revalidateSsoDefaultRole(params: {
 
   let orgId: string | undefined;
   let partnerId: string | undefined;
+  // Also handed back to the caller as `orgPartnerId` (Fix 4) so the
+  // provisioning block ~40 lines below doesn't re-run the identical
+  // `organizations` select for the same org id.
+  let orgPartnerId: string | null = null;
   if (params.scopeContext.scope === 'organization') {
     orgId = params.scopeContext.orgId;
     const [org] = await db
@@ -451,6 +497,7 @@ async function revalidateSsoDefaultRole(params: {
       .where(eq(organizations.id, orgId))
       .limit(1);
     partnerId = org?.partnerId ?? undefined;
+    orgPartnerId = org?.partnerId ?? null;
   } else {
     partnerId = params.scopeContext.partnerId;
   }
@@ -463,7 +510,7 @@ async function revalidateSsoDefaultRole(params: {
   const ceilingError = await checkRolePermissionCeiling(configurerPermissions, role);
   return ceilingError
     ? { ok: false, reason: 'default_role_exceeds_configurer_permissions' }
-    : { ok: true, roleId: role.id };
+    : { ok: true, roleId: role.id, orgPartnerId };
 }
 
 function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
@@ -1674,22 +1721,18 @@ ssoRoutes.get('/callback', async (c) => {
   // this is config validation ONLY — v1 never APPLIES a default role at login
   // (identity-first, membership-required), so a defaultRoleId can never grant
   // access to a membershipless user.
+  //
+  // SR2-10 Fix 1: uses `getProviderAxisRole` (services/roleAssignment) — the
+  // SAME strict resolver `validateProviderDefaultRole` (config time) and
+  // `revalidateSsoDefaultRole` (below) use, via the shared `providerScopeContext`
+  // axis helper. Keeping this one call site means config time, this pre-check,
+  // and the JIT ceiling can never resolve a defaultRoleId differently again.
   let validatedDefaultRoleId: string | null = null;
   if (provider.defaultRoleId) {
-    const roleCondition = provider.partnerId
-      ? and(
-          eq(roles.id, provider.defaultRoleId),
-          eq(roles.scope, 'partner'),
-          eq(roles.partnerId, provider.partnerId)
-        )
-      : and(
-          eq(roles.id, provider.defaultRoleId),
-          eq(roles.scope, 'organization'),
-          eq(roles.orgId, provider.orgId!)
-        );
-    const [defaultRole] = await withSystemDbAccessContext(async () =>
-      db.select({ id: roles.id }).from(roles).where(roleCondition).limit(1)
-    );
+    const defaultRoleScope = providerScopeContext(provider);
+    const defaultRole = defaultRoleScope
+      ? await withSystemDbAccessContext(() => getProviderAxisRole(provider.defaultRoleId!, defaultRoleScope))
+      : null;
 
     if (!defaultRole) {
       clearStateCookie();
@@ -2008,20 +2051,19 @@ ssoRoutes.get('/callback', async (c) => {
       // SSO-provisioned users are customer-org members: partner_id is
       // inherited from the provider's org's owning partner, org_id is
       // the provider's org.
-      const newUser = await withSystemDbAccessContext(async () => {
-        const [providerOrg] = await db
-          .select({ partnerId: organizations.partnerId })
-          .from(organizations)
-          .where(eq(organizations.id, provisionOrgId))
-          .limit(1);
-        if (!providerOrg) {
-          return null;
-        }
-
+      //
+      // SR2-10 Fix 4: `provisionOrgPartnerId` is the SAME `organizations.partnerId`
+      // for this SAME provisionOrgId that revalidateSsoDefaultRole already fetched
+      // a few lines up — reused here instead of round-tripping the identical select
+      // again. `null` there means the org row didn't exist at that read (the
+      // NOT NULL `organizations.partner_id` column guarantees a real row is never
+      // null), so it fails closed exactly like the old re-query's `!providerOrg` did.
+      const provisionOrgPartnerId: string | null = jitRole.orgPartnerId;
+      const newUser = provisionOrgPartnerId === null ? null : await withSystemDbAccessContext(async () => {
         const [created] = await db
           .insert(users)
           .values({
-            partnerId: providerOrg.partnerId,
+            partnerId: provisionOrgPartnerId,
             orgId: provisionOrgId,
             email: attrs.email.toLowerCase(),
             name: attrs.name,
