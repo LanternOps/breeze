@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useHashState } from "@/lib/useHashState";
 import {
   AlertTriangle,
   Loader2,
@@ -71,13 +72,11 @@ export default function VulnerabilitiesPage() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   // Deep-linkable severity filter (#severity=critical), see dashboard severity rows.
-  const [severity, setSeverity] = useState(() => {
-    if (typeof window === "undefined") return "";
-    const match = window.location.hash.match(
-      /severity=(critical|high|medium|low)/,
-    );
-    return match ? match[1] : "";
-  });
+  // Adopted post-mount to avoid an SSR hydration mismatch (#2421).
+  const [severity, setSeverity] = useHashState<string>(
+    "",
+    (h) => h.match(/severity=(critical|high|medium|low)/)?.[1],
+  );
   const [status, setStatus] = useState("");
   const [category, setCategory] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());

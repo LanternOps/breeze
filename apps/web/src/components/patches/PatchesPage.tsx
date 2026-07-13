@@ -65,12 +65,10 @@ export default function PatchesPage() {
   const canManageRings = scope === 'partner' || scope === 'system';
   const RING_SCOPE_HINT = t('patchesPage.ringScopeHint');
 
-  // Seed from the hash, applying the org-scope guard: an org user landing on
-  // #rings (e.g. a bookmark) falls back to compliance so the rings body is never
-  // rendered without navigation access.
-  const [activeTab, setActiveTabState] = useState<TabKey>(() =>
-    resolveTab(getTabFromHash(), canManageRings)
-  );
+  // Start from the SSR-safe default; the hash (with the org-scope guard) is
+  // applied post-mount by the sync effect below, avoiding an SSR hydration
+  // mismatch (#2421).
+  const [activeTab, setActiveTabState] = useState<TabKey>('compliance');
   const setActiveTab = useCallback((tab: TabKey) => {
     setActiveTabState(tab);
     setTabInHash(tab);

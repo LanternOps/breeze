@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { useState, useEffect } from 'react';
+import { useHashState } from '@/lib/useHashState';
 import { ScanSearch } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import DashboardTab from './DashboardTab';
@@ -16,22 +16,12 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'policies', label: 'Policies' },
 ];
 
-function getTabFromHash(): Tab {
-  if (typeof window === 'undefined') return 'dashboard';
-  const hash = window.location.hash.replace('#', '');
-  if (TABS.some((t) => t.id === hash)) return hash as Tab;
-  return 'dashboard';
-}
-
 export default function SensitiveDataPage() {
   const { t } = useTranslation('security');
-  const [activeTab, setActiveTab] = useState<Tab>(getTabFromHash);
-
-  useEffect(() => {
-    const onHashChange = () => setActiveTab(getTabFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
+  const [activeTab, setActiveTab] = useHashState<Tab>('dashboard', (h) =>
+    TABS.some((tab) => tab.id === h) ? (h as Tab) : undefined
+  );
 
   const switchTab = (tab: Tab) => {
     window.location.hash = tab;

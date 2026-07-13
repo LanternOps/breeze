@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { useHashTab } from '@/lib/useHashState';
 import { Network, Plug, ListChecks, ScrollText } from 'lucide-react';
 import DnsSecurityIntegrationsTab from './DnsSecurityIntegrationsTab';
 import DnsSecurityPoliciesTab from './DnsSecurityPoliciesTab';
@@ -11,28 +12,17 @@ type Tab = 'overview' | 'integrations' | 'policies' | 'events';
 
 const VALID_TABS: readonly Tab[] = ['overview', 'integrations', 'policies', 'events'];
 
-function readTabFromHash(): Tab {
-  if (typeof window === 'undefined') return 'overview';
-  const hash = window.location.hash.replace('#', '');
-  return (VALID_TABS as readonly string[]).includes(hash) ? (hash as Tab) : 'overview';
-}
-
 export default function DnsSecurityPage() {
   const { t } = useTranslation('security');
-  const [activeTab, setActiveTab] = useState<Tab>(readTabFromHash);
+  // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
+  const [activeTab, setActiveTab] = useHashTab<Tab>(VALID_TABS, 'overview');
 
   // Reflect tab into URL hash per the CLAUDE.md "URL State in Components"
   // rule — matches DeviceDetails.tsx / OrganizationsPage.tsx.
   const switchTab = useCallback((tab: Tab) => {
     window.location.hash = tab;
     setActiveTab(tab);
-  }, []);
-
-  useEffect(() => {
-    const onHashChange = () => setActiveTab(readTabFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  }, [setActiveTab]);
 
   return (
     <div className="space-y-6">

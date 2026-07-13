@@ -340,7 +340,13 @@ describe('TicketsPage', () => {
 
       await screen.findByTestId('ticket-row-tk-risk');
 
-      expect(ticketFetchUrls().at(0)).toContain('sort=oldest');
+      // SSR-safe hash adoption (#2421): the first render uses the 'triage'
+      // default, then useHashState adopts the hash pre-paint and the list
+      // effect refetches with sort=oldest (fetchSeq drops the stale response).
+      // Assert on the fetch that wins, not the seed fetch.
+      await waitFor(() => {
+        expect(ticketFetchUrls().at(-1)).toContain('sort=oldest');
+      });
       expect(screen.getByTestId('ticket-sort')).toHaveValue('oldest');
       await waitFor(() => {
         expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'true');

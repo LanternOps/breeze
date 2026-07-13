@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useHashState } from '@/lib/useHashState';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import DRExecutionView from './DRExecutionView';
@@ -81,10 +82,8 @@ function statusBadge(status: string) {
 
 export default function DRDashboard() {
   const { t } = useTranslation('backup');
-  const [activeTab, setActiveTab] = useState<DRTab>(() => {
-    if (typeof window === 'undefined') return 'plans';
-    return window.location.hash.replace('#', '') === 'executions' ? 'executions' : 'plans';
-  });
+  // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
+  const [activeTab, setActiveTab] = useHashState<DRTab>('plans', (h) => (h === 'executions' ? 'executions' : undefined));
   const [plans, setPlans] = useState<DRPlan[]>([]);
   const [executions, setExecutions] = useState<DRExecution[]>([]);
   const [groupCounts, setGroupCounts] = useState<Record<string, number>>({});
@@ -148,15 +147,6 @@ export default function DRDashboard() {
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
-
-  useEffect(() => {
-    const onHashChange = () => {
-      const nextHash = window.location.hash.replace('#', '');
-      setActiveTab(nextHash === 'executions' ? 'executions' : 'plans');
-    };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
 
   const hasRunningExecution = useMemo(
     () => executions.some((execution) => ['pending', 'running'].includes(execution.status)),

@@ -69,9 +69,8 @@ describe('AiForOfficePage', () => {
   });
 
   it('getStateFromHash falls back to orgs for junk hashes', () => {
-    window.location.hash = '#nonsense';
-    expect(getStateFromHash()).toEqual({ tab: 'orgs' });
-    window.location.hash = '#policy/';
-    expect(getStateFromHash()).toEqual({ tab: 'orgs' });
+    // #2421: the parser is pure — it takes the already-#-stripped hash string.
+    expect(getStateFromHash('nonsense')).toEqual({ tab: 'orgs' });
+    expect(getStateFromHash('policy/')).toEqual({ tab: 'orgs' });
   });
 });

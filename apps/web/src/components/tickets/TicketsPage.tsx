@@ -7,6 +7,7 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { useHashState } from '@/lib/useHashState';
 import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import TicketQueueList from './TicketQueueList';
 import TicketArchivedList from './TicketArchivedList';
@@ -119,11 +120,11 @@ function tabQuery(tab: Exclude<Tab, 'review' | 'archived'>): string {
 // The bare segment is the selected ticket key (internal number or id); the
 // `sort=` segment carries the queue sort. Both are optional, and the default
 // sort ('triage') is omitted so plain `#T-2026-0001` hashes keep working.
-function parseHash(): { selection: string | null; sort: TicketSort } {
-  if (typeof window === 'undefined') return { selection: null, sort: 'triage' };
+// Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
+function parseHash(hash: string): { selection: string | null; sort: TicketSort } {
   let selection: string | null = null;
   let sort: TicketSort = 'triage';
-  for (const part of window.location.hash.replace('#', '').split('&')) {
+  for (const part of hash.split('&')) {
     if (!part) continue;
     if (part.startsWith('sort=')) {
       const value = part.slice('sort='.length);
@@ -163,8 +164,10 @@ export default function TicketsPage() {
   const [stats, setStats] = useState<{ open: number; unassigned: number; mine: number; breached: number; atRisk?: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [selectedNumber, setSelectedNumber] = useState<string | null>(() => parseHash().selection);
-  const [sort, setSort] = useState<TicketSort>(() => parseHash().sort);
+  // SSR-safe hash adoption + hashchange subscription live in the hook (#2421).
+  // parse → undefined falls back to the null default, preserving "no selection".
+  const [selectedNumber, setSelectedNumber] = useHashState<string | null>(null, (h) => parseHash(h).selection ?? undefined);
+  const [sort, setSort] = useHashState<TicketSort>('triage', (h) => parseHash(h).sort);
   const [search, setSearch] = useState('');
   // Debounced twin of `search` — only this drives the list fetch, so typing
   // doesn't fire a 100-row query per keystroke (the input itself stays instant).
@@ -355,16 +358,6 @@ export default function TicketsPage() {
     setBulkAssignee('');
     setBulkStatus('');
   }, [search, orgFilter, priorityFilter, categoryFilter, assigneeFilter]);
-
-  useEffect(() => {
-    const onHash = () => {
-      const parsed = parseHash();
-      setSelectedNumber(parsed.selection);
-      setSort(parsed.sort);
-    };
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
 
   // Single writer for the hash so selection and sort never clobber each other.
   const writeHash = useCallback((selection: string | null, sortValue: TicketSort) => {

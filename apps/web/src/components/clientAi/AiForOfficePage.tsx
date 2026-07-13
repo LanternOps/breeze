@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useHashState } from "@/lib/useHashState";
 import OrgsTab from "./OrgsTab";
 import PolicyEditor from "./PolicyEditor";
 import SessionsTab from "./SessionsTab";
@@ -19,9 +19,9 @@ type SimpleTab = (typeof SIMPLE_TABS)[number];
 
 export type TabState = { tab: SimpleTab } | { tab: "policy"; orgId: string };
 
-export function getStateFromHash(): TabState {
-  if (typeof window === "undefined") return { tab: "orgs" };
-  const hash = window.location.hash.replace("#", "");
+// Pure parser (leading `#` already stripped by useHashState) so it is
+// SSR-safe — the hash is adopted post-mount by the hook (#2421).
+export function getStateFromHash(hash: string): TabState {
   if (hash.startsWith("policy/")) {
     const orgId = hash.slice("policy/".length);
     if (orgId) return { tab: "policy", orgId };
@@ -33,13 +33,10 @@ export function getStateFromHash(): TabState {
 
 export default function AiForOfficePage() {
   const { t } = useTranslation("ai");
-  const [state, setState] = useState<TabState>(getStateFromHash);
-
-  useEffect(() => {
-    const onHashChange = () => setState(getStateFromHash());
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
+  const [state, setState] = useHashState<TabState>(
+    { tab: "orgs" },
+    getStateFromHash,
+  );
 
   const switchTab = (tab: SimpleTab) => {
     window.location.hash = tab;

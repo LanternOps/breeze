@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import '@/lib/i18n';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { useHashState } from '@/lib/useHashState';
 import {
   listContracts,
   monthlyValue,
@@ -46,9 +47,9 @@ interface Filters {
 }
 const EMPTY_FILTERS: Filters = { orgId: '', status: '' };
 
-function readFilters(): Filters {
-  if (typeof window === 'undefined') return EMPTY_FILTERS;
-  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+// Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
+function readFilters(hash: string): Filters {
+  const params = new URLSearchParams(hash);
   const status = params.get('status') ?? '';
   return {
     orgId: params.get('orgId') ?? '',
@@ -92,8 +93,12 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   // A 403 from the contracts route is a permission denial, not a load failure, so
   // it renders the access-denied state rather than the retryable error.
   const [forbidden, setForbidden] = useState(false);
-  const [filters, setFilters] = useState<Filters>(() =>
-    lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : readFilters(),
+  // SSR-safe hash adoption + hashchange subscription live in the hook (#2421).
+  // When locked to an org (embedded in a hash-routed tab) the host owns the
+  // hash, so parse yields undefined and the locked default always wins.
+  const [filters, setFilters] = useHashState<Filters>(
+    lockedOrgId ? { ...EMPTY_FILTERS, orgId: lockedOrgId } : EMPTY_FILTERS,
+    (h) => (lockedOrgId ? undefined : readFilters(h)),
   );
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
@@ -136,15 +141,6 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadContracts(filters); }, [loadContracts, filters]);
-
-  // React to back/forward hash changes — only when standalone. When locked to an
-  // org (embedded in a hash-routed tab), the host owns the hash; ignore it.
-  useEffect(() => {
-    if (lockedOrgId) return;
-    const onHash = () => setFilters(readFilters());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, [lockedOrgId]);
 
   // Clear bulk selection whenever the server-side filters or client-side search
   // change so stale, now-invisible rows are never acted on.

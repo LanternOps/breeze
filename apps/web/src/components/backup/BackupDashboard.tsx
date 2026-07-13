@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Database, HardDrive, ShieldAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useHashState } from '@/lib/useHashState';
 import { fetchWithAuth } from '../../stores/auth';
 import BackupOverviewContent from './BackupOverviewContent';
 import BackupVerificationOverview from './BackupVerificationOverview';
@@ -63,11 +64,8 @@ function TabFallback() {
 
 export default function BackupDashboard() {
   const { t } = useTranslation('backup');
-  const [activeTab, setActiveTab] = useState<BackupTab>(() => {
-    if (typeof window === 'undefined') return 'overview';
-    const hash = window.location.hash.replace('#', '');
-    return isValidTab(hash) ? hash : 'overview';
-  });
+  // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
+  const [activeTab, setActiveTab] = useHashState<BackupTab>('overview', (h) => (isValidTab(h) ? h : undefined));
   const [stats, setStats] = useState<BackupStat[]>([]);
   const [recentJobs, setRecentJobs] = useState<BackupJob[]>([]);
   const [overdueDevices, setOverdueDevices] = useState<OverdueDevice[]>([]);
@@ -176,15 +174,6 @@ export default function BackupDashboard() {
   useEffect(() => {
     fetchOverview();
   }, [fetchOverview]);
-
-  useEffect(() => {
-    const onHashChange = () => {
-      const hash = window.location.hash.replace('#', '');
-      setActiveTab(isValidTab(hash) ? hash : 'overview');
-    };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
 
   const handleRunAllClick = useCallback(async () => {
     try {

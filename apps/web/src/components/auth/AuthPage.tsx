@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import LoginPage from './LoginPage';
 import PartnerRegisterPage from './PartnerRegisterPage';
 import { useRegistrationGate } from '../../stores/featuresStore';
+import { useHashState } from '@/lib/useHashState';
 // Initializes the shared i18next singleton. This page's layout has no Sidebar
 // (which is what pulls i18n in elsewhere), so without this every t() call here
 // renders its raw key.
@@ -14,14 +14,11 @@ interface AuthPageProps {
 
 type Tab = 'signin' | 'signup';
 
-function getInitialTab(): Tab {
-  if (typeof window === 'undefined') return 'signin';
-  return window.location.hash === '#signup' ? 'signup' : 'signin';
-}
-
 export default function AuthPage({ next }: AuthPageProps) {
   const { t } = useTranslation('auth');
-  const [tab, setTab] = useState<Tab>(getInitialTab);
+  // SSR-safe hash tab (#2421): starts at signin, adopts the hash post-mount.
+  // Any hash other than #signup (including #signin) falls back to signin.
+  const [tab, setTab] = useHashState<Tab>('signin', (h) => (h === 'signup' ? 'signup' : undefined));
 
   // Runtime registration gate (#1308 / #1979). The server enforces
   // ENABLE_REGISTRATION on /auth/register-partner; mirror it client-side so the
@@ -29,14 +26,6 @@ export default function AuthPage({ next }: AuthPageProps) {
   // disabled. The gate is read from runtime /config, the same source of truth
   // PartnerRegisterPage and LoginForm consult — not a build-time PUBLIC_ flag.
   const { enabled: registrationEnabled, loaded: gateLoaded } = useRegistrationGate();
-
-  useEffect(() => {
-    const onHashChange = () => {
-      setTab(window.location.hash === '#signup' ? 'signup' : 'signin');
-    };
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
 
   const handleTabChange = (newTab: Tab) => {
     window.location.hash = newTab;

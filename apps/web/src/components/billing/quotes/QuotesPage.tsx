@@ -4,6 +4,7 @@ import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
+import { useHashState } from '@/lib/useHashState';
 import { usePermissions } from '../../../lib/permissions';
 import { Dialog } from '../../shared/Dialog';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
@@ -47,9 +48,9 @@ interface Filters {
 }
 const EMPTY_FILTERS: Filters = { orgId: '', status: '' };
 
-function readFilters(): Filters {
-  if (typeof window === 'undefined') return EMPTY_FILTERS;
-  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+// Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
+function readFilters(hash: string): Filters {
+  const params = new URLSearchParams(hash);
   const status = params.get('status') ?? '';
   return {
     orgId: params.get('orgId') ?? '',
@@ -98,7 +99,8 @@ export function QuotesPage() {
   // A 403 from the quotes route is a permission denial, not a load failure, so it
   // renders the access-denied state rather than the retryable error.
   const [forbidden, setForbidden] = useState(false);
-  const [filters, setFilters] = useState<Filters>(() => readFilters());
+  // SSR-safe hash adoption + hashchange subscription live in the hook (#2421).
+  const [filters, setFilters] = useHashState<Filters>(EMPTY_FILTERS, readFilters);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<Sort | null>(null);
 
@@ -147,13 +149,6 @@ export function QuotesPage() {
 
   useEffect(() => { void loadOrgs(); }, [loadOrgs]);
   useEffect(() => { void loadQuotes(filters); }, [loadQuotes, filters]);
-
-  // React to back/forward hash changes.
-  useEffect(() => {
-    const onHash = () => setFilters(readFilters());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
 
   // Clear bulk selection whenever the server-side filters or client-side search
   // change so stale invisible rows are never acted on.

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
+import { useHashState } from '@/lib/useHashState';
 import '@/lib/i18n';
 import ContractEditor from './ContractEditor';
 import ContractDetail from './ContractDetail';
@@ -19,18 +20,19 @@ interface Props {
   contractId?: string;
 }
 
-/** Read a deep-linked org for the create form (e.g. `/contracts/new#orgId=…`). */
-function readPresetOrgId(): string | undefined {
-  if (typeof window === 'undefined') return undefined;
-  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-  return params.get('orgId') ?? undefined;
-}
-
 export default function ContractWorkspace({ contractId }: Props) {
   const { t } = useTranslation('billing');
   const isNew = contractId === 'new';
   const { can } = usePermissions();
   const canWrite = can('contracts', 'write');
+
+  // Deep-linked org for the create form (e.g. `/contracts/new#orgId=…`), adopted
+  // post-mount to avoid SSR hydration mismatches (#2421). Only meaningful when
+  // `isNew`; harmless otherwise.
+  const [presetOrgId] = useHashState<string | undefined>(
+    undefined,
+    (h) => new URLSearchParams(h).get('orgId') ?? undefined,
+  );
 
   const [detail, setDetail] = useState<ContractDetailData | null>(null);
   const [loading, setLoading] = useState(!isNew);
@@ -67,7 +69,7 @@ export default function ContractWorkspace({ contractId }: Props) {
           <a href="/contracts" className="text-xs text-muted-foreground hover:underline">{t('contracts.contractWorkspace.backToContracts')}</a>
           <h1 className="text-xl font-semibold" data-testid="contract-workspace-title">{t('contracts.contractWorkspace.newContract')}</h1>
         </div>
-        <ContractEditor presetOrgId={readPresetOrgId()} />
+        <ContractEditor presetOrgId={presetOrgId} />
       </div>
     );
   }

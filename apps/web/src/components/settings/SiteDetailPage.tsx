@@ -13,6 +13,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useHashTab } from '@/lib/useHashState';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
@@ -86,13 +87,6 @@ const tabs = [
 
 const VALID_TABS: TabKey[] = tabs.map(t => t.id);
 
-function getTabFromHash(): TabKey {
-  if (typeof window === 'undefined') return 'details';
-  const hash = window.location.hash.replace('#', '');
-  if (VALID_TABS.includes(hash as TabKey)) return hash as TabKey;
-  return 'details';
-}
-
 const timezoneOptions = [
   'UTC',
   'America/Los_Angeles',
@@ -121,13 +115,8 @@ const formatTime = (date: Date) =>
 
 export default function SiteDetailPage({ siteId }: { siteId: string }) {
   const { t } = useTranslation('settings');
-  const [activeTab, setActiveTab] = useState<TabKey>(getTabFromHash);
-
-  useEffect(() => {
-    const onHashChange = () => setActiveTab(getTabFromHash());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
+  const [activeTab, setActiveTab] = useHashTab<TabKey>(VALID_TABS, 'details');
 
   const switchTab = (tab: TabKey) => {
     window.location.hash = tab;
