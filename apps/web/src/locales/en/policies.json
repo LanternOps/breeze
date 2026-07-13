@@ -578,7 +578,11 @@
         "destinationRequired": "Pick a destination or set an org default",
         "setAsOrgDefault": "Set as org default",
         "setAsOrgDefaultHint": "Partner-wide policies and profile links without an explicit destination store backups here.",
-        "defaultBadge": "Default"
+        "defaultBadge": "Default",
+        "profilesLoadFailed": "Couldn't load backup profiles.",
+        "profilesLoadFailedHint": "Reload the page to try again. Saving is disabled until the list loads, so an existing profile link isn't overwritten.",
+        "destinationsLoadFailed": "Couldn't load backup destinations.",
+        "destinationsLoadRetry": "Try again"
       },
       "complianceTab": {
         "requiredSoftware": "Required Software",

@@ -49,6 +49,15 @@ vi.mock('../db', () => ({
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
+    // Default-destination demote + promote are transactional; route the tx
+    // through the same mocks so assertions still see every statement.
+    transaction: (fn: (tx: unknown) => unknown) =>
+      fn({
+        select: (...args: unknown[]) => selectMock(...(args as [])),
+        insert: (...args: unknown[]) => insertMock(...(args as [])),
+        update: (...args: unknown[]) => updateMock(...(args as [])),
+        delete: (...args: unknown[]) => deleteMock(...(args as [])),
+      }),
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),

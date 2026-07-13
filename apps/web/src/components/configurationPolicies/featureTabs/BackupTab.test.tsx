@@ -653,4 +653,75 @@ describe('BackupTab', () => {
       }),
     );
   });
+  // A failed /backup/profiles fetch used to render as "no profiles yet". A user
+  // looking at that false-empty picker can reasonably switch to "custom" and
+  // save — permanently converting a profile link on the basis of data that
+  // never arrived. Surface the failure and refuse the save instead.
+  it('profile fetch failure: shows an error instead of the empty picker, and blocks converting an existing profile link', async () => {
+    const profileLink = {
+      id: 'link-1',
+      featureType: 'backup',
+      featurePolicyId: 'prof-1',
+      inlineSettings: { backupProfileId: 'prof-1', schedule: { frequency: 'daily', time: '02:00' } },
+    };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ data: [baseConfig] });
+      }
+      // The profile list is down.
+      if (url === '/backup/profiles' && method === 'GET') {
+        return makeJsonResponse({ error: 'boom' }, false, 500);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={profileLink as never}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    // The picker must NOT claim the org has no profiles.
+    expect(await screen.findByTestId('backup-profiles-load-error')).toBeTruthy();
+    expect(screen.queryByText(/No backup profiles yet/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    // The link is never rewritten from a list we failed to load.
+    await waitFor(() => expect(screen.getByTestId('backup-profiles-load-error')).toBeTruthy());
+    expect(saveMock).not.toHaveBeenCalled();
+  });
+
+  it('destination fetch failure: shows an error instead of the create-first-destination form', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      // The destination list is down — the org may well have destinations.
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ error: 'boom' }, false, 500);
+      }
+      if (url === '/backup/profiles' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    expect(await screen.findByTestId('backup-destinations-load-error')).toBeTruthy();
+    // The create form must not auto-open over a load failure.
+    expect(screen.queryByText(/Editing storage configuration/i)).toBeNull();
+  });
 });

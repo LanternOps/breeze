@@ -578,7 +578,11 @@
         "destinationRequired": "Escolha um destino ou defina um padrão da organização",
         "setAsOrgDefault": "Definir como padrão da org",
         "setAsOrgDefaultHint": "Políticas de parceiro e vínculos de perfil sem destino explícito armazenam backups aqui.",
-        "defaultBadge": "Padrão"
+        "defaultBadge": "Padrão",
+        "profilesLoadFailed": "Não foi possível carregar os perfis de backup.",
+        "profilesLoadFailedHint": "Recarregue a página para tentar novamente. O salvamento fica desativado até a lista carregar, para não sobrescrever um vínculo de perfil existente.",
+        "destinationsLoadFailed": "Não foi possível carregar os destinos de backup.",
+        "destinationsLoadRetry": "Tentar novamente"
       },
       "complianceTab": {
         "requiredSoftware": "Software obrigatório",

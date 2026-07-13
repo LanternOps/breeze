@@ -25,6 +25,15 @@ vi.mock('../../db', () => ({
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
+    // Default-destination demote + promote run in one transaction so a failed
+    // write can't leave the org with no default. The tx routes through the same
+    // insert/update mocks, so assertions below see every statement.
+    transaction: (fn: (tx: unknown) => unknown) =>
+      fn({
+        select: (...args: unknown[]) => selectMock(...(args as [])),
+        insert: (...args: unknown[]) => insertMock(...(args as [])),
+        update: (...args: unknown[]) => updateMock(...(args as [])),
+      }),
   },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -524,5 +533,62 @@ describe('backup config routes', () => {
     expect(s3ClientCtorMock).toHaveBeenCalledWith(
       expect.objectContaining({ region: 'us-west-004' }),
     );
+  });
+
+  // The org DEFAULT destination is what every partner-wide and profile-linked
+  // backup resolves to at job time. Demoting the current default and THEN
+  // bailing out on a validation/existence error would silently leave the org
+  // with no default at all — and their scheduled backups would start skipping
+  // with no obvious cause. Validate first; demote+promote atomically.
+  describe('default destination', () => {
+    it('does not demote the current default when the target config does not exist', async () => {
+      selectMock.mockReturnValue(chainMock([])); // no such config in this org
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isDefault: true }),
+      });
+
+      expect(res.status).toBe(404);
+      // Nothing was written — the previous default is untouched.
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('does not demote the current default when the update fails validation', async () => {
+      // Existing local-provider config; enabling encryption on it is rejected.
+      selectMock.mockReturnValue(
+        chainMock([makeConfig({ provider: 'local', providerConfig: { path: '/backups' } })]),
+      );
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isDefault: true, encryption: true }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('demotes the previous default when promoting a config', async () => {
+      selectMock.mockReturnValue(chainMock([makeConfig()]));
+      updateMock.mockReturnValue(chainMock([makeConfig({ isDefault: true })]));
+
+      const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isDefault: true }),
+      });
+
+      expect(res.status).toBe(200);
+      // One UPDATE demotes the old default, one promotes this config.
+      expect(updateMock).toHaveBeenCalledTimes(2);
+      const sets = updateMock.mock.results.flatMap((r: any) =>
+        r.value.set.mock.calls.map((c: any[]) => c[0]),
+      );
+      expect(sets).toContainEqual(expect.objectContaining({ isDefault: false }));
+      expect(sets).toContainEqual(expect.objectContaining({ isDefault: true }));
+    });
   });
 });

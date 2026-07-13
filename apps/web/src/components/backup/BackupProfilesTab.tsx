@@ -285,7 +285,8 @@ export default function BackupProfilesTab() {
       if (!response.ok) throw new Error(String(response.status));
       const payload = await response.json();
       setProfiles(Array.isArray(payload.data) ? payload.data : []);
-    } catch {
+    } catch (err) {
+      console.error("Failed to load backup profiles", err);
       setLoadError(i18n.t("backup:profiles.loadFailed"));
     } finally {
       setLoading(false);
@@ -415,9 +416,13 @@ export default function BackupProfilesTab() {
       if (err instanceof ActionError && err.status === 401) return;
       if (err instanceof ActionError && err.status === 409) {
         // In-use race (a policy linked it since the list loaded). The toast
-        // already fired; flip the inline panel to the in-use message and
-        // refresh counts.
-        setDeleteBlockedBy([]);
+        // already fired; flip the inline panel to the in-use message. The API
+        // names the blocking policies in the 409 body — show them, or the user
+        // is told "can't delete" with no way to find out what to unlink.
+        const referencing = (err.body as
+          | { referencingPolicies?: { policyId: string; policyName: string }[] }
+          | undefined)?.referencingPolicies;
+        setDeleteBlockedBy(Array.isArray(referencing) ? referencing : []);
         await fetchProfiles();
         return;
       }

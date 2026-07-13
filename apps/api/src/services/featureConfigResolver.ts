@@ -598,6 +598,12 @@ export async function resolveBackupConfigForDevice(
         configPolicyBackupSettings,
         eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
       )
+      // Deliberately NOT filtered on backupProfiles.isActive: deactivating a
+      // profile removes it from the pickers (the list API hides inactive rows)
+      // but must NOT silently stop backups on policies that already link it —
+      // that would be a data-protection change disguised as a UI toggle. The
+      // profile editor's helper text states this contract. To stop backups,
+      // unlink the profile or deactivate the policy.
       .leftJoin(
         backupProfiles,
         eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId)
@@ -1455,6 +1461,12 @@ export async function resolveAllBackupAssignedDevices(
         configPolicyBackupSettings,
         eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
       )
+      // Deliberately NOT filtered on backupProfiles.isActive: deactivating a
+      // profile removes it from the pickers (the list API hides inactive rows)
+      // but must NOT silently stop backups on policies that already link it —
+      // that would be a data-protection change disguised as a UI toggle. The
+      // profile editor's helper text states this contract. To stop backups,
+      // unlink the profile or deactivate the policy.
       .leftJoin(
         backupProfiles,
         eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId)

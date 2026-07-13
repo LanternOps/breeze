@@ -4,11 +4,17 @@ import { extractApiError, isApiFailure } from './apiError';
 export class ActionError extends Error {
   code?: string;
   status: number;
-  constructor(message: string, status: number, code?: string) {
+  /** Parsed response body, when the failure carried one. Routes that return
+   *  structured detail with their error (e.g. a 409 listing what blocks a
+   *  delete) would otherwise have it thrown away, leaving the UI unable to
+   *  tell the user WHY. Undefined for network failures and 401s. */
+  body?: unknown;
+  constructor(message: string, status: number, code?: string, body?: unknown) {
     super(message);
     this.name = 'ActionError';
     this.status = status;
     this.code = code;
+    this.body = body;
   }
 }
 
@@ -54,7 +60,7 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       if (friendly) message = friendly;
     }
     showToast({ message, type: 'error' });
-    throw new ActionError(message, response.status, code);
+    throw new ActionError(message, response.status, code, data);
   }
 
   let result: T;

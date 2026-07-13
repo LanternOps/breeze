@@ -531,6 +531,10 @@ export default function BackupTab({
   );
   const [profiles, setProfiles] = useState<PolicyBackupProfile[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(false);
+  // A failed profile fetch must NOT render as "this org has no profiles" — a
+  // user seeing a false-empty picker can switch to "custom" and save, which
+  // permanently converts a profile link.
+  const [profilesFailed, setProfilesFailed] = useState(false);
 
   // Destination state
   const [configs, setConfigs] = useState<BackupConfig[]>([]);
@@ -538,6 +542,9 @@ export default function BackupTab({
   // Distinguishes "fetch not done yet" from "fetched, zero configs" so the
   // create form only auto-opens once we know the org truly has none.
   const [configsLoaded, setConfigsLoaded] = useState(false);
+  // ...and a FAILED fetch is neither. Without this, a transient 500 renders the
+  // "create your first destination" form over an org that already has some.
+  const [configsFailed, setConfigsFailed] = useState(false);
   const [selectedConfigId, setSelectedConfigId] = useState<string>(() => {
     if (storedDestinationId) return storedDestinationId;
     // Legacy custom links stored the destination in featurePolicyId; profile
@@ -588,21 +595,26 @@ export default function BackupTab({
     setConfigsLoading(true);
     try {
       const response = await fetchWithAuth(meta.fetchUrl);
-      if (response.ok) {
-        const payload = await response.json();
-        setConfigs(
-          Array.isArray(payload.data)
-            ? payload.data
-            : Array.isArray(payload)
-              ? payload
-              : [],
-        );
+      if (!response.ok) {
+        throw new Error(`Failed to load backup destinations (${response.status})`);
       }
-    } catch {
-      // Silently fail
+      const payload = await response.json();
+      setConfigs(
+        Array.isArray(payload.data)
+          ? payload.data
+          : Array.isArray(payload)
+            ? payload
+            : [],
+      );
+      setConfigsFailed(false);
+      setConfigsLoaded(true);
+    } catch (err) {
+      // Never fall through to the empty state: the destination list is what the
+      // whole tab keys off, and an empty one auto-opens the create form.
+      console.error("Failed to load backup destinations", err);
+      setConfigsFailed(true);
     } finally {
       setConfigsLoading(false);
-      setConfigsLoaded(true);
     }
   }, [meta.fetchUrl]);
 
@@ -616,21 +628,24 @@ export default function BackupTab({
       setProfilesLoading(true);
       try {
         const response = await fetchWithAuth("/backup/profiles");
-        if (response.ok) {
-          const payload = await response.json();
-          if (!cancelled) {
-            const rows = Array.isArray(payload.data) ? payload.data : [];
-            setProfiles(rows);
-            if (rows.length > 0 && !effectiveLink) {
-              setSourceModeTouched((touched) => {
-                if (!touched) setSourceMode("profile");
-                return touched;
-              });
-            }
+        if (!response.ok) {
+          throw new Error(`Failed to load backup profiles (${response.status})`);
+        }
+        const payload = await response.json();
+        if (!cancelled) {
+          const rows = Array.isArray(payload.data) ? payload.data : [];
+          setProfiles(rows);
+          setProfilesFailed(false);
+          if (rows.length > 0 && !effectiveLink) {
+            setSourceModeTouched((touched) => {
+              if (!touched) setSourceMode("profile");
+              return touched;
+            });
           }
         }
-      } catch {
-        // Silently fail — the picker shows its empty state with a manage link.
+      } catch (err) {
+        console.error("Failed to load backup profiles", err);
+        if (!cancelled) setProfilesFailed(true);
       } finally {
         if (!cancelled) setProfilesLoading(false);
       }
@@ -1025,6 +1040,20 @@ export default function BackupTab({
     setConfigError(undefined);
     setFieldErrors({});
 
+    // Block the save only when a profile link is actually at stake: we're
+    // saving one (profile mode), or this policy already has one and a custom
+    // save would silently convert it — and the failed fetch means we can't
+    // even show the user what they'd be replacing. A plain custom save on a
+    // policy that never had a profile is unaffected.
+    if (profilesFailed && (sourceMode === "profile" || storedProfileId)) {
+      setConfigError(
+        i18n.t(
+          "policies:configurationPolicies.featureTabs.backupTab.profilesLoadFailed",
+        ),
+      );
+      return;
+    }
+
     // ── Profile-linked save ─────────────────────────────────────────────
     if (sourceMode === "profile") {
       if (!selectedProfileId) {
@@ -1306,6 +1335,22 @@ export default function BackupTab({
                       className="h-20 animate-pulse rounded-md border border-muted bg-muted/30"
                     />
                   ))}
+                </div>
+              ) : profilesFailed ? (
+                <div
+                  className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm"
+                  data-testid="backup-profiles-load-error"
+                >
+                  <p className="font-medium text-destructive">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.profilesLoadFailed",
+                    )}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:configurationPolicies.featureTabs.backupTab.profilesLoadFailedHint",
+                    )}
+                  </p>
                 </div>
               ) : linkableProfiles.length === 0 ? (
                 <div className="rounded-md border border-dashed p-4 text-sm">
@@ -1824,6 +1869,29 @@ export default function BackupTab({
               {i18n.t(
                 "policies:configurationPolicies.featureTabs.backupTab.partnerDestinationNote",
               )}
+            </div>
+          ) : configsFailed ? (
+            // Never show the destination picker (or its "create your first
+            // destination" empty state) over a failed load — the org may well
+            // have destinations we just couldn't fetch.
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm"
+              data-testid="backup-destinations-load-error"
+            >
+              <p className="font-medium text-destructive">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.destinationsLoadFailed",
+                )}
+              </p>
+              <button
+                type="button"
+                onClick={() => void fetchConfigs()}
+                className="mt-2 text-xs text-primary hover:underline"
+              >
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.backupTab.destinationsLoadRetry",
+                )}
+              </button>
             </div>
           ) : (
             <>
