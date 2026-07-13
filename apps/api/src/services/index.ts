@@ -30,7 +30,7 @@ export * from './commandQueue';
 export * from './email';
 export * from './auditService';
 export * from './tokenRevocation';
-export * from './refreshTokenFamily';
+export { getActiveRefreshTokenFamily } from './refreshTokenFamily';
 export * from './userSession';
 export * from './authLifecycle';
 export * from './authBrowserTransition';
