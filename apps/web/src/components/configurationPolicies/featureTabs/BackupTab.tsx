@@ -830,7 +830,7 @@ export default function BackupTab({
     setS3Region(region);
     setS3RegionTouched(Boolean(region.trim()));
     setS3Endpoint(typeof details.endpoint === "string" ? details.endpoint : "");
-    if (typeof details.prefix === "string") update("s3Prefix", details.prefix);
+    update("s3Prefix", typeof details.prefix === "string" ? details.prefix : "");
     setS3AccessKey(hasStoredSecret(details.accessKey) ? MASKED_SECRET : "");
     setS3SecretKey(hasStoredSecret(details.secretKey) ? MASKED_SECRET : "");
     setLocalPath(
