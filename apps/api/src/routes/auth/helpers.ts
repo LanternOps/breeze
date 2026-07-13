@@ -48,6 +48,8 @@ export const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T>
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
+const CSRF_BINDING_VALUE_PATTERN = /^[0-9a-f]{64}$/;
+
 /**
  * #2153: does the account have at least one usable (non-disabled) passkey?
  *
@@ -488,13 +490,27 @@ export function setRefreshTokenCookie(c: Context, refreshToken: string): void {
   if (hasCfAccessLogoutQuarantine(c)) {
     throw new HTTPException(409, { message: 'Terminal logout is still in progress' });
   }
-  const csrfToken = randomBytes(32).toString('hex');
+  const existingCsrfToken = getCookieValue(c.req.header('Cookie'), CSRF_COOKIE_NAME);
+  const csrfToken = existingCsrfToken && CSRF_BINDING_VALUE_PATTERN.test(existingCsrfToken)
+    ? existingCsrfToken
+    : randomBytes(32).toString('hex');
   c.header('Set-Cookie', buildRefreshTokenCookie(refreshToken), { append: true });
   c.header('Set-Cookie', buildCsrfTokenCookie(csrfToken), { append: true });
 }
 
-export function clearRefreshTokenCookie(c: Context): void {
+export function clearRefreshCookieOnly(c: Context): void {
   c.header('Set-Cookie', buildClearRefreshTokenCookie(), { append: true });
+}
+
+export function rotateCsrfBindingCookie(c: Context, value: string): void {
+  if (!CSRF_BINDING_VALUE_PATTERN.test(value)) {
+    throw new Error('CSRF binding value must be a 256-bit lowercase hexadecimal value');
+  }
+  c.header('Set-Cookie', buildCsrfTokenCookie(value), { append: true });
+}
+
+export function clearRefreshTokenCookie(c: Context): void {
+  clearRefreshCookieOnly(c);
   c.header('Set-Cookie', buildClearCsrfTokenCookie(), { append: true });
 }
 
@@ -561,7 +577,10 @@ export function isAllowedOrigin(origin: string): boolean {
   return false;
 }
 
-export function validateCookieCsrfRequest(c: Context): string | null {
+function validateCookieCsrfRequestInternal(
+  c: Context,
+  allowHeaderOnlyCompatibility: boolean,
+): string | null {
   const csrfHeader = c.req.header(CSRF_HEADER_NAME)?.trim();
   if (!csrfHeader || csrfHeader.length === 0) {
     return 'Missing CSRF header';
@@ -574,10 +593,17 @@ export function validateCookieCsrfRequest(c: Context): string | null {
     const hasOrigin = Boolean(c.req.header('origin'));
     const fetchSite = c.req.header('sec-fetch-site');
     const isBrowserSignal = hasOrigin || Boolean(fetchSite);
-    if (csrfHeader === '1' && !isBrowserSignal) {
+    if (allowHeaderOnlyCompatibility && csrfHeader === '1' && !isBrowserSignal) {
       return null;
     }
     return 'Missing CSRF cookie';
+  }
+  if (
+    !allowHeaderOnlyCompatibility
+    && (!CSRF_BINDING_VALUE_PATTERN.test(csrfHeader)
+      || !CSRF_BINDING_VALUE_PATTERN.test(csrfCookie))
+  ) {
+    return 'Invalid CSRF token';
   }
   if (!safeCompareTokens(csrfHeader, csrfCookie)) {
     return 'Invalid CSRF token';
@@ -598,6 +624,14 @@ export function validateCookieCsrfRequest(c: Context): string | null {
   }
 
   return null;
+}
+
+export function validateCookieCsrfRequest(c: Context): string | null {
+  return validateCookieCsrfRequestInternal(c, true);
+}
+
+export function validateTerminalCookieCsrfRequest(c: Context): string | null {
+  return validateCookieCsrfRequestInternal(c, false);
 }
 
 function safeCompareTokens(headerToken: string, cookieToken: string): boolean {

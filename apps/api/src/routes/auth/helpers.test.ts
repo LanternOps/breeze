@@ -2,12 +2,16 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { createHash } from 'crypto';
 import { Hono } from 'hono';
 import {
+  clearRefreshCookieOnly,
+  clearRefreshTokenCookie,
   clearCfAccessLogoutQuarantineCookie,
   getAllowedOrigins,
   hashRecoveryCode,
+  rotateCsrfBindingCookie,
   setCfAccessLogoutQuarantineCookie,
   setRefreshTokenCookie,
   userRequiresSetup,
+  validateTerminalCookieCsrfRequest,
 } from './helpers';
 
 describe('Cloudflare logout quarantine cookie', () => {
@@ -47,6 +51,186 @@ describe('Cloudflare logout quarantine cookie', () => {
     );
     expect(clearResponse.headers.get('set-cookie')).toContain('Max-Age=0');
   });
+});
+
+describe('durable browser binding cookies', () => {
+  const csrf = 'a'.repeat(64);
+
+  it('preserves a valid stable CSRF binding when installing a refresh token', async () => {
+    const app = new Hono();
+    app.get('/issue', (c) => {
+      setRefreshTokenCookie(c, 'new-refresh-token');
+      return c.json({ success: true });
+    });
+
+    const response = await app.request('/issue', {
+      headers: { cookie: `breeze_csrf_token=${csrf}` },
+    });
+    const setCookie = response.headers.get('set-cookie') ?? '';
+
+    expect(setCookie).toContain('breeze_refresh_token=new-refresh-token');
+    expect(setCookie).toContain(`breeze_csrf_token=${csrf}`);
+    expect(setCookie.match(/breeze_csrf_token=([0-9a-f]{64})/)?.[1]).toBe(csrf);
+  });
+
+  it('keeps the legacy unguarded path functional with a fresh 256-bit CSRF value', async () => {
+    const app = new Hono();
+    app.get('/issue', (c) => {
+      setRefreshTokenCookie(c, 'new-refresh-token');
+      return c.json({ success: true });
+    });
+
+    const response = await app.request('/issue');
+
+    expect(response.headers.get('set-cookie') ?? '').toMatch(
+      /breeze_csrf_token=[0-9a-f]{64}/,
+    );
+  });
+
+  it('can clear only the refresh cookie while preserving the transition binding', async () => {
+    const app = new Hono();
+    app.get('/clear', (c) => {
+      clearRefreshCookieOnly(c);
+      return c.json({ success: true });
+    });
+
+    const response = await app.request('/clear');
+    const setCookie = response.headers.get('set-cookie') ?? '';
+
+    expect(setCookie).toContain('breeze_refresh_token=');
+    expect(setCookie).toContain('Max-Age=0');
+    expect(setCookie).not.toContain('breeze_csrf_token=');
+  });
+
+  it('keeps ordinary clearing behavior for non-terminal logout', async () => {
+    const app = new Hono();
+    app.get('/clear', (c) => {
+      clearRefreshTokenCookie(c);
+      return c.json({ success: true });
+    });
+
+    const response = await app.request('/clear');
+    const setCookie = response.headers.get('set-cookie') ?? '';
+
+    expect(setCookie).toContain('breeze_refresh_token=');
+    expect(setCookie).toContain('breeze_csrf_token=');
+  });
+
+  it('installs an explicitly admitted replacement binding', async () => {
+    const replacement = 'b'.repeat(64);
+    const app = new Hono();
+    app.get('/rotate', (c) => {
+      rotateCsrfBindingCookie(c, replacement);
+      return c.json({ success: true });
+    });
+
+    const response = await app.request('/rotate');
+
+    expect(response.headers.get('set-cookie') ?? '').toContain(
+      `breeze_csrf_token=${replacement}`,
+    );
+  });
+});
+
+describe('strict terminal cookie CSRF validation', () => {
+  const csrf = 'c'.repeat(64);
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalCorsOrigins = process.env.CORS_ALLOWED_ORIGINS;
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    process.env.CORS_ALLOWED_ORIGINS = 'https://app.example.com';
+  });
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    if (originalCorsOrigins === undefined) delete process.env.CORS_ALLOWED_ORIGINS;
+    else process.env.CORS_ALLOWED_ORIGINS = originalCorsOrigins;
+  });
+
+  function terminalApp(): Hono {
+    const app = new Hono();
+    app.post('/prepare', (c) => {
+      const error = validateTerminalCookieCsrfRequest(c);
+      return error
+        ? c.json({ error }, 403)
+        : c.json({ success: true });
+    });
+    return app;
+  }
+
+  it.each([
+    ['missing cookie', {
+      'x-breeze-csrf': csrf,
+      origin: 'https://app.example.com',
+      'sec-fetch-site': 'same-origin',
+    }, 'Missing CSRF cookie'],
+    ['missing header', {
+      cookie: `breeze_csrf_token=${csrf}`,
+      origin: 'https://app.example.com',
+      'sec-fetch-site': 'same-origin',
+    }, 'Missing CSRF header'],
+    ['mismatch', {
+      cookie: `breeze_csrf_token=${csrf}`,
+      'x-breeze-csrf': 'd'.repeat(64),
+      origin: 'https://app.example.com',
+      'sec-fetch-site': 'same-origin',
+    }, 'Invalid CSRF token'],
+    ['malformed matching values', {
+      cookie: 'breeze_csrf_token=matching-but-not-a-binding',
+      'x-breeze-csrf': 'matching-but-not-a-binding',
+      origin: 'https://app.example.com',
+      'sec-fetch-site': 'same-origin',
+    }, 'Invalid CSRF token'],
+    ['disallowed origin', {
+      cookie: `breeze_csrf_token=${csrf}`,
+      'x-breeze-csrf': csrf,
+      origin: 'https://evil.example.com',
+      'sec-fetch-site': 'same-origin',
+    }, 'Invalid request origin'],
+    ['cross-site fetch', {
+      cookie: `breeze_csrf_token=${csrf}`,
+      'x-breeze-csrf': csrf,
+      origin: 'https://app.example.com',
+      'sec-fetch-site': 'cross-site',
+    }, 'Cross-site request blocked'],
+  ])('rejects %s', async (_label, headers, expectedError) => {
+    const response = await terminalApp().request('/prepare', {
+      method: 'POST',
+      headers,
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: expectedError });
+  });
+
+  it('does not accept the header-only non-browser compatibility branch', async () => {
+    const response = await terminalApp().request('/prepare', {
+      method: 'POST',
+      headers: { 'x-breeze-csrf': '1' },
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: 'Missing CSRF cookie' });
+  });
+
+  it.each(['same-origin', 'same-site'])(
+    'accepts a matching cookie/header from an allowed %s request',
+    async (fetchSite) => {
+      const response = await terminalApp().request('/prepare', {
+        method: 'POST',
+        headers: {
+          cookie: `breeze_csrf_token=${csrf}`,
+          'x-breeze-csrf': csrf,
+          origin: 'https://app.example.com',
+          'sec-fetch-site': fetchSite,
+        },
+      });
+
+      expect(response.status).toBe(200);
+    },
+  );
 });
 
 describe('getAllowedOrigins (G5 — dev-origin gating)', () => {

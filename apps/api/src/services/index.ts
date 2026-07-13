@@ -33,4 +33,5 @@ export * from './tokenRevocation';
 export { getActiveRefreshTokenFamily } from './refreshTokenFamily';
 export * from './userSession';
 export * from './authLifecycle';
+export * from './authBrowserTransition';
 export * from './clientIp';
