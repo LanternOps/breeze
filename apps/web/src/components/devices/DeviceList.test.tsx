@@ -1081,8 +1081,20 @@ describe('DeviceList — row-menu agent commands gated on device status (#2426)'
     fireEvent.click(runScript);
     expect(onAction).not.toHaveBeenCalled();
 
-    expect(screen.getByRole('button', { name: /remote terminal/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /^reboot$/i })).toBeDisabled();
+    // The sibling agent commands carry the same gate AND the same tooltip —
+    // they were already disabled, so assert the title too or a dropped
+    // tooltip would go unnoticed.
+    for (const name of [/remote terminal/i, /^reboot$/i]) {
+      const sibling = screen.getByRole('button', { name });
+      expect(sibling).toBeDisabled();
+      expect(sibling).toHaveAttribute('title', 'Device is offline');
+    }
+
+    // Wake (Wake-on-LAN) is the deliberate exception: it exists precisely to
+    // target an offline device, so it must stay enabled. Guards against a
+    // future "gate every row-menu action on !== online" sweep silently killing
+    // the one action that is only useful when the device is offline.
+    expect(screen.getByRole('button', { name: /^wake$/i })).toBeEnabled();
   });
 
   it('disables Run Script for a decommissioned device with a decommissioned tooltip', () => {
