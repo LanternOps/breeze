@@ -23,6 +23,7 @@ import M365Integration from "./M365Integration";
 import Pax8Integration from "./Pax8Integration";
 import TdSynnexCatalogPanel from "../settings/TdSynnexCatalogPanel";
 import TdSynnexEcExpressPanel from "../settings/TdSynnexEcExpressPanel";
+import TdSynnexSftpPanel from "../settings/TdSynnexSftpPanel";
 import QuickbooksIntegration from "./QuickbooksIntegration";
 import StripePaymentsIntegration from "./StripePaymentsIntegration";
 import UnifiIntegration from "./UnifiIntegration";
@@ -43,7 +44,7 @@ type TabId =
   | "unifi";
 type SecuritySubTab = "sentinelone" | "huntress";
 type IdentitySubTab = "google" | "m365";
-type DistributorSubTab = "pax8" | "tdsynnex" | "tdsynnex-ec";
+type DistributorSubTab = "pax8" | "tdsynnex" | "tdsynnex-ec" | "tdsynnex-sftp";
 type AccountingSubTab = "quickbooks" | "stripe";
 
 const tabs: { id: TabId; labelKey: string; icon: typeof Activity }[] = [
@@ -88,6 +89,7 @@ const distributorSubTabs: { id: DistributorSubTab; labelKey: string }[] = [
   // hidden while EC Express is the working TD SYNNEX connector. The panel,
   // routes, and service remain; re-add this entry to restore the tab.
   { id: "tdsynnex-ec", labelKey: "integrationsPage.tdSYNNEXPricing" },
+  { id: "tdsynnex-sftp", labelKey: "integrationsPage.tdSYNNEXPriceFile" },
 ];
 
 const accountingSubTabs: { id: AccountingSubTab; labelKey: string }[] = [
@@ -402,6 +404,9 @@ export default function IntegrationsPage({
       {activeTab === "distributors" &&
         !isOrgScoped &&
         distributorSubTab === "tdsynnex-ec" && <TdSynnexEcExpressPanel />}
+      {activeTab === "distributors" &&
+        !isOrgScoped &&
+        distributorSubTab === "tdsynnex-sftp" && <TdSynnexSftpPanel />}
       {activeTab === "accounting" && isOrgScoped && (
         <p
           className="py-12 text-center text-sm text-muted-foreground"

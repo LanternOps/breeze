@@ -225,6 +225,7 @@ import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorke
 import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
 import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
 import { initializePax8SyncWorkers, shutdownPax8SyncWorkers } from './jobs/pax8SyncWorker';
+import { initializeTdSynnexSftpWorkers, shutdownTdSynnexSftpWorkers } from './jobs/tdSynnexSftpSyncWorker';
 import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
 import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
 import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
@@ -1187,6 +1188,7 @@ async function initializeWorkers(): Promise<void> {
     ['s1SyncWorker', initializeS1SyncJob],
     ['huntressSyncWorker', initializeHuntressSyncJob],
     ['pax8SyncWorker', initializePax8SyncWorkers],
+    ['tdSynnexSftpSyncWorker', initializeTdSynnexSftpWorkers],
     ['logForwardingWorker', initializeLogForwardingWorker],
     ['patchJobWorker', initializePatchJobWorkers],
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
@@ -1341,6 +1343,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownS1SyncJob,
     shutdownHuntressSyncJob,
     shutdownPax8SyncWorkers,
+    shutdownTdSynnexSftpWorkers,
     shutdownBackupVerificationJobs,
     shutdownSnmpRetention,
     shutdownMonitorWorker,

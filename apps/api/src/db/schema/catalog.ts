@@ -1,6 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
-  pgTable, uuid, text, varchar, char, boolean, numeric, integer, jsonb, timestamp, pgEnum,
+  pgTable, uuid, text, varchar, char, boolean, numeric, integer, jsonb, timestamp, date, pgEnum,
   index, uniqueIndex
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
@@ -140,4 +140,59 @@ export const tdSynnexDigitalBridgeIntegrations = pgTable('td_synnex_digital_brid
 }, (t) => [
   uniqueIndex('td_synnex_digital_bridge_partner_uq').on(t.partnerId),
   index('td_synnex_digital_bridge_partner_enabled_idx').on(t.partnerId, t.enabled)
+]);
+
+// Partner-axis (RLS shape 3). TD SYNNEX nightly SFTP P&A file connector config.
+// Secret-bearing values (accountNumber, password) live encrypted in credentials.
+// No host column: the SFTP host is server-controlled via a region map, and the
+// username ('u'/'c' + accountNumber) and remote filename (accountNumber + '.zip')
+// are derived, so a partner cannot point this connector at an arbitrary host.
+export const tdSynnexSftpIntegrations = pgTable('td_synnex_sftp_integrations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  region: varchar('region', { length: 8 }).notNull().default('US'),
+  accountNumber: varchar('account_number', { length: 32 }),
+  credentials: jsonb('credentials').notNull().default({}),
+  settings: jsonb('settings').notNull().default({}),
+  enabled: boolean('enabled').notNull().default(false),
+  lastTestStatus: varchar('last_test_status', { length: 30 }),
+  lastTestAt: timestamp('last_test_at'),
+  lastTestError: text('last_test_error'),
+  lastSyncAt: timestamp('last_sync_at'),
+  lastSyncStatus: varchar('last_sync_status', { length: 20 }),
+  lastSyncError: text('last_sync_error'),
+  lastFileName: text('last_file_name'),
+  lastRowCount: integer('last_row_count'),
+  createdBy: uuid('created_by').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (t) => [
+  uniqueIndex('td_synnex_sftp_partner_uq').on(t.partnerId)
+]);
+
+// Partner-axis (RLS shape 3). Price & availability rows ingested from the
+// nightly SFTP flat file, one per (partner, TD SYNNEX SKU).
+export const tdSynnexPriceAvailability = pgTable('td_synnex_price_availability', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  synnexSku: varchar('synnex_sku', { length: 64 }).notNull(),
+  mfgPartNo: varchar('mfg_part_no', { length: 128 }),
+  name: text('name'),
+  description: text('description'),
+  status: varchar('status', { length: 32 }),
+  currency: varchar('currency', { length: 8 }),
+  cost: numeric('cost', { precision: 12, scale: 4 }),
+  msrp: numeric('msrp', { precision: 12, scale: 4 }),
+  totalQty: integer('total_qty'),
+  warehouses: jsonb('warehouses').notNull().default([]),
+  weight: numeric('weight', { precision: 10, scale: 3 }),
+  raw: jsonb('raw').notNull().default({}),
+  fileDate: date('file_date'),
+  syncedAt: timestamp('synced_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+}, (t) => [
+  uniqueIndex('td_synnex_pa_partner_sku_uq').on(t.partnerId, t.synnexSku),
+  index('td_synnex_pa_partner_mfg_idx').on(t.partnerId, t.mfgPartNo),
+  index('td_synnex_pa_partner_synced_idx').on(t.partnerId, t.syncedAt)
 ]);

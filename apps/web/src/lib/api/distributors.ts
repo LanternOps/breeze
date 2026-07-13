@@ -68,6 +68,100 @@ export function sellPriceDefault(product: EcProduct): string {
   return value === null || value === undefined ? '' : value.toFixed(2);
 }
 
+// ─── TD SYNNEX nightly SFTP price & availability file ────────────────────────
+
+const SFTP_BASE = '/catalog/distributors/td-synnex-sftp';
+
+/** A populated password reads back from the API as this sentinel. Never send it
+ *  back on save — an empty field means "keep the stored password". */
+export const SFTP_MASKED_SECRET = '********';
+
+export type SftpRegion = 'US' | 'CA';
+
+export interface SftpStatus {
+  configured: boolean;
+  enabled: boolean;
+  id?: string;
+  region?: string;
+  accountNumber?: string;
+  /** Derived server-side from region + account number (read-only in the UI). */
+  username?: string | null;
+  remoteFileName?: string | null;
+  host?: string;
+  credentials?: { password?: string };
+  lastTestStatus?: string | null;
+  lastTestAt?: string | null;
+  lastTestError?: string | null;
+  lastSyncStatus?: string | null;
+  lastSyncAt?: string | null;
+  lastSyncError?: string | null;
+  lastFileName?: string | null;
+  lastRowCount?: number | null;
+}
+
+export interface SftpConfigInput {
+  region?: SftpRegion;
+  accountNumber?: string | null;
+  /** Omit to keep the stored password. */
+  password?: string | null;
+  enabled?: boolean;
+}
+
+export interface SftpTestResult {
+  success: boolean;
+  /** A brand-new account authenticates ~24h before TD SYNNEX generates the
+   *  first file: success with fileFound=false is informational, not a failure. */
+  fileFound: boolean;
+  message?: string;
+  error?: string | null;
+}
+
+/** One ingested price & availability row. Drizzle numerics arrive as strings. */
+export interface SftpProduct {
+  id?: string;
+  synnexSku: string;
+  mfgPartNo: string | null;
+  name: string | null;
+  description?: string | null;
+  status?: string | null;
+  currency: string | null;
+  cost: string | number | null;
+  msrp: string | number | null;
+  totalQty: number | null;
+  warehouses?: unknown;
+  syncedAt?: string | null;
+}
+
+export function tdSynnexSftpStatus(): Promise<Response> {
+  return fetchWithAuth(`${SFTP_BASE}/status`);
+}
+
+export function tdSynnexSftpSaveConfig(body: SftpConfigInput): Promise<Response> {
+  return fetchWithAuth(`${SFTP_BASE}/config`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
+export function tdSynnexSftpTest(): Promise<Response> {
+  return fetchWithAuth(`${SFTP_BASE}/test`, { method: 'POST', headers: JSON_HEADERS });
+}
+
+/** Enqueues a background job — the caller must report "queued", not "synced". */
+export function tdSynnexSftpSync(): Promise<Response> {
+  return fetchWithAuth(`${SFTP_BASE}/sync`, { method: 'POST', headers: JSON_HEADERS });
+}
+
+export function tdSynnexSftpProducts(opts: { q?: string; limit?: number; offset?: number } = {}): Promise<Response> {
+  const params = new URLSearchParams({
+    limit: String(opts.limit ?? 50),
+    offset: String(opts.offset ?? 0),
+  });
+  if (opts.q?.trim()) params.set('q', opts.q.trim());
+  return fetchWithAuth(`${SFTP_BASE}/products?${params.toString()}`);
+}
+
 const PAX8_BASE = '/catalog/distributors/pax8';
 
 export interface Pax8Product {

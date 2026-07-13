@@ -47,6 +47,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex\/import\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex-ec\/import\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/pax8\/import\/?$/ },
+  // The TD SYNNEX SFTP "test connection" route opens a real SSH/SFTP socket to
+  // the distributor (DNS resolve + handshake + auth + directory list, up to a
+  // 30s readyTimeout). testSftpConnection wraps each DB op in its own short
+  // withDbAccessContext, so the socket is never held across an open transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex-sftp\/test\/?$/ },
 ];
 
 /**

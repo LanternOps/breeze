@@ -180,6 +180,12 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['catalog_bundle_components', 'partner_id'],
   ['td_synnex_digital_bridge_integrations', 'partner_id'],
   ['td_synnex_ec_express_integrations', 'partner_id'],
+  // Nightly SFTP P&A file ingest (2026-07-16): partner-axis (Shape 3).
+  // td_synnex_price_availability holds the ingested rows and is written by the
+  // nightly worker under a system context; both carry a flat partner_id.
+  // Functional cross-partner forge proof: tdSynnexSftpRls.integration.test.ts.
+  ['td_synnex_sftp_integrations', 'partner_id'],
+  ['td_synnex_price_availability', 'partner_id'],
   // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
   // ticket_email_inbound (only system scope may write null-partner rows);
   // NOT NULL on partner_inbound_domains. Policy:

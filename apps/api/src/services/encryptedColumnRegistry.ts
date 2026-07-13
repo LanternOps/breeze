@@ -78,6 +78,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'sites', column: 'settings', kind: 'json', description: 'site-level settings with encrypted overrides' },
   { table: 'td_synnex_digital_bridge_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX Digital Bridge API credentials' },
   { table: 'td_synnex_ec_express_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX EC Express API credentials' },
+  { table: 'td_synnex_sftp_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX nightly SFTP P&A password (credentials.password)' },
   { table: 'device_recovery_keys', column: 'encrypted_key', kind: 'text', description: 'escrowed BitLocker/FileVault recovery key (#2021)' },
 ];
 
