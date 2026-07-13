@@ -255,6 +255,9 @@ describe('consumeVerificationToken', () => {
       'p-1',
       expect.any(Date),
     );
+    expect(
+      vi.mocked(activatePendingPartnerAndInvalidateSessions).mock.invocationCallOrder[0],
+    ).toBeLessThan(vi.mocked(db.update).mock.invocationCallOrder[0]!);
   });
 
   it('returns superseded when supersededAt is set on the row (resend invalidated this link)', async () => {
@@ -322,8 +325,8 @@ describe('consumeVerificationToken', () => {
 
   it('returns consumed if a concurrent request claimed the token first', async () => {
     const future = new Date(Date.now() + 60_000);
-    vi.mocked(db.select).mockReturnValueOnce(
-      chainSelect([
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainSelect([
         {
           id: 'evt-1',
           partnerId: 'p-1',
@@ -332,8 +335,10 @@ describe('consumeVerificationToken', () => {
           expiresAt: future,
           consumedAt: null,
         },
-      ]) as any
-    );
+      ]) as any)
+      .mockReturnValueOnce(chainSelect([
+        { id: 'p-1', status: 'pending', paymentMethodAttachedAt: null },
+      ]) as any);
 
     // Conditional UPDATE returns no rows — another request claimed it.
     vi.mocked(db.update).mockReturnValueOnce(chainUpdateReturning([]) as any);

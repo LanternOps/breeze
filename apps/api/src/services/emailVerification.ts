@@ -49,6 +49,8 @@ export type ConsumeResult =
   | { ok: true; partnerId: string; userId: string; email: string; autoActivated: boolean }
   | { ok: false; error: ConsumeFailureReason };
 
+class VerificationTokenClaimLostError extends Error {}
+
 /**
  * Atomically consume a verification token. On success, marks the token
  * row consumed and stamps `partners.email_verified_at` and
@@ -63,8 +65,9 @@ export type ConsumeResult =
 export async function consumeVerificationToken(rawToken: string): Promise<ConsumeResult> {
   const tokenHash = hashToken(rawToken);
 
-  return withSystemDbAccessContext(() =>
-    db.transaction(async (tx) => {
+  try {
+    return await withSystemDbAccessContext(() =>
+      db.transaction(async (tx) => {
       const [row] = await tx
         .select({
           id: emailVerificationTokens.id,
@@ -97,6 +100,32 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
 
       const now = new Date();
 
+      const [partnerBefore] = await tx
+        .select({
+          id: partners.id,
+          status: partners.status,
+          paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
+        })
+        .from(partners)
+        .where(eq(partners.id, row.partnerId))
+        .limit(1);
+
+      // Pay-then-verify ordering (#718): email is being verified now, so
+      // evaluate the shared activation predicate as if email_verified_at were
+      // already set. When activation is needed, it MUST run before the
+      // route-specific verification token/user/partner writes so every caller
+      // obeys users (UUID order) -> families (UUID order) -> route rows.
+      const shouldAutoActivate =
+        !!partnerBefore &&
+        shouldActivatePendingPartner({
+          status: partnerBefore.status,
+          emailVerifiedAt: now,
+          paymentMethodAttachedAt: partnerBefore.paymentMethodAttachedAt,
+        });
+      const activation = shouldAutoActivate
+        ? await activatePendingPartnerAndInvalidateSessions(tx, row.partnerId, now)
+        : { activated: false };
+
       // Single-claim guarantee: only one concurrent caller will see
       // returning() come back non-empty. The `superseded_at IS NULL`
       // clause closes the SELECT/UPDATE race window where invalidate-
@@ -114,36 +143,17 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
         .returning({ id: emailVerificationTokens.id });
 
       if (claimed.length === 0) {
-        return { ok: false, error: 'consumed' as const };
+        // Activation may already have performed writes earlier in this same
+        // transaction to preserve global lock order. Throw across the
+        // transaction boundary so those writes roll back before reporting the
+        // benign concurrent-claim result.
+        throw new VerificationTokenClaimLostError();
       }
 
       await tx
         .update(users)
         .set({ emailVerifiedAt: now })
         .where(eq(users.id, row.userId));
-
-      const [partnerBefore] = await tx
-        .select({
-          id: partners.id,
-          status: partners.status,
-          paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
-        })
-        .from(partners)
-        .where(eq(partners.id, row.partnerId))
-        .limit(1);
-
-      // Pay-then-verify ordering (#718): email is being verified now, so
-      // evaluate the shared activation predicate as if email_verified_at were
-      // already set (it is, in this same transaction). The predicate keeps the
-      // gate identical to partnerGuard's verify-then-pay self-heal — both
-      // require status=pending AND a confirmed payment attachment, never time.
-      const shouldAutoActivate =
-        !!partnerBefore &&
-        shouldActivatePendingPartner({
-          status: partnerBefore.status,
-          emailVerifiedAt: now,
-          paymentMethodAttachedAt: partnerBefore.paymentMethodAttachedAt,
-        });
 
       // Always stamp email_verified_at. When both preconditions are met, the
       // activation helper flips status and invalidates pre-activation sessions
@@ -153,10 +163,6 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
         .set({ emailVerifiedAt: now, updatedAt: now })
         .where(eq(partners.id, row.partnerId));
 
-      const activation = shouldAutoActivate
-        ? await activatePendingPartnerAndInvalidateSessions(tx, row.partnerId, now)
-        : { activated: false };
-
       return {
         ok: true as const,
         partnerId: row.partnerId,
@@ -164,8 +170,14 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
         email: row.email,
         autoActivated: activation.activated,
       };
-    })
-  );
+      })
+    );
+  } catch (error) {
+    if (error instanceof VerificationTokenClaimLostError) {
+      return { ok: false, error: 'consumed' };
+    }
+    throw error;
+  }
 }
 
 /**

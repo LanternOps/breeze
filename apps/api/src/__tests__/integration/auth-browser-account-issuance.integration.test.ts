@@ -41,6 +41,10 @@ import { activateInvitedUserSession } from '../../routes/auth/invite';
 import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
 import { issueUserSession } from '../../services/userSession';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
+import {
+  consumeVerificationToken,
+  generateVerificationToken,
+} from '../../services/emailVerification';
 
 const CURRENT_KEY = 'integration-account-issuance-browser-binding-key';
 
@@ -117,7 +121,10 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function waitForBlockedActivationLock(tableName: 'users' | 'refresh_token_families'): Promise<void> {
+async function waitForBlockedActivationLock(
+  tableName: 'users' | 'refresh_token_families',
+  minimum = 1,
+): Promise<void> {
   const db = getTestDb();
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const rows = await db.execute(sql`
@@ -128,10 +135,10 @@ async function waitForBlockedActivationLock(tableName: 'users' | 'refresh_token_
         AND wait_event_type = 'Lock'
         AND position(${tableName} in lower(query)) > 0
     `) as unknown as Array<{ blocked_count: number }>;
-    if (Number(rows[0]?.blocked_count ?? 0) > 0) return;
+    if (Number(rows[0]?.blocked_count ?? 0) >= minimum) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`Activation never blocked on ${tableName}`);
+  throw new Error(`Expected ${minimum} activation queries blocked on ${tableName}`);
 }
 
 async function queueTransitionRacers<TFirst, TSecond>(
@@ -531,6 +538,107 @@ describe('registration and invite issuance against terminal logout', () => {
       releaseUserLock.resolve();
       releaseFamilyLock.resolve();
       await Promise.allSettled([userBlocker, familyBlocker, activationPromise]);
+    }
+  });
+
+  it('keeps email verification and guarded hosted activation in one cross-caller lock order', async () => {
+    const db = getTestDb();
+    const partner = await createPartner({ name: 'Verification Activation Race Partner' });
+    await db.update(partners).set({
+      status: 'pending',
+      paymentMethodAttachedAt: new Date(),
+    }).where(eq(partners.id, partner.id));
+    const org = await createOrganization({ partnerId: partner.id });
+    const partnerRole = await createRole({ scope: 'partner', partnerId: partner.id });
+    const createdUsers = [
+      await createUser({
+        partnerId: partner.id,
+        orgId: org.id,
+        email: 'verification-activation-a@example.com',
+      }),
+      await createUser({
+        partnerId: partner.id,
+        orgId: org.id,
+        email: 'verification-activation-b@example.com',
+      }),
+    ];
+    const [lowerUser, higherUser] = [...createdUsers].sort((left, right) =>
+      left.id.localeCompare(right.id));
+    if (!lowerUser || !higherUser) throw new Error('Failed to seed verification race users');
+    await assignUserToPartner(lowerUser.id, partner.id, partnerRole.id, 'all');
+    await assignUserToPartner(higherUser.id, partner.id, partnerRole.id, 'all');
+    const rawVerificationToken = await generateVerificationToken({
+      partnerId: partner.id,
+      userId: higherUser.id,
+      email: higherUser.email,
+    });
+
+    const lowerLockHeld = deferred();
+    const releaseLowerLock = deferred();
+    const lowerBlocker = db.transaction(async (tx) => {
+      await tx.execute(sql`
+        SELECT id FROM users WHERE id = ${lowerUser.id}::uuid FOR UPDATE
+      `);
+      lowerLockHeld.resolve();
+      await releaseLowerLock.promise;
+    });
+    await lowerLockHeld.promise;
+
+    const binding = freshBrowserBinding();
+    const capability = await beginAuthIssuance(binding);
+    const guardedActivation = finishAuthIssuance(capability, async (tx) => {
+      const activation = await activatePendingPartnerAndInvalidateSessions(tx, partner.id);
+      const tokens = await issueUserSession({
+        userId: higherUser.id,
+        email: higherUser.email,
+        roleId: partnerRole.id,
+        orgId: null,
+        partnerId: partner.id,
+        scope: 'partner',
+        mfa: false,
+        amr: ['password'],
+      }, { tx, capability });
+      return { activation, tokens };
+    });
+    void guardedActivation.catch(() => undefined);
+
+    let verification!: Promise<Awaited<ReturnType<typeof consumeVerificationToken>>>;
+    try {
+      await waitForBlockedActivationLock('users', 1);
+      verification = consumeVerificationToken(rawVerificationToken);
+      void verification.catch(() => undefined);
+      await waitForBlockedActivationLock('users', 2);
+
+      // The verification path must reach the canonical lower-user lock before
+      // writing its higher verification user. Under the old order this probe
+      // times out, and releasing the lower row creates the exact higher/lower
+      // deadlock with the guarded activation transaction.
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '1s'`);
+        await tx.execute(sql`
+          SELECT id FROM users WHERE id = ${higherUser.id}::uuid FOR UPDATE
+        `);
+      });
+
+      releaseLowerLock.resolve();
+      await lowerBlocker;
+      const [guardedResult, verificationResult] = await Promise.all([
+        guardedActivation,
+        verification,
+      ]);
+      expect(guardedResult.activation.activated).toBe(true);
+      expect(verificationResult).toMatchObject({
+        ok: true,
+        partnerId: partner.id,
+        userId: higherUser.id,
+      });
+    } finally {
+      releaseLowerLock.resolve();
+      await Promise.allSettled([
+        lowerBlocker,
+        guardedActivation,
+        ...(verification ? [verification] : []),
+      ]);
     }
   });
 });
