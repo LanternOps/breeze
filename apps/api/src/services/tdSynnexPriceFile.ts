@@ -348,10 +348,14 @@ export function parsePriceFile(
 
     if (recordType === 'HDR') {
       if (header) continue; // trailing/duplicate HDR — first one wins
-      const qualifier = (field(parts, HDR_FILE_QUALIFIER) ?? 'C').toUpperCase();
+      // Fail CLOSED on a missing/blank qualifier: never assume 'C' (full), because
+      // isFullFile drives pruneStaleRows — guessing "full" on a delta-or-unknown
+      // file would delete every row the sync didn't touch and wipe the catalog.
+      const rawQualifier = field(parts, HDR_FILE_QUALIFIER);
+      const qualifier = (rawQualifier ?? '').toUpperCase();
       if (qualifier !== 'C' && qualifier !== 'U') {
         throw new TdSynnexPriceFileError(
-          `HDR file qualifier (field 05) is "${qualifier}", expected "C" (full) or "U" (delta)`,
+          `HDR file qualifier (field 05) is "${rawQualifier ?? '(missing)'}", expected "C" (full) or "U" (delta)`,
           'TDS_PA_BAD_QUALIFIER'
         );
       }

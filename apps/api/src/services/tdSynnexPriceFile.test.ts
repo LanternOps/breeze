@@ -121,6 +121,13 @@ describe('parsePriceFile — failure modes', () => {
       .toThrow(/expected "C" \(full\) or "U" \(delta\)/);
   });
 
+  it('throws on a missing/blank file qualifier rather than assuming full (fail closed — a blank must NOT prune)', () => {
+    // A blank qualifier column must never coalesce to 'C'; that would flag the
+    // file as a full snapshot and prune the catalog. It must fail loudly instead.
+    expect(() => parsePriceFile(SAMPLE_FILE.replace('~190227~C~', '~190227~~')))
+      .toThrow(/qualifier \(field 05\) is "\(missing\)"/);
+  });
+
   it('rejects the file when too many DTL rows are malformed', () => {
     // One good row, two truncated rows => 66% malformed, over the 1% ceiling.
     const truncated = 'SAMPLE846~DTL~ABC~DEF~123~A~name';
