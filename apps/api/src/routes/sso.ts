@@ -30,6 +30,7 @@ import {
   idpAssertedMfa,
   mapUserAttributes,
   discoverOIDCConfig,
+  assertSafeOidcEndpoint,
   PROVIDER_PRESETS,
   type OIDCConfig,
   type EmailVerifiedClaim
@@ -660,7 +661,10 @@ function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
     throw new Error('Provider is not fully configured');
   }
 
-  return {
+  // Resolved ONCE here, from deployment config — never from a request value.
+  const allowPrivateNetwork = selfHostAllowsPrivateNetwork();
+
+  const config: OIDCConfig = {
     issuer: provider.issuer,
     clientId: provider.clientId,
     clientSecret: decryptedClientSecret,
@@ -668,8 +672,23 @@ function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
     tokenUrl: provider.tokenUrl || `${provider.issuer}/oauth/token`,
     userInfoUrl: provider.userInfoUrl || `${provider.issuer}/userinfo`,
     jwksUrl: provider.jwksUrl || undefined,
-    scopes: provider.scopes || 'openid profile email'
+    scopes: provider.scopes || 'openid profile email',
+    allowPrivateNetwork
   };
+
+  // SR2-14: RE-VALIDATE persisted endpoints at runtime. They were trusted
+  // blindly: discovery wrote them verbatim, and PATCH can change `issuer`
+  // WITHOUT re-running discovery, so tokenUrl/jwksUrl could still point at the
+  // previous (or an attacker's) IdP. The `${issuer}/…` string-concat fallbacks
+  // above are validated by the same gate.
+  assertSafeOidcEndpoint('authorization_endpoint', config.authorizationUrl, allowPrivateNetwork);
+  assertSafeOidcEndpoint('token_endpoint', config.tokenUrl, allowPrivateNetwork);
+  assertSafeOidcEndpoint('userinfo_endpoint', config.userInfoUrl, allowPrivateNetwork);
+  if (config.jwksUrl) {
+    assertSafeOidcEndpoint('jwks_uri', config.jwksUrl, allowPrivateNetwork);
+  }
+
+  return config;
 }
 
 function getClientIP(c: any): string {
@@ -909,8 +928,11 @@ ssoRoutes.post(
       config.userInfoUrl = discovery.userinfo_endpoint;
       config.jwksUrl = discovery.jwks_uri;
     } catch (error) {
-      // Discovery failed, user will need to provide URLs manually
-      console.warn('OIDC discovery failed:', error);
+      // Discovery failed OR returned endpoints that failed SSRF/HTTPS validation
+      // (SR2-14). Either way we persist NO endpoints — an unusable provider is
+      // strictly better than one pointing at an attacker-controlled endpoint.
+      console.warn('OIDC discovery failed or was rejected:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -976,7 +998,13 @@ ssoRoutes.patch(
   const body = c.req.valid('json');
 
   const [existing] = await db
-    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
+    .select({
+      id: ssoProviders.id,
+      orgId: ssoProviders.orgId,
+      partnerId: ssoProviders.partnerId,
+      issuer: ssoProviders.issuer,
+      type: ssoProviders.type
+    })
     .from(ssoProviders)
     .where(eq(ssoProviders.id, providerId))
     .limit(1);
@@ -1003,8 +1031,37 @@ ssoRoutes.patch(
     }
   }
 
+  // SR2-14: repointing the issuer WITHOUT re-discovery leaves tokenUrl/jwksUrl
+  // aimed at the OLD IdP (or, with a crafted discovery doc, an attacker's).
+  // Re-discover; if that fails or is rejected, CLEAR the endpoints (fail closed)
+  // rather than keep stale ones. The provider is unusable until it is fixed —
+  // which is the correct outcome for a half-repointed IdP.
+  const issuerChanged = body.issuer !== undefined && body.issuer !== existing.issuer;
+  const rediscovered: Partial<typeof ssoProviders.$inferInsert> = {};
+  if (issuerChanged && (body.type ?? existing.type) === 'oidc') {
+    try {
+      const discovery = await discoverOIDCConfig(body.issuer!, {
+        allowPrivateNetwork: selfHostAllowsPrivateNetwork()
+      });
+      rediscovered.authorizationUrl = discovery.authorization_endpoint;
+      rediscovered.tokenUrl = discovery.token_endpoint;
+      rediscovered.userInfoUrl = discovery.userinfo_endpoint;
+      rediscovered.jwksUrl = discovery.jwks_uri;
+    } catch (error) {
+      console.warn(`[sso] re-discovery failed for provider ${providerId} after issuer change:`, error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      rediscovered.authorizationUrl = null;
+      rediscovered.tokenUrl = null;
+      rediscovered.userInfoUrl = null;
+      rediscovered.jwksUrl = null;
+    }
+  }
+
   const updates: Partial<typeof ssoProviders.$inferInsert> = {
     ...body,
+    // SR2-14 (Task 7): must come AFTER ...body so re-discovered endpoints (or
+    // the fail-closed nulls) override any stale endpoint columns in the body.
+    ...rediscovered,
     updatedAt: new Date(),
     // SR2-10: re-stamp the JIT principal whenever the delegation is (re-)set.
     // This is the repair path when the previous configurer offboards: re-saving
@@ -1509,7 +1566,13 @@ ssoRoutes.post(
       return c.json({ error: 'Only OIDC linking is currently supported' }, 400);
     }
 
-    const config = getOIDCConfig(provider);
+    let config: OIDCConfig;
+    try {
+      config = getOIDCConfig(provider);
+    } catch (err) {
+      console.warn(`[sso] provider ${provider.id} has an invalid configuration:`, err);
+      return c.json({ error: 'SSO provider configuration is invalid' }, 400);
+    }
     const pkce = generatePKCEChallenge();
     const state = generateState();
     const nonce = generateNonce();
@@ -1664,7 +1727,13 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
     return c.json({ error: 'Only OIDC login is currently supported' }, 400);
   }
 
-  const config = getOIDCConfig(provider);
+  let config: OIDCConfig;
+  try {
+    config = getOIDCConfig(provider);
+  } catch (err) {
+    console.warn(`[sso] provider ${provider.id} has an invalid configuration:`, err);
+    return c.json({ error: 'SSO provider configuration is invalid' }, 400);
+  }
   const pkce = generatePKCEChallenge();
   const state = generateState();
   const nonce = generateNonce();
@@ -1758,7 +1827,13 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
     return c.json({ error: 'Only OIDC login is currently supported' }, 400);
   }
 
-  const config = getOIDCConfig(provider);
+  let config: OIDCConfig;
+  try {
+    config = getOIDCConfig(provider);
+  } catch (err) {
+    console.warn(`[sso] provider ${provider.id} has an invalid configuration:`, err);
+    return c.json({ error: 'SSO provider configuration is invalid' }, 400);
+  }
 
   // Generate PKCE challenge
   const pkce = generatePKCEChallenge();

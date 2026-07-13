@@ -45,6 +45,24 @@ vi.mock('../services/sso', () => ({
   idpAssertedMfa: (claims: { amr?: unknown }) => Array.isArray(claims?.amr) && claims.amr.includes('mfa'),
   mapUserAttributes: vi.fn(),
   discoverOIDCConfig: vi.fn(),
+  // SR2-14: getOIDCConfig (defined in the route file, NOT mocked) now calls this
+  // to re-validate persisted endpoints at runtime. Faithful mirror of the real
+  // implementation (missing / non-HTTPS / internal-literal → throw) so the
+  // runtime-revalidation tests bite while safe https endpoints stay no-ops.
+  assertSafeOidcEndpoint: (label: string, urlStr: string | null | undefined, allowPrivateNetwork = false) => {
+    if (!urlStr) throw new Error(`OIDC endpoint missing: ${label}`);
+    let u: URL;
+    try { u = new URL(urlStr); } catch { throw new Error(`OIDC endpoint rejected: ${label}`); }
+    const isHttps = u.protocol === 'https:';
+    const isHttp = u.protocol === 'http:';
+    if (!isHttps && !(allowPrivateNetwork && isHttp)) throw new Error(`OIDC endpoint rejected (must be HTTPS): ${label}`);
+    const host = u.hostname.replace(/^\[|\]$/g, '');
+    if (host === 'localhost') throw new Error(`OIDC endpoint rejected (internal): ${label}`);
+    const literalIp = /^[0-9.]+$/.test(host) || host.includes(':');
+    if (literalIp && /^(127\.|10\.|192\.168\.|169\.254\.|0\.|172\.(1[6-9]|2\d|3[01])\.|::1|::$|fc|fd|fe80)/i.test(host)) {
+      throw new Error(`OIDC endpoint rejected (internal): ${label}`);
+    }
+  },
   PROVIDER_PRESETS: {
     okta: {
       scopes: 'openid profile email',
@@ -1583,6 +1601,23 @@ describe('sso routes', () => {
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ sub: USER_UUID }), expect.any(Object));
     });
 
+    // SR2-14: the callback re-reads the provider and builds its OIDC config via
+    // getOIDCConfig, which now re-validates the persisted endpoints. A stale/
+    // attacker tokenUrl (e.g. left by a PATCH issuer change) must abort the flow
+    // via the existing catch-all redirect BEFORE the code is exchanged — the
+    // decrypted client_secret never leaves the process.
+    it('re-validates persisted endpoints at runtime: an unsafe tokenUrl redirects without a token exchange', async () => {
+      primeCallback();
+      vi.mocked(db.select).mockReturnValueOnce(
+        sel([{ ...PROVIDER_ROW[0], tokenUrl: 'http://evil.example.com/token' }])
+      );
+
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('/login?error=sso_error');
+      expect(exchangeCodeForTokens).not.toHaveBeenCalled();
+    });
+
     it('refuses to JIT-link an SSO assertion to an existing PASSWORD account (1B)', async () => {
       primeCallback();
       vi.mocked(db.select)
@@ -2534,6 +2569,22 @@ describe('sso routes', () => {
         providerVersion: ACTIVE_OIDC_PROVIDER_ROW.configVersion
       }));
       expect(res.headers.get('set-cookie') ?? '').toContain('breeze_sso_state=');
+    });
+
+    // SR2-14: an endpoint that was persisted (or left stale by a PATCH issuer
+    // change) pointing at a non-HTTPS/internal host must yield a clean 400, not
+    // an unhandled 500 from getOIDCConfig throwing out of the handler.
+    it('returns 400 for a provider with an unsafe persisted endpoint (not 500)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        providerSelectChain([
+          { ...ACTIVE_OIDC_PROVIDER_ROW, orgId: ORG_UUID, partnerId: null, tokenUrl: 'http://evil.example.com/token' }
+        ]) as any
+      );
+
+      const res = await app.request(`/sso/login/${ORG_UUID}`);
+
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
     it('429s on the per-(IP, org) bucket without touching the DB', async () => {

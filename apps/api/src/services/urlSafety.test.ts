@@ -9,6 +9,7 @@ import {
   isRfc1918OrUla,
   isAlwaysBlockedIp,
   SsrfBlockedError,
+  ResponseTooLargeError,
   __setLookupForTests
 } from './urlSafety';
 
@@ -327,6 +328,81 @@ describe('safeFetch — SSRF policy', () => {
     expect(pinnedAddress).toBe('8.8.8.8');
     expect(pinnedFamily).toBe(4);
     requestSpy.mockRestore();
+  });
+});
+
+describe('safeFetch — maxBytes body cap (SR2-13)', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  // Public IP so safeFetch's SSRF gate passes and we reach the (spied) request.
+  function primeLookupPublic(): void {
+    __setLookupForTests(async () => [{ address: '8.8.8.8', family: 4 }]);
+  }
+
+  // Spy http.request with a fake req/res that emits the supplied chunks then
+  // 'end'. Returns the fake req so a test can assert `.destroy()` fired on
+  // overrun. Chunks are emitted synchronously AFTER safeFetch's response
+  // callback has attached its `data`/`end` listeners.
+  function spyRequestEmitting(chunks: Buffer[]): { req: any } {
+    const handle: { req: any } = { req: undefined };
+    vi.spyOn(http, 'request').mockImplementation((_options: any, callback?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = 200;
+        res.statusMessage = 'OK';
+        res.headers = { 'content-type': 'application/json' };
+        callback?.(res);
+        for (const chunk of chunks) res.emit('data', chunk);
+        res.emit('end');
+      });
+      handle.req = req;
+      return req;
+    });
+    return handle;
+  }
+
+  it('destroys the socket and rejects with ResponseTooLargeError on overrun', async () => {
+    primeLookupPublic();
+    // 2048 > 1024, then a LATE chunk after the overrun to prove the guard
+    // does not double-reject or keep buffering after destroy.
+    const handle = spyRequestEmitting([Buffer.alloc(2048, 0x61), Buffer.alloc(4096, 0x62)]);
+
+    await expect(safeFetch('http://big.example.test/jwks', { maxBytes: 1024 })).rejects.toBeInstanceOf(
+      ResponseTooLargeError
+    );
+    expect(handle.req.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the ceiling on the error', async () => {
+    primeLookupPublic();
+    spyRequestEmitting([Buffer.alloc(5000, 0x61)]);
+    await expect(safeFetch('http://big.example.test/jwks', { maxBytes: 1024 })).rejects.toMatchObject({
+      maxBytes: 1024
+    });
+  });
+
+  it('resolves normally when the body is under maxBytes', async () => {
+    primeLookupPublic();
+    spyRequestEmitting([Buffer.from('{"ok":true}')]);
+    const res = await safeFetch('http://small.example.test/jwks', { maxBytes: 1024 });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ ok: true });
+  });
+
+  it('is unbounded when maxBytes is unset (no behavior change for existing callers)', async () => {
+    primeLookupPublic();
+    spyRequestEmitting([Buffer.alloc(1_000_000, 0x63)]);
+    const res = await safeFetch('http://huge.example.test/x');
+    expect(res.status).toBe(200);
+    const body = await res.arrayBuffer();
+    expect(body.byteLength).toBe(1_000_000);
   });
 });
 
