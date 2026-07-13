@@ -1157,6 +1157,7 @@ describe('browser-auth issuer inventory (1 guarded refresh; 8 frozen legacy issu
     const source = readFileSync(join(SRC_DIR, 'routes/auth/login.ts'), 'utf8');
     expect(source).toMatch(/finishAuthIssuance\([\s\S]*issueUserSession\([\s\S]*tx,[\s\S]*capability,/);
     expect(source).not.toContain('issueUserSessionLegacyDuringTransition');
+    expect(source).not.toContain('touchFamilyLastUsed');
   }, 15_000);
 
   it('freezes the exact remaining migration-shim callers', () => {

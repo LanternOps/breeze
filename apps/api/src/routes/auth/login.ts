@@ -13,12 +13,12 @@ import {
   loginLimiter,
   getRedis,
   isRefreshTokenJtiRevoked,
+  getRefreshTokenJtiRevocationState,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
   wasRefreshTokenJtiRecentlyRotated,
   revokeFamily,
   isFamilyRevoked,
-  touchFamilyLastUsed,
   isTokenIssuedBeforePasswordChange,
   recordAccountFailure,
   clearAccountFailures,
@@ -867,8 +867,8 @@ loginRoutes.post('/refresh', async (c) => {
       resourceType: 'refresh_token_family',
       resourceId: familyId,
       details: {
-        replayedJti: presentedJti,
-        reason: 'Durably stale refresh-token JTI replayed — entire family revoked',
+        classification: 'durably_stale',
+        reason: 'Durably stale refresh token replayed — entire family revoked',
       },
       ipAddress: getClientIP(c),
       userAgent: c.req.header('user-agent'),
@@ -878,9 +878,20 @@ loginRoutes.post('/refresh', async (c) => {
     return c.json({ error: 'Invalid refresh token' }, 401);
   }
 
-  // Redis remains an early accelerator for rollout-null families and defense
-  // in depth. It is not required to detect a stale non-null digest above.
-  if (await isRefreshTokenJtiRevoked(presentedJti)) {
+  // Only rollout-null families consult the legacy Redis JTI marker. A cache
+  // outage is unknown, not proof of compromise: refuse this attempt without
+  // mutating the family so the client can retry. Non-null PostgreSQL
+  // currentness never consults this cache.
+  const legacyJtiState = preflightCurrentJtiDigest === null
+    ? await getRefreshTokenJtiRevocationState(presentedJti)
+    : 'active';
+  if (legacyJtiState === 'unknown') {
+    return c.json({
+      error: 'Service temporarily unavailable',
+      reason: 'refresh_state_unavailable',
+    }, 503);
+  }
+  if (legacyJtiState === 'revoked') {
     if (await wasRefreshTokenJtiRecentlyRotated(presentedJti)) {
       return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
     }
@@ -893,8 +904,8 @@ loginRoutes.post('/refresh', async (c) => {
       resourceType: 'refresh_token_family',
       resourceId: familyId,
       details: {
-        replayedJti: presentedJti,
-        reason: 'Revoked refresh-token JTI replayed — entire family revoked',
+        classification: 'legacy_revoked',
+        reason: 'Revoked rollout-era refresh token replayed — entire family revoked',
       },
       ipAddress: getClientIP(c),
       userAgent: c.req.header('user-agent'),
@@ -1026,7 +1037,6 @@ loginRoutes.post('/refresh', async (c) => {
     console.warn('[auth] Post-commit refresh JTI cache cleanup failed:', error);
   });
   void bindIssuedUserSession(tokens);
-  void touchFamilyLastUsed(familyId);
 
   setRefreshTokenCookie(c, tokens.refreshToken);
   // Bind the rotated credentials to the server-verified account. The refresh

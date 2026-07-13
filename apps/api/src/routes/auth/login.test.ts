@@ -81,6 +81,7 @@ vi.mock('../../services', () => ({
     setex: vi.fn(async () => 'OK'),
   })),
   isRefreshTokenJtiRevoked: vi.fn(async () => false),
+  getRefreshTokenJtiRevocationState: vi.fn(async () => 'active'),
   revokeAllUserTokens: vi.fn(async () => undefined),
   revokeRefreshTokenJti: vi.fn(async () => true),
   markRefreshTokenJtiRotated: vi.fn(async () => undefined),
@@ -244,6 +245,7 @@ import {
   issueUserSessionLegacyDuringTransition,
   verifyToken,
   isRefreshTokenJtiRevoked,
+  getRefreshTokenJtiRevocationState,
   wasRefreshTokenJtiRecentlyRotated,
   isFamilyRevoked,
   revokeAllUserTokens,
@@ -858,6 +860,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       mfaEpoch: 7,
     }]) as any);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(getRefreshTokenJtiRevocationState).mockResolvedValue('active');
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
     vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
       roleId: 'role-1',
@@ -926,6 +929,69 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     expect(beginAuthIssuance).toHaveBeenCalledOnce();
     expect(finishAuthIssuance).toHaveBeenCalledOnce();
     expect(bindIssuedUserSession).toHaveBeenCalledOnce();
+    expect(touchFamilyLastUsed).not.toHaveBeenCalled();
+  });
+
+  it('uses non-null PostgreSQL currentness without consulting Redis JTI state', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current-durable',
+      fam: 'family-42',
+      ae: 4,
+      me: 7,
+      mfa: false,
+      amr: ['password'],
+    } as any);
+    vi.mocked(getActiveRefreshTokenFamily).mockResolvedValueOnce({
+      familyId: 'family-42',
+      userId: 'user-1',
+      createdAt: new Date(),
+      absoluteExpiresAt: new Date(Date.now() + 60_000),
+      lastUsedAt: new Date(),
+      revokedAt: null,
+      revokedReason: null,
+      currentRefreshJtiDigest: 'digest:jti-current-durable',
+      previousRefreshJtiDigest: null,
+      databaseNow: new Date(),
+    });
+    vi.mocked(getRefreshTokenJtiRevocationState).mockResolvedValueOnce('unknown');
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValueOnce(true);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(200);
+    expect(getRefreshTokenJtiRevocationState).not.toHaveBeenCalled();
+    expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
+    expect(revokeFamily).not.toHaveBeenCalled();
+    vi.mocked(getRefreshTokenJtiRevocationState).mockReset().mockResolvedValue('active');
+    vi.mocked(isRefreshTokenJtiRevoked).mockReset().mockResolvedValue(false);
+  });
+
+  it('returns retryable failure for legacy-null currentness when Redis state is unknown', async () => {
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-legacy-null',
+      fam: 'family-42',
+      ae: 4,
+      me: 7,
+    } as any);
+    vi.mocked(getRefreshTokenJtiRevocationState).mockResolvedValueOnce('unknown');
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'Service temporarily unavailable',
+      reason: 'refresh_state_unavailable',
+    });
+    expect(revokeFamily).not.toHaveBeenCalled();
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(beginAuthIssuance).not.toHaveBeenCalled();
   });
 
   it('durably revokes exactly the replayed family outside rotation grace', async () => {
@@ -938,12 +1004,19 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       ae: 4,
       me: 7,
     } as any);
-    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValueOnce(true);
+    vi.mocked(getRefreshTokenJtiRevocationState).mockResolvedValueOnce('revoked');
 
     const res = await postRefresh();
 
     expect(res.status).toBe(401);
     expect(revokeFamily).toHaveBeenCalledWith('family-42', 'reuse-detected');
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      resourceId: 'family-42',
+      details: {
+        classification: 'legacy_revoked',
+        reason: 'Revoked rollout-era refresh token replayed — entire family revoked',
+      },
+    }));
     expect(beginAuthIssuance).not.toHaveBeenCalled();
     expect(issueUserSession).not.toHaveBeenCalled();
   });
@@ -975,6 +1048,13 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
 
     expect(res.status).toBe(401);
     expect(revokeFamily).toHaveBeenCalledWith('family-42', 'reuse-detected');
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      resourceId: 'family-42',
+      details: {
+        classification: 'durably_stale',
+        reason: 'Durably stale refresh token replayed — entire family revoked',
+      },
+    }));
     expect(wasRefreshTokenJtiRecentlyRotated).not.toHaveBeenCalled();
     expect(isRefreshTokenJtiRevoked).not.toHaveBeenCalled();
     expect(beginAuthIssuance).not.toHaveBeenCalled();
@@ -1025,7 +1105,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
       ae: 4,
       me: 7,
     } as any);
-    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValueOnce(true);
+    vi.mocked(getRefreshTokenJtiRevocationState).mockResolvedValueOnce('revoked');
     vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValueOnce(true);
 
     const res = await postRefresh();

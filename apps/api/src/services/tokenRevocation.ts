@@ -260,20 +260,33 @@ export function isTokenIssuedBeforePasswordChange(
   return tokenIssuedAt < Math.floor(changedAtMs / 1000);
 }
 
-export async function isRefreshTokenJtiRevoked(jti: string): Promise<boolean> {
+export type RefreshTokenJtiRevocationState = 'active' | 'revoked' | 'unknown';
+
+/**
+ * Redis-only rollout-era JTI state. `unknown` is deliberately distinct from
+ * `revoked`: callers without durable currentness may retry, but must never
+ * turn a cache outage into durable family compromise handling.
+ */
+export async function getRefreshTokenJtiRevocationState(
+  jti: string,
+): Promise<RefreshTokenJtiRevocationState> {
   const redis = getRedis();
   if (!redis) {
-    console.error('[token-revocation] Redis unavailable — failing closed (treating refresh token as revoked)');
-    return true;
+    console.error('[token-revocation] Redis unavailable — refresh token revocation state unknown');
+    return 'unknown';
   }
 
   try {
     const revoked = await redis.get(getRevokedRefreshKey(jti));
-    return Boolean(revoked);
+    return revoked ? 'revoked' : 'active';
   } catch (error) {
-    console.error('[token-revocation] Failed to check refresh token revocation — failing closed:', error);
-    return true;
+    console.error('[token-revocation] Failed to check refresh token revocation state:', error);
+    return 'unknown';
   }
+}
+
+export async function isRefreshTokenJtiRevoked(jti: string): Promise<boolean> {
+  return (await getRefreshTokenJtiRevocationState(jti)) !== 'active';
 }
 
 /**

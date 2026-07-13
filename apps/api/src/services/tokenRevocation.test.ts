@@ -43,6 +43,7 @@ import {
   revokeAllRefreshTokenFamiliesForUser,
   isTokenIssuedBeforePasswordChange,
   isRefreshTokenJtiRevoked,
+  getRefreshTokenJtiRevocationState,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
   wasRefreshTokenJtiRecentlyRotated,
@@ -516,7 +517,7 @@ describe('tokenRevocation', () => {
 
       expect(result).toBe(true);
       expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Redis unavailable — failing closed (treating refresh token as revoked)')
+        expect.stringContaining('Redis unavailable — refresh token revocation state unknown')
       );
     });
 
@@ -530,7 +531,7 @@ describe('tokenRevocation', () => {
 
       expect(result).toBe(true);
       expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to check refresh token revocation — failing closed'),
+        expect.stringContaining('Failed to check refresh token revocation state'),
         expect.any(Error)
       );
     });
@@ -563,6 +564,33 @@ describe('tokenRevocation', () => {
       await isRefreshTokenJtiRevoked('jti-xyz');
 
       expect(mockGet).toHaveBeenCalledWith('token:refresh:revoked:jti-xyz');
+    });
+  });
+
+  describe('getRefreshTokenJtiRevocationState', () => {
+    it('returns unknown when Redis is unavailable', async () => {
+      mockGetRedis.mockReturnValue(null as unknown as Redis);
+
+      await expect(getRefreshTokenJtiRevocationState('jti-legacy')).resolves.toBe('unknown');
+    });
+
+    it('returns unknown when the Redis read fails', async () => {
+      const { redis } = createMockRedis({
+        get: vi.fn().mockRejectedValue(new Error('cache unavailable')),
+      });
+      mockGetRedis.mockReturnValue(redis);
+
+      await expect(getRefreshTokenJtiRevocationState('jti-legacy')).resolves.toBe('unknown');
+    });
+
+    it.each([
+      ['revoked', '1', 'revoked'],
+      ['active', null, 'active'],
+    ] as const)('returns %s for an authoritative cache value', async (_case, value, expected) => {
+      const { redis } = createMockRedis({ get: vi.fn().mockResolvedValue(value) });
+      mockGetRedis.mockReturnValue(redis);
+
+      await expect(getRefreshTokenJtiRevocationState('jti-legacy')).resolves.toBe(expected);
     });
   });
 
