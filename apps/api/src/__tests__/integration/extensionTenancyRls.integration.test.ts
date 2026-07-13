@@ -6,7 +6,7 @@ import {
   assertExtensionTenancyRls,
   assertNoUnaccountedPublicTables,
   coreTableNames,
-} from '../../extensions/loader';
+} from '../../extensions/tenancyTripwire';
 
 /**
  * Real-DB contract test for the extension RLS tripwire (#2424).
