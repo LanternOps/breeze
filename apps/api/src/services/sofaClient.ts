@@ -264,12 +264,15 @@ export async function syncSofa(
       const now = new Date();
       const vulnerabilityIds = new Map<string, string>();
       const skippedCveIds = new Set<string>();
+      // Occurrences, not Set.size — a repeated bogus id must not collapse to 1 (#2427).
+      let recheckSkippedCount = 0;
       for (const vuln of distinctCves(recs)) {
         // Defense-in-depth re-check of the parse-boundary validation (#2261).
         // Everything here runs in one transaction, so letting a malformed id
         // reach the INSERT would poison the whole run — skip it instead.
         if (!isValidCveId(vuln.cveId)) {
           skippedCveIds.add(vuln.cveId);
+          recheckSkippedCount += 1;
           continue;
         }
         vulnerabilityIds.set(vuln.cveId, await upsertSofaVulnerability({
@@ -304,7 +307,7 @@ export async function syncSofa(
       // Dropped-ENTRY count (#2427), not distinct ids: parse-boundary drops plus
       // the (normally empty) defense-in-depth re-check above. Denominator is the
       // raw upstream CVE-entry count.
-      const skipped = parseSkippedCount + skippedCveIds.size;
+      const skipped = parseSkippedCount + recheckSkippedCount;
       warnHighSkipRatio('SofaClient/sync', skipped, entryCount);
       await upsertSofaSourceSuccess(now, skipped);
       return { vulns: vulnerabilityIds.size, osFacts, skipped };

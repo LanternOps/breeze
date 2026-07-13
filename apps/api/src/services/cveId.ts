@@ -63,9 +63,20 @@ export const SKIP_ABSOLUTE_WARN_FLOOR = 100;
 /**
  * Minimum entries before the RATIO trigger is trusted. On a 3-entry feed one
  * skip is 33% — statistically meaningless and pure alert noise. Below this,
- * only the absolute floor can escalate.
+ * only the absolute floor or the gross-loss trigger can escalate.
  */
 export const MIN_ENTRIES_FOR_RATIO_WARN = 50;
+
+/**
+ * Gross-loss trigger, closing the gap BETWEEN the other two guards: a 45-entry
+ * feed that drops 40 of them trips neither the ratio trigger (too few entries to
+ * trust) nor the absolute floor (40 < 100), and assertSomeValidCveIds only
+ * throws at 100% loss — so an 89% loss would be stdout-only. Any run losing at
+ * least half its entries escalates, provided the loss is more than a rounding
+ * error in absolute terms.
+ */
+export const GROSS_LOSS_RATIO = 0.5;
+export const GROSS_LOSS_MIN_SKIPS = 5;
 
 /**
  * Escalate a sync run's malformed-CVE skips (#2427): console.error + a Sentry
@@ -79,9 +90,12 @@ export const MIN_ENTRIES_FOR_RATIO_WARN = 50;
  * count would render a mass drop as `1` and never trip either trigger — the
  * precise blind spot this function exists to close.
  *
- * Fires when EITHER the skip ratio exceeds SKIP_RATIO_WARN_THRESHOLD (on a feed
- * large enough for a ratio to mean anything) OR the absolute count reaches
- * SKIP_ABSOLUTE_WARN_FLOOR. No-op when nothing was skipped.
+ * Fires when ANY of three triggers is met, so no shape of loss slips between
+ * them: the skip ratio exceeds SKIP_RATIO_WARN_THRESHOLD on a feed large enough
+ * for a ratio to mean anything; the absolute count reaches
+ * SKIP_ABSOLUTE_WARN_FLOOR (a huge drop whose ratio is small only because the
+ * feed is huge); or the run lost at least GROSS_LOSS_RATIO of a small feed.
+ * No-op when nothing was skipped.
  */
 export function warnHighSkipRatio(tag: string, skippedCount: number, entryCount: number): void {
   if (skippedCount <= 0 || entryCount <= 0) return;
@@ -89,20 +103,16 @@ export function warnHighSkipRatio(tag: string, skippedCount: number, entryCount:
   const ratio = skippedCount / entryCount;
   const ratioTrips = entryCount >= MIN_ENTRIES_FOR_RATIO_WARN && ratio > SKIP_RATIO_WARN_THRESHOLD;
   const floorTrips = skippedCount >= SKIP_ABSOLUTE_WARN_FLOOR;
-  if (!ratioTrips && !floorTrips) return;
+  const grossLossTrips = ratio >= GROSS_LOSS_RATIO && skippedCount >= GROSS_LOSS_MIN_SKIPS;
+  if (!ratioTrips && !floorTrips && !grossLossTrips) return;
 
+  const trigger = ratioTrips ? 'ratio' : floorTrips ? 'absolute_floor' : 'gross_loss';
   const message =
     `[${tag}] High malformed-CVE skip count: ${skippedCount} of ${entryCount} `
     + `CVE entries (${(ratio * 100).toFixed(1)}%) were skipped this sync — `
     + 'probable upstream feed quality regression';
   console.error(message);
-  captureMessage(message, 'warning', {
-    tag,
-    skippedCount,
-    entryCount,
-    ratio,
-    trigger: ratioTrips ? 'ratio' : 'absolute_floor',
-  });
+  captureMessage(message, 'warning', { tag, skippedCount, entryCount, ratio, trigger });
 }
 
 /**

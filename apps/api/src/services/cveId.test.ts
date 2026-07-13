@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   assertSomeValidCveIds,
+  GROSS_LOSS_MIN_SKIPS,
   isValidCveId,
   MIN_ENTRIES_FOR_RATIO_WARN,
   SKIP_ABSOLUTE_WARN_FLOOR,
@@ -157,6 +158,32 @@ describe('warnHighSkipRatio', () => {
     warnHighSkipRatio('Test', 1, 3);
     expect(error).not.toHaveBeenCalled();
     expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  // The gap BETWEEN the ratio trigger and the absolute floor: a small feed that
+  // loses most of itself. 40 of 45 trips neither (45 < 50 entries; 40 < 100
+  // skips) and assertSomeValidCveIds only throws at 100% loss — so an 89% loss
+  // would have been stdout-only.
+  it('escalates gross loss on a small feed (below BOTH the ratio and floor triggers)', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnHighSkipRatio('Test', 40, 45);
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), 'warning', {
+      tag: 'Test',
+      skippedCount: 40,
+      entryCount: 45,
+      ratio: 40 / 45,
+      trigger: 'gross_loss',
+    });
+  });
+
+  it('still ignores a trivial gross-loss case below the min-skips guard', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(GROSS_LOSS_MIN_SKIPS).toBe(5);
+    // 2 of 3 is 67% but only 2 entries — noise, not signal.
+    warnHighSkipRatio('Test', 2, 3);
+    expect(error).not.toHaveBeenCalled();
   });
 });
 
