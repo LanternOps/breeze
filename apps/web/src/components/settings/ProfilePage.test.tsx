@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProfilePage from './ProfilePage';
-import { fetchWithAuth, ReauthenticationRequiredError } from '../../stores/auth';
+import { createPasskeyCredential, fetchWithAuth, ReauthenticationRequiredError } from '../../stores/auth';
 import { writeDensity, writeFontPreference, writeThemePreference, writeTimeFormatPreference } from '@/lib/appearance';
 
 vi.mock('../../stores/auth', () => ({
@@ -502,5 +502,30 @@ describe('ProfilePage MFA setup', () => {
     expect(await screen.findByTestId('signed-out-recovery-codes')).toBeTruthy();
     expect(screen.getAllByText('ROTA-1001')).toHaveLength(1);
     expect(screen.getAllByText('ROTA-1002')).toHaveLength(1);
+  });
+
+  it('preserves initial passkey recovery codes through terminal reauthentication', async () => {
+    vi.mocked(createPasskeyCredential).mockResolvedValueOnce({ id: 'credential-1', response: {} } as never);
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/auth/passkeys/register/options') {
+        return makeJsonResponse({ options: { challenge: 'challenge' } });
+      }
+      if (String(url) === '/auth/passkeys/register/verify') {
+        throw new ReauthenticationRequiredError(['PASS-1001', 'PASS-1002']);
+      }
+      return undefined as unknown as Response;
+    });
+    render(<ProfilePage initialUser={{
+      id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: false,
+    }} />);
+
+    await screen.findByText('No passkeys are registered for this account.');
+    fireEvent.change(document.getElementById('passkey-password')!, { target: { value: 'hunter2-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+    expect(await screen.findByTestId('signed-out-recovery-codes')).toBeTruthy();
+    expect(screen.getAllByText('PASS-1001')).toHaveLength(1);
+    expect(screen.getAllByText('PASS-1002')).toHaveLength(1);
   });
 });

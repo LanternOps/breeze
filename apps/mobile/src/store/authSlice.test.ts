@@ -31,7 +31,7 @@ vi.mock('@sentry/react-native', () => ({
   captureException: (...a: unknown[]) => sentry.captureException(...a),
 }));
 
-import authReducer, { loginAsync, logoutAsync } from './authSlice';
+import authReducer, { loginAsync, logoutAsync, verifyMfaAsync } from './authSlice';
 import { advanceSessionGeneration } from '../services/sessionGeneration';
 
 function makeStore() {
@@ -51,6 +51,66 @@ beforeEach(() => {
 describe('authenticated-session persistence boundary', () => {
   const userA = { id: 'a', email: 'a@example.com', name: 'A', role: 'admin' };
   const userB = { id: 'b', email: 'b@example.com', name: 'B', role: 'admin' };
+
+  it('serializes cookie-writing login A through persistence before login B starts', async () => {
+    let releaseTokenA!: () => void;
+    auth.storeToken.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseTokenA = resolve; }));
+    api.login
+      .mockResolvedValueOnce({ kind: 'success', token: 'token-a', user: userA })
+      .mockResolvedValueOnce({ kind: 'success', token: 'token-b', user: userB });
+    const store = makeStore();
+
+    const loginA = store.dispatch(loginAsync({ email: userA.email, password: 'password' }));
+    while (auth.storeToken.mock.calls.length === 0) await Promise.resolve();
+    const loginB = store.dispatch(loginAsync({ email: userB.email, password: 'password' }));
+    await Promise.resolve();
+
+    expect(api.login).toHaveBeenCalledTimes(1);
+    releaseTokenA();
+    expect((await loginA).type).toBe('auth/login/fulfilled');
+    expect((await loginB).type).toBe('auth/login/fulfilled');
+    expect(auth.storeToken).toHaveBeenLastCalledWith('token-b');
+    expect(auth.storeUser).toHaveBeenLastCalledWith(userB);
+    expect(store.getState().auth.user).toEqual(userB);
+  });
+
+  it('keeps MFA cookie issuance and persistence ahead of a later password login', async () => {
+    let releaseMfaToken!: () => void;
+    auth.storeToken.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseMfaToken = resolve; }));
+    api.verifyMfa.mockResolvedValueOnce({ token: 'token-a', user: userA });
+    api.login.mockResolvedValueOnce({ kind: 'success', token: 'token-b', user: userB });
+    const store = makeStore();
+
+    const mfaA = store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'temp-a', method: 'totp' }));
+    while (auth.storeToken.mock.calls.length === 0) await Promise.resolve();
+    const loginB = store.dispatch(loginAsync({ email: userB.email, password: 'password' }));
+    await Promise.resolve();
+    expect(api.login).not.toHaveBeenCalled();
+
+    releaseMfaToken();
+    expect((await mfaA).type).toBe('auth/verifyMfa/fulfilled');
+    expect((await loginB).type).toBe('auth/login/fulfilled');
+    expect(store.getState().auth.user).toEqual(userB);
+  });
+
+  it('finishes logout cookie clear and wipe before a later login can issue', async () => {
+    let releaseLogout!: () => void;
+    api.logout.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseLogout = resolve; }));
+    api.login.mockResolvedValueOnce({ kind: 'success', token: 'token-b', user: userB });
+    const store = makeStore();
+
+    const logoutA = store.dispatch(logoutAsync());
+    while (api.logout.mock.calls.length === 0) await Promise.resolve();
+    const loginB = store.dispatch(loginAsync({ email: userB.email, password: 'password' }));
+    await Promise.resolve();
+    expect(api.login).not.toHaveBeenCalled();
+
+    releaseLogout();
+    await logoutA;
+    await loginB;
+    expect(auth.clearAuthData).toHaveBeenCalledBefore(auth.storeToken);
+    expect(store.getState().auth.user).toEqual(userB);
+  });
 
   it('compensates and rejects when logout lands between token and user writes', async () => {
     let releaseToken!: () => void;
@@ -72,7 +132,7 @@ describe('authenticated-session persistence boundary', () => {
     expect(store.getState().auth.user).toBeNull();
   });
 
-  it('lets login B replace login A while A persistence is pending without A wiping B', async () => {
+  it('lets queued login B replace completed login A without A wiping B', async () => {
     let releaseTokenA!: () => void;
     auth.storeToken.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseTokenA = resolve; }));
     api.login
@@ -85,7 +145,7 @@ describe('authenticated-session persistence boundary', () => {
     const loginB = store.dispatch(loginAsync({ email: userB.email, password: 'password' }));
     releaseTokenA();
 
-    expect((await loginA).type).toBe('auth/login/rejected');
+    expect((await loginA).type).toBe('auth/login/fulfilled');
     expect((await loginB).type).toBe('auth/login/fulfilled');
     expect(auth.storeToken).toHaveBeenLastCalledWith('token-b');
     expect(auth.storeUser).toHaveBeenLastCalledWith(userB);

@@ -8,6 +8,7 @@ import {
   apiVerifyMFA,
   apiVerifyPasskeyMFA,
   apiSendSmsMfaCode,
+  clearCfAccessLogoutIntent,
   fetchAndApplyPreferences,
   isInstalledAuthSessionCurrent,
   StaleWebSessionError,
@@ -147,7 +148,9 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
         setLoading(false);
         return;
       }
-      await navigateTo(requiresSetup ? '/setup' : safeNext);
+      await navigateTo(requiresSetup ? '/setup' : safeNext, {
+        guard: () => isInstalledAuthSessionCurrent(installedSession),
+      });
     } catch (caught) {
       // A superseding sign-in makes account-A preference work stale. Treat it
       // as a terminal completion for this form, never as permission to
@@ -167,6 +170,12 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // present, surface a "Sign in with {provider}" button above the password
   // form. Fetch failure / null response leaves the button absent
   // (password-only login).
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('signedOut') === '1') {
+      clearCfAccessLogoutIntent();
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     getLoginContext().then((ctx) => {

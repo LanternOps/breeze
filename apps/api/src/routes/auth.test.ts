@@ -1826,6 +1826,7 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.tokens).toBeDefined();
+      expect(body.userId).toBe('user-123');
       expect(issueUserSession).toHaveBeenCalledWith(
         expect.objectContaining({
           scope: 'system',

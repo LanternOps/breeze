@@ -75,7 +75,7 @@ describe('PartnerRegisterPage navigation after signup', () => {
     await fillAndSubmit();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/billing/onboarding');
+    expect(navigateTo).toHaveBeenCalledWith('/billing/onboarding', { guard: expect.any(Function) });
   });
 
   it('falls back to next when no redirectUrl is supplied', async () => {
@@ -85,7 +85,7 @@ describe('PartnerRegisterPage navigation after signup', () => {
     await fillAndSubmit();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
+    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc', { guard: expect.any(Function) });
   });
 
   it('falls back to "/" when neither redirectUrl nor next is supplied', async () => {
@@ -95,7 +95,7 @@ describe('PartnerRegisterPage navigation after signup', () => {
     await fillAndSubmit();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/');
+    expect(navigateTo).toHaveBeenCalledWith('/', { guard: expect.any(Function) });
   });
 
   it('rewrites unsafe next to "/" before navigating', async () => {
@@ -105,7 +105,7 @@ describe('PartnerRegisterPage navigation after signup', () => {
     await fillAndSubmit();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/');
+    expect(navigateTo).toHaveBeenCalledWith('/', { guard: expect.any(Function) });
   });
 
   it('suppresses navigation when a newer session replaces the registered account', async () => {

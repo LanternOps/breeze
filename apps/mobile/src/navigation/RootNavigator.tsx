@@ -27,7 +27,7 @@ import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen';
 import { Spinner } from '../components/Spinner';
 import { palette } from '../theme';
 import { runReauthenticationTeardown } from './reauthenticationTeardown';
-import { runAuthStorageExclusive } from '../services/sessionGeneration';
+import { runAuthSessionTransition, runAuthStorageExclusive } from '../services/sessionGeneration';
 import { handleHydrationFailure } from './hydrationFailure';
 
 /**
@@ -76,7 +76,7 @@ export function RootNavigator() {
     // local wipe, but always leave authenticated navigation even when the
     // secure store reports a partial cleanup failure.
     void runReauthenticationTeardown(
-      () => runAuthStorageExclusive(clearAuthDataTolerant),
+      () => runAuthSessionTransition(() => runAuthStorageExclusive(clearAuthDataTolerant)),
       () => { dispatch(requireReauthentication()); },
       (error) => Sentry.captureException(error, { tags: { area: 'auth-teardown-nav' } }),
     );

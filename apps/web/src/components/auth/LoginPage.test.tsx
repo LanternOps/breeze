@@ -16,6 +16,7 @@ vi.mock('../../stores/auth', () => ({
   apiVerifyMFA: vi.fn(),
   apiVerifyPasskeyMFA: vi.fn(),
   apiSendSmsMfaCode: vi.fn(),
+  clearCfAccessLogoutIntent: vi.fn(),
   fetchAndApplyPreferences: vi.fn(),
   isInstalledAuthSessionCurrent: currentInstalledSessionMock,
   StaleWebSessionError: class StaleWebSessionError extends Error {},
@@ -116,7 +117,7 @@ describe('LoginPage navigation after login', () => {
     await fillAndSubmit();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
+    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc', { guard: expect.any(Function) });
   });
 
   it('navigates to "/" when next is omitted', async () => {
@@ -126,7 +127,7 @@ describe('LoginPage navigation after login', () => {
     await fillAndSubmit();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/');
+    expect(navigateTo).toHaveBeenCalledWith('/', { guard: expect.any(Function) });
   });
 
   it('routes to /setup when requiresSetup is true, ignoring next', async () => {
@@ -136,7 +137,7 @@ describe('LoginPage navigation after login', () => {
     await fillAndSubmit();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/setup');
+    expect(navigateTo).toHaveBeenCalledWith('/setup', { guard: expect.any(Function) });
   });
 
   it('rewrites unsafe next to "/" before navigating', async () => {
@@ -146,7 +147,7 @@ describe('LoginPage navigation after login', () => {
     await fillAndSubmit();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/');
+    expect(navigateTo).toHaveBeenCalledWith('/', { guard: expect.any(Function) });
   });
 
   it('does not reinstall or navigate account A when account B supersedes its password helper result', async () => {
@@ -343,7 +344,7 @@ describe('LoginPage navigation after MFA verify', () => {
     await submitMfaCode();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
+    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc', { guard: expect.any(Function) });
   });
 
   it('routes MFA verify to /setup when requiresSetup is true', async () => {
@@ -354,7 +355,7 @@ describe('LoginPage navigation after MFA verify', () => {
     await submitMfaCode();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/setup');
+    expect(navigateTo).toHaveBeenCalledWith('/setup', { guard: expect.any(Function) });
   });
 
   it('rewrites unsafe next to "/" before navigating after MFA verify', async () => {
@@ -365,7 +366,7 @@ describe('LoginPage navigation after MFA verify', () => {
     await submitMfaCode();
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/');
+    expect(navigateTo).toHaveBeenCalledWith('/', { guard: expect.any(Function) });
   });
 
   it('submits a selected recovery code with the recovery method', async () => {

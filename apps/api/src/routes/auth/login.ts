@@ -934,5 +934,8 @@ loginRoutes.post('/refresh', async (c) => {
   void touchFamilyLastUsed(familyId);
 
   setRefreshTokenCookie(c, tokens.refreshToken);
-  return c.json({ tokens: toPublicTokens(tokens) });
+  // Bind the rotated credentials to the server-verified account. The refresh
+  // cookie is origin-wide, while browser stores are tab-local; clients must
+  // never attach this token to a stale tab's different user projection.
+  return c.json({ userId: user.id, tokens: toPublicTokens(tokens) });
 });

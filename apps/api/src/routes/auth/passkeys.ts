@@ -7,6 +7,7 @@ import { userPasskeys, users } from '../../db/schema';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import {
   consumeMFAToken,
+  generateRecoveryCodes,
   getRedis,
   issueVerifiedPendingMfaSession,
   mfaLimiter,
@@ -49,6 +50,7 @@ import {
   consumeMfaStepUpGrant,
   getClientIP,
   hashMfaStepUpGrant,
+  hashRecoveryCodes,
   issueMfaStepUpGrant,
   MFA_STEP_UP_GRANT_TTL_SECONDS,
   MfaStepUpGrantInvalidError,
@@ -352,6 +354,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
 
   const fields = registrationInfoToPasskeyFields(verification, credential);
   let inserted: PasskeyRow;
+  let recoveryCodes: string[] | undefined;
   try {
     const mutation = await runLockedMfaMutation(
       lockedMutationInput(auth, 'passkey-added'),
@@ -403,18 +406,21 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
         if (!created) throw new Error('Passkey insert returned no row');
 
         const hasExistingPrimaryFactor = Boolean(user.mfaSecret) || user.mfaMethod === 'sms';
+        const initialRecoveryCodes = existingMethods.size === 0 ? generateRecoveryCodes() : undefined;
         await tx
           .update(users)
           .set({
             mfaEnabled: true,
             ...(hasExistingPrimaryFactor ? {} : { mfaMethod: 'passkey' }),
+            ...(initialRecoveryCodes ? { mfaRecoveryCodes: hashRecoveryCodes(initialRecoveryCodes) } : {}),
             updatedAt: new Date()
           })
           .where(eq(users.id, auth.user.id));
-        return created;
+        return { created, recoveryCodes: initialRecoveryCodes };
       },
     );
-    inserted = mutation.result;
+    inserted = mutation.result.created;
+    recoveryCodes = mutation.result.recoveryCodes;
   } catch (error) {
     if (error instanceof MfaAssuranceMutationStaleError) {
       return c.json({ error: 'Authentication state changed. Please sign in again.' }, 401);
@@ -437,7 +443,8 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     reauthenticate: true,
     cleanupStatus: cleanup.cleanupStatus,
     cleanupFailures: cleanup.cleanupFailures,
-    passkey: toPublicPasskey(inserted)
+    passkey: toPublicPasskey(inserted),
+    ...(recoveryCodes ? { recoveryCodes } : {}),
   });
 });
 

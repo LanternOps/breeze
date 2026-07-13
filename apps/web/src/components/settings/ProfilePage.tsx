@@ -540,7 +540,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setPasskeySuccess(t('profilePage.passkeyAdded'));
       await loadPasskeys();
     } catch (error) {
-      if (error instanceof ReauthenticationRequiredError) return;
+      if (handleTerminalRecoveryCodes(error)) return;
       if (error instanceof Error && error.name === 'NotAllowedError') {
         setPasskeyError(t('profilePage.passkeySetupWasCanceledOrTimedOut'));
       } else {

@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { fetchWithAuth, apiLogin, useAuthStore } from '../../stores/auth';
+import {
+  fetchWithAuth,
+  apiLogin,
+  isInstalledAuthSessionCurrent,
+  StaleWebSessionError,
+  useAuthStore,
+} from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
 
 interface AccountSetupStepProps {
@@ -45,6 +51,7 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
 
     setLoading(true);
 
+    let installedSession: Awaited<ReturnType<typeof apiLogin>>['installedSession'];
     try {
       // Update email if changed
       if (email && email !== user?.email) {
@@ -78,8 +85,13 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
         // Password change invalidates session — re-login transparently
         const loginEmail = email || user?.email || '';
         const loginResult = await apiLogin(loginEmail, newPassword);
-        if (loginResult.success && loginResult.user && loginResult.tokens) {
-          useAuthStore.getState().login(loginResult.user, loginResult.tokens);
+        if (
+          loginResult.success
+          && loginResult.user
+          && loginResult.tokens
+          && isInstalledAuthSessionCurrent(loginResult.installedSession)
+        ) {
+          installedSession = loginResult.installedSession;
         } else {
           setError(t('setup.account.errors.reloginFailed'));
           setLoading(false);
@@ -87,10 +99,13 @@ export default function AccountSetupStep({ onNext }: AccountSetupStepProps) {
         }
       }
 
+      if (installedSession && !isInstalledAuthSessionCurrent(installedSession)) return;
       setSuccess(t('setup.account.success'));
-      setTimeout(() => onNext(), 600);
-    } catch {
-      setError(t('setup.common.unexpectedError'));
+      setTimeout(() => {
+        if (!installedSession || isInstalledAuthSessionCurrent(installedSession)) onNext();
+      }, 600);
+    } catch (error) {
+      if (!(error instanceof StaleWebSessionError)) setError(t('setup.common.unexpectedError'));
     } finally {
       setLoading(false);
     }

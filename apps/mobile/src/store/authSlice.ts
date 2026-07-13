@@ -13,6 +13,7 @@ import { storeToken, storeUser, clearAuthData } from '../services/auth';
 import {
   advanceSessionGeneration,
   isCurrentSessionGeneration,
+  runAuthSessionTransition,
   runAuthStorageExclusive,
   SessionGenerationStaleError,
 } from '../services/sessionGeneration';
@@ -67,15 +68,17 @@ export const loginAsync = createAsyncThunk(
   'auth/login',
   async ({ email, password }: { email: string; password: string }, { rejectWithValue }) => {
     try {
-      const result = await apiLogin(email, password);
+      return await runAuthSessionTransition(async () => {
+        const result = await apiLogin(email, password);
 
-      if (result.kind === 'mfaRequired') {
-        return { mfa: result.challenge };
-      }
+        if (result.kind === 'mfaRequired') {
+          return { mfa: result.challenge };
+        }
 
-      await persistAuthenticatedSession(result.token, result.user);
+        await persistAuthenticatedSession(result.token, result.user);
 
-      return { token: result.token, user: result.user };
+        return { token: result.token, user: result.user };
+      });
     } catch (error: unknown) {
       const apiError = error as { message?: string };
       return rejectWithValue(apiError.message || 'Login failed');
@@ -87,9 +90,11 @@ export const verifyMfaAsync = createAsyncThunk(
   'auth/verifyMfa',
   async ({ code, tempToken, method }: { code: string; tempToken: string; method: MfaCodeMethod }, { rejectWithValue }) => {
     try {
-      const response = await apiVerifyMfa(code, tempToken, method);
-      await persistAuthenticatedSession(response.token, response.user);
-      return response;
+      return await runAuthSessionTransition(async () => {
+        const response = await apiVerifyMfa(code, tempToken, method);
+        await persistAuthenticatedSession(response.token, response.user);
+        return response;
+      });
     } catch (error: unknown) {
       const apiError = error as { message?: string };
       return rejectWithValue(apiError.message || 'MFA verification failed');
@@ -101,34 +106,26 @@ export const logoutAsync = createAsyncThunk(
   'auth/logout',
   async (_, { rejectWithValue }) => {
     advanceSessionGeneration();
-    // Best-effort server logout; we tear down local state regardless of its
-    // outcome so the user always leaves the authenticated surface.
-    let apiErrorMessage: string | undefined;
-    try {
-      await apiLogout();
-    } catch (error: unknown) {
-      apiErrorMessage = (error as { message?: string }).message || 'Logout failed';
-      // A failed server-side logout may leave the session token live on the
-      // backend — security-relevant, and the rejected reducer discards the
-      // message (state.error is reset), so report it to telemetry here.
-      Sentry.captureException(error, { tags: { area: 'auth-logout-api' } });
-    }
+    return runAuthSessionTransition(async () => {
+      // Best-effort server logout; we tear down local state regardless of its
+      // outcome so the user always leaves the authenticated surface.
+      let apiErrorMessage: string | undefined;
+      try {
+        await apiLogout();
+      } catch (error: unknown) {
+        apiErrorMessage = (error as { message?: string }).message || 'Logout failed';
+        Sentry.captureException(error, { tags: { area: 'auth-logout-api' } });
+      }
 
-    // Local secure wipe runs exactly once. `clearAuthData` now throws a
-    // SecureWipeError (already reported to Sentry) if any sensitive entry
-    // survived; surface that as a rejection rather than letting it escape the
-    // thunk unhandled — the Redux session reset still happens via the
-    // logout/rejected reducers, so the user is signed out either way.
-    try {
-      await runAuthStorageExclusive(clearAuthData);
-    } catch (error: unknown) {
-      const wipeMessage = (error as { message?: string }).message || 'Secure wipe failed';
-      return rejectWithValue(apiErrorMessage ? `${apiErrorMessage}; ${wipeMessage}` : wipeMessage);
-    }
+      try {
+        await runAuthStorageExclusive(clearAuthData);
+      } catch (error: unknown) {
+        const wipeMessage = (error as { message?: string }).message || 'Secure wipe failed';
+        return rejectWithValue(apiErrorMessage ? `${apiErrorMessage}; ${wipeMessage}` : wipeMessage);
+      }
 
-    if (apiErrorMessage) {
-      return rejectWithValue(apiErrorMessage);
-    }
+      if (apiErrorMessage) return rejectWithValue(apiErrorMessage);
+    });
   }
 );
 

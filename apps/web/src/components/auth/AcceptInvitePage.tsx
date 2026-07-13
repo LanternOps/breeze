@@ -82,7 +82,9 @@ export default function AcceptInvitePage() {
         if (!isInstalledAuthSessionCurrent(result.installedSession)) return;
         await fetchAndApplyPreferences();
         if (!isInstalledAuthSessionCurrent(result.installedSession)) return;
-        await navigateTo('/');
+        await navigateTo('/', {
+          guard: () => isInstalledAuthSessionCurrent(result.installedSession),
+        });
         return;
       } else {
         await navigateTo('/login', { replace: true });

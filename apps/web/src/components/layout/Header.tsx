@@ -27,7 +27,7 @@ import NotificationCenter from './NotificationCenter';
 import TimerWidget from '../time/TimerWidget';
 import CommandPalette from './CommandPalette';
 import SupportModal from '../support/SupportModal';
-import { useAuthStore, apiLogout, clearLocalAuthSession, fetchWithAuth } from '../../stores/auth';
+import { useAuthStore, apiCfAccessLogout, apiLogout, fetchWithAuth } from '../../stores/auth';
 import { useAiStore } from '../../stores/aiStore';
 import { useHelpStore } from '../../stores/helpStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -225,10 +225,7 @@ export default function Header() {
     // to /login?signedOut=1.
     const cfAccessEnabled = useFeaturesStore.getState().cfAccessLogin.enabled;
     if (cfAccessEnabled) {
-      // Drop in-memory state first so any racing component doesn't read
-      // stale tokens before the navigation lands.
-      clearLocalAuthSession();
-      window.location.assign('/api/v1/auth/cf-access-logout');
+      void apiCfAccessLogout();
       return;
     }
 

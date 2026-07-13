@@ -79,7 +79,7 @@ vi.mock('../services', () => ({
   consumeMFAToken: vi.fn().mockResolvedValue(true),
   generateOTPAuthURL: vi.fn(),
   generateQRCode: vi.fn(),
-  generateRecoveryCodes: vi.fn(),
+  generateRecoveryCodes: vi.fn().mockReturnValue(['TEST-0001', 'TEST-0002']),
   createPendingMfaForLogin: vi.fn(),
   readPendingMfa: vi.fn(),
   issueVerifiedPendingMfaSession: vi.fn(),
@@ -319,6 +319,7 @@ import {
   issueVerifiedPendingMfaSession,
   PendingMfaInvalidError,
   consumeMFAToken,
+  generateRecoveryCodes,
 } from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
@@ -1361,6 +1362,7 @@ describe('passkey MFA auth routes', () => {
 
   // (f) register/verify must NOT clobber an existing TOTP/SMS factor's method.
   it('does not overwrite an existing TOTP factor method when registering a passkey', async () => {
+    vi.mocked(generateRecoveryCodes).mockReturnValueOnce(['AAAA-BBBB', 'CCCC-DDDD']);
     mfaLockState.user = { ...mfaLockState.user!, mfaSecret: 'enc-secret', mfaMethod: 'totp' };
     const mfaGrant = await issueMfaStepUpGrant({
       purpose: 'passkey.register',
@@ -1388,9 +1390,12 @@ describe('passkey MFA auth routes', () => {
     expect(userUpdate).toBeDefined();
     expect(userUpdate).toMatchObject({ mfaEnabled: true });
     expect(userUpdate).not.toHaveProperty('mfaMethod');
+    expect(userUpdate).not.toHaveProperty('mfaRecoveryCodes');
+    expect(generateRecoveryCodes).not.toHaveBeenCalled();
   });
 
   it('makes passkey the primary MFA method when the user has no existing factor', async () => {
+    vi.mocked(generateRecoveryCodes).mockReturnValueOnce(['AAAA-BBBB', 'CCCC-DDDD']);
     const res = await app.request('/auth/passkeys/register/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
@@ -1398,8 +1403,12 @@ describe('passkey MFA auth routes', () => {
     });
 
     expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.recoveryCodes).toEqual(['AAAA-BBBB', 'CCCC-DDDD']);
     const userUpdate = dbState.updateSets.find((set) => 'mfaEnabled' in set);
     expect(userUpdate).toMatchObject({ mfaEnabled: true, mfaMethod: 'passkey' });
+    expect(userUpdate.mfaRecoveryCodes).toHaveLength(2);
+    expect(userUpdate.mfaRecoveryCodes).not.toContain('AAAA-BBBB');
   });
 
   // (g) DELETE branches.

@@ -31,7 +31,9 @@ export default function RegisterPage() {
         setLoading(false);
         return;
       }
-      await navigateTo('/');
+      await navigateTo('/', {
+        guard: () => isInstalledAuthSessionCurrent(result.installedSession),
+      });
       return;
     }
 

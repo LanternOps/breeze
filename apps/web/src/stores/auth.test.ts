@@ -5,6 +5,7 @@ import {
   apiAcceptInvite,
   apiCreateMfaStepUpGrant,
   apiLogin,
+  apiCfAccessLogout,
   apiLogout,
   apiPreviewInvite,
   apiRegister,
@@ -14,6 +15,7 @@ import {
   AuthSessionExpiredError,
   bootstrapFromCfAccessRedirect,
   clearLocalAuthSession,
+  clearCfAccessLogoutIntent,
   ReauthenticationRequiredError,
   fetchAndApplyPreferences,
   fetchWithAuth,
@@ -259,7 +261,7 @@ describe('auth store fetchWithAuth', () => {
     };
 
     const firstUnauthorized = makeResponse({ error: 'unauthorized' }, false, 401);
-    const refreshSuccess = makeResponse({ tokens: refreshedTokens }, true, 200);
+    const refreshSuccess = makeResponse({ userId: baseUser.id, tokens: refreshedTokens }, true, 200);
     const retrySuccess = makeResponse({ data: { id: 'dev-1' } }, true, 200);
 
     const fetchMock = vi
@@ -286,6 +288,23 @@ describe('auth store fetchWithAuth', () => {
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
   });
 
+  it('never installs or replays with another account returned by the shared refresh cookie', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const tokenB: Tokens = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ userId: 'user-b', tokens: tokenB }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchWithAuth('/devices/dev-1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().tokens).toBeNull();
+    expect(useAuthStore.getState().user).toBeNull();
+  });
+
   it('restores token before request when authenticated but token is missing', async () => {
     useAuthStore.setState({
       user: baseUser,
@@ -301,7 +320,7 @@ describe('auth store fetchWithAuth', () => {
       expiresInSeconds: 3600
     };
 
-    const refreshSuccess = makeResponse({ tokens: refreshedTokens }, true, 200);
+    const refreshSuccess = makeResponse({ userId: baseUser.id, tokens: refreshedTokens }, true, 200);
     const apiSuccess = makeResponse({ data: { ok: true } }, true, 200);
 
     const fetchMock = vi
@@ -355,7 +374,7 @@ describe('auth store fetchWithAuth', () => {
       .fn()
       .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401)) // original request
       .mockResolvedValueOnce(makeResponse({ error: 'bad gateway' }, false, 502))  // refresh blips
-      .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }, true, 200)) // refresh recovers
+      .mockResolvedValueOnce(makeResponse({ userId: baseUser.id, tokens: refreshedTokens }, true, 200)) // refresh recovers
       .mockResolvedValueOnce(apiSuccess);                                          // original replayed
     vi.stubGlobal('fetch', fetchMock);
 
@@ -510,7 +529,7 @@ describe('auth store fetchWithAuth', () => {
       const url = String(input);
 
       if (url.endsWith('/api/v1/auth/refresh')) {
-        return makeResponse({ tokens: refreshedTokens }, true, 200);
+        return makeResponse({ userId: baseUser.id, tokens: refreshedTokens }, true, 200);
       }
 
       const authHeader = new Headers(init?.headers).get('Authorization');
@@ -538,7 +557,7 @@ describe('auth store fetchWithAuth', () => {
     const refreshedTokens = { accessToken: 'access-new', expiresInSeconds: 3600 };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
-      .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }))
+      .mockResolvedValueOnce(makeResponse({ userId: baseUser.id, tokens: refreshedTokens }))
       .mockResolvedValueOnce(makeResponse({ reauthenticate: true })));
     const originalLocation = window.location;
     Object.defineProperty(window, 'location', {
@@ -570,7 +589,7 @@ describe('auth store fetchWithAuth', () => {
     const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
     const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
     useAuthStore.getState().login(userB, tokensB);
-    resolveRefresh(makeResponse({ tokens: { accessToken: 'access-a', expiresInSeconds: 3600 } }));
+    resolveRefresh(makeResponse({ userId: baseUser.id, tokens: { accessToken: 'access-a', expiresInSeconds: 3600 } }));
 
     await expect(oldRestore).resolves.toBe(false);
     expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
@@ -593,7 +612,7 @@ describe('auth store fetchWithAuth', () => {
   it('discards a deferred account A Cloudflare bootstrap after account B installs', async () => {
     let resolveMe!: (response: Response) => void;
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(makeResponse({ tokens: baseTokens }))
+      .mockResolvedValueOnce(makeResponse({ userId: baseUser.id, tokens: baseTokens }))
       .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveMe = resolve; }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -622,7 +641,7 @@ describe('auth store fetchWithAuth', () => {
     const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
     const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
     useAuthStore.getState().login(userB, tokensB);
-    resolveRefresh(makeResponse({ tokens: { accessToken: 'access-a-new', expiresInSeconds: 3600 } }));
+    resolveRefresh(makeResponse({ userId: baseUser.id, tokens: { accessToken: 'access-a-new', expiresInSeconds: 3600 } }));
 
     await expect(oldRequest).rejects.toBeInstanceOf(StaleWebSessionError);
     expect(useAuthStore.getState()).toMatchObject({ user: userB, tokens: tokensB });
@@ -863,7 +882,7 @@ describe('auth store fetchWithAuth', () => {
     const loginB = apiLogin('b@example.com', 'password-b');
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/auth/login'))).toHaveLength(0);
 
-    resolveRefresh(makeResponse({ tokens: baseTokens }));
+    resolveRefresh(makeResponse({ userId: baseUser.id, tokens: baseTokens }));
     await vi.waitFor(() => expect(meCalls).toBe(1));
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/auth/login'))).toHaveLength(0);
     resolveMe(makeResponse(baseUser));
@@ -891,6 +910,38 @@ describe('auth API helpers', () => {
       mfaPending: false,
       mfaTempToken: null
     });
+  });
+
+  it('clears the server cookie and reserves CF navigation before a newer issuer starts', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    let resolveLogout!: (response: Response) => void;
+    const events: string[] = [];
+    const userB = { ...baseUser, id: 'user-b', email: 'b@example.com' };
+    const tokensB = { accessToken: 'access-b', expiresInSeconds: 3600 };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/auth/logout')) {
+        events.push('logout-start');
+        return new Promise<Response>((resolve) => { resolveLogout = resolve; });
+      }
+      if (url.endsWith('/auth/login')) {
+        events.push('login-b');
+        return Promise.resolve(makeResponse({ user: userB, tokens: tokensB }));
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const cfLogout = apiCfAccessLogout(() => { events.push('cf-navigate'); });
+    const loginB = apiLogin('b@example.com', 'password-b');
+    await vi.waitFor(() => expect(events).toEqual(['logout-start']));
+
+    resolveLogout(makeResponse({ success: true }));
+    await cfLogout;
+    await expect(loginB).rejects.toBeInstanceOf(StaleWebSessionError);
+    expect(events).toEqual(['logout-start', 'cf-navigate']);
+    expect(useAuthStore.getState().user).toBeNull();
+    clearCfAccessLogoutIntent();
   });
 
   it('apiLogin returns MFA challenge payload when required', async () => {
@@ -1311,7 +1362,7 @@ describe('refresh rotation-race recovery (#1107)', () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(racedResponse())
-      .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200));
+      .mockResolvedValueOnce(makeResponse({ userId: baseUser.id, tokens: refreshed }, true, 200));
     vi.stubGlobal('fetch', fetchMock);
 
     const restored = await restoreAccessTokenFromCookie();
@@ -1358,7 +1409,7 @@ describe('refresh rotation-race recovery (#1107)', () => {
 
     try {
       const refreshed: Tokens = { accessToken: 'access-locked', expiresInSeconds: 3600 };
-      const fetchMock = vi.fn().mockResolvedValue(makeResponse({ tokens: refreshed }, true, 200));
+      const fetchMock = vi.fn().mockResolvedValue(makeResponse({ userId: baseUser.id, tokens: refreshed }, true, 200));
       vi.stubGlobal('fetch', fetchMock);
 
       const restored = await restoreAccessTokenFromCookie();

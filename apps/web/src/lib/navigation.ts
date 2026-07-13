@@ -2,6 +2,8 @@ import { getSafeNext } from './authNext';
 
 interface NavigateOptions {
   replace?: boolean;
+  /** Rechecked after asynchronous module loading and before any fallback. */
+  guard?: () => boolean;
 }
 
 export async function navigateTo(path: string, options: NavigateOptions = {}): Promise<void> {
@@ -16,10 +18,12 @@ export async function navigateTo(path: string, options: NavigateOptions = {}): P
 
   try {
     const { navigate } = await import('astro:transitions/client');
+    if (options.guard && !options.guard()) return;
     await navigate(safePath, {
       history: options.replace ? 'replace' : 'auto'
     });
   } catch {
+    if (options.guard && !options.guard()) return;
     if (options.replace) {
       window.location.replace(safePath);
     } else {

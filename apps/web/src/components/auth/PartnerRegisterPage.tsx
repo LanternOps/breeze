@@ -64,7 +64,9 @@ export default function PartnerRegisterPage({ next }: PartnerRegisterPageProps =
         setLoading(false);
         return;
       }
-      await navigateTo(result.redirectUrl ?? safeNext);
+      await navigateTo(result.redirectUrl ?? safeNext, {
+        guard: () => isInstalledAuthSessionCurrent(result.installedSession),
+      });
       return;
     }
 

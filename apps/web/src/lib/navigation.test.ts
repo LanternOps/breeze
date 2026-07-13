@@ -62,6 +62,33 @@ describe('navigateTo same-origin guard', () => {
     expect(navigateMock).toHaveBeenCalledWith('/devices/123', { history: 'replace' });
   });
 
+  it('rechecks a caller guard after the dynamic import before navigating', async () => {
+    let current = true;
+    navigateMock.mockImplementationOnce(async () => undefined);
+
+    const navigation = navigateTo('/devices/123', {
+      guard: () => current,
+    });
+    current = false;
+    await navigation;
+
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not use the location fallback when a caller guard becomes stale', async () => {
+    const assignSpy = vi.fn();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { assign: assignSpy, replace: vi.fn() } as unknown as Location,
+    });
+    let checks = 0;
+    navigateMock.mockRejectedValueOnce(new Error('navigate failed'));
+
+    await navigateTo('/devices/123', { guard: () => ++checks === 1 });
+
+    expect(assignSpy).not.toHaveBeenCalled();
+  });
+
   describe('catch / fallback branch uses the sanitized value', () => {
     let assignSpy: ReturnType<typeof vi.fn>;
     let replaceSpy: ReturnType<typeof vi.fn>;

@@ -281,7 +281,26 @@ export function resolveApiOrigin(): string {
 }
 
 const AUTH_SESSION_TRANSITION_LOCK_NAME = 'breeze-auth-session-transition';
+const CF_ACCESS_LOGOUT_INTENT_KEY = 'breeze-cf-access-logout-pending';
+const CF_ACCESS_LOGOUT_INTENT_TTL_MS = 10 * 60 * 1000;
 let authSessionTransitionTail: Promise<void> = Promise.resolve();
+
+function hasActiveCfAccessLogoutIntent(): boolean {
+  try {
+    const issuedAt = Number(localStorage.getItem(CF_ACCESS_LOGOUT_INTENT_KEY));
+    if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > CF_ACCESS_LOGOUT_INTENT_TTL_MS) {
+      localStorage.removeItem(CF_ACCESS_LOGOUT_INTENT_KEY);
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearCfAccessLogoutIntent(): void {
+  try { localStorage.removeItem(CF_ACCESS_LOGOUT_INTENT_KEY); } catch { /* storage unavailable */ }
+}
 
 async function withLocalAuthSessionTransition<T>(operation: () => Promise<T>): Promise<T> {
   const previous = authSessionTransitionTail;
@@ -302,7 +321,10 @@ async function withLocalAuthSessionTransition<T>(operation: () => Promise<T>): P
  * deliberately absorbed by the tail so one failed transition cannot poison
  * later sign-in attempts.
  */
-export async function withAuthSessionTransition<T>(operation: () => Promise<T>): Promise<T> {
+export async function withAuthSessionTransition<T>(
+  operation: () => Promise<T>,
+  options: { allowDuringCfLogout?: boolean } = {},
+): Promise<T> {
   // Always reserve a same-tab FIFO position synchronously. Web Locks add
   // cross-tab exclusion inside that position, but their API is optional and
   // can itself fail before the callback starts (privacy mode, browser bugs,
@@ -310,6 +332,9 @@ export async function withAuthSessionTransition<T>(operation: () => Promise<T>):
   // back locally; once the callback begins, an operation failure must never be
   // replayed because auth mutations are not idempotent.
   return withLocalAuthSessionTransition(async () => {
+    if (!options.allowDuringCfLogout && hasActiveCfAccessLogoutIntent()) {
+      throw new StaleWebSessionError();
+    }
     let locks: LockManager | undefined;
     try {
       locks = typeof navigator !== 'undefined'
@@ -346,7 +371,9 @@ export async function withAuthSessionTransition<T>(operation: () => Promise<T>):
 //                hard-logged-out the SPA mid-session).
 //   - neither:   a hard failure (expired/reused refresh cookie, real 401/403) —
 //                the session is unrecoverable and the caller must evict.
-async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boolean; transient: boolean }> {
+type RefreshedAuthSession = { userId: string; tokens: Tokens };
+
+async function refreshFetchOnce(): Promise<{ session: RefreshedAuthSession | null; raced: boolean; transient: boolean }> {
   const headers = new Headers({ 'Content-Type': 'application/json' });
   const csrfToken = readCookie(CSRF_COOKIE_NAME);
   if (csrfToken) {
@@ -368,30 +395,36 @@ async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boole
   } catch {
     // Network error, offline, or the 8s abort fired — no HTTP status reached
     // the client, so the refresh cookie is untouched. Retryable.
-    return { tokens: null, raced: false, transient: true };
+    return { session: null, raced: false, transient: true };
   } finally {
     clearTimeout(timeout);
   }
 
   if (refreshResponse.ok) {
-    const { tokens } = await refreshResponse.json().catch(() => ({ tokens: undefined })) as { tokens?: Tokens };
-    return { tokens: tokens?.accessToken ? tokens : null, raced: false, transient: false };
+    const { userId, tokens } = await refreshResponse.json().catch(() => ({ tokens: undefined })) as {
+      userId?: unknown;
+      tokens?: Tokens;
+    };
+    const session = typeof userId === 'string' && userId.length > 0 && tokens?.accessToken
+      ? { userId, tokens }
+      : null;
+    return { session, raced: false, transient: false };
   }
 
   if (refreshResponse.status === 401) {
     const body = await refreshResponse.json().catch(() => null) as { reason?: string } | null;
     if (body?.reason === 'refresh_raced') {
-      return { tokens: null, raced: true, transient: false };
+      return { session: null, raced: true, transient: false };
     }
   }
 
   // 5xx (typically a 502/503/504 from the gateway) means the request never
   // reached a verdict on the refresh cookie — retryable, not an auth failure.
   if (refreshResponse.status >= 500) {
-    return { tokens: null, raced: false, transient: true };
+    return { session: null, raced: false, transient: true };
   }
 
-  return { tokens: null, raced: false, transient: false };
+  return { session: null, raced: false, transient: false };
 }
 
 // A single transient gateway/network blip must not boot the user mid-session
@@ -401,16 +434,16 @@ async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boole
 const MAX_TRANSIENT_REFRESH_RETRIES = 2;
 const TRANSIENT_REFRESH_BASE_DELAY_MS = 300;
 
-async function requestTokenRefresh(): Promise<Tokens | null> {
+async function requestTokenRefresh(): Promise<RefreshedAuthSession | null> {
   let transientRetries = 0;
   for (;;) {
     const result = await refreshFetchOnce();
-    if (result.tokens) return result.tokens;
+    if (result.session) return result.session;
 
     if (result.raced) {
       await new Promise((resolve) => setTimeout(resolve, 200));
       const retry = await refreshFetchOnce();
-      if (retry.tokens) return retry.tokens;
+      if (retry.session) return retry.session;
       if (!retry.transient) return null;
     } else if (!result.transient) {
       return null;
@@ -423,15 +456,20 @@ async function requestTokenRefresh(): Promise<Tokens | null> {
   }
 }
 
-let tokenRefreshInFlight: { generation: number; promise: Promise<Tokens | null> } | null = null;
+let tokenRefreshInFlight: { generation: number; userId: string | null; promise: Promise<Tokens | null> } | null = null;
 
 async function requestTokenRefreshShared(generation = captureWebSessionGeneration()): Promise<Tokens | null> {
-  if (tokenRefreshInFlight?.generation === generation) {
+  const expectedUserId = useAuthStore.getState().user?.id ?? null;
+  if (tokenRefreshInFlight?.generation === generation && tokenRefreshInFlight.userId === expectedUserId) {
     return tokenRefreshInFlight.promise;
   }
 
-  const entry = { generation, promise: Promise.resolve<Tokens | null>(null) };
-  entry.promise = withAuthSessionTransition(requestTokenRefresh).finally(() => {
+  const entry = { generation, userId: expectedUserId, promise: Promise.resolve<Tokens | null>(null) };
+  entry.promise = withAuthSessionTransition(async () => {
+    const session = await requestTokenRefresh();
+    if (!session || !expectedUserId || session.userId !== expectedUserId) return null;
+    return session.tokens;
+  }).finally(() => {
     if (tokenRefreshInFlight === entry) tokenRefreshInFlight = null;
   });
   tokenRefreshInFlight = entry;
@@ -496,8 +534,9 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
 export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
   const populated = await withAuthSessionTransition(async () => {
     const generation = captureWebSessionGeneration();
-    const tokens = await requestTokenRefresh();
-    if (!isCurrentWebSessionGeneration(generation) || !tokens?.accessToken) return false;
+    const refreshedSession = await requestTokenRefresh();
+    const tokens = refreshedSession?.tokens;
+    if (!isCurrentWebSessionGeneration(generation) || !refreshedSession || !tokens?.accessToken) return false;
 
     try {
       const meResponse = await fetch(buildApiUrl('/users/me'), {
@@ -507,7 +546,7 @@ export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
       });
       if (!isCurrentWebSessionGeneration(generation) || !meResponse.ok) return false;
       const user = (await meResponse.json()) as User | null;
-      if (!isCurrentWebSessionGeneration(generation) || !user?.id) return false;
+      if (!isCurrentWebSessionGeneration(generation) || !user?.id || user.id !== refreshedSession.userId) return false;
       useAuthStore.getState().login(user, tokens);
       return true;
     } catch (error) {
@@ -1151,6 +1190,39 @@ export async function apiLogout(): Promise<void> {
     }
   });
 
+}
+
+/**
+ * Complete the Breeze cookie-clear boundary while still holding the shared
+ * issuer transition, then begin the Cloudflare IdP logout navigation. Calling
+ * navigation from inside the boundary closes the await-continuation gap where
+ * another tab could otherwise mint a Breeze cookie before Header redirects.
+ */
+export async function apiCfAccessLogout(
+  navigate: () => void = () => window.location.assign('/api/v1/auth/cf-access-logout'),
+): Promise<void> {
+  const { tokens } = useAuthStore.getState();
+  try { localStorage.setItem(CF_ACCESS_LOGOUT_INTENT_KEY, String(Date.now())); } catch { /* Web Lock still orders this tab */ }
+  clearLocalAuthSession();
+  await withAuthSessionTransition(async () => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (tokens?.accessToken) headers.Authorization = `Bearer ${tokens.accessToken}`;
+    try {
+      await fetch(buildApiUrl('/auth/logout'), {
+        method: 'POST',
+        headers,
+        credentials: 'include',
+      });
+    } catch {
+      // The redirect endpoint repeats the cookie clear and remains the
+      // authoritative fallback when this best-effort preflight is offline.
+    } finally {
+      // The CF endpoint repeats the Breeze cookie clear before redirecting to
+      // the IdP, so network failure here still lands on a deterministic
+      // server-side cookie boundary.
+      navigate();
+    }
+  }, { allowDuringCfLogout: true });
 }
 
 export async function fetchAndApplyPreferences(): Promise<void> {

@@ -944,7 +944,9 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               'application/json': {
                 schema: {
                   type: 'object',
+                  required: ['userId', 'tokens'],
                   properties: {
+                    userId: { type: 'string', format: 'uuid' },
                     tokens: { $ref: '#/components/schemas/Tokens' }
                   }
                 }

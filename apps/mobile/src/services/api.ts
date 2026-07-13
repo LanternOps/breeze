@@ -6,6 +6,7 @@ import {
   advanceSessionGeneration,
   captureSessionGeneration,
   isCurrentSessionGeneration,
+  runAuthSessionTransition,
 } from './sessionGeneration';
 export { captureSessionGeneration, isCurrentSessionGeneration } from './sessionGeneration';
 
@@ -430,26 +431,22 @@ export async function sendMfaSms(tempToken: string): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
-  try {
-    await requestWithPrefix('/auth/logout', API_CORE_PREFIX, { method: 'POST' });
-  } catch {
-    // Ignore logout errors
-  }
+  await requestWithPrefix('/auth/logout', API_CORE_PREFIX, { method: 'POST' });
 }
 
 export async function refreshToken(): Promise<{ token: string }> {
-  const response = await requestWithPrefix<{ tokens?: AuthTokensPayload; accessToken?: string }>(
-    '/auth/refresh',
-    API_CORE_PREFIX,
-    {
-      method: 'POST',
-      body: JSON.stringify({})
-    });
-  const token = response.tokens?.accessToken || response.accessToken;
-  if (!token) {
-    throw { message: 'Failed to refresh token' } as ApiError;
-  }
-  return { token };
+  return runAuthSessionTransition(async () => {
+    const response = await requestWithPrefix<{ tokens?: AuthTokensPayload; accessToken?: string }>(
+      '/auth/refresh',
+      API_CORE_PREFIX,
+      {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+    const token = response.tokens?.accessToken || response.accessToken;
+    if (!token) throw { message: 'Failed to refresh token' } as ApiError;
+    return { token };
+  });
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {

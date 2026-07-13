@@ -1,5 +1,6 @@
 import {
   isCurrentSessionGeneration,
+  runAuthSessionTransition,
   runAuthStorageExclusive,
 } from '../services/sessionGeneration';
 
@@ -16,10 +17,12 @@ export async function handleHydrationFailure(
   if (!isCurrentSessionGeneration(generation)) return false;
 
   let cleared = false;
-  await runAuthStorageExclusive(async () => {
-    if (!isCurrentSessionGeneration(generation)) return;
-    await clear();
-    cleared = true;
+  await runAuthSessionTransition(async () => {
+    await runAuthStorageExclusive(async () => {
+      if (!isCurrentSessionGeneration(generation)) return;
+      await clear();
+      cleared = true;
+    });
   });
 
   if (!cleared || !isCurrentSessionGeneration(generation)) return false;
