@@ -68,7 +68,6 @@ import {
   SsoCallbackStateUnavailableError,
   claimSsoCallbackIssuance,
   consumeDurableSsoExchangeGrant,
-  consumeSsoCallbackSession,
   createDurableSsoExchangeGrant,
 } from '../services/ssoBrowserTransition';
 
@@ -1611,6 +1610,7 @@ ssoRoutes.get('/callback', async (c) => {
       throw new AuthIssuanceCapabilityError();
     }
     const finalized = await finishAuthIssuance(loginCapability, async (tx) => {
+    let provisionedRoleId: string | null = null;
     let user = await withSystemDbAccessContext(async () => {
       const [link] = await db
         .select({ userId: userSsoIdentities.userId })
@@ -1745,12 +1745,6 @@ ssoRoutes.get('/callback', async (c) => {
           return null;
         }
 
-        await db.insert(organizationUsers).values({
-          orgId: provisionOrgId,
-          userId: created.id,
-          roleId: validatedDefaultRoleId
-        });
-
         return created;
       });
 
@@ -1759,6 +1753,7 @@ ssoRoutes.get('/callback', async (c) => {
       }
 
       user = newUser;
+      provisionedRoleId = validatedDefaultRoleId;
     }
 
     // IdP-asserted MFA — axis-independent, so it is
@@ -1827,24 +1822,31 @@ ssoRoutes.get('/callback', async (c) => {
       // alongside the provider-read fix since both are shared callback
       // plumbing and the org-axis e2e regression case now exercises this
       // exact path (see ssoPartnerLogin.integration.test.ts).
-      const [orgUser] = await withSystemDbAccessContext(async () =>
-        db
-          .select({
-            orgId: organizationUsers.orgId,
-            roleId: organizationUsers.roleId,
-            roleName: roles.name,
-            roleScope: roles.scope
-          })
-          .from(organizationUsers)
-          .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
-          .where(
-            and(
-              eq(organizationUsers.userId, user.id),
-              eq(organizationUsers.orgId, provider.orgId!)
-            )
-          )
-          .limit(1)
-      );
+      const orgUser = provisionedRoleId
+        ? {
+            orgId: provider.orgId!,
+            roleId: provisionedRoleId,
+            roleName: null,
+            roleScope: 'organization' as const,
+          }
+        : (await withSystemDbAccessContext(async () =>
+            db
+              .select({
+                orgId: organizationUsers.orgId,
+                roleId: organizationUsers.roleId,
+                roleName: roles.name,
+                roleScope: roles.scope
+              })
+              .from(organizationUsers)
+              .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
+              .where(
+                and(
+                  eq(organizationUsers.userId, user.id),
+                  eq(organizationUsers.orgId, provider.orgId!)
+                )
+              )
+              .limit(1)
+          ))[0];
 
       if (!orgUser) {
         throw new SsoLoginFinalizationError('/login?error=no_org_access');
@@ -1864,6 +1866,23 @@ ssoRoutes.get('/callback', async (c) => {
         mfa: ssoMfa,
         amr: ['sso']
       };
+    }
+
+    // `issueUserSession` locks and revalidates the user, then creates and
+    // links the refresh family. Keep that transition → user → family sequence
+    // ahead of every identity, membership, legacy-session, and grant write.
+    // Any later failure still rolls the family back with this transaction.
+    const issued = await issueUserSession(sessionIdentity, {
+      tx,
+      capability: loginCapability!,
+    });
+
+    if (provisionedRoleId) {
+      await db.insert(organizationUsers).values({
+        orgId: provider.orgId!,
+        userId: user.id,
+        roleId: provisionedRoleId,
+      });
     }
 
     // Update or create SSO identity link (shared across both axes). System DB
@@ -1964,18 +1983,13 @@ ssoRoutes.get('/callback', async (c) => {
       throw new SsoLoginFinalizationError(`/login?error=${identityOutcome.error}`);
     }
 
-    // The SSO session row was already consumed atomically up-front
-    // (delete().returning()), so there is nothing left to clean up here.
+    // The SSO state was durably consumed with the operation lease before IdP
+    // work, so cancellation or lease expiry can never make it replayable.
 
-    // Create session and tokens. `sessionIdentity` (and its MFA outcome) was already
-    // built by the axis branch above.
+    // Create the legacy database session after family authority and identity
+    // writes. `sessionIdentity` and MFA outcome were built above.
     const ip = getClientIP(c);
     const userAgent = c.req.header('user-agent') || 'unknown';
-
-    const issued = await issueUserSession(sessionIdentity, {
-      tx,
-      capability: loginCapability!,
-    });
 
     await createSession({
       userId: user.id,
@@ -1993,7 +2007,6 @@ ssoRoutes.get('/callback', async (c) => {
         expiresInSeconds: issued.expiresInSeconds,
       },
     });
-    await consumeSsoCallbackSession(tx, session);
     return { user, issued, tokenExchangeCode, ip, ssoMfa };
     });
     loginCapability = undefined;
@@ -2025,9 +2038,9 @@ ssoRoutes.get('/callback', async (c) => {
       clearStateCookie();
       return c.redirect(error.location);
     }
-    // The session was already consumed atomically, so even on a failed IdP
-    // token exchange the captured state cannot be replayed. Surface the error
-    // to the login page exactly as before; the user simply re-initiates.
+    // The state was durably consumed with the operation admission, so even on
+    // a failed IdP token exchange it cannot be replayed. Surface the error to
+    // the login page; the user simply re-initiates.
     // Sentry too (#2195): this catch wraps the account-takeover-critical
     // identity-linking path, so failures need more visibility than stderr.
     console.error('SSO callback error:', error);

@@ -116,39 +116,26 @@ export async function claimSsoCallbackIssuance(
     transitionId: candidate.browserTransitionId,
     generation: candidate.browserGeneration,
   }, async (tx) => {
-    const [locked] = await tx
-      .select()
-      .from(ssoSessions)
+    const [consumed] = await tx
+      .delete(ssoSessions)
       .where(and(
         eq(ssoSessions.id, candidate.id),
         eq(ssoSessions.state, state),
+        eq(ssoSessions.browserTransitionId, candidate.browserTransitionId!),
+        eq(ssoSessions.browserGeneration, candidate.browserGeneration!),
         gt(ssoSessions.expiresAt, sql`now()`),
       ))
-      .for('update')
-      .limit(1);
-    if (!locked
-      || locked.browserTransitionId !== candidate.browserTransitionId
-      || locked.browserGeneration !== candidate.browserGeneration) {
+      .returning();
+    if (!consumed) {
       throw new SsoCallbackStateUnavailableError();
     }
-    return locked;
+    return consumed;
   });
   return Object.freeze({
     kind: 'login' as const,
     session: admission.claimed,
     capability: admission.capability,
   });
-}
-
-export async function consumeSsoCallbackSession(
-  tx: AuthLifecycleTransaction,
-  session: Pick<typeof ssoSessions.$inferSelect, 'id' | 'state'>,
-): Promise<void> {
-  const deleted = await tx
-    .delete(ssoSessions)
-    .where(and(eq(ssoSessions.id, session.id), eq(ssoSessions.state, session.state)))
-    .returning({ id: ssoSessions.id });
-  if (deleted.length !== 1) throw new SsoCallbackStateUnavailableError();
 }
 
 export async function createDurableSsoExchangeGrant(

@@ -1214,4 +1214,25 @@ describe('browser-auth issuer inventory (9 guarded issuances; 0 frozen legacy is
     expect(serviceSource).toContain('transition.currentFamilyId !== candidate.familyId');
     expect(serviceSource).toContain('family.revokedAt !== null');
   });
+
+  it('establishes SSO user/family authority before route-specific finalization writes', () => {
+    const source = readFileSync(join(SRC_DIR, 'routes/sso.ts'), 'utf8');
+    const finalizerStart = source.indexOf('const finalized = await finishAuthIssuance(');
+    const familyAuthority = source.indexOf('const issued = await issueUserSession(', finalizerStart);
+    const membershipWrite = source.indexOf('await db.insert(organizationUsers)', finalizerStart);
+    const identityWrite = source.indexOf('const identityOutcome = await withSystemDbAccessContext', finalizerStart);
+    const legacySessionWrite = source.indexOf('await createSession(', finalizerStart);
+    const durableGrantWrite = source.indexOf('await createDurableSsoExchangeGrant(', finalizerStart);
+
+    expect(finalizerStart).toBeGreaterThan(-1);
+    expect(familyAuthority).toBeGreaterThan(finalizerStart);
+    for (const routeWrite of [
+      membershipWrite,
+      identityWrite,
+      legacySessionWrite,
+      durableGrantWrite,
+    ]) {
+      expect(routeWrite).toBeGreaterThan(familyAuthority);
+    }
+  });
 });

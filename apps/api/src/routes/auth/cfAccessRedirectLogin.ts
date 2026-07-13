@@ -251,7 +251,8 @@ cfAccessRedirectLoginRoutes.get('/cf-access-login', async (c) => {
     if (capability) await cancelAuthIssuance(capability).catch(() => false);
     if (error instanceof AuthBindingRotationRequiredError) {
       rotateCsrfBindingCookie(c, error.replacement.value);
-      return loginErrorRedirect('binding-refresh');
+      const requestUrl = new URL(c.req.url);
+      return c.redirect(`${requestUrl.pathname}${requestUrl.search}`, 303);
     }
     if (error instanceof AuthBindingUnavailableError
       || error instanceof AuthIssuanceConflictError

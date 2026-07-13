@@ -56,7 +56,6 @@ vi.mock('../services/ssoBrowserTransition', async () => {
         ? { kind: 'link', session }
         : { kind: 'login', session, capability: browserTransitionState.capability };
     }),
-    consumeSsoCallbackSession: vi.fn(async () => undefined),
     createDurableSsoExchangeGrant: vi.fn(async (_tx, input) => {
       const code = `durable-sso-code-${++ssoTransitionState.grantSequence}`;
       ssoTransitionState.grants.set(code, input.tokens);
@@ -2230,7 +2229,10 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=identity_in_use');
-      expect(issueUserSession).not.toHaveBeenCalled();
+      // Session issuance acquires user/family authority before route-specific
+      // identity writes; the later conflict throws from the same finalization
+      // transaction, so the real DB rolls the family back.
+      expect(issueUserSession).toHaveBeenCalledOnce();
     });
 
     it('proceeds when the identity INSERT loses the race to the SAME user (parallel logins)', async () => {

@@ -12,11 +12,16 @@ import {
   authBrowserTransitions,
   refreshTokenFamilies,
   roles,
+  ssoProviders,
+  ssoSessions,
   ssoTokenExchangeGrants,
 } from '../../db/schema';
 import {
   AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
   beginAuthIssuance,
+  cancelAuthIssuance,
   finishAuthIssuance,
   resolveAuthBinding,
   type AuthBindingSource,
@@ -27,6 +32,7 @@ import {
 } from '../../services/authLifecycle';
 import { issueUserSession } from '../../services/userSession';
 import {
+  claimSsoCallbackIssuance,
   consumeDurableSsoExchangeGrant,
   createDurableSsoExchangeGrant,
   digestSsoExchangeCode,
@@ -164,6 +170,43 @@ async function createGrantFixture() {
   return { partner, org, role, user, capability, ...finalized };
 }
 
+async function createCallbackStateFixture() {
+  const partner = await createPartner({ name: 'SSO Callback State Partner' });
+  const org = await createOrganization({ partnerId: partner.id });
+  const [provider] = await getTestDb()
+    .insert(ssoProviders)
+    .values({
+      orgId: org.id,
+      partnerId: null,
+      name: 'SSO Callback State Provider',
+      type: 'oidc',
+      status: 'active',
+      issuer: 'https://idp.example.test',
+      clientId: 'callback-state-client',
+      authorizationUrl: 'https://idp.example.test/authorize',
+      tokenUrl: 'https://idp.example.test/token',
+      userInfoUrl: 'https://idp.example.test/userinfo',
+      jwksUrl: 'https://idp.example.test/jwks',
+      autoProvision: false,
+    })
+    .returning();
+  if (!provider) throw new Error('Missing SSO provider fixture');
+  const snapshot = await beginAuthIssuance(freshBrowserBinding());
+  if (!await cancelAuthIssuance(snapshot)) throw new Error('Failed to release snapshot lease');
+  const state = crypto.randomUUID();
+  await getTestDb().insert(ssoSessions).values({
+    providerId: provider.id,
+    state,
+    nonce: crypto.randomUUID(),
+    codeVerifier: 'callback-state-verifier',
+    redirectUrl: '/',
+    browserTransitionId: snapshot.transitionId,
+    browserGeneration: snapshot.generation,
+    expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+  });
+  return { partner, org, provider, snapshot, state };
+}
+
 beforeEach(async () => {
   delete process.env.APP_ENCRYPTION_KEY;
   process.env.APP_ENCRYPTION_KEY_ID = 'current';
@@ -257,5 +300,54 @@ describe('durable SSO exchange authority', () => {
 
     await expect(logout).resolves.toBeUndefined();
     await expect(exchange).resolves.toBeNull();
+  });
+});
+
+describe('durable SSO callback state claim', () => {
+  it('consumes state with admission so cancellation cannot make replay claimable', async () => {
+    const fixture = await createCallbackStateFixture();
+    const first = await claimSsoCallbackIssuance(fixture.state);
+    expect(first?.kind).toBe('login');
+    if (!first || first.kind !== 'login') throw new Error('Missing login claim');
+    await expect(cancelAuthIssuance(first.capability)).resolves.toBe(true);
+
+    expect(await getTestDb().select().from(ssoSessions)
+      .where(eq(ssoSessions.state, fixture.state))).toHaveLength(0);
+    await expect(claimSsoCallbackIssuance(fixture.state)).resolves.toBeNull();
+  });
+
+  it('leaves callback state untouched when terminal logout owns the transition first', async () => {
+    const fixture = await createCallbackStateFixture();
+    const [logout, claim] = await queueTransitionRacers(
+      fixture.snapshot.transitionId,
+      () => beginLogoutAndRevokeLinkedFamily(fixture.snapshot.transitionId),
+      () => claimSsoCallbackIssuance(fixture.state),
+    );
+
+    await expect(logout).resolves.toBeUndefined();
+    await expect(claim).rejects.toBeInstanceOf(AuthBindingUnavailableError);
+    expect(await getTestDb().select().from(ssoSessions)
+      .where(eq(ssoSessions.state, fixture.state))).toHaveLength(1);
+  });
+
+  it('consumes state first but finalizes no local write when logout takes ownership next', async () => {
+    const fixture = await createCallbackStateFixture();
+    const [claim, logout] = await queueTransitionRacers(
+      fixture.snapshot.transitionId,
+      () => claimSsoCallbackIssuance(fixture.state),
+      () => beginLogoutAndRevokeLinkedFamily(fixture.snapshot.transitionId),
+    );
+
+    const admitted = await claim;
+    expect(admitted?.kind).toBe('login');
+    await expect(logout).resolves.toBeUndefined();
+    if (!admitted || admitted.kind !== 'login') throw new Error('Missing login claim');
+    let localWrites = 0;
+    await expect(finishAuthIssuance(admitted.capability, async () => {
+      localWrites += 1;
+    })).rejects.toBeInstanceOf(AuthIssuanceCapabilityError);
+    expect(localWrites).toBe(0);
+    expect(await getTestDb().select().from(ssoSessions)
+      .where(eq(ssoSessions.state, fixture.state))).toHaveLength(0);
   });
 });

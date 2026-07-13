@@ -487,6 +487,32 @@ describe('GET /cf-access-login', () => {
     }));
   });
 
+  it('preserves the replacement binding cookie on first-use bootstrap', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: 'user@example.com', sub: 'cf-subject' },
+    };
+    dbState.userRow = activeUser;
+    const { AuthBindingRotationRequiredError } = await import(
+      '../../services/authBrowserTransition'
+    );
+    issuanceState.beginFailure = new AuthBindingRotationRequiredError({
+      kind: 'browser',
+      value: 'c'.repeat(64),
+    }, 'missing');
+
+    const res = await callGet('/cf-access-login', {
+      'Cf-Access-Jwt-Assertion': 'tok',
+    });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toBe('/cf-access-login');
+    expect(res.headers.get('set-cookie')).toContain(`breeze_csrf_token=${'c'.repeat(64)}`);
+    expect(cookieState.set).toBeNull();
+    expect(servicesState.lastSessionIdentity).toBeNull();
+  });
+
   it('delegates the complete identity to the high-level session issuer', async () => {
     envState.enabled = true;
     verifyState.next = {
