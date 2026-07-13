@@ -150,6 +150,23 @@ export function redactSecretsDeep(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') return redactSecretsFromOutput(value);
   if (value == null || typeof value !== 'object') return value;
 
+  // Non-plain objects must pass through BY REFERENCE. `Object.entries(new Date())`
+  // is `[]`, so walking a Date would rebuild it as `{}` — it loses toISOString(),
+  // Drizzle's timestamp mapper throws on insert, the caller's try/catch swallows
+  // it, and the row silently never persists. Same for the other carriers that can
+  // ride a result blob. None of these can hold a secret in a string field we'd
+  // otherwise reach, so passing them through costs no coverage.
+  if (
+    value instanceof Date ||
+    value instanceof RegExp ||
+    Buffer.isBuffer(value) ||
+    ArrayBuffer.isView(value) ||
+    value instanceof Map ||
+    value instanceof Set
+  ) {
+    return value;
+  }
+
   if (depth >= MAX_DEEP_REDACTION_DEPTH) {
     try {
       return JSON.parse(redactSecretsFromOutput(JSON.stringify(value)));

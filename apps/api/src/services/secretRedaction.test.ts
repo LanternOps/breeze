@@ -218,6 +218,24 @@ describe('redactSecretsDeep (#2434)', () => {
     expect(serialized).not.toContain('MIIBOgIBAAJBAKe0m0h');
   });
 
+  it('passes a Date through BY REFERENCE — a generic walk would flatten it to {}', () => {
+    // Object.entries(new Date()) === [], so an unguarded walk rebuilds a Date as
+    // {} and it loses toISOString(). Drizzle's timestamp mapper then throws on
+    // insert, the caller's try/catch swallows it, and the row silently never
+    // persists (this shipped as a real bug in the first cut of this PR: it took
+    // out the CIS *success* path while failed scans kept writing).
+    const checkedAt = new Date('2026-07-13T00:00:00Z');
+    const out = redactSecretsDeep({
+      checkedAt,
+      findings: [{ message: `key: ${pem}` }],
+    }) as { checkedAt: unknown; findings: unknown };
+
+    expect(out.checkedAt).toBeInstanceOf(Date);
+    expect((out.checkedAt as Date).toISOString()).toBe('2026-07-13T00:00:00.000Z');
+    // ...while still redacting the strings alongside it.
+    expect(JSON.stringify(out.findings)).toContain('[PRIVATE_KEY_REDACTED]');
+  });
+
   it('does not hang or leak on a cyclic structure', () => {
     const cyclic: Record<string, unknown> = { note: `key: ${pem}` };
     cyclic.self = cyclic;

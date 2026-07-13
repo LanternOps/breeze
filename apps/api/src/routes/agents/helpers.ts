@@ -1068,7 +1068,11 @@ export async function handleSoftwareRemediationCommandResult(
       commandId: command.id,
       softwareName,
       softwareVersion: softwareVersion ?? null,
-      message: resultData.error ?? resultData.stderr ?? 'Uninstall command failed',
+      // #2434: self-redact rather than depend on the ingest chokepoint two
+      // modules away (idempotent — already-redacted text passes through).
+      message: redactOptionalSecretText(resultData.error)
+        ?? redactOptionalSecretText(resultData.stderr)
+        ?? 'Uninstall command failed',
       status: resultData.status,
       exitCode: resultData.exitCode ?? null,
       failedAt: new Date().toISOString(),
@@ -1097,7 +1101,8 @@ export async function handleSoftwareRemediationCommandResult(
         softwareVersion: softwareVersion ?? null,
         commandStatus: resultData.status,
         exitCode: resultData.exitCode ?? null,
-        error: resultData.error ?? null,
+        // #2434: self-redact (see above) — this lands in audit_logs.details.
+        error: redactOptionalSecretText(resultData.error) ?? null,
       },
     }).catch((err) => {
       console.error('[agents/helpers] Audit write failed for remediation_command_failed:', err);
@@ -1220,13 +1225,29 @@ export async function handleCisCommandResult(
     // redacted at the ingest chokepoint), and each finding carries free-text
     // `message` / `evidence` / `remediation` produced by the collector — a
     // failing check's evidence can quote the very config value (connection
-    // string, service-account password) that made it fail. Redact the whole
-    // parsed blob before it reaches cis_baseline_results. The failure branch
-    // below builds its finding from error/stderr, already redacted upstream.
-    let parsed = redactSecretsDeep(
-      parseCisCollectorOutput(resultData.stdout)
-    ) as ReturnType<typeof parseCisCollectorOutput>;
+    // string, service-account password) that made it fail.
+    //
+    // Redact only the JSON-safe sub-parts. Do NOT hand the whole object to
+    // redactSecretsDeep: `checkedAt` is a Date, and a generic object walk
+    // would rebuild it as `{}` (Object.entries(new Date()) === []), which
+    // makes Drizzle's timestamp mapper throw on insert — a throw the caller
+    // swallows, so successful scans would silently stop persisting while
+    // failed ones (which rebuild checkedAt below) kept working.
+    const collected = parseCisCollectorOutput(resultData.stdout);
+    let parsed: ReturnType<typeof parseCisCollectorOutput> = {
+      ...collected,
+      findings: redactSecretsDeep(collected.findings) as typeof collected.findings,
+      rawSummary: redactSecretsDeep(collected.rawSummary) as typeof collected.rawSummary,
+    };
     if (resultData.status !== 'completed') {
+      // #2434: error/stderr arrive already-redacted from the ingest chokepoint,
+      // but redact again here rather than depending on a caller two modules
+      // away — this handler is reachable from both ingest legs and the
+      // failure branch writes agent text straight into a user-visible finding.
+      // Every sibling persistence service (backup/restore/vault) self-redacts
+      // for the same reason; redaction is idempotent, so this is free.
+      const failureError = redactOptionalSecretText(resultData.error);
+      const failureStderr = redactOptionalSecretText(resultData.stderr);
       parsed = {
         checkedAt: new Date(),
         findings: [{
@@ -1234,7 +1255,7 @@ export async function handleCisCommandResult(
           title: 'CIS collector execution',
           severity: 'high',
           status: 'fail',
-          message: resultData.error ?? resultData.stderr ?? 'CIS collector execution failed',
+          message: failureError ?? failureStderr ?? 'CIS collector execution failed',
           evidence: null,
           remediation: null,
         }],
@@ -1243,8 +1264,8 @@ export async function handleCisCommandResult(
         failedChecks: 1,
         score: 0,
         rawSummary: {
-          error: resultData.error ?? null,
-          stderr: resultData.stderr ?? null,
+          error: failureError ?? null,
+          stderr: failureStderr ?? null,
           status: resultData.status,
         },
       };

@@ -174,8 +174,50 @@ describe('#2434 — handleCisCommandResult redacts stdout-derived CIS state', ()
     );
 
     expect(insertValuesMock).toHaveBeenCalledTimes(1);
-    const inserted = insertValuesMock.mock.calls[0]![0] as { findings: unknown };
+    const inserted = insertValuesMock.mock.calls[0]![0] as {
+      findings: unknown;
+      checkedAt: unknown;
+    };
     expectRedacted(inserted.findings);
+
+    // Regression: redaction must not flatten the Date. `db.insert` is mocked
+    // here, so Drizzle's timestamp mapper never runs — without this assertion a
+    // `checkedAt` of `{}` sails through the test and only explodes in prod,
+    // where the throw is swallowed and successful CIS scans stop persisting.
+    expect(inserted.checkedAt).toBeInstanceOf(Date);
+  });
+
+  it('redacts error/stderr on the FAILURE branch (no reliance on the ingest chokepoint)', async () => {
+    // baseline → device org → idempotency probe → previous result
+    selectQueue.push(
+      [{ id: BASELINE_ID, orgId: ORG_ID, name: 'CIS L1' }],
+      [{ orgId: ORG_ID }],
+      [],
+      [],
+    );
+
+    // A failed collector run: the finding's `message` and the summary are built
+    // straight from the agent's error/stderr. This handler must self-redact —
+    // if it only worked because a caller two modules away redacted first, then
+    // deleting that call would silently leak a raw key into
+    // cis_baseline_results with a fully green test suite.
+    await handleCisCommandResult(
+      makeCommand('cis_benchmark', { baselineId: BASELINE_ID }),
+      makeResult({
+        status: 'failed',
+        exitCode: 1,
+        error: `collector died: ${PEM}`,
+        stderr: `stderr: ${PEM}`,
+      }),
+    );
+
+    expect(insertValuesMock).toHaveBeenCalledTimes(1);
+    const inserted = insertValuesMock.mock.calls[0]![0] as {
+      findings: unknown;
+      summary: unknown;
+    };
+    expectRedacted(inserted.findings);
+    expectRedacted(inserted.summary);
   });
 
   it('redacts remediation details/beforeState/afterState/rollbackHint parsed from raw stdout', async () => {

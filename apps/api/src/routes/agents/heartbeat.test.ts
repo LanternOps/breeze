@@ -78,6 +78,18 @@ vi.mock('../../db/schema', () => ({
     version: 'agent_versions.version',
     createdAt: 'agent_versions.created_at',
   },
+  // Resolved via a dynamic import inside PUT /:id/monitoring-results.
+  serviceProcessCheckResults: {
+    orgId: 'service_process_check_results.org_id',
+    deviceId: 'service_process_check_results.device_id',
+    details: 'service_process_check_results.details',
+  },
+}));
+
+// Same route dynamically imports getRedis; null disables the failure-counter
+// branch so the test focuses on what is persisted.
+vi.mock('../../services/redis', () => ({
+  getRedis: vi.fn(() => null),
 }));
 
 // Heartbeat schema is large — bypass it by stubbing the validator to make
@@ -2539,5 +2551,61 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       { id: 'cmd-good', type: 'run_script', payload: { scriptId: 'script-1' } },
     ]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+  });
+});
+
+// #2434 — the service/process monitoring ingest persists an agent-supplied
+// free-form `details` blob straight into a jsonb column that the monitoring UI
+// renders. It is a separate REST ingest from the command-result path, so the
+// command-result chokepoint never sees it.
+describe('PUT /:id/monitoring-results — secret redaction (#2434)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('redacts secrets from agent-supplied check details before persistence', async () => {
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKe0m0h\n-----END RSA PRIVATE KEY-----';
+
+    // device lookup by agentId
+    selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([
+            { id: 'device-1', orgId: 'org-1', siteId: 'site-1' },
+          ]),
+        }),
+      }),
+    });
+
+    const values = vi.fn().mockResolvedValue(undefined);
+    insertMock.mockReturnValue({ values });
+
+    const res = await buildApp().request('/agents/agent-1/monitoring-results', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        results: [{
+          watchType: 'service',
+          name: 'sshd',
+          status: 'error',
+          details: {
+            lastError: `service failed to start:\n${pem}`,
+            nested: { hint: `config holds:\n${pem}` },
+          },
+        }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(values).toHaveBeenCalledTimes(1);
+
+    const inserted = values.mock.calls[0]![0] as Array<{ details: Record<string, any> }>;
+    expect(inserted[0]!.details.lastError).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(inserted[0]!.details.nested.hint).toContain('[PRIVATE_KEY_REDACTED]');
+
+    const serialized = JSON.stringify(inserted);
+    expect(serialized).not.toContain('BEGIN RSA PRIVATE KEY');
+    expect(serialized).not.toContain('MIIBOgIBAAJBAKe0m0h');
   });
 });

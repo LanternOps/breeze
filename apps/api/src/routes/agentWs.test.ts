@@ -1669,6 +1669,41 @@ describe('#2434 — secret redaction on non-device_commands persistence surfaces
     expect(stored.errorMessage).not.toContain('BEGIN RSA PRIVATE KEY');
   });
 
+  it('hands per-type handlers a redacted result — pins the processCommandResult chokepoint', async () => {
+    // Regression guard for the chokepoint itself. Several downstream handlers
+    // (CIS failure branch, software-remediation audit) persist agent error text
+    // that ONLY this call redacts on the WS leg. Without this test, deleting the
+    // chokepoint leaves every other suite green while raw key material lands in
+    // cis_baseline_results. `backup_verify` is the probe: its handler is mocked,
+    // so we can assert exactly what the dispatch handed it.
+    const preValidatedAgent = { deviceId: 'device-ck', orgId: 'org-ck' };
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-ck', type: 'backup_verify', payload: {}, deviceId: 'device-ck' },
+    ]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-ck' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-ck', preValidatedAgent);
+    const ws = wsMock();
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '99999999-9999-4999-8999-999999999999',
+        status: 'failed',
+        exitCode: 1,
+        error: `verify failed, key follows:\n${pem2434}`,
+        stderr: `stderr, key follows:\n${pem2434}`,
+      }),
+    } as any, ws as any);
+
+    expect(processBackupVerificationResult).toHaveBeenCalledTimes(1);
+    const handed = vi.mocked(processBackupVerificationResult).mock.calls[0]![1] as {
+      error?: string;
+    };
+    expect(handed.error).toContain('[PRIVATE_KEY_REDACTED]');
+    expect(JSON.stringify(handed)).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+
   it('redacts remote_sessions.errorMessage on a failed desk-start result (fast path)', async () => {
     const preValidatedAgent = { deviceId: 'device-rs', orgId: 'org-rs' };
     const sessionSetSpy = vi.fn().mockReturnValue({
