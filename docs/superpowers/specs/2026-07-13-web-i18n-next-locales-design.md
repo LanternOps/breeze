@@ -1,7 +1,7 @@
 # Web i18n next locales design
 
-**Date:** 2026-07-13  
-**Status:** Approved for planning  
+**Date:** 2026-07-13
+**Status:** Approved for planning
 **Locales:** Latin American Spanish (`es-419`), France French (`fr-FR`), Germany German (`de-DE`)
 
 ## Objective
