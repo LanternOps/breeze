@@ -39,6 +39,24 @@ describe('requestDatabaseConfig', () => {
       expect(decodeURIComponent(parsed.password)).toBe('p@ss/word:with spaces');
     });
 
+    // Regression: postgres.js decodes the URL password with decodeURIComponent()
+    // at connect time. A literal '%' is NOT escaped by the WHATWG password
+    // setter, so without explicit encoding the decode either silently mutates
+    // ('pa%20ss' -> 'pa ss') or throws "URI malformed" ('50%off') — diverging
+    // from the raw bytes ensureAppRole() sets and breaking production auth.
+    it('preserves passwords containing a literal percent through the postgres.js decode', () => {
+      for (const password of ['50%off', 'pa%20ss', 'sec%zzret', 'p@ss/word:with spaces', 'café']) {
+        const result = deriveAppConnectionString(
+          'postgresql://admin:admin-secret@db:5432/breeze',
+          password,
+        );
+        expect(result).not.toBeNull();
+        // Mirror postgres.js: parse the URL, then decodeURIComponent the password.
+        const parsed = new URL(result!);
+        expect(decodeURIComponent(parsed.password)).toBe(password);
+      }
+    });
+
     it('returns null without a password', () => {
       expect(
         deriveAppConnectionString('postgresql://admin:admin-secret@db:5432/breeze', undefined),

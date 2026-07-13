@@ -96,7 +96,14 @@ export function deriveAppConnectionString(
   try {
     const url = parseConnectionUrl(adminUrl, 'DATABASE_URL');
     url.username = 'breeze_app';
-    url.password = appPassword;
+    // postgres.js decodes the URL password with decodeURIComponent() at connect
+    // time (postgres@3.4.9 src/index.js:550). The WHATWG `password` setter does
+    // NOT percent-encode a literal '%', so an unescaped password byte would
+    // either silently change (e.g. 'pa%20ss' -> 'pa ss') or throw "URI
+    // malformed" (e.g. '50%off') on decode — diverging from the raw bytes
+    // ensureAppRole() sets on the role and breaking auth. Percent-encode so the
+    // decode round-trips to the exact password bytes.
+    url.password = encodeURIComponent(appPassword);
     return url.toString();
   } catch {
     return null;
