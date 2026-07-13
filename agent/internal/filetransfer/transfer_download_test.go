@@ -62,6 +62,7 @@ func TestHandleTransferDownloadSuccess(t *testing.T) {
 	if string(data) != body {
 		t.Fatalf("expected %q, got %q", body, string(data))
 	}
+	assertNoTransfers(t, m)
 }
 
 func TestHandleTransferDownloadDirectoryTraversal(t *testing.T) {
@@ -117,6 +118,7 @@ func TestHandleTransferDownloadServerError(t *testing.T) {
 	if result["status"] != "failed" {
 		t.Fatalf("expected failed, got %v", result["status"])
 	}
+	assertNoTransfers(t, m)
 }
 
 // ---------- CancelTransfer ----------
@@ -142,6 +144,84 @@ func TestCancelTransferSetsStatus(t *testing.T) {
 	if m.transfers["cancel-me"].Status != "cancelled" {
 		t.Fatalf("expected cancelled, got %s", m.transfers["cancel-me"].Status)
 	}
+}
+
+// TestCancelTransferMidFlight cancels through the real HandleTransfer path
+// while the first chunk upload is blocked in the server handler, then keeps
+// hammering CancelTransfer concurrently while the transfer winds down so the
+// mutex guards on Status/Progress/Error and the reportProgress snapshot are
+// genuinely exercised under -race.
+func TestCancelTransferMidFlight(t *testing.T) {
+	firstChunk := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			once.Do(func() {
+				close(firstChunk)
+				<-release
+			})
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "big.dat")
+	// Two chunks, so a cancellation check runs after the first chunk uploads.
+	if err := os.WriteFile(srcFile, make([]byte, ChunkSize+100), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{
+		ServerURL: ts.URL,
+		AuthToken: secmem.NewSecureString("tok"),
+		AgentID:   "agent-1",
+	}
+	m := NewManager(cfg)
+
+	done := make(chan map[string]any, 1)
+	go func() {
+		done <- m.HandleTransfer(map[string]any{
+			"transferId": "t-cancel-mid",
+			"direction":  "upload",
+			"remotePath": "/remote/dest.dat",
+			"localPath":  srcFile,
+		})
+	}()
+
+	<-firstChunk
+	m.CancelTransfer("t-cancel-mid")
+
+	// Race the manager's terminal-state writes against concurrent cancels.
+	stopCancel := make(chan struct{})
+	var cancelWg sync.WaitGroup
+	cancelWg.Add(1)
+	go func() {
+		defer cancelWg.Done()
+		for {
+			select {
+			case <-stopCancel:
+				return
+			default:
+				m.CancelTransfer("t-cancel-mid")
+			}
+		}
+	}()
+
+	close(release)
+	result := <-done
+	close(stopCancel)
+	cancelWg.Wait()
+
+	if result["status"] != "failed" {
+		t.Fatalf("expected failed after mid-flight cancel, got %v", result["status"])
+	}
+	if result["error"] != "transfer cancelled" {
+		t.Fatalf("expected 'transfer cancelled', got %v", result["error"])
+	}
+	assertNoTransfers(t, m)
 }
 
 func TestCancelTransferNonexistentIsNoop(t *testing.T) {
@@ -189,6 +269,7 @@ func TestConcurrentHandleTransfer(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	assertNoTransfers(t, m)
 }
 
 // ---------- reportProgress ----------
