@@ -21,8 +21,7 @@ const (
 	// bumping this constant forces reconsideration of that limit via
 	// TestMaxMessageSizeCoversLargestLegitimateFrame. The API-side upload
 	// schema (apps/api/src/routes/systemTools/schemas.ts fileUploadBodySchema)
-	// mirrors this cap; larger transfers use the chunked HTTP file-transfer
-	// endpoints instead.
+	// mirrors this cap.
 	MaxFileWriteSize     = 4 * 1024 * 1024
 	defaultFileListLimit = 1000
 	maxFileListLimit     = 5000

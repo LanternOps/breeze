@@ -64,8 +64,6 @@ func TestRequiresElevationFalseForNonElevatedCommands(t *testing.T) {
 		tools.CmdRegistryValues,
 		tools.CmdRegistryGet,
 		tools.CmdCollectSoftware,
-		tools.CmdFileTransfer,
-		tools.CmdCancelTransfer,
 	}
 
 	for _, cmd := range nonElevated {

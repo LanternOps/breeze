@@ -32,7 +32,6 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../db/schema', () => ({
   remoteSessions: {},
-  fileTransfers: {},
   devices: {},
   auditLogs: { __table: 'audit_logs' }
 }));

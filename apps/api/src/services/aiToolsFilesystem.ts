@@ -104,7 +104,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         const contentBytes = Buffer.byteLength((input.content as string) ?? '', 'utf8');
         if (contentBytes > AGENT_MAX_FILE_WRITE_BYTES) {
           return JSON.stringify({
-            error: `File content too large (${contentBytes} bytes; max ${AGENT_MAX_FILE_WRITE_BYTES}). Use the file transfer feature for larger files.`,
+            error: `File content too large (${contentBytes} bytes; max ${AGENT_MAX_FILE_WRITE_BYTES}).`,
           });
         }
       }

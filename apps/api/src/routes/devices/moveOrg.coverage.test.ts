@@ -32,7 +32,6 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   'deployment_results',
   'device_commands',
   'device_software',
-  'file_transfers',
   'patch_job_results',
   'patch_rollbacks',
   'psa_ticket_mappings',

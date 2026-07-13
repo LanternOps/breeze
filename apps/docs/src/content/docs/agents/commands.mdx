@@ -321,7 +321,7 @@ Returns `FileListResponse` with `entries[]`, each containing `name`, `path`, `ty
 | `encoding` | string | `"text"` | `"text"` for UTF-8, `"base64"` for binary |
 
 <Aside>
-Maximum file read size is 1 MB. Larger files will be rejected. Use `file_transfer` for large file downloads.
+Maximum file read size is 1 MB. Larger files will be rejected.
 </Aside>
 
 ### `file_write`
@@ -832,45 +832,6 @@ No payload parameters. Removes snapshots that exceed the configured retention po
 | `collect_software` | Collect installed software inventory | -- |
 
 No payload parameters. Runs the software collector and returns the full list of installed applications with name, version, publisher, install date, and size.
-
----
-
-## File Transfer
-
-Transfer files to/from managed devices.
-
-| Action | Description | Key Payload Fields |
-|---|---|---|
-| `file_transfer` | Initiate a file transfer | `direction`, `path`, `transferId` |
-| `cancel_transfer` | Cancel an in-progress transfer | `transferId` |
-
-### `file_transfer`
-
-Payload is passed directly to the file transfer manager. Key fields include the transfer direction and file path.
-
-```json
-{
-  "action": "file_transfer",
-  "payload": {
-    "direction": "download",
-    "path": "/var/log/application.log",
-    "transferId": "xfer-a1b2c3d4"
-  }
-}
-```
-
-### `cancel_transfer`
-
-| Param | Type | Required | Description |
-|---|---|---|---|
-| `transferId` | string | Yes | Transfer ID to cancel |
-
-```json
-{
-  "action": "cancel_transfer",
-  "payload": { "transferId": "xfer-a1b2c3d4" }
-}
-```
 
 ---
 

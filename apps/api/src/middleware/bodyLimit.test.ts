@@ -26,13 +26,6 @@ describe('bodyLimitForPath', () => {
     });
   });
 
-  it('carves out remote file-transfer chunk uploads at 50MB', () => {
-    expect(bodyLimitForPath('/api/v1/remote/transfers/abc-123/chunks')).toEqual({
-      maxSize: 50 * MB,
-      error: 'Chunk too large (max 50MB)',
-    });
-  });
-
   // Regression for #2401: agent command results on the heartbeat/REST
   // fallback leg can legitimately carry multi-MB stdout (capture_pprof
   // profiles, big script output). commandResultSchema caps stdout/stderr at
@@ -54,7 +47,7 @@ describe('bodyLimitForPath', () => {
   it('carves out file-browser uploads at 8MB', () => {
     expect(bodyLimitForPath('/api/v1/system-tools/devices/dev-1/files/upload')).toEqual({
       maxSize: 8 * MB,
-      error: 'File too large (max 4MB); use file transfer for larger files',
+      error: 'File too large (max 4MB)',
     });
   });
 

@@ -605,8 +605,7 @@ breeze-agent/
 │   ├── scripts/          # Script runner
 │   ├── remote/           # WebRTC remote access
 │   │   ├── terminal.go
-│   │   ├── desktop.go
-│   │   └── filetransfer.go
+│   │   └── desktop.go
 │   ├── updates/          # Self-update mechanism
 │   └── platform/         # OS-specific code
 │       ├── windows/

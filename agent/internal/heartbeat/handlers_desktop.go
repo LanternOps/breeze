@@ -94,8 +94,6 @@ func serviceUnavailable(command string, start time.Time) tools.CommandResult {
 }
 
 func init() {
-	handlerRegistry[tools.CmdFileTransfer] = handleFileTransfer
-	handlerRegistry[tools.CmdCancelTransfer] = handleCancelTransfer
 	handlerRegistry[tools.CmdStartDesktop] = handleStartDesktop
 	handlerRegistry[tools.CmdStopDesktop] = handleStopDesktop
 	handlerRegistry[tools.CmdDesktopStreamStart] = handleDesktopStreamStart
@@ -103,37 +101,6 @@ func init() {
 	handlerRegistry[tools.CmdDesktopInput] = handleDesktopInput
 	handlerRegistry[tools.CmdDesktopConfig] = handleDesktopConfig
 	handlerRegistry[tools.CmdListSessions] = handleListSessions
-}
-
-func handleFileTransfer(h *Heartbeat, cmd Command) tools.CommandResult {
-	start := time.Now()
-	transferResult := h.fileTransferMgr.HandleTransfer(cmd.Payload)
-	durationMs := time.Since(start).Milliseconds()
-
-	status, _ := transferResult["status"].(string)
-	if status != "completed" {
-		errMsg, _ := transferResult["error"].(string)
-		if errMsg == "" {
-			errMsg = fmt.Sprintf("file transfer failed with status: %s", status)
-		}
-		return tools.CommandResult{
-			Status:     "failed",
-			Error:      errMsg,
-			DurationMs: durationMs,
-		}
-	}
-	return tools.NewSuccessResult(transferResult, durationMs)
-}
-
-func handleCancelTransfer(h *Heartbeat, cmd Command) tools.CommandResult {
-	start := time.Now()
-	transferID, errResult := tools.RequirePayloadString(cmd.Payload, "transferId")
-	if errResult != nil {
-		errResult.DurationMs = time.Since(start).Milliseconds()
-		return *errResult
-	}
-	h.fileTransferMgr.CancelTransfer(transferID)
-	return tools.NewSuccessResult(map[string]any{"cancelled": true}, time.Since(start).Milliseconds())
 }
 
 func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {

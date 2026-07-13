@@ -499,8 +499,6 @@ export interface Alert {
 
 export type RemoteSessionType = 'terminal' | 'desktop' | 'file_transfer';
 export type RemoteSessionStatus = 'pending' | 'connecting' | 'active' | 'disconnected' | 'failed';
-export type FileTransferDirection = 'upload' | 'download';
-export type FileTransferStatus = 'pending' | 'transferring' | 'completed' | 'failed';
 
 export interface RemoteSession {
   id: string;

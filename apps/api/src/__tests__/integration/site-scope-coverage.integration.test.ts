@@ -168,7 +168,6 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // ---- Genuinely site-gated via the cross-file `getDeviceWithOrgCheck`
   // helper (routes/remote/helpers.ts), which the file-local scanner can't see.
   'routes/remote/sessions.ts:POST /sessions',
-  'routes/remote/transfers.ts:POST /transfers',
   // ---- Org-wide AGGREGATE reads: return only counts/summaries (no
   // per-device rows), so no cross-site device data is disclosed (returns
   // re-verified 2026-05-31). NB: totals still span the org incl. other
@@ -205,7 +204,6 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   'routes/lifecycle.ts:GET /me/mobile-devices',
   // Site-gated via the cross-file getDeviceWithOrgCheck resolver (remote/helpers.ts).
   'routes/remote/sessions.ts:POST /sessions',
-  'routes/remote/transfers.ts:POST /transfers',
   // Org-wide AGGREGATE reads: return only counts/summaries (no per-device rows),
   // so no cross-site device data is disclosed. Reached via user auth but exempt
   // for the aggregate reason rather than non-user auth — recorded here so the

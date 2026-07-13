@@ -365,7 +365,6 @@ const DEVICE_ID_JOIN_POLICY_TABLES: ReadonlySet<string> = new Set<string>([
   'deployment_results',
   'patch_job_results',
   'patch_rollbacks',
-  'file_transfers',
 ]);
 
 // Tables that reach their tenant through a PARENT FK (no device_id, no

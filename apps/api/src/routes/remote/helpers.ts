@@ -4,7 +4,6 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { captureException } from '../../services/sentry';
 import {
   remoteSessions,
-  fileTransfers,
   devices,
   auditLogs,
   configPolicyFeatureLinks,
@@ -94,12 +93,10 @@ export function envInt(name: string, defaultValue: number): number {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
-export const MAX_ACTIVE_TRANSFERS_PER_ORG = envInt('MAX_ACTIVE_TRANSFERS_PER_ORG', 20);
-export const MAX_ACTIVE_TRANSFERS_PER_USER = envInt('MAX_ACTIVE_TRANSFERS_PER_USER', 10);
 export const MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG = envInt('MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG', 10);
 export const MAX_ACTIVE_REMOTE_SESSIONS_PER_USER = envInt('MAX_ACTIVE_REMOTE_SESSIONS_PER_USER', 5);
 
-export function hasSessionOrTransferOwnership(
+export function hasSessionOwnership(
   auth: { scope: string; user: { id: string } },
   ownerUserId: string
 ) {
@@ -161,29 +158,6 @@ export async function getSessionWithOrgCheck(sessionId: string, auth: { canAcces
   }
 
   return session;
-}
-
-export async function getTransferWithOrgCheck(transferId: string, auth: { canAccessOrg: (orgId: string) => boolean }) {
-  const [transfer] = await db
-    .select({
-      transfer: fileTransfers,
-      device: devices
-    })
-    .from(fileTransfers)
-    .innerJoin(devices, eq(fileTransfers.deviceId, devices.id))
-    .where(eq(fileTransfers.id, transferId))
-    .limit(1);
-
-  if (!transfer) {
-    return null;
-  }
-
-  const hasAccess = ensureOrgAccess(transfer.device.orgId, auth);
-  if (!hasAccess) {
-    return null;
-  }
-
-  return transfer;
 }
 
 // Auto-expire stale sessions that were never properly connected

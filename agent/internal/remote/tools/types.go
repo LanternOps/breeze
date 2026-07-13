@@ -69,10 +69,6 @@ const (
 	CmdCollectAuditPolicy       = "collect_audit_policy"
 	CmdApplyAuditPolicyBaseline = "apply_audit_policy_baseline"
 
-	// File transfer
-	CmdFileTransfer   = "file_transfer"
-	CmdCancelTransfer = "cancel_transfer"
-
 	// Remote desktop (WebRTC - legacy)
 	CmdStartDesktop = "start_desktop"
 	CmdStopDesktop  = "stop_desktop"
