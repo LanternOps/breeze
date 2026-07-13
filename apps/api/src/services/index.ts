@@ -30,7 +30,11 @@ export * from './commandQueue';
 export * from './email';
 export * from './auditService';
 export * from './tokenRevocation';
-export { getActiveRefreshTokenFamily } from './refreshTokenFamily';
+export {
+  RefreshTokenCurrentnessError,
+  digestRefreshTokenJti,
+  getActiveRefreshTokenFamily,
+} from './refreshTokenFamily';
 export * from './userSession';
 export * from './authLifecycle';
 export * from './authBrowserTransition';
