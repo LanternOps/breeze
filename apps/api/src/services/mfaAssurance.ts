@@ -1,13 +1,21 @@
 import { nanoid } from 'nanoid';
 import type { MfaMethod, MfaPrimaryMethod } from '@breeze/shared';
+import { eq } from 'drizzle-orm';
+import { users } from '../db/schema';
 import { resolveEffectiveMfaPolicy } from './mfaPolicy';
 import { getRedis } from './redis';
-import { bindIssuedUserSession, issueUserSessionLegacyDuringTransition } from './userSession';
+import { bindIssuedUserSession, issueUserSession } from './userSession';
 import {
   withAuthLifecycleSystemTransaction,
   type AuthLifecycleTransaction,
 } from './authLifecycle';
 import { lockMfaAssuranceState } from './mfaAssuranceLocks';
+import {
+  beginAuthIssuance,
+  finishAuthIssuance,
+  type AuthBindingSource,
+  type AuthIssuanceCapability,
+} from './authBrowserTransition';
 
 const PENDING_MFA_TTL_SECONDS = 5 * 60;
 const PENDING_MFA_TTL_MS = PENDING_MFA_TTL_SECONDS * 1000;
@@ -44,6 +52,8 @@ export interface CreatePendingMfaInput {
   primaryAuthenticationMethod: PrimaryAuthenticationMethod;
   configuredMfaMethod?: MfaPrimaryMethod | null;
   primaryMfaMethod: MfaPrimaryMethod;
+  browserTransitionId: string;
+  browserGeneration: number;
 }
 
 export interface PendingMfaSessionV2 {
@@ -63,6 +73,8 @@ export interface PendingMfaSessionV2 {
   primaryAuthenticationMethod: PrimaryAuthenticationMethod;
   configuredMfaMethod: MfaPrimaryMethod | null;
   primaryMfaMethod: MfaPrimaryMethod;
+  browserTransitionId: string;
+  browserGeneration: number;
   issuedAt: string;
   expiresAt: string;
 }
@@ -101,6 +113,8 @@ function hasExactKeys(value: Record<string, unknown>): boolean {
   const expected = [
     'allowedMethods',
     'authEpoch',
+    'browserGeneration',
+    'browserTransitionId',
     'configuredMfaMethod',
     'enrolledMethods',
     'expectedStatus',
@@ -165,6 +179,9 @@ function parsePendingMfa(raw: string): PendingMfaSessionV2 | null {
     || !isNonEmptyString(value.userId)
     || !isNonNegativeInteger(value.authEpoch)
     || !isNonNegativeInteger(value.mfaEpoch)
+    || !isNonEmptyString(value.browserTransitionId)
+    || !Number.isSafeInteger(value.browserGeneration)
+    || (value.browserGeneration as number) < 1
     || value.expectedStatus !== 'active'
     || !isNullableNonEmptyString(value.roleId)
     || !isNullableNonEmptyString(value.orgId)
@@ -235,6 +252,8 @@ export async function createPendingMfa(input: CreatePendingMfaInput): Promise<st
     primaryAuthenticationMethod: input.primaryAuthenticationMethod,
     configuredMfaMethod: input.configuredMfaMethod ?? input.primaryMfaMethod,
     primaryMfaMethod: input.primaryMfaMethod,
+    browserTransitionId: input.browserTransitionId,
+    browserGeneration: input.browserGeneration,
     issuedAt: issuedAt.toISOString(),
     expiresAt: new Date(issuedAt.getTime() + PENDING_MFA_TTL_MS).toISOString(),
   };
@@ -283,8 +302,13 @@ export function pendingMfaRecordsEqual(
 export interface IssueVerifiedPendingMfaSessionInput {
   tempToken: string;
   expectedPending: PendingMfaSessionV2;
+  capability: AuthIssuanceCapability;
   verifiedMethod: MfaPrimaryMethod;
   mobileDeviceId?: string;
+  finalizeFactor?: (
+    tx: AuthLifecycleTransaction,
+    user: Awaited<ReturnType<typeof loadLockedPendingMfaAuthority>>['user'],
+  ) => Promise<void>;
 }
 
 export interface CreatePendingMfaForLoginInput {
@@ -301,6 +325,7 @@ type AuthenticatedUserSessionDecisionBase = Omit<
   'primaryAuthenticationMethod'
 > & {
   requireLocalMfa: boolean;
+  authBinding: AuthBindingSource;
   externallySatisfiedMfa?: boolean;
   mobileDeviceId?: string;
 };
@@ -406,7 +431,8 @@ function normalizeIdentityEmail(email: string): string {
 export async function decideAuthenticatedUserSession(
   input: AuthenticatedUserSessionDecisionInput,
 ) {
-  const decision = await withAuthLifecycleSystemTransaction(async (tx) => {
+  const capability = await beginAuthIssuance(input.authBinding);
+  const decision = await finishAuthIssuance(capability, async (tx) => {
     const { user, activePasskeyCount, policy } = await loadLockedPendingMfaAuthority(tx, input);
     if (!user || user.id !== input.userId || user.status !== 'active') {
       throw new PendingMfaInvalidError();
@@ -455,6 +481,8 @@ export async function decideAuthenticatedUserSession(
           primaryAuthenticationMethod: input.primaryAuthenticationMethod,
           configuredMfaMethod,
           primaryMfaMethod,
+          browserTransitionId: capability.transitionId,
+          browserGeneration: capability.generation,
         },
         primaryMfaMethod,
         passkeyAvailable: enrolledMethods.has('passkey') && policy.allowedMethods.has('passkey'),
@@ -462,7 +490,7 @@ export async function decideAuthenticatedUserSession(
       };
     }
 
-    const tokens = await issueUserSessionLegacyDuringTransition({
+    const tokens = await issueUserSession({
       userId: user.id,
       email: user.email,
       roleId: input.roleId,
@@ -472,7 +500,11 @@ export async function decideAuthenticatedUserSession(
       mfa: input.externallySatisfiedMfa === true,
       amr: [input.primaryAuthenticationMethod],
       mobileDeviceId: input.mobileDeviceId,
-    }, { tx });
+    }, { tx, capability });
+    await tx
+      .update(users)
+      .set({ lastLoginAt: new Date() })
+      .where(eq(users.id, user.id));
     return { kind: 'issued' as const, user, tokens };
   });
 
@@ -491,8 +523,11 @@ export async function decideAuthenticatedUserSession(
   return decision;
 }
 
-export async function createPendingMfaForLogin(input: CreatePendingMfaForLoginInput) {
-  const prepared = await withAuthLifecycleSystemTransaction(async (tx) => {
+export async function createPendingMfaForLogin(
+  input: CreatePendingMfaForLoginInput & { authBinding: AuthBindingSource },
+) {
+  const capability = await beginAuthIssuance(input.authBinding);
+  const prepared = await finishAuthIssuance(capability, async (tx) => {
     const { user, activePasskeyCount, policy } = await loadLockedPendingMfaAuthority(tx, input);
     if (!user || user.id !== input.userId || user.status !== 'active' || user.mfaEnabled !== true) {
       throw new PendingMfaInvalidError();
@@ -525,6 +560,8 @@ export async function createPendingMfaForLogin(input: CreatePendingMfaForLoginIn
         primaryAuthenticationMethod: input.primaryAuthenticationMethod,
         configuredMfaMethod: configuredPrimary,
         primaryMfaMethod,
+        browserTransitionId: capability.transitionId,
+        browserGeneration: capability.generation,
       },
     };
   });
@@ -538,6 +575,22 @@ export async function createPendingMfaForLogin(input: CreatePendingMfaForLoginIn
       ? prepared.user.phoneNumber?.slice(-4) ?? null
       : null,
   };
+}
+
+/** Admit the request binding and reject a different/retired generation before factor use. */
+export async function beginPendingMfaIssuance(
+  pending: PendingMfaSessionV2,
+  authBinding: AuthBindingSource,
+): Promise<AuthIssuanceCapability> {
+  const capability = await beginAuthIssuance(authBinding);
+  if (
+    capability.transitionId !== pending.browserTransitionId
+    || capability.generation !== pending.browserGeneration
+  ) {
+    await finishAuthIssuance(capability, async () => undefined);
+    throw new PendingMfaInvalidError();
+  }
+  return capability;
 }
 
 /**
@@ -555,7 +608,14 @@ export async function issueVerifiedPendingMfaSession(
     throw new PendingMfaInvalidError();
   }
 
-  const issued = await withAuthLifecycleSystemTransaction(async (tx) => {
+  if (
+    input.capability.transitionId !== consumed.browserTransitionId
+    || input.capability.generation !== consumed.browserGeneration
+  ) {
+    throw new PendingMfaInvalidError();
+  }
+
+  const issued = await finishAuthIssuance(input.capability, async (tx) => {
     let authority;
     try {
       authority = await loadLockedPendingMfaAuthority(tx, {
@@ -598,7 +658,8 @@ export async function issueVerifiedPendingMfaSession(
       throw new PendingMfaInvalidError();
     }
 
-    const tokens = await issueUserSessionLegacyDuringTransition({
+    if (input.finalizeFactor) await input.finalizeFactor(tx, user);
+    const tokens = await issueUserSession({
       userId: user.id,
       email: user.email,
       roleId: consumed.roleId,
@@ -608,7 +669,11 @@ export async function issueVerifiedPendingMfaSession(
       mfa: true,
       amr: [consumed.primaryAuthenticationMethod, input.verifiedMethod],
       mobileDeviceId: input.mobileDeviceId,
-    }, { tx });
+    }, { tx, capability: input.capability });
+    await tx
+      .update(users)
+      .set({ lastLoginAt: new Date() })
+      .where(eq(users.id, user.id));
 
     return {
       user,

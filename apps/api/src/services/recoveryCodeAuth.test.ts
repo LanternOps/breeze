@@ -21,6 +21,9 @@ const invalidateUserMfaAssurance = vi.hoisted(() => vi.fn());
 const withAuthLifecycleSystemTransaction = vi.hoisted(() => vi.fn());
 const revokeUserSessionFamily = vi.hoisted(() => vi.fn());
 const consumePendingMfa = vi.hoisted(() => vi.fn());
+const readPendingMfa = vi.hoisted(() => vi.fn());
+const beginPendingMfaIssuance = vi.hoisted(() => vi.fn());
+const finishAuthIssuance = vi.hoisted(() => vi.fn());
 const resolveEffectiveMfaPolicy = vi.hoisted(() => vi.fn());
 const issueUserSession = vi.hoisted(() => vi.fn());
 const bindIssuedUserSession = vi.hoisted(() => vi.fn());
@@ -33,10 +36,14 @@ vi.mock('./authLifecycle', () => ({
 }));
 vi.mock('./mfaAssurance', () => ({
   consumePendingMfa,
+  readPendingMfa,
+  beginPendingMfaIssuance,
+  pendingMfaRecordsEqual: vi.fn((left: unknown, right: unknown) => left === right),
   PendingMfaInvalidError: class PendingMfaInvalidError extends Error {},
   PendingMfaUnavailableError: class PendingMfaUnavailableError extends Error {},
   selectEffectiveMfaMethod: vi.fn(() => 'totp'),
 }));
+vi.mock('./authBrowserTransition', () => ({ finishAuthIssuance }));
 vi.mock('./mfaPolicy', () => ({ resolveEffectiveMfaPolicy }));
 vi.mock('./userSession', () => ({ issueUserSession, bindIssuedUserSession }));
 import {
@@ -103,10 +110,22 @@ describe('recovery-code authentication', () => {
       primaryAuthenticationMethod: 'password', configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp', issuedAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      browserTransitionId: '11111111-1111-4111-8111-111111111111', browserGeneration: 3,
     };
     consumePendingMfa.mockReset().mockImplementation(async () => {
       state.events.push('pending-consumed');
       return state.pending;
+    });
+    readPendingMfa.mockReset().mockImplementation(async () => state.pending);
+    beginPendingMfaIssuance.mockReset().mockResolvedValue({
+      transitionId: state.pending.browserTransitionId,
+      generation: state.pending.browserGeneration,
+      operationId: '22222222-2222-4222-8222-222222222222',
+      expiresAt: new Date(Date.now() + 120_000),
+    });
+    finishAuthIssuance.mockReset().mockImplementation(async (_capability, fn) => {
+      state.events.push('finish');
+      return fn(state.tx);
     });
     resolveEffectiveMfaPolicy.mockReset().mockResolvedValue({
       required: false,
@@ -188,17 +207,30 @@ describe('recovery-code authentication', () => {
       code: 'ABCD-EF12',
     });
 
-    expect(state.events).toEqual([
-      'pending-consumed',
-      'transaction',
-      'transaction',
-      'session-issued',
-    ]);
+    expect(state.events).toEqual(['pending-consumed', 'finish', 'session-issued']);
     expect(issueUserSession).toHaveBeenCalledWith(expect.objectContaining({
       mfa: true,
       amr: ['password', 'recovery_code'],
-    }), { tx: state.tx });
+    }), { tx: state.tx, capability: expect.any(Object) });
     expect(result).toMatchObject({ remainingCount: 1, mfaEpoch: 8 });
+  });
+
+  it('does not consume a recovery hash or issue a family when terminal finalization rejects', async () => {
+    finishAuthIssuance.mockRejectedValueOnce(new Error('logout pending'));
+
+    await expect(completeRecoveryCodeLogin({
+      tempToken: 'pending-token',
+      code: 'ABCD-EF12',
+      authBinding: { kind: 'browser', value: 'a'.repeat(64) },
+    })).rejects.toBeInstanceOf(RecoveryCodeUnavailableError);
+
+    expect(beginPendingMfaIssuance).toHaveBeenCalledWith(
+      state.pending,
+      { kind: 'browser', value: 'a'.repeat(64) },
+    );
+    expect(invalidateUserMfaAssurance).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).not.toHaveBeenCalled();
   });
 
   it('burns pending state and issues no token when the durable transaction fails', async () => {
@@ -353,6 +385,6 @@ describe('recovery-code authentication', () => {
       userId: 'user-1',
       ...authority,
       amr: ['password', 'recovery_code'],
-    }), { tx: state.tx });
+    }), { tx: state.tx, capability: expect.any(Object) });
   });
 });

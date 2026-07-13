@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -14,6 +14,12 @@ import {
   mfaLimiter,
   getRedis,
   issueVerifiedPendingMfaSession,
+  beginPendingMfaIssuance,
+  finishAuthIssuance,
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
   readPendingMfa,
@@ -30,10 +36,13 @@ import {
   ENABLE_2FA,
   mfaVerifySchema,
   standardMfaVerifySchema,
+  CSRF_COOKIE_NAME,
   mfaEnableSchema,
 } from './schemas';
 import {
   getClientIP,
+  getCookieValue,
+  rotateCsrfBindingCookie,
   setRefreshTokenCookie,
   toPublicTokens,
   encryptMfaSecret,
@@ -82,6 +91,26 @@ const mfaDisableSchema = standardMfaVerifySchema.extend({
 });
 
 export const mfaRoutes = new Hono();
+
+function requestAuthBinding(c: Context) {
+  return {
+    kind: 'browser' as const,
+    value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
+  };
+}
+
+function authTransitionErrorResponse(c: Context, error: unknown) {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    rotateCsrfBindingCookie(c, error.replacement.value);
+    return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
+  }
+  if (error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError) {
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+  return null;
+}
 
 class MfaMutationRouteError extends Error {
   constructor(
@@ -398,6 +427,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
       completed = await completeRecoveryCodeLogin({
         tempToken,
         code,
+        authBinding: requestAuthBinding(c),
         mobileDeviceId: readMobileDeviceId(c) ?? undefined,
       });
     } catch (error) {
@@ -408,13 +438,11 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
       if (error instanceof RecoveryCodeUnavailableError) {
         return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
       }
+      const transitionResponse = authTransitionErrorResponse(c, error);
+      if (transitionResponse) return transitionResponse;
       throw error;
     }
     const { user: issuedUser, tokens, authority, remainingCount } = completed;
-    await withSystemDbAccessContext(() => db
-      .update(users)
-      .set({ lastLoginAt: new Date() })
-      .where(eq(users.id, issuedUser.id)));
     auditLogin(c, {
       orgId: authority.orgId ?? null,
       userId: issuedUser.id,
@@ -485,23 +513,39 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
     // Use the server-stored method only — never allow the client to override
     const effectiveMethod = pending.primaryMfaMethod;
 
+    let capability;
+    try {
+      capability = await beginPendingMfaIssuance(pending, requestAuthBinding(c));
+    } catch (error) {
+      if (error instanceof PendingMfaInvalidError) {
+        return c.json({ error: 'Invalid or expired MFA session' }, 401);
+      }
+      const transitionResponse = authTransitionErrorResponse(c, error);
+      if (transitionResponse) return transitionResponse;
+      throw error;
+    }
+
     let valid = false;
     let migratedMfaSecret: string | null = null;
     if (effectiveMethod === 'passkey') {
+      await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
       return c.json({ error: 'Use passkey verification for this MFA session' }, 400);
     }
 
     if (effectiveMethod === 'sms') {
       const phone = user.phoneNumber;
       if (!phone) {
+        await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
         return c.json({ error: 'No phone number configured for SMS MFA' }, 400);
       }
       const twilio = getTwilioService();
       if (!twilio) {
+        await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
         return c.json({ error: 'SMS service not configured' }, 501);
       }
       const result = await twilio.checkVerificationCode(phone, code);
       if (result.serviceError) {
+        await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
         return c.json({ error: 'SMS verification service temporarily unavailable. Please try again.' }, 502);
       }
       valid = result.valid;
@@ -510,6 +554,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
       const decrypted = decryptMfaSecretForMigration(user.mfaSecret);
       const decryptedMfaSecret = decrypted.plaintext;
       if (!decryptedMfaSecret) {
+        await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
         return c.json({ error: 'Invalid MFA configuration' }, 400);
       }
       migratedMfaSecret = decrypted.migratedSecret;
@@ -519,6 +564,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
     }
 
     if (!valid) {
+      await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
       void auditUserLoginFailure(c, {
         userId: user.id,
         email: user.email,
@@ -534,8 +580,17 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
       completed = await issueVerifiedPendingMfaSession({
         tempToken,
         expectedPending: pending,
+        capability,
         verifiedMethod: effectiveMethod,
         mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+        finalizeFactor: migratedMfaSecret
+          ? async (tx, issuedUser) => {
+            await tx
+              .update(users)
+              .set({ mfaSecret: migratedMfaSecret, updatedAt: new Date() })
+              .where(eq(users.id, issuedUser.id));
+          }
+          : undefined,
       });
     } catch (error) {
       if (error instanceof PendingMfaUnavailableError) {
@@ -544,24 +599,11 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema, async (result,
       if (error instanceof PendingMfaInvalidError) {
         return c.json({ error: 'Invalid or expired MFA session' }, 401);
       }
+      const transitionResponse = authTransitionErrorResponse(c, error);
+      if (transitionResponse) return transitionResponse;
       throw error;
     }
     const { user: issuedUser, tokens, authority } = completed;
-
-    // Update last login
-    // System DB context required: the MFA-verify step is still unauthenticated,
-    // so without it this `users` RLS UPDATE silently matches 0 rows under
-    // breeze_app — freezing last_login_at AND silently dropping the mfaSecret
-    // migration write (#1375).
-    await withSystemDbAccessContext(() =>
-      db
-        .update(users)
-        .set({
-          lastLoginAt: new Date(),
-          ...(migratedMfaSecret ? { mfaSecret: migratedMfaSecret, updatedAt: new Date() } : {})
-        })
-        .where(eq(users.id, issuedUser.id))
-    );
 
     auditLogin(c, { orgId: authority.orgId ?? null, userId: issuedUser.id, email: issuedUser.email, name: issuedUser.name, mfa: true, scope: authority.scope, ip: getClientIP(c) });
 

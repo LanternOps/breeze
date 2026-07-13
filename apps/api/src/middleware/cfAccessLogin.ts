@@ -15,18 +15,24 @@ import {
 } from '../services/cfAccessJwt';
 import {
   decideAuthenticatedUserSession,
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
 } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { TenantInactiveError } from '../services/tenantStatus';
-import { ENABLE_2FA } from '../routes/auth/schemas';
+import { CSRF_COOKIE_NAME, ENABLE_2FA } from '../routes/auth/schemas';
 import {
   auditUserLoginFailure,
+  getCookieValue,
   getClientIP,
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
   setRefreshTokenCookie,
+  rotateCsrfBindingCookie,
   toPublicTokens,
   userRequiresSetup,
 } from '../routes/auth/helpers';
@@ -140,6 +146,10 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
   let loginDecision;
   try {
     loginDecision = await decideAuthenticatedUserSession({
+      authBinding: {
+        kind: 'browser',
+        value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
+      },
       userId: user.id,
       roleId: context.roleId,
       orgId: context.orgId,
@@ -155,6 +165,15 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
     });
   } catch (error) {
+    if (error instanceof AuthBindingRotationRequiredError) {
+      rotateCsrfBindingCookie(c, error.replacement.value);
+      return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
+    }
+    if (error instanceof AuthBindingUnavailableError
+      || error instanceof AuthIssuanceConflictError
+      || error instanceof AuthIssuanceCapabilityError) {
+      return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+    }
     if (error instanceof PendingMfaInvalidError) {
       console.error('[cf-access-login] locked identity or MFA state changed; denying assertion login');
       return c.json({ error: 'Invalid email or password' }, 401);
@@ -179,13 +198,6 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
 
   const mfaSatisfied = trustsMfa;
   const tokens = loginDecision.tokens;
-
-  // System DB context required: no request auth context is established on this
-  // pre-auth path, so a bare UPDATE silently matches 0 rows under breeze_app RLS
-  // and last_login_at never moves (#1375).
-  await withSystemDbAccessContext(() =>
-    db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id))
-  );
 
   createAuditLogAsync({
     orgId: context.orgId ?? undefined,

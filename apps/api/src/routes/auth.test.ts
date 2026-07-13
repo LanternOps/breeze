@@ -27,6 +27,33 @@ const mfaMutationState = vi.hoisted(() => ({
 
 // Mock all services
 vi.mock('../services', () => ({
+  AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
+    replacement = { kind: 'browser', value: 'b'.repeat(64) };
+  },
+  AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
+  AuthIssuanceCapabilityError: class AuthIssuanceCapabilityError extends Error {},
+  AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
+  RefreshTokenCurrentnessError: class RefreshTokenCurrentnessError extends Error {},
+  beginAuthIssuance: vi.fn().mockResolvedValue({
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    generation: 3,
+    operationId: '22222222-2222-4222-8222-222222222222',
+    expiresAt: new Date(Date.now() + 120_000),
+  }),
+  beginPendingMfaIssuance: vi.fn().mockResolvedValue({
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    generation: 3,
+    operationId: '22222222-2222-4222-8222-222222222222',
+    expiresAt: new Date(Date.now() + 120_000),
+  }),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => unknown) => {
+    const { db } = await import('../db');
+    return callback(db);
+  }),
+  bindIssuedUserSession: vi.fn().mockResolvedValue(undefined),
+  digestRefreshTokenJti: vi.fn((jti: string) => `digest:${jti}`),
+  getRefreshTokenJtiRevocationState: vi.fn().mockResolvedValue('active'),
+  getRefreshRotationGraceSeconds: vi.fn(() => 15),
   hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
   verifyPassword: vi.fn(),
   isPasswordStrong: vi.fn(),
@@ -45,6 +72,9 @@ vi.mock('../services', () => ({
     lastUsedAt: new Date(),
     revokedAt: null,
     revokedReason: null,
+    currentRefreshJtiDigest: null,
+    previousRefreshJtiDigest: null,
+    databaseNow: new Date(),
   }),
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn().mockReturnValue('MFASECRET123'),
@@ -346,6 +376,7 @@ import {
   revokeAllUserTokens,
   revokeAllRefreshTokenFamiliesForUser,
   isRefreshTokenJtiRevoked,
+  getRefreshTokenJtiRevocationState,
   revokeRefreshTokenJti,
   markRefreshTokenJtiRotated,
   wasRefreshTokenJtiRecentlyRotated,
@@ -358,6 +389,10 @@ import {
   decideAuthenticatedUserSession,
   readPendingMfa,
   issueVerifiedPendingMfaSession,
+  beginPendingMfaIssuance,
+  finishAuthIssuance,
+  AuthIssuanceCapabilityError,
+  RefreshTokenCurrentnessError,
   completeRecoveryCodeLogin,
   rejectMalformedRecoveryCodeLogin,
   RecoveryCodeInvalidError,
@@ -492,6 +527,8 @@ describe('auth routes', () => {
       primaryAuthenticationMethod: 'password',
       configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
+      browserTransitionId: '11111111-1111-4111-8111-111111111111',
+      browserGeneration: 3,
       issuedAt: '2026-07-12T12:00:00.000Z',
       expiresAt: '2026-07-12T12:05:00.000Z',
     });
@@ -1154,6 +1191,154 @@ describe('auth routes', () => {
       expect(issueUserSession).not.toHaveBeenCalled();
     });
 
+    it('releases an invalid TOTP lease without family, cookie, success audit, or database mutation', async () => {
+      vi.mocked(consumeMFAToken).mockResolvedValueOnce(false);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123', email: 'test@example.com', name: 'Test User', status: 'active',
+              mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'secret123',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token', code: '000000' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(beginPendingMfaIssuance).toHaveBeenCalledOnce();
+      expect(finishAuthIssuance).toHaveBeenCalledOnce();
+      expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(mfaMutationState.auditWrites).not.toContainEqual(expect.objectContaining({
+        action: 'user.login', result: 'success',
+      }));
+    });
+
+    it('releases an SMS provider-error lease without family, cookie, success audit, or database mutation', async () => {
+      vi.mocked(readPendingMfa).mockResolvedValueOnce({
+        version: 2,
+        userId: 'user-123', authEpoch: 1, mfaEpoch: 1, expectedStatus: 'active',
+        roleId: 'role-1', orgId: null, partnerId: 'partner-1', scope: 'partner',
+        policyRequired: false, policySources: [],
+        allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
+        enrolledMethods: ['sms'], primaryAuthenticationMethod: 'password',
+        configuredMfaMethod: 'sms', primaryMfaMethod: 'sms',
+        browserTransitionId: '11111111-1111-4111-8111-111111111111', browserGeneration: 3,
+        issuedAt: '2026-07-12T12:00:00.000Z', expiresAt: '2026-07-12T12:05:00.000Z',
+      });
+      mfaMutationState.twilioResult = { valid: false, serviceError: true };
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123', email: 'test@example.com', name: 'Test User', status: 'active',
+              mfaEnabled: true, mfaMethod: 'sms', mfaSecret: null, phoneNumber: '+14155551234',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token', code: '000000' }),
+      });
+
+      expect(res.status).toBe(502);
+      expect(beginPendingMfaIssuance).toHaveBeenCalledOnce();
+      expect(finishAuthIssuance).toHaveBeenCalledOnce();
+      expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(mfaMutationState.auditWrites).not.toContainEqual(expect.objectContaining({
+        action: 'user.login', result: 'success',
+      }));
+    });
+
+    it('does not apply TOTP migration or last-login state when terminal finalization rejects', async () => {
+      vi.mocked(issueVerifiedPendingMfaSession)
+        .mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123', email: 'test@example.com', name: 'Test User', status: 'active',
+              mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'secret123',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token', code: '123456' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(issueVerifiedPendingMfaSession).toHaveBeenCalledWith(expect.objectContaining({
+        capability: expect.any(Object),
+        finalizeFactor: expect.any(Function),
+      }));
+      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(mfaMutationState.auditWrites).not.toContainEqual(expect.objectContaining({
+        action: 'user.login', result: 'success',
+      }));
+    });
+
+    it('does not turn a consumed SMS success into authority when terminal finalization rejects', async () => {
+      vi.mocked(readPendingMfa).mockResolvedValueOnce({
+        version: 2,
+        userId: 'user-123', authEpoch: 1, mfaEpoch: 1, expectedStatus: 'active',
+        roleId: 'role-1', orgId: null, partnerId: 'partner-1', scope: 'partner',
+        policyRequired: false, policySources: [],
+        allowedMethods: ['totp', 'sms', 'passkey', 'recovery_code'],
+        enrolledMethods: ['sms'], primaryAuthenticationMethod: 'password',
+        configuredMfaMethod: 'sms', primaryMfaMethod: 'sms',
+        browserTransitionId: '11111111-1111-4111-8111-111111111111', browserGeneration: 3,
+        issuedAt: '2026-07-12T12:00:00.000Z', expiresAt: '2026-07-12T12:05:00.000Z',
+      });
+      mfaMutationState.twilioResult = { valid: true };
+      vi.mocked(issueVerifiedPendingMfaSession)
+        .mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'user-123', email: 'test@example.com', name: 'Test User', status: 'active',
+              mfaEnabled: true, mfaMethod: 'sms', mfaSecret: null, phoneNumber: '+14155551234',
+            }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'v2-temp-token', code: '123456' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(issueVerifiedPendingMfaSession).toHaveBeenCalledOnce();
+      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(mfaMutationState.auditWrites).not.toContainEqual(expect.objectContaining({
+        action: 'user.login', result: 'success',
+      }));
+    });
+
     it('fails closed without a cookie or token when atomic pending consumption loses the race', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -1192,6 +1377,7 @@ describe('auth routes', () => {
       expect(res.status).toBe(200);
       expect(completeRecoveryCodeLogin).toHaveBeenCalledWith({
         tempToken: 'v2-temp-token', code: rawCode, mobileDeviceId: undefined,
+        authBinding: { kind: 'browser', value: '' },
       });
       expect(readPendingMfa).not.toHaveBeenCalled();
       expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
@@ -1834,7 +2020,12 @@ describe('auth routes', () => {
           orgId: null,
           partnerId: null
         }),
-        { familyId: 'family-id-mock' }
+        expect.objectContaining({
+          familyId: 'family-id-mock',
+          capability: expect.any(Object),
+          refreshRotation: expect.objectContaining({ presentedJti: 'refresh-jti-1' }),
+          tx: expect.any(Object),
+        })
       );
       expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-1');
     });
@@ -1960,11 +2151,8 @@ describe('auth routes', () => {
       expect(issueUserSession).not.toHaveBeenCalled();
     });
 
-    it('rejects when a concurrent /refresh already claimed the jti (SET NX miss)', async () => {
-      // revokeRefreshTokenJti returning false means another caller won the
-      // atomic claim. The losing /refresh MUST NOT mint a new pair — exactly
-      // the TOCTOU the SET-NX wiring closes.
-      vi.mocked(revokeRefreshTokenJti).mockResolvedValueOnce(false);
+    it('rejects when a concurrent /refresh wins the durable family CAS', async () => {
+      vi.mocked(issueUserSession).mockRejectedValueOnce(new RefreshTokenCurrentnessError());
       vi.mocked(verifyToken).mockResolvedValue({
         sub: 'user-123',
         email: 'test@example.com',
@@ -2014,20 +2202,18 @@ describe('auth routes', () => {
       });
 
       expect(res.status).toBe(401);
-      expect(issueUserSession).not.toHaveBeenCalled();
-      // #1107: a lost race must surface refresh_raced and must NOT clear the
-      // cookie — the winning sibling already set a fresh one this browser shares.
+      expect(issueUserSession).toHaveBeenCalledOnce();
       const body = await res.json();
-      expect(body.reason).toBe('refresh_raced');
+      expect(body).toEqual({ error: 'Invalid refresh token' });
       const setCookie = res.headers.get('set-cookie') ?? '';
-      expect(setCookie).not.toContain('breeze_refresh_token=;');
+      expect(setCookie).toContain('breeze_refresh_token=;');
     });
 
     it('#1107: benign concurrent replay within the rotation-grace window is not treated as reuse', async () => {
       // The same cookie is replayed seconds after its own legitimate rotation
       // (multi-tab / heartbeat / reload-mid-flight). isRefreshTokenJtiRevoked is
       // true, but wasRefreshTokenJtiRecentlyRotated is also true → benign race.
-      vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(true);
+      vi.mocked(getRefreshTokenJtiRevocationState).mockResolvedValueOnce('revoked');
       vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValue(true);
       vi.mocked(getFamilyForJti).mockResolvedValue('fam-raced');
       vi.mocked(verifyToken).mockResolvedValue({
@@ -2068,7 +2254,7 @@ describe('auth routes', () => {
 
     it('#1107: a genuine replay outside the grace window still kills the family', async () => {
       // Revoked jti, NOT recently rotated → real token-reuse → family revoked.
-      vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(true);
+      vi.mocked(getRefreshTokenJtiRevocationState).mockResolvedValueOnce('revoked');
       vi.mocked(wasRefreshTokenJtiRecentlyRotated).mockResolvedValue(false);
       vi.mocked(getFamilyForJti).mockResolvedValue('fam-attacked');
       vi.mocked(verifyToken).mockResolvedValue({
@@ -2238,7 +2424,12 @@ describe('auth routes', () => {
           orgId: 'org-live',
           partnerId: 'partner-live'
         }),
-        { familyId: 'family-id-mock' }
+        expect.objectContaining({
+          familyId: 'family-id-mock',
+          capability: expect.any(Object),
+          refreshRotation: expect.objectContaining({ presentedJti: 'refresh-jti-3' }),
+          tx: expect.any(Object),
+        })
       );
       expect(revokeRefreshTokenJti).toHaveBeenCalledWith('refresh-jti-3');
     });

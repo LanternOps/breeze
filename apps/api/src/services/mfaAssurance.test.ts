@@ -13,6 +13,8 @@ const {
   lockPolicyMock,
   issueUserSessionMock,
   bindIssuedUserSessionMock,
+  beginAuthIssuanceMock,
+  finishAuthIssuanceMock,
 } = vi.hoisted(() => {
   const store = new Map<string, string>();
   const schema = {
@@ -37,7 +39,10 @@ const {
     }),
   }));
   const database = { select };
-  const transaction = { select };
+  const update = vi.fn(() => ({
+    set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+  }));
+  const transaction = { select, update };
   const events: string[] = [];
   const wrapper = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
     events.push('tx-start');
@@ -69,6 +74,8 @@ const {
     lockPolicyMock: vi.fn(),
     issueUserSessionMock: vi.fn(),
     bindIssuedUserSessionMock: vi.fn(async () => { events.push('bind'); }),
+    beginAuthIssuanceMock: vi.fn(),
+    finishAuthIssuanceMock: vi.fn(),
   };
 });
 
@@ -101,6 +108,11 @@ vi.mock('./userSession', () => ({
   bindIssuedUserSession: bindIssuedUserSessionMock,
 }));
 
+vi.mock('./authBrowserTransition', () => ({
+  beginAuthIssuance: beginAuthIssuanceMock,
+  finishAuthIssuance: finishAuthIssuanceMock,
+}));
+
 vi.mock('./authLifecycle', () => ({
   withAuthLifecycleSystemTransaction: transactionWrapperMock,
 }));
@@ -111,6 +123,7 @@ import {
   consumePendingMfa,
   createPendingMfa,
   createPendingMfaForLogin,
+  beginPendingMfaIssuance,
   decideAuthenticatedUserSession,
   issueVerifiedPendingMfaSession,
   pendingMfaRecordsEqual,
@@ -120,6 +133,12 @@ import {
 } from './mfaAssurance';
 
 const now = new Date('2026-07-12T12:00:00.000Z');
+const capability = {
+  transitionId: '11111111-1111-4111-8111-111111111111',
+  generation: 3,
+  operationId: '22222222-2222-4222-8222-222222222222',
+  expiresAt: new Date('2026-07-12T12:02:00.000Z'),
+} as never;
 
 function pendingInput(overrides: Partial<CreatePendingMfaInput> = {}): CreatePendingMfaInput {
   return {
@@ -138,6 +157,8 @@ function pendingInput(overrides: Partial<CreatePendingMfaInput> = {}): CreatePen
     primaryAuthenticationMethod: 'password',
     configuredMfaMethod: 'totp',
     primaryMfaMethod: 'totp',
+    browserTransitionId: capability.transitionId,
+    browserGeneration: capability.generation,
     ...overrides,
   };
 }
@@ -179,6 +200,13 @@ beforeEach(() => {
   });
   lockPolicyMock.mockResolvedValue(undefined);
   bindIssuedUserSessionMock.mockImplementation(async () => { transactionEvents.push('bind'); });
+  beginAuthIssuanceMock.mockResolvedValue(capability);
+  finishAuthIssuanceMock.mockImplementation(async (_capability, callback) => {
+    transactionEvents.push('finish-start');
+    const result = await callback(transactionMock);
+    transactionEvents.push('finish-commit');
+    return result;
+  });
 });
 
 afterEach(() => {
@@ -200,6 +228,7 @@ describe('pending MFA V2 state', () => {
 
   it('creates login state from freshly loaded user, policy, enrollment, and authority', async () => {
     const created = await createPendingMfaForLogin({
+      authBinding: { kind: 'browser', value: 'a'.repeat(64) },
       userId: 'user-1',
       roleId: 'role-1',
       orgId: 'org-1',
@@ -222,6 +251,8 @@ describe('pending MFA V2 state', () => {
       primaryAuthenticationMethod: 'password',
       configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
+      browserTransitionId: capability.transitionId,
+      browserGeneration: capability.generation,
     });
     expect(created).toMatchObject({
       primaryMfaMethod: 'totp',
@@ -234,6 +265,7 @@ describe('pending MFA V2 state', () => {
     dbState.userRows[0]!.mfaRecoveryCodes = ['hashed-code'];
 
     const created = await createPendingMfaForLogin({
+      authBinding: { kind: 'browser', value: 'a'.repeat(64) },
       userId: 'user-1',
       roleId: 'role-1',
       orgId: 'org-1',
@@ -272,6 +304,8 @@ describe('pending MFA V2 state', () => {
       primaryAuthenticationMethod: 'password',
       configuredMfaMethod: 'totp',
       primaryMfaMethod: 'totp',
+      browserTransitionId: capability.transitionId,
+      browserGeneration: capability.generation,
       issuedAt: '2026-07-12T12:00:00.000Z',
       expiresAt: '2026-07-12T12:05:00.000Z',
     });
@@ -372,6 +406,7 @@ describe('pending MFA V2 state', () => {
     const expectedPending = await readPendingMfa(token);
 
     const result = await issueVerifiedPendingMfaSession({
+      capability,
       tempToken: token,
       expectedPending: expectedPending!,
       verifiedMethod: 'passkey',
@@ -397,11 +432,11 @@ describe('pending MFA V2 state', () => {
       mfa: true,
       amr: ['password', 'passkey'],
       mobileDeviceId: 'mobile-1',
-    }, { tx: transactionMock });
+    }, { tx: transactionMock, capability });
     expect(redisMock.getdel.mock.invocationCallOrder[0]!).toBeLessThan(dbMock.select.mock.invocationCallOrder[0]!);
     expect(dbMock.select.mock.invocationCallOrder.at(-1)!).toBeLessThan(issueUserSessionMock.mock.invocationCallOrder[0]!);
     expect(result.user).toMatchObject({ id: 'user-1', status: 'active' });
-    expect(transactionEvents).toEqual(['tx-start', 'tx-commit', 'bind']);
+    expect(transactionEvents).toEqual(['finish-start', 'finish-commit', 'bind']);
   });
 
   it('preserves a verified Cloudflare Access primary method in post-factor AMR', async () => {
@@ -411,6 +446,7 @@ describe('pending MFA V2 state', () => {
     const expectedPending = await readPendingMfa(token);
 
     await issueVerifiedPendingMfaSession({
+      capability,
       tempToken: token,
       expectedPending: expectedPending!,
       verifiedMethod: 'totp',
@@ -419,7 +455,7 @@ describe('pending MFA V2 state', () => {
     expect(issueUserSessionMock).toHaveBeenCalledWith(expect.objectContaining({
       mfa: true,
       amr: ['cf_access', 'totp'],
-    }), { tx: transactionMock });
+    }), { tx: transactionMock, capability });
   });
 
   it('issues when a configured TOTP fallback to passkey remains unchanged', async () => {
@@ -440,6 +476,7 @@ describe('pending MFA V2 state', () => {
     const expectedPending = await readPendingMfa(token);
 
     await expect(issueVerifiedPendingMfaSession({
+      capability,
       tempToken: token,
       expectedPending: expectedPending!,
       verifiedMethod: 'passkey',
@@ -466,6 +503,7 @@ describe('pending MFA V2 state', () => {
     });
 
     await expect(issueVerifiedPendingMfaSession({
+      capability,
       tempToken: token,
       expectedPending: expectedPending!,
       verifiedMethod: 'passkey',
@@ -485,6 +523,7 @@ describe('pending MFA V2 state', () => {
     });
 
     const decision = await decideAuthenticatedUserSession({
+      authBinding: { kind: 'browser', value: 'a'.repeat(64) },
       userId: 'user-1',
       roleId: 'role-1',
       orgId: 'org-1',
@@ -506,13 +545,101 @@ describe('pending MFA V2 state', () => {
       passkeyAvailable: true,
     });
     expect(issueUserSessionMock).not.toHaveBeenCalled();
-    expect(transactionEvents).toEqual(['tx-start', 'tx-commit']);
+    expect(transactionEvents).toEqual(['finish-start', 'finish-commit']);
+  });
+
+  it.each(['password', 'cf_access'] as const)(
+    'rejects %s direct issuance when the terminal transition wins before finalization',
+    async (primaryAuthenticationMethod) => {
+      dbState.userRows[0]!.mfaEnabled = false;
+      dbState.userRows[0]!.mfaSecret = null;
+      dbState.passkeyRows = [];
+      policyMock.mockResolvedValue({ required: false, allowedMethods: new Set(['totp']), sources: [] });
+      finishAuthIssuanceMock.mockRejectedValueOnce(new Error('logout pending'));
+
+      const common = {
+        userId: 'user-1',
+        roleId: 'role-1',
+        orgId: 'org-1',
+        partnerId: 'partner-1',
+        scope: 'organization' as const,
+        requireLocalMfa: false,
+        authBinding: { kind: 'browser' as const, value: 'a'.repeat(64) },
+      };
+      const input = primaryAuthenticationMethod === 'password'
+        ? {
+          ...common,
+          primaryAuthenticationMethod,
+          credentialBinding: {
+            kind: 'password' as const,
+            passwordHash: 'verified-password-hash',
+            passwordChangedAt: new Date('2026-07-01T00:00:00.000Z'),
+            authEpoch: 4,
+          },
+        }
+        : {
+          ...common,
+          primaryAuthenticationMethod,
+          credentialBinding: { kind: 'cf_access' as const, verifiedEmail: 'user@example.com' },
+        };
+
+      await expect(decideAuthenticatedUserSession(input)).rejects.toThrow('logout pending');
+      expect(beginAuthIssuanceMock).toHaveBeenCalledWith(common.authBinding);
+      expect(issueUserSessionMock).not.toHaveBeenCalled();
+      expect(bindIssuedUserSessionMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('binds pending MFA to the admitted transition generation', async () => {
+    const decision = await decideAuthenticatedUserSession({
+      userId: 'user-1',
+      roleId: 'role-1',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      scope: 'organization',
+      primaryAuthenticationMethod: 'password',
+      requireLocalMfa: true,
+      authBinding: { kind: 'browser', value: 'a'.repeat(64) },
+      credentialBinding: {
+        kind: 'password',
+        passwordHash: 'verified-password-hash',
+        passwordChangedAt: new Date('2026-07-01T00:00:00.000Z'),
+        authEpoch: 4,
+      },
+    });
+
+    expect(decision.kind).toBe('pending');
+    expect(await readPendingMfa(decision.kind === 'pending' ? decision.tempToken : 'missing'))
+      .toMatchObject({
+        browserTransitionId: capability.transitionId,
+        browserGeneration: capability.generation,
+      });
+  });
+
+  it('rejects a different pending generation before any pending or factor consumption', async () => {
+    const token = await createPendingMfa(pendingInput());
+    const pending = await readPendingMfa(token);
+    beginAuthIssuanceMock.mockResolvedValueOnce({ ...capability, generation: 4 });
+
+    await expect(beginPendingMfaIssuance(
+      pending!,
+      { kind: 'browser', value: 'a'.repeat(64) },
+    )).rejects.toBeInstanceOf(PendingMfaInvalidError);
+
+    expect(redisMock.getdel).not.toHaveBeenCalled();
+    expect(finishAuthIssuanceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ generation: 4 }),
+      expect.any(Function),
+    );
+    expect(issueUserSessionMock).not.toHaveBeenCalled();
+    expect(bindIssuedUserSessionMock).not.toHaveBeenCalled();
   });
 
   it('rejects a password credential changed before the locked login decision', async () => {
     dbState.userRows[0]!.authEpoch = 5;
 
     await expect(decideAuthenticatedUserSession({
+      authBinding: { kind: 'browser', value: 'a'.repeat(64) },
       userId: 'user-1',
       roleId: 'role-1',
       orgId: 'org-1',
@@ -535,6 +662,7 @@ describe('pending MFA V2 state', () => {
     dbState.userRows[0]!.email = 'renamed@example.com';
 
     await expect(decideAuthenticatedUserSession({
+      authBinding: { kind: 'browser', value: 'a'.repeat(64) },
       userId: 'user-1',
       roleId: 'role-1',
       orgId: 'org-1',
@@ -557,6 +685,7 @@ describe('pending MFA V2 state', () => {
     dbState.userRows[0]!.email = 'User@Example.COM';
 
     await expect(decideAuthenticatedUserSession({
+      authBinding: { kind: 'browser', value: 'a'.repeat(64) },
       userId: 'user-1',
       roleId: 'role-1',
       orgId: 'org-1',
@@ -589,6 +718,7 @@ describe('pending MFA V2 state', () => {
     mutate();
 
     await expect(issueVerifiedPendingMfaSession({
+      capability,
       tempToken: token,
       expectedPending: expectedPending!,
       verifiedMethod: 'totp',
@@ -606,6 +736,7 @@ describe('pending MFA V2 state', () => {
     redisState.store.set(key, JSON.stringify({ ...stored, authEpoch: 5 }));
 
     await expect(issueVerifiedPendingMfaSession({
+      capability,
       tempToken: token,
       expectedPending: expectedPending!,
       verifiedMethod: 'totp',
@@ -620,6 +751,7 @@ describe('pending MFA V2 state', () => {
     redisState.store.delete(`mfa:pending:${token}`);
 
     await expect(issueVerifiedPendingMfaSession({
+      capability,
       tempToken: token,
       expectedPending: expectedPending!,
       verifiedMethod: 'totp',
@@ -627,6 +759,7 @@ describe('pending MFA V2 state', () => {
 
     redisMock.getdel.mockRejectedValueOnce(new Error('redis down'));
     await expect(issueVerifiedPendingMfaSession({
+      capability,
       tempToken: token,
       expectedPending: expectedPending!,
       verifiedMethod: 'totp',
@@ -639,8 +772,8 @@ describe('pending MFA V2 state', () => {
     const expectedPending = await readPendingMfa(token);
 
     const results = await Promise.allSettled([
-      issueVerifiedPendingMfaSession({ tempToken: token, expectedPending: expectedPending!, verifiedMethod: 'totp' }),
-      issueVerifiedPendingMfaSession({ tempToken: token, expectedPending: expectedPending!, verifiedMethod: 'totp' }),
+      issueVerifiedPendingMfaSession({ tempToken: token, expectedPending: expectedPending!, capability, verifiedMethod: 'totp' }),
+      issueVerifiedPendingMfaSession({ tempToken: token, expectedPending: expectedPending!, capability, verifiedMethod: 'totp' }),
     ]);
 
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);

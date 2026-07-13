@@ -82,6 +82,12 @@ const tokenState = vi.hoisted(() => ({
 }));
 
 vi.mock('../services', () => ({
+  AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
+    replacement = { kind: 'browser', value: 'b'.repeat(64) };
+  },
+  AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
+  AuthIssuanceCapabilityError: class AuthIssuanceCapabilityError extends Error {},
+  AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
   createPendingMfaForLogin: vi.fn(async (input: Record<string, unknown>) => {
     tokenState.pendingInput = input;
     return {
@@ -166,6 +172,8 @@ vi.mock('../routes/auth/helpers', async () => {
       auditState.loginFailures.push(entry);
     }),
     resolveCurrentUserTokenContext: vi.fn(async () => contextState.value),
+    getCookieValue: vi.fn(() => 'a'.repeat(64)),
+    rotateCsrfBindingCookie: vi.fn(),
     setRefreshTokenCookie: vi.fn((c: Context, refreshToken: string) => {
       cookieState.set = refreshToken;
       // ape Hono's behaviour just enough for the test's purposes
@@ -203,7 +211,11 @@ vi.mock('../routes/auth/schemas', async () => {
 });
 
 import { cfAccessLoginMiddleware } from './cfAccessLogin';
-import { decideAuthenticatedUserSession, PendingMfaInvalidError } from '../services';
+import {
+  decideAuthenticatedUserSession,
+  PendingMfaInvalidError,
+  AuthIssuanceCapabilityError,
+} from '../services';
 
 function createContext(headers: Record<string, string | undefined> = {}): Context {
   const normalized = Object.fromEntries(
@@ -398,11 +410,34 @@ describe('cfAccessLoginMiddleware', () => {
       amr: ['cf_access'],
     });
     expect(cookieState.set).toBe('refresh-tok');
-    expect(dbState.lastUpdateId).toBe(activeUser.id);
+    expect(dbState.lastUpdateId).toBeNull();
     expect(auditState.audits[0]).toMatchObject({
       action: 'user.login',
       details: expect.objectContaining({ method: 'cf_access_jwt', cfAccessCountry: 'CA' }),
     });
+  });
+
+  it('returns no cookie, success audit, or last-login write when terminal finalization rejects', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: activeUser.email, sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = { ...activeUser };
+    vi.mocked(decideAuthenticatedUserSession)
+      .mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const { next, called } = createNext();
+    const res = await cfAccessLoginMiddleware(
+      createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }),
+      next,
+    );
+
+    expect(called()).toBe(false);
+    expect((res as Response).status).toBe(409);
+    expect(cookieState.set).toBeNull();
+    expect(dbState.lastUpdateId).toBeNull();
+    expect(auditState.audits).toEqual([]);
   });
 
   it('honors a locked live enrollment decision even when the pre-auth user row had MFA disabled', async () => {

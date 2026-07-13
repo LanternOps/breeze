@@ -10,6 +10,12 @@ import {
   generateRecoveryCodes,
   getRedis,
   issueVerifiedPendingMfaSession,
+  beginPendingMfaIssuance,
+  finishAuthIssuance,
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
   mfaLimiter,
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
@@ -39,6 +45,7 @@ import {
 } from '../../services/mfaAssuranceMutation';
 import {
   ENABLE_2FA,
+  CSRF_COOKIE_NAME,
   mfaStepUpOptionsSchema,
   mfaStepUpVerifySchema,
   passkeyRegisterOptionsSchema,
@@ -47,6 +54,8 @@ import {
 } from './schemas';
 import {
   auditLogin,
+  getCookieValue,
+  rotateCsrfBindingCookie,
   consumeMfaStepUpGrant,
   getClientIP,
   hashMfaStepUpGrant,
@@ -71,6 +80,26 @@ import type {
 } from './helpers';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
+
+function requestAuthBinding(c: Context) {
+  return {
+    kind: 'browser' as const,
+    value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
+  };
+}
+
+function authTransitionErrorResponse(c: Context, error: unknown) {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    rotateCsrfBindingCookie(c, error.replacement.value);
+    return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
+  }
+  if (error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError) {
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+  return null;
+}
 
 // WebAuthn assertion/attestation payloads are large nested objects validated
 // structurally by @simplewebauthn; at this layer we only need a string `id` to
@@ -543,6 +572,18 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     return c.json({ error: 'Passkey is not registered for this account' }, 403);
   }
 
+  let capability;
+  try {
+    capability = await beginPendingMfaIssuance(pending, requestAuthBinding(c));
+  } catch (error) {
+    if (error instanceof PendingMfaInvalidError) {
+      return c.json({ error: 'Invalid or expired MFA session' }, 401);
+    }
+    const transitionResponse = authTransitionErrorResponse(c, error);
+    if (transitionResponse) return transitionResponse;
+    throw error;
+  }
+
   let verification;
   try {
     verification = await verifyPasskeyAuthentication({
@@ -552,42 +593,44 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     });
   } catch (err) {
     if (err instanceof PasskeyChallengeError) {
+      await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
       return c.json({ error: err.message }, 401);
     }
     throw err;
   }
 
   if (!verification.verified) {
+    await finishAuthIssuance(capability, async () => undefined).catch(() => undefined);
     return c.json({ error: 'Passkey verification failed' }, 401);
   }
 
   const updateFields = authenticationInfoToPasskeyUpdateFields(verification);
-  // System DB context required: passkey MFA runs before the user is
-  // authenticated, so without it this `user_passkeys` RLS UPDATE silently
-  // matches 0 rows under breeze_app (Shape 6: user_id = breeze_current_user_id()
-  // OR scope = 'system'). last_used_at never moves AND the WebAuthn signature
-  // counter is never persisted — defeating clone detection. Same root cause as
-  // the users.last_login_at update below (#2210, #1375).
-  await withSystemDbAccessContext(() =>
-    db
-      .update(userPasskeys)
-      .set({
-        counter: updateFields.counter,
-        deviceType: updateFields.deviceType,
-        backedUp: updateFields.backedUp,
-        lastUsedAt: updateFields.lastUsedAt,
-        updatedAt: new Date()
-      })
-      .where(eq(userPasskeys.id, passkey.id))
-  );
-
   let completed;
   try {
     completed = await issueVerifiedPendingMfaSession({
       tempToken,
       expectedPending: pending,
+      capability,
       verifiedMethod: 'passkey',
       mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      finalizeFactor: async (tx) => {
+        const updated = await tx
+          .update(userPasskeys)
+          .set({
+            counter: updateFields.counter,
+            deviceType: updateFields.deviceType,
+            backedUp: updateFields.backedUp,
+            lastUsedAt: updateFields.lastUsedAt,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(userPasskeys.id, passkey.id),
+            eq(userPasskeys.userId, pending.userId),
+            isNull(userPasskeys.disabledAt),
+          ))
+          .returning({ id: userPasskeys.id });
+        if (updated.length !== 1) throw new PendingMfaInvalidError();
+      },
     });
   } catch (error) {
     if (error instanceof PendingMfaUnavailableError) {
@@ -596,19 +639,11 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     if (error instanceof PendingMfaInvalidError) {
       return c.json({ error: 'Invalid or expired MFA session' }, 401);
     }
+    const transitionResponse = authTransitionErrorResponse(c, error);
+    if (transitionResponse) return transitionResponse;
     throw error;
   }
   const { user, tokens, authority } = completed;
-
-  // System DB context required: passkey login is unauthenticated at this point,
-  // so without it the `users` RLS UPDATE silently matches 0 rows under
-  // breeze_app and last_login_at never moves (#1375).
-  await withSystemDbAccessContext(() =>
-    db
-      .update(users)
-      .set({ lastLoginAt: new Date() })
-      .where(eq(users.id, user.id))
-  );
 
   auditLogin(c, {
     orgId: authority.orgId ?? null,

@@ -63,6 +63,22 @@ const {
 });
 
 vi.mock('../services', () => ({
+  AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
+    replacement = { kind: 'browser', value: 'b'.repeat(64) };
+  },
+  AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
+  AuthIssuanceCapabilityError: class AuthIssuanceCapabilityError extends Error {},
+  AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
+  beginPendingMfaIssuance: vi.fn().mockResolvedValue({
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    generation: 3,
+    operationId: '22222222-2222-4222-8222-222222222222',
+    expiresAt: new Date(Date.now() + 120_000),
+  }),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => unknown) => {
+    const { db } = await import('../db');
+    return callback(db);
+  }),
   hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
   verifyPassword: vi.fn().mockResolvedValue(true),
   isPasswordStrong: vi.fn().mockReturnValue({ valid: true, errors: [] }),
@@ -317,6 +333,9 @@ import {
   decideAuthenticatedUserSession,
   readPendingMfa,
   issueVerifiedPendingMfaSession,
+  beginPendingMfaIssuance,
+  finishAuthIssuance,
+  AuthIssuanceCapabilityError,
   PendingMfaInvalidError,
   consumeMFAToken,
   generateRecoveryCodes,
@@ -354,6 +373,8 @@ const pendingMfa = {
   primaryAuthenticationMethod: 'password' as const,
   configuredMfaMethod: 'passkey' as const,
   primaryMfaMethod: 'passkey' as const,
+  browserTransitionId: '11111111-1111-4111-8111-111111111111',
+  browserGeneration: 3,
   issuedAt: '2026-07-12T12:00:00.000Z',
   expiresAt: '2026-07-12T12:05:00.000Z',
 };
@@ -1213,7 +1234,119 @@ describe('passkey MFA auth routes', () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/verification failed/i) });
     expect(issueUserSession).not.toHaveBeenCalled();
+    expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
+    expect(beginPendingMfaIssuance).toHaveBeenCalledWith(
+      pendingMfa,
+      { kind: 'browser', value: '' },
+    );
+    expect(finishAuthIssuance).toHaveBeenCalledOnce();
+    expect(dbState.updateSets).toEqual([]);
+    expect(res.headers.get('set-cookie')).toBeNull();
     expect(redisMock.del).not.toHaveBeenCalled();
+  });
+
+  it('cannot release a retired passkey issuance generation into authority or factor state', async () => {
+    dbState.selectQueue.push([{
+      id: 'credential-row-1',
+      userId: 'user-123',
+      credentialId: 'credential-1',
+      publicKey: 'public-key',
+      counter: 0,
+      transports: ['internal'],
+      disabledAt: null,
+    }]);
+    passkeyMocks.verifyPasskeyAuthentication.mockResolvedValueOnce({ verified: false });
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(finishAuthIssuance).toHaveBeenCalledOnce();
+    expect(issueVerifiedPendingMfaSession).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('does not persist a passkey counter or last-login state when terminal finalization rejects', async () => {
+    dbState.selectQueue.push([{
+      id: 'credential-row-1', userId: 'user-123', credentialId: 'credential-1',
+      publicKey: 'public-key', counter: 0, transports: ['internal'], disabledAt: null,
+    }]);
+    passkeyMocks.verifyPasskeyAuthentication.mockResolvedValueOnce({ verified: true });
+    passkeyMocks.authenticationInfoToPasskeyUpdateFields.mockReturnValueOnce({
+      counter: 2,
+      deviceType: 'singleDevice',
+      backedUp: false,
+      lastUsedAt: new Date('2026-07-13T00:00:00.000Z'),
+    });
+    vi.mocked(issueVerifiedPendingMfaSession)
+      .mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(issueVerifiedPendingMfaSession).toHaveBeenCalledWith(expect.objectContaining({
+      capability: expect.any(Object),
+      finalizeFactor: expect.any(Function),
+    }));
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('fails closed when the verified passkey counter update no longer owns an active credential', async () => {
+    dbState.selectQueue.push([{
+      id: 'credential-row-1', userId: 'user-123', credentialId: 'credential-1',
+      publicKey: 'public-key', counter: 0, transports: ['internal'], disabledAt: null,
+    }]);
+    passkeyMocks.verifyPasskeyAuthentication.mockResolvedValueOnce({ verified: true });
+    passkeyMocks.authenticationInfoToPasskeyUpdateFields.mockReturnValueOnce({
+      counter: 2, deviceType: 'singleDevice', backedUp: false, lastUsedAt: new Date(),
+    });
+    vi.mocked(issueVerifiedPendingMfaSession).mockImplementationOnce(async (input) => {
+      await input.finalizeFactor!({
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({
+            where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })),
+          })),
+        })),
+      } as never, user as never);
+      return {
+        user,
+        tokens: {
+          accessToken: 'access-token', refreshToken: 'refresh-token', refreshJti: 'refresh-jti',
+          expiresInSeconds: 900, familyId: 'family-passkey',
+        },
+        authority: { roleId: 'role-123', orgId: null, partnerId: 'partner-123', scope: 'partner' },
+      } as never;
+    });
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.headers.get('set-cookie')).toBeNull();
   });
 
   // (b) A disabled credential owned by the user is still rejected (403).

@@ -33,6 +33,7 @@ import {
   AuthBindingRotationRequiredError,
   AuthBindingUnavailableError,
   AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
   bindIssuedUserSession,
   RefreshTokenCurrentnessError,
   digestRefreshTokenJti,
@@ -73,7 +74,6 @@ import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../servic
 import { captureException } from '../../services/sentry';
 import { cfAccessLoginMiddleware } from '../../middleware/cfAccessLogin';
 import { getMfaAssuranceFailure, resolveEffectiveMfaPolicy } from '../../services/mfaPolicy';
-import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import {
   revokeUserSessionFamilyForLogout,
   withAuthLifecycleSystemTransaction,
@@ -442,6 +442,10 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   let loginDecision;
   try {
     loginDecision = await decideAuthenticatedUserSession({
+      authBinding: {
+        kind: 'browser',
+        value: getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME) ?? '',
+      },
       userId: user.id,
       roleId: context.roleId,
       orgId: context.orgId,
@@ -459,6 +463,15 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     });
   } catch (error) {
     await floorPromise;
+    if (error instanceof AuthBindingRotationRequiredError) {
+      rotateCsrfBindingCookie(c, error.replacement.value);
+      return c.json({ error: 'Authentication binding refresh required', reason: 'binding_refresh' }, 428);
+    }
+    if (error instanceof AuthBindingUnavailableError
+      || error instanceof AuthIssuanceConflictError
+      || error instanceof AuthIssuanceCapabilityError) {
+      return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+    }
     if (error instanceof PendingMfaUnavailableError) {
       return c.json({ error: 'MFA verification unavailable. Please try again later.' }, 503);
     }
@@ -505,21 +518,6 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   const scope = context.scope;
 
   const tokens = loginDecision.tokens;
-
-  // Update last login. MUST run inside a system DB context: /login is an
-  // unauthenticated route, so no breeze.user_id/partner/org GUC is set and the
-  // `users` RLS UPDATE policy would match 0 rows silently under breeze_app —
-  // the bug that froze last_login_at platform-wide (#1375). System scope
-  // satisfies RLS the same way the pre-auth user lookup above does.
-  await withSystemDbAccessContext(() =>
-    dbWriteExpectingRows('users.last_login_at', () =>
-      db
-        .update(users)
-        .set({ lastLoginAt: new Date() })
-        .where(eq(users.id, user.id))
-        .returning({ id: users.id })
-    )
-  );
 
   // Task 10: clear the per-account failure counter on successful login so
   // a real user with one fat-finger doesn't slowly approach a lockout over

@@ -14,12 +14,9 @@ import { describe, expect, it } from 'vitest';
 
 const SRC_DIR = join(__dirname, '..');
 
-const expectedIssuers = new Set([
-  'services/mfaAssurance.ts',
-  'services/recoveryCodeAuth.ts',
+const expectedLegacyIssuers = new Set([
   'routes/auth/cfAccessRedirectLogin.ts',
   'routes/auth/register.ts',
-  'routes/auth/login.ts',
   'routes/auth/invite.ts',
   'routes/sso.ts',
 ]);
@@ -1149,31 +1146,36 @@ describe('session inventory analyzer fixtures', () => {
   });
 });
 
-describe('browser-auth issuer inventory (1 guarded refresh; 8 frozen legacy issuances; 10 cookie writes)', () => {
-  it('allows guarded issueUserSession only from refresh', () => {
+describe('browser-auth issuer inventory (4 guarded issuances; 5 frozen legacy issuances; 10 cookie writes)', () => {
+  it('allows guarded issueUserSession only from browser-transition finalizers', () => {
     const inventory = collectCallInventory('issueUserSession');
 
-    expect(Object.fromEntries(inventory)).toEqual({ 'routes/auth/login.ts': 1 });
-    const source = readFileSync(join(SRC_DIR, 'routes/auth/login.ts'), 'utf8');
-    expect(source).toMatch(/finishAuthIssuance\([\s\S]*issueUserSession\([\s\S]*tx,[\s\S]*capability,/);
-    expect(source).not.toContain('issueUserSessionLegacyDuringTransition');
-    expect(source).not.toContain('touchFamilyLastUsed');
+    expect(Object.fromEntries([...inventory.entries()].sort())).toEqual({
+      'routes/auth/login.ts': 1,
+      'services/mfaAssurance.ts': 2,
+      'services/recoveryCodeAuth.ts': 1,
+    });
+    for (const [file, count] of inventory) {
+      const source = readFileSync(join(SRC_DIR, file), 'utf8');
+      expect(source).toContain('finishAuthIssuance(');
+      expect(source.match(
+        /},\s*\{(?=[\s\S]{0,500}?\btx\b)(?=[\s\S]{0,500}?\bcapability\b)[\s\S]{0,500}?\}\)/g,
+      ) ?? []).toHaveLength(count);
+      expect(source).not.toContain('issueUserSessionLegacyDuringTransition');
+      expect(source).not.toContain('touchFamilyLastUsed');
+    }
   }, 15_000);
 
   it('freezes the exact remaining migration-shim callers', () => {
     const inventory = collectCallInventory('issueUserSessionLegacyDuringTransition');
-    expect(new Set(inventory.keys())).toEqual(new Set([...expectedIssuers].filter(
-      (file) => file !== 'routes/auth/login.ts',
-    )));
+    expect(new Set(inventory.keys())).toEqual(expectedLegacyIssuers);
     expect(Object.fromEntries([...inventory.entries()].sort())).toEqual({
       'routes/auth/cfAccessRedirectLogin.ts': 1,
       'routes/auth/invite.ts': 1,
       'routes/auth/register.ts': 2,
       'routes/sso.ts': 1,
-      'services/mfaAssurance.ts': 2,
-      'services/recoveryCodeAuth.ts': 1,
     });
-    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(8);
+    expect([...inventory.values()].reduce((total, count) => total + count, 0)).toBe(5);
   }, 15_000);
 
   it('freezes every production setRefreshTokenCookie call site', () => {

@@ -9,6 +9,9 @@ import {
 } from './authLifecycle';
 import {
   consumePendingMfa,
+  readPendingMfa,
+  beginPendingMfaIssuance,
+  pendingMfaRecordsEqual,
   PendingMfaInvalidError,
   PendingMfaUnavailableError,
   selectEffectiveMfaMethod,
@@ -16,7 +19,8 @@ import {
 } from './mfaAssurance';
 import { lockMfaAssuranceState } from './mfaAssuranceLocks';
 import { resolveEffectiveMfaPolicy } from './mfaPolicy';
-import { bindIssuedUserSession, issueUserSessionLegacyDuringTransition } from './userSession';
+import { bindIssuedUserSession, issueUserSession } from './userSession';
+import { finishAuthIssuance, type AuthBindingSource } from './authBrowserTransition';
 
 const MFA_METHOD_ORDER = ['totp', 'sms', 'passkey', 'recovery_code'] as const;
 const MFA_POLICY_SOURCE_ORDER = ['role', 'partner', 'organization'] as const;
@@ -194,33 +198,44 @@ async function validatePendingRecoveryAuthority(
 export async function completeRecoveryCodeLogin(input: {
   tempToken: string;
   code: string;
+  authBinding: AuthBindingSource;
   mobileDeviceId?: string;
 }) {
   let pending: PendingMfaSessionV2 | null;
   try {
-    pending = await consumePendingMfa(input.tempToken);
+    pending = await readPendingMfa(input.tempToken);
   } catch (error) {
     if (error instanceof PendingMfaUnavailableError) throw new RecoveryCodeUnavailableError();
     throw error;
   }
   if (!pending) throw new RecoveryCodeInvalidError();
 
-  let consumed;
+  let capability;
   try {
-    consumed = await withAuthLifecycleSystemTransaction(async (tx) => {
-      await validatePendingRecoveryAuthority(tx, pending!);
-      return consumeRecoveryCode(pending!.userId, input.code, tx);
-    });
+    capability = await beginPendingMfaIssuance(pending, input.authBinding);
   } catch (error) {
-    if (error instanceof RecoveryCodeInvalidError || error instanceof PendingMfaInvalidError) {
+    if (error instanceof PendingMfaInvalidError) {
       throw new RecoveryCodeInvalidError(pending.userId);
     }
     throw new RecoveryCodeUnavailableError();
   }
 
-  let issued;
+  let consumedPending: PendingMfaSessionV2 | null;
   try {
-    issued = await withAuthLifecycleSystemTransaction(async (tx) => {
+    consumedPending = await consumePendingMfa(input.tempToken);
+  } catch (error) {
+    if (error instanceof PendingMfaUnavailableError) throw new RecoveryCodeUnavailableError();
+    throw error;
+  }
+  if (!consumedPending || !pendingMfaRecordsEqual(consumedPending, pending)) {
+    throw new RecoveryCodeInvalidError(pending.userId);
+  }
+
+  let result;
+  try {
+    result = await finishAuthIssuance(capability, async (tx) => {
+      await validatePendingRecoveryAuthority(tx, pending!);
+      const consumed = await consumeRecoveryCode(pending!.userId, input.code, tx);
       const locked = await lockMfaAssuranceState(tx, {
         userId: pending!.userId,
         partnerId: pending!.partnerId,
@@ -239,7 +254,7 @@ export async function completeRecoveryCodeLogin(input: {
         tx,
       });
       if (!policy.allowedMethods.has('recovery_code')) throw new RecoveryCodeInvalidError();
-      const tokens = await issueUserSessionLegacyDuringTransition({
+      const tokens = await issueUserSession({
         userId: user.id,
         email: user.email,
         roleId: pending!.roleId,
@@ -249,10 +264,15 @@ export async function completeRecoveryCodeLogin(input: {
         mfa: true,
         amr: ['password', 'recovery_code'],
         mobileDeviceId: input.mobileDeviceId,
-      }, { tx });
+      }, { tx, capability });
+      await tx
+        .update(users)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(users.id, user.id));
       return {
         user,
         tokens,
+        ...consumed,
         authority: {
           roleId: pending!.roleId,
           orgId: pending!.orgId,
@@ -262,17 +282,19 @@ export async function completeRecoveryCodeLogin(input: {
       };
     });
   } catch (error) {
-    if (error instanceof RecoveryCodeInvalidError) throw new RecoveryCodeInvalidError(pending.userId);
+    if (error instanceof RecoveryCodeInvalidError || error instanceof PendingMfaInvalidError) {
+      throw new RecoveryCodeInvalidError(pending.userId);
+    }
     throw new RecoveryCodeUnavailableError();
   }
   try {
-    await bindIssuedUserSession(issued.tokens);
+    await bindIssuedUserSession(result.tokens);
   } catch {
     try {
       await withAuthLifecycleSystemTransaction((tx) => revokeUserSessionFamily(
         tx,
         pending.userId,
-        issued.tokens.familyId,
+        result.tokens.familyId,
         'mfa-recovery-bind-failed',
       ));
     } catch {
@@ -286,7 +308,7 @@ export async function completeRecoveryCodeLogin(input: {
     }
     throw new RecoveryCodeUnavailableError();
   }
-  return { ...issued, ...consumed };
+  return result;
 }
 
 /** Burn pending state for a recovery payload rejected by schema validation. */

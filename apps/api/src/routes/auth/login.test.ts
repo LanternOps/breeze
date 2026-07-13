@@ -42,6 +42,7 @@ vi.mock('../../services', () => ({
   },
   AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
   AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
+  AuthIssuanceCapabilityError: class AuthIssuanceCapabilityError extends Error {},
   RefreshTokenCurrentnessError: class RefreshTokenCurrentnessError extends Error {},
   digestRefreshTokenJti: vi.fn((jti: string) => `digest:${jti}`),
   getRefreshRotationGraceSeconds: vi.fn(() => 15),
@@ -259,6 +260,8 @@ import {
   finishAuthIssuance,
   bindIssuedUserSession,
   RefreshTokenCurrentnessError,
+  decideAuthenticatedUserSession,
+  AuthIssuanceCapabilityError,
 } from '../../services';
 import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { createAuditLogAsync } from '../../services/auditService';
@@ -280,6 +283,7 @@ import {
   setCfAccessLogoutQuarantineCookie,
   cacheRefreshTokenFamilyRevocation,
   getCookieValue,
+  auditLogin,
 } from './helpers';
 
 function selectChain(rows: unknown[]) {
@@ -787,8 +791,8 @@ describe('POST /login — inactive-tenant observability signal (#719)', () => {
 // context. /login is unauthenticated, so on the bare `db` connection the
 // `users` RLS UPDATE silently matches 0 rows under breeze_app and last_login_at
 // never moves — the bug that froze the column platform-wide. This guards the
-// write against regressing back to a context-less `db.update`.
-describe('POST /login — last_login_at write runs under system DB context (#1375)', () => {
+// last_login_at is part of the guarded service transaction, not a route effect.
+describe('POST /login — guarded issuance owns last_login_at', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.NODE_ENV = 'test';
@@ -808,7 +812,7 @@ describe('POST /login — last_login_at write runs under system DB context (#137
     }]) as any);
   });
 
-  it('performs the users update only while inside withSystemDbAccessContext', async () => {
+  it('does not perform a second route-level users update after guarded issuance', async () => {
     let insideSystemContext = false;
     let updateRanInsideContext: boolean | null = null;
 
@@ -831,8 +835,21 @@ describe('POST /login — last_login_at write runs under system DB context (#137
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
 
     expect(res.status).toBe(200);
-    expect(db.update).toHaveBeenCalled();
-    expect(updateRanInsideContext).toBe(true);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(updateRanInsideContext).toBeNull();
+  });
+
+  it('returns no cookie, success audit, or last-login write when terminal finalization rejects', async () => {
+    vi.mocked(decideAuthenticatedUserSession)
+      .mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(409);
+    expect(setRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(auditLogin).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
   });
 });
 
