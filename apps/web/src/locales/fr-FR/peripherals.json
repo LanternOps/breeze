@@ -1,0 +1,104 @@
+{
+  "peripheralPage": {
+    "title": "Contrôle périphérique",
+    "tabs": {
+      "policies": "Politiques",
+      "activity": "Journal d’activité"
+    }
+  },
+  "peripheralActivityLog": {
+    "errors": {
+      "fetch": "Impossible de récupérer l’activité",
+      "generic": "Une erreur s’est produite"
+    },
+    "allEvents": "Tous les événements",
+    "events": {
+      "connected": "Connecté",
+      "disconnected": "Déconnecté",
+      "blocked": "Bloqué",
+      "mounted_read_only": "Lecture seule",
+      "policy_override": "Outrelèvement de politique"
+    },
+    "peripheralType": "Type périphérique",
+    "vendor": "Fournisseur",
+    "empty": "Aucune activité périphérique trouvée.",
+    "columns": {
+      "occurredAt": "A eu lieu à",
+      "eventType": "Type d’événement",
+      "product": "Produit",
+      "serialNumber": "Numéro de série",
+      "device": "Dispositif",
+      "policy": "Politique"
+    },
+    "pagination": "Affichage de {{from}} à {{to}} sur {{total}}",
+    "prev": "Précédent"
+  },
+  "peripheralPoliciesList": {
+    "errors": {
+      "fetch": "Impossible de récupérer des stratégies",
+      "generic": "Une erreur s’est produite"
+    },
+    "allClasses": "Toutes les classes",
+    "classes": {
+      "storage": "Stockage",
+      "all_usb": "Tout en USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "allActions": "Toutes les actions",
+    "actions": {
+      "allow": "Permettre",
+      "block": "Bloquer",
+      "read_only": "Lecture seule",
+      "alert": "Alerte"
+    },
+    "allStatus": "Tous les statuts",
+    "createPolicy": "Créer une politique",
+    "empty": "Aucune politique périphérique n’a été trouvée. Créez-en un pour commencer.",
+    "columns": {
+      "deviceClass": "Classe de dispositifs",
+      "action": "Action",
+      "exceptions": "Exceptions",
+      "created": "Création"
+    },
+    "partnerWideTitle": "Politique à l’échelle des partenaires — appliquée sur les appareils de chaque organisation",
+    "allOrgs": "Toutes les organisations"
+  },
+  "peripheralPolicyForm": {
+    "errors": {
+      "save": "Impossible d’enregistrer la stratégie",
+      "generic": "Une erreur s’est produite"
+    },
+    "editTitle": "Modifier la politique des périphériques",
+    "createTitle": "Créer une politique périphérique",
+    "scope": "Portée",
+    "allOrganizations": "Toutes les organisations",
+    "partnerWide": "(politique à l’échelle des partenaires)",
+    "thisOrganization": "Cette organisation uniquement",
+    "deviceClass": "Classe de dispositifs",
+    "classes": {
+      "storage": "Stockage",
+      "all_usb": "Tout en USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "action": "Action",
+    "actions": {
+      "allow": "Permettre",
+      "block": "Bloquer",
+      "read_only": "Lecture seule",
+      "alert": "Alerte"
+    },
+    "exceptions": "Exceptions",
+    "addException": "Ajouter une exception",
+    "noExceptions": "Aucune exception configurée.",
+    "exceptionNumber": "Exception {{number}}",
+    "vendor": "Fournisseur",
+    "product": "Produit",
+    "serialNumber": "Numéro de série",
+    "allow": "Autoriser :",
+    "reason": "Raison",
+    "updatePolicy": "Mise à jour de la politique",
+    "createPolicy": "Créer une politique"
+  }
+}
