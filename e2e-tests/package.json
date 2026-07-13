@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
+    "test:auth-browser-transition": "playwright test --config=playwright.auth-browser-transition.config.ts",
     "test:ui": "playwright test --ui",
     "test:headed": "playwright test --headed",
     "test:debug": "PWDEBUG=1 playwright test",
