@@ -7,6 +7,10 @@ import {
   backupInlineSettingsSchema,
   backupScheduleSchema,
   backupRetentionSchema,
+  backupProfileSelectionsSchema,
+  enabledBackupSelections,
+  createBackupProfileSchema,
+  updateBackupProfileSchema,
 } from './backupTargets';
 
 describe('fileTargetsSchema', () => {
@@ -217,6 +221,89 @@ describe('backupRetentionSchema', () => {
   it('requires immutableDays when application immutability is enabled', () => {
     const result = backupRetentionSchema.safeParse({
       immutabilityMode: 'application',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('backupProfileSelectionsSchema', () => {
+  it('accepts a multi-source server profile', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      file: { enabled: true, paths: ['C:\\Users'], excludes: ['*.tmp'] },
+      system_image: { enabled: true },
+      mssql: { enabled: true, backupType: 'full', excludeDatabases: ['tempdb'] },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a profile with no enabled sources', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      file: { enabled: false, paths: [] },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects file selection without paths or volumes', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      file: { enabled: true, paths: [] },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts file selection with volumes but no paths (reserved field)', () => {
+    const result = backupProfileSelectionsSchema.safeParse({
+      file: { enabled: true, paths: [], volumes: 'all_fixed' },
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('enabledBackupSelections', () => {
+  it('returns enabled sources in fan-out order', () => {
+    const parsed = backupProfileSelectionsSchema.parse({
+      hyperv: { enabled: true },
+      file: { enabled: true, paths: ['/home'] },
+      system_image: { enabled: false },
+    });
+    expect(enabledBackupSelections(parsed)).toEqual(['file', 'hyperv']);
+  });
+});
+
+describe('createBackupProfileSchema', () => {
+  it('defaults ownerScope to organization', () => {
+    const result = createBackupProfileSchema.safeParse({
+      name: 'Server',
+      selections: { file: { enabled: true, paths: ['C:\\Users'] } },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.ownerScope).toBe('organization');
+  });
+
+  it('rejects an empty name', () => {
+    const result = createBackupProfileSchema.safeParse({
+      name: '  ',
+      selections: { file: { enabled: true, paths: ['/data'] } },
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('updateBackupProfileSchema', () => {
+  it('has no ownerScope field (ownership axis is immutable)', () => {
+    const result = updateBackupProfileSchema.safeParse({
+      name: 'Renamed',
+      ownerScope: 'partner',
+    });
+    // Unknown keys are stripped, not errors — assert it does not pass through.
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('ownerScope' in result.data).toBe(false);
+    }
+  });
+
+  it('validates selections when provided', () => {
+    const result = updateBackupProfileSchema.safeParse({
+      selections: { file: { enabled: true, paths: [] } },
     });
     expect(result.success).toBe(false);
   });

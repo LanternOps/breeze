@@ -236,6 +236,14 @@ configsRoutes.post(
     }
 
     const now = new Date();
+    // Setting a new default demotes the previous one (partial unique index on
+    // (org_id) WHERE is_default enforces at most one).
+    if (payload.isDefault === true) {
+      await db
+        .update(backupConfigs)
+        .set({ isDefault: false, updatedAt: now })
+        .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isDefault, true)));
+    }
     const [row] = await db
       .insert(backupConfigs)
       .values({
@@ -248,6 +256,7 @@ configsRoutes.post(
         providerCapabilitiesCheckedAt: null,
         encryption,
         isActive: payload.enabled ?? true,
+        isDefault: payload.isDefault ?? false,
         createdAt: now,
         updatedAt: now,
       })
@@ -311,6 +320,17 @@ configsRoutes.patch(
     if (payload.name !== undefined) updateData.name = payload.name;
     if (payload.enabled !== undefined) updateData.isActive = payload.enabled;
     if (payload.encryption !== undefined) updateData.encryption = payload.encryption;
+    if (payload.isDefault !== undefined) {
+      updateData.isDefault = payload.isDefault;
+      // Promoting a new default demotes the previous one (partial unique
+      // index on (org_id) WHERE is_default enforces at most one per org).
+      if (payload.isDefault === true) {
+        await db
+          .update(backupConfigs)
+          .set({ isDefault: false, updatedAt: new Date() })
+          .where(and(eq(backupConfigs.orgId, orgId), eq(backupConfigs.isDefault, true)));
+      }
+    }
     if (payload.details !== undefined || payload.encryption !== undefined) {
       const [current] = await db
         .select()
@@ -515,6 +535,7 @@ function toConfigResponse(row: typeof backupConfigs.$inferSelect) {
     name: row.name,
     provider: row.provider,
     enabled: row.isActive,
+    isDefault: row.isDefault,
     encryption: buildBackupStorageEncryptionResponse({
       encryption: row.encryption,
       provider: row.provider,

@@ -48,6 +48,7 @@ export const configSchema = z.object({
   provider: z.enum(['s3', 'local']),
   enabled: z.boolean().optional(),
   encryption: z.boolean().optional(),
+  isDefault: z.boolean().optional(),
   details: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }
@@ -64,6 +65,7 @@ export const configUpdateSchema = z.object({
   name: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
   encryption: z.boolean().optional(),
+  isDefault: z.boolean().optional(),
   details: z.record(z.string(), z.any()).refine(
     (val) => JSON.stringify(val).length <= 65536,
     { message: 'Object too large (max 64KB)' }

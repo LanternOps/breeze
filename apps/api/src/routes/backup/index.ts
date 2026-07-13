@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { configsRoutes } from './configs';
+import { profilesRoutes } from './profiles';
 import { jobsRoutes } from './jobs';
 import { snapshotsRoutes } from './snapshots';
 import { restoreRoutes } from './restore';
@@ -25,6 +26,7 @@ backupRoutes.use('*', authMiddleware);
 backupRoutes.use('*', requireScope('organization', 'partner', 'system'));
 
 backupRoutes.route('/', configsRoutes);
+backupRoutes.route('/', profilesRoutes);
 backupRoutes.route('/', jobsRoutes);
 backupRoutes.route('/', snapshotsRoutes);
 backupRoutes.route('/', restoreRoutes);
