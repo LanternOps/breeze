@@ -327,8 +327,8 @@ function analyzeTrackedSymbolCalls(
     }
     if (
       ts.isCallExpression(node)
-      && ts.isIdentifier(node.expression)
-      && node.expression.text === 'require'
+      && ts.isIdentifier(unwrapExpression(node.expression))
+      && (unwrapExpression(node.expression) as ts.Identifier).text === 'require'
     ) {
       const specifier = resolveStaticModuleSpecifier(checker, node.arguments[0]);
       const moduleSymbol = specifier
@@ -375,9 +375,7 @@ function analyzeTrackedSymbolCalls(
       }
     }
   }
-  if (sourceFile.text.includes('import(') || sourceFile.text.includes('require(')) {
-    inspectModuleLoads(sourceFile);
-  }
+  inspectModuleLoads(sourceFile);
 
   if (protectedBindings.size === 0) return 0;
 
@@ -729,6 +727,39 @@ describe('session inventory analyzer fixtures', () => {
     });
   });
 
+  it.each([
+    [
+      'whitespace before the argument list',
+      "const { issueUserSession } = require \n ('../services/userSession'); issueUserSession();",
+    ],
+    [
+      'a parenthesized callee',
+      "const { issueUserSession } = (require)('../services/userSession'); issueUserSession();",
+    ],
+    [
+      'a TypeScript-wrapped callee',
+      "const { issueUserSession } = (require as typeof require)('../services/userSession'); issueUserSession();",
+    ],
+  ])('rejects formatted protected CommonJS require through %s', (_name, body) => {
+    withModuleGraph({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { module: 'CommonJS', moduleResolution: 'Node', target: 'ES2022' },
+        include: ['**/*.ts'],
+      }),
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'routes/consumer.ts': body,
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(() => analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+        join(root, 'tsconfig.json'),
+      )).toThrow(/protected symbol convention/i);
+    });
+  });
+
   it('ignores CommonJS require of a genuinely unrelated module', () => {
     withModuleGraph({
       'tsconfig.json': JSON.stringify({
@@ -811,6 +842,26 @@ describe('session inventory analyzer fixtures', () => {
     withModuleGraph({
       'services/userSession.ts': 'export function issueUserSession() {}',
       'routes/consumer.ts': `async function run() { ${body} }`,
+    }, (root) => {
+      const consumer = join(root, 'routes/consumer.ts');
+      expect(() => analyzeFixture(
+        readFileSync(consumer, 'utf8'),
+        'issueUserSession',
+        consumer,
+        join(root, 'services/userSession.ts'),
+      )).toThrow(/protected symbol convention/i);
+    });
+  });
+
+  it('rejects a protected dynamic import with a comment before its argument list', () => {
+    withModuleGraph({
+      'services/userSession.ts': 'export function issueUserSession() {}',
+      'routes/consumer.ts': `
+        async function run() {
+          const { issueUserSession } = await import /* module */ ('../services/userSession');
+          issueUserSession();
+        }
+      `,
     }, (root) => {
       const consumer = join(root, 'routes/consumer.ts');
       expect(() => analyzeFixture(
