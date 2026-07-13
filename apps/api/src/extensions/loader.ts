@@ -45,11 +45,22 @@ async function loadEntry(dir: string, entry: string): Promise<BreezeExtension> {
   return ext;
 }
 
-// Context variable marking that the loader guard already authenticated this
-// request, so the ctx-injected middlewares can no-op instead of running the
-// (side-effectful: per-agent/per-IP rate counters) core auth twice when an
-// extension also applies them itself.
-const LOADER_AUTH_APPLIED = 'extensionLoaderAuthApplied';
+// Records WHICH core auth the loader guard already ran for this request, so a
+// ctx-injected middleware can no-op instead of running the (side-effectful:
+// per-agent/per-IP rate counters) core auth twice when an extension redundantly
+// applies the SAME one itself.
+//
+// This stores the KIND, not a boolean, and that distinction is load-bearing.
+// `authMiddleware` and `agentAuthMiddleware` are not interchangeable — they
+// accept disjoint credentials and set disjoint context vars (auth+permissions
+// vs agent). With a boolean, an extension applying `ctx.agentAuthMiddleware` to
+// a route NOT under /agent/ would have it silently evaporate after the loader
+// ran USER auth: the route would fall back to "any authenticated user token"
+// with `c.get('agent')` undefined, downgrading a device-bound ingest route into
+// a cross-tenant primitive. So a MISMATCHED kind must still run — the request
+// then needs both and 401s (fail closed) — and is never silently skipped.
+type LoaderAuthKind = 'user' | 'agent';
+const LOADER_AUTH_KIND = 'extensionLoaderAuthKind';
 
 /**
  * Default-deny auth guard for one extension namespace. Evaluated per request
@@ -76,21 +87,25 @@ export function buildExtensionAuthGuard(
   return async (c, next) => {
     const rel = c.req.path.slice(mountPrefix.length) || '/';
     if (rel === '/agent' || rel.startsWith('/agent/')) {
-      c.set(LOADER_AUTH_APPLIED, true);
+      c.set(LOADER_AUTH_KIND, 'agent');
       return agentAuthMiddleware(c, next);
     }
     if (publicExact.has(rel) || publicPrefixes.some((p) => rel.startsWith(p))) {
       return next();
     }
-    c.set(LOADER_AUTH_APPLIED, true);
+    c.set(LOADER_AUTH_KIND, 'user');
     return authMiddleware(c, next);
   };
 }
 
-/** Wrap a core auth middleware so it no-ops when the loader guard already ran. */
-function skipIfLoaderAuthed(inner: MiddlewareHandler): MiddlewareHandler {
+/**
+ * Wrap a core auth middleware so it no-ops ONLY when the loader guard already
+ * ran the SAME kind of auth for this request. A mismatched kind still runs —
+ * skipping it would silently strip the guarantee the extension asked for.
+ */
+function skipIfLoaderAuthed(inner: MiddlewareHandler, kind: LoaderAuthKind): MiddlewareHandler {
   return (c, next) => {
-    if (c.get(LOADER_AUTH_APPLIED) === true) return next();
+    if (c.get(LOADER_AUTH_KIND) === kind) return next();
     return inner(c, next);
   };
 }
@@ -121,7 +136,20 @@ export async function assertExtensionTenancyRls(
       ...(tenancy.deviceOrgMoveDeleteTables ?? []),
     ]),
   ];
-  if (tables.length === 0) return;
+  if (tables.length === 0) {
+    // This check verifies that DECLARED tables have RLS — it cannot verify that
+    // the extension declared all the tables it created (the policed party still
+    // writes the policy). An extension whose migrations create tenant tables but
+    // whose manifest omits them gets no check at all, so at minimum make the
+    // silence audible. Deriving the table set from the extension's own
+    // migrations and requiring every one to be declared is the real fix.
+    console.warn(
+      `[extensions] "${extensionName}" declares no tenancy tables — no RLS verification performed. `
+        + 'If this extension creates tenant-scoped tables, they MUST be listed in the manifest '
+        + 'tenancy arrays or they ship with no RLS coverage check whatsoever.',
+    );
+    return;
+  }
 
   // Bind the table list as an explicit ARRAY[...] of individually-parameterised
   // text literals. Embedding the JS array directly (`= ANY(${tables})`) makes
@@ -136,7 +164,10 @@ export async function assertExtensionTenancyRls(
              WHERE p.schemaname = 'public' AND p.tablename = c.relname) AS policy_count
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public' AND c.relkind = 'r'
+    -- 'r' = ordinary table, 'p' = partitioned table. Omitting 'p' would report
+    -- a partitioned extension table as "does not exist" and send the operator
+    -- chasing a migration bug that isn't there.
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
       AND c.relname::text = ANY(ARRAY[${tableList}]::text[])
   `)) as unknown as RlsCatalogRow[] | { rows?: RlsCatalogRow[] };
   const rows: RlsCatalogRow[] = Array.isArray(result) ? result : (result.rows ?? []);
@@ -151,7 +182,12 @@ export async function assertExtensionTenancyRls(
     }
     if (!row.rls_enabled) problems.push(`"${table}" does not have ROW LEVEL SECURITY enabled`);
     if (!row.rls_forced) problems.push(`"${table}" does not have ROW LEVEL SECURITY forced (ALTER TABLE ... FORCE ROW LEVEL SECURITY)`);
-    if (Number(row.policy_count) === 0) problems.push(`"${table}" has no RLS policies (pg_policies is empty for it)`);
+    // Phrased as `!(n > 0)` rather than `=== 0` so a NaN/null/undefined
+    // policy_count (unexpected row shape, driver change) fails CLOSED like its
+    // two siblings. `Number(undefined) === 0` is false — which would have let a
+    // policy-less table pass silently, in the one function whose whole contract
+    // is to fail loudly.
+    if (!(Number(row.policy_count) > 0)) problems.push(`"${table}" has no RLS policies (pg_policies is empty for it)`);
   }
   if (problems.length > 0) {
     throw new Error(
@@ -174,8 +210,23 @@ export async function mountExtensions(app: Hono, root?: string): Promise<void> {
     const ext = await loadEntry(d.dir, d.manifest.entry);
     await assertExtensionTenancyRls(d.name, d.manifest.tenancy);
     const mountPrefix = `/api/v1/${d.manifest.routeNamespace}`;
+    let mounted = false;
     const ctx: ExtensionContext = {
       mountRoute: (subApp) => {
+        // Each mountRoute call registers its own `use('*', guard)` at the same
+        // prefix, and Hono runs EVERY matching wildcard — so a second call would
+        // run core auth twice per request (double-incrementing the per-agent /
+        // per-IP rate counters, so agents 429 at half the intended rate) while
+        // silently shadowing the first sub-app for any overlapping route. Both
+        // are exactly the quiet misconfiguration these tripwires exist to kill.
+        if (mounted) {
+          throw new Error(
+            `[extensions] "${d.name}" called ctx.mountRoute more than once — `
+              + `a second sub-app at ${mountPrefix} would double-run core auth and `
+              + 'shadow the first. Compose your routes into a single Hono app before mounting.',
+          );
+        }
+        mounted = true;
         const guarded = new Hono();
         guarded.use('*', buildExtensionAuthGuard(mountPrefix, d.manifest));
         guarded.route('/', subApp);
@@ -186,8 +237,8 @@ export async function mountExtensions(app: Hono, root?: string): Promise<void> {
           registerGlobalRateLimitSkipPrefix(`${mountPrefix}/agent/`);
         }
       },
-      authMiddleware: skipIfLoaderAuthed(authMiddleware),
-      agentAuthMiddleware: skipIfLoaderAuthed(agentAuthMiddleware),
+      authMiddleware: skipIfLoaderAuthed(authMiddleware, 'user'),
+      agentAuthMiddleware: skipIfLoaderAuthed(agentAuthMiddleware, 'agent'),
       db: db as unknown as ExtensionDatabase,
       secrets: {
         encryptForColumn: (table, column, plaintext) =>
@@ -216,6 +267,14 @@ export async function mountExtensions(app: Hono, root?: string): Promise<void> {
       log: (message) => console.log(`[extensions:${d.name}] ${message}`),
     };
     await ext.register(ctx);
-    console.log(`[extensions] mounted "${d.name}" at ${mountPrefix}`);
+    // Don't claim a mount that never happened — an extension can register AI
+    // tools / audit hooks without calling mountRoute, and a confident
+    // "mounted at /api/v1/x" line for a namespace serving nothing has sent
+    // people hunting phantom routing bugs.
+    console.log(
+      mounted
+        ? `[extensions] mounted "${d.name}" at ${mountPrefix}`
+        : `[extensions] registered "${d.name}" (no routes mounted — ctx.mountRoute was never called)`,
+    );
   }
 }

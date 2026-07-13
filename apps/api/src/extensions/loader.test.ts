@@ -7,16 +7,20 @@ vi.mock('../services/aiTools', () => ({ aiTools: new Map() }));
 // Auth mocks stamp a response header so tests can observe WHICH guard the
 // loader's default-deny wrapper applied to each route.
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: async (c: { header: (k: string, v: string) => void }, next: () => Promise<void>) => {
-    c.header('x-guard', 'user');
-    return next();
-  },
+  authMiddleware: vi.fn(
+    async (c: { header: (k: string, v: string) => void }, next: () => Promise<void>) => {
+      c.header('x-guard', 'user');
+      return next();
+    },
+  ),
 }));
 vi.mock('../middleware/agentAuth', () => ({
-  agentAuthMiddleware: async (c: { header: (k: string, v: string) => void }, next: () => Promise<void>) => {
-    c.header('x-guard', 'agent');
-    return next();
-  },
+  agentAuthMiddleware: vi.fn(
+    async (c: { header: (k: string, v: string) => void }, next: () => Promise<void>) => {
+      c.header('x-guard', 'agent');
+      return next();
+    },
+  ),
 }));
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../services/secretCrypto', () => ({
@@ -236,6 +240,87 @@ describe('mountExtensions', () => {
 
       const guarded = await app.request('/api/v1/demo/health');
       expect(guarded.headers.get('x-guard')).toBe('user');
+    });
+
+    // The ctx-injected middlewares no-op only when the loader ALREADY ran the
+    // SAME kind of auth. A boolean "loader authed" flag would make a mismatched
+    // middleware silently evaporate — e.g. an extension applying
+    // ctx.agentAuthMiddleware to a non-/agent/ route would get user auth
+    // instead, with c.get('agent') undefined: an auth downgrade.
+    it('runs the extension\'s ctx.agentAuthMiddleware on a non-/agent/ route (loader ran USER auth — kinds differ, must not be skipped)', async () => {
+      scaffoldRuntimeExtension(
+        root,
+        {},
+        `import { Hono } from 'hono';
+         const ext = {
+           register(ctx) {
+             const app = new Hono();
+             // Extension explicitly demands AGENT auth on a path the loader
+             // default-denies with USER auth. Both must run — fail closed.
+             app.use('/telemetry', ctx.agentAuthMiddleware);
+             app.get('/telemetry', (c) => c.json({ ok: true }));
+             ctx.mountRoute(app);
+           },
+         };
+         export default ext;`,
+      );
+      const app = new Hono();
+      await mountExtensions(app, root);
+
+      const res = await app.request('/api/v1/demo/telemetry');
+      expect(res.status).toBe(200);
+      // The loader's user guard ran AND the extension's agent middleware ran —
+      // the header is overwritten by whichever ran last, so 'agent' proves the
+      // extension's middleware was NOT silently skipped.
+      expect(res.headers.get('x-guard')).toBe('agent');
+    });
+
+    it('no-ops a redundant ctx.authMiddleware when the loader already ran the SAME (user) auth', async () => {
+      scaffoldRuntimeExtension(
+        root,
+        {},
+        `import { Hono } from 'hono';
+         const ext = {
+           register(ctx) {
+             const app = new Hono();
+             // Redundant: the loader already applies user auth to this path.
+             app.use('/thing', ctx.authMiddleware);
+             app.get('/thing', (c) => c.json({ ok: true }));
+             ctx.mountRoute(app);
+           },
+         };
+         export default ext;`,
+      );
+      const app = new Hono();
+      await mountExtensions(app, root);
+
+      const { authMiddleware } = await import('../middleware/auth');
+      const res = await app.request('/api/v1/demo/thing');
+      expect(res.status).toBe(200);
+      // Core user auth ran exactly ONCE (the loader's) — the extension's
+      // redundant call was skipped, so the per-IP/per-agent rate counters
+      // inside core auth are not double-incremented.
+      expect(vi.mocked(authMiddleware)).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws when an extension calls ctx.mountRoute twice (second sub-app would shadow the first)', async () => {
+      scaffoldRuntimeExtension(
+        root,
+        {},
+        `import { Hono } from 'hono';
+         const ext = {
+           register(ctx) {
+             const a = new Hono();
+             a.get('/health', (c) => c.json({ ok: true }));
+             ctx.mountRoute(a);
+             const b = new Hono();
+             b.get('/health', (c) => c.json({ shadowed: true }));
+             ctx.mountRoute(b);
+           },
+         };
+         export default ext;`,
+      );
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(/mountRoute more than once/);
     });
 
     it('does not register the rate-limit skip prefix when the extension never mounts routes', async () => {

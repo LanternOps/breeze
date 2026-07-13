@@ -86,9 +86,14 @@ describe('tenancyRegistry', () => {
     expect(withExtensionDeviceOrgMoveDelete([])).toEqual(['demo_things']);
   });
 
-  it('dedupes device-cascade tables declared by both an extension and core, keeping the first (extension) position', () => {
-    expect(withExtensionDeviceCascade(['sample_parent', 'backup_jobs'])).toEqual([
-      'sample_child', 'sample_parent', 'backup_jobs',
+  it('dedupes a core/extension overlap WITHOUT hoisting the core table out of its FK-ordered position', () => {
+    // `sample_parent` is declared by both the extension and core, and sits LAST
+    // in core's FK order. A naive Set-dedupe keeps the first occurrence and
+    // would hoist it to the front (['sample_child','sample_parent','backup_jobs']),
+    // letting it be deleted before rows that FK-reference it → 23503. Core's
+    // ordering must win.
+    expect(withExtensionDeviceCascade(['backup_jobs', 'sample_parent'])).toEqual([
+      'sample_child', 'backup_jobs', 'sample_parent',
     ]);
   });
 

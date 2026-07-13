@@ -22,6 +22,21 @@ import { assertExtensionTenancyRls } from '../../extensions/loader';
  * a compliant extension table from a non-compliant one.
  */
 
+/**
+ * NOTE — these fixtures deliberately have NO `org_id` column. Do not add one.
+ *
+ * `rls-coverage.integration.test.ts` auto-discovers org-tenant tables purely by
+ * `column_name = 'org_id'` and then asserts RLS enabled + forced + policies.
+ * It runs against the SAME CI database as this suite. Three of these fixtures
+ * are intentionally RLS-broken, so giving them an `org_id` would make a leaked
+ * fixture (hook timeout, worker crash, cancelled run — anything that skips
+ * `afterAll`) look exactly like a real cross-tenant breach to the repo's
+ * highest-signal alarm, and `cleanupDatabase`'s TRUNCATE hand-list would never
+ * DROP an unknown table, so it would keep failing on unrelated PRs.
+ *
+ * The column buys the test nothing — `assertExtensionTenancyRls` reads only
+ * `pg_class` / `pg_policies` and never inspects columns.
+ */
 const FIXTURES = [
   'ext_rls_good',
   'ext_rls_notforced',
@@ -39,26 +54,26 @@ beforeAll(async () => {
   await dropFixtures();
   // Fully compliant: RLS enabled + forced + a policy.
   await db.execute(sql.raw(`
-    CREATE TABLE ext_rls_good (id uuid PRIMARY KEY, org_id uuid NOT NULL);
+    CREATE TABLE ext_rls_good (id uuid PRIMARY KEY);
     ALTER TABLE ext_rls_good ENABLE ROW LEVEL SECURITY;
     ALTER TABLE ext_rls_good FORCE ROW LEVEL SECURITY;
     CREATE POLICY ext_rls_good_p ON ext_rls_good FOR ALL USING (true);
   `));
   // Enabled but NOT forced — the table owner would bypass RLS.
   await db.execute(sql.raw(`
-    CREATE TABLE ext_rls_notforced (id uuid PRIMARY KEY, org_id uuid NOT NULL);
+    CREATE TABLE ext_rls_notforced (id uuid PRIMARY KEY);
     ALTER TABLE ext_rls_notforced ENABLE ROW LEVEL SECURITY;
     CREATE POLICY ext_rls_notforced_p ON ext_rls_notforced FOR ALL USING (true);
   `));
   // Enabled + forced but zero policies — deny-all, which is a misconfiguration
   // we still want surfaced loudly rather than silently shipping a dead table.
   await db.execute(sql.raw(`
-    CREATE TABLE ext_rls_nopolicy (id uuid PRIMARY KEY, org_id uuid NOT NULL);
+    CREATE TABLE ext_rls_nopolicy (id uuid PRIMARY KEY);
     ALTER TABLE ext_rls_nopolicy ENABLE ROW LEVEL SECURITY;
     ALTER TABLE ext_rls_nopolicy FORCE ROW LEVEL SECURITY;
   `));
   // No RLS at all — the case the tripwire exists to catch.
-  await db.execute(sql.raw(`CREATE TABLE ext_rls_bare (id uuid PRIMARY KEY, org_id uuid NOT NULL)`));
+  await db.execute(sql.raw(`CREATE TABLE ext_rls_bare (id uuid PRIMARY KEY)`));
 });
 
 afterAll(async () => {
