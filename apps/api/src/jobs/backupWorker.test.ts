@@ -36,7 +36,30 @@ describe('resolveBackupTargets', () => {
       'device-id'
     );
     expect(result).toEqual([
-      { commandType: 'backup_run', payload: { paths: ['/data', '/etc'] } },
+      {
+        commandType: 'backup_run',
+        payload: { paths: ['/data', '/etc'], excludes: [] },
+      },
+    ]);
+  });
+
+  it('forwards exclusion patterns for file mode (#2418)', async () => {
+    const result = await resolveBackupTargets(
+      'file',
+      {
+        paths: ['C:\\Users'],
+        excludes: ['*.tmp', 'node_modules/**', '**/AppData/Local/Temp/**'],
+      },
+      'device-id'
+    );
+    expect(result).toEqual([
+      {
+        commandType: 'backup_run',
+        payload: {
+          paths: ['C:\\Users'],
+          excludes: ['*.tmp', 'node_modules/**', '**/AppData/Local/Temp/**'],
+        },
+      },
     ]);
   });
 
@@ -250,10 +273,10 @@ describe('resolveBackupTargets', () => {
     expect(result).toEqual([]);
   });
 
-  it('returns empty paths array for file mode when paths not provided', async () => {
+  it('returns empty paths/excludes arrays for file mode when not provided', async () => {
     const result = await resolveBackupTargets('file', {}, 'device-id');
     expect(result).toEqual([
-      { commandType: 'backup_run', payload: { paths: [] } },
+      { commandType: 'backup_run', payload: { paths: [], excludes: [] } },
     ]);
   });
 });

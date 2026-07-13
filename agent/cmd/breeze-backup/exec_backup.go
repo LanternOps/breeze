@@ -66,6 +66,24 @@ func applyCommandStorageEncryption(provider providers.BackupProvider, payload js
 	return nil
 }
 
+// parseBackupRunExcludes extracts file-exclusion glob patterns from a
+// backup_run command payload (#2418). Returns nil when the payload omits the
+// field so locally-configured excludes still apply; a server that sends an
+// explicit empty list disables exclusions for the run. Unknown payload fields
+// are ignored (encoding/json), so older servers and newer agents interoperate.
+func parseBackupRunExcludes(payload json.RawMessage) ([]string, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	var p struct {
+		Excludes []string `json:"excludes"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("invalid backup payload: %w", err)
+	}
+	return p.Excludes, nil
+}
+
 func resolveRestoreProvider(mgr *backup.BackupManager, vaultState *vaultManagerRef) providers.BackupProvider {
 	if mgr == nil {
 		return nil

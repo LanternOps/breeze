@@ -270,8 +270,13 @@ export async function resolveBackupTargets(
 ): Promise<BackupTarget[]> {
   switch (backupMode) {
     case 'file': {
-      const t = targets as { paths?: string[] };
-      return [{ commandType: 'backup_run', payload: { paths: t.paths ?? [] } }];
+      const t = targets as { paths?: string[]; excludes?: string[] };
+      return [
+        {
+          commandType: 'backup_run',
+          payload: { paths: t.paths ?? [], excludes: t.excludes ?? [] },
+        },
+      ];
     }
 
     case 'system_image':

@@ -33,6 +33,7 @@ var errBackupStopped = errors.New("backup stopped")
 type BackupConfig struct {
 	Provider           providers.BackupProvider
 	Paths              []string
+	Excludes           []string // Glob exclusion patterns for file-mode backups (see excludeMatcher)
 	Schedule           time.Duration
 	Retention          int
 	VSSEnabled         bool   // Windows only: create VSS shadow copy before backup
@@ -158,8 +159,21 @@ func (m *BackupManager) Stop() bool {
 	return true
 }
 
-// RunBackup triggers an immediate backup run.
+// RunBackup triggers an immediate backup run using the configured exclusion
+// patterns.
 func (m *BackupManager) RunBackup() (*BackupJob, error) {
+	return m.RunBackupWithExcludes(nil)
+}
+
+// RunBackupWithExcludes triggers an immediate backup run. A non-nil excludes
+// slice overrides the configured exclusion patterns for this run only (an
+// empty non-nil slice disables exclusions); nil falls back to the config
+// excludes. Server-dispatched backup_run commands pass their policy excludes
+// here (#2418).
+func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, error) {
+	if excludes == nil {
+		excludes = m.config.Excludes
+	}
 	if m.config.Provider == nil {
 		return nil, errors.New("backup provider is required")
 	}
@@ -266,7 +280,7 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 		return stopBackupRun()
 	}
 	cutoff := m.lastSnapshotTime
-	files, scanErr := m.collectBackupFilesFromPaths(ctx, backupPaths, cutoff)
+	files, scanErr := m.collectBackupFilesFromPaths(ctx, backupPaths, cutoff, newExcludeMatcher(excludes))
 	if scanErr != nil {
 		if errors.Is(scanErr, errBackupStopped) {
 			return stopBackupRun()
@@ -355,10 +369,10 @@ type backupFile struct {
 }
 
 func (m *BackupManager) collectBackupFiles(cutoff time.Time) ([]backupFile, error) {
-	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, cutoff)
+	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, cutoff, newExcludeMatcher(m.config.Excludes))
 }
 
-func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, cutoff time.Time) ([]backupFile, error) {
+func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, cutoff time.Time, excl *excludeMatcher) ([]backupFile, error) {
 	var files []backupFile
 	var errs []error
 	seen := make(map[string]struct{})
@@ -384,6 +398,9 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				continue
 			}
 			relPath := filepath.Base(cleanRoot)
+			if excl.matches(relPath) {
+				continue
+			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
 			if _, exists := seen[snapshotPath]; exists {
 				log.Printf("[backup] duplicate backup path skipped: %s", snapshotPath)
@@ -408,6 +425,14 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				return nil
 			}
 			if entry.IsDir() {
+				// An excluded directory is skipped entirely (fs.SkipDir), not
+				// just its immediate files (#2418).
+				if excl != nil && path != cleanRoot {
+					relPath, relErr := filepath.Rel(cleanRoot, path)
+					if relErr == nil && excl.matches(filepath.ToSlash(relPath)) {
+						return fs.SkipDir
+					}
+				}
 				return nil
 			}
 			if entry.Type()&os.ModeSymlink != 0 {
@@ -424,6 +449,9 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 			relPath, err := filepath.Rel(cleanRoot, path)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("failed to resolve relative path for %s: %w", path, err))
+				return nil
+			}
+			if excl.matches(filepath.ToSlash(relPath)) {
 				return nil
 			}
 			snapshotPath := filepath.ToSlash(filepath.Join(rootLabel, relPath))
