@@ -339,6 +339,54 @@ func TestReconcileDoesNotRespawnWhilePreAuthProcessLives(t *testing.T) {
 	}
 }
 
+func TestSCMDisconnectThenReconcileRetainsSystemAndStopsUserForDisconnectedRDP(t *testing.T) {
+	b := New("disconnect-policy-"+t.Name(), nil)
+	detector := &fakeLifecycleDetector{sessions: []DetectedSession{{Session: "7", State: "active", Type: "rdp"}}}
+	systemKey := HelperKey{WindowsSessionID: 7, Role: "system"}
+	userKey := HelperKey{WindowsSessionID: 7, Role: "user"}
+	system := newFakeHelperProcess(4110)
+	user := newFakeHelperProcess(4120)
+	spawner := &fakeHelperSpawner{byKey: map[HelperKey]helperProcess{
+		systemKey: system,
+		userKey:   user,
+	}}
+	m := newHelperLifecycleManager(b, detector, nil, spawner)
+	m.gracePeriod = 0
+	m.finalWait = 100 * time.Millisecond
+	t.Cleanup(func() {
+		system.markExited(0)
+		user.markExited(0)
+		m.Stop()
+		b.Close()
+	})
+
+	m.reconcile()
+	detector.sessions = []DetectedSession{{Session: "7", State: "disconnected", Type: "rdp"}}
+
+	// This is the WTS_SESSION_DISCONNECT lifecycle sequence: stop the user
+	// role immediately, then reconcile against the detector's real state.
+	m.removeDesired(userKey)
+	m.stopKey(userKey)
+	m.reconcile()
+
+	m.mu.Lock()
+	systemDesired := m.desired[systemKey]
+	userDesired := m.desired[userKey]
+	m.mu.Unlock()
+	if !systemDesired {
+		t.Fatal("SYSTEM helper became undesired after disconnected-RDP reconcile")
+	}
+	if userDesired {
+		t.Fatal("user helper remained desired after disconnected-RDP reconcile")
+	}
+	if !system.Alive() {
+		t.Fatal("SYSTEM helper was stopped after disconnected-RDP reconcile")
+	}
+	if user.Alive() {
+		t.Fatal("user helper remained alive after disconnected-RDP reconcile")
+	}
+}
+
 func TestStaleExitCannotClearReplacement(t *testing.T) {
 	oldProc := newFakeHelperProcess(4100)
 	newProc := newFakeHelperProcess(4200)

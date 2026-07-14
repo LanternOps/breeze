@@ -15,7 +15,9 @@ func TestHelperRoleDesired(t *testing.T) {
 		{"user connected", DetectedSession{Session: "7", State: "connected", Type: "rdp"}, "user", false},
 		{"session zero", DetectedSession{Session: "0", State: "active", Type: "rdp"}, "system", false},
 		{"services", DetectedSession{Session: "8", State: "active", Type: "services"}, "system", false},
-		{"disconnected", DetectedSession{Session: "8", State: "disconnected", Type: "rdp"}, "system", false},
+		{"system disconnected rdp", DetectedSession{Session: "8", State: "disconnected", Type: "rdp"}, "system", true},
+		{"user disconnected rdp", DetectedSession{Session: "8", State: "disconnected", Type: "rdp"}, "user", false},
+		{"system disconnected non-rdp", DetectedSession{Session: "8", State: "disconnected", Type: "console"}, "system", false},
 		{"unknown role", DetectedSession{Session: "8", State: "active", Type: "rdp"}, "assist", false},
 	}
 	for _, tt := range tests {

@@ -34,7 +34,7 @@ func TestHandleSCMEventDoesNotSpawnBeforeDetectorPublishesEventKey(t *testing.T)
 }
 
 func TestHandleSCMDisconnectStopsUserAndRetainsSystem(t *testing.T) {
-	m, _ := newWindowsLifecycleHarness(t, []DetectedSession{{Session: "7", State: "connected", Type: "rdp"}})
+	m, _ := newWindowsLifecycleHarness(t, []DetectedSession{{Session: "7", State: "disconnected", Type: "rdp"}})
 	system := newFakeHelperProcess(6100)
 	user := newFakeHelperProcess(6200)
 	m.registry.attach(HelperKey{WindowsSessionID: 7, Role: "system"}, system, "helper", "system-helper")

@@ -20,7 +20,7 @@ func helperRoleDesired(s DetectedSession, role string) bool {
 	}
 	switch role {
 	case "system":
-		return s.State == "active" || s.State == "connected"
+		return s.State == "active" || s.State == "connected" || (s.Type == "rdp" && s.State == "disconnected")
 	case "user":
 		return s.State == "active"
 	default:
