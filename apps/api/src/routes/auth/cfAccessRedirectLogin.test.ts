@@ -12,6 +12,28 @@ vi.mock('../../config/env', () => ({
   cfAccessTeamDomain: () => envState.teamDomain,
   cfAccessAud: () => envState.audience,
   cfAccessTrustsMfa: () => envState.trustsMfa,
+  // Read by the effective-MFA-policy resolver (kill switch for the role-force
+  // axis). The resolver is mocked below, but keep the export honest.
+  mfaForcePartnerAdmin: () => false,
+}));
+
+// Effective MFA policy (PR2's resolver). The redirect mint site consults it so
+// an unenrolled user under a `required` policy can never be handed a vacuous
+// mfa=true. Mocked at module level so the policy axis is independent of the
+// user-row axis, and so an implementation set in one test can't leak into the
+// next (the suite's beforeEach clears calls, not implementations).
+const policyState = vi.hoisted(() => ({ required: false }));
+
+vi.mock('../../services/mfaPolicy', () => ({
+  getEffectiveMfaPolicy: vi.fn(async () => ({
+    required: policyState.required,
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    source: {
+      roleForceMfa: false,
+      settingsRequireMfa: policyState.required,
+      killSwitchOff: false,
+    },
+  })),
 }));
 
 const verifyState = vi.hoisted(() => ({
@@ -184,6 +206,7 @@ describe('GET /cf-access-login', () => {
     envState.teamDomain = 'your-team.cloudflareaccess.com';
     envState.audience = 'aud-app-1234567890abcdef';
     envState.trustsMfa = false;
+    policyState.required = false;
     verifyState.next = undefined;
     dbState.userRow = null;
     auditState.audits = [];
@@ -350,6 +373,88 @@ describe('GET /cf-access-login', () => {
     expect(servicesState.lastTokenOptions).toMatchObject({ refreshFam: 'fam-1' });
     // 3. The minted refresh jti was bound to the family in Redis.
     expect(servicesState.bindCalls).toEqual([{ jti: 'jti-new', familyId: 'fam-1' }]);
+  });
+
+  // PR3 carry-forward: this mint site used to compute
+  // `trustsMfa || !(ENABLE_2FA && user.mfaEnabled)`, handing mfa=true to any
+  // user with no enrolled factor — including one whose effective policy
+  // REQUIRES MFA. The redirect path has no JSON body to carry an
+  // `mfaEnrollmentRequired` flag, so the mfa=false claim IS the fix: it is
+  // what makes authMiddleware 428 the session into enrollment and what keeps
+  // every hasSatisfiedMfa() gate closed.
+  describe('MFA assurance parity with /login (PR3 carry-forward)', () => {
+    function claimsFor(email: string) {
+      return {
+        kind: 'claims' as const,
+        claims: {
+          email,
+          sub: 'cf-1',
+          aud: envState.audience,
+          iss: `https://${envState.teamDomain}`,
+          exp: 999,
+          iat: 1,
+        },
+      };
+    }
+
+    it('an unenrolled user under a required policy is NOT granted mfa=true', async () => {
+      envState.enabled = true;
+      policyState.required = true;
+      verifyState.next = claimsFor(activeUser.email);
+      dbState.userRow = { ...activeUser, mfaEnabled: false };
+
+      const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+      expect(res.status).toBe(302);
+      expect(servicesState.lastTokenPayload).toMatchObject({ sub: activeUser.id, mfa: false });
+      // The audit trail must record the real assurance level, not the claimed one.
+      expect(auditState.audits[0]).toMatchObject({
+        details: expect.objectContaining({ mfa: false }),
+      });
+    });
+
+    it('an unenrolled user under a NON-required policy still gets mfa=true', async () => {
+      envState.enabled = true;
+      policyState.required = false;
+      verifyState.next = claimsFor(activeUser.email);
+      dbState.userRow = { ...activeUser, mfaEnabled: false };
+
+      const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+      expect(res.status).toBe(302);
+      expect(servicesState.lastTokenPayload).toMatchObject({ mfa: true });
+    });
+
+    it('CF_ACCESS_TRUSTS_MFA does NOT satisfy a required policy for an unenrolled user (fail closed)', async () => {
+      envState.enabled = true;
+      envState.trustsMfa = true;
+      policyState.required = true;
+      verifyState.next = claimsFor(activeUser.email);
+      dbState.userRow = { ...activeUser, mfaEnabled: false };
+
+      const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+      expect(res.status).toBe(302);
+      expect(servicesState.lastTokenPayload).toMatchObject({ mfa: false });
+    });
+
+    it('CF_ACCESS_TRUSTS_MFA still satisfies a required policy for an ENROLLED user', async () => {
+      envState.enabled = true;
+      envState.trustsMfa = true;
+      policyState.required = true;
+      verifyState.next = claimsFor(activeUser.email);
+      dbState.userRow = {
+        ...activeUser,
+        mfaEnabled: true,
+        mfaSecret: 'encrypted',
+        mfaMethod: 'totp',
+      };
+
+      const res = await callGet('/cf-access-login', { 'Cf-Access-Jwt-Assertion': 'tok' });
+
+      expect(res.status).toBe(302);
+      expect(servicesState.lastTokenPayload).toMatchObject({ mfa: true });
+    });
   });
 
   it('preserves a safe next param and appends cf-access-login=success', async () => {

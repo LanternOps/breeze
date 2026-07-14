@@ -22,6 +22,7 @@ import { writeAuditEvent, ANONYMOUS_ACTOR_ID } from '../../services/auditEvents'
 import { createAuditLog } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
 import { generateVerificationToken } from '../../services/emailVerification';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { getEmailService } from '../../services/email';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
@@ -237,9 +238,31 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
 
       phase = 'token-creation';
 
-      // Token creation outside tx (doesn't need rollback)
-      // MFA is vacuously satisfied when the user hasn't enrolled in MFA
-      const mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled);
+      // Token creation outside tx (doesn't need rollback).
+      //
+      // This is a token-MINT site: /register-partner auto-logs the new admin
+      // in. The old `!(ENABLE_2FA && newUser.mfaEnabled)` was a constant `true`
+      // here — a just-created user never has a factor — so it handed the
+      // session VACUOUS MFA assurance. If the new admin's role carries
+      // force_mfa (the seeded "Partner Admin" posture) or the partner is
+      // created under a requireMfa policy, that claim satisfies every
+      // hasSatisfiedMfa() gate without a second factor ever existing, and it
+      // survives indefinitely through refresh rotation. Resolve the effective
+      // policy instead — same contract as /login and the CF-Access mint sites.
+      //
+      // Fail-closed on an unresolvable policy: getEffectiveMfaPolicy reads
+      // under runOutsideDbContext+withSystemDbAccessContext (never a silent
+      // 0-row RLS read that could be mistaken for "no policy"), and a
+      // role/membership-join failure THROWS — caught by this handler's
+      // try/catch, which 500s without returning tokens. No token, no claim.
+      const policy = await getEffectiveMfaPolicy({
+        scope: 'partner',
+        userId: newUser.id,
+        orgId: null,
+        partnerId: newPartner.id,
+      });
+      const mfaEnrollmentRequired = ENABLE_2FA && !newUser.mfaEnabled && policy.required;
+      const mfaSatisfied = !ENABLE_2FA || (!newUser.mfaEnabled && !policy.required);
 
       // Auto-login from partner signup: mint a fresh refresh-token family so
       // the first session inherits the same reuse-detection chain as a real
@@ -394,6 +417,10 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         },
         tokens: toPublicTokens(tokens),
         mfaRequired: false,
+        // Same contract /login returns, so the signup flow lands the new admin
+        // on enrollment instead of bouncing them off authMiddleware's 428.
+        mfaEnrollmentRequired,
+        enrollUrl: mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
         verificationEmailSent,
         ...(redirectUrl ? { redirectUrl } : {}),
       });

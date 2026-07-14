@@ -79,17 +79,42 @@ vi.mock('./helpers', async () => {
   };
 });
 
+// ENABLE_2FA is a module-level const in the real schemas module; hoist it into
+// mutable state so the MFA-assurance suite below can exercise the 2FA-on path
+// without a second test file. Everything else keeps the historical `false`.
+const schemaState = vi.hoisted(() => ({ enable2fa: false }));
+
 vi.mock('./schemas', async () => {
   const actual = await vi.importActual<typeof import('./schemas')>('./schemas');
   return {
     ...actual,
     ENABLE_REGISTRATION: true,
-    ENABLE_2FA: false,
+    get ENABLE_2FA() {
+      return schemaState.enable2fa;
+    },
   };
 });
 
+// Effective MFA policy (PR2's resolver). /register-partner auto-logs the new
+// partner admin in, so it is a token-mint site and must not hand out a vacuous
+// mfa=true when policy requires a factor the brand-new user does not have.
+const policyState = vi.hoisted(() => ({ required: false }));
+
+vi.mock('../../services/mfaPolicy', () => ({
+  getEffectiveMfaPolicy: vi.fn(async () => ({
+    required: policyState.required,
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    source: {
+      roleForceMfa: policyState.required,
+      settingsRequireMfa: false,
+      killSwitchOff: false,
+    },
+  })),
+}));
+
 import { registerRoutes } from './register';
 import { db } from '../../db';
+import { createTokenPair } from '../../services';
 import { createPartner } from '../../services/partnerCreate';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { createAuditLog } from '../../services/auditService';
@@ -351,5 +376,75 @@ describe('POST /register-partner setup-admin gate', () => {
     }
     const res = await postRegisterPartner(validBody);
     expect(res.status).toBe(expectedStatus);
+  });
+});
+
+// PR3 carry-forward (sweep): /register-partner auto-logs the brand-new partner
+// admin in, and computed `mfaSatisfied = !(ENABLE_2FA && newUser.mfaEnabled)`.
+// A just-created user NEVER has a factor, so that expression is a constant
+// `true` — a vacuous MFA claim on a real, refreshable session. If the new
+// admin's role carries force_mfa (the seeded "Partner Admin" posture) or the
+// partner is created under a requireMfa policy, that token satisfies every
+// hasSatisfiedMfa() gate without a second factor ever existing. Resolve the
+// effective policy instead, exactly like /login and the CF-Access mint sites.
+describe('POST /register-partner — MFA assurance (no vacuous mfa=true)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.IS_HOSTED = 'true';
+    schemaState.enable2fa = true;
+    policyState.required = false;
+
+    vi.mocked(createPartner).mockResolvedValue({
+      partnerId: 'p-1',
+      orgId: 'o-1',
+      adminUserId: 'u-1',
+      adminRoleId: 'r-1',
+      siteId: 's-1',
+      mcpOrigin: false,
+    });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending',
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+      }]) as any);
+  });
+
+  afterEach(() => {
+    schemaState.enable2fa = false;
+    policyState.required = false;
+    delete process.env.IS_HOSTED;
+  });
+
+  it('mints mfa=false and flags enrollment when the new admin is under a required policy', async () => {
+    policyState.required = true;
+
+    const res = await postRegisterPartner(validBody);
+
+    expect(res.status).toBeLessThan(400);
+    expect(vi.mocked(createTokenPair)).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: 'u-1', mfa: false }),
+      expect.anything(),
+    );
+    const body = await res.json();
+    expect(body.mfaEnrollmentRequired).toBe(true);
+    expect(body.enrollUrl).toBe('/auth/mfa/setup');
+  });
+
+  it('mints mfa=true when no policy requires MFA', async () => {
+    policyState.required = false;
+
+    const res = await postRegisterPartner(validBody);
+
+    expect(res.status).toBeLessThan(400);
+    expect(vi.mocked(createTokenPair)).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: 'u-1', mfa: true }),
+      expect.anything(),
+    );
+    const body = await res.json();
+    expect(body.mfaEnrollmentRequired).toBe(false);
   });
 });
