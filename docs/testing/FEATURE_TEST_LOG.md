@@ -4,6 +4,35 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Pax8 ordering (organization UI, orders API, and quote handoff) — 2026-07-14
+
+**Branch:** `ToddHebebrand/pax8-ordering`
+**Commit:** `87ebf270a`
+**Tested by:** Codex
+**Result:** PARTIAL
+
+### What was tested
+- [ ] UI live E2E: blocked before login because the root `.env` has no `E2E_BASE_URL`, `E2E_API_URL`, `E2E_ADMIN_EMAIL`, or `E2E_ADMIN_PASSWORD`, and this worktree has no running web/API/Redis stack. The unrelated service listening on port 3000 was not used.
+- [x] UI component and mutation-policy verification: `LinkSubscriptionPicker` explicit billing quantity behavior (including no Pax8-quantity default, validation, and explicit zero), `Pax8OrgTab`, `Pax8OrderBuilder` recovery states, organization-settings hash/deep-link routing, the accepted-quote Pax8 panel, Pax8 API client, and `no-silent-mutations` suites passed (7 files, 148 tests).
+- [ ] API live authenticated reads: blocked by the same missing URL/credentials and absent worktree API service; no real Pax8 submit/order write was attempted.
+- [x] API unit verification: Pax8 schema, catalog, drift, sync, order service/routes/submission, authorized-line request-integrity repository, quote acceptance, and quote-to-order suites passed (11 files, 183 tests).
+- [ ] Agent: not applicable; this feature has no agent binary changes.
+
+### Evidence
+- Browser/accessibility/console/network: not captured because no safe authenticated browser target was available.
+- Web command: scoped Vitest run completed at final HEAD with 7/7 files and 148/148 tests passing.
+- API command: scoped Vitest run completed at final HEAD with 11/11 files and 183/183 tests passing.
+- Final HEAD note: the explicit-quantity subscription-picker delta is included in the final web run; its documentation and locale updates were verified separately.
+- Database integration: fresh-DB integration verification is owned by the concurrent final-verification pass, so this scoped feature check did not reset or mutate shared services. An earlier attempt against the stale shared `breeze-postgres-test` stopped at the expected migration-checksum guard before executing cases.
+
+### Issues Found
+- No product defect was found by the executable checks.
+- Live organization-tab/deep-link/quote-panel behavior, accessibility tree, console health, and network responses still require an authenticated E2E environment.
+
+### Notes
+- No credentials were printed, no vendor mutation was performed, and no test containers or data were created by this feature-test pass.
+- Required follow-up: run the live Playwright flow when the four E2E URL/admin variables and a matching web/API/Redis stack are available; navigate to the organization `#pax8` tab and `#pax8/<orderId>` deep link, inspect the accepted-quote panel, and confirm clean console/network output without submitting an order.
+
 ## Agent backup server URL failover + DNS cache (#2288) — live two-stack e2e — 2026-07-10
 
 **Branch:** `feat/agent-backup-server-url` · **Tested by:** Claude · **Result:** PASS (7/8 steps live; DNS-outage fallback covered by unit tests — /etc/hosts step needs sudo)
