@@ -29,6 +29,10 @@ const CANONICAL_MUTATION_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-21-partner-export-canonical-org-mutations.sql',
 );
+const LOCK_HARDENING_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-22-partner-export-lock-upgrade-hardening.sql',
+);
 const STALE_TIMESTAMP = new Date('2000-01-01T00:00:00.000Z');
 
 type ChangeKind = 'membership' | 'device' | 'hardware' | 'site' | 'organization';
@@ -38,17 +42,22 @@ describe('partner export transaction watermark serialization', () => {
     const migration = readFileSync(MIGRATION_FILE, 'utf8');
     const completionMigration = readFileSync(COMPLETION_MIGRATION_FILE, 'utf8');
     const canonicalMutationMigration = readFileSync(CANONICAL_MUTATION_MIGRATION_FILE, 'utf8');
+    const lockHardeningMigration = readFileSync(LOCK_HARDENING_MIGRATION_FILE, 'utf8');
     const db = getTestDb();
     await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(completionMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(canonicalMutationMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(canonicalMutationMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(lockHardeningMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(lockHardeningMigration))).resolves.toBeDefined();
     expect(migration).toMatch(/1000201/);
     expect(migration).toMatch(/ORDER BY org_id/);
     expect(migration).toMatch(/pg_advisory_xact_lock_shared/);
     expect(completionMigration).toMatch(/REFERENCING OLD TABLE AS old_rows/);
     expect(completionMigration).toMatch(/breeze_partner_export_hardware_delete/);
     expect(canonicalMutationMigration).toMatch(/exclusive_partner_locks/);
+    expect(lockHardeningMigration).toMatch(/shared partner locks cannot be upgraded to exclusive/);
+    expect(lockHardeningMigration).toMatch(/REVOKE ALL ON FUNCTION/);
   });
 
   runDb.each<ChangeKind>(['membership', 'device', 'hardware', 'site', 'organization'])(
@@ -144,6 +153,103 @@ describe('partner export transaction watermark serialization', () => {
         ARRAY[${partner.id}::uuid]
       )`);
     })).rejects.toMatchObject({ cause: expect.objectContaining({ code: 'P0001' }) });
+  });
+
+  runDb('concurrent shared partner holders reject exclusive lock upgrades without deadlocking', async () => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    const firstShared = deferred<void>();
+    const secondShared = deferred<void>();
+    const attemptUpgrade = deferred<void>();
+
+    const first = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_partners_shared(
+        ARRAY[${partner.id}::uuid]
+      )`);
+      firstShared.resolve();
+      await attemptUpgrade.promise;
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_partners_exclusive(
+        ARRAY[${partner.id}::uuid]
+      )`);
+    });
+    const second = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_partners_shared(
+        ARRAY[${partner.id}::uuid]
+      )`);
+      secondShared.resolve();
+      await attemptUpgrade.promise;
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_partners_exclusive(
+        ARRAY[${partner.id}::uuid]
+      )`);
+    });
+
+    await Promise.all([firstShared.promise, secondShared.promise]);
+    attemptUpgrade.resolve();
+    const results = await Promise.allSettled([first, second]);
+    expect(results).toEqual([
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({ cause: expect.objectContaining({ code: 'P0001' }) }),
+      }),
+      expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({ cause: expect.objectContaining({ code: 'P0001' }) }),
+      }),
+    ]);
+  }, 10_000);
+
+  runDb('specialized organization locking rejects a caller-supplied unrelated partner', async () => {
+    const db = getTestDb();
+    const lockedPartner = await createPartner();
+    const actualPartner = await createPartner();
+    const actualOrg = await createOrganization({ partnerId: actualPartner.id });
+
+    await expect(db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_partners_exclusive(
+        ARRAY[${lockedPartner.id}::uuid]
+      )`);
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_orgs_under_exclusive_partners(
+        ARRAY[${actualOrg.id}::uuid],
+        ARRAY[${lockedPartner.id}::uuid, NULL]
+      )`);
+    })).rejects.toMatchObject({ cause: expect.objectContaining({ code: 'P0001' }) });
+  });
+
+  runDb('private mutation lock helpers are not executable by breeze_app', async () => {
+    const rows = await getTestDb().execute(sql`
+      SELECT
+        has_function_privilege(
+          'breeze_app',
+          'public.breeze_partner_export_lock_partners_exclusive(uuid[])',
+          'EXECUTE'
+        ) AS "canLockPartnersExclusive",
+        has_function_privilege(
+          'breeze_app',
+          'public.breeze_partner_export_lock_orgs_under_exclusive_partners(uuid[],uuid[])',
+          'EXECUTE'
+        ) AS "canLockOrgsUnderExclusivePartners"
+    `) as unknown as Array<{
+      canLockPartnersExclusive: boolean;
+      canLockOrgsUnderExclusivePartners: boolean;
+    }>;
+    expect(rows[0]).toEqual({
+      canLockPartnersExclusive: false,
+      canLockOrgsUnderExclusivePartners: false,
+    });
+  });
+
+  runDb('general organization locking rejects inaccessible organization IDs before locking them', async () => {
+    const accessiblePartner = await createPartner();
+    const accessibleOrg = await createOrganization({ partnerId: accessiblePartner.id });
+    const inaccessiblePartner = await createPartner();
+    const inaccessibleOrg = await createOrganization({ partnerId: inaccessiblePartner.id });
+
+    await expect(withDbAccessContext(
+      partnerContext(accessiblePartner.id, accessibleOrg.id),
+      () => appDb.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(
+        ARRAY[${inaccessibleOrg.id}::uuid]
+      )`),
+    )).rejects.toMatchObject({ cause: expect.objectContaining({ code: 'P0001' }) });
   });
 
   runDb('volatile device telemetry does not advance the material export watermark', async () => {

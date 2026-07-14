@@ -28,6 +28,10 @@ const CANONICAL_MUTATION_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-21-partner-export-canonical-org-mutations.sql',
 );
+const LOCK_HARDENING_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-22-partner-export-lock-upgrade-hardening.sql',
+);
 
 async function seedDeviceAndGroup() {
   const db = getTestDb();
@@ -75,11 +79,13 @@ describe('partner device membership incremental change contract', () => {
     const watermarkMigration = readFileSync(WATERMARK_MIGRATION_FILE, 'utf8');
     const completionMigration = readFileSync(COMPLETION_MIGRATION_FILE, 'utf8');
     const canonicalMutationMigration = readFileSync(CANONICAL_MUTATION_MIGRATION_FILE, 'utf8');
+    const lockHardeningMigration = readFileSync(LOCK_HARDENING_MIGRATION_FILE, 'utf8');
     for (let pass = 0; pass < 2; pass += 1) {
       await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
       await expect(db.execute(sql.raw(watermarkMigration))).resolves.toBeDefined();
       await expect(db.execute(sql.raw(completionMigration))).resolves.toBeDefined();
       await expect(db.execute(sql.raw(canonicalMutationMigration))).resolves.toBeDefined();
+      await expect(db.execute(sql.raw(lockHardeningMigration))).resolves.toBeDefined();
     }
     expect(migration.match(/FOR EACH STATEMENT/gu)).toHaveLength(3);
     expect(migration).toMatch(/REFERENCING NEW TABLE AS new_memberships/gu);
