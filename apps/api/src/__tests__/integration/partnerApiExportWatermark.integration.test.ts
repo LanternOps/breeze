@@ -33,6 +33,10 @@ const LOCK_HARDENING_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-22-partner-export-lock-upgrade-hardening.sql',
 );
+const LOCK_KEY_COLLISION_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-22-z-partner-export-lock-key-collision-hardening.sql',
+);
 const STALE_TIMESTAMP = new Date('2000-01-01T00:00:00.000Z');
 
 type ChangeKind = 'membership' | 'device' | 'hardware' | 'site' | 'organization';
@@ -43,6 +47,7 @@ describe('partner export transaction watermark serialization', () => {
     const completionMigration = readFileSync(COMPLETION_MIGRATION_FILE, 'utf8');
     const canonicalMutationMigration = readFileSync(CANONICAL_MUTATION_MIGRATION_FILE, 'utf8');
     const lockHardeningMigration = readFileSync(LOCK_HARDENING_MIGRATION_FILE, 'utf8');
+    const lockKeyCollisionMigration = readFileSync(LOCK_KEY_COLLISION_MIGRATION_FILE, 'utf8');
     const db = getTestDb();
     await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(completionMigration))).resolves.toBeDefined();
@@ -50,6 +55,8 @@ describe('partner export transaction watermark serialization', () => {
     await expect(db.execute(sql.raw(canonicalMutationMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(lockHardeningMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(lockHardeningMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(lockKeyCollisionMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(lockKeyCollisionMigration))).resolves.toBeDefined();
     expect(migration).toMatch(/1000201/);
     expect(migration).toMatch(/ORDER BY org_id/);
     expect(migration).toMatch(/pg_advisory_xact_lock_shared/);
@@ -58,6 +65,7 @@ describe('partner export transaction watermark serialization', () => {
     expect(canonicalMutationMigration).toMatch(/exclusive_partner_locks/);
     expect(lockHardeningMigration).toMatch(/shared partner locks cannot be upgraded to exclusive/);
     expect(lockHardeningMigration).toMatch(/REVOKE ALL ON FUNCTION/);
+    expect(lockKeyCollisionMigration).toMatch(/partner_export_partner_lock_keys/);
   });
 
   runDb.each<ChangeKind>(['membership', 'device', 'hardware', 'site', 'organization'])(
@@ -196,6 +204,46 @@ describe('partner export transaction watermark serialization', () => {
         reason: expect.objectContaining({ cause: expect.objectContaining({ code: 'P0001' }) }),
       }),
     ]);
+  }, 10_000);
+
+  runDb('colliding partner UUIDs reject shared-key to exclusive-key upgrades without deadlocking', async () => {
+    const db = getTestDb();
+    // Verified hashtext collision on the PostgreSQL 16 runtime used by the
+    // integration suite. Advisory-lock ownership must be tracked by this
+    // physical key, not only by the logical UUID.
+    const sharedPartnerId = '54287acf-3cc2-43c7-a19c-73f3e7f03d16';
+    const collidingPartnerId = '5815dab9-7e09-471b-a11e-6d851f641774';
+    const [hashes] = await db.execute<{ first: number; second: number }>(sql`
+      SELECT hashtext(${sharedPartnerId}) AS first, hashtext(${collidingPartnerId}) AS second
+    `);
+    expect(hashes?.first).toBe(1887689276);
+    expect(hashes?.second).toBe(hashes?.first);
+
+    const firstShared = deferred<void>();
+    const secondShared = deferred<void>();
+    const attemptUpgrade = deferred<void>();
+    const contender = (entered: ReturnType<typeof deferred<void>>) => db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_partners_shared(
+        ARRAY[${sharedPartnerId}::uuid]
+      )`);
+      entered.resolve();
+      await attemptUpgrade.promise;
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_partners_exclusive(
+        ARRAY[${collidingPartnerId}::uuid]
+      )`);
+    });
+    const first = contender(firstShared);
+    const second = contender(secondShared);
+    await Promise.all([firstShared.promise, secondShared.promise]);
+    attemptUpgrade.resolve();
+
+    const results = await Promise.allSettled([first, second]);
+    for (const result of results) {
+      expect(result).toEqual(expect.objectContaining({
+        status: 'rejected',
+        reason: expect.objectContaining({ cause: expect.objectContaining({ code: 'P0001' }) }),
+      }));
+    }
   }, 10_000);
 
   runDb('specialized organization locking rejects a caller-supplied unrelated partner', async () => {
