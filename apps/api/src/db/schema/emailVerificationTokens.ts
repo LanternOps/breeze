@@ -22,6 +22,11 @@ export const emailVerificationTokens = pgTable(
     // redeemed after the address moves. NULL on rows minted before the
     // 2026-07-16 migration — those fall back to the exact-address match.
     emailEpoch: integer('email_epoch'),
+    // 'signup' (prove the address on a new partner — the historical behaviour,
+    // and the default for every pre-2026-07-18 row) or 'email_change' (prove
+    // control of users.pending_email, then swap it in). consumeVerificationToken
+    // branches on this; the two branches check DIFFERENT live-row columns.
+    purpose: varchar('purpose', { length: 32 }).notNull().default('signup'),
     expiresAt: timestamp('expires_at').notNull(),
     consumedAt: timestamp('consumed_at'),
     // Stamped when a later resend invalidates this still-live token, so

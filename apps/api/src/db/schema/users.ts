@@ -67,6 +67,13 @@ export const users = pgTable('users', {
   authEpoch: integer('auth_epoch').notNull().default(1),
   mfaEpoch: integer('mfa_epoch').notNull().default(1),
   emailEpoch: integer('email_epoch').notNull().default(1),
+  // SR2-17: the address the user has ASKED to move to. users.email remains the
+  // verified, authoritative identity (login, password reset, CF Access and SSO
+  // all match on it and MUST NOT match this) until a purpose='email_change'
+  // verification token proves control of this address. Cleared on commit and on
+  // cancellation. Deliberately not unique — see the migration.
+  pendingEmail: varchar('pending_email', { length: 255 }),
+  pendingEmailRequestedAt: timestamp('pending_email_requested_at', { withTimezone: true }),
   passwordResetEpoch: integer('password_reset_epoch').notNull().default(1),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
