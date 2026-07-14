@@ -51,6 +51,10 @@ const ONEDRIVE_REFERENCE_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-27-b-onedrive-reference-ownership.sql',
 );
+const PATCH_EXPORT_PARITY_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-27-d-patch-export-validation-parity.sql',
+);
 
 describe('partner desired-configuration material watermarks', () => {
   runDb('migration is idempotent and creates forced org-axis RLS', async () => {
@@ -72,6 +76,7 @@ describe('partner desired-configuration material watermarks', () => {
     const parityMigration = readFileSync(CANONICAL_PARITY_MIGRATION_FILE, 'utf8');
     const featureReferenceMigration = readFileSync(FEATURE_REFERENCE_MIGRATION_FILE, 'utf8');
     const onedriveReferenceMigration = readFileSync(ONEDRIVE_REFERENCE_MIGRATION_FILE, 'utf8');
+    const patchExportParityMigration = readFileSync(PATCH_EXPORT_PARITY_MIGRATION_FILE, 'utf8');
     await expect(db.execute(sql.raw(integrityMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(integrityMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(parityMigration))).resolves.toBeDefined();
@@ -80,6 +85,11 @@ describe('partner desired-configuration material watermarks', () => {
     await expect(db.execute(sql.raw(featureReferenceMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(onedriveReferenceMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(onedriveReferenceMigration))).resolves.toBeDefined();
+    // Re-applying 07-26-b recreates the pre-parity implementation under the
+    // public name. The fix-forward migration must restore its wrapper and must
+    // itself remain idempotent.
+    await expect(db.execute(sql.raw(patchExportParityMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(patchExportParityMigration))).resolves.toBeDefined();
 
     const catalog = await db.execute<{ relname: string; enabled: boolean; forced: boolean; commands: string[] }>(sql`
       SELECT c.relname, c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced,
@@ -104,6 +114,8 @@ describe('partner desired-configuration material watermarks', () => {
       validate: boolean; enforce: boolean; revalidate: boolean;
       featureValidate: boolean; featureEnforce: boolean; featureRevalidate: boolean;
       onedriveSettings: boolean; onedriveLibrary: boolean; onedriveRevalidate: boolean;
+      patchProjectionPublic: boolean; patchProjectionApp: boolean;
+      patchExportPublic: boolean; patchExportApp: boolean;
     }>(sql`
       SELECT
         has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_backup_settings(uuid,uuid,uuid,uuid,uuid)', 'EXECUTE') AS validate,
@@ -114,12 +126,36 @@ describe('partner desired-configuration material watermarks', () => {
         has_function_privilege('breeze_app', 'public.breeze_revalidate_config_policy_feature_references()', 'EXECUTE') AS "featureRevalidate",
         has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_onedrive_settings(uuid,uuid)', 'EXECUTE') AS "onedriveSettings",
         has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_onedrive_library(uuid,uuid)', 'EXECUTE') AS "onedriveLibrary",
-        has_function_privilege('breeze_app', 'public.breeze_revalidate_config_policy_onedrive_reference()', 'EXECUTE') AS "onedriveRevalidate"
+        has_function_privilege('breeze_app', 'public.breeze_revalidate_config_policy_onedrive_reference()', 'EXECUTE') AS "onedriveRevalidate",
+        EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_proc p
+          CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+          ) privilege
+          WHERE p.oid = 'public.breeze_partner_export_patch_mirror_projection(jsonb)'::regprocedure
+            AND privilege.grantee = 0
+            AND privilege.privilege_type = 'EXECUTE'
+        ) AS "patchProjectionPublic",
+        has_function_privilege('breeze_app', 'public.breeze_partner_export_patch_mirror_projection(jsonb)', 'EXECUTE') AS "patchProjectionApp",
+        EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_proc p
+          CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+          ) privilege
+          WHERE p.oid = 'public.breeze_partner_export_effective_policy_settings(uuid,text,jsonb)'::regprocedure
+            AND privilege.grantee = 0
+            AND privilege.privilege_type = 'EXECUTE'
+        ) AS "patchExportPublic",
+        has_function_privilege('breeze_app', 'public.breeze_partner_export_effective_policy_settings(uuid,text,jsonb)', 'EXECUTE') AS "patchExportApp"
     `);
     expect(privileges).toEqual({
       validate: false, enforce: false, revalidate: false,
       featureValidate: false, featureEnforce: false, featureRevalidate: false,
       onedriveSettings: false, onedriveLibrary: false, onedriveRevalidate: false,
+      patchProjectionPublic: false, patchProjectionApp: true,
+      patchExportPublic: false, patchExportApp: true,
     });
   });
 
