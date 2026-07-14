@@ -206,6 +206,12 @@
       "topMemoryUsage": "Höchste Arbeitsspeicherauslastung",
       "totalDevices": "Gesamtzahl der Geräte"
     },
+    "postureOptions": {
+      "requireBackupCoverage": "Backup-Abdeckung voraussetzen",
+      "requireBackupCoverageHelp": "Wenn Backups optional sind, bleiben sie als neutrale Nachweise sichtbar und erzeugen keine Empfehlung.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
     "reportBuilderPage": {
       "configurationTitle": "Berichtskonfiguration",
       "description": "Erstellen Sie einen einmaligen Bericht, ohne ihn zu speichern.",
