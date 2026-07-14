@@ -10,6 +10,7 @@ import {
   Unplug,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { M365_PERMISSION_PROFILES } from "@breeze/shared";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { getJwtClaims } from "../../lib/authScope";
@@ -82,6 +83,17 @@ type Envelope = {
 
 type LoadState = "unavailable" | "loading" | "ready" | "error";
 type ActionName = "consent" | "retest" | "disconnect";
+type OrgGeneration = {
+  orgId: string | null;
+  generation: number;
+  requestSequence: number;
+};
+type ScopedLoad = {
+  scope: OrgGeneration;
+  state: LoadState;
+  data: Envelope | null;
+};
+type ScopedAction = { scope: OrgGeneration; name: ActionName };
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -120,6 +132,21 @@ function parseGrants(value: unknown): Grant[] | null {
   const parsed = grants as Grant[];
   const unique = new Set(parsed.map((grant) => `${grant.resourceApplicationId}:${grant.appRoleId}`));
   return unique.size === parsed.length ? parsed : null;
+}
+
+const TRUSTED_PROFILE = M365_PERMISSION_PROFILES["customer-graph-read"];
+
+function grantTuple(grant: Grant): string {
+  return `${grant.resourceApplicationId.toLowerCase()}:${grant.appRoleId.toLowerCase()}:${grant.value}`;
+}
+
+function matchesTrustedManifest(grants: Grant[]): boolean {
+  const expected = [...(TRUSTED_PROFILE.applicationPermissionAssignments ?? [])]
+    .map(grantTuple)
+    .sort();
+  const actual = grants.map(grantTuple).sort();
+  return actual.length === expected.length
+    && actual.every((grant, index) => grant === expected[index]);
 }
 
 function parseTimestamp(value: unknown): string | null | undefined {
@@ -176,8 +203,8 @@ function parseEnvelope(value: unknown): Envelope | null {
   if (
     value.profile.id !== "customer-graph-read"
     || typeof value.profile.displayName !== "string"
-    || value.profile.manifestVersion !== 2
-    || grants === null || grants.length !== 9
+    || value.profile.manifestVersion !== TRUSTED_PROFILE.version
+    || grants === null || !matchesTrustedManifest(grants)
     || typeof value.onboardingEnabled !== "boolean"
     || connection === undefined
   ) return null;
@@ -244,102 +271,170 @@ export default function M365CustomerGraphReadCard() {
   const { can } = usePermissions();
   const claims = getJwtClaims();
   const orgId = currentOrgId || (claims.scope === "organization" ? claims.orgId : null);
-  const [loadState, setLoadState] = useState<LoadState>(orgId ? "loading" : "unavailable");
-  const [data, setData] = useState<Envelope | null>(null);
-  const [action, setAction] = useState<ActionName | null>(null);
-  const actionRef = useRef<ActionName | null>(null);
-  const requestId = useRef(0);
+  const scopeRef = useRef<OrgGeneration>({ orgId, generation: 0, requestSequence: 0 });
+  if (scopeRef.current.orgId !== orgId) {
+    scopeRef.current = {
+      orgId,
+      generation: scopeRef.current.generation + 1,
+      requestSequence: 0,
+    };
+  }
+  const scope = scopeRef.current;
+  const [loaded, setLoaded] = useState<ScopedLoad>({
+    scope,
+    state: orgId ? "loading" : "unavailable",
+    data: null,
+  });
+  const [actionState, setActionState] = useState<ScopedAction | null>(null);
+  const actionRef = useRef<ScopedAction | null>(null);
   const canWrite = can("organizations", "write");
+  const isCurrent = useCallback((target: OrgGeneration) => scopeRef.current === target, []);
 
-  const load = useCallback(async () => {
-    const sequence = ++requestId.current;
-    setData(null);
-    if (!orgId) {
-      setLoadState("unavailable");
+  const load = useCallback(async (target: OrgGeneration) => {
+    if (!isCurrent(target)) return;
+    const sequence = ++target.requestSequence;
+    if (!target.orgId) {
+      setLoaded({ scope: target, state: "unavailable", data: null });
       return;
     }
-    setLoadState("loading");
+    setLoaded({ scope: target, state: "loading", data: null });
     try {
-      const response = await fetchWithAuth(`/m365/connections?orgId=${orgId}`);
+      const response = await fetchWithAuth(`/m365/connections?orgId=${target.orgId}`);
       const raw = await response.json().catch(() => null);
       const parsed = response.ok ? parseEnvelope(raw) : null;
-      if (sequence !== requestId.current) return;
-      if (!parsed) {
-        setLoadState("error");
-        return;
-      }
-      setData(parsed);
-      setLoadState("ready");
+      if (!isCurrent(target) || sequence !== target.requestSequence) return;
+      setLoaded({
+        scope: target,
+        state: parsed ? "ready" : "error",
+        data: parsed,
+      });
     } catch {
-      if (sequence === requestId.current) setLoadState("error");
+      if (isCurrent(target) && sequence === target.requestSequence) {
+        setLoaded({ scope: target, state: "error", data: null });
+      }
     }
-  }, [orgId]);
+  }, [isCurrent]);
 
   useEffect(() => {
-    void load();
-    return () => { requestId.current += 1; };
-  }, [load]);
+    void load(scope);
+    return () => { scope.requestSequence += 1; };
+  }, [load, scope]);
 
-  const perform = useCallback(async (name: ActionName, task: () => Promise<void>) => {
-    if (actionRef.current) return;
-    actionRef.current = name;
-    setAction(name);
+  const scopedRequest = useCallback(async (
+    target: OrgGeneration,
+    request: () => Promise<Response>,
+    stalePayload: unknown,
+  ): Promise<Response> => {
+    const response = await request();
+    if (isCurrent(target)) return response;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => stalePayload,
+    } as Response;
+  }, [isCurrent]);
+
+  const perform = useCallback(async (
+    target: OrgGeneration,
+    name: ActionName,
+    task: () => Promise<void>,
+  ) => {
+    if (actionRef.current?.scope === target) return;
+    const nextAction = { scope: target, name };
+    actionRef.current = nextAction;
+    if (isCurrent(target)) setActionState(nextAction);
     try {
       await task();
     } finally {
-      actionRef.current = null;
-      setAction(null);
+      if (actionRef.current === nextAction) actionRef.current = null;
+      if (isCurrent(target)) {
+        setActionState((current) => current === nextAction ? null : current);
+      }
     }
-  }, []);
+  }, [isCurrent]);
+
+  const loadState = loaded.scope === scope
+    ? loaded.state
+    : (orgId ? "loading" : "unavailable");
+  const data = loaded.scope === scope ? loaded.data : null;
+  const action = actionState?.scope === scope ? actionState.name : null;
 
   const startConsent = useCallback(() => {
     if (!orgId || !data || !canWrite || !data.onboardingEnabled) return;
-    void perform("consent", async () => {
+    const target = scope;
+    void perform(target, "consent", async () => {
       try {
         const url = await runAction<string>({
-          request: () => fetchWithAuth(`/m365/connections/customer-graph-read/consent?orgId=${orgId}`, { method: "POST" }),
+          request: () => scopedRequest(
+            target,
+            () => fetchWithAuth(`/m365/connections/customer-graph-read/consent?orgId=${target.orgId}`, { method: "POST" }),
+            { adminConsentUrl: "https://login.microsoftonline.com/organizations/" },
+          ),
           parseSuccess: parseConsentUrl,
           errorFallback: t("m365CustomerGraphRead.actions.consentFailed"),
         });
-        navigateTo(url);
+        if (isCurrent(target)) navigateTo(url);
       } catch (error) {
-        handleActionError(error, t("m365CustomerGraphRead.actions.consentFailed"));
+        if (isCurrent(target)) {
+          handleActionError(error, t("m365CustomerGraphRead.actions.consentFailed"));
+        }
       }
     });
-  }, [canWrite, data, orgId, perform, t]);
+  }, [canWrite, data, isCurrent, orgId, perform, scope, scopedRequest, t]);
 
   const retest = useCallback(() => {
     if (!orgId || !data?.connection || !canWrite) return;
-    void perform("retest", async () => {
+    const target = scope;
+    const connectionId = data.connection.id;
+    void perform(target, "retest", async () => {
       try {
         await runAction({
-          request: () => fetchWithAuth(`/m365/connections/${data.connection!.id}/retest?orgId=${orgId}`, { method: "POST" }),
+          request: () => scopedRequest(
+            target,
+            () => fetchWithAuth(`/m365/connections/${connectionId}/retest?orgId=${target.orgId}`, { method: "POST" }),
+            {},
+          ),
           errorFallback: t("m365CustomerGraphRead.actions.retestFailed"),
-          successMessage: t("m365CustomerGraphRead.actions.retestSucceeded"),
+          successMessage: () => isCurrent(target)
+            ? t("m365CustomerGraphRead.actions.retestSucceeded")
+            : "",
         });
-        await load();
+        if (isCurrent(target)) await load(target);
       } catch (error) {
-        handleActionError(error, t("m365CustomerGraphRead.actions.retestFailed"));
+        if (isCurrent(target)) {
+          handleActionError(error, t("m365CustomerGraphRead.actions.retestFailed"));
+        }
       }
     });
-  }, [canWrite, data, load, orgId, perform, t]);
+  }, [canWrite, data, isCurrent, load, orgId, perform, scope, scopedRequest, t]);
 
   const disconnect = useCallback(() => {
     if (!orgId || !data?.connection || !canWrite) return;
     if (!window.confirm(t("m365CustomerGraphRead.actions.disconnectWarning"))) return;
-    void perform("disconnect", async () => {
+    const target = scope;
+    const connectionId = data.connection.id;
+    void perform(target, "disconnect", async () => {
       try {
         await runAction({
-          request: () => fetchWithAuth(`/m365/connections/${data.connection!.id}/disconnect?orgId=${orgId}`, { method: "POST" }),
+          request: () => scopedRequest(
+            target,
+            () => fetchWithAuth(`/m365/connections/${connectionId}/disconnect?orgId=${target.orgId}`, { method: "POST" }),
+            {},
+          ),
           errorFallback: t("m365CustomerGraphRead.actions.disconnectFailed"),
-          successMessage: t("m365CustomerGraphRead.actions.disconnectSucceeded"),
+          successMessage: () => isCurrent(target)
+            ? t("m365CustomerGraphRead.actions.disconnectSucceeded")
+            : "",
         });
-        await load();
+        if (isCurrent(target)) await load(target);
       } catch (error) {
-        handleActionError(error, t("m365CustomerGraphRead.actions.disconnectFailed"));
+        if (isCurrent(target)) {
+          handleActionError(error, t("m365CustomerGraphRead.actions.disconnectFailed"));
+        }
       }
     });
-  }, [canWrite, data, load, orgId, perform, t]);
+  }, [canWrite, data, isCurrent, load, orgId, perform, scope, scopedRequest, t]);
 
   const connection = data?.connection ?? null;
   const observedHeading = connection?.lastErrorCode === "grant_reconciliation_unavailable"
@@ -444,16 +539,16 @@ export default function M365CustomerGraphReadCard() {
           )}
 
           <div className="flex flex-col gap-3 border-t pt-5 sm:flex-row sm:flex-wrap sm:items-center">
-            <button type="button" onClick={startConsent} disabled={!canWrite || !data.onboardingEnabled || action !== null} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={startConsent} disabled={!canWrite || !data.onboardingEnabled || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
               {action === "consent" && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
               {connection ? t("m365CustomerGraphRead.actions.reconsent") : t("m365CustomerGraphRead.actions.connect")}
             </button>
             {connection && (
               <>
-                <button type="button" onClick={retest} disabled={!canWrite || action !== null} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
+                <button type="button" onClick={retest} disabled={!canWrite || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
                   <RefreshCw aria-hidden="true" className={`h-4 w-4 ${action === "retest" ? "animate-spin" : ""}`} />{t("m365CustomerGraphRead.actions.retest")}
                 </button>
-                <button type="button" onClick={disconnect} disabled={!canWrite || action !== null} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-destructive disabled:cursor-not-allowed disabled:opacity-50">
+                <button type="button" onClick={disconnect} disabled={!canWrite || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-destructive disabled:cursor-not-allowed disabled:opacity-50">
                   <Unplug aria-hidden="true" className="h-4 w-4" />{t("m365CustomerGraphRead.actions.disconnect")}
                 </button>
               </>

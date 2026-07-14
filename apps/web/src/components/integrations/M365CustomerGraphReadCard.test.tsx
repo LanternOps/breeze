@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   jwtScope: "partner" as "partner" | "organization" | null,
   jwtOrgId: null as string | null,
   canWrite: true,
+  successMessages: [] as string[],
 }));
 
 vi.mock("../../stores/auth", () => ({
@@ -46,11 +47,19 @@ vi.mock("../../lib/runAction", () => ({
   runAction: vi.fn(async (options: {
     request: () => Promise<Response>;
     parseSuccess?: (value: unknown) => unknown;
+    successMessage?: string | ((value: unknown) => string);
   }) => {
     const response = await options.request();
     const value = await response.json();
     if (!response.ok) throw new Error("request failed");
-    return options.parseSuccess ? options.parseSuccess(value) : value;
+    const result = options.parseSuccess ? options.parseSuccess(value) : value;
+    if (options.successMessage) {
+      const message = typeof options.successMessage === "function"
+        ? options.successMessage(result)
+        : options.successMessage;
+      if (message) state.successMessages.push(message);
+    }
+    return result;
   }),
   handleActionError: vi.fn(),
 }));
@@ -142,6 +151,7 @@ describe("M365CustomerGraphReadCard", () => {
     state.jwtScope = "partner";
     state.jwtOrgId = null;
     state.canWrite = true;
+    state.successMessages = [];
   });
 
   it("renders the exact nine fixed permissions and no credential inputs for an empty envelope", async () => {
@@ -211,6 +221,28 @@ describe("M365CustomerGraphReadCard", () => {
     );
     expect(screen.queryByText("do-not-render")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+  });
+
+  it("fails closed when one canonical manifest assignment is substituted", async () => {
+    const substituted = REQUIRED_GRANTS.map((grant, index) =>
+      index === 0
+        ? {
+            resourceApplicationId: grant.resourceApplicationId,
+            appRoleId: "77777777-7777-4777-8777-777777777777",
+            value: "Directory.Read.All",
+          }
+        : grant,
+    );
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ profile: { ...envelope().profile, requiredGrants: substituted } })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Connection details are unavailable.",
+    );
+    expect(screen.queryByText("Directory.Read.All")).not.toBeInTheDocument();
   });
 
   it("shows tenant, manifest, grant groups, and formatted verification timestamps", async () => {
@@ -341,6 +373,36 @@ describe("M365CustomerGraphReadCard", () => {
     );
   });
 
+  it("does not let a deferred Org A retest overwrite Org B or block Org B actions", async () => {
+    const pendingRetest = deferredResponse();
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })))
+      .mockReturnValueOnce(pendingRetest.promise)
+      .mockResolvedValueOnce(makeResponse(envelope({
+        connection: connection({
+          id: "88888888-8888-4888-8888-888888888888",
+          tenantId: "99999999-9999-4999-8999-999999999999",
+          displayName: "Contoso B",
+        }),
+      })));
+    const view = render(<M365CustomerGraphReadCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retest" }));
+
+    state.currentOrgId = ORG_B;
+    view.rerender(<M365CustomerGraphReadCard />);
+    expect(await screen.findByText("Contoso B")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retest" })).toBeEnabled();
+
+    pendingRetest.resolve(makeResponse({ connection: connection() }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+    expect(screen.getByText("Contoso B")).toBeInTheDocument();
+    expect(screen.queryByText("Northwind Tenant")).not.toBeInTheDocument();
+    expect(state.successMessages).toEqual([]);
+  });
+
   it("warns that Microsoft consent remains, disconnects through runAction, and reloads", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     fetchWithAuthMock
@@ -362,6 +424,107 @@ describe("M365CustomerGraphReadCard", () => {
       { method: "POST" },
     );
     confirm.mockRestore();
+  });
+
+  it("does not let a deferred Org A disconnect reload or clear Org B action state", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const pendingDisconnect = deferredResponse();
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })))
+      .mockReturnValueOnce(pendingDisconnect.promise)
+      .mockResolvedValueOnce(makeResponse(envelope({
+        connection: connection({
+          id: "88888888-8888-4888-8888-888888888888",
+          tenantId: "99999999-9999-4999-8999-999999999999",
+          displayName: "Contoso B",
+        }),
+      })));
+    const view = render(<M365CustomerGraphReadCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect from Breeze" }));
+
+    state.currentOrgId = ORG_B;
+    view.rerender(<M365CustomerGraphReadCard />);
+    expect(await screen.findByText("Contoso B")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Disconnect from Breeze" })).toBeEnabled();
+
+    pendingDisconnect.resolve(makeResponse({ connection: connection({ status: "revoked" }) }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+    expect(screen.getByText("Contoso B")).toBeInTheDocument();
+    expect(state.successMessages).toEqual([]);
+    confirm.mockRestore();
+  });
+
+  it("does not navigate for deferred Org A consent and allows Org B consent", async () => {
+    const pendingConsent = deferredResponse();
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope()))
+      .mockReturnValueOnce(pendingConsent.promise)
+      .mockResolvedValueOnce(makeResponse(envelope()))
+      .mockResolvedValueOnce(makeResponse({
+        adminConsentUrl: "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=org-b",
+      }));
+    const view = render(<M365CustomerGraphReadCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+
+    state.currentOrgId = ORG_B;
+    view.rerender(<M365CustomerGraphReadCard />);
+    const orgBConnect = await screen.findByRole("button", { name: "Connect" });
+    expect(orgBConnect).toBeEnabled();
+    fireEvent.click(orgBConnect);
+    await waitFor(() =>
+      expect(navigateToMock).toHaveBeenCalledWith(
+        "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=org-b",
+      ),
+    );
+
+    pendingConsent.resolve(makeResponse({
+      adminConsentUrl: "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=org-a",
+    }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(navigateToMock).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps the completed Org B load when an older Org A load resolves last", async () => {
+    const pendingOrgA = deferredResponse();
+    fetchWithAuthMock
+      .mockReturnValueOnce(pendingOrgA.promise)
+      .mockResolvedValueOnce(makeResponse(envelope({
+        connection: connection({
+          id: "88888888-8888-4888-8888-888888888888",
+          tenantId: "99999999-9999-4999-8999-999999999999",
+          displayName: "Contoso B",
+        }),
+      })));
+    const view = render(<M365CustomerGraphReadCard />);
+
+    state.currentOrgId = ORG_B;
+    view.rerender(<M365CustomerGraphReadCard />);
+    expect(await screen.findByText("Contoso B")).toBeInTheDocument();
+
+    pendingOrgA.resolve(makeResponse(envelope({ connection: connection() })));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Contoso B")).toBeInTheDocument();
+    expect(screen.queryByText("Northwind Tenant")).not.toBeInTheDocument();
+  });
+
+  it("uses at least 44px touch targets for every action", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection() })),
+    );
+    render(<M365CustomerGraphReadCard />);
+
+    for (const name of ["Re-consent", "Retest", "Disconnect from Breeze"]) {
+      expect(await screen.findByRole("button", { name })).toHaveClass("min-h-11");
+    }
   });
 
   it("disables every mutation without organizations:write", async () => {
