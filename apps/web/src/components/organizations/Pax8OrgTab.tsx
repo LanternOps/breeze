@@ -4,6 +4,7 @@ import { AlertTriangle, Building2, PackagePlus, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '../../lib/navigation';
 import { ActionError, handleActionError, runAction } from '../../lib/runAction';
+import { useHashState } from '../../lib/useHashState';
 import { TableSkeleton } from '../billing/shared/TableSkeleton';
 import {
   addPax8OrderLine,
@@ -31,10 +32,9 @@ import { displayQuantity } from './pax8OrderUi';
 const onUnauthorized = () => void navigateTo('/login', { replace: true });
 const mutableStatuses = new Set(['draft', 'awaiting_details']);
 
-function selectedOrderFromHash(): string | null {
-  if (typeof window === 'undefined') return null;
-  const match = /^#pax8\/([0-9a-f-]{36})$/i.exec(window.location.hash);
-  return match?.[1] ?? null;
+function selectedOrderFromHash(hash: string): string | undefined {
+  const match = /^pax8\/([0-9a-f-]{36})$/i.exec(hash);
+  return match?.[1];
 }
 
 function isKnownDrift(subscription: Pax8Subscription): boolean {
@@ -89,7 +89,7 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
   const [subscriptions, setSubscriptions] = useState<Pax8Subscription[]>([]);
   const [orders, setOrders] = useState<Pax8Order[]>([]);
   const [products, setProducts] = useState<Pax8ProductOption[]>([]);
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(() => selectedOrderFromHash());
+  const [selectedOrderId, setSelectedOrderId] = useHashState<string | null>(null, selectedOrderFromHash);
   const [bundle, setBundle] = useState<Pax8OrderBundle | null>(null);
   const [bundleLoading, setBundleLoading] = useState(false);
   const [mappingChoice, setMappingChoice] = useState('');
@@ -140,11 +140,6 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void loadBundle(); }, [loadBundle]);
-  useEffect(() => {
-    const syncHash = () => setSelectedOrderId(selectedOrderFromHash());
-    window.addEventListener('hashchange', syncHash);
-    return () => window.removeEventListener('hashchange', syncHash);
-  }, []);
 
   const mappedCompany = companies.find((company) => company.mappedOrgId === orgId && !company.ignored) ?? null;
   const mappingOptions = companies.filter((company) => !company.ignored && (!company.mappedOrgId || company.mappedOrgId === orgId));

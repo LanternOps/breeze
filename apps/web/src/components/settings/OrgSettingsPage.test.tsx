@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -345,12 +345,16 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(link.getAttribute('aria-current')).toBe('page');
     expect(screen.getByTestId('pax8-org-tab')).toHaveTextContent('org-1');
 
-    window.location.hash = '#general';
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    act(() => {
+      window.location.hash = '#general';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
     await screen.findByTestId('org-name-input');
 
-    window.location.hash = '#pax8/55555555-5555-4555-8555-555555555555';
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    act(() => {
+      window.location.hash = '#pax8/55555555-5555-4555-8555-555555555555';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
     expect(await screen.findByTestId('pax8-org-tab')).toBeInTheDocument();
   });
 

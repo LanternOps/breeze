@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -34,6 +34,22 @@ vi.mock('../../lib/api/pax8Orders', async (importOriginal) => {
 const response = (payload: unknown) => Promise.resolve(new Response(JSON.stringify(payload), {
   status: 200, headers: { 'content-type': 'application/json' },
 }));
+
+const order = (id: string, orgId = 'org-1') => ({
+  id,
+  integrationId: 'integration-1',
+  partnerId: 'partner-1',
+  orgId,
+  pax8CompanyId: 'company-1',
+  status: 'draft',
+  source: 'direct',
+  sourceQuoteId: null,
+  pax8OrderId: null,
+  error: null,
+  submittedAt: null,
+  createdAt: '2026-07-14T00:00:00Z',
+  updatedAt: '2026-07-14T00:00:00Z',
+} as const);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -217,5 +233,35 @@ describe('Pax8 organization mapping state', () => {
     expect(screen.queryByTestId('pax8-submit')).not.toBeInTheDocument();
     expect(preflightPax8Order).not.toHaveBeenCalled();
     expect(submitPax8Order).not.toHaveBeenCalled();
+  });
+
+  it('writes exact order hashes and follows root/order hash navigation', async () => {
+    const firstId = '44444444-4444-4444-8444-444444444444';
+    const secondId = '55555555-5555-4555-8555-555555555555';
+    vi.mocked(listPax8Companies).mockImplementation(() => response({ data: [], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Subscriptions).mockImplementation(() => response({ data: [], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Orders).mockImplementation(() => response({ data: [order(firstId)] }));
+    vi.mocked(listPax8Products).mockImplementation(() => response({ data: [] }));
+    vi.mocked(getPax8Order).mockImplementation((id) => response({
+      data: { order: order(id), lines: [] },
+    }));
+
+    render(<Pax8OrgTab orgId="org-1" />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /direct order/i }));
+    expect(window.location.hash).toBe(`#pax8/${firstId}`);
+    expect(await screen.findByTestId('pax8-order-builder')).toBeInTheDocument();
+    expect(getPax8Order).toHaveBeenLastCalledWith(firstId);
+
+    await userEvent.click(screen.getByRole('button', { name: /back to pax8/i }));
+    expect(window.location.hash).toBe('#pax8');
+    expect(await screen.findByTestId('pax8-org-tab')).toBeInTheDocument();
+
+    act(() => {
+      window.location.hash = `#pax8/${secondId}`;
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByTestId('pax8-order-builder')).toBeInTheDocument();
+    expect(getPax8Order).toHaveBeenLastCalledWith(secondId);
   });
 });

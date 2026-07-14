@@ -28,6 +28,7 @@ describe('Pax8 provisioning details', () => {
         fields={[{
           key: 'region',
           label: 'Region',
+          description: null,
           valueType: 'Single-Value',
           possibleValues: ['US', 'CA'],
         }]}
@@ -46,7 +47,7 @@ describe('Pax8 provisioning details', () => {
     function Harness() {
       const [value, setValue] = useState<Array<{ key: string; values: string[] }>>([]);
       return <Pax8ProvisioningForm
-        fields={[{ key: 'region', label: 'Region', valueType: 'Single-Value', possibleValues: ['US', 'CA'] }]}
+        fields={[{ key: 'region', label: 'Region', description: null, valueType: 'Single-Value', possibleValues: ['US', 'CA'] }]}
         value={value}
         onChange={(next) => { setValue(next); onChange(next); }}
       />;
@@ -68,8 +69,8 @@ describe('Pax8 provisioning details', () => {
     function Harness() {
       const [value, setValue] = useState<Array<{ key: string; values: string[] }>>([]);
       return <Pax8ProvisioningForm fields={[
-        { key: 'alias', label: 'Alias', valueType: 'Input', possibleValues: [] },
-        { key: 'features', label: 'Features', valueType: 'Multi-Value', possibleValues: ['A', 'B'] },
+        { key: 'alias', label: 'Alias', description: null, valueType: 'Input', possibleValues: [] },
+        { key: 'features', label: 'Features', description: null, valueType: 'Multi-Value', possibleValues: ['A', 'B'] },
       ]} value={value} onChange={(next) => { setValue(next); onChange(next); }} />;
     }
     render(<Harness />);
