@@ -54,6 +54,8 @@ interface GraphClientDependencies {
 
 interface RequestBudget {
   bytes: number;
+  requests: number;
+  items: number;
 }
 
 interface CollectionPage {
@@ -171,16 +173,18 @@ export function createMicrosoftGraphClient(
 ): MicrosoftGraphClient {
   const fetchImpl = dependencies.fetch ?? fetch;
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxPageCount = config.maxPageCount ?? DEFAULT_MAX_PAGE_COUNT;
+  const maxRequestCount = config.maxPageCount ?? DEFAULT_MAX_PAGE_COUNT;
   const maxItemCount = config.maxItemCount ?? DEFAULT_MAX_ITEM_COUNT;
   const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const configValid = CANONICAL_UUID.test(config.applicationId)
     && positiveInteger(timeoutMs)
-    && positiveInteger(maxPageCount)
+    && positiveInteger(maxRequestCount)
     && positiveInteger(maxItemCount)
     && positiveInteger(maxResponseBytes);
 
   async function request(url: string, accessToken: OpaqueAccessToken, budget: RequestBudget): Promise<unknown> {
+    if (budget.requests >= maxRequestCount) throw failure('graph_response_too_large');
+    budget.requests += 1;
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -214,14 +218,12 @@ export function createMicrosoftGraphClient(
   ): Promise<unknown[]> {
     const values: unknown[] = [];
     let url: string | undefined = initialUrl;
-    let pages = 0;
     while (url !== undefined) {
-      pages += 1;
-      if (pages > maxPageCount) throw failure('graph_response_too_large');
       const page = parseCollectionPage(await request(url, accessToken, budget));
-      if (values.length + page.value.length > maxItemCount) {
+      if (budget.items + page.value.length > maxItemCount) {
         throw failure('graph_response_too_large');
       }
+      budget.items += page.value.length;
       values.push(...page.value);
       url = page.nextLink === undefined
         ? undefined
@@ -320,10 +322,13 @@ export function createMicrosoftGraphClient(
         if (!isRecord(rawResource)
           || typeof rawResource.appId !== 'string'
           || !CANONICAL_UUID.test(rawResource.appId)
-          || !Array.isArray(rawResource.appRoles)
-          || rawResource.appRoles.length > maxItemCount) {
+          || !Array.isArray(rawResource.appRoles)) {
           throw failure('graph_response_invalid');
         }
+        if (budget.items + rawResource.appRoles.length > maxItemCount) {
+          throw failure('graph_response_too_large');
+        }
+        budget.items += rawResource.appRoles.length;
         const values = new Map<string, string | null>();
         for (const role of rawResource.appRoles) {
           if (!isRecord(role)
@@ -362,7 +367,7 @@ export function createMicrosoftGraphClient(
         || !input.accessToken) {
         throw failure('graph_request_invalid');
       }
-      const budget = { bytes: 0 };
+      const budget = { bytes: 0, requests: 0, items: 0 };
       const organizationDisplayName = await organizationProof(input.tenantId, input.accessToken, budget);
       const applicationServicePrincipalId = await applicationServicePrincipal(input.accessToken, budget);
       const observedGrants = await grants(applicationServicePrincipalId, input.accessToken, budget);

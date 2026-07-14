@@ -9,9 +9,11 @@ const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 const APPLICATION_ID = '22222222-2222-4222-8222-222222222222';
 const APPLICATION_SP_ID = '33333333-3333-4333-8333-333333333333';
 const RESOURCE_SP_ID = '44444444-4444-4444-8444-444444444444';
+const SECOND_RESOURCE_SP_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GRAPH_APPLICATION_ID = '00000003-0000-0000-c000-000000000000';
 const ROLE_ID = '9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30';
 const UNKNOWN_ROLE_ID = '55555555-5555-4555-8555-555555555555';
+const SECOND_ROLE_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ACCESS_TOKEN = 'opaque-secret-access-token' as OpaqueAccessToken;
 
 type Route = {
@@ -215,8 +217,8 @@ describe('MicrosoftGraphClient', () => {
   it('enforces page, item, and cumulative response-byte bounds without returning partial grants', async () => {
     const nextLink = `https://graph.microsoft.com/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments?$skiptoken=x`;
     const cases: Array<{ limits: Record<string, number>; assignments: unknown }> = [
-      { limits: { maxPageCount: 1 }, assignments: { value: [], '@odata.nextLink': nextLink } },
-      { limits: { maxItemCount: 1 }, assignments: { value: [
+      { limits: { maxPageCount: 3 }, assignments: { value: [], '@odata.nextLink': nextLink } },
+      { limits: { maxItemCount: 3 }, assignments: { value: [
         { appRoleId: ROLE_ID, resourceId: RESOURCE_SP_ID },
         { appRoleId: UNKNOWN_ROLE_ID, resourceId: RESOURCE_SP_ID },
       ] } },
@@ -242,11 +244,108 @@ describe('MicrosoftGraphClient', () => {
         { id: UNKNOWN_ROLE_ID, value: 'Unexpected.Read.All' },
       ],
     } });
-    const { graph } = client(expected, { maxItemCount: 1 });
+    const { graph } = client(expected, { maxItemCount: 4 });
 
     const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN });
 
     expect(result.observedGrants).toBeNull();
+  });
+
+  it('counts every paginated response against one probe-wide request boundary before fetching the next page', async () => {
+    const pageTwo = `https://graph.microsoft.com/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments?$skiptoken=next`;
+    const expected = routes();
+    expected.splice(2, 2, {
+      path: `/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments`,
+      response: json({ value: [], '@odata.nextLink': pageTwo }),
+    });
+    const { graph, fetch } = client(expected, { maxPageCount: 3 });
+
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN });
+
+    expect(result.observedGrants).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('counts singleton resource GETs against the same request boundary and rejects before the next request', async () => {
+    const expected = routes();
+    expected.splice(2, 2,
+      {
+        path: `/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments`,
+        response: json({ value: [
+          { appRoleId: ROLE_ID, resourceId: RESOURCE_SP_ID },
+          { appRoleId: SECOND_ROLE_ID, resourceId: SECOND_RESOURCE_SP_ID },
+        ] }),
+      },
+      {
+        path: `/v1.0/servicePrincipals/${RESOURCE_SP_ID}`,
+        search: { '$select': 'appId,appRoles' },
+        response: json({
+          appId: GRAPH_APPLICATION_ID,
+          appRoles: [{ id: ROLE_ID, value: 'Application.Read.All' }],
+        }),
+      },
+    );
+    const { graph, fetch } = client(expected, { maxPageCount: 4 });
+
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN });
+
+    expect(result.observedGrants).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('shares one item budget across collection values and all resource app-role responses', async () => {
+    const expected = routes();
+    expected.splice(2, 2,
+      {
+        path: `/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments`,
+        response: json({ value: [
+          { appRoleId: ROLE_ID, resourceId: RESOURCE_SP_ID },
+          { appRoleId: SECOND_ROLE_ID, resourceId: SECOND_RESOURCE_SP_ID },
+        ] }),
+      },
+      {
+        path: `/v1.0/servicePrincipals/${RESOURCE_SP_ID}`,
+        search: { '$select': 'appId,appRoles' },
+        response: json({
+          appId: GRAPH_APPLICATION_ID,
+          appRoles: [{ id: ROLE_ID, value: 'Application.Read.All' }],
+        }),
+      },
+      {
+        path: `/v1.0/servicePrincipals/${SECOND_RESOURCE_SP_ID}`,
+        search: { '$select': 'appId,appRoles' },
+        response: json({
+          appId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          appRoles: [{ id: SECOND_ROLE_ID, value: 'Other.Read.All' }],
+        }),
+      },
+    );
+    const { graph, fetch, assertComplete } = client(expected, { maxItemCount: 5 });
+
+    const result = await graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN });
+
+    expect(result.observedGrants).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(5);
+    assertComplete();
+  });
+
+  it('accepts exact cumulative request and item boundaries but rejects either boundary off by one', async () => {
+    const exact = client(routes(), { maxPageCount: 4, maxItemCount: 4 });
+    await expect(exact.graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN }))
+      .resolves.toMatchObject({ observedGrants: [{ appRoleId: ROLE_ID }] });
+    expect(exact.fetch).toHaveBeenCalledTimes(4);
+
+    const requestOffByOneRoutes = routes();
+    requestOffByOneRoutes.pop();
+    const requestOffByOne = client(requestOffByOneRoutes, { maxPageCount: 3, maxItemCount: 4 });
+    await expect(requestOffByOne.graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN }))
+      .resolves.toMatchObject({ observedGrants: null });
+    expect(requestOffByOne.fetch).toHaveBeenCalledTimes(3);
+
+    const itemOffByOne = client(routes(), { maxPageCount: 4, maxItemCount: 3 });
+    await expect(itemOffByOne.graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN }))
+      .resolves.toMatchObject({ observedGrants: null });
+    expect(itemOffByOne.fetch).toHaveBeenCalledTimes(4);
   });
 
   it.each([
