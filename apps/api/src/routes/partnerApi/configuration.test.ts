@@ -156,8 +156,12 @@ describe('partner desired-configuration exports', () => {
 
   it.each([
     'password=hunter2',
+    'DB_PASSWORD=hunter2',
+    'LOCAL_ADMIN_PASSWORD=Summer2026!',
+    'set "PASSWORD=hunter2"',
     "$Password = 'Summer2026!'",
     "ConvertTo-SecureString 'Summer2026!' -AsPlainText -Force",
+    "ConvertTo-SecureString -String 'Summer2026!' -AsPlainText -Force",
   ])('blocks the whole script for low-entropy credential syntax without leaking derived metadata: %s', async (content) => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'organization', name: 'Unsafe rebuild', description: null, category: 'build',

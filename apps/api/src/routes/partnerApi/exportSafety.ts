@@ -36,8 +36,7 @@ const SECRET_VALUE_PATTERNS = [
   /\b(?:gh[oprsu]_|sk-(?:live|test)?-?|xox[baprs]-)[A-Za-z0-9_-]{20,}/u,
   /\bAKIA[0-9A-Z]{16}\b/u,
   /\bhttps?:\/\/[^\s/:@]+:[^\s/@]+@/iu,
-  /(?:^|[\s;|&])(?:export\s+|setx?\s+)?\$?(?:env:)?(?:password|passwd|pwd|token|api[_-]?key|authorization|credential|secret|private[_-]?key)\s*(?:=|:)\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s;]+)/imu,
-  /\bConvertTo-SecureString\s+(?:"[^"\r\n]+"|'[^'\r\n]+')\s+-AsPlainText\b/iu,
+  /\bConvertTo-SecureString\s+(?:-String\s+)?(?:"[^"\r\n]+"|'[^'\r\n]+')\s+-AsPlainText\b/iu,
 ] as const;
 
 type CanonicalJson = null | boolean | number | string | CanonicalJson[] | { [key: string]: CanonicalJson };
@@ -115,8 +114,21 @@ function windowContainsHighEntropyToken(window: string): boolean {
   return candidates.some(candidateLooksHighEntropy);
 }
 
+function containsCredentialAssignment(value: string): boolean {
+  const assignments = value.matchAll(
+    /(?:^|[\s;|&])(?:export\s+|setx?\s+)?["']?\$?(?:env:)?([A-Za-z][A-Za-z0-9_-]{0,127})\s*(?:=|:)\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s;]+)/gimu,
+  );
+  for (const assignment of assignments) {
+    if (splitFieldName(assignment[1] ?? '').some((token) => FORBIDDEN_FIELD_TOKENS.has(token))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isSecretLikeValue(value: string): boolean {
   return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))
+    || containsCredentialAssignment(value)
     || (/^[A-Za-z0-9_.-]{1,128}$/u.test(value)
       && splitFieldName(value).some((token) => FORBIDDEN_FIELD_TOKENS.has(token)))
     || windowContainsHighEntropyToken(value);

@@ -68,9 +68,13 @@ describe('recursive export safety', () => {
 
   it.each([
     ['shell password', { content: 'password=hunter2' }],
+    ['compound database password', { content: 'DB_PASSWORD=hunter2' }],
+    ['compound local admin password', { content: 'LOCAL_ADMIN_PASSWORD=Summer2026!' }],
     ['exported API key', { content: "export API_KEY='ordinary-low-entropy'" }],
+    ['quoted CMD set', { content: 'set "PASSWORD=hunter2"' }],
     ['PowerShell password', { content: "$Password = 'Summer2026!'" }],
     ['PowerShell secure string', { content: "ConvertTo-SecureString 'Summer2026!' -AsPlainText -Force" }],
+    ['PowerShell named secure string', { content: "ConvertTo-SecureString -String 'Summer2026!' -AsPlainText -Force" }],
     ['authorization assignment', { content: 'Authorization = Basic dXNlcjpwYXNz' }],
   ])('rejects low-entropy credential assignment syntax: %s', (_name, definition) => {
     expect(inspectDefinitionForSecrets(definition)).toMatchObject({
