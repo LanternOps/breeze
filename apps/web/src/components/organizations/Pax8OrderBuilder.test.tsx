@@ -243,8 +243,7 @@ describe('Pax8 order mutation affordances', () => {
   });
 
   it.each([
-    ['a needs-reconcile parent with a needs-reconcile line', 'needs_reconcile', ['needs_reconcile']],
-    ['a needs-reconcile parent with an in-flight line', 'needs_reconcile', ['in_flight']],
+    ['a partially-failed parent with a needs-reconcile line', 'partially_failed', ['needs_reconcile']],
     ['a submitting parent with an in-flight line', 'submitting', ['in_flight']],
     ['a submitting order whose lines are all pending', 'submitting', ['pending', 'pending']],
   ] as const)('offers recovery for %s', (_label, status, submitStates) => {
@@ -257,11 +256,24 @@ describe('Pax8 order mutation affordances', () => {
   it.each([
     ['draft', ['in_flight']],
     ['awaiting_details', ['needs_reconcile']],
+    ['ready', ['needs_reconcile']],
+    ['partially_failed', ['in_flight']],
+    ['partially_failed', ['failed']],
+    ['submitting', ['needs_reconcile']],
   ] as const)('does not offer recovery for malformed %s parent state', (status, submitStates) => {
     render(<Pax8OrderBuilder bundle={orderBundle({ status, submitStates: [...submitStates] })} products={[product]} onReload={vi.fn()} onBack={vi.fn()} />);
 
     expect(screen.queryByTestId('pax8-reconcile')).not.toBeInTheDocument();
     expect(screen.queryByTestId('pax8-submit')).not.toBeInTheDocument();
+  });
+
+  it('allows a safely reset ready order to be resubmitted without reopening authoring', () => {
+    render(<Pax8OrderBuilder bundle={orderBundle({ status: 'ready', submitStates: ['pending'] })} products={[product]} onReload={vi.fn()} onBack={vi.fn()} />);
+
+    expect(screen.getByTestId('pax8-submit')).toBeEnabled();
+    expect(screen.queryByTestId('pax8-product-select')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /remove line/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /edit details/i })).not.toBeInTheDocument();
   });
 
   it('uses a WCAG-AA dark recovery treatment with visible hover and focus states', () => {
@@ -283,7 +295,7 @@ describe('Pax8 order mutation affordances', () => {
 describe('Pax8 wire-enum localization', () => {
   it('maps every wire value to a translated key without changing the request values', () => {
     expect(Object.keys(PAX8_ORDER_STATUS_I18N_KEYS)).toEqual([
-      'draft', 'awaiting_details', 'ready', 'submitting', 'completed', 'partially_failed', 'failed', 'cancelled', 'needs_reconcile',
+      'draft', 'awaiting_details', 'ready', 'submitting', 'completed', 'partially_failed', 'failed', 'cancelled',
     ]);
     expect(Object.keys(PAX8_ORDER_ACTION_I18N_KEYS)).toEqual(['new_subscription', 'change_quantity', 'cancel']);
     expect(Object.keys(PAX8_SUBMIT_STATE_I18N_KEYS)).toEqual(['pending', 'in_flight', 'succeeded', 'failed', 'needs_reconcile']);

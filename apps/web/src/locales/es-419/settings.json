@@ -2429,7 +2429,7 @@
     "actions": { "newOrder": "Nuevo pedido", "retry": "Reintentar" }, "states": { "loadingProduct": "Cargando requisitos del producto…" },
     "products": { "emptyReason": "Asocia productos activos del catálogo con Pax8 antes de pedir." },
     "enums": {
-      "orderStatus": { "draft": "Borrador", "awaitingDetails": "Esperando detalles", "ready": "Listo", "submitting": "Enviando", "completed": "Completado", "partiallyFailed": "Falló parcialmente", "failed": "Falló", "cancelled": "Cancelado", "needsReconcile": "Requiere conciliación" },
+      "orderStatus": { "draft": "Borrador", "awaitingDetails": "Esperando detalles", "ready": "Listo", "submitting": "Enviando", "completed": "Completado", "partiallyFailed": "Falló parcialmente", "failed": "Falló", "cancelled": "Cancelado" },
       "lineAction": { "newSubscription": "Nueva suscripción", "changeQuantity": "Cambiar cantidad", "cancel": "Cancelar suscripción" },
       "submitState": { "pending": "Pendiente", "inFlight": "En curso", "succeeded": "Correcto", "failed": "Falló", "needsReconcile": "Requiere conciliación" },
       "billingTerm": { "monthly": "Mensual", "annual": "Anual", "twoYear": "2 años", "threeYear": "3 años", "oneTime": "Pago único", "trial": "Prueba", "activation": "Activación" }

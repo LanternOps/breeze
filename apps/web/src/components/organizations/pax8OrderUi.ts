@@ -10,7 +10,6 @@ export const PAX8_ORDER_STATUS_I18N_KEYS: Record<Pax8OrderStatus, string> = {
   partially_failed: 'pax8.enums.orderStatus.partiallyFailed',
   failed: 'pax8.enums.orderStatus.failed',
   cancelled: 'pax8.enums.orderStatus.cancelled',
-  needs_reconcile: 'pax8.enums.orderStatus.needsReconcile',
 };
 
 export const PAX8_ORDER_ACTION_I18N_KEYS: Record<Pax8OrderAction, string> = {

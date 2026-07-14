@@ -34,7 +34,8 @@ import {
 } from './pax8OrderUi';
 
 const onUnauthorized = () => void navigateTo('/login', { replace: true });
-const mutableStatuses = new Set(['draft', 'awaiting_details']);
+const authoringStatuses = new Set(['draft', 'awaiting_details']);
+const submittableStatuses = new Set(['draft', 'awaiting_details', 'ready']);
 
 function lineLabel(line: Pax8OrderLine, products: Pax8ProductOption[], fallback: string): string {
   const product = products.find((candidate) => candidate.pax8ProductId === line.pax8ProductId);
@@ -61,14 +62,15 @@ export default function Pax8OrderBuilder({
 }) {
   const { t } = useTranslation('settings');
   const { order, lines } = bundle;
-  const mutable = mutableStatuses.has(order.status);
+  const mutable = authoringStatuses.has(order.status);
   const directMutable = mutable && order.source === 'direct';
   const hasInFlight = lines.some((line) => line.submitState === 'in_flight');
-  const hasUnknown = lines.some((line) => line.submitState === 'in_flight' || line.submitState === 'needs_reconcile');
+  const hasNeedsReconcile = lines.some((line) => line.submitState === 'needs_reconcile');
   const allPending = lines.length > 0 && lines.every((line) => line.submitState === 'pending');
   const canReconcile = (order.status === 'submitting' && (hasInFlight || allPending))
-    || (order.status === 'needs_reconcile' && hasUnknown);
-  const canSubmit = mutable && lines.every((line) => line.submitState === 'pending');
+    || (order.status === 'partially_failed' && hasNeedsReconcile);
+  const canSubmit = submittableStatuses.has(order.status)
+    && lines.every((line) => line.submitState === 'pending');
   const [selectedProductId, setSelectedProductId] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [billingTerm, setBillingTerm] = useState<(typeof PAX8_BILLING_TERMS)[number]>('Monthly');

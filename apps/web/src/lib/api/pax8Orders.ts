@@ -3,7 +3,7 @@ import type { Pax8BillingTerm } from '@breeze/shared';
 
 export type Pax8OrderStatus =
   | 'draft' | 'awaiting_details' | 'ready' | 'submitting' | 'completed'
-  | 'partially_failed' | 'failed' | 'cancelled' | 'needs_reconcile';
+  | 'partially_failed' | 'failed' | 'cancelled';
 export type Pax8OrderAction = 'new_subscription' | 'change_quantity' | 'cancel';
 
 export interface ProvisioningValue { key: string; values: string[] }

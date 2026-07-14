@@ -2429,7 +2429,7 @@
     "actions": { "newOrder": "Nouvelle commande", "retry": "Réessayer" }, "states": { "loadingProduct": "Chargement des exigences du produit…" },
     "products": { "emptyReason": "Associez des produits actifs du catalogue à Pax8 avant de commander." },
     "enums": {
-      "orderStatus": { "draft": "Brouillon", "awaitingDetails": "En attente de détails", "ready": "Prête", "submitting": "Envoi en cours", "completed": "Terminée", "partiallyFailed": "Échec partiel", "failed": "Échec", "cancelled": "Annulée", "needsReconcile": "Rapprochement requis" },
+      "orderStatus": { "draft": "Brouillon", "awaitingDetails": "En attente de détails", "ready": "Prête", "submitting": "Envoi en cours", "completed": "Terminée", "partiallyFailed": "Échec partiel", "failed": "Échec", "cancelled": "Annulée" },
       "lineAction": { "newSubscription": "Nouvel abonnement", "changeQuantity": "Modifier la quantité", "cancel": "Résilier l’abonnement" },
       "submitState": { "pending": "En attente", "inFlight": "En cours", "succeeded": "Réussie", "failed": "Échec", "needsReconcile": "Rapprochement requis" },
       "billingTerm": { "monthly": "Mensuelle", "annual": "Annuelle", "twoYear": "2 ans", "threeYear": "3 ans", "oneTime": "Paiement unique", "trial": "Essai", "activation": "Mise en service" }
