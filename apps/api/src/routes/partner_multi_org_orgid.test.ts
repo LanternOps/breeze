@@ -17,7 +17,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { discoveryRoutes } from './discovery';
+import { huntressRoutes } from './huntress';
 import { orgRoutes } from './orgs';
+import { softwareRoutes } from './software';
+import { softwareInventoryRoutes } from './softwareInventory';
 
 const { authState, canAccessOrgSpy, dbSelectDelegate, ORG_A, ORG_B, FOREIGN_ORG } = vi.hoisted(() => {
   const ORG_A = '11111111-1111-1111-1111-111111111111';
@@ -67,7 +71,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// db / chain mocks shared across all four route imports
+// db / chain mocks shared across the route modules
 // ---------------------------------------------------------------------------
 function chainMock(terminalValue: any) {
   const handler: ProxyHandler<any> = {
@@ -227,7 +231,11 @@ vi.mock('../services/permissions', () => ({
 // Tests
 // ---------------------------------------------------------------------------
 
+const discoveryApp = new Hono().route('/discovery', discoveryRoutes);
+const huntressApp = new Hono().route('/huntress', huntressRoutes);
 const orgApp = new Hono().route('/orgs', orgRoutes);
+const softwareApp = new Hono().route('/software', softwareRoutes);
+const softwareInventoryApp = new Hono().route('/software-inventory', softwareInventoryRoutes);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -253,10 +261,7 @@ async function expectNotOrgIdRequired400(res: Response) {
 describe('issue #620: partner-multi-org orgId pass-through', () => {
   describe('software catalog routes', () => {
     it('GET /software/catalog accepts ?orgId= for partner-multi-org user', async () => {
-      const { softwareRoutes } = await import('./software');
-      const app = new Hono().route('/software', softwareRoutes);
-
-      const res = await app.request(`/software/catalog?orgId=${ORG_A}`, {
+      const res = await softwareApp.request(`/software/catalog?orgId=${ORG_A}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer t' },
       });
@@ -270,10 +275,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
       // Orgs") when no orgId is supplied, instead of 400ing. (Explicit foreign
       // orgIds still 403 — see the test below — and single-org catalog detail /
       // write paths are unchanged.)
-      const { softwareRoutes } = await import('./software');
-      const app = new Hono().route('/software', softwareRoutes);
-
-      const res = await app.request('/software/catalog', {
+      const res = await softwareApp.request('/software/catalog', {
         method: 'GET',
         headers: { Authorization: 'Bearer t' },
       });
@@ -285,10 +287,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
     });
 
     it('GET /software/catalog 403s when ?orgId= points outside accessibleOrgIds', async () => {
-      const { softwareRoutes } = await import('./software');
-      const app = new Hono().route('/software', softwareRoutes);
-
-      const res = await app.request(`/software/catalog?orgId=${FOREIGN_ORG}`, {
+      const res = await softwareApp.request(`/software/catalog?orgId=${FOREIGN_ORG}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer t' },
       });
@@ -297,10 +296,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
     });
 
     it('GET /software/catalog/search accepts ?orgId=', async () => {
-      const { softwareRoutes } = await import('./software');
-      const app = new Hono().route('/software', softwareRoutes);
-
-      const res = await app.request(`/software/catalog/search?q=foo&orgId=${ORG_A}`, {
+      const res = await softwareApp.request(`/software/catalog/search?q=foo&orgId=${ORG_A}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer t' },
       });
@@ -309,10 +305,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
     });
 
     it('POST /software/catalog accepts orgId in body', async () => {
-      const { softwareRoutes } = await import('./software');
-      const app = new Hono().route('/software', softwareRoutes);
-
-      const res = await app.request('/software/catalog', {
+      const res = await softwareApp.request('/software/catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
         body: JSON.stringify({ name: 'Acme', orgId: ORG_A }),
@@ -324,10 +317,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
 
   describe('software inventory routes', () => {
     it('GET /software-inventory accepts ?orgId=', async () => {
-      const { softwareInventoryRoutes } = await import('./softwareInventory');
-      const app = new Hono().route('/software-inventory', softwareInventoryRoutes);
-
-      const res = await app.request(`/software-inventory?orgId=${ORG_A}`, {
+      const res = await softwareInventoryApp.request(`/software-inventory?orgId=${ORG_A}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer t' },
       });
@@ -341,10 +331,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
     // the same as of #1933; the discovery routes below still require an explicit
     // orgId.)
     it('GET /software-inventory aggregates across all orgs when orgId is missing', async () => {
-      const { softwareInventoryRoutes } = await import('./softwareInventory');
-      const app = new Hono().route('/software-inventory', softwareInventoryRoutes);
-
-      const res = await app.request('/software-inventory', {
+      const res = await softwareInventoryApp.request('/software-inventory', {
         method: 'GET',
         headers: { Authorization: 'Bearer t' },
       });
@@ -353,10 +340,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
     });
 
     it('GET /software-inventory 403s when ?orgId= is foreign', async () => {
-      const { softwareInventoryRoutes } = await import('./softwareInventory');
-      const app = new Hono().route('/software-inventory', softwareInventoryRoutes);
-
-      const res = await app.request(`/software-inventory?orgId=${FOREIGN_ORG}`, {
+      const res = await softwareInventoryApp.request(`/software-inventory?orgId=${FOREIGN_ORG}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer t' },
       });
@@ -367,10 +351,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
 
   describe('discovery scan route', () => {
     it('POST /discovery/scan accepts orgId in body', async () => {
-      const { discoveryRoutes } = await import('./discovery');
-      const app = new Hono().route('/discovery', discoveryRoutes);
-
-      const res = await app.request('/discovery/scan', {
+      const res = await discoveryApp.request('/discovery/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
         body: JSON.stringify({
@@ -383,10 +364,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
     });
 
     it('POST /discovery/scan 400s when orgId is missing for partner-multi-org user', async () => {
-      const { discoveryRoutes } = await import('./discovery');
-      const app = new Hono().route('/discovery', discoveryRoutes);
-
-      const res = await app.request('/discovery/scan', {
+      const res = await discoveryApp.request('/discovery/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
         body: JSON.stringify({ profileId: '99999999-9999-9999-9999-999999999999' }),
@@ -400,10 +378,7 @@ describe('issue #620: partner-multi-org orgId pass-through', () => {
 
   describe('huntress integration save', () => {
     it('POST /huntress/integration accepts partner-level credentials without orgId', async () => {
-      const { huntressRoutes } = await import('./huntress');
-      const app = new Hono().route('/huntress', huntressRoutes);
-
-      const res = await app.request('/huntress/integration', {
+      const res = await huntressApp.request('/huntress/integration', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer t' },
         body: JSON.stringify({ name: 'Primary', apiKey: 'k' }),
