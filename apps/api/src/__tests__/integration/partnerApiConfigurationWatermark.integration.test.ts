@@ -34,6 +34,14 @@ const MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-24-partner-export-configuration-material-state.sql',
 );
+const TENANT_INTEGRITY_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-26-a-normalized-policy-tenant-integrity.sql',
+);
+const CANONICAL_PARITY_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-26-b-partner-export-canonical-parity.sql',
+);
 
 describe('partner desired-configuration material watermarks', () => {
   runDb('migration is idempotent and creates forced org-axis RLS', async () => {
@@ -47,6 +55,43 @@ describe('partner desired-configuration material watermarks', () => {
       WHERE oid = 'public.partner_export_configuration_org_state'::regclass
     `);
     expect(state).toEqual({ enabled: true, forced: true });
+  });
+
+  runDb('tenant-integrity and canonical parity migrations are idempotent and keep helpers private', async () => {
+    const db = getTestDb();
+    const integrityMigration = readFileSync(TENANT_INTEGRITY_MIGRATION_FILE, 'utf8');
+    const parityMigration = readFileSync(CANONICAL_PARITY_MIGRATION_FILE, 'utf8');
+    await expect(db.execute(sql.raw(integrityMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(integrityMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(parityMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(parityMigration))).resolves.toBeDefined();
+
+    const catalog = await db.execute<{ relname: string; enabled: boolean; forced: boolean; commands: string[] }>(sql`
+      SELECT c.relname, c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced,
+        array_agg(DISTINCT p.polcmd ORDER BY p.polcmd) AS commands
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_policy p ON p.polrelid = c.oid
+      WHERE c.relname = ANY(ARRAY[
+        'config_policy_feature_links', 'config_policy_assignments',
+        'config_policy_alert_rules', 'config_policy_automations',
+        'config_policy_compliance_rules', 'config_policy_patch_settings',
+        'config_policy_maintenance_settings', 'config_policy_event_log_settings'
+      ]::text[])
+      GROUP BY c.relname, c.relrowsecurity, c.relforcerowsecurity
+      ORDER BY c.relname
+    `);
+    expect(catalog).toHaveLength(8);
+    expect(catalog.every((row) => row.enabled && row.forced)).toBe(true);
+    expect(catalog.every((row) => row.commands.join(',') === 'a,d,r,w')).toBe(true);
+
+    await ensureAppRole();
+    const [privileges] = await db.execute<{ validate: boolean; enforce: boolean; revalidate: boolean }>(sql`
+      SELECT
+        has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_backup_settings(uuid,uuid,uuid,uuid,uuid)', 'EXECUTE') AS validate,
+        has_function_privilege('breeze_app', 'public.breeze_enforce_config_policy_backup_settings()', 'EXECUTE') AS enforce,
+        has_function_privilege('breeze_app', 'public.breeze_revalidate_config_policy_backup_settings_reference()', 'EXECUTE') AS revalidate
+    `);
+    expect(privileges).toEqual({ validate: false, enforce: false, revalidate: false });
   });
 
   runDb('policy feature and assignment changes advance the affected configuration clocks', async () => {
@@ -127,6 +172,127 @@ describe('partner desired-configuration material watermarks', () => {
     const beforeDelete = await stateClock(org.id, 'configuration-policies');
     await db.delete(configPolicyBackupSettings).where(eq(configPolicyBackupSettings.id, settings.id));
     expect((await stateClock(org.id, 'configuration-policies')).getTime()).toBeGreaterThan(beforeDelete.getTime());
+  });
+
+  runDb('canonical policy settings match Breeze empty collections and validated patch projection', async () => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [policy] = await db.insert(configurationPolicies).values({
+      orgId: org.id, name: 'Canonical settings parity', status: 'active',
+    }).returning();
+    if (!policy) throw new Error('canonical parity policy insert failed');
+    await db.insert(configPolicyAssignments).values({
+      configPolicyId: policy.id, level: 'organization', targetId: org.id,
+    });
+    const links = await db.insert(configPolicyFeatureLinks).values([
+      { configPolicyId: policy.id, featureType: 'alert_rule', inlineSettings: { items: [] } },
+      { configPolicyId: policy.id, featureType: 'automation', inlineSettings: { items: [] } },
+      { configPolicyId: policy.id, featureType: 'compliance', inlineSettings: { items: [] } },
+      {
+        configPolicyId: policy.id,
+        featureType: 'patch',
+        inlineSettings: {
+          autoApproveDeferralDays: 7,
+          apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
+          unexpectedRawExtra: 'must-not-export',
+        },
+      },
+      { configPolicyId: policy.id, featureType: 'maintenance', inlineSettings: { stale: true } },
+      { configPolicyId: policy.id, featureType: 'event_log', inlineSettings: { stale: true } },
+      { configPolicyId: policy.id, featureType: 'sensitive_data', inlineSettings: { stale: true } },
+      { configPolicyId: policy.id, featureType: 'monitoring', inlineSettings: { stale: true } },
+      { configPolicyId: policy.id, featureType: 'backup', inlineSettings: { stale: true } },
+      { configPolicyId: policy.id, featureType: 'remote_access', inlineSettings: {} },
+      { configPolicyId: policy.id, featureType: 'onedrive_helper', inlineSettings: { stale: true } },
+    ]).returning();
+    const patchLink = links.find((link) => link.featureType === 'patch');
+    if (!patchLink) throw new Error('canonical parity patch link insert failed');
+    const linkId = (featureType: string) => {
+      const link = links.find((candidate) => candidate.featureType === featureType);
+      if (!link) throw new Error(`canonical parity ${featureType} link insert failed`);
+      return link.id;
+    };
+    await db.execute(sql`INSERT INTO public.config_policy_patch_settings (feature_link_id) VALUES (${patchLink.id}::uuid)`);
+    await db.execute(sql`INSERT INTO public.config_policy_maintenance_settings (feature_link_id) VALUES (${linkId('maintenance')}::uuid)`);
+    await db.execute(sql`INSERT INTO public.config_policy_event_log_settings (feature_link_id) VALUES (${linkId('event_log')}::uuid)`);
+    await db.execute(sql`INSERT INTO public.config_policy_sensitive_data_settings (feature_link_id) VALUES (${linkId('sensitive_data')}::uuid)`);
+    await db.execute(sql`INSERT INTO public.config_policy_monitoring_settings (feature_link_id) VALUES (${linkId('monitoring')}::uuid)`);
+    await db.execute(sql`INSERT INTO public.config_policy_backup_settings (feature_link_id, org_id, partner_id)
+      VALUES (${linkId('backup')}::uuid, ${org.id}::uuid, NULL)`);
+    await db.execute(sql`INSERT INTO public.config_policy_remote_access_settings (feature_link_id) VALUES (${linkId('remote_access')}::uuid)`);
+    await db.execute(sql`INSERT INTO public.config_policy_onedrive_settings (feature_link_id, org_id)
+      VALUES (${linkId('onedrive_helper')}::uuid, ${org.id}::uuid)`);
+
+    const response = await configurationExportApp(partner.id, org.id).request('/configuration-policies');
+    expect(response.status, await response.clone().text()).toBe(200);
+    const body = await response.json() as {
+      data: Array<{ features: Array<{ type: string; settings: unknown }> }>;
+    };
+    expect(body.data, JSON.stringify(body)).toHaveLength(1);
+    const settings = Object.fromEntries(body.data[0]!.features.map((feature) => [feature.type, feature.settings]));
+    expect(settings.alert_rule).toEqual({ items: [] });
+    expect(settings.automation).toEqual({ items: [] });
+    expect(settings.compliance).toEqual({ items: [] });
+    expect(settings.patch).toEqual({
+      sources: ['os'], autoApprove: false, autoApproveSeverities: [],
+      autoApproveDeferralDays: 7,
+      apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
+      scheduleFrequency: 'weekly', scheduleTime: '02:00', scheduleDayOfWeek: 'sun',
+      scheduleDayOfMonth: 1, rebootPolicy: 'if_required', exclusiveWindowsUpdate: false,
+    });
+    expect(settings.maintenance).toEqual({
+      recurrence: 'weekly', durationHours: 2, timezone: 'UTC', windowStart: null,
+      suppressAlerts: true, suppressPatching: false, suppressAutomations: false,
+      suppressScripts: false, rebootIfPending: false, notifyBeforeMinutes: 15,
+      notifyOnStart: true, notifyOnEnd: true,
+    });
+    expect(settings.event_log).toEqual({
+      retentionDays: 30, maxEventsPerCycle: 100,
+      collectCategories: ['security', 'hardware', 'application', 'system'],
+      minimumLevel: 'info', collectionIntervalMinutes: 15, rateLimitPerHour: 12000,
+    });
+    expect(settings.sensitive_data).toEqual({
+      detectionClasses: ['credential'], includePaths: [], excludePaths: [], fileTypes: [],
+      maxFileSizeBytes: 104857600, workers: 4, timeoutSeconds: 300,
+      suppressPatternIds: [], scheduleType: 'manual', intervalMinutes: null,
+      cron: null, timezone: 'UTC',
+    });
+    expect(settings.monitoring).toEqual({
+      checkIntervalSeconds: 60, watches: [], eventLogAlerts: [], alertRules: [],
+    });
+    expect(settings.backup).toEqual({
+      schedule: {}, retention: {}, paths: [], backupMode: 'file', targets: {},
+    });
+    expect(settings.remote_access).toEqual({
+      sessionPromptMode: 'notify', consentUnavailableBehavior: 'proceed',
+      notifyOnSessionEnd: true, showActiveIndicator: true,
+      technicianIdentityLevel: 'name_email',
+    });
+    expect(settings.onedrive_helper).toEqual({
+      silentAccountConfig: true, filesOnDemand: true, kfmSilentOptIn: false,
+      kfmFolders: ['Desktop', 'Documents', 'Pictures'], kfmBlockOptOut: false,
+      tenantAssociationId: null, restartOnChange: true, libraries: [],
+    });
+    expect(JSON.stringify(settings)).not.toContain('unexpectedRawExtra');
+
+    await db.update(configPolicyFeatureLinks).set({
+      inlineSettings: {
+        autoApproveDeferralDays: 999999999999999999999999,
+        apps: [{ packageId: 'missing-source', action: 'block', unexpected: 'drop-me' }],
+      },
+    }).where(eq(configPolicyFeatureLinks.id, patchLink.id));
+    const malformedResponse = await configurationExportApp(partner.id, org.id)
+      .request('/configuration-policies');
+    expect(malformedResponse.status, await malformedResponse.clone().text()).toBe(200);
+    const malformedBody = await malformedResponse.json() as {
+      data: Array<{ features: Array<{ type: string; settings: Record<string, unknown> }> }>;
+    };
+    const malformedPatch = malformedBody.data[0]!.features
+      .find((feature) => feature.type === 'patch')!.settings;
+    expect(malformedPatch.autoApproveDeferralDays).toBe(0);
+    expect(malformedPatch.apps).toEqual([]);
+    expect(JSON.stringify(malformedBody)).not.toContain('drop-me');
   });
 
   runDb('partner-owned library changes touch every owned org while another partner remains unchanged', async () => {
@@ -237,25 +403,33 @@ describe('partner desired-configuration material watermarks', () => {
       .rejects.toMatchObject({ cause: expect.objectContaining({ code: '42501' }) });
   });
 
-  runDb('custom-field values traverse more than 500 devices and secret-semantic definitions block safely', async () => {
+  runDb('custom-field values traverse more than 500 definitions on one device and block secret semantics', async () => {
     const db = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const site = await createSite({ orgId: org.id });
-    await db.insert(customFieldDefinitions).values({
-      orgId: org.id, name: 'Rack', fieldKey: 'rack', type: 'text',
-    });
-    await db.insert(devices).values(Array.from({ length: 501 }, (_, index) => ({
+    const fieldValues = Object.fromEntries(Array.from({ length: 501 }, (_, index) => [
+      `field_${String(index).padStart(4, '0')}`,
+      `value-${index}`,
+    ]));
+    await db.insert(customFieldDefinitions).values(Array.from({ length: 501 }, (_, index) => ({
+      orgId: org.id,
+      name: `Field ${index}`,
+      fieldKey: `field_${String(index).padStart(4, '0')}`,
+      type: 'text' as const,
+    })));
+    const [device] = await db.insert(devices).values({
       orgId: org.id,
       siteId: site.id,
-      agentId: `task7-page-${String(index).padStart(4, '0')}-${crypto.randomUUID()}`.slice(0, 64),
-      hostname: `task7-page-${String(index).padStart(4, '0')}`,
+      agentId: `task7-page-${crypto.randomUUID()}`.slice(0, 64),
+      hostname: 'task7-page-single-device',
       osType: 'linux' as const,
       osVersion: '1',
       architecture: 'amd64',
       agentVersion: '1',
-      customFields: { rack: `R-${index}` },
-    })));
+      customFields: fieldValues,
+    }).returning();
+    if (!device) throw new Error('custom-value device insert failed');
     const app = configurationExportApp(partner.id, org.id);
     const first = await app.request('/custom-field-values?limit=500');
     expect(first.status, await first.clone().text()).toBe(200);
@@ -273,22 +447,39 @@ describe('partner desired-configuration material watermarks', () => {
     expect(secondBody.data).toHaveLength(1);
     const identities = [...firstBody.data, ...secondBody.data].map((row) => `${row.id}:${row.orgId}`);
     expect(new Set(identities).size).toBe(501);
+    expect(new Set([...firstBody.data, ...secondBody.data].map((row: any) => row.definitionId)).size).toBe(501);
+    expect([...firstBody.data, ...secondBody.data].every((row: any) => row.deviceId === device.id)).toBe(true);
 
     await db.insert(customFieldDefinitions).values({
       orgId: org.id, name: 'local_admin_password', fieldKey: 'local_admin_password', type: 'text',
     });
-    const victim = firstBody.data[0]!;
     await db.update(devices).set({
-      customFields: { rack: 'R-safe', local_admin_password: 'Summer2026!' },
-    }).where(eq(devices.id, victim.id));
-    const definitions = await app.request('/custom-fields');
-    const definitionsBody = await definitions.json() as { blocked?: Array<{ id: string }>; data: unknown[] };
-    expect(definitionsBody.blocked).toEqual([expect.objectContaining({ orgId: org.id })]);
-    expect(JSON.stringify(definitionsBody)).not.toContain('local_admin_password');
-    const values = await app.request('/custom-field-values');
-    const valuesBody = await values.json() as { blocked?: Array<{ id: string }>; data: unknown[] };
-    expect(valuesBody.blocked).toContainEqual(expect.objectContaining({ id: victim.id, orgId: org.id }));
-    expect(JSON.stringify(valuesBody)).not.toContain('Summer2026');
+      customFields: { ...fieldValues, local_admin_password: 'Summer2026!' },
+    }).where(eq(devices.id, device.id));
+    const collectExportPages = async (path: string) => {
+      const pages: Array<{ blocked?: Array<{ id: string; orgId: string }>; data: unknown[] }> = [];
+      let cursor: string | null = null;
+      do {
+        const response = await app.request(`${path}?limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+        expect(response.status, await response.clone().text()).toBe(200);
+        const body = await response.json() as {
+          blocked?: Array<{ id: string; orgId: string }>;
+          data: unknown[];
+          nextCursor: string | null;
+        };
+        pages.push(body);
+        cursor = body.nextCursor;
+      } while (cursor);
+      return pages;
+    };
+    const definitionPages = await collectExportPages('/custom-fields');
+    expect(definitionPages.flatMap((page) => page.blocked ?? []))
+      .toEqual([expect.objectContaining({ orgId: org.id })]);
+    expect(JSON.stringify(definitionPages)).not.toContain('local_admin_password');
+    const valuePages = await collectExportPages('/custom-field-values');
+    expect(valuePages.flatMap((page) => page.blocked ?? []))
+      .toContainEqual(expect.objectContaining({ orgId: org.id }));
+    expect(JSON.stringify(valuePages)).not.toContain('Summer2026');
   });
 
   runDb('all seven routes execute under app-role RLS and cannot expose another partner', async () => {

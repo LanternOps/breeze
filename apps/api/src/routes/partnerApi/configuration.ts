@@ -323,44 +323,34 @@ function customFieldSource(principal: PartnerApiPrincipalContext, query: ExportQ
 
 function customFieldValueSource(principal: PartnerApiPrincipalContext, query: ExportQueryInput): SQL {
   return sql`
-    WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'custom-field-values')})
-    SELECT d.id, eo.id AS org_id, d.created_at, eo.material_updated_at AS updated_at,
+    WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'custom-field-values')}),
+    value_rows AS (
+      SELECT d.id AS device_id, d.site_id, d.created_at AS device_created_at,
+        f.id AS definition_id, f.created_at AS definition_created_at,
+        f.name, f.field_key, f.type, d.custom_fields->f.field_key AS value,
+        eo.id AS org_id, eo.material_updated_at,
+        md5(d.id::text || ':' || f.id::text) AS identity_hash
+      FROM public.devices d
+      JOIN effective_orgs eo ON eo.id = d.org_id
+      JOIN public.custom_field_definitions f
+        ON (f.org_id = eo.id OR (f.org_id IS NULL AND f.partner_id = ${principal.partnerId}::uuid))
+       AND d.custom_fields ? f.field_key
+    )
+    SELECT (
+        substr(identity_hash, 1, 8) || '-' || substr(identity_hash, 9, 4) || '-5' ||
+        substr(identity_hash, 14, 3) || '-8' || substr(identity_hash, 18, 3) || '-' ||
+        substr(identity_hash, 21, 12)
+      )::uuid AS id,
+      org_id, GREATEST(device_created_at, definition_created_at) AS created_at,
+      material_updated_at AS updated_at,
       jsonb_build_object(
-        'fields', COALESCE(values.items, '[]'::jsonb),
-        'collection', jsonb_build_object(
-          'total', values.total,
-          'included', values.included,
-          'complete', values.total = values.included,
-          'reason', CASE WHEN values.total = values.included
-            THEN NULL ELSE 'collection_limit_exceeded' END
-        )
+        'siteId', site_id,
+        'deviceId', device_id,
+        'definitionId', definition_id,
+        'target', jsonb_build_object('type', 'device', 'id', device_id),
+        'name', name, 'fieldKey', field_key, 'type', type, 'value', value
       ) AS definition
-    FROM public.devices d
-    JOIN effective_orgs eo ON eo.id = d.org_id
-    JOIN LATERAL (
-      SELECT
-        jsonb_agg(jsonb_build_object(
-          'definitionId', selected.id,
-          'name', selected.name,
-          'fieldKey', selected.field_key,
-          'type', selected.type,
-          'value', selected.value
-        ) ORDER BY selected.field_key, selected.id) AS items,
-        COUNT(*)::integer AS included,
-        (SELECT COUNT(*)::integer
-         FROM public.custom_field_definitions all_fields
-         WHERE (all_fields.org_id = eo.id
-             OR (all_fields.org_id IS NULL AND all_fields.partner_id = ${principal.partnerId}::uuid))
-           AND d.custom_fields ? all_fields.field_key) AS total
-      FROM (
-        SELECT f.id, f.name, f.field_key, f.type, d.custom_fields->f.field_key AS value
-        FROM public.custom_field_definitions f
-        WHERE (f.org_id = eo.id OR (f.org_id IS NULL AND f.partner_id = ${principal.partnerId}::uuid))
-          AND d.custom_fields ? f.field_key
-        ORDER BY f.field_key, f.id
-        LIMIT 500
-      ) selected
-    ) values ON values.total > 0
+    FROM value_rows
   `;
 }
 

@@ -25,7 +25,7 @@ const cases = [
   ['automations', automationExportEnvelopeSchema, { sourceScope: 'organization', name: 'A', description: null, enabled: true, trigger: { type: 'manual' }, conditions: null, actions: [{ type: 'reboot' }], onFailure: 'stop', notificationTargets: null, dependencies: [] }],
   ['backup-configurations', backupConfigurationExportEnvelopeSchema, { kind: 'destination', sourceScope: 'organization', name: 'B', type: 'file', provider: 'local', compression: true, encryption: false, active: true, default: true, schedule: null, retention: null, exclusions: [], completenessGaps: [{ code: 'restore_procedure_unavailable' }] }],
   ['custom-fields', customFieldExportEnvelopeSchema, { sourceScope: 'organization', name: 'C', fieldKey: 'c', type: 'text', options: null, required: false, defaultValue: null, deviceTypes: null }],
-  ['custom-field-values', customFieldValueExportEnvelopeSchema, { fields: [{ definitionId: ID, name: 'C', fieldKey: 'c', type: 'text', value: 'safe' }], collection: { total: 1, included: 1, complete: true, reason: null } }],
+  ['custom-field-values', customFieldValueExportEnvelopeSchema, { deviceId: ID, definitionId: '22222222-2222-4222-8222-222222222222', target: { type: 'device', id: ID }, name: 'C', fieldKey: 'c', type: 'text', value: 'safe' }],
 ] as const;
 
 function fieldShape(value: unknown): unknown {

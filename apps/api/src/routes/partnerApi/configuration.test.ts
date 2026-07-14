@@ -284,12 +284,20 @@ describe('partner desired-configuration exports', () => {
     expect(serialized).not.toContain('Summer2026');
   });
 
-  it('pages more than 500 custom-field value devices without duplicate or skipped identities', async () => {
-    const field = { definitionId: SOURCE_A, name: 'Rack', fieldKey: 'rack', type: 'text', value: 'DC1-R07' };
+  it('pages more than 500 values on one device without duplicate or skipped definition identities', async () => {
     const firstPage = Array.from({ length: 501 }, (_, index) => row(
       `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
       ORG_A,
-      { fields: [field], collection: { total: 1, included: 1, complete: true, reason: null } },
+      {
+        siteId: null,
+        deviceId: DEVICE_ID,
+        definitionId: `10000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        target: { type: 'device', id: DEVICE_ID },
+        name: `Field ${index}`,
+        fieldKey: `field_${index}`,
+        type: 'text',
+        value: `value-${index}`,
+      },
     ));
     mocks.queryResults.push(firstPage);
     const first = await (await request('/custom-field-values?limit=500', 'custom-fields:read')).json();
@@ -305,6 +313,8 @@ describe('partner desired-configuration exports', () => {
     const ids = [...first.data, ...second.data].map((record) => `${record.id}:${record.orgId}`);
     expect(ids).toHaveLength(501);
     expect(new Set(ids).size).toBe(501);
+    expect(new Set([...first.data, ...second.data].map((record) => record.definitionId)).size).toBe(501);
+    expect([...first.data, ...second.data].every((record) => record.deviceId === DEVICE_ID)).toBe(true);
   });
 
   it('fans partner definitions out with stable composite pagination identity', async () => {
@@ -359,7 +369,7 @@ function sampleDefinition(path: string): Record<string, unknown> {
     case '/backup-configurations':
       return { kind: 'profile', sourceScope: 'organization', name: 'B', description: null, active: true, selections: {}, destinationId: null, schedule: null, retention: null, exclusions: [], completenessGaps: [{ code: 'restore_procedure_unavailable' }] };
     case '/custom-field-values':
-      return { fields: [{ definitionId: SOURCE_A, name: 'C', fieldKey: 'c', type: 'text', value: 'safe' }], collection: { total: 1, included: 1, complete: true, reason: null } };
+      return { deviceId: DEVICE_ID, definitionId: SOURCE_A, target: { type: 'device', id: DEVICE_ID }, name: 'C', fieldKey: 'c', type: 'text', value: 'safe' };
     default:
       return { sourceScope: 'organization', name: 'C', fieldKey: 'c', type: 'text', options: null, required: false, defaultValue: null, deviceTypes: null };
   }

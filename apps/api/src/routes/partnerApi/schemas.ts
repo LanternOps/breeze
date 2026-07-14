@@ -462,14 +462,16 @@ export const customFieldExportEnvelopeSchema = createPartnerExportEnvelopeSchema
 );
 
 export const partnerCustomFieldValueExportRecordSchema = strictPartnerExportRecordSchema({
-  fields: z.array(z.object({
-    definitionId: z.string().uuid(),
-    name: z.string().min(1).max(100),
-    fieldKey: z.string().min(1).max(100),
-    type: z.enum(['text', 'number', 'boolean', 'dropdown', 'date']),
-    value: partnerExportJsonSchema,
-  }).strict()).max(500),
-  collection: partnerExportCollectionSchema,
+  deviceId: z.string().uuid(),
+  definitionId: z.string().uuid(),
+  target: z.object({
+    type: z.literal('device'),
+    id: z.string().uuid(),
+  }).strict(),
+  name: z.string().min(1).max(100),
+  fieldKey: z.string().min(1).max(100),
+  type: z.enum(['text', 'number', 'boolean', 'dropdown', 'date']),
+  value: partnerExportJsonSchema,
 });
 export const customFieldValueExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
   partnerCustomFieldValueExportRecordSchema,

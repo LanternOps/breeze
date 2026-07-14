@@ -97,26 +97,21 @@ exports[`desired-configuration DTO safety contract > validates and snapshots the
 
 exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for custom-field-values 1`] = `
 {
-  "collection": {
-    "complete": "boolean",
-    "included": "number",
-    "reason": "object",
-    "total": "number",
-  },
-  "fields": [
-    {
-      "definitionId": "string",
-      "fieldKey": "string",
-      "name": "string",
-      "type": "string",
-      "value": "string",
-    },
-  ],
+  "definitionId": "string",
+  "deviceId": "string",
+  "fieldKey": "string",
   "id": "string",
+  "name": "string",
   "orgId": "string",
   "revision": "string",
   "siteId": "object",
   "sourceUpdatedAt": "string",
+  "target": {
+    "id": "string",
+    "type": "string",
+  },
+  "type": "string",
+  "value": "string",
 }
 `;
 
