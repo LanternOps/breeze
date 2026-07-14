@@ -57,6 +57,10 @@ const MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-28-config-policy-assignment-target-integrity.sql',
 );
+const SERIALIZATION_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-29-serialize-config-policy-assignment-integrity.sql',
+);
 const ALL_SCOPES = [
   'organizations:read',
   'sites:read',
@@ -80,8 +84,8 @@ const EXPECTED_COUNTS: Record<PartnerExportResource, number> = {
   scripts: 2,
   automations: 2,
   'backup-configurations': 2,
-  'custom-fields': 2,
-  'custom-field-values': 2,
+  'custom-fields': 4,
+  'custom-field-values': 4,
 };
 
 interface ExportRecord {
@@ -113,13 +117,28 @@ interface SeededPartner {
 describe('partner reconstruction export RLS traversal', () => {
   runDb('cursor-walks every resource through actual auth without crossing partners', async () => {
     await ensureAppRole();
-    const partnerA = await seedPartner('A');
-    const partnerB = await seedPartner('B');
+    const [partnerA, partnerB] = await seedInterleavedPartners();
+    const [partnerField] = await getTestDb().insert(customFieldDefinitions).values({
+      partnerId: partnerA.partner.id,
+      name: 'A-Partner-Inventory-Label',
+      fieldKey: 'partner_inventory_label',
+      type: 'text',
+    }).returning();
+    if (!partnerField) throw new Error('partner custom field seed failed');
+    for (const [index, device] of partnerA.devices.entries()) {
+      await getTestDb().update(devices).set({
+        customFields: {
+          [`rack_a_${index + 1}`]: `A-rack-value-${index + 1}`,
+          partner_inventory_label: `A-partner-value-${index + 1}`,
+        },
+      }).where(eq(devices.id, device.id));
+    }
     const keyA = await issueKey(partnerA.partner.id, partnerA.user.id);
     const keyB = await issueKey(partnerB.partner.id, partnerB.user.id);
     const observedRoles: Array<{ who: string; bypass: boolean }> = [];
     const app = actualPartnerApiApp(observedRoles);
     const allTuples = new Set<string>();
+    const traversals = new Map<PartnerExportResource, ExportRecord[]>();
     let traversedPages = 0;
 
     for (const resource of PARTNER_EXPORT_RESOURCES) {
@@ -130,6 +149,7 @@ describe('partner reconstruction export RLS traversal', () => {
         new Set(partnerA.orgs.map((org) => org.id)),
       );
       expect(JSON.stringify(traversal.records)).not.toContain('B-');
+      traversals.set(resource, traversal.records);
 
       for (const record of traversal.records) {
         const tuple = `${resource}:${record.id}:${record.orgId}`;
@@ -137,6 +157,13 @@ describe('partner reconstruction export RLS traversal', () => {
         allTuples.add(tuple);
       }
     }
+
+    const fannedDefinitions = traversals.get('custom-fields')!
+      .filter((record) => record.id === partnerField.id);
+    expect(fannedDefinitions).toHaveLength(2);
+    expect(new Set(fannedDefinitions.map((record) => record.orgId))).toEqual(
+      new Set(partnerA.orgs.map((org) => org.id)),
+    );
 
     expect(observedRoles).toHaveLength(traversedPages);
     expect(observedRoles.every((role) => role.who === 'breeze_app' && !role.bypass)).toBe(true);
@@ -344,6 +371,9 @@ describe('partner reconstruction export RLS traversal', () => {
     expect(await captureSqlState(() => admin.update(deviceGroups)
       .set({ orgId: partnerA.orgs[1]!.id }).where(eq(deviceGroups.id, partnerA.groups[0]!.id))))
       .toBe('23503');
+    expect(await captureSqlState(() => admin.delete(deviceGroups)
+      .where(eq(deviceGroups.id, partnerA.groups[0]!.id))))
+      .toBe('23503');
     const [movableDevice] = await admin.insert(devices).values({
       orgId: partnerA.orgs[0]!.id,
       siteId: partnerA.sites[0]!.id,
@@ -362,9 +392,27 @@ describe('partner reconstruction export RLS traversal', () => {
       orgId: partnerA.orgs[1]!.id,
       siteId: partnerA.sites[1]!.id,
     }).where(eq(devices.id, movableDevice.id)))).toBe('23503');
+    expect(await captureSqlState(() => admin.delete(devices)
+      .where(eq(devices.id, movableDevice.id))))
+      .toBe('23503');
     expect(await captureSqlState(() => admin.update(configurationPolicies)
       .set({ orgId: partnerA.orgs[1]!.id }).where(eq(configurationPolicies.id, orgPolicy.id))))
       .toBe('23503');
+    expect(await captureSqlState(() => admin.update(configurationPolicies)
+      .set({ partnerId: partnerB.partner.id }).where(eq(configurationPolicies.id, partnerPolicy.id))))
+      .toBe('23503');
+
+    const [updatableAssignment] = await withDbAccessContext(contextA, () =>
+      db.insert(configPolicyAssignments).values({
+        configPolicyId: partnerPolicy.id,
+        level: 'organization',
+        targetId: partnerA.orgs[0]!.id,
+      }).returning());
+    if (!updatableAssignment) throw new Error('updatable assignment seed failed');
+    expect(await captureSqlState(() => withDbAccessContext(contextA, () =>
+      db.update(configPolicyAssignments).set({ targetId: partnerB.orgs[0]!.id })
+        .where(eq(configPolicyAssignments.id, updatableAssignment.id)),
+    ))).toBe('23503');
 
     const movableOrg = await createOrganization({
       partnerId: partnerA.partner.id,
@@ -377,26 +425,190 @@ describe('partner reconstruction export RLS traversal', () => {
       .set({ partnerId: partnerB.partner.id })
       .where(eq(organizations.id, movableOrg.id))))
       .toBe('23503');
+    expect(await captureSqlState(() => admin.delete(organizations)
+      .where(eq(organizations.id, movableOrg.id))))
+      .toBe('23503');
+  }, 30_000);
+
+  runDb('serializes concurrent target and policy owner moves before assignment validation', async () => {
+    const admin = getTestDb();
+    const first = await seedPartner('A');
+    const second = await seedPartner('B');
+    const ordered = [first, second].sort((left, right) =>
+      left.partner.id.localeCompare(right.partner.id));
+    const low = ordered[0]!;
+    const high = ordered[1]!;
+
+    for (const [source, target] of [[low, high], [high, low]] as const) {
+      const context = partnerContext(source);
+      const site = await createSite({ orgId: source.orgs[0]!.id, name: 'Concurrent target site' });
+      const [policy] = await admin.insert(configurationPolicies).values({
+        orgId: source.orgs[0]!.id,
+        name: 'Concurrent target policy',
+      }).returning();
+      if (!policy) throw new Error('concurrent target policy seed failed');
+
+      const targetMove = deferred<void>();
+      const releaseTargetMove = deferred<void>();
+      const mover = admin.transaction(async (tx) => {
+        await tx.update(sites).set({ orgId: target.orgs[0]!.id }).where(eq(sites.id, site.id));
+        targetMove.resolve();
+        await releaseTargetMove.promise;
+      });
+      await targetMove.promise;
+      const assignment = captureSqlState(() => withDbAccessContext(context, () =>
+        db.insert(configPolicyAssignments).values({
+          configPolicyId: policy.id,
+          level: 'site',
+          targetId: site.id,
+        }),
+      ));
+      await waitForPartnerExportWaiter();
+      releaseTargetMove.resolve();
+      await mover;
+      expect(await assignment).toBe('23503');
+
+      const ownerMove = deferred<void>();
+      const releaseOwnerMove = deferred<void>();
+      const [movingPolicy] = await admin.insert(configurationPolicies).values({
+        orgId: source.orgs[0]!.id,
+        name: 'Concurrent owner policy',
+      }).returning();
+      if (!movingPolicy) throw new Error('concurrent owner policy seed failed');
+      const policyMover = admin.transaction(async (tx) => {
+        await tx.update(configurationPolicies).set({ orgId: target.orgs[0]!.id })
+          .where(eq(configurationPolicies.id, movingPolicy.id));
+        ownerMove.resolve();
+        await releaseOwnerMove.promise;
+      });
+      await ownerMove.promise;
+      const ownerAssignment = captureSqlState(() => withDbAccessContext(context, () =>
+        db.insert(configPolicyAssignments).values({
+          configPolicyId: movingPolicy.id,
+          level: 'organization',
+          targetId: source.orgs[0]!.id,
+        }),
+      ));
+      await waitForPartnerExportWaiter();
+      releaseOwnerMove.resolve();
+      await policyMover;
+      expect(await ownerAssignment).toBe('23503');
+    }
+  }, 30_000);
+
+  runDb('resolves FORCE-RLS owners under fixed system GUCs for a non-bypass definer', async () => {
+    const admin = getTestDb();
+    const [current] = await admin.execute<{ roleName: string }>(sql`
+      SELECT current_user AS "roleName"
+    `);
+    if (!current) throw new Error('database owner probe failed');
+    const ownerRole = 'breeze_assignment_validator_owner';
+    await admin.execute(sql.raw(`DROP ROLE IF EXISTS ${ownerRole}`));
+    await admin.execute(sql.raw(`CREATE ROLE ${ownerRole} NOLOGIN NOSUPERUSER NOBYPASSRLS`));
+    try {
+      await admin.execute(sql.raw(`
+        GRANT USAGE ON SCHEMA public TO ${ownerRole};
+        GRANT SELECT ON public.config_policy_assignments, public.configuration_policies,
+          public.organizations, public.sites, public.device_groups, public.devices TO ${ownerRole};
+        GRANT UPDATE ON public.configuration_policies TO ${ownerRole};
+        GRANT EXECUTE ON FUNCTION public.breeze_partner_export_lock_partners_exclusive(uuid[]),
+          public.breeze_partner_export_lock_orgs_under_exclusive_partners(uuid[], uuid[])
+          TO ${ownerRole};
+        ALTER FUNCTION public.breeze_lock_config_policy_assignment_rows(jsonb[], uuid[], uuid[]) OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_validate_config_policy_assignment_target(uuid, text, uuid) OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_validate_config_policy_assignment_new_rows(jsonb[]) OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_enforce_config_policy_assignment_insert() OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_enforce_config_policy_assignment_update() OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_enforce_config_policy_assignment_delete() OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_serialize_config_policy_assignment_owner_change() OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_enforce_config_policy_assignment_target() OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_revalidate_config_policy_assignment_targets() OWNER TO ${ownerRole};
+      `));
+
+      const [roleFlags] = await admin.execute<{ superuser: boolean; bypass: boolean }>(sql.raw(`
+        SELECT rolsuper AS superuser, rolbypassrls AS bypass
+        FROM pg_catalog.pg_roles WHERE rolname = '${ownerRole}'
+      `));
+      expect(roleFlags).toEqual({ superuser: false, bypass: false });
+      const configured = await admin.execute<{ name: string; config: string[] }>(sql`
+        SELECT proname AS name, proconfig AS config
+        FROM pg_catalog.pg_proc
+        WHERE proname IN (
+          'breeze_lock_config_policy_assignment_rows',
+          'breeze_validate_config_policy_assignment_target',
+          'breeze_enforce_config_policy_assignment_target',
+          'breeze_revalidate_config_policy_assignment_targets'
+        )
+      `);
+      expect(configured).toHaveLength(4);
+      expect(configured.every((fn) =>
+        fn.config.includes('breeze.scope=system')
+        && fn.config.includes('search_path=pg_catalog, public'),
+      )).toBe(true);
+
+      const partnerA = await seedPartner('A');
+      const partnerB = await seedPartner('B');
+      const [policy] = await admin.insert(configurationPolicies).values({
+        partnerId: partnerA.partner.id,
+        name: 'Non-bypass definer policy',
+      }).returning();
+      if (!policy) throw new Error('non-bypass policy seed failed');
+
+      const insertedIds: string[] = [];
+      for (const [index, callerScope] of ['', 'org'].entries()) {
+        await admin.transaction(async (tx) => {
+          await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', ${callerScope}, true)`);
+          await tx.execute(sql`SELECT pg_catalog.set_config(
+            'breeze.accessible_org_ids', ${partnerB.orgs[0]!.id}, true
+          )`);
+          await tx.execute(sql`SELECT pg_catalog.set_config(
+            'breeze.accessible_partner_ids', ${partnerB.partner.id}, true
+          )`);
+          const [assignment] = await tx.insert(configPolicyAssignments).values({
+            configPolicyId: policy.id,
+            level: 'organization',
+            targetId: partnerA.orgs[index]!.id,
+          }).returning({ id: configPolicyAssignments.id });
+          if (!assignment) throw new Error('non-bypass assignment insert failed');
+          insertedIds.push(assignment.id);
+        });
+      }
+      await admin.delete(configPolicyAssignments)
+        .where(inArray(configPolicyAssignments.id, insertedIds));
+    } finally {
+      const quotedCurrent = `"${current.roleName.replaceAll('"', '""')}"`;
+      await admin.execute(sql.raw(`REASSIGN OWNED BY ${ownerRole} TO ${quotedCurrent}`));
+      await admin.execute(sql.raw(`DROP OWNED BY ${ownerRole}`));
+      await admin.execute(sql.raw(`DROP ROLE ${ownerRole}`));
+    }
   }, 30_000);
 
   runDb('is idempotent, keeps helpers private, and aborts forged preflight rows as breeze_app', async () => {
     const admin = getTestDb();
     const migration = readFileSync(MIGRATION_FILE, 'utf8');
+    const serializationMigration = readFileSync(SERIALIZATION_MIGRATION_FILE, 'utf8');
     await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
+    await expect(admin.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
     await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
+    await expect(admin.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
     await ensureAppRole();
 
-    const [privileges] = await admin.execute<{
-      validate: boolean;
-      enforce: boolean;
-      revalidate: boolean;
-    }>(sql`
-      SELECT
-        has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_assignment_target(uuid,text,uuid)', 'EXECUTE') AS validate,
-        has_function_privilege('breeze_app', 'public.breeze_enforce_config_policy_assignment_target()', 'EXECUTE') AS enforce,
-        has_function_privilege('breeze_app', 'public.breeze_revalidate_config_policy_assignment_targets()', 'EXECUTE') AS revalidate
+    const [privileges] = await admin.execute<{ helpersPrivate: boolean }>(sql`
+      SELECT bool_and(NOT has_function_privilege('breeze_app', signature, 'EXECUTE'))
+        AS "helpersPrivate"
+      FROM unnest(ARRAY[
+        'public.breeze_lock_config_policy_assignment_rows(jsonb[],uuid[],uuid[])',
+        'public.breeze_validate_config_policy_assignment_target(uuid,text,uuid)',
+        'public.breeze_validate_config_policy_assignment_new_rows(jsonb[])',
+        'public.breeze_enforce_config_policy_assignment_insert()',
+        'public.breeze_enforce_config_policy_assignment_update()',
+        'public.breeze_enforce_config_policy_assignment_delete()',
+        'public.breeze_serialize_config_policy_assignment_owner_change()',
+        'public.breeze_enforce_config_policy_assignment_target()',
+        'public.breeze_revalidate_config_policy_assignment_targets()'
+      ]::text[]) signature
     `);
-    expect(privileges).toEqual({ validate: false, enforce: false, revalidate: false });
+    expect(privileges).toEqual({ helpersPrivate: true });
 
     const partnerA = await seedPartner('A');
     const partnerB = await seedPartner('B');
@@ -414,7 +626,7 @@ describe('partner reconstruction export RLS traversal', () => {
     }
     if (!forgedId) throw new Error('preflight forge seed failed');
     try {
-      await expect(getAppDb().execute(sql.raw(migration)))
+      await expect(getAppDb().execute(sql.raw(serializationMigration)))
         .rejects.toMatchObject({ cause: expect.objectContaining({ code: '23514' }) });
     } finally {
       await admin.delete(configPolicyAssignments).where(eq(configPolicyAssignments.id, forgedId));
@@ -423,116 +635,103 @@ describe('partner reconstruction export RLS traversal', () => {
 });
 
 async function seedPartner(label: 'A' | 'B'): Promise<SeededPartner> {
-  const admin = getTestDb();
+  const seed = await createPartnerSeed(label);
+  for (let index = 1; index <= 2; index += 1) await seedPartnerOrg(seed, label, index);
+  return seed;
+}
+
+async function seedInterleavedPartners(): Promise<[SeededPartner, SeededPartner]> {
+  const partnerA = await createPartnerSeed('A');
+  const partnerB = await createPartnerSeed('B');
+  for (let index = 1; index <= 2; index += 1) {
+    await seedPartnerOrg(partnerA, 'A', index);
+    await seedPartnerOrg(partnerB, 'B', index);
+  }
+  return [partnerA, partnerB];
+}
+
+async function createPartnerSeed(label: 'A' | 'B'): Promise<SeededPartner> {
   const partner = await createPartner({ name: `${label}-Partner` });
   const user = await createUser({ partnerId: partner.id });
-  const orgs = [];
-  const sites = [];
-  const seededDevices = [];
-  const groups = [];
-  const policies = [];
-  const assignments = [];
-  const featureLinks = [];
-
-  for (let index = 1; index <= 2; index += 1) {
-    const org = await createOrganization({
-      partnerId: partner.id,
-      name: `${label}-Organization-${index}`,
-    });
-    const site = await createSite({ orgId: org.id, name: `${label}-Site-${index}` });
-    const fieldKey = `rack_${label.toLowerCase()}_${index}`;
-    await admin.insert(customFieldDefinitions).values({
-      orgId: org.id,
-      name: `${label}-Rack-${index}`,
-      fieldKey,
-      type: 'text',
-    });
-    const [device] = await admin.insert(devices).values({
-      orgId: org.id,
-      siteId: site.id,
-      agentId: `${label.toLowerCase()}-${index}-${crypto.randomUUID()}`.slice(0, 64),
-      hostname: `${label}-device-${index}`,
-      osType: 'linux',
-      osVersion: 'Ubuntu 24.04',
-      architecture: 'amd64',
-      agentVersion: '1.0.0',
-      customFields: { [fieldKey]: `${label}-rack-value-${index}` },
-    }).returning();
-    if (!device) throw new Error('device seed failed');
-    const [group] = await admin.insert(deviceGroups).values({
-      orgId: org.id,
-      siteId: site.id,
-      name: `${label}-Group-${index}`,
-    }).returning();
-    if (!group) throw new Error('device group seed failed');
-    await admin.insert(softwareInventory).values({
-      deviceId: device.id,
-      orgId: org.id,
-      name: `${label}-Software-${index}`,
-      version: '1.0.0',
-      vendor: `${label}-Vendor`,
-    });
-
-    const [policy] = await admin.insert(configurationPolicies).values({
-      orgId: org.id,
-      name: `${label}-Policy-${index}`,
-      status: 'active',
-    }).returning();
-    if (!policy) throw new Error('configuration policy seed failed');
-    const [assignment] = await admin.insert(configPolicyAssignments).values({
-      configPolicyId: policy.id,
-      level: 'organization',
-      targetId: org.id,
-      priority: index,
-    }).returning();
-    if (!assignment) throw new Error('configuration assignment seed failed');
-    const [featureLink] = await admin.insert(configPolicyFeatureLinks).values({
-      configPolicyId: policy.id,
-      featureType: 'monitoring',
-      inlineSettings: { intervalMinutes: 5 },
-    }).returning();
-    if (!featureLink) throw new Error('configuration feature link seed failed');
-    await admin.insert(scripts).values({
-      orgId: org.id,
-      name: `${label}-Script-${index}`,
-      osTypes: ['linux'],
-      language: 'bash',
-      content: 'printf rebuild-complete',
-    });
-    await admin.insert(automations).values({
-      orgId: org.id,
-      name: `${label}-Automation-${index}`,
-      trigger: { type: 'manual' },
-      actions: [],
-    });
-    await admin.insert(backupConfigs).values({
-      orgId: org.id,
-      name: `${label}-Backup-${index}`,
-      type: 'system_image',
-      provider: 's3',
-      providerConfig: { bucket: `${label.toLowerCase()}-fixture` },
-    });
-
-    orgs.push(org);
-    sites.push(site);
-    seededDevices.push(device);
-    groups.push(group);
-    policies.push(policy);
-    assignments.push(assignment);
-    featureLinks.push(featureLink);
-  }
-
   return {
     partner,
     user,
-    orgs,
-    sites,
-    devices: seededDevices,
-    groups,
-    policies,
-    assignments,
-    featureLinks,
+    orgs: [], sites: [], devices: [], groups: [], policies: [], assignments: [], featureLinks: [],
   };
+}
+
+async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: number): Promise<void> {
+  const admin = getTestDb();
+  const org = await createOrganization({
+    partnerId: seed.partner.id,
+    name: `${label}-Organization-${index}`,
+  });
+  const site = await createSite({ orgId: org.id, name: `${label}-Site-${index}` });
+  const fieldKey = `rack_${label.toLowerCase()}_${index}`;
+  await admin.insert(customFieldDefinitions).values({
+    orgId: org.id, name: `${label}-Rack-${index}`, fieldKey, type: 'text',
+  });
+  const [device] = await admin.insert(devices).values({
+    orgId: org.id,
+    siteId: site.id,
+    agentId: `${label.toLowerCase()}-${index}-${crypto.randomUUID()}`.slice(0, 64),
+    hostname: `${label}-device-${index}`,
+    osType: 'linux',
+    osVersion: 'Ubuntu 24.04',
+    architecture: 'amd64',
+    agentVersion: '1.0.0',
+    customFields: { [fieldKey]: `${label}-rack-value-${index}` },
+  }).returning();
+  if (!device) throw new Error('device seed failed');
+  const [group] = await admin.insert(deviceGroups).values({
+    orgId: org.id, siteId: site.id, name: `${label}-Group-${index}`,
+  }).returning();
+  if (!group) throw new Error('device group seed failed');
+  await admin.insert(softwareInventory).values({
+    deviceId: device.id,
+    orgId: org.id,
+    name: `${label}-Software-${index}`,
+    version: '1.0.0',
+    vendor: `${label}-Vendor`,
+  });
+  const [policy] = await admin.insert(configurationPolicies).values({
+    orgId: org.id, name: `${label}-Policy-${index}`, status: 'active',
+  }).returning();
+  if (!policy) throw new Error('configuration policy seed failed');
+  const [assignment] = await admin.insert(configPolicyAssignments).values({
+    configPolicyId: policy.id, level: 'organization', targetId: org.id, priority: index,
+  }).returning();
+  if (!assignment) throw new Error('configuration assignment seed failed');
+  const [featureLink] = await admin.insert(configPolicyFeatureLinks).values({
+    configPolicyId: policy.id,
+    featureType: 'monitoring',
+    inlineSettings: { intervalMinutes: 5 },
+  }).returning();
+  if (!featureLink) throw new Error('configuration feature link seed failed');
+  await admin.insert(scripts).values({
+    orgId: org.id,
+    name: `${label}-Script-${index}`,
+    osTypes: ['linux'],
+    language: 'bash',
+    content: 'printf rebuild-complete',
+  });
+  await admin.insert(automations).values({
+    orgId: org.id, name: `${label}-Automation-${index}`, trigger: { type: 'manual' }, actions: [],
+  });
+  await admin.insert(backupConfigs).values({
+    orgId: org.id,
+    name: `${label}-Backup-${index}`,
+    type: 'system_image',
+    provider: 's3',
+    providerConfig: { bucket: `${label.toLowerCase()}-fixture` },
+  });
+  seed.orgs.push(org);
+  seed.sites.push(site);
+  seed.devices.push(device);
+  seed.groups.push(group);
+  seed.policies.push(policy);
+  seed.assignments.push(assignment);
+  seed.featureLinks.push(featureLink);
 }
 
 async function issueKey(partnerId: string, userId: string): Promise<string> {
@@ -620,6 +819,29 @@ function partnerContext(seed: SeededPartner): DbAccessContext {
     accessiblePartnerIds: [seed.partner.id],
     userId: seed.user.id,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForPartnerExportWaiter(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const rows = await getTestDb().execute(sql`
+      SELECT 1 FROM pg_catalog.pg_locks
+      WHERE locktype = 'advisory' AND classid = 1000202 AND NOT granted
+      LIMIT 1
+    `);
+    if (rows.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('assignment writer never waited on the partner export advisory lock');
 }
 
 async function captureSqlState(work: () => Promise<unknown>): Promise<string | undefined> {
