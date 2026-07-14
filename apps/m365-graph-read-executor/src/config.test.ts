@@ -91,12 +91,34 @@ describe('M365 Graph-read executor config', () => {
   it.each([
     ['the wildcard IPv4 interface', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '0.0.0.0' }],
     ['the wildcard IPv6 interface', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '::' }],
+    ['IPv4 loopback', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '127.0.0.1' }],
+    ['another IPv4 loopback address', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '127.42.0.9' }],
+    ['IPv6 loopback', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '::1' }],
+    ['IPv6 link-local', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: 'fe80::1' }],
+    ['zone-scoped IPv6 link-local', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: 'fe80::1%eth0' }],
+    ['IPv4 multicast', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '239.1.2.3' }],
+    ['IPv6 multicast', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: 'ff02::1' }],
     ['a public interface', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '203.0.113.10' }],
     ['a hostname requiring resolution', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: 'executor.internal' }],
     ['port zero', { M365_GRAPH_READ_EXECUTOR_PORT: '0' }],
     ['an out-of-range port', { M365_GRAPH_READ_EXECUTOR_PORT: '65536' }],
   ])('rejects %s', (_label, overrides) => {
     expect(() => loadExecutorConfig(validEnv(overrides))).toThrow(/BIND_HOST|PORT/);
+  });
+
+  it.each([
+    '10.0.0.0',
+    '10.255.255.255',
+    '172.16.0.0',
+    '172.31.255.255',
+    '192.168.0.0',
+    '192.168.255.255',
+    'fc00::',
+    'fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
+  ])('accepts the RFC1918/ULA private boundary address %s', (bindHost) => {
+    expect(loadExecutorConfig(validEnv({
+      M365_GRAPH_READ_EXECUTOR_BIND_HOST: bindHost,
+    })).bindHost).toBe(bindHost);
   });
 
   it.each([

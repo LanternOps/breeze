@@ -54,16 +54,13 @@ function privateBindAddress(value: string): boolean {
   if (version === 4) {
     const [first, second = -1] = value.split('.').map(Number);
     return first === 10
-      || first === 127
       || (first === 172 && second >= 16 && second <= 31)
       || (first === 192 && second === 168);
   }
   if (version === 6) {
     const normalized = value.toLowerCase();
-    return normalized === '::1'
-      || normalized.startsWith('fc')
-      || normalized.startsWith('fd')
-      || /^fe[89ab]/.test(normalized);
+    return !normalized.includes('%')
+      && (normalized.startsWith('fc') || normalized.startsWith('fd'));
   }
   return false;
 }
