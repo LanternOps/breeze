@@ -18,7 +18,7 @@ import {
 import { Pax8ApiError } from '../../services/pax8Client';
 import { createPax8OrderSubmitService } from '../../services/pax8OrderSubmit';
 import { pax8OrderSubmitRepository } from '../../services/pax8OrderSubmitRepository';
-import { updateOrderLine } from '../../services/pax8OrderService';
+import { removeOrderLine, updateOrderLine } from '../../services/pax8OrderService';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -173,8 +173,12 @@ function successfulClient() {
   };
 }
 
-async function seedChangeOrder(options: { baseline: string | null; current: string }) {
-  const fixture = await seedOrder({ action: 'cancel' });
+async function seedChangeOrder(options: {
+  baseline: string | null;
+  current: string;
+  source?: 'direct' | 'quote';
+}) {
+  const fixture = await seedOrder({ action: 'cancel', source: options.source });
   await withSystemDbAccessContext(async () => {
     await db.update(contractLines)
       .set({ manualQuantity: options.current })
@@ -290,7 +294,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
   });
 
   runDb('fails closed when the manual quantity changed after direction authorization', async () => {
-    const fixture = await seedChangeOrder({ baseline: '10.00', current: '20.00' });
+    const fixture = await seedChangeOrder({ baseline: '10.00', current: '20.00', source: 'direct' });
     const client = successfulClient();
     const { service, createClient } = serviceHarness(client);
 
@@ -308,13 +312,39 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       const [billing] = await db.select().from(contractLines).where(eq(contractLines.id, fixture.contractLine.id));
       return { orderRow, lineRow, billing };
     });
-    expect(state.orderRow?.status).toBe('ready');
+    expect(state.orderRow?.status).toBe('draft');
     expect(state.lineRow?.submitState).toBe('pending');
     expect(state.billing?.manualQuantity).toBe('20.00');
+    await expect(removeOrderLine({
+      partnerId: fixture.partner.id,
+      orderId: fixture.order.id,
+      lineId: fixture.line.id,
+    })).resolves.toEqual({ removed: true });
+    await withSystemDbAccessContext(() => db.insert(pax8OrderLines).values({
+      orderId: fixture.order.id,
+      partnerId: fixture.partner.id,
+      orgId: fixture.org.id,
+      action: 'change_quantity',
+      targetSubscriptionId: 'subscription-cancel',
+      quantity: '25.00',
+      authorizedBaselineQuantity: '20.00',
+      contractLineId: fixture.contractLine.id,
+    }));
+    const restagedClient = successfulClient();
+    await serviceWithClient(restagedClient).submitOrder({
+      partnerId: fixture.partner.id,
+      orderId: fixture.order.id,
+      actorUserId: fixture.user.id,
+    });
+    expect(restagedClient.updateSubscriptionQuantity)
+      .toHaveBeenCalledWith('subscription-cancel', 25);
+    const [restagedBilling] = await withSystemDbAccessContext(() => db.select()
+      .from(contractLines).where(eq(contractLines.id, fixture.contractLine.id)));
+    expect(restagedBilling?.manualQuantity).toBe('25.00');
   });
 
   runDb('fails closed for a legacy quantity change without an authorization baseline', async () => {
-    const fixture = await seedChangeOrder({ baseline: null, current: '10.00' });
+    const fixture = await seedChangeOrder({ baseline: null, current: '10.00', source: 'direct' });
     const client = successfulClient();
 
     await expect(serviceWithClient(client).submitOrder({
@@ -323,6 +353,14 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       actorUserId: fixture.user.id,
     })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('baseline') });
     expect(client.updateSubscriptionQuantity).not.toHaveBeenCalled();
+    const [orderAfter] = await withSystemDbAccessContext(() => db.select()
+      .from(pax8Orders).where(eq(pax8Orders.id, fixture.order.id)));
+    expect(orderAfter?.status).toBe('draft');
+    await expect(removeOrderLine({
+      partnerId: fixture.partner.id,
+      orderId: fixture.order.id,
+      lineId: fixture.line.id,
+    })).resolves.toEqual({ removed: true });
   });
 
   runDb('submits an unchanged authorized baseline and records the new billing quantity', async () => {

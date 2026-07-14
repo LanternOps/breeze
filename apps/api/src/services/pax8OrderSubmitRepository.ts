@@ -14,6 +14,7 @@ import {
 } from '../db/schema';
 import {
   Pax8OrderError,
+  Pax8OrderRestageRequiredError,
   requireImmediateCancelDate,
   validateDirectOrderLinesForSubmit,
   type Pax8OrderLineRow,
@@ -283,7 +284,7 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
     // forced RLS permits the exact contract-line integrity join.
     const discovered = await withPartnerDbContext(input.partnerId, () =>
       findOrder(input.partnerId, input.orderId));
-    return withOrderScopeDbContext(input.partnerId, discovered.orgId, async () => {
+    const outcome = await withOrderScopeDbContext(input.partnerId, discovered.orgId, async () => {
       const existing = await findOrder(input.partnerId, input.orderId);
       if (existing.orgId !== discovered.orgId) {
         throw new Pax8OrderError('The Pax8 order organization changed while claiming it.', 409);
@@ -331,15 +332,54 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
       for (const line of lines) {
         if (line.action === 'cancel') requireImmediateCancelDate(line.cancelDate);
       }
-      lines = await validateDirectOrderLinesForSubmit(claimed, lines);
+      try {
+        lines = await validateDirectOrderLinesForSubmit(claimed, lines);
+      } catch (error) {
+        if (!(error instanceof Pax8OrderRestageRequiredError) || claimed.source !== 'direct') throw error;
+        const reset = await db
+          .update(pax8Orders)
+          .set({
+            status: 'draft',
+            submittedBy: null,
+            submittedAt: null,
+            error: error.message,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(pax8Orders.id, claimed.id),
+            eq(pax8Orders.partnerId, claimed.partnerId),
+            eq(pax8Orders.orgId, claimed.orgId),
+            eq(pax8Orders.integrationId, claimed.integrationId),
+            eq(pax8Orders.source, 'direct'),
+            eq(pax8Orders.status, 'submitting'),
+            eq(pax8Orders.submittedAt, claimed.submittedAt!),
+            sql`NOT EXISTS (
+              SELECT 1 FROM pax8_order_lines pol
+              WHERE pol.order_id = ${pax8Orders.id}
+                AND pol.partner_id = ${pax8Orders.partnerId}
+                AND pol.org_id = ${pax8Orders.orgId}
+                AND pol.submit_state <> 'pending'
+            )`,
+          ))
+          .returning({ id: pax8Orders.id });
+        if (reset.length !== 1) {
+          throw new Pax8OrderError(
+            'The Pax8 order could not be safely reopened for restaging; reconcile it before retrying.',
+            409,
+          );
+        }
+        return { restageError: error } as const;
+      }
       const targets = lines
         .filter((line) => line.action !== 'new_subscription')
         .map((line) => line.targetSubscriptionId);
       if (targets.some((target, index) => target !== null && targets.indexOf(target) !== index)) {
         throw new Pax8OrderError('Only one change or cancellation may target a Pax8 subscription per order.', 422);
       }
-      return { order: claimed, lines };
+      return { bundle: { order: claimed, lines } } as const;
     });
+    if ('restageError' in outcome) throw outcome.restageError;
+    return outcome.bundle;
   },
 
   createClient(bundle) {

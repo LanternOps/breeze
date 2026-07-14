@@ -32,6 +32,13 @@ export class Pax8OrderError extends Error {
   }
 }
 
+export class Pax8OrderRestageRequiredError extends Pax8OrderError {
+  constructor(message: string) {
+    super(message, 409);
+    this.name = 'Pax8OrderRestageRequiredError';
+  }
+}
+
 export type Pax8OrderRow = typeof pax8Orders.$inferSelect;
 export type Pax8OrderLineRow = typeof pax8OrderLines.$inferSelect;
 
@@ -464,15 +471,13 @@ export async function validateDirectOrderLinesForSubmit(
     }
     if (line.action === 'change_quantity') {
       if (line.authorizedBaselineQuantity === null) {
-        throw new Pax8OrderError(
+        throw new Pax8OrderRestageRequiredError(
           'This legacy quantity change has no authorization baseline; remove and stage it again.',
-          409,
         );
       }
       if (!sameNumericQuantity(line.authorizedBaselineQuantity, linked.manualQuantity)) {
-        throw new Pax8OrderError(
+        throw new Pax8OrderRestageRequiredError(
           'The linked Breeze contract quantity changed since this Pax8 action was authorized; remove and stage it again.',
-          409,
         );
       }
     }

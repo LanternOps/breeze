@@ -18,8 +18,10 @@ vi.mock('./pax8OrderService', () => {
       super(message);
     }
   }
+  class Pax8OrderRestageRequiredError extends Pax8OrderError {}
   return {
     Pax8OrderError,
+    Pax8OrderRestageRequiredError,
     requireImmediateCancelDate: vi.fn(),
     validateDirectOrderLinesForSubmit: mocks.validateLines,
   };
@@ -111,5 +113,84 @@ describe('pax8OrderSubmitRepository.claimOrder', () => {
     expect(mocks.events.indexOf('parent-claimed')).toBeLessThan(mocks.events.indexOf('lines-read'));
     expect(mocks.events.indexOf('lines-read')).toBeLessThan(mocks.events.indexOf('lines-validated'));
     expect(bundle.lines).toEqual([patchedLine]);
+  });
+
+  it('commits a safe direct ready-to-draft recovery before surfacing a baseline conflict', async () => {
+    const directOrder = { ...order, source: 'direct' as const };
+    const legacyLine = {
+      id: 'line-legacy', orderId: order.id, partnerId: order.partnerId, orgId: order.orgId,
+      action: 'change_quantity', submitState: 'pending', targetSubscriptionId: 'sub-1',
+      contractLineId: 'contract-line-1', authorizedBaselineQuantity: null,
+    };
+    mocks.db.select
+      .mockReturnValueOnce(selectChain([directOrder], 'limit'))
+      .mockReturnValueOnce(selectChain([directOrder], 'limit'))
+      .mockReturnValueOnce(selectChain([{
+        pax8CompanyId: 'company-1', status: 'Active', metadata: READY_METADATA,
+      }], 'for'))
+      .mockReturnValueOnce(selectChain([legacyLine], 'orderBy'));
+    const claimedAt = new Date('2026-07-14T12:00:00.000Z');
+    const claimReturning = vi.fn(async () => [{
+      ...directOrder, status: 'submitting', submittedAt: claimedAt,
+    }]);
+    const resetReturning = vi.fn(async () => {
+      mocks.events.push('draft-reset-committed');
+      return [{ id: order.id }];
+    });
+    const claimSet = vi.fn(() => ({ where: vi.fn(() => ({ returning: claimReturning })) }));
+    const resetSet = vi.fn(() => ({ where: vi.fn(() => ({ returning: resetReturning })) }));
+    mocks.db.update
+      .mockReturnValueOnce({ set: claimSet })
+      .mockReturnValueOnce({ set: resetSet });
+    const { Pax8OrderRestageRequiredError } = await import('./pax8OrderService');
+    mocks.validateLines.mockRejectedValueOnce(new Pax8OrderRestageRequiredError(
+      'This legacy quantity change has no authorization baseline; remove and stage it again.',
+      409,
+    ));
+
+    await expect(pax8OrderSubmitRepository.claimOrder({
+      partnerId: order.partnerId,
+      orderId: order.id,
+      actorUserId: 'actor-1',
+    })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('stage it again') });
+
+    expect(resetSet).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'draft', submittedBy: null, submittedAt: null,
+    }));
+    expect(mocks.events).toContain('draft-reset-committed');
+  });
+
+  it('never demotes a quote order for a restage-required conflict', async () => {
+    const quoteLine = {
+      id: 'line-quote', orderId: order.id, partnerId: order.partnerId, orgId: order.orgId,
+      action: 'change_quantity', submitState: 'pending', targetSubscriptionId: 'sub-1',
+      contractLineId: 'contract-line-1', authorizedBaselineQuantity: null,
+    };
+    mocks.db.select
+      .mockReturnValueOnce(selectChain([order], 'limit'))
+      .mockReturnValueOnce(selectChain([order], 'limit'))
+      .mockReturnValueOnce(selectChain([{
+        pax8CompanyId: 'company-1', status: 'Active', metadata: READY_METADATA,
+      }], 'for'))
+      .mockReturnValueOnce(selectChain([quoteLine], 'orderBy'));
+    const claimReturning = vi.fn(async () => [{
+      ...order, status: 'submitting', submittedAt: new Date('2026-07-14T12:00:00.000Z'),
+    }]);
+    mocks.db.update.mockReturnValueOnce({
+      set: vi.fn(() => ({ where: vi.fn(() => ({ returning: claimReturning })) })),
+    });
+    const { Pax8OrderRestageRequiredError } = await import('./pax8OrderService');
+    mocks.validateLines.mockRejectedValueOnce(new Pax8OrderRestageRequiredError(
+      'Quote conflict must remain non-actionable.',
+      409,
+    ));
+
+    await expect(pax8OrderSubmitRepository.claimOrder({
+      partnerId: order.partnerId,
+      orderId: order.id,
+      actorUserId: 'actor-1',
+    })).rejects.toMatchObject({ status: 409 });
+
+    expect(mocks.db.update).toHaveBeenCalledTimes(1);
   });
 });
