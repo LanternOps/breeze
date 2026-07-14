@@ -119,7 +119,9 @@ export const sites = pgTable('sites', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
-});
+}, (table) => ({
+  idOrgUnique: uniqueIndex('sites_id_org_id_uniq').on(table.id, table.orgId),
+}));
 
 export const enrollmentKeys = pgTable('enrollment_keys', {
   id: uuid('id').primaryKey().defaultRandom(),

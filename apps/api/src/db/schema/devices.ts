@@ -127,7 +127,9 @@ export const devices = pgTable('devices', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
-});
+}, (table) => ({
+  idOrgUnique: uniqueIndex('devices_id_org_id_uniq').on(table.id, table.orgId),
+}));
 
 // Linked device profiles for multi-boot systems (#2138). One row per physical
 // machine whose OS boot profiles are surfaced as separate device records. This
