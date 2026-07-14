@@ -259,7 +259,8 @@
     "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Buchhaltungsintegrationen sind nur für Partnerkonten verfügbar.",
     "theUniFiNetworkIntegrationIsAvailableToPartner": "Die UniFi-Netzwerkintegration ist nur für Partnerkonten verfügbar.",
     "psa": "PSA",
-    "viewNameDocumentation": "{{name}} Dokumentation ansehen"
+    "viewNameDocumentation": "{{name}} Dokumentation ansehen",
+    "tdSYNNEXPriceFile": "TD SYNNEX Preisdatei"
   },
   "linkSubscriptionPicker": {
     "couldNotLoadContractsForThisOrganizationClose": "Die Verträge für diese Organisation konnten nicht geladen werden. Schließen und erneut versuchen.",
