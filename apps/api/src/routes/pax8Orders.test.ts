@@ -184,6 +184,7 @@ describe('Pax8 order route security and tenancy', () => {
     state.permissionDenied = true;
     expect((await request('/orders')).status).toBe(403);
     expect(mocks.listPax8Orders).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it('rejects organization scope with the ordering-specific message', async () => {
@@ -238,6 +239,7 @@ describe('Pax8 order route security and tenancy', () => {
     const submit = await request(`/orders/${ORDER_ID}/submit`, { method: 'POST' });
     expect(submit.status).toBe(403);
     expect(mocks.submitOrder).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });
 
   it('requires MFA on every POST and DELETE action', async () => {
@@ -255,6 +257,7 @@ describe('Pax8 order route security and tenancy', () => {
     }
     expect(mocks.getOrCreateDraftOrder).not.toHaveBeenCalled();
     expect(mocks.submitOrder).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });
 });
 
@@ -282,6 +285,18 @@ describe('Pax8 order route handlers', () => {
     }));
   });
 
+  it('audits a create service failure only after org authorization', async () => {
+    mocks.getOrCreateDraftOrder.mockRejectedValueOnce(new Pax8OrderError('No mapping.', 409));
+    const res = await request('/orders', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ orgId: ORG_A }),
+    });
+    expect(res.status).toBe(409);
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_A, action: 'pax8.order.create', result: 'failure',
+      details: { partnerId: PARTNER_A, status: 409, errorClass: 'Pax8OrderError' },
+    }));
+  });
+
   it('adds and removes lines, returning 404 when no line was removed', async () => {
     const add = await request(`/orders/${ORDER_ID}/lines`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -295,7 +310,11 @@ describe('Pax8 order route handlers', () => {
     mocks.removeOrderLine.mockResolvedValueOnce({ removed: false });
     const missing = await request(`/orders/${ORDER_ID}/lines/${LINE_ID}`, { method: 'DELETE' });
     expect(missing.status).toBe(404);
-    expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(2);
+    expect(mocks.writeRouteAudit).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+      action: 'pax8.order.line.delete', result: 'failure',
+      details: { partnerId: PARTNER_A, lineId: LINE_ID, status: 404, errorClass: 'NotFound' },
+    }));
   });
 
   it('maps Pax8OrderError status and message exactly', async () => {
@@ -303,6 +322,74 @@ describe('Pax8 order route handlers', () => {
     const res = await request(`/orders/${ORDER_ID}/submit`, { method: 'POST' });
     expect(res.status).toBe(409);
     await expect(res.json()).resolves.toEqual({ error: 'Order is already submitting.' });
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'pax8.order.submit', result: 'failure',
+      details: { partnerId: PARTNER_A, status: 409, errorClass: 'Pax8OrderError' },
+    }));
+  });
+
+  it('uses the same bounded failure audit for every authorized order operation', async () => {
+    const cases: Array<{
+      service: typeof mocks.addOrderLine;
+      path: string;
+      init: RequestInit;
+      action: string;
+      safeDetails?: Record<string, unknown>;
+    }> = [
+      {
+        service: mocks.addOrderLine,
+        path: `/orders/${ORDER_ID}/lines`,
+        init: {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'cancel', targetSubscriptionId: 'sub-1' }),
+        },
+        action: 'pax8.order.line.create',
+        safeDetails: { lineAction: 'cancel' },
+      },
+      {
+        service: mocks.removeOrderLine,
+        path: `/orders/${ORDER_ID}/lines/${LINE_ID}`,
+        init: { method: 'DELETE' },
+        action: 'pax8.order.line.delete',
+        safeDetails: { lineId: LINE_ID },
+      },
+      {
+        service: mocks.preflightOrder,
+        path: `/orders/${ORDER_ID}/preflight`,
+        init: { method: 'POST' },
+        action: 'pax8.order.preflight',
+      },
+      {
+        service: mocks.submitOrder,
+        path: `/orders/${ORDER_ID}/submit`,
+        init: { method: 'POST' },
+        action: 'pax8.order.submit',
+      },
+      {
+        service: mocks.reconcileOrder,
+        path: `/orders/${ORDER_ID}/reconcile`,
+        init: { method: 'POST' },
+        action: 'pax8.order.reconcile',
+      },
+    ];
+
+    for (const scenario of cases) {
+      mocks.writeRouteAudit.mockClear();
+      scenario.service.mockRejectedValueOnce(new Pax8OrderError('Rejected.', 422));
+      const res = await request(scenario.path, scenario.init);
+      expect(res.status, scenario.action).toBe(422);
+      expect(mocks.writeRouteAudit, scenario.action).toHaveBeenCalledTimes(1);
+      expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: scenario.action,
+        result: 'failure',
+        details: {
+          partnerId: PARTNER_A,
+          ...scenario.safeDetails,
+          status: 422,
+          errorClass: 'Pax8OrderError',
+        },
+      }));
+    }
   });
 
   it('returns raw preflight validation bodies with 422 and audits the failed outcome', async () => {
@@ -336,7 +423,7 @@ describe('Pax8 order route handlers', () => {
     expect(res.status).toBe(200);
     expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'pax8.order.submit', result: 'failure',
-      details: expect.objectContaining({ status: 'failed' }),
+      details: { partnerId: PARTNER_A, status: 200, errorClass: 'OrderResultNotCompleted' },
     }));
   });
 
@@ -347,6 +434,32 @@ describe('Pax8 order route handlers', () => {
     });
     expect(badLine.status).toBe(400);
     expect(mocks.addOrderLine).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('preserves a raw Pax8ApiError response but excludes its body from failure audit metadata', async () => {
+    const raw = '{"details":[{"secretProvisioningValue":"do-not-audit"}]}';
+    mocks.submitOrder.mockRejectedValueOnce(new Pax8ApiError('vendor failure', 422, raw));
+    const res = await request(`/orders/${ORDER_ID}/submit`, { method: 'POST' });
+    expect(res.status).toBe(502);
+    expect(await res.text()).toBe(raw);
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'pax8.order.submit', result: 'failure',
+      details: { partnerId: PARTNER_A, status: 502, errorClass: 'Pax8ApiError' },
+    }));
+    expect(JSON.stringify(mocks.writeRouteAudit.mock.calls)).not.toContain('do-not-audit');
+  });
+
+  it('audits an unexpected authorized mutation failure without its message or stack', async () => {
+    mocks.reconcileOrder.mockRejectedValueOnce(new Error('postgresql://user:secret@internal/orders'));
+    const res = await request(`/orders/${ORDER_ID}/reconcile`, { method: 'POST' });
+    expect(res.status).toBe(500);
+    const audit = mocks.writeRouteAudit.mock.calls[0]?.[1];
+    expect(audit).toMatchObject({
+      action: 'pax8.order.reconcile', result: 'failure',
+      details: { partnerId: PARTNER_A, status: 500, errorClass: 'UnexpectedError' },
+    });
+    expect(JSON.stringify(audit)).not.toContain('secret');
   });
 
   it('returns a generic 500 without leaking unexpected service errors', async () => {

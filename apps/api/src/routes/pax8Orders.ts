@@ -159,7 +159,7 @@ function auditOrderAction(
     action: string;
     partnerId: string;
     orgId: string;
-    orderId: string;
+    orderId?: string;
     result?: 'success' | 'failure';
     details?: Record<string, unknown>;
   },
@@ -172,6 +172,50 @@ function auditOrderAction(
     result: input.result,
     details: { partnerId: input.partnerId, ...input.details },
   });
+}
+
+type FailureClass =
+  | 'Pax8OrderError'
+  | 'Pax8ApiError'
+  | 'UnexpectedError'
+  | 'NotFound'
+  | 'Pax8Validation'
+  | 'OrderResultNotCompleted'
+  | 'ReconciliationIncomplete';
+
+function classifyFailure(error: unknown): { status: number; errorClass: FailureClass } {
+  if (error instanceof Pax8OrderError) return { status: error.status, errorClass: 'Pax8OrderError' };
+  if (error instanceof Pax8ApiError) return { status: 502, errorClass: 'Pax8ApiError' };
+  return { status: 500, errorClass: 'UnexpectedError' };
+}
+
+function auditOrderFailure(
+  c: Context,
+  input: Omit<Parameters<typeof auditOrderAction>[1], 'result'>,
+  failure: { status: number; errorClass: FailureClass },
+): void {
+  auditOrderAction(c, {
+    ...input,
+    result: 'failure',
+    details: { ...input.details, ...failure },
+  });
+}
+
+async function runAuditedMutation<T>(
+  c: Context,
+  audit: Omit<Parameters<typeof auditOrderAction>[1], 'result'>,
+  operation: () => Promise<T>,
+): Promise<{ value: T } | { response: Response }> {
+  try {
+    return { value: await operation() };
+  } catch (error) {
+    // The route audit is deliberately fire-and-forget, matching every existing
+    // writeRouteAudit call. It receives only a bounded classification; response
+    // mapping still receives the original error so raw Pax8 bodies reach the
+    // caller but can never enter audit metadata.
+    auditOrderFailure(c, audit, classifyFailure(error));
+    return { response: routeError(c, error) };
+  }
 }
 
 pax8OrderRoutes.use('*', authMiddleware);
@@ -248,20 +292,20 @@ pax8OrderRoutes.post(
     const partner = resolvePartnerId(auth, query.partnerId);
     if ('error' in partner) return c.json({ error: partner.error }, partner.status);
     if (!auth.canAccessOrg(body.orgId)) return c.json({ error: 'Access to this organization denied.' }, 403);
-    try {
-      const order = await getOrCreateDraftOrder({
+    const mutation = await runAuditedMutation(c, {
+      action: 'pax8.order.create', partnerId: partner.partnerId, orgId: body.orgId,
+    }, () => getOrCreateDraftOrder({
         partnerId: partner.partnerId,
         orgId: body.orgId,
         actorUserId: auth.user.id,
-      });
-      auditOrderAction(c, {
-        action: 'pax8.order.create', partnerId: partner.partnerId,
-        orgId: order.orgId, orderId: order.id,
-      });
-      return c.json({ data: order }, 201);
-    } catch (error) {
-      return routeError(c, error);
-    }
+      }));
+    if ('response' in mutation) return mutation.response;
+    const order = mutation.value;
+    auditOrderAction(c, {
+      action: 'pax8.order.create', partnerId: partner.partnerId,
+      orgId: order.orgId, orderId: order.id,
+    });
+    return c.json({ data: order }, 201);
   },
 );
 
@@ -280,18 +324,24 @@ pax8OrderRoutes.post(
     const body = c.req.valid('json');
     const partner = resolvePartnerId(auth, query.partnerId);
     if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    let bundle: Awaited<ReturnType<typeof loadAuthorizedOrder>>;
     try {
-      const bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
-      const line = await addOrderLine({ partnerId: partner.partnerId, orderId: id, ...body });
-      auditOrderAction(c, {
-        action: 'pax8.order.line.create', partnerId: partner.partnerId,
-        orgId: bundle.order.orgId, orderId: id,
-        details: { lineId: line.id, lineAction: line.action },
-      });
-      return c.json({ data: line }, 201);
+      bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
     } catch (error) {
       return routeError(c, error);
     }
+    const mutation = await runAuditedMutation(c, {
+      action: 'pax8.order.line.create', partnerId: partner.partnerId,
+      orgId: bundle.order.orgId, orderId: id, details: { lineAction: body.action },
+    }, () => addOrderLine({ partnerId: partner.partnerId, orderId: id, ...body }));
+    if ('response' in mutation) return mutation.response;
+    const line = mutation.value;
+    auditOrderAction(c, {
+      action: 'pax8.order.line.create', partnerId: partner.partnerId,
+      orgId: bundle.order.orgId, orderId: id,
+      details: { lineId: line.id, lineAction: line.action },
+    });
+    return c.json({ data: line }, 201);
   },
 );
 
@@ -308,18 +358,25 @@ pax8OrderRoutes.delete(
     const { id, lineId } = c.req.valid('param');
     const partner = resolvePartnerId(auth, query.partnerId);
     if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    let bundle: Awaited<ReturnType<typeof loadAuthorizedOrder>>;
     try {
-      const bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
-      const result = await removeOrderLine({ partnerId: partner.partnerId, orderId: id, lineId });
-      if (!result.removed) return c.json({ error: 'Pax8 order line not found.' }, 404);
-      auditOrderAction(c, {
-        action: 'pax8.order.line.delete', partnerId: partner.partnerId,
-        orgId: bundle.order.orgId, orderId: id, details: { lineId },
-      });
-      return c.json({ removed: true });
+      bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
     } catch (error) {
       return routeError(c, error);
     }
+    const audit = {
+      action: 'pax8.order.line.delete', partnerId: partner.partnerId,
+      orgId: bundle.order.orgId, orderId: id, details: { lineId },
+    };
+    const mutation = await runAuditedMutation(c, audit, () =>
+      removeOrderLine({ partnerId: partner.partnerId, orderId: id, lineId }));
+    if ('response' in mutation) return mutation.response;
+    if (!mutation.value.removed) {
+      auditOrderFailure(c, audit, { status: 404, errorClass: 'NotFound' });
+      return c.json({ error: 'Pax8 order line not found.' }, 404);
+    }
+    auditOrderAction(c, { ...audit, result: 'success' });
+    return c.json({ removed: true });
   },
 );
 
@@ -336,18 +393,26 @@ pax8OrderRoutes.post(
     const { id } = c.req.valid('param');
     const partner = resolvePartnerId(auth, query.partnerId);
     if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    let bundle: Awaited<ReturnType<typeof loadAuthorizedOrder>>;
     try {
-      const bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
-      const result = await preflightOrder({ partnerId: partner.partnerId, orderId: id });
-      auditOrderAction(c, {
-        action: 'pax8.order.preflight', partnerId: partner.partnerId,
-        orgId: bundle.order.orgId, orderId: id, result: result.ok ? 'success' : 'failure',
-      });
-      if (!result.ok) return rawBody(c, result.errorBody, 422);
-      return c.json(result);
+      bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
     } catch (error) {
       return routeError(c, error);
     }
+    const audit = {
+      action: 'pax8.order.preflight', partnerId: partner.partnerId,
+      orgId: bundle.order.orgId, orderId: id,
+    };
+    const mutation = await runAuditedMutation(c, audit, () =>
+      preflightOrder({ partnerId: partner.partnerId, orderId: id }));
+    if ('response' in mutation) return mutation.response;
+    const result = mutation.value;
+    if (!result.ok) {
+      auditOrderFailure(c, audit, { status: 422, errorClass: 'Pax8Validation' });
+      return rawBody(c, result.errorBody, 422);
+    }
+    auditOrderAction(c, { ...audit, result: 'success' });
+    return c.json(result);
   },
 );
 
@@ -364,19 +429,30 @@ pax8OrderRoutes.post(
     const { id } = c.req.valid('param');
     const partner = resolvePartnerId(auth, query.partnerId);
     if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    let bundle: Awaited<ReturnType<typeof loadAuthorizedOrder>>;
     try {
-      const bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
-      const result = await submitOrder({ partnerId: partner.partnerId, orderId: id, actorUserId: auth.user.id });
-      auditOrderAction(c, {
-        action: 'pax8.order.submit', partnerId: partner.partnerId,
-        orgId: bundle.order.orgId, orderId: id,
-        result: result.status === 'completed' ? 'success' : 'failure',
-        details: { status: result.status },
-      });
-      return c.json(result);
+      bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
     } catch (error) {
       return routeError(c, error);
     }
+    const audit = {
+      action: 'pax8.order.submit', partnerId: partner.partnerId,
+      orgId: bundle.order.orgId, orderId: id,
+    };
+    const mutation = await runAuditedMutation(c, audit, () =>
+      submitOrder({ partnerId: partner.partnerId, orderId: id, actorUserId: auth.user.id }));
+    if ('response' in mutation) return mutation.response;
+    const result = mutation.value;
+    if (result.status === 'completed') {
+      auditOrderAction(c, {
+        ...audit,
+        result: 'success',
+        details: { status: result.status },
+      });
+    } else {
+      auditOrderFailure(c, audit, { status: 200, errorClass: 'OrderResultNotCompleted' });
+    }
+    return c.json(result);
   },
 );
 
@@ -393,19 +469,29 @@ pax8OrderRoutes.post(
     const { id } = c.req.valid('param');
     const partner = resolvePartnerId(auth, query.partnerId);
     if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    let bundle: Awaited<ReturnType<typeof loadAuthorizedOrder>>;
     try {
-      const bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
-      const result = await reconcileOrder({ partnerId: partner.partnerId, orderId: id });
-      auditOrderAction(c, {
-        action: 'pax8.order.reconcile', partnerId: partner.partnerId,
-        orgId: bundle.order.orgId, orderId: id,
-        result: result.stillUnknown === 0 ? 'success' : 'failure',
-        details: { resolved: result.resolved, stillUnknown: result.stillUnknown },
-      });
-      return c.json(result);
+      bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
     } catch (error) {
       return routeError(c, error);
     }
+    const audit = {
+      action: 'pax8.order.reconcile', partnerId: partner.partnerId,
+      orgId: bundle.order.orgId, orderId: id,
+    };
+    const mutation = await runAuditedMutation(c, audit, () =>
+      reconcileOrder({ partnerId: partner.partnerId, orderId: id }));
+    if ('response' in mutation) return mutation.response;
+    const result = mutation.value;
+    if (result.stillUnknown === 0) {
+      auditOrderAction(c, {
+        ...audit, result: 'success',
+        details: { resolved: result.resolved, stillUnknown: result.stillUnknown },
+      });
+    } else {
+      auditOrderFailure(c, audit, { status: 200, errorClass: 'ReconciliationIncomplete' });
+    }
+    return c.json(result);
   },
 );
 
