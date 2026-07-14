@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
+const selectMock = vi.hoisted(() => vi.fn());
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../db', () => ({
@@ -8,7 +10,7 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
-    select: vi.fn(),
+    select: selectMock,
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn()
@@ -87,6 +89,11 @@ describe('metrics routes', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    selectMock.mockReturnValue({
+      from: () => ({
+        where: () => Promise.resolve([{ count: 0 }]),
+      }),
+    });
     vi.resetModules();
     process.env.METRICS_SCRAPE_TOKEN = 'test-scrape-token';
     const metricsModule = await import('./metrics');
@@ -302,6 +309,11 @@ describe('metrics routes', () => {
   });
 
   it('records backup operational metrics', async () => {
+    selectMock.mockReturnValueOnce({
+      from: () => ({
+        where: () => Promise.resolve([{ count: 3 }]),
+      }),
+    });
     recordBackupDispatchFailure('manual_restore', 'device_offline');
     recordBackupCommandTimeout('mssql_backup', 'sync_wait');
     recordBackupVerificationResult('test_restore', 'failed');

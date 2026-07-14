@@ -14,7 +14,7 @@ import { deviceMetrics, devices, metricRollups, recoveryReadiness as recoveryRea
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { PERMISSIONS } from '../services/permissions';
-import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/verificationService';
+import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/constants';
 import {
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
