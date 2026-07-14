@@ -28,6 +28,7 @@ import {
   generateVerificationToken,
   consumeVerificationToken,
 } from '../../services/emailVerification';
+import { requestPendingEmailChange } from '../../services/pendingEmail';
 import { createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -35,7 +36,9 @@ async function readUser(userId: string) {
   const [row] = await getTestDb()
     .select({
       email: users.email,
+      pendingEmail: users.pendingEmail,
       emailEpoch: users.emailEpoch,
+      authEpoch: users.authEpoch,
       emailVerifiedAt: users.emailVerifiedAt,
     })
     .from(users)
@@ -193,16 +196,30 @@ describe('email_epoch generation gate — real Postgres (#2428)', () => {
 });
 
 // ============================================================================
-// Real HTTP-route coverage for PATCH /users/me. The suites above exercise the
-// service gate; this one exercises the ROUTE, and specifically its RLS claim:
-// the email write, the epoch advance and the refresh-family revoke all run in
-// the CALLER's request context (not a system context). Mocked tests cannot
-// prove that — under a wrong context `revokeAllRefreshFamilies` is silently
-// RLS-filtered to zero rows and returns success, which is exactly the trap the
-// route comment says it avoids. middleware/auth is mocked ONLY to inject a
-// pre-built auth context; every write below still goes through real Postgres
-// RLS via the real withDbAccessContext. Pattern mirrors
-// authLifecycle.integration.test.ts.
+// Real HTTP-route coverage for the SR2-17/18 TWO-PHASE email change.
+//
+// BEFORE (the old #2428 shape) PATCH /users/me moved users.email, advanced BOTH
+// epochs and revoked the refresh family — all in the request. Tasks 7 + 8 split
+// that in two:
+//
+//   Phase 1 (initiation, PATCH /users/me): records users.pending_email behind a
+//     recovery-grade step-up, advances email_epoch ONLY. It does NOT move
+//     users.email, does NOT advance auth_epoch and does NOT revoke sessions —
+//     the user stays signed in to go click the link.
+//   Phase 2 (commit, redeeming the purpose='email_change' token): ONE
+//     db.transaction swaps pending_email→email, advances auth+email epochs and
+//     revokes every refresh family with reason 'email-change-committed'.
+//
+// The property the OLD single-phase test guarded — that the sign-out revoke is
+// NOT silently RLS-filtered to zero rows (#1105), i.e. it provably hits real
+// family rows under the correct DB context — did not disappear. It MOVED to the
+// commit. The Phase-2 test below is where that guard now lives: it is the
+// load-bearing assertion, and removing the commit-path revoke turns it RED.
+//
+// middleware/auth is mocked ONLY to inject a pre-built auth context (and to run
+// the handler inside the CALLER's request-scoped withDbAccessContext); the
+// step-up gates are stubbed (see the mock above). Every DB write below still
+// goes through real Postgres RLS. Pattern mirrors authLifecycle.integration.test.ts.
 // ============================================================================
 type AuthCtx = {
   scope: 'partner' | 'organization';
@@ -242,11 +259,27 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
         () => next(),
       );
     },
-    // The caller is passwordless below, so PATCH /me takes the MFA step-up
-    // branch — no Redis-backed password step-up needed.
     hasSatisfiedMfa: () => true,
     requireMfa: () => (_c: any, next: any) => next(),
     requirePermission: () => (_c: any, next: any) => next(),
+  };
+});
+
+// SR2-17/18: PATCH /me email change is gated behind a recovery-grade step-up
+// (current password + a fresh existing-factor grant). Those gates are the
+// province of the ROUTE unit suite (routes/users.test.ts) and the step-up
+// helpers' own tests — NOT this file, whose job is to prove the REAL Postgres /
+// RLS behaviour of the two-phase flow. So we stub the two step-up gates to
+// "satisfied" and let every DB write below hit real Postgres RLS. The Phase-1
+// caller is a normal local-password user (createUser sets a real argon2 hash),
+// so passing currentPassword drives the password branch; the existing-factor
+// step-up is a no-op for this unprotected account anyway.
+vi.mock('../../routes/auth/helpers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../routes/auth/helpers')>();
+  return {
+    ...actual,
+    requireCurrentPasswordStepUp: vi.fn(async () => null),
+    enforceExistingFactorStepUp: vi.fn(async () => null),
   };
 });
 
@@ -259,7 +292,7 @@ async function buildUsersApp() {
   return app;
 }
 
-describe('PATCH /users/me email change — real route, real RLS (#2428)', () => {
+describe('PATCH /users/me email change — real route, real RLS (SR2-17, SR2-18)', () => {
   beforeEach(() => {
     activeAuthContext = null;
   });
@@ -269,19 +302,23 @@ describe('PATCH /users/me email change — real route, real RLS (#2428)', () => 
     vi.clearAllMocks();
   });
 
-  it('advances both epochs, clears verification, and REALLY revokes the refresh family under the caller request context', async () => {
+  // PHASE 1 — initiation. The route records a PENDING address and advances
+  // email_epoch ONLY. It must NOT move users.email, must NOT advance auth_epoch
+  // and must NOT revoke the refresh family: the user stays signed in to go prove
+  // the new address.
+  it('records a PENDING address, advances email_epoch ONLY, and does NOT move users.email or revoke the family', async () => {
     const partner = await createPartner();
     const oldEmail = `route-old-${Date.now()}@example.com`;
-    const user = await createUser({ partnerId: partner.id, email: oldEmail, withMembership: true });
-
-    // Passwordless (SSO-less) user → the handler's MFA step-up branch, which
-    // the mocked hasSatisfiedMfa satisfies. Also verify the original address so
-    // the flag has something to clear.
+    // Local-password user (createUser sets a real argon2 hash). Verify the
+    // original address so we can prove the flag is NOT cleared at initiation.
+    const user = await createUser({
+      partnerId: partner.id,
+      email: oldEmail,
+      password: 'TestPass123!',
+      withMembership: true,
+    });
     await withSystemDbAccessContext(() =>
-      db
-        .update(users)
-        .set({ passwordHash: null, emailVerifiedAt: new Date() })
-        .where(eq(users.id, user.id))
+      db.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, user.id))
     );
 
     const familyId = await mintRefreshTokenFamily(user.id);
@@ -302,35 +339,90 @@ describe('PATCH /users/me email change — real route, real RLS (#2428)', () => 
     const res = await app.request('/users/me', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: newEmail }),
+      body: JSON.stringify({ email: newEmail, currentPassword: 'TestPass123!' }),
     });
 
     expect(res.status).toBe(200);
+    const body = await res.json();
+    // The response surfaces the OLD (still-authoritative) address, the requested
+    // address as pendingEmail, and verificationSent — never an optimistic swap.
+    expect(body.email).toBe(oldEmail);
+    expect(body.pendingEmail).toBe(newEmail);
+    expect(body.verificationSent).toBe(true);
 
     const after = await readUser(user.id);
-    expect(after.email).toBe(newEmail);
+    // users.email UNCHANGED; pending recorded; email_epoch advanced by exactly 1.
+    expect(after.email).toBe(oldEmail);
+    expect(after.pendingEmail).toBe(newEmail);
     expect(after.emailEpoch).toBe(before.emailEpoch + 1);
-    expect(after.emailVerifiedAt).toBeNull();
+    // NOT a sign-out: auth_epoch untouched, verified flag untouched.
+    expect(after.authEpoch).toBe(before.authEpoch);
+    expect(after.emailVerifiedAt).not.toBeNull();
 
-    const [authEpochRow] = await getTestDb()
-      .select({ authEpoch: users.authEpoch })
-      .from(users)
-      .where(eq(users.id, user.id))
+    // The refresh family MUST still be live — initiation never signs the user out.
+    const [family] = await getTestDb()
+      .select({ revokedAt: refreshTokenFamilies.revokedAt })
+      .from(refreshTokenFamilies)
+      .where(eq(refreshTokenFamilies.familyId, familyId))
       .limit(1);
-    expect(authEpochRow!.authEpoch).toBeGreaterThan(1);
+    expect(family!.revokedAt).toBeNull();
+  });
 
-    // The decisive one: the revoke was NOT silently filtered to zero rows.
+  // PHASE 2 — commit. Redeeming the purpose='email_change' token swaps the
+  // pending address in, advances auth+email epochs, and REALLY revokes the
+  // refresh family. This is the RELOCATED #1105 guard: the revoke provably hits
+  // real family rows under the correct DB context. If the commit-path revoke
+  // were removed, family.revokedAt stays null and this test goes RED.
+  it('COMMIT: redeeming the email_change token swaps the address, advances auth+email epochs, and REALLY revokes the refresh family', async () => {
+    const partner = await createPartner();
+    const oldEmail = `commit-old-${Date.now()}@example.com`;
+    const user = await createUser({ partnerId: partner.id, email: oldEmail, withMembership: true });
+
+    // Verify the original address so the swap has a real prior verified state.
+    await withSystemDbAccessContext(() =>
+      db.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, user.id))
+    );
+
+    const familyId = await mintRefreshTokenFamily(user.id);
+    const before = await readUser(user.id);
+
+    // Realistic initiation (what Phase 1's route does) — under a system context
+    // here so the pending write lands past RLS in this contextless test, and to
+    // capture the raw token the route would have emailed.
+    const newEmail = `commit-new-${Date.now()}@example.com`;
+    const { rawToken } = await withSystemDbAccessContext(() =>
+      requestPendingEmailChange({ userId: user.id, partnerId: partner.id, newEmail })
+    );
+
+    // The commit itself.
+    const result = await consumeVerificationToken(rawToken);
+    expect(result).toMatchObject({
+      ok: true,
+      purpose: 'email_change',
+      email: newEmail,
+      previousEmail: oldEmail,
+    });
+
+    const after = await readUser(user.id);
+    // Swap + pending clear.
+    expect(after.email).toBe(newEmail);
+    expect(after.pendingEmail).toBeNull();
+    expect(after.emailVerifiedAt).not.toBeNull();
+    // email_epoch advanced twice total (once at initiation, once at commit);
+    // auth_epoch advanced once — at the commit, never at initiation.
+    expect(after.emailEpoch).toBe(before.emailEpoch + 2);
+    expect(after.authEpoch).toBe(before.authEpoch + 1);
+
+    // THE DECISIVE, RELOCATED #1105 ASSERTION: the sign-out revoke hit the real
+    // family row (not silently RLS-filtered to zero) and stamped the commit
+    // reason. Delete revokeAllRefreshFamilies from the commit and this fails.
     const [family] = await getTestDb()
       .select({ revokedAt: refreshTokenFamilies.revokedAt, reason: refreshTokenFamilies.revokedReason })
       .from(refreshTokenFamilies)
       .where(eq(refreshTokenFamilies.familyId, familyId))
       .limit(1);
     expect(family!.revokedAt).not.toBeNull();
-    expect(family!.reason).toBe('email-change');
-
-    // And the stale link for the old address is now dead end-to-end.
-    const stale = await generateVerificationTokenForOldAddress(partner.id, user.id, oldEmail);
-    expect(await consumeVerificationToken(stale)).toEqual({ ok: false, error: 'address_changed' });
+    expect(family!.reason).toBe('email-change-committed');
   });
 
   it('a name-only PATCH does NOT revoke the refresh family or touch the epochs', async () => {
@@ -372,31 +464,3 @@ describe('PATCH /users/me email change — real route, real RLS (#2428)', () => 
     expect(family!.revokedAt).toBeNull();
   });
 });
-
-/**
- * Mint a token bound to an address the user no longer holds. Done by hand (not
- * via generateVerificationToken, which reads the LIVE epoch and would bind the
- * post-change generation) to reproduce the pre-change link exactly.
- */
-async function generateVerificationTokenForOldAddress(
-  partnerId: string,
-  userId: string,
-  oldEmail: string
-): Promise<string> {
-  const { createHash } = await import('crypto');
-  const raw = `stale-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const tokenHash = createHash('sha256').update(raw).digest('hex');
-
-  await withSystemDbAccessContext(() =>
-    db.insert(emailVerificationTokens).values({
-      tokenHash,
-      partnerId,
-      userId,
-      email: oldEmail,
-      emailEpoch: 1, // the generation in force before the change
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-    })
-  );
-
-  return raw;
-}
