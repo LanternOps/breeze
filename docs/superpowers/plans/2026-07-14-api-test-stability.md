@@ -527,3 +527,35 @@ git commit -m "test(api): isolate migration ordering contract"
 ### Task 13: Final all-green gate
 
 Run the expanded focused set, API lint, direct TypeScript compilation, and then the normal full API suite twice. Both normal runs must pass without a global timeout increase or serial override. Confirm only the pre-existing local hook files remain untracked, then perform the final whole-branch review.
+
+### Task 14: Bound API test worker parallelism
+
+**Files:**
+- Modify: `apps/api/vitest.config.ts`
+
+**Context:** Vitest 4 defaults to `availableParallelism() - 1` fork workers. This host reports 14, so a normal run launches 13 workers; changing unrelated timeout victims, a 240/240 green focused gate, and high aggregate import time demonstrate worker starvation. The public 4-vCPU CI runner similarly benefits from reducing its default three workers to two.
+
+**Requirements:**
+
+- Import `availableParallelism` from `node:os`.
+- Set `maxWorkers` to:
+
+```ts
+Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2)))
+```
+
+- Keep `fileParallelism: true`, the default fork pool, isolation, reporters, and all test/hook timeouts unchanged.
+- Add a focused config test only if the repository has an existing config-test pattern; otherwise TypeScript compilation plus full-suite evidence is the contract.
+
+**Verification and commit:**
+
+```bash
+pnpm --filter @breeze/api exec tsc --noEmit
+pnpm test --filter=@breeze/api
+git add apps/api/vitest.config.ts
+git commit -m "test(api): bound vitest worker parallelism"
+```
+
+### Task 15: Final consecutive green verification
+
+Run the expanded focused set, API lint, direct TypeScript compilation, and two consecutive normal `pnpm test --filter=@breeze/api` commands with no CLI worker override. Both full runs must pass. Record worker count and durations, confirm timeouts remain unchanged, inspect branch scope, and then perform the final whole-branch review.
