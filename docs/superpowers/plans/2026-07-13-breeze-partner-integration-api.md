@@ -550,6 +550,8 @@ Capture counts/duration in the route, leave the held request DB context, then ca
 
 Cursor-walk every resource, require one stable `snapshotAt` per traversal, reject duplicate `(resource, id, orgId)` tuples, record bytes/pages/retries/duration, and fail when the 15-minute incremental budget is exceeded or runs overlap indefinitely. Record 429/5xx and pool saturation separately.
 
+Use the seeded load run and `EXPLAIN (ANALYZE, BUFFERS)` to measure the new material-watermark predicates, including the device/hardware `GREATEST` expression. Add dedicated incremental indexes only where the Task 8 query evidence shows a material scan or sort bottleneck; do not guess at expression or partial indexes before the representative 10,000-device traversal exists.
+
 - [ ] **Step 5: Document setup and recovery**
 
 Document principal creation, the exact minimum scopes, one-time key capture, rotation overlap procedure, revocation, optional trusted source-CIDR behavior, pagination/versioning, blocked-record semantics, rate limits, and disaster recovery. Examples use only placeholders such as `https://breeze.example.com`.

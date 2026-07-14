@@ -12,6 +12,7 @@ const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
 const mocks = vi.hoisted(() => ({
   select: vi.fn(),
   execute: vi.fn(),
+  accessibleOrgIds: [] as string[],
 }));
 
 vi.mock('../../db', () => ({
@@ -26,7 +27,7 @@ vi.mock('../../middleware/partnerApiAuth', () => ({
     if (c.req.header('X-API-Key') !== 'test-key') return c.json({ error: 'authentication required' }, 401);
     c.set('partnerApiPrincipal', {
       partnerId: PARTNER_ID,
-      accessibleOrgIds: [ORG_ID],
+      accessibleOrgIds: mocks.accessibleOrgIds,
       scopes: (c.req.header('X-Test-Scopes') ?? '').split(',').filter(Boolean),
     });
     return next();
@@ -83,6 +84,7 @@ describe('partner organization and site exports', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     results = [];
+    mocks.accessibleOrgIds = [ORG_ID];
     mocks.select.mockImplementation(() => query(results.shift() ?? []));
     mocks.execute.mockResolvedValue([{ snapshotAt: new Date() }]);
     app = new Hono();
@@ -126,6 +128,22 @@ describe('partner organization and site exports', () => {
     expect((await request(`/partner-api${path}`, scope)).status).toBe(200);
     expect(mocks.execute).toHaveBeenCalledOnce();
     expect(mocks.execute.mock.invocationCallOrder[0]).toBeLessThan(mocks.select.mock.invocationCallOrder[0]!);
+  });
+
+  it.each([
+    ['/organizations', 'organizations:read'],
+    ['/sites', 'sites:read'],
+  ])('uses the database snapshot and rejects future updatedSince for empty %s traversal', async (path, scope) => {
+    mocks.accessibleOrgIds = [];
+    mocks.execute.mockResolvedValueOnce([{ snapshotAt: new Date('2026-07-14T12:00:00.000Z') }]);
+    const response = await request(
+      `/partner-api${path}?updatedSince=${encodeURIComponent('2026-07-14T12:00:00.001Z')}`,
+      scope,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_partner_export_pagination' });
+    expect(mocks.execute).toHaveBeenCalledOnce();
+    expect(mocks.select).not.toHaveBeenCalled();
   });
 
   it('exports only narrow organization mapping fields', async () => {

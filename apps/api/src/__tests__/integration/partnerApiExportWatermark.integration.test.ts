@@ -15,11 +15,16 @@ import {
 } from '../../db/schema';
 import { partnerDeviceRoutes } from '../../routes/partnerApi/devices';
 import { partnerOrganizationRoutes } from '../../routes/partnerApi/organizations';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-07-18-partner-export-org-locks.sql');
+const COMPLETION_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-19-partner-export-consistency-completion.sql',
+);
 const STALE_TIMESTAMP = new Date('2000-01-01T00:00:00.000Z');
 
 type ChangeKind = 'membership' | 'device' | 'hardware' | 'site' | 'organization';
@@ -27,12 +32,16 @@ type ChangeKind = 'membership' | 'device' | 'hardware' | 'site' | 'organization'
 describe('partner export transaction watermark serialization', () => {
   runDb('migration is idempotent and documents its lock namespace and order', async () => {
     const migration = readFileSync(MIGRATION_FILE, 'utf8');
+    const completionMigration = readFileSync(COMPLETION_MIGRATION_FILE, 'utf8');
     const db = getTestDb();
     await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
-    await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(completionMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(completionMigration))).resolves.toBeDefined();
     expect(migration).toMatch(/1000201/);
     expect(migration).toMatch(/ORDER BY org_id/);
     expect(migration).toMatch(/pg_advisory_xact_lock_shared/);
+    expect(completionMigration).toMatch(/REFERENCING OLD TABLE AS old_rows/);
+    expect(completionMigration).toMatch(/breeze_partner_export_hardware_delete/);
   });
 
   runDb.each<ChangeKind>(['membership', 'device', 'hardware', 'site', 'organization'])(
@@ -119,6 +128,154 @@ describe('partner export transaction watermark serialization', () => {
     }).where(eq(devices.id, fixture.device.id));
     expect((await sourceUpdatedAt('device', fixture)).getTime()).toBe(before.getTime());
   });
+
+  runDb('database-owned material watermarks cannot be directly regressed', async () => {
+    const fixture = await seedFixture();
+    const context = partnerContext(fixture.partner.id, fixture.org.id);
+    await withDbAccessContext(context, () => appDb.insert(deviceHardware).values({
+      deviceId: fixture.device.id,
+      orgId: fixture.org.id,
+      serialNumber: 'protected-serial',
+    }));
+    const db = getTestDb();
+    const [beforeOrg] = await db.select({ value: organizations.partnerExportUpdatedAt })
+      .from(organizations).where(eq(organizations.id, fixture.org.id));
+    const [beforeSite] = await db.select({ value: sites.partnerExportUpdatedAt })
+      .from(sites).where(eq(sites.id, fixture.site.id));
+    const [beforeDevice] = await db.select({ value: devices.partnerExportUpdatedAt })
+      .from(devices).where(eq(devices.id, fixture.device.id));
+    const [beforeHardware] = await db.select({ value: deviceHardware.partnerExportUpdatedAt })
+      .from(deviceHardware).where(eq(deviceHardware.deviceId, fixture.device.id));
+    if (!beforeOrg || !beforeSite || !beforeDevice || !beforeHardware) throw new Error('watermark baseline missing');
+
+    await withDbAccessContext(context, async () => {
+      await appDb.update(organizations).set({ partnerExportUpdatedAt: STALE_TIMESTAMP })
+        .where(eq(organizations.id, fixture.org.id));
+      await appDb.update(sites).set({ partnerExportUpdatedAt: STALE_TIMESTAMP })
+        .where(eq(sites.id, fixture.site.id));
+      await appDb.update(devices).set({ partnerExportUpdatedAt: STALE_TIMESTAMP })
+        .where(eq(devices.id, fixture.device.id));
+      await appDb.update(deviceHardware).set({ partnerExportUpdatedAt: STALE_TIMESTAMP })
+        .where(eq(deviceHardware.deviceId, fixture.device.id));
+    });
+
+    const [afterOrg] = await db.select({ value: organizations.partnerExportUpdatedAt })
+      .from(organizations).where(eq(organizations.id, fixture.org.id));
+    const [afterSite] = await db.select({ value: sites.partnerExportUpdatedAt })
+      .from(sites).where(eq(sites.id, fixture.site.id));
+    const [afterDevice] = await db.select({ value: devices.partnerExportUpdatedAt })
+      .from(devices).where(eq(devices.id, fixture.device.id));
+    const [afterHardware] = await db.select({ value: deviceHardware.partnerExportUpdatedAt })
+      .from(deviceHardware).where(eq(deviceHardware.deviceId, fixture.device.id));
+    expect(afterOrg?.value.getTime()).toBe(beforeOrg.value.getTime());
+    expect(afterSite?.value.getTime()).toBe(beforeSite.value.getTime());
+    expect(afterDevice?.value.getTime()).toBe(beforeDevice.value.getTime());
+    expect(afterHardware?.value.getTime()).toBe(beforeHardware.value.getTime());
+  });
+
+  runDb('hardware deletion advances the parent device and re-emits null hardware identity', async () => {
+    const fixture = await seedFixture();
+    const context = partnerContext(fixture.partner.id, fixture.org.id);
+    await withDbAccessContext(context, () => appDb.insert(deviceHardware).values({
+      deviceId: fixture.device.id,
+      orgId: fixture.org.id,
+      serialNumber: 'delete-me',
+      manufacturer: 'Breeze Test',
+      model: 'Transient Hardware',
+    }));
+    const baseline = await sourceUpdatedAt('hardware', fixture);
+    await withDbAccessContext(context, () => appDb.delete(deviceHardware)
+      .where(eq(deviceHardware.deviceId, fixture.device.id)));
+
+    const response = await exportApp(fixture).request(
+      `/devices?updatedSince=${encodeURIComponent(baseline.toISOString())}`,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as ExportEnvelope;
+    expect(body.data).toContainEqual(expect.objectContaining({
+      id: fixture.device.id,
+      hardwareIdentity: { serialNumber: null, manufacturer: null, model: null },
+    }));
+  });
+
+  runDb('an open hard organization delete serializes partner export readers', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const context = partnerContext(partner.id, org.id);
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const deleteDone = withDbAccessContext(context, async () => {
+      await appDb.delete(organizations).where(eq(organizations.id, org.id));
+      started.resolve();
+      await release.promise;
+    });
+    await started.promise;
+
+    const request = Promise.resolve(exportAppFor(partner.id, [org.id]).request('/organizations'));
+    let settled = false;
+    void request.finally(() => { settled = true; });
+    await delay(100);
+    const racedPastDelete = settled;
+    release.resolve();
+    const response = await request;
+    await deleteDone;
+    expect(racedPastDelete).toBe(false);
+    expect(response.status).toBe(200);
+  }, 15_000);
+
+  runDb('tenantCascade hard deletion waits for an in-flight export reader', async () => {
+    const partner = await createPartner();
+    const user = await createUser({ partnerId: partner.id });
+    const org = await createOrganization({ partnerId: partner.id });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const reader = withDbAccessContext(partnerContext(partner.id, org.id), async () => {
+      await appDb.execute(sql`SELECT public.breeze_partner_export_lock_partners_shared(
+        ARRAY[${partner.id}::uuid]
+      )`);
+      await appDb.execute(sql`SELECT public.breeze_partner_export_lock_orgs_shared_snapshot(
+        ARRAY[${org.id}::uuid]
+      )`);
+      entered.resolve();
+      await release.promise;
+    });
+    await entered.promise;
+    const cascade = cascadeDeleteOrg(org.id, user.id);
+    await waitForAdvisoryWaiter();
+    release.resolve();
+    await reader;
+    const stats = await cascade;
+    expect(stats.tablesDeleted.organizations).toBe(1);
+    const remaining = await getTestDb().select({ id: organizations.id })
+      .from(organizations).where(eq(organizations.id, org.id));
+    expect(remaining).toEqual([]);
+  }, 20_000);
+
+  runDb('a device and hardware can reacquire the same sorted org locks during one move transaction', async () => {
+    const fixture = await seedFixture();
+    const targetOrg = await createOrganization({ partnerId: fixture.partner.id });
+    const targetSite = await createSite({ orgId: targetOrg.id });
+    await getTestDb().insert(deviceHardware).values({
+      deviceId: fixture.device.id,
+      orgId: fixture.org.id,
+      serialNumber: 'move-me',
+    });
+    const context = {
+      ...partnerContext(fixture.partner.id, fixture.org.id),
+      accessibleOrgIds: [fixture.org.id, targetOrg.id],
+    };
+    await expect(withDbAccessContext(context, async () => {
+      await appDb.update(devices).set({ orgId: targetOrg.id, siteId: targetSite.id })
+        .where(eq(devices.id, fixture.device.id));
+      await appDb.update(deviceHardware).set({ orgId: targetOrg.id })
+        .where(eq(deviceHardware.deviceId, fixture.device.id));
+    })).resolves.toBeUndefined();
+    const [moved] = await getTestDb().select({ deviceOrgId: devices.orgId, hardwareOrgId: deviceHardware.orgId })
+      .from(devices)
+      .innerJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
+      .where(eq(devices.id, fixture.device.id));
+    expect(moved).toEqual({ deviceOrgId: targetOrg.id, hardwareOrgId: targetOrg.id });
+  });
 });
 
 interface Fixture {
@@ -131,7 +288,10 @@ interface Fixture {
 
 interface ExportEnvelope {
   snapshotAt: string;
-  data: Array<{ id: string }>;
+  data: Array<{
+    id: string;
+    hardwareIdentity?: { serialNumber: string | null; manufacturer: string | null; model: string | null };
+  }>;
 }
 
 async function seedFixture(): Promise<Fixture> {
@@ -249,21 +409,28 @@ async function applyChange(kind: ChangeKind, fixture: Fixture): Promise<void> {
 }
 
 function exportApp(fixture: Fixture): Hono {
-  const context = partnerContext(fixture.partner.id, fixture.org.id);
+  return exportAppFor(fixture.partner.id, [fixture.org.id]);
+}
+
+function exportAppFor(partnerId: string, orgIds: string[]): Hono {
+  const context = {
+    ...partnerContext(partnerId, orgIds[0] ?? crypto.randomUUID()),
+    accessibleOrgIds: orgIds,
+  };
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('partnerApiPrincipal', {
       servicePrincipalId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
-      partnerId: fixture.partner.id,
+      partnerId,
       name: 'Watermark integration test',
       scopes: ['organizations:read', 'sites:read', 'devices:read'],
-      accessibleOrgIds: [fixture.org.id],
+      accessibleOrgIds: orgIds,
       rateLimit: 600,
     });
     await withDbAccessContext(context, async () => {
       await appDb.execute(sql`SELECT public.breeze_partner_export_lock_partners_shared(
-        ARRAY[${fixture.partner.id}::uuid]
+        ARRAY[${partnerId}::uuid]
       )`);
       await next();
     });
@@ -296,4 +463,20 @@ function deferred<T>() {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForAdvisoryWaiter(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const rows = await getTestDb().execute(sql`
+      SELECT 1
+        FROM pg_catalog.pg_locks
+       WHERE locktype = 'advisory'
+         AND classid = 1000202
+         AND NOT granted
+       LIMIT 1
+    `);
+    if (rows.length > 0) return;
+    await delay(25);
+  }
+  throw new Error('tenant cascade never waited on the partner export advisory lock');
 }

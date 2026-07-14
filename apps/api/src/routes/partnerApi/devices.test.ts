@@ -11,7 +11,11 @@ const GROUP_ID = '77777777-7777-4777-8777-777777777777';
 const CREATED_AT = new Date('2026-07-10T12:00:00.000Z');
 const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
 
-const mocks = vi.hoisted(() => ({ select: vi.fn(), execute: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  select: vi.fn(),
+  execute: vi.fn(),
+  accessibleOrgIds: [] as string[],
+}));
 vi.mock('../../db', () => ({
   db: { select: mocks.select, execute: mocks.execute },
   hasDbAccessContext: () => true,
@@ -24,7 +28,7 @@ vi.mock('../../middleware/partnerApiAuth', () => ({
     if (c.req.header('X-API-Key') !== 'test-key') return c.json({ error: 'authentication required' }, 401);
     c.set('partnerApiPrincipal', {
       partnerId: PARTNER_ID,
-      accessibleOrgIds: [ORG_ID],
+      accessibleOrgIds: mocks.accessibleOrgIds,
       scopes: (c.req.header('X-Test-Scopes') ?? '').split(',').filter(Boolean),
     });
     return next();
@@ -77,6 +81,7 @@ describe('partner foundational device export', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     results = [];
+    mocks.accessibleOrgIds = [ORG_ID];
     mocks.select.mockImplementation(() => query(results.shift() ?? []));
     mocks.execute.mockResolvedValue([{ snapshotAt: new Date() }]);
     app = new Hono();
@@ -107,6 +112,28 @@ describe('partner foundational device export', () => {
     expect((await request('/partner-api/devices')).status).toBe(200);
     expect(mocks.execute).toHaveBeenCalledOnce();
     expect(mocks.execute.mock.invocationCallOrder[0]).toBeLessThan(mocks.select.mock.invocationCallOrder[0]!);
+  });
+
+  it('uses the database snapshot and rejects future updatedSince for an empty traversal', async () => {
+    mocks.accessibleOrgIds = [];
+    mocks.execute.mockResolvedValueOnce([{ snapshotAt: new Date('2026-07-14T12:00:00.000Z') }]);
+    const response = await request(
+      `/partner-api/devices?updatedSince=${encodeURIComponent('2026-07-14T12:00:00.001Z')}`,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_partner_export_pagination' });
+    expect(mocks.execute).toHaveBeenCalledOnce();
+    expect(mocks.select).not.toHaveBeenCalled();
+  });
+
+  it('maps a future database watermark to the structured pagination error', async () => {
+    mocks.execute.mockResolvedValueOnce([{ snapshotAt: new Date('2026-07-14T12:00:00.000Z') }]);
+    const response = await request(
+      `/partner-api/devices?updatedSince=${encodeURIComponent('2026-07-14T12:00:00.001Z')}`,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_partner_export_pagination' });
+    expect(mocks.select).not.toHaveBeenCalled();
   });
 
   it('exports a strict reconstruction DTO and group identifiers', async () => {

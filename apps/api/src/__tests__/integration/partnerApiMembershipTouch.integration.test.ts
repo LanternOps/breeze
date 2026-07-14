@@ -20,6 +20,10 @@ const WATERMARK_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-18-partner-export-org-locks.sql',
 );
+const COMPLETION_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-19-partner-export-consistency-completion.sql',
+);
 
 async function seedDeviceAndGroup() {
   const db = getTestDb();
@@ -65,9 +69,11 @@ describe('partner device membership incremental change contract', () => {
     const db = getTestDb();
     const migration = readFileSync(MEMBERSHIP_MIGRATION_FILE, 'utf8');
     const watermarkMigration = readFileSync(WATERMARK_MIGRATION_FILE, 'utf8');
+    const completionMigration = readFileSync(COMPLETION_MIGRATION_FILE, 'utf8');
     for (let pass = 0; pass < 2; pass += 1) {
       await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
       await expect(db.execute(sql.raw(watermarkMigration))).resolves.toBeDefined();
+      await expect(db.execute(sql.raw(completionMigration))).resolves.toBeDefined();
     }
     expect(migration.match(/FOR EACH STATEMENT/gu)).toHaveLength(3);
     expect(migration).toMatch(/REFERENCING NEW TABLE AS new_memberships/gu);

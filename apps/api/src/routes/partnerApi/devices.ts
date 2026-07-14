@@ -12,6 +12,8 @@ import { deviceExportEnvelopeSchema } from './schemas';
 import {
   buildEnvelope,
   bindPartnerExportSnapshot,
+  clientError,
+  isKnownClientError,
   normalizeSourceRow,
   paginationConditions,
   paginationOrder,
@@ -30,11 +32,11 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
 
   try {
     const orgIds = parsed.orgId ? [parsed.orgId] : principal.accessibleOrgIds;
+    const lockSnapshotAt = await acquirePartnerExportReadLocks(orgIds);
+    bindPartnerExportSnapshot(parsed, lockSnapshotAt);
     if (orgIds.length === 0) return c.json(deviceExportEnvelopeSchema.parse(buildEnvelope({
       resource: 'devices', partnerId: principal.partnerId, rows: [], query: parsed, makeRecord: () => ({}),
     })));
-    const lockSnapshotAt = await acquirePartnerExportReadLocks(orgIds);
-    bindPartnerExportSnapshot(parsed, lockSnapshotAt);
     // Hardware identity is part of this DTO. Fold its change timestamp into
     // the device keyset so an inventory refresh is not missed merely because
     // the parent device row itself was untouched.
@@ -127,7 +129,8 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
       }),
     });
     return c.json(deviceExportEnvelopeSchema.parse(envelope));
-  } catch {
+  } catch (error) {
+    if (isKnownClientError(error)) return clientError(c, error);
     return c.json({ error: 'Partner device export failed.', code: 'partner_export_failed' }, 500);
   }
 });

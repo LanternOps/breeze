@@ -7,10 +7,13 @@ export async function acquirePartnerExportReadLocks(orgIds: readonly string[]): 
     throw new Error('Partner export consistency locks require an active database access context.');
   }
   const sortedOrgIds = [...new Set(orgIds)].sort();
-  if (sortedOrgIds.length === 0) return new Date();
-  const uuidArray = sql`ARRAY[${sql.join(sortedOrgIds.map((orgId) => sql`${orgId}::uuid`), sql`, `)}]`;
+  const uuidArray = sortedOrgIds.length === 0
+    ? sql`ARRAY[]::uuid[]`
+    : sql`ARRAY[${sql.join(sortedOrgIds.map((orgId) => sql`${orgId}::uuid`), sql`, `)}]`;
   const rows = await db.execute<{ snapshotAt: Date | string }>(sql`
-    SELECT public.breeze_partner_export_lock_orgs_shared_snapshot(${uuidArray}) AS "snapshotAt"
+    SELECT (
+      public.breeze_partner_export_lock_orgs_shared_snapshot(${uuidArray}) AT TIME ZONE 'UTC'
+    ) AS "snapshotAt"
   `);
   const rawSnapshotAt = rows[0]?.snapshotAt;
   const snapshotAt = rawSnapshotAt instanceof Date ? rawSnapshotAt : new Date(rawSnapshotAt ?? '');

@@ -68,11 +68,11 @@ export function normalizeSourceRow<T extends { id: string; orgId: string; create
   return { ...row, createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt) };
 }
 
-function isKnownClientError(error: unknown): error is PartnerExportCursorError | PartnerExportPaginationError {
+export function isKnownClientError(error: unknown): error is PartnerExportCursorError | PartnerExportPaginationError {
   return error instanceof PartnerExportCursorError || error instanceof PartnerExportPaginationError;
 }
 
-function clientError(c: Context, error: PartnerExportCursorError | PartnerExportPaginationError) {
+export function clientError(c: Context, error: PartnerExportCursorError | PartnerExportPaginationError) {
   return c.json({ error: error.message, code: error.code }, 400);
 }
 
@@ -238,11 +238,11 @@ partnerOrganizationRoutes.get('/organizations', requirePartnerApiScope('organiza
   if (parsed instanceof Response) return parsed;
   try {
     const orgIds = parsed.orgId ? [parsed.orgId] : principal.accessibleOrgIds;
+    const lockSnapshotAt = await acquirePartnerExportReadLocks(orgIds);
+    bindPartnerExportSnapshot(parsed, lockSnapshotAt);
     if (orgIds.length === 0) return c.json(organizationExportEnvelopeSchema.parse(buildEnvelope({
       resource: 'organizations', partnerId: principal.partnerId, rows: [], query: parsed, makeRecord: () => ({}),
     })));
-    const lockSnapshotAt = await acquirePartnerExportReadLocks(orgIds);
-    bindPartnerExportSnapshot(parsed, lockSnapshotAt);
     const rows = await db.select({
       id: organizations.id,
       orgId: organizations.id,
@@ -278,11 +278,11 @@ partnerOrganizationRoutes.get('/sites', requirePartnerApiScope('sites:read'), as
   if (parsed instanceof Response) return parsed;
   try {
     const orgIds = parsed.orgId ? [parsed.orgId] : principal.accessibleOrgIds;
+    const lockSnapshotAt = await acquirePartnerExportReadLocks(orgIds);
+    bindPartnerExportSnapshot(parsed, lockSnapshotAt);
     if (orgIds.length === 0) return c.json(siteExportEnvelopeSchema.parse(buildEnvelope({
       resource: 'sites', partnerId: principal.partnerId, rows: [], query: parsed, makeRecord: () => ({}),
     })));
-    const lockSnapshotAt = await acquirePartnerExportReadLocks(orgIds);
-    bindPartnerExportSnapshot(parsed, lockSnapshotAt);
     const rows = await db.select({
       id: sites.id, orgId: sites.orgId, siteId: sites.id, name: sites.name,
       address: sites.address, timezone: sites.timezone, contact: sites.contact,
