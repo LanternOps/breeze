@@ -17,6 +17,14 @@ export const AGENT_TOKEN = __ENV.AGENT_TOKEN || '';
 // A known device ID used in tests that target a specific device.
 export const DEVICE_ID = __ENV.DEVICE_ID || '';
 
+// Partner reconstruction export. The scenario intentionally uses the
+// dedicated X-API-Key machine credential rather than AUTH_TOKEN.
+export const PARTNER_API_KEY = __ENV.PARTNER_API_KEY || '';
+export const PARTNER_API_PAGE_LIMIT = Number.parseInt(__ENV.PARTNER_API_PAGE_LIMIT || '500', 10);
+export const PARTNER_API_EXPECTED_DEVICES = Number.parseInt(__ENV.PARTNER_API_EXPECTED_DEVICES || '10000', 10);
+export const PARTNER_API_MAX_RETRIES = Number.parseInt(__ENV.PARTNER_API_MAX_RETRIES || '5', 10);
+export const PARTNER_API_MAX_PAGES = Number.parseInt(__ENV.PARTNER_API_MAX_PAGES || '100000', 10);
+
 // Common HTTP headers
 export function authHeaders() {
   return {
@@ -29,6 +37,13 @@ export function agentHeaders() {
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${AGENT_TOKEN}`,
+  };
+}
+
+export function partnerApiHeaders() {
+  return {
+    Accept: 'application/json',
+    'X-API-Key': PARTNER_API_KEY,
   };
 }
 

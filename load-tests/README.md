@@ -44,6 +44,11 @@ environment variables passed via `-e`:
 | `AGENT_TOKEN` | (empty) | Bearer token for agent endpoints |
 | `DEVICE_ID` | (empty) | A known device ID for single-device tests |
 | `DEVICE_IDS` | (empty) | Comma-separated device IDs for command tests |
+| `PARTNER_API_KEY` | (empty) | Dedicated `brz_sp_...` service-principal key for partner exports |
+| `PARTNER_API_PAGE_LIMIT` | `500` | Export page size (clamped to the API maximum of 500) |
+| `PARTNER_API_EXPECTED_DEVICES` | `10000` | Minimum device records required in the seeded full traversal |
+| `PARTNER_API_MAX_RETRIES` | `5` | Bounded retries per page for HTTP 429 and 5xx responses (maximum 10) |
+| `PARTNER_API_MAX_PAGES` | `100000` | Safety bound per resource traversal |
 | `TEST_EMAIL` | `loadtest@breeze.local` | Login email for auth tests |
 | `TEST_PASSWORD` | `LoadTest123!` | Login password for auth tests |
 | `HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeats per VU |
@@ -128,6 +133,43 @@ k6 run -e BASE_URL=http://localhost:3001 \
        scenarios/websocket.js
 ```
 
+### Partner reconstruction export
+
+Run this against a partner fixture containing at least 10,000 devices. Use a
+dedicated service-principal key with all eight partner read scopes; a human JWT
+or ordinary organization API key cannot authenticate this route.
+
+```bash
+k6 run -e BASE_URL=https://breeze.example.com \
+       -e PARTNER_API_KEY=brz_sp_replace_with_test_key \
+       scenarios/partner-api-export.js
+```
+
+The setup phase performs a full cursor traversal of all 13 v1 resources. The
+single shared iteration then uses each resource's full-crawl `snapshotAt` as
+its `updatedSince` checkpoint and must finish the entire incremental pass in
+under 15 minutes. A single VU, one iteration, a hard 15-minute `maxDuration`,
+bounded page count, and bounded retries prevent one scheduled run from
+overlapping itself indefinitely. The external scheduler must likewise allow
+only one invocation per integration at a time.
+
+For every resource, including `custom-fields` and scalar
+`custom-field-values`, the scenario:
+
+- requires one stable `snapshotAt` across every page;
+- rejects repeated cursors and duplicate `(resource, id, orgId)` identities;
+- records successful pages, records, response bytes, retry count, page time,
+  and traversal time;
+- records HTTP 429 and 5xx responses independently; and
+- records pool-saturation signals independently. HTTP 503 is treated as the
+  operational pool-saturation proxy, as are explicit pool-saturation headers
+  or bounded error codes.
+
+The scenario writes `partner-api-export-summary.json`. A run fails on a v1
+contract error, duplicate identity, changing snapshot, detected pool
+saturation, fewer than the expected devices, retry/page exhaustion, or the
+15-minute incremental budget.
+
 ### With Docker
 
 ```bash
@@ -148,6 +190,7 @@ docker run --rm -i --network=host \
 | Device list | `device-list.js` | 100 | 3 min | p95 < 1s, errors < 1% |
 | Command dispatch | `command-dispatch.js` | 50 | 2 min | p95 < 1s, errors < 1% |
 | WebSocket | `websocket.js` | 500 | 5 min | connect p95 < 5s, fail < 5% |
+| Partner API export | `partner-api-export.js` | 1 | one full + one incremental traversal | incremental < 15 min; no duplicates, snapshot drift, or pool saturation |
 
 ## Interpreting Results
 
@@ -192,6 +235,63 @@ The load generator machine (where k6 runs) needs sufficient resources:
 | Device list (100 VUs) | 2 cores | 2 GB | |
 | Command dispatch (50 VUs) | 2 cores | 1 GB | |
 | WebSocket (500 conns) | 4 cores | 4 GB | File descriptor limits matter |
+| Partner API export (10K devices) | 2 cores | 2 GB | Run near the API to avoid measuring WAN latency |
+
+## Partner export index evidence gate
+
+Do not add speculative indexes from a small development database. Capture the
+k6 summary and `EXPLAIN (ANALYZE, BUFFERS)` on the same representative partner
+fixture with at least 10,000 devices, both for the first page and a late cursor
+page of each incremental traversal. Retain the plan, actual rows, rows removed
+by filter, sort method/disk spill, buffer hits/reads, and execution time.
+
+The current local verification database contained one device and one
+discovered asset, the API stack was not running, and k6 was not installed. That
+environment cannot provide representative planner or latency evidence, so this
+change adds no database index. Static predicate inspection identifies two
+candidates that the seeded run must evaluate:
+
+- Site inventory exports approved `printer`, `router`, `switch`, `firewall`,
+  `access_point`, and `nas` assets. The existing
+  `discovered_assets_partner_export_site_idx` partial predicate omits
+  `printer`, so printer-heavy sites may not use it. Expand or replace that
+  partial index only if the representative plan shows material heap scanning.
+- Incremental devices order and filter by the effective
+  `GREATEST(device.partner_export_updated_at,
+  hardware.partner_export_updated_at)` timestamp. Inventory/software/
+  relationship resources similarly use material-state timestamps. Add an
+  expression or composite incremental index only if late-page plans show a
+  material scan, sort, or spill; the exact expression and key order must match
+  the measured query.
+
+Example evidence capture (replace every placeholder and use a read-only
+session with the same tenant context as the load fixture):
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS)
+SELECT a.id
+FROM discovered_assets AS a
+WHERE a.org_id = '<organization-uuid>'::uuid
+  AND a.site_id = '<site-uuid>'::uuid
+  AND a.approval_status = 'approved'
+  AND a.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')
+ORDER BY a.id
+LIMIT 501;
+
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS)
+SELECT d.id,
+       GREATEST(d.partner_export_updated_at,
+                COALESCE(h.partner_export_updated_at, d.partner_export_updated_at)) AS effective_updated_at
+FROM devices AS d
+LEFT JOIN device_hardware AS h
+  ON h.device_id = d.id AND h.org_id = d.org_id
+WHERE d.org_id = '<organization-uuid>'::uuid
+  AND GREATEST(d.partner_export_updated_at,
+               COALESCE(h.partner_export_updated_at, d.partner_export_updated_at))
+      > '<incremental-checkpoint>'::timestamp
+ORDER BY effective_updated_at, d.id, d.org_id
+LIMIT 501;
+```
 
 ### OS Tuning for High VU Counts
 
