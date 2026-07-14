@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { validateConfig } from './validate';
 
@@ -68,6 +71,66 @@ describe('validateConfig', () => {
     }, () => {
       const config = validateConfig();
       expect(config.NODE_ENV).toBe('production');
+    });
+  });
+
+  describe('M365 customer Graph-read onboarding', () => {
+    const descriptorEnv = (signingJwkFile: string) => ({
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'true',
+      M365_CUSTOMER_GRAPH_READ_CLIENT_ID: '33333333-3333-4333-8333-333333333333',
+      M365_CUSTOMER_GRAPH_READ_VAULT_REF:
+        'akv://customer-vault.vault.azure.net/m365-customer-graph-read/0123456789abcdef0123456789abcdef',
+      M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION: '0123456789abcdef0123456789abcdef',
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS: '11111111-1111-4111-8111-111111111111',
+      M365_GRAPH_READ_EXECUTOR_URL: 'https://m365-graph-read.internal.example.test',
+      M365_GRAPH_READ_EXECUTOR_AUDIENCE: 'm365-graph-read-executor',
+      M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: signingJwkFile,
+      M365_GRAPH_READ_EXECUTOR_SIGNING_KID: 'graph-read-api-1',
+      PUBLIC_URL: 'https://console.example.test',
+    });
+
+    it('refuses boot when onboarding is enabled without a complete descriptor', () => {
+      withEnv({
+        ...validEnv,
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'true',
+        M365_CUSTOMER_GRAPH_READ_CLIENT_ID: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/M365_CUSTOMER_GRAPH_READ_CLIENT_ID/);
+      });
+    });
+
+    it('validates the complete descriptor at boot when onboarding is enabled', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'breeze-m365-boot-'));
+      const signingJwkFile = join(dir, 'signing.jwk');
+      writeFileSync(signingJwkFile, JSON.stringify({
+        kty: 'OKP',
+        crv: 'Ed25519',
+        alg: 'EdDSA',
+        use: 'sig',
+        kid: 'graph-read-api-1',
+        x: Buffer.alloc(32, 1).toString('base64url'),
+        d: Buffer.alloc(32, 2).toString('base64url'),
+      }), { mode: 0o600 });
+      chmodSync(signingJwkFile, 0o600);
+
+      try {
+        withEnv({ ...validEnv, ...descriptorEnv(signingJwkFile) }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not require or parse descriptor fields when onboarding is disabled', () => {
+      withEnv({
+        ...validEnv,
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'false',
+        M365_CUSTOMER_GRAPH_READ_CLIENT_ID: 'not-a-uuid',
+        M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: '/missing/signing.jwk',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
     });
   });
 
