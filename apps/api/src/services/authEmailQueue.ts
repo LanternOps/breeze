@@ -46,9 +46,23 @@ export function getAuthEmailQueue(): Queue<AuthEmailJob> {
  * token). Also: a jobId derived from the email would be a Redis key an attacker
  * with Redis read access could probe for existence — and BullMQ job ids must
  * not contain `:` anyway.
+ *
+ * Unlike the registration job (which carries only a token hash), the worker
+ * genuinely needs the raw email here to look up the account by
+ * `users.email` (there is no hash-keyed lookup path — see
+ * getPasswordResetEligibility). So the payload can't be minimized the way
+ * registration's is. Instead, override the queue's default retention
+ * (removeOnComplete: {count:200} / removeOnFail: {count:500}, sized for the
+ * PII-free registration job) so this PII-bearing job doesn't linger in
+ * Redis's completed/failed job history: remove immediately on success, keep
+ * only a small bounded tail on failure for debugging (mirrors
+ * notificationDispatcher.ts's per-job override pattern).
  */
 export async function enqueuePasswordResetRequest(email: string): Promise<void> {
-  await getAuthEmailQueue().add('password-reset', { kind: 'password-reset', email });
+  await getAuthEmailQueue().add('password-reset', { kind: 'password-reset', email }, {
+    removeOnComplete: true,
+    removeOnFail: { count: 100 },
+  });
 }
 
 export async function enqueueRegistrationVerification(tokenHash: string): Promise<void> {

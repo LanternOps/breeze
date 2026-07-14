@@ -24,7 +24,7 @@ import {
   registrationDisabledResponse
 } from './helpers';
 
-const { db, withSystemDbAccessContext } = dbModule;
+const { db } = dbModule;
 
 export const registerRoutes = new Hono();
 
@@ -34,9 +34,8 @@ registerRoutes.post('/register', zValidator('json', registerSchema), async (c) =
     return registrationDisabledResponse(c);
   }
 
-  const { email, password, name } = c.req.valid('json');
+  const { password } = c.req.valid('json');
   const rateLimitClient = getClientRateLimitKey(c);
-  const normalizedEmail = email.toLowerCase();
 
   const redis = getRedis();
   if (!redis) {
@@ -53,23 +52,15 @@ registerRoutes.post('/register', zValidator('json', registerSchema), async (c) =
     return c.json({ error: passwordCheck.errors[0] }, 400);
   }
 
-  // Pre-auth lookup — wrap in system scope so the `users` RLS policy
-  // doesn't deny the read before the real request scope is applied.
-  const existingUsers = await withSystemDbAccessContext(async () =>
-    db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, normalizedEmail))
-      .limit(1)
-  );
-
   // Legacy /register is a no-op: it used to create a partnerless orphan
   // user, which is incompatible with the users.partner_id NOT NULL
   // constraint and the users RLS policy. New signups must go through
   // /register-partner which creates the partner + user + first org
   // together. Return the same generic success response the existing-user
   // branch returns so legacy clients don't observe a breaking change.
-  void existingUsers;
+  // No user-existence lookup here — that lookup's result was already
+  // discarded, and performing it would risk becoming a timing oracle for
+  // no benefit (the response below is identical for every input).
   return c.json({
     success: true,
     message: 'If registration can proceed, you will receive next steps shortly.'
