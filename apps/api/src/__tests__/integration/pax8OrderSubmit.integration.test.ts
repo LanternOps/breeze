@@ -208,6 +208,84 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
     expect(reconcileClient.listSubscriptions).toHaveBeenCalledWith({ companyId: 'company-1' });
     expect(timeoutOrder?.pax8CompanyId).toBe('company-1');
 
+    const parentGuardFixture = await seedOrder();
+    const capturedAt = new Date('2026-07-20T01:00:00Z');
+    await withSystemDbAccessContext(async () => {
+      await db.update(pax8Orders).set({
+        status: 'submitting',
+        pax8CompanyId: 'company-1',
+        pax8OrderId: 'captured-parent',
+        submittedAt: capturedAt,
+      }).where(eq(pax8Orders.id, parentGuardFixture.order.id));
+      await db.update(pax8OrderLines).set({ submitState: 'needs_reconcile' })
+        .where(eq(pax8OrderLines.id, parentGuardFixture.line.id));
+    });
+    const parentGuardBundle = await pax8OrderSubmitRepository.loadReconcileOrder({
+      partnerId: parentGuardFixture.partner.id,
+      orderId: parentGuardFixture.order.id,
+    });
+    await expect(pax8OrderSubmitRepository.persistReconcileResults(
+      parentGuardBundle,
+      [{
+        lineId: parentGuardFixture.line.id,
+        submitState: 'succeeded',
+        error: null,
+        resultSubscriptionId: 'conflicting-subscription',
+      }],
+      'conflicting-parent',
+    )).rejects.toMatchObject({ status: 409 });
+    const parentGuardState = await withSystemDbAccessContext(async () => {
+      const [order] = await db.select().from(pax8Orders)
+        .where(eq(pax8Orders.id, parentGuardFixture.order.id));
+      const [line] = await db.select().from(pax8OrderLines)
+        .where(eq(pax8OrderLines.id, parentGuardFixture.line.id));
+      const [contractLine] = await db.select().from(contractLines)
+        .where(eq(contractLines.id, parentGuardFixture.contractLine.id));
+      return { order, line, contractLine };
+    });
+    expect(parentGuardState.order?.pax8OrderId).toBe('captured-parent');
+    expect(parentGuardState.line?.submitState).toBe('needs_reconcile');
+    expect(parentGuardState.line?.resultSubscriptionId).toBeNull();
+    expect(parentGuardState.contractLine?.manualQuantity).toBeNull();
+    await expect(pax8OrderSubmitRepository.persistReconcileResults(
+      parentGuardBundle,
+      [{
+        lineId: parentGuardFixture.line.id,
+        submitState: 'succeeded',
+        error: null,
+        resultSubscriptionId: 'captured-subscription',
+      }],
+      'captured-parent',
+    )).resolves.toEqual({ resolved: 1, stillUnknown: 0 });
+
+    const nullParentFixture = await seedOrder();
+    await withSystemDbAccessContext(async () => {
+      await db.update(pax8Orders).set({
+        status: 'submitting',
+        pax8CompanyId: 'company-1',
+        submittedAt: capturedAt,
+      }).where(eq(pax8Orders.id, nullParentFixture.order.id));
+      await db.update(pax8OrderLines).set({ submitState: 'needs_reconcile' })
+        .where(eq(pax8OrderLines.id, nullParentFixture.line.id));
+    });
+    const nullParentBundle = await pax8OrderSubmitRepository.loadReconcileOrder({
+      partnerId: nullParentFixture.partner.id,
+      orderId: nullParentFixture.order.id,
+    });
+    await expect(pax8OrderSubmitRepository.persistReconcileResults(
+      nullParentBundle,
+      [{
+        lineId: nullParentFixture.line.id,
+        submitState: 'succeeded',
+        error: null,
+        resultSubscriptionId: 'matched-subscription',
+      }],
+      'matched-parent',
+    )).resolves.toEqual({ resolved: 1, stillUnknown: 0 });
+    const [nullParentOrder] = await withSystemDbAccessContext(() => db.select()
+      .from(pax8Orders).where(eq(pax8Orders.id, nullParentFixture.order.id)));
+    expect(nullParentOrder?.pax8OrderId).toBe('matched-parent');
+
     const rollbackFixture = await seedOrder();
     const rollbackClient = successfulClient();
     rollbackClient.createOrder.mockReset()

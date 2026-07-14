@@ -252,10 +252,14 @@ function reconcileNewBatch(
   if (unknownNewLines.length === 0) return { outcomes: [], pax8OrderId: null };
   const allNewLines = newSubscriptionLines(bundle);
   const submittedDate = bundle.order.submittedAt?.toISOString().slice(0, 10) ?? null;
-  const candidates: Array<{ order: Pax8OrderRecord; assignment: number[] }> = [];
+  const candidates: Array<{
+    order: Pax8OrderRecord;
+    subscriptionIds: string[];
+  }> = [];
   if (submittedDate) {
     for (const order of orders) {
       if (order.pax8CompanyId !== bundle.order.pax8CompanyId || order.createdDate !== submittedDate) continue;
+      if (bundle.order.pax8OrderId && order.pax8OrderId !== bundle.order.pax8OrderId) continue;
       const assignment = uniqueBijection(allNewLines, order.lineItems, (line, item) => {
         if (!item.quantityKnown || !sameQuantity(line.quantity, item.quantity)) return false;
         const numberEvidence = item.lineItemNumber !== null;
@@ -265,7 +269,11 @@ function reconcileNewBatch(
         if (productEvidence && item.productId !== line.pax8ProductId) return false;
         return true;
       });
-      if (assignment) candidates.push({ order, assignment });
+      if (!assignment) continue;
+      const subscriptionIds = assignment.map((index) => order.lineItems[index]!.subscriptionId);
+      if (subscriptionIds.some((id) => !id)
+        || new Set(subscriptionIds).size !== allNewLines.length) continue;
+      candidates.push({ order, subscriptionIds: subscriptionIds as string[] });
     }
   }
   if (candidates.length === 1) {
@@ -274,8 +282,12 @@ function reconcileNewBatch(
     return {
       outcomes: unknownNewLines.map((line) => {
         const index = localIndex.get(line.id)!;
-        const item = candidate.order.lineItems[candidate.assignment[index]!]!;
-        return { lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: item.subscriptionId };
+        return {
+          lineId: line.id,
+          submitState: 'succeeded',
+          error: null,
+          resultSubscriptionId: candidate.subscriptionIds[index]!,
+        };
       }),
       pax8OrderId: candidate.order.pax8OrderId,
     };
@@ -299,9 +311,12 @@ function reconcileNewBatch(
 
 function reconcileSubscriptionLine(
   line: Pax8OrderLineRow,
+  pax8CompanyId: string,
   subscriptions: Pax8SubscriptionRecord[],
 ): SubmitLineOutcome {
-  const target = subscriptions.filter((row) => row.pax8SubscriptionId === line.targetSubscriptionId);
+  const target = subscriptions.filter((row) =>
+    row.pax8SubscriptionId === line.targetSubscriptionId
+    && row.pax8CompanyId === pax8CompanyId);
   if (target.length > 1) {
     return { lineId: line.id, submitState: 'needs_reconcile', error: 'Pax8 returned duplicate target subscriptions.', resultSubscriptionId: null };
   }
@@ -377,7 +392,7 @@ export function createPax8OrderSubmitService(deps: ServiceDeps) {
       const outcomes = [
         ...newBatch.outcomes,
         ...unknown.filter((line) => line.action !== 'new_subscription')
-          .map((line) => reconcileSubscriptionLine(line, subscriptions)),
+          .map((line) => reconcileSubscriptionLine(line, bundle.order.pax8CompanyId!, subscriptions)),
       ];
       return deps.repository.persistReconcileResults(bundle, outcomes, newBatch.pax8OrderId);
     },

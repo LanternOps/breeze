@@ -1,5 +1,5 @@
 import type { Pax8OrderStatus, Pax8SubmitState } from '@breeze/shared';
-import { and, eq, getTableColumns, inArray, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
@@ -447,11 +447,14 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
         .for('update')
         .limit(1);
       if (!locked) throw new Pax8OrderError('Pax8 order not found.', 404);
+      if (pax8OrderId && locked.pax8OrderId && locked.pax8OrderId !== pax8OrderId) {
+        throw new Pax8OrderError('The reconciled Pax8 parent conflicts with the captured order id.', 409);
+      }
       await persistLineOutcomes(bundle, outcomes, ['in_flight', 'needs_reconcile']);
       const lines = await reloadLines(bundle);
       const status = deriveOrderStatus(lines.map((line) => line.submitState as Pax8SubmitState));
       const errors = lines.flatMap((line) => line.error ? [line.error] : []);
-      await db
+      const updated = await db
         .update(pax8Orders)
         .set({
           status,
@@ -465,7 +468,15 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
           eq(pax8Orders.orgId, bundle.order.orgId),
           eq(pax8Orders.pax8CompanyId, bundle.order.pax8CompanyId!),
           eq(pax8Orders.submittedAt, bundle.order.submittedAt!),
-        ));
+          pax8OrderId ? or(
+            isNull(pax8Orders.pax8OrderId),
+            eq(pax8Orders.pax8OrderId, pax8OrderId),
+          ) : undefined,
+        ))
+        .returning({ id: pax8Orders.id });
+      if (updated.length !== 1) {
+        throw new Pax8OrderError('The reconciled Pax8 parent conflicts with the captured order id.', 409);
+      }
       return {
         resolved: outcomes.filter((outcome) => outcome.submitState !== 'needs_reconcile').length,
         stillUnknown: outcomes.filter((outcome) => outcome.submitState === 'needs_reconcile').length,
