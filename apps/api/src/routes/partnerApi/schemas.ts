@@ -96,6 +96,78 @@ export const partnerExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
   partnerExportRecordBaseSchema,
 );
 
+const nullableBoundedString = z.string().max(1000).nullable();
+
+export const partnerOrganizationExportRecordSchema = strictPartnerExportRecordSchema({
+  name: z.string().min(1).max(255),
+  slug: z.string().min(1).max(100),
+  type: z.enum(['customer', 'internal']),
+});
+export const organizationExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerOrganizationExportRecordSchema,
+);
+
+export const partnerSiteAddressSchema = z.object({
+  line1: nullableBoundedString,
+  line2: nullableBoundedString,
+  city: nullableBoundedString,
+  region: nullableBoundedString,
+  postalCode: nullableBoundedString,
+  country: nullableBoundedString,
+}).strict();
+
+export const partnerSiteContactSchema = z.object({
+  name: nullableBoundedString,
+  email: nullableBoundedString,
+  phone: nullableBoundedString,
+}).strict();
+
+export const partnerSiteExportRecordSchema = strictPartnerExportRecordSchema({
+  name: z.string().min(1).max(255),
+  timezone: z.string().min(1).max(64),
+  address: partnerSiteAddressSchema.nullable(),
+  contact: partnerSiteContactSchema.nullable(),
+});
+export const siteExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerSiteExportRecordSchema,
+);
+
+export const partnerDeviceExportRecordSchema = strictPartnerExportRecordSchema({
+  hostname: z.string().min(1).max(255),
+  displayName: z.string().max(255).nullable(),
+  type: z.object({
+    os: z.enum(['windows', 'macos', 'linux']),
+    role: z.string().min(1).max(30),
+    virtual: z.boolean(),
+    virtualizationPlatform: z.string().max(30).nullable(),
+  }).strict(),
+  operatingSystem: z.object({
+    edition: z.string().min(1).max(100),
+    build: z.string().max(100).nullable(),
+    architecture: z.string().min(1).max(20),
+  }).strict(),
+  installation: z.object({
+    enrolledAt: partnerExportTimestampSchema,
+  }).strict(),
+  hardwareIdentity: z.object({
+    serialNumber: z.string().max(100).nullable(),
+    manufacturer: z.string().max(255).nullable(),
+    model: z.string().max(255).nullable(),
+  }).strict(),
+  stableIdentifiers: z.object({
+    assetTag: z.string().max(255).nullable(),
+    inventoryId: z.string().max(255).nullable(),
+    externalId: z.string().max(255).nullable(),
+  }).strict(),
+  tags: z.array(z.string().min(1).max(255)).max(200),
+  groupIds: z.array(z.string().uuid()).max(500),
+  linkGroupId: z.string().uuid().nullable(),
+  linkGroupRole: z.string().max(16).nullable(),
+});
+export const deviceExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerDeviceExportRecordSchema,
+);
+
 export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {
   schemaVersion: '1';
   snapshotAt: string;
