@@ -329,3 +329,139 @@ git log --oneline --decorate -10
 ```
 
 Confirm the pre-existing local hook files remain untracked and untouched, report commits remain unchanged, and stabilization work is represented by separate commits.
+
+---
+
+## Second stabilization wave discovered by the normal full suite
+
+The first wave fixes the original seven timeout failures and passes its 91-test focused set. Running the normal API suite twice exposed a smaller, overlapping set of older test harnesses with the same cold-import/module-reset failure mode. The following tasks extend the plan; the global constraints above continue to apply.
+
+### Task 7: Stabilize connected-app and OAuth route setup
+
+**Files:**
+- Modify: `apps/api/src/routes/connectedApps.test.ts`
+- Create: `apps/api/src/routes/connectedApps.disabled.test.ts`
+- Modify: `apps/api/src/routes/oauth.test.ts`
+- Create: `apps/api/src/routes/oauth.disabled.test.ts`
+
+**Step 1: Preserve the full-suite failures as RED evidence**
+
+Run the exact connected-app denial and OAuth-disabled cases under their existing default timeout. Confirm the cold import times out or remains close to the five-second boundary; use an extended timeout only diagnostically to prove finite completion.
+
+**Step 2: Cache the connected-app enabled route**
+
+- Add a minimal static `../db/schema` mock containing the `oauthClients` and `oauthClientPartnerGrants` columns used by the route.
+- Import `connectedAppsRoutes` once with OAuth enabled and make `loadApp()` synchronous.
+- In `beforeEach`, call `mockReset()` on `select`, `update`, `delete`, and `revokeClientFamilies`, then restore the revocation service's default resolved value. This clears abandoned `mockImplementationOnce` queues.
+- Move the disabled-mount assertion to `connectedApps.disabled.test.ts`, with a static disabled `../config/env` mock and lightweight direct dependencies.
+
+**Step 3: Isolate OAuth import-time configurations**
+
+- Move the disabled catch-all assertion to `oauth.disabled.test.ts`. Mock `../oauth/provider` before importing the route and assert `getProvider` is never called.
+- In `oauth.test.ts`, statically mock the provider, Redis, and rate limiter, set enabled configuration through a stable config mock, and import the enabled route once for the provider-deferred and resource-alias cases.
+- Reset only mutable provider/rate-limit state and request fixtures between tests; remove `vi.resetModules()`, `vi.doMock()`, and `vi.doUnmock()` from both stabilized files.
+
+**Step 4: Verify and commit**
+
+```bash
+pnpm --filter @breeze/api exec vitest run \
+  src/routes/connectedApps.test.ts src/routes/connectedApps.disabled.test.ts \
+  src/routes/oauth.test.ts src/routes/oauth.disabled.test.ts \
+  src/routes/oauth.revocation.test.ts src/routes/oauth.rate-limit.test.ts \
+  --fileParallelism=false --maxWorkers=1
+pnpm --filter @breeze/api exec tsc --noEmit
+git add apps/api/src/routes/connectedApps.test.ts apps/api/src/routes/connectedApps.disabled.test.ts apps/api/src/routes/oauth.test.ts apps/api/src/routes/oauth.disabled.test.ts
+git commit -m "test(api): stabilize oauth route setup"
+```
+
+### Task 8: Stabilize MCP bearer, streamable, and bootstrap transport setup
+
+**Files:**
+- Modify: `apps/api/src/routes/mcpServer.bearer.test.ts`
+- Modify: `apps/api/src/routes/mcpServer.streamable.test.ts`
+- Modify: `apps/api/src/routes/mcpServer.test.ts`
+- Optionally create narrowly scoped `mcpServer.*.test.ts` files when import-time configurations cannot share one harness
+
+**Step 1: Preserve the repeated timeout/cascade failures as RED evidence**
+
+Run the three exact full-suite cases at the existing default timeout. Confirm that extended diagnostic timeouts complete with the expected assertions and that request bodies execute in milliseconds after import.
+
+**Step 2: Reuse route graphs in bearer and streamable files**
+
+- Mock `../config/env` with live `MCP_OAUTH_ENABLED` / issuer getters backed by hoisted state where tests vary the OAuth flag.
+- Import `mcpServerRoutes` once per file and construct Hono apps synchronously.
+- Reset middleware implementations, tool delegates, session stores, and environment-backed state in `beforeEach`; do not reset the module registry.
+- Preserve real auth selection, partner/org auth building, session minting/ownership, byte limits, scope gates, and JSON-RPC dispatch.
+
+**Step 3: Remove the timed cold import from `mcpServer.test.ts`**
+
+- Correct the stale bootstrap comment: the route no longer reads `IS_HOSTED` or starts bootstrap loading at import.
+- Move the bootstrap carve-out block to a stable static-mock harness (a dedicated test file is preferred if the rest of the large test requires distinct import-time configuration).
+- Use hoisted mutable API-key/bootstrap/DB/ledger delegates, import the route once, and keep real Zod-to-JSON-Schema conversion plus all handler/list/401 assertions.
+- For remaining dynamic-configuration blocks in `mcpServer.test.ts`, either convert them to live mutable delegates or split only the genuinely different import-time configurations into dedicated files. No timed test may perform a first cold import of the full route graph.
+
+**Step 4: Verify and commit**
+
+```bash
+pnpm --filter @breeze/api exec vitest run \
+  src/routes/mcpServer.bearer.test.ts \
+  src/routes/mcpServer.streamable.test.ts \
+  src/routes/mcpServer.test.ts \
+  --fileParallelism=false --maxWorkers=1
+pnpm --filter @breeze/api exec tsc --noEmit
+git add apps/api/src/routes/mcpServer.bearer.test.ts apps/api/src/routes/mcpServer.streamable.test.ts apps/api/src/routes/mcpServer.test.ts apps/api/src/routes/mcpServer.*.test.ts
+git commit -m "test(api): stabilize mcp transport route setup"
+```
+
+### Task 9: Remove database startup from encrypted-column unit tests
+
+**Files:**
+- Modify: `apps/api/src/services/encryptedColumnRegistry.test.ts`
+- Modify or create focused tests beside `apps/api/src/services/sentinelOne/metrics.ts` only if needed by review
+
+**Step 1: Capture the current import-heavy behavior**
+
+Run the exact v1-to-v2 transform test at the existing timeout and record its cold duration. The existing prefix and decrypt assertions are the behavioral RED/GREEN contract; do not add a brittle duration assertion.
+
+**Step 2: Use static real registry/crypto imports**
+
+- Add a narrow `../db` mock so this unit file does not initialize dotenv, the schema barrel, Postgres, or Drizzle. The transform cases never call DB; the batch case injects its own executor.
+- Statically import the real `transformEncryptedColumnValue`, `reencryptRegisteredSecrets`, `encryptSecret`, and `decryptSecret`.
+- Remove `loadRegistry()`, every `vi.resetModules()`, and every dynamic registry/crypto import.
+- Continue clearing and restoring the encryption environment around each test. The crypto module reads active key ID/keyring per call; the current cases use one legacy v1 primary key, so no test-only production cache reset is required.
+- Preserve real encryption/decryption, JSON recursion, dry-run statistics, and executor call-count assertions.
+
+**Step 3: Verify and commit**
+
+```bash
+pnpm --filter @breeze/api exec vitest run src/services/encryptedColumnRegistry.test.ts --fileParallelism=false --maxWorkers=1
+pnpm --filter @breeze/api exec tsc --noEmit
+git add apps/api/src/services/encryptedColumnRegistry.test.ts
+git commit -m "test(api): stabilize encrypted column registry setup"
+```
+
+### Task 10: Repeat the full verification gate
+
+**Step 1: Run both focused waves together**
+
+Run all first-wave files plus the connected-app, OAuth, MCP transport, and encrypted-column files under one worker. Expect zero failures, timeouts, or cascade mock errors.
+
+**Step 2: Run static checks**
+
+```bash
+pnpm --filter @breeze/api lint
+pnpm --filter @breeze/api exec tsc --noEmit
+```
+
+**Step 3: Run the normal full suite twice**
+
+```bash
+pnpm test --filter=@breeze/api
+pnpm test --filter=@breeze/api
+```
+
+Both runs must pass under the repository's normal parallel configuration. Do not substitute serial execution or a higher global timeout.
+
+**Step 4: Review scope**
+
+Confirm the report commits remain unchanged, both stabilization waves are separately committed, and only the four pre-existing local hook files remain untracked.
