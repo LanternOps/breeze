@@ -465,3 +465,65 @@ Both runs must pass under the repository's normal parallel configuration. Do not
 **Step 4: Review scope**
 
 Confirm the report commits remain unchanged, both stabilization waves are separately committed, and only the four pre-existing local hook files remain untracked.
+
+---
+
+## Final residual stabilization
+
+The second verification wave reduced the normal suite from 24 failures to three timeout-only failures, and the next identical full run passed. Two OAuth harnesses still reload their route/crypto graphs per test, and the migration-ordering repository contract shares a worker with the DB-heavy auto-migration module. The following tasks remove those last avoidable timing hazards.
+
+### Task 11: Stabilize OAuth rate-limit and revocation harnesses
+
+**Files:**
+- Modify: `apps/api/src/routes/oauth.rate-limit.test.ts`
+- Create: `apps/api/src/routes/oauth.rate-limit.disabled.test.ts`
+- Modify: `apps/api/src/routes/oauth.revocation.test.ts`
+
+**Requirements:**
+
+- Split the import-time disabled OAuth topology into `oauth.rate-limit.disabled.test.ts` with static `MCP_OAUTH_ENABLED: false`, static provider/Redis/rate mocks, one route import, and both 404/no-rate-limiter assertions.
+- In the main rate-limit file, use static enabled configuration and a live mutable `OAUTH_DCR_ENABLED` getter, static provider/Redis/rate delegates, and one route import. Reset delegate implementations, call history, DCR state, `NODE_ENV`, and proxy-related environment in `beforeEach).
+- Keep real Hono routing, client-IP resolution, redirect policy, body-size parsing, resource normalization, and rate-limit key construction.
+- In revocation tests, use one static enabled route graph and stable provider/cache/rate/Redis delegates. Generate one legitimate Ed25519 keypair in `beforeAll`, expose its private JWKS through live config before the first request, and reuse it. Generate only the foreign key required by the forged-token assertion.
+- Keep real JWKS loading, JOSE signing/verification, client binding, body parsing, status handling, and Hono middleware.
+- Remove `vi.resetModules()`, `vi.doMock()`, `vi.doUnmock()`, and dynamic OAuth route imports. Do not add timeouts or production cache reset hooks.
+
+**Verification and commit:**
+
+```bash
+pnpm --filter @breeze/api exec vitest run \
+  src/routes/oauth.rate-limit.test.ts \
+  src/routes/oauth.rate-limit.disabled.test.ts \
+  src/routes/oauth.revocation.test.ts \
+  --cache=false
+pnpm --filter @breeze/api exec tsc --noEmit
+git add apps/api/src/routes/oauth.rate-limit.test.ts apps/api/src/routes/oauth.rate-limit.disabled.test.ts apps/api/src/routes/oauth.revocation.test.ts
+git commit -m "test(api): stabilize oauth security harnesses"
+```
+
+### Task 12: Isolate the migration-ordering repository contract
+
+**Files:**
+- Modify: `apps/api/src/db/autoMigrate.test.ts`
+- Create: `apps/api/src/db/migrationOrdering.test.ts`
+
+**Requirements:**
+
+- Move the entire `migration ordering` describe unchanged into the adjacent lightweight test file.
+- The new file may import only Vitest and Node filesystem/path modules. It must continue scanning the live repository's core SQL migrations, sorting by filename, extracting created tables, enforcing same-file-before-reference ordering, honoring the same system-table exclusions, and asserting the complete violations array is empty.
+- Leave the pure runner and extension-migration tests in `autoMigrate.test.ts`.
+- Do not move the scan outside the timed test, mock migration contents, weaken it to filename checks, raise the timeout, or change production migration logic.
+
+**Verification and commit:**
+
+```bash
+pnpm --filter @breeze/api exec vitest run src/db/autoMigrate.test.ts src/db/migrationOrdering.test.ts --reporter=verbose
+pnpm --filter @breeze/api exec vitest run -t "every referenced table is created in the same file or an earlier one" --reporter=verbose
+pnpm --filter @breeze/api exec tsc --noEmit
+git add apps/api/src/db/autoMigrate.test.ts apps/api/src/db/migrationOrdering.test.ts
+git commit -m "test(api): isolate migration ordering contract"
+```
+
+### Task 13: Final all-green gate
+
+Run the expanded focused set, API lint, direct TypeScript compilation, and then the normal full API suite twice. Both normal runs must pass without a global timeout increase or serial override. Confirm only the pre-existing local hook files remain untracked, then perform the final whole-branch review.
