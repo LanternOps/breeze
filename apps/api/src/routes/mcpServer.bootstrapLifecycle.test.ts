@@ -7,6 +7,12 @@ import { z as zod } from 'zod';
 // silently degrading ledger/audit classification to 'success'.
 import type { SendDeploymentInvitesOutput } from '../modules/mcpInvites/tools/sendDeploymentInvites';
 import type { ConfigureDefaultsOutput } from '../modules/mcpInvites/tools/configureDefaults';
+import { BootstrapError } from '../modules/mcpInvites/types';
+import {
+  __loadMcpBootstrapForTests,
+  classifyBootstrapToolResult,
+  mcpServerRoutes,
+} from './mcpServer';
 
 // ---------------------------------------------------------------------------
 // Task 7 — MCP-OAUTH-11 (bootstrap RBAC) + MCP-OAUTH-12 (shared Tier 3
@@ -20,23 +26,98 @@ import type { ConfigureDefaultsOutput } from '../modules/mcpInvites/tools/config
 // the handlers' DB logic.
 // ---------------------------------------------------------------------------
 
-const ledgerBegin = vi.fn(async (..._args: any[]) => ({
-  executionId: 'exec-1',
-  sessionId: 'sess-1',
-  orgId: 'org-1',
+const testState = vi.hoisted(() => {
+  const originalEnv = {
+    NODE_ENV: process.env.NODE_ENV,
+    EXEC_ADMIN: process.env.MCP_REQUIRE_EXECUTE_ADMIN,
+    ALLOWLIST: process.env.MCP_EXECUTE_TOOL_ALLOWLIST,
+  };
+
+  // mcpServer parses the execute-tool allowlist once at module import time.
+  process.env.NODE_ENV = 'production';
+  process.env.MCP_REQUIRE_EXECUTE_ADMIN = 'false';
+  process.env.MCP_EXECUTE_TOOL_ALLOWLIST = '*';
+
+  return {
+    originalEnv,
+    scopes: ['ai:read', 'ai:execute'] as string[],
+    permissions: [{ resource: '*', action: '*' }] as Array<{ resource: string; action: string }>,
+    roleId: 'role-1' as string | null,
+    billingEmail: 'admin@acme.com',
+  };
+});
+
+const mocks = vi.hoisted(() => ({
+  ledgerBegin: vi.fn(),
+  ledgerComplete: vi.fn(),
+  writeAuditEvent: vi.fn(),
+  sendHandler: vi.fn() as any,
+  configureHandler: vi.fn() as any,
+  // SR2-15: getUserPermissions is called TWICE per bootstrap request (see the
+  // FULL_AI_READ_EXECUTE_BASELINE comment below) — a plain testState-backed
+  // return can't express "first call differs from every later call", so this
+  // is a real vi.fn() whose per-call behavior callBootstrap programs fresh
+  // for each request via mockResolvedValueOnce + mockResolvedValue.
+  getUserPermissions: vi.fn(),
 }));
-const ledgerComplete = vi.fn(async (..._args: any[]) => undefined);
 
 vi.mock('../services/mcpToolExecutionLedger', () => ({
-  beginMcpToolExecutionLedger: (...args: any[]) => ledgerBegin(...args),
-  completeMcpToolExecutionLedger: (...args: any[]) => ledgerComplete(...args),
+  beginMcpToolExecutionLedger: (...args: any[]) => mocks.ledgerBegin(...args),
+  completeMcpToolExecutionLedger: (...args: any[]) => mocks.ledgerComplete(...args),
 }));
 
-const writeAuditEvent = vi.fn();
 vi.mock('../services/auditEvents', () => ({
-  writeAuditEvent: (...args: any[]) => writeAuditEvent(...args),
+  writeAuditEvent: (...args: any[]) => mocks.writeAuditEvent(...args),
   requestLikeFromSnapshot: vi.fn(() => ({})),
 }));
+
+vi.mock('../db', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({ limit: async () => [{ billingEmail: testState.billingEmail }] }),
+      }),
+    }),
+  },
+  withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: any) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+}));
+
+vi.mock('../db/schema', () => ({
+  devices: {},
+  alerts: {},
+  scripts: {},
+  automations: {},
+  organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
+  partners: { id: 'partners.id', billingEmail: 'partners.billingEmail' },
+}));
+
+vi.mock('../middleware/apiKeyAuth', () => ({
+  apiKeyAuthMiddleware: async (c: any, next: any) => {
+    c.set('apiKey', {
+      id: 'key-1',
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      name: 'test',
+      keyPrefix: 'brz_test',
+      scopes: testState.scopes,
+      rateLimit: 1000,
+      createdBy: 'user-1',
+    });
+    c.set('apiKeyOrgId', 'org-1');
+    await next();
+  },
+  requireApiKeyScope: () => async (_c: any, next: any) => next(),
+}));
+
+vi.mock('../services/permissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/permissions')>();
+  return {
+    ...actual,
+    getUserPermissions: (...args: any[]) => mocks.getUserPermissions(...args),
+  };
+});
 
 // Truthy stub: production preflight requires a non-null Redis for the message
 // rate-limit gate; rateLimiter itself is mocked below to always allow.
@@ -65,20 +146,6 @@ vi.mock('../services/aiTools', () => ({
   getToolTier: () => undefined,
 }));
 
-// Fake bootstrap authTools, per-test configurable handlers. Referenced lazily
-// inside the mock factory so beforeEach can reset them.
-// Typed `any` so per-test reassignments with differing result shapes (partial
-// failures, throws) don't fight the inferred signature of the initial value.
-let sendHandler: any = vi.fn(async () => ({ invites_sent: 1, invite_ids: ['i1'], skipped_duplicates: 0 }));
-let configureHandler: any = vi.fn(async () => ({
-  applied: {
-    device_group: { created: true },
-    alert_policy: { created: true },
-    risk_profile: { created: true },
-    notification_channel: { created: true },
-  },
-}));
-
 vi.mock('../modules/mcpInvites', () => ({
   initMcpBootstrap: () => ({
     unauthTools: [],
@@ -89,7 +156,7 @@ vi.mock('../modules/mcpInvites', () => ({
           description: 'fake',
           inputSchema: zod.object({}).passthrough(),
         },
-        handler: (...args: any[]) => sendHandler(...(args as [any, any])),
+        handler: (...args: any[]) => mocks.sendHandler(...(args as [any, any])),
       },
       {
         definition: {
@@ -97,23 +164,17 @@ vi.mock('../modules/mcpInvites', () => ({
           description: 'fake',
           inputSchema: zod.object({}).passthrough(),
         },
-        handler: (...args: any[]) => configureHandler(...(args as [any, any])),
+        handler: (...args: any[]) => mocks.configureHandler(...(args as [any, any])),
       },
     ],
   }),
 }));
 
-const ORIG = {
-  NODE_ENV: process.env.NODE_ENV,
-  EXEC_ADMIN: process.env.MCP_REQUIRE_EXECUTE_ADMIN,
-  ALLOWLIST: process.env.MCP_EXECUTE_TOOL_ALLOWLIST,
-};
-
 function restoreEnv() {
   for (const [k, v] of [
-    ['NODE_ENV', ORIG.NODE_ENV],
-    ['MCP_REQUIRE_EXECUTE_ADMIN', ORIG.EXEC_ADMIN],
-    ['MCP_EXECUTE_TOOL_ALLOWLIST', ORIG.ALLOWLIST],
+    ['NODE_ENV', testState.originalEnv.NODE_ENV],
+    ['MCP_REQUIRE_EXECUTE_ADMIN', testState.originalEnv.EXEC_ADMIN],
+    ['MCP_EXECUTE_TOOL_ALLOWLIST', testState.originalEnv.ALLOWLIST],
   ] as const) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -121,12 +182,19 @@ function restoreEnv() {
 }
 
 beforeEach(() => {
-  vi.resetModules();
-  ledgerBegin.mockClear();
-  ledgerComplete.mockClear();
-  writeAuditEvent.mockClear();
-  sendHandler = vi.fn(async () => ({ invites_sent: 1, invite_ids: ['i1'], skipped_duplicates: 0 }));
-  configureHandler = vi.fn(async () => ({
+  testState.scopes = ['ai:read', 'ai:execute'];
+  testState.permissions = [{ resource: '*', action: '*' }];
+  testState.roleId = 'role-1';
+  testState.billingEmail = 'admin@acme.com';
+  mocks.ledgerBegin.mockReset().mockResolvedValue({
+    executionId: 'exec-1',
+    sessionId: 'sess-1',
+    orgId: 'org-1',
+  });
+  mocks.ledgerComplete.mockReset().mockResolvedValue(undefined);
+  mocks.writeAuditEvent.mockReset();
+  mocks.sendHandler = vi.fn(async () => ({ invites_sent: 1, invite_ids: ['i1'], skipped_duplicates: 0 }));
+  mocks.configureHandler = vi.fn(async () => ({
     applied: {
       device_group: { created: true },
       alert_policy: { created: true },
@@ -143,47 +211,7 @@ beforeEach(() => {
 
 afterEach(() => {
   restoreEnv();
-  vi.doUnmock('../services/permissions');
-  vi.doUnmock('../middleware/apiKeyAuth');
-  vi.doUnmock('../db');
 });
-
-function mockDb() {
-  // Bootstrap dispatch queries partners.billingEmail; ledger is mocked so no
-  // insert path is exercised here.
-  vi.doMock('../db', () => ({
-    db: {
-      select: () => ({
-        from: () => ({
-          where: () => ({ limit: async () => [{ billingEmail: 'admin@acme.com' }] }),
-        }),
-      }),
-    },
-    withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-    withSystemDbAccessContext: vi.fn((fn: any) => fn()),
-    runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  }));
-}
-
-function mockApiKey(scopes: string[]) {
-  vi.doMock('../middleware/apiKeyAuth', () => ({
-    apiKeyAuthMiddleware: async (c: any, next: any) => {
-      c.set('apiKey', {
-        id: 'key-1',
-        orgId: 'org-1',
-        partnerId: 'partner-1',
-        name: 'test',
-        keyPrefix: 'brz_test',
-        scopes,
-        rateLimit: 1000,
-        createdBy: 'user-1',
-      });
-      c.set('apiKeyOrgId', 'org-1');
-      await next();
-    },
-    requireApiKeyScope: () => async (_c: any, next: any) => next(),
-  }));
-}
 
 // SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now calls
 // getUserPermissions ONCE via authorizeHumanApiKeyCreator to re-validate the
@@ -197,6 +225,12 @@ function mockApiKey(scopes: string[]) {
 // SUBSEQUENT call (the real per-tool RBAC gate) returns the scenario's actual
 // `permissions`, preserving every test's premise (including the "missing
 // devices.write" denial cases) without loosening any assertion.
+//
+// The hoisted, module-level `services/permissions` mock above just forwards
+// to `mocks.getUserPermissions` — callBootstrap (below) reprograms that vi.fn
+// fresh on every call via mockResolvedValueOnce + mockResolvedValue, since a
+// single testState-backed return value can't express "first call differs
+// from every later call".
 const FULL_AI_READ_EXECUTE_BASELINE = [
   { resource: 'devices', action: 'read' },
   { resource: 'alerts', action: 'read' },
@@ -206,25 +240,16 @@ const FULL_AI_READ_EXECUTE_BASELINE = [
   { resource: 'scripts', action: 'execute' },
 ];
 
-function mockPerms(permissions: Array<{ resource: string; action: string }>, roleId: string | null = 'role-1') {
-  vi.doMock('../services/permissions', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../services/permissions')>();
-    const buildResult = (perms: Array<{ resource: string; action: string }>) =>
-      roleId === null
-        ? null
-        : {
-            permissions: perms,
-            partnerId: 'partner-1',
-            orgId: 'org-1',
-            roleId,
-            scope: 'organization' as const,
-          };
-    const getUserPermissions = vi.fn(async () => buildResult(permissions));
-    if (roleId !== null) {
-      getUserPermissions.mockResolvedValueOnce(buildResult(FULL_AI_READ_EXECUTE_BASELINE));
-    }
-    return { ...actual, getUserPermissions };
-  });
+function buildPermsResult(permissions: Array<{ resource: string; action: string }>) {
+  return testState.roleId === null
+    ? null
+    : {
+        permissions,
+        partnerId: 'partner-1',
+        orgId: 'org-1',
+        roleId: testState.roleId,
+        scope: 'organization' as const,
+      };
 }
 
 async function callBootstrap(
@@ -235,13 +260,15 @@ async function callBootstrap(
     args?: Record<string, unknown>;
   } = {},
 ) {
-  const scopes = opts.scopes ?? ['ai:read', 'ai:execute'];
-  mockApiKey(scopes);
-  mockPerms(opts.perms ?? [{ resource: '*', action: '*' }]);
-  mockDb();
-  const mod = await import('./mcpServer');
-  await mod.__loadMcpBootstrapForTests();
-  const res = await mod.mcpServerRoutes.request('/message', {
+  testState.scopes = opts.scopes ?? ['ai:read', 'ai:execute'];
+  testState.permissions = opts.perms ?? [{ resource: '*', action: '*' }];
+  mocks.getUserPermissions.mockReset();
+  if (testState.roleId !== null) {
+    mocks.getUserPermissions.mockResolvedValueOnce(buildPermsResult(FULL_AI_READ_EXECUTE_BASELINE));
+  }
+  mocks.getUserPermissions.mockResolvedValue(buildPermsResult(testState.permissions));
+  await __loadMcpBootstrapForTests();
+  const res = await mcpServerRoutes.request('/message', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
     body: JSON.stringify({
@@ -266,8 +293,8 @@ describe('bootstrap tool RBAC (MCP-OAUTH-11)', () => {
     expect(body.error?.code).toBe(-32603);
     expect(body.error?.message).toContain('devices.write');
     // Reject precedes ledger: no ledger row, handler never ran.
-    expect(ledgerBegin).not.toHaveBeenCalled();
-    expect(sendHandler).not.toHaveBeenCalled();
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(mocks.sendHandler).not.toHaveBeenCalled();
   });
 
   it('send_deployment_invites: role WITH devices.write succeeds', async () => {
@@ -276,7 +303,7 @@ describe('bootstrap tool RBAC (MCP-OAUTH-11)', () => {
       args: { emails: ['a@b.com'] },
     });
     expect(body.error).toBeUndefined();
-    expect(sendHandler).toHaveBeenCalledTimes(1);
+    expect(mocks.sendHandler).toHaveBeenCalledTimes(1);
   });
 
   it('configure_defaults: role with organizations.write but MISSING devices.write extra is DENIED', async () => {
@@ -288,8 +315,8 @@ describe('bootstrap tool RBAC (MCP-OAUTH-11)', () => {
     });
     expect(body.error?.code).toBe(-32603);
     expect(body.error?.message).toContain('devices.write');
-    expect(ledgerBegin).not.toHaveBeenCalled();
-    expect(configureHandler).not.toHaveBeenCalled();
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(mocks.configureHandler).not.toHaveBeenCalled();
   });
 
   it('configure_defaults: role with organizations.write + devices.write + alerts.write succeeds', async () => {
@@ -301,7 +328,7 @@ describe('bootstrap tool RBAC (MCP-OAUTH-11)', () => {
       ],
     });
     expect(body.error).toBeUndefined();
-    expect(configureHandler).toHaveBeenCalledTimes(1);
+    expect(mocks.configureHandler).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -314,14 +341,14 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
 
   it('send_deployment_invites: ledger row is created BEFORE the handler runs', async () => {
     let ledgerCallsAtHandlerTime = -1;
-    sendHandler = vi.fn(async () => {
-      ledgerCallsAtHandlerTime = ledgerBegin.mock.calls.length;
+    mocks.sendHandler = vi.fn(async () => {
+      ledgerCallsAtHandlerTime = mocks.ledgerBegin.mock.calls.length;
       return { invites_sent: 1, invite_ids: ['i1'], skipped_duplicates: 0 };
     });
     await callBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
-    expect(ledgerBegin).toHaveBeenCalledTimes(1);
+    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
     expect(ledgerCallsAtHandlerTime).toBe(1);
-    const arg = (ledgerBegin.mock.calls[0] as any[])[0];
+    const arg = (mocks.ledgerBegin.mock.calls[0] as any[])[0];
     expect(arg.toolName).toBe('send_deployment_invites');
     expect(arg.tier).toBe(3);
     expect(arg.orgId).toBe('org-1');
@@ -329,31 +356,31 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
 
   it('configure_defaults: ledger row is created BEFORE the handler runs', async () => {
     let ledgerCallsAtHandlerTime = -1;
-    configureHandler = vi.fn(async () => {
-      ledgerCallsAtHandlerTime = ledgerBegin.mock.calls.length;
+    mocks.configureHandler = vi.fn(async () => {
+      ledgerCallsAtHandlerTime = mocks.ledgerBegin.mock.calls.length;
       return { applied: {} };
     });
     await callBootstrap('configure_defaults', { perms: ALL });
-    expect(ledgerBegin).toHaveBeenCalledTimes(1);
+    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
     expect(ledgerCallsAtHandlerTime).toBe(1);
-    const arg = (ledgerBegin.mock.calls[0] as any[])[0];
+    const arg = (mocks.ledgerBegin.mock.calls[0] as any[])[0];
     expect(arg.toolName).toBe('configure_defaults');
     expect(arg.tier).toBe(3);
   });
 
   it('ledger-creation failure prevents the handler from running (fail closed)', async () => {
-    ledgerBegin.mockRejectedValueOnce(new Error('ledger insert boom'));
+    mocks.ledgerBegin.mockRejectedValueOnce(new Error('ledger insert boom'));
     const body = await callBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
     expect(body.error?.code).toBe(-32000);
-    expect(sendHandler).not.toHaveBeenCalled();
-    expect(ledgerComplete).not.toHaveBeenCalled();
+    expect(mocks.sendHandler).not.toHaveBeenCalled();
+    expect(mocks.ledgerComplete).not.toHaveBeenCalled();
   });
 
   it('success completes the ledger (success) and writes a uniform mcp.tool.<name> audit', async () => {
     await callBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
-    expect(ledgerComplete).toHaveBeenCalledTimes(1);
-    expect((ledgerComplete.mock.calls[0] as any[])[0].status).toBe('success');
-    const toolAudit = writeAuditEvent.mock.calls
+    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('success');
+    const toolAudit = mocks.writeAuditEvent.mock.calls
       .map((c: any[]) => c[1])
       .find((p: any) => p?.resourceType === 'mcp_tool_execution');
     expect(toolAudit).toBeDefined();
@@ -362,24 +389,21 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
   });
 
   it('thrown BootstrapError completes the ledger (failure) and writes a failure audit', async () => {
-    sendHandler = vi.fn(async () => {
-      // Import the SAME (freshly reset) module instance the route uses, so the
-      // route's `err instanceof BootstrapError` check matches.
-      const { BootstrapError } = await import('../modules/mcpInvites/types');
+    mocks.sendHandler = vi.fn(async () => {
       throw new BootstrapError('RATE_LIMITED', 'too many');
     });
     const body = await callBootstrap('send_deployment_invites', { perms: ALL, args: { emails: ['a@b.com'] } });
     expect(body.error?.code).toBe(-32000);
-    expect(ledgerComplete).toHaveBeenCalledTimes(1);
-    expect((ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
-    const toolAudit = writeAuditEvent.mock.calls
+    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
+    const toolAudit = mocks.writeAuditEvent.mock.calls
       .map((c: any[]) => c[1])
       .find((p: any) => p?.resourceType === 'mcp_tool_execution');
     expect(toolAudit?.result).toBe('failure');
   });
 
   it('send_deployment_invites PARTIAL failure (per-invite failures) classifies the ledger as failure', async () => {
-    sendHandler = vi.fn(async () => ({
+    mocks.sendHandler = vi.fn(async () => ({
       invites_sent: 1,
       invite_ids: ['i1'],
       skipped_duplicates: 0,
@@ -391,22 +415,22 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
     });
     // Handler result is still returned to the caller (not an RPC error).
     expect(body.error).toBeUndefined();
-    expect(ledgerComplete).toHaveBeenCalledTimes(1);
-    expect((ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
-    const toolAudit = writeAuditEvent.mock.calls
+    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
+    const toolAudit = mocks.writeAuditEvent.mock.calls
       .map((c: any[]) => c[1])
       .find((p: any) => p?.resourceType === 'mcp_tool_execution');
     expect(toolAudit?.result).toBe('failure');
   });
 
   it('configure_defaults PARTIAL failure (step errors) classifies the ledger as failure', async () => {
-    configureHandler = vi.fn(async () => ({
+    mocks.configureHandler = vi.fn(async () => ({
       applied: {},
       errors: [{ step: 'alert_policy', error: 'boom' }],
     }));
     await callBootstrap('configure_defaults', { perms: ALL });
-    expect(ledgerComplete).toHaveBeenCalledTimes(1);
-    expect((ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
+    expect(mocks.ledgerComplete).toHaveBeenCalledTimes(1);
+    expect((mocks.ledgerComplete.mock.calls[0] as any[])[0].status).toBe('failure');
   });
 
   it('classifyBootstrapToolResult treats REAL-shaped handler output as failure (regression against field-name drift)', async () => {
@@ -418,11 +442,6 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
     // to the ACTUAL exported types via `satisfies`: if either field is ever
     // renamed, this fails to typecheck (caught at build/CI time) rather than
     // silently degrading every partial-failure result to 'success'.
-    mockApiKey(['ai:read', 'ai:execute']);
-    mockPerms([{ resource: '*', action: '*' }]);
-    mockDb();
-    const mod = await import('./mcpServer');
-
     const sendResult = {
       invites_sent: 1,
       invite_ids: ['i1'],
@@ -440,14 +459,14 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
       errors: [{ step: 'alert_policy', error: 'boom' }],
     } satisfies ConfigureDefaultsOutput;
 
-    expect(mod.classifyBootstrapToolResult(sendResult)).toBe('failure');
-    expect(mod.classifyBootstrapToolResult(configureResult)).toBe('failure');
+    expect(classifyBootstrapToolResult(sendResult)).toBe('failure');
+    expect(classifyBootstrapToolResult(configureResult)).toBe('failure');
   });
 
   it('handler-specific business audits still fire alongside the uniform audit', async () => {
     // Model configureDefaults writing its own bootstrap.configure_defaults audit.
-    configureHandler = vi.fn(async (_input: any, _ctx: any) => {
-      writeAuditEvent({} as any, {
+    mocks.configureHandler = vi.fn(async (_input: any, _ctx: any) => {
+      mocks.writeAuditEvent({} as any, {
         orgId: 'org-1',
         actorType: 'api_key',
         actorId: 'key-1',
@@ -459,7 +478,7 @@ describe('bootstrap Tier 3 ledger/audit lifecycle (MCP-OAUTH-12)', () => {
       return { applied: {} };
     });
     await callBootstrap('configure_defaults', { perms: ALL });
-    const actions = writeAuditEvent.mock.calls.map((c: any[]) => c[1]?.action);
+    const actions = mocks.writeAuditEvent.mock.calls.map((c: any[]) => c[1]?.action);
     expect(actions).toContain('bootstrap.configure_defaults'); // business audit intact
     expect(actions).toContain('mcp.tool.configure_defaults'); // uniform audit added
   });
@@ -475,8 +494,8 @@ describe('reject precedes ledger (ordering pin)', () => {
       perms: [{ resource: 'devices', action: 'read' }],
     });
     expect(body.error).toBeDefined();
-    expect(ledgerBegin).not.toHaveBeenCalled();
-    expect(ledgerComplete).not.toHaveBeenCalled();
-    expect(sendHandler).not.toHaveBeenCalled();
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(mocks.ledgerComplete).not.toHaveBeenCalled();
+    expect(mocks.sendHandler).not.toHaveBeenCalled();
   });
 });
