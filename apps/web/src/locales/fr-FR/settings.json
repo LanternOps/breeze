@@ -1542,7 +1542,10 @@
     "connect": "Connecter",
     "emailMismatch": "Ce compte fournisseur d’identité utilise une adresse e-mail différente de votre compte Breeze. Connectez-vous à votre fournisseur avec l’adresse e-mail sur votre compte Breeze et réessayez.",
     "identityInUse": "Ce compte de fournisseur d’identité est déjà lié à un autre utilisateur Breeze.",
-    "userGone": "Votre compte n’a pas été retrouvé. Veuillez vous reconnecter."
+    "sessionInvalid": "Votre session a changé avant que la liaison puisse aboutir. Veuillez vous reconnecter et réessayer.",
+    "providerInactive": "Ce fournisseur de connexion unique n’est plus actif. Contactez votre administrateur.",
+    "configChanged": "La configuration de la connexion unique a été modifiée pendant l’opération. Veuillez réessayer.",
+    "emailUnverified": "Votre fournisseur d’identité n’a pas confirmé que votre adresse e-mail est vérifiée. Contactez votre administrateur."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Chargement des applications connectées...",

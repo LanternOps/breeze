@@ -1542,7 +1542,10 @@
     "connect": "Verbinden",
     "emailMismatch": "Dieses Identitätsanbieterkonto verwendet eine andere E-Mail-Adresse als Ihr Breeze-Konto. Melden Sie sich mit der E-Mail-Adresse Ihres Breeze-Kontos bei Ihrem Anbieter an und versuchen Sie es erneut.",
     "identityInUse": "Dieses Identitätsanbieterkonto ist bereits mit einem anderen Breeze-Benutzer verknüpft.",
-    "userGone": "Ihr Konto konnte nicht gefunden werden. Bitte melden Sie sich erneut an."
+    "sessionInvalid": "Ihre Sitzung hat sich geändert, bevor die Verknüpfung abgeschlossen werden konnte. Bitte melden Sie sich erneut an und versuchen Sie es noch einmal.",
+    "providerInactive": "Dieser Single-Sign-On-Anbieter ist nicht mehr aktiv. Wenden Sie sich an Ihren Administrator.",
+    "configChanged": "Die Single-Sign-On-Konfiguration wurde geändert, während Sie sich verbunden haben. Bitte versuchen Sie es erneut.",
+    "emailUnverified": "Ihr Identitätsanbieter hat nicht bestätigt, dass Ihre E-Mail-Adresse verifiziert ist. Wenden Sie sich an Ihren Administrator."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Verbundene Apps werden geladen…",
