@@ -25,6 +25,10 @@ const COMPLETION_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-19-partner-export-consistency-completion.sql',
 );
+const CANONICAL_MUTATION_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-21-partner-export-canonical-org-mutations.sql',
+);
 const STALE_TIMESTAMP = new Date('2000-01-01T00:00:00.000Z');
 
 type ChangeKind = 'membership' | 'device' | 'hardware' | 'site' | 'organization';
@@ -33,15 +37,18 @@ describe('partner export transaction watermark serialization', () => {
   runDb('migration is idempotent and documents its lock namespace and order', async () => {
     const migration = readFileSync(MIGRATION_FILE, 'utf8');
     const completionMigration = readFileSync(COMPLETION_MIGRATION_FILE, 'utf8');
+    const canonicalMutationMigration = readFileSync(CANONICAL_MUTATION_MIGRATION_FILE, 'utf8');
     const db = getTestDb();
     await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(completionMigration))).resolves.toBeDefined();
-    await expect(db.execute(sql.raw(completionMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(canonicalMutationMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(canonicalMutationMigration))).resolves.toBeDefined();
     expect(migration).toMatch(/1000201/);
     expect(migration).toMatch(/ORDER BY org_id/);
     expect(migration).toMatch(/pg_advisory_xact_lock_shared/);
     expect(completionMigration).toMatch(/REFERENCING OLD TABLE AS old_rows/);
     expect(completionMigration).toMatch(/breeze_partner_export_hardware_delete/);
+    expect(canonicalMutationMigration).toMatch(/exclusive_partner_locks/);
   });
 
   runDb.each<ChangeKind>(['membership', 'device', 'hardware', 'site', 'organization'])(
@@ -78,11 +85,12 @@ describe('partner export transaction watermark serialization', () => {
     15_000,
   );
 
-  runDb('exclusive multi-org helper canonicalizes reverse input without deadlock', async () => {
+  runDb('canonicalizes complete sets, permits organization cleanup, and rejects unknown descending keys', async () => {
     const db = getTestDb();
     const partner = await createPartner();
-    const low = await createOrganization({ partnerId: partner.id });
-    const high = await createOrganization({ partnerId: partner.id });
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const [low, high] = [orgA, orgB].sort((left, right) => left.id.localeCompare(right.id));
     const firstAcquired = deferred<void>();
     const releaseFirst = deferred<void>();
     const first = db.transaction(async (tx) => {
@@ -101,6 +109,27 @@ describe('partner export transaction watermark serialization', () => {
     await delay(75);
     releaseFirst.resolve();
     await expect(Promise.all([first, second])).resolves.toBeDefined();
+
+    await expect(db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(
+        ARRAY[${high.id}::uuid]
+      )`);
+      await tx.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(
+        ARRAY[${low.id}::uuid]
+      )`);
+    })).rejects.toMatchObject({ cause: expect.objectContaining({ code: 'P0001' }) });
+
+    await expect(db.transaction(async (tx) => {
+      await tx.update(organizations).set({ name: 'Updated high org' })
+        .where(eq(organizations.id, high.id));
+      await tx.update(organizations).set({ name: 'Updated low org' })
+        .where(eq(organizations.id, low.id));
+    })).resolves.toBeUndefined();
+
+    await expect(db.transaction(async (tx) => {
+      await tx.delete(organizations).where(eq(organizations.id, high.id));
+      await tx.delete(organizations).where(eq(organizations.id, low.id));
+    })).resolves.toBeUndefined();
   }, 10_000);
 
   runDb('lock hierarchy rejects partner acquisition after an organization lock', async () => {
