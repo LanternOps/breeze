@@ -27,6 +27,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
     onboardingEnabled: vi.fn(() => true),
     buildBindingCookie: vi.fn(() => 'binding-cookie=opaque; HttpOnly; SameSite=Lax'),
     audit: vi.fn(),
+    canAccessOrg: vi.fn(),
   },
 }));
 
@@ -39,7 +40,7 @@ vi.mock('../middleware/auth', () => ({
       partnerId: state.scope === 'partner' ? '77777777-7777-4777-8777-777777777777' : null,
       user: { id: USER_ID, email: 'admin@example.com', name: 'Admin', isPlatformAdmin: false },
       token: { mfa: state.mfa },
-      canAccessOrg: (orgId: string) => state.accessibleOrgIds === null || state.accessibleOrgIds.includes(orgId),
+      canAccessOrg: mocks.canAccessOrg,
       orgCondition: () => undefined,
     });
     return next();
@@ -159,6 +160,10 @@ beforeEach(() => {
     lastVerifiedAt: null, grantHealth: undefined,
   }));
   mocks.buildBindingCookie.mockReturnValue('binding-cookie=opaque; HttpOnly; SameSite=Lax');
+  mocks.canAccessOrg.mockImplementation(
+    (orgId: string) => authRef.current?.accessibleOrgIds === null
+      || authRef.current?.accessibleOrgIds.includes(orgId) === true,
+  );
 });
 
 describe('GET /m365/connections', () => {
@@ -172,7 +177,7 @@ describe('GET /m365/connections', () => {
   });
 
   it('lets an organization-scoped administrator use its concrete organization', async () => {
-    const response = await app().request('/m365/connections');
+    const response = await app().request(`/m365/connections?orgId=${ORG_ID}`);
     expect(response.status).toBe(200);
     expect(mocks.list).toHaveBeenCalledWith(ORG_ID);
     await expect(response.json()).resolves.toMatchObject({
@@ -184,7 +189,7 @@ describe('GET /m365/connections', () => {
 
   it('returns the exact safe envelope and strips every credential/session/admin field', async () => {
     mocks.list.mockResolvedValue([connection()]);
-    const response = await app().request('/m365/connections');
+    const response = await app().request(`/m365/connections?orgId=${ORG_ID}`);
     const body = await response.json();
     expect(body.profile.requiredGrants).toContainEqual(requiredGrant);
     expect(body.connection).toEqual({
@@ -211,16 +216,16 @@ describe('GET /m365/connections', () => {
   it('reports onboarding disabled without hiding an existing connection', async () => {
     mocks.onboardingEnabled.mockReturnValue(false);
     mocks.list.mockResolvedValue([connection()]);
-    const body = await (await app().request('/m365/connections')).json();
+    const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
     expect(body.onboardingEnabled).toBe(false);
     expect(body.connection.id).toBe(CONNECTION_ID);
   });
 });
 
 const mutationRequests = [
-  ['consent', (orgId?: string) => app().request(`/m365/connections/customer-graph-read/consent${orgId ? `?orgId=${orgId}` : ''}`, { method: 'POST' })],
-  ['retest', (orgId?: string) => app().request(`/m365/connections/${CONNECTION_ID}/retest${orgId ? `?orgId=${orgId}` : ''}`, { method: 'POST' })],
-  ['disconnect', (orgId?: string) => app().request(`/m365/connections/${CONNECTION_ID}/disconnect${orgId ? `?orgId=${orgId}` : ''}`, { method: 'POST' })],
+  ['consent', (orgId = ORG_ID) => app().request(`/m365/connections/customer-graph-read/consent?orgId=${orgId}`, { method: 'POST' })],
+  ['retest', (orgId = ORG_ID) => app().request(`/m365/connections/${CONNECTION_ID}/retest?orgId=${orgId}`, { method: 'POST' })],
+  ['disconnect', (orgId = ORG_ID) => app().request(`/m365/connections/${CONNECTION_ID}/disconnect?orgId=${orgId}`, { method: 'POST' })],
 ] as const;
 
 describe.each(mutationRequests)('%s authorization', (_name, request) => {
@@ -250,13 +255,13 @@ describe.each(mutationRequests)('%s authorization', (_name, request) => {
     authRef.current = auth({
       scope: 'partner', orgId: null, partnerOrgAccess: 'all', accessibleOrgIds: [ORG_ID, OTHER_ORG_ID],
     });
-    expect((await request()).status).toBe(400);
+    expect((await request('')).status).toBe(400);
   });
 });
 
 describe('POST /m365/connections/customer-graph-read/consent', () => {
   it('creates one browser-bound attempt, audits safe identifiers, and returns only the server URL', async () => {
-    const response = await app().request('/m365/connections/customer-graph-read/consent', { method: 'POST' });
+    const response = await app().request(`/m365/connections/customer-graph-read/consent?orgId=${ORG_ID}`, { method: 'POST' });
     expect(response.status).toBe(200);
     expect(mocks.initiate).toHaveBeenCalledWith({ orgId: ORG_ID, actorId: USER_ID });
     expect(mocks.buildBindingCookie).toHaveBeenCalledWith({
@@ -278,16 +283,16 @@ describe('POST /m365/connections/customer-graph-read/consent', () => {
 
   it('is the only lifecycle route gated by onboarding enablement', async () => {
     mocks.onboardingEnabled.mockReturnValue(false);
-    expect((await app().request('/m365/connections/customer-graph-read/consent', { method: 'POST' })).status).toBe(404);
+    expect((await app().request(`/m365/connections/customer-graph-read/consent?orgId=${ORG_ID}`, { method: 'POST' })).status).toBe(404);
     expect(mocks.initiate).not.toHaveBeenCalled();
-    expect((await app().request(`/m365/connections/${CONNECTION_ID}/retest`, { method: 'POST' })).status).toBe(200);
-    expect((await app().request(`/m365/connections/${CONNECTION_ID}/disconnect`, { method: 'POST' })).status).toBe(200);
+    expect((await app().request(`/m365/connections/${CONNECTION_ID}/retest?orgId=${ORG_ID}`, { method: 'POST' })).status).toBe(200);
+    expect((await app().request(`/m365/connections/${CONNECTION_ID}/disconnect?orgId=${ORG_ID}`, { method: 'POST' })).status).toBe(200);
   });
 });
 
 describe('scoped connection mutations', () => {
   it('passes only the scoped stored id to retest and returns a safe DTO', async () => {
-    const response = await app().request(`/m365/connections/${CONNECTION_ID}/retest`, { method: 'POST' });
+    const response = await app().request(`/m365/connections/${CONNECTION_ID}/retest?orgId=${ORG_ID}`, { method: 'POST' });
     expect(response.status).toBe(200);
     expect(mocks.retest).toHaveBeenCalledWith(expect.objectContaining({
       id: CONNECTION_ID, orgId: ORG_ID, auth: expect.objectContaining({ scope: 'organization' }),
@@ -305,5 +310,46 @@ describe('scoped connection mutations', () => {
     expect(scopeMiss.status).toBe(404);
     expect(conflict.status).toBe(404);
     expect(await scopeMiss.json()).toEqual(await conflict.json());
+  });
+});
+
+const strictOrgQueryRoutes = [
+  ['list', 'GET', '/m365/connections'],
+  ['consent', 'POST', '/m365/connections/customer-graph-read/consent'],
+  ['retest', 'POST', `/m365/connections/${CONNECTION_ID}/retest`],
+  ['disconnect', 'POST', `/m365/connections/${CONNECTION_ID}/disconnect`],
+] as const;
+
+const invalidOrgQueries = [
+  ['missing', ''],
+  ['malformed', '?orgId=not-a-uuid'],
+  ['uppercase', '?orgId=AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA'],
+  ['duplicate accessible then inaccessible', `?orgId=${ORG_ID}&orgId=${OTHER_ORG_ID}`],
+  ['duplicate inaccessible then accessible', `?orgId=${OTHER_ORG_ID}&orgId=${ORG_ID}`],
+  ['duplicate same value', `?orgId=${ORG_ID}&orgId=${ORG_ID}`],
+] as const;
+
+describe.each(strictOrgQueryRoutes)('%s strict orgId query contract', (_name, method, path) => {
+  it('authenticates before parsing orgId', async () => {
+    authRef.current = null;
+    const response = await app().request(path, { method });
+    expect(response.status).toBe(401);
+    expect(mocks.canAccessOrg).not.toHaveBeenCalled();
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.initiate).not.toHaveBeenCalled();
+    expect(mocks.retest).not.toHaveBeenCalled();
+    expect(mocks.disconnect).not.toHaveBeenCalled();
+  });
+
+  it.each(invalidOrgQueries)('rejects %s before scope, service, or audit work', async (_case, query) => {
+    const response = await app().request(`${path}${query}`, { method });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: 'Invalid organization request' });
+    expect(mocks.canAccessOrg).not.toHaveBeenCalled();
+    expect(mocks.list).not.toHaveBeenCalled();
+    expect(mocks.initiate).not.toHaveBeenCalled();
+    expect(mocks.retest).not.toHaveBeenCalled();
+    expect(mocks.disconnect).not.toHaveBeenCalled();
+    expect(mocks.audit).not.toHaveBeenCalled();
   });
 });

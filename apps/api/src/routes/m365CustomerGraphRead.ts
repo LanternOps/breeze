@@ -42,6 +42,7 @@ const requireOrgsWrite = requirePermission(
   PERMISSIONS.ORGS_WRITE.action,
 );
 const idParam = z.object({ id: z.string().uuid() });
+const CANONICAL_ORG_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export interface CustomerGraphReadConnectionDto {
   id: string;
@@ -111,31 +112,40 @@ function envelope(
   };
 }
 
-type ConcreteOrg = { orgId: string } | { status: 400 | 404; error: string };
+type ConcreteOrg = { orgId: string } | { status: 404; error: string };
 
-function resolveConcreteOrg(auth: AuthContext, requestedOrgId?: string): ConcreteOrg {
+function parseOrganizationQuery(c: Context): { orgId: string } | Response {
+  const params = new URL(c.req.url).searchParams;
+  const values = c.req.queries('orgId') ?? [];
+  if (
+    [...params.keys()].some((key) => key !== 'orgId')
+    || values.length !== 1
+    || !CANONICAL_ORG_ID.test(values[0] ?? '')
+  ) {
+    return c.json({ error: 'Invalid organization request' }, 400);
+  }
+  return { orgId: values[0]! };
+}
+
+function resolveConcreteOrg(auth: AuthContext, requestedOrgId: string): ConcreteOrg {
   if (auth.scope === 'organization') {
-    if (!auth.orgId || (requestedOrgId && requestedOrgId !== auth.orgId)) {
+    if (!auth.orgId || requestedOrgId !== auth.orgId) {
       return { status: 404, error: 'Organization not found' };
     }
     return { orgId: auth.orgId };
   }
 
-  if (requestedOrgId) {
-    if (!auth.canAccessOrg(requestedOrgId)) {
-      return { status: 404, error: 'Organization not found' };
-    }
-    return { orgId: requestedOrgId };
+  if (!auth.canAccessOrg(requestedOrgId)) {
+    return { status: 404, error: 'Organization not found' };
   }
-
-  if (auth.orgId) return { orgId: auth.orgId };
-  if (auth.accessibleOrgIds?.length === 1) return { orgId: auth.accessibleOrgIds[0]! };
-  return { status: 400, error: 'A concrete organization is required' };
+  return { orgId: requestedOrgId };
 }
 
 function mutationOrg(c: Context): ConcreteOrg | Response {
   const auth = c.get('auth') as AuthContext;
-  const resolved = resolveConcreteOrg(auth, c.req.query('orgId'));
+  const parsed = parseOrganizationQuery(c);
+  if (parsed instanceof Response) return parsed;
+  const resolved = resolveConcreteOrg(auth, parsed.orgId);
   if (!('orgId' in resolved)) {
     return c.json(
       { error: resolved.status === 404 ? 'Connection not found' : resolved.error },
@@ -166,7 +176,9 @@ export const m365CustomerGraphReadRoutes = new Hono();
 m365CustomerGraphReadRoutes.use('*', authMiddleware);
 
 m365CustomerGraphReadRoutes.get('/connections', requireOrgsRead, async (c) => {
-  const resolved = resolveConcreteOrg(c.get('auth'), c.req.query('orgId'));
+  const parsed = parseOrganizationQuery(c);
+  if (parsed instanceof Response) return parsed;
+  const resolved = resolveConcreteOrg(c.get('auth'), parsed.orgId);
   if (!('orgId' in resolved)) return c.json({ error: resolved.error }, resolved.status);
   const connections = await listCustomerGraphReadConnections(resolved.orgId);
   return c.json(envelope(resolved.orgId, connections[0] ?? null));
