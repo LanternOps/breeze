@@ -419,7 +419,7 @@ describe("M365CustomerGraphReadCard", () => {
     fetchWithAuthMock.mockResolvedValue(
       makeResponse(envelope({ connection: connection({
         status: "degraded",
-        observedGrants: REQUIRED_GRANTS.concat(unknownRole),
+        observedGrants: [...REQUIRED_GRANTS, unknownRole],
         unexpectedGrants: [unknownRole],
       }) })),
     );
