@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PAX8_BILLING_TERMS, type Pax8BillingTerm, type Pax8OrderAction } from '@breeze/shared';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, notInArray, sql, type SQL } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
@@ -464,4 +464,34 @@ export async function getOrderWithLines(input: {
       eq(pax8OrderLines.orderId, input.orderId),
     ));
   return { order, lines };
+}
+
+/**
+ * Partner-scoped order history for the ordering UI. An org filter returns that
+ * org's complete history; the partner-wide queue intentionally excludes only
+ * terminal completed/cancelled rows so failed and partially-failed work stays
+ * visible for technician action. Both views are bounded and deterministic.
+ */
+export async function listPax8Orders(input: {
+  partnerId: string;
+  orgId?: string;
+  accessibleOrgIds?: string[] | null;
+}): Promise<Pax8OrderRow[]> {
+  const conditions: SQL[] = [eq(pax8Orders.partnerId, input.partnerId)];
+  if (input.orgId) {
+    conditions.push(eq(pax8Orders.orgId, input.orgId));
+  } else {
+    conditions.push(notInArray(pax8Orders.status, ['completed', 'cancelled']));
+    if (input.accessibleOrgIds !== undefined && input.accessibleOrgIds !== null) {
+      conditions.push(input.accessibleOrgIds.length > 0
+        ? inArray(pax8Orders.orgId, input.accessibleOrgIds)
+        : sql`false`);
+    }
+  }
+  return db
+    .select()
+    .from(pax8Orders)
+    .where(and(...conditions))
+    .orderBy(desc(pax8Orders.updatedAt), desc(pax8Orders.id))
+    .limit(100);
 }

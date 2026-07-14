@@ -23,7 +23,7 @@ import {
   contracts,
   contractLines,
 } from '../../db/schema';
-import { getOrCreateDraftOrder } from '../../services/pax8OrderService';
+import { getOrCreateDraftOrder, listPax8Orders } from '../../services/pax8OrderService';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -143,6 +143,29 @@ describe('Pax8 ordering partner-axis RLS and integrity (breeze_app)', () => {
       db.select().from(pax8Orders).where(eq(pax8Orders.id, orderB.id))
     );
     expect(rows).toHaveLength(0);
+  });
+
+  runDb('partner-wide actionable listing honors the member org allowlist', async () => {
+    const { partnerA, orgA, integrationA, orderA } = await seed();
+    const otherOrgA = await withSystemDbAccessContext(() =>
+      createOrganization({ partnerId: partnerA.id })
+    );
+    await withSystemDbAccessContext(() => db.insert(pax8Orders).values({
+      integrationId: integrationA.id,
+      partnerId: partnerA.id,
+      orgId: otherOrgA.id,
+      status: 'ready',
+      source: 'direct',
+      dedupeKey: 'same-partner-hidden-order',
+    }));
+
+    const rows = await withPartnerContext(partnerA.id, () => listPax8Orders({
+      partnerId: partnerA.id,
+      accessibleOrgIds: [orgA.id],
+    }));
+
+    expect(rows.map((row) => row.id)).toEqual([orderA.id]);
+    expect(rows.every((row) => row.orgId === orgA.id)).toBe(true);
   });
 
   runDb('rejects a second order with the same (partner_id, dedupe_key)', async () => {

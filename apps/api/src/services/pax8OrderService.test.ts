@@ -29,6 +29,7 @@ vi.mock('../db/schema', () => new Proxy({
     orgId: 'pax8_orders.org_id',
     status: 'pax8_orders.status',
     source: 'pax8_orders.source',
+    updatedAt: 'pax8_orders.updated_at',
   },
   pax8OrderLines: {
     id: 'pax8_order_lines.id',
@@ -65,6 +66,7 @@ import {
   buildDedupeKey,
   getOrderWithLines,
   getOrCreateDraftOrder,
+  listPax8Orders,
   removeOrderLine,
 } from './pax8OrderService';
 
@@ -92,11 +94,49 @@ function queryChain(rows: unknown[]) {
   chain.from = vi.fn(() => chain);
   chain.where = vi.fn(() => chain);
   chain.for = vi.fn(() => chain);
+  chain.orderBy = vi.fn(() => chain);
   chain.limit = vi.fn(async () => rows);
   chain.then = (resolve: (value: unknown[]) => unknown, reject: (error: unknown) => unknown) =>
     Promise.resolve(rows).then(resolve, reject);
   return chain;
 }
+
+describe('listPax8Orders', () => {
+  it('lists a bounded org history with stable ordering and partner/org predicates', async () => {
+    const chain = selectRowsOnce([{ ...baseOrder }]);
+
+    await expect(listPax8Orders({ partnerId: 'p1', orgId: 'o1' })).resolves.toHaveLength(1);
+
+    expect(chain.where).toHaveBeenCalledWith(expect.objectContaining({
+      queryChunks: expect.any(Array),
+    }));
+    expect(chain.orderBy).toHaveBeenCalledTimes(1);
+    expect(containsValue(vi.mocked(chain.orderBy as any).mock.calls[0], 'pax8_orders.updated_at')).toBe(true);
+    expect(containsValue(vi.mocked(chain.orderBy as any).mock.calls[0], 'pax8_orders.id')).toBe(true);
+    expect(chain.limit).toHaveBeenCalledWith(100);
+    expect(containsValue(vi.mocked(chain.where as any).mock.calls[0]?.[0], 'p1')).toBe(true);
+    expect(containsValue(vi.mocked(chain.where as any).mock.calls[0]?.[0], 'o1')).toBe(true);
+  });
+
+  it('limits the partner-wide view to nonterminal actionable orders', async () => {
+    const chain = selectRowsOnce([{ ...baseOrder }]);
+
+    await listPax8Orders({ partnerId: 'p1', accessibleOrgIds: ['o1'] });
+
+    const where = vi.mocked(chain.where as any).mock.calls[0]?.[0];
+    expect(containsValue(where, 'completed')).toBe(true);
+    expect(containsValue(where, 'cancelled')).toBe(true);
+    expect(containsValue(where, 'o1')).toBe(true);
+  });
+
+  it('fails closed for a partner member with no accessible organizations', async () => {
+    const chain = selectRowsOnce([]);
+
+    await listPax8Orders({ partnerId: 'p1', accessibleOrgIds: [] });
+
+    expect(containsValue(vi.mocked(chain.where as any).mock.calls[0]?.[0], false)).toBe(true);
+  });
+});
 
 function containsValue(value: unknown, expected: unknown, seen = new WeakSet<object>()): boolean {
   if (value === expected) return true;

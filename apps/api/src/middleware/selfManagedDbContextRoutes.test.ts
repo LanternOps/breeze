@@ -47,6 +47,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/pax8/orders/ord-1/submit/'],
     ['POST', '/api/v1/pax8/orders/ord-1/reconcile'],
     ['POST', '/api/v1/pax8/orders/ord-1/reconcile/'],
+    // Product form metadata proxies Pax8 HTTP after a short credential read.
+    ['GET', '/api/v1/pax8/products/prod-1/provision-details'],
+    ['GET', '/api/v1/pax8/products/prod-1/provision-details/'],
+    ['GET', '/api/v1/pax8/products/prod-1/dependencies'],
+    ['GET', '/api/v1/pax8/products/prod-1/dependencies/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -97,6 +102,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/pax8/orders/ord-1/reconcile', 'Pax8 reconcile is POST-only'],
     ['POST', '/api/v1/pax8/orders//submit', 'Pax8 order id must not be empty'],
     ['POST', '/api/v1/pax8/orders/ord-1/submit/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/pax8/products/prod-1/dependencies', 'Pax8 product metadata routes are GET-only'],
+    ['GET', '/api/v1/pax8/products//dependencies', 'Pax8 product id must not be empty'],
+    ['GET', '/api/v1/pax8/products/prod-1/dependencies/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {
