@@ -5,7 +5,6 @@ import {
   backupConfigs,
   c2cConnections,
   devicePatches,
-  deviceVulnerabilities,
   devices,
   dnsFilterIntegrations,
   elevationRequests,
@@ -21,13 +20,13 @@ import {
   s1Agents,
   securityPostureOrgSnapshots,
   securityStatus,
-  sites,
-  vulnerabilities
+  sites
 } from '../db/schema';
 import { securityCompliancePostureConfigSchema } from '../routes/reports/schemas';
 import type { PostureSummary, PostureProduct } from '@breeze/shared';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { resolveSiteAllowedDeviceIds, type ReportResult } from './reportGenerationService';
+import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
 
 const pct = (num: number, denom: number): number =>
   denom === 0 ? 0 : Math.round((num / denom) * 100);
@@ -258,24 +257,7 @@ export async function generateSecurityCompliancePostureReport(
     pendingByDevice.set(p.deviceId, e);
   }
 
-  const vulnRows = await db
-    .select({ deviceId: deviceVulnerabilities.deviceId, severity: vulnerabilities.severity })
-    .from(deviceVulnerabilities)
-    .innerJoin(vulnerabilities, eq(deviceVulnerabilities.vulnerabilityId, vulnerabilities.id))
-    .where(
-      and(
-        eq(deviceVulnerabilities.orgId, orgId),
-        inArray(deviceVulnerabilities.deviceId, deviceIds),
-        eq(deviceVulnerabilities.status, 'open')
-      )
-    );
-  const vulnByDevice = new Map<string, { critical: number; high: number }>();
-  for (const v of vulnRows) {
-    const e = vulnByDevice.get(v.deviceId) ?? { critical: 0, high: 0 };
-    if (v.severity === 'critical') e.critical += 1;
-    else if (v.severity === 'high') e.high += 1;
-    vulnByDevice.set(v.deviceId, e);
-  }
+  const vulnByDevice = await loadOpenVulnerabilityCounts(deviceIds);
 
   const [dns] = await db
     .select({ isActive: dnsFilterIntegrations.isActive, provider: dnsFilterIntegrations.provider, lastSyncStatus: dnsFilterIntegrations.lastSyncStatus })
