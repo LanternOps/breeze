@@ -40,8 +40,10 @@ CREATE INDEX IF NOT EXISTS pax8_orders_partner_idx ON pax8_orders(partner_id);
 CREATE INDEX IF NOT EXISTS pax8_orders_org_idx ON pax8_orders(org_id);
 CREATE INDEX IF NOT EXISTS pax8_orders_status_idx ON pax8_orders(partner_id, status);
 CREATE INDEX IF NOT EXISTS pax8_orders_quote_idx ON pax8_orders(source_quote_id);
--- Target for the order_lines composite FK.
-CREATE UNIQUE INDEX IF NOT EXISTS pax8_orders_id_partner_idx ON pax8_orders(id, partner_id);
+-- Target for the order_lines composite FK. Including org_id prevents an order
+-- line from pointing at another customer under the same MSP partner.
+CREATE UNIQUE INDEX IF NOT EXISTS pax8_orders_id_partner_org_idx
+  ON pax8_orders(id, partner_id, org_id);
 
 CREATE TABLE IF NOT EXISTS pax8_order_lines (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -69,6 +71,9 @@ CREATE TABLE IF NOT EXISTS pax8_order_lines (
     'new_subscription','change_quantity','cancel')),
   CONSTRAINT pax8_order_lines_state_chk CHECK (submit_state IN (
     'pending','in_flight','succeeded','failed','needs_reconcile')),
+  CONSTRAINT pax8_order_lines_billing_term_chk CHECK (
+    billing_term IS NULL OR billing_term IN (
+      'Monthly','Annual','2-Year','3-Year','One-Time','Trial','Activation')),
   -- Each action carries a different payload; enforce the shape rather than
   -- trusting the service layer. A cancel with a quantity is a bug, not data.
   CONSTRAINT pax8_order_lines_action_payload_chk CHECK (
@@ -80,9 +85,9 @@ CREATE TABLE IF NOT EXISTS pax8_order_lines (
     OR (action = 'cancel'
        AND target_subscription_id IS NOT NULL AND quantity IS NULL)
   ),
-  CONSTRAINT pax8_order_lines_order_partner_fkey
-    FOREIGN KEY (order_id, partner_id)
-    REFERENCES pax8_orders(id, partner_id) ON DELETE CASCADE,
+  CONSTRAINT pax8_order_lines_order_partner_org_fkey
+    FOREIGN KEY (order_id, partner_id, org_id)
+    REFERENCES pax8_orders(id, partner_id, org_id) ON DELETE CASCADE,
   CONSTRAINT pax8_order_lines_org_partner_fkey
     FOREIGN KEY (org_id, partner_id)
     REFERENCES organizations(id, partner_id) ON DELETE CASCADE,

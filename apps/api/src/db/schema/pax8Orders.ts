@@ -40,7 +40,8 @@ export const pax8Orders = pgTable('pax8_orders', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   dedupeKeyIdx: uniqueIndex('pax8_orders_dedupe_key_uq').on(table.partnerId, table.dedupeKey),
-  idPartnerIdx: uniqueIndex('pax8_orders_id_partner_idx').on(table.id, table.partnerId),
+  idPartnerOrgIdx: uniqueIndex('pax8_orders_id_partner_org_idx')
+    .on(table.id, table.partnerId, table.orgId),
   partnerIdx: index('pax8_orders_partner_idx').on(table.partnerId),
   orgIdx: index('pax8_orders_org_idx').on(table.orgId),
   statusIdx: index('pax8_orders_status_idx').on(table.partnerId, table.status),
@@ -84,10 +85,10 @@ export const pax8OrderLines = pgTable('pax8_order_lines', {
   partnerIdx: index('pax8_order_lines_partner_idx').on(table.partnerId),
   orgIdx: index('pax8_order_lines_org_idx').on(table.orgId),
   contractLineIdx: index('pax8_order_lines_contract_line_idx').on(table.contractLineId),
-  orderPartnerFk: foreignKey({
-    columns: [table.orderId, table.partnerId],
-    foreignColumns: [pax8Orders.id, pax8Orders.partnerId],
-    name: 'pax8_order_lines_order_partner_fkey',
+  orderPartnerOrgFk: foreignKey({
+    columns: [table.orderId, table.partnerId, table.orgId],
+    foreignColumns: [pax8Orders.id, pax8Orders.partnerId, pax8Orders.orgId],
+    name: 'pax8_order_lines_order_partner_org_fkey',
   }).onDelete('cascade'),
   orgPartnerFk: foreignKey({
     columns: [table.orgId, table.partnerId],

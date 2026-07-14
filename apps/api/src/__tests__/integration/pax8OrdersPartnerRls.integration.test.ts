@@ -168,6 +168,43 @@ describe('Pax8 ordering partner-axis RLS and integrity (breeze_app)', () => {
     ).rejects.toMatchObject({ cause: { code: '23514' } });
   });
 
+  runDb('rejects a new-subscription line with an invalid billing term', async () => {
+    const { partnerA, orgA, orderA } = await seed();
+
+    await expect(
+      withPartnerContext(partnerA.id, () =>
+        db.insert(pax8OrderLines).values({
+          orderId: orderA.id,
+          partnerId: partnerA.id,
+          orgId: orgA.id,
+          action: 'new_subscription',
+          pax8ProductId: 'product-1',
+          billingTerm: 'monthly',
+          quantity: '1.00',
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  runDb('rejects an order line whose org differs from its parent order', async () => {
+    const { partnerA, orderA } = await seed();
+    const otherOrgA = await withSystemDbAccessContext(() =>
+      createOrganization({ partnerId: partnerA.id })
+    );
+
+    await expect(
+      withPartnerContext(partnerA.id, () =>
+        db.insert(pax8OrderLines).values({
+          orderId: orderA.id,
+          partnerId: partnerA.id,
+          orgId: otherOrgA.id,
+          action: 'cancel',
+          targetSubscriptionId: 'subscription-1',
+        })
+      )
+    ).rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
   runDb('deleting a catalog item clears only catalog_item_id on its order line', async () => {
     const { partnerA, orgA, orderA } = await seed();
 
