@@ -11,6 +11,7 @@ import {
   real,
   index,
   uniqueIndex,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { users } from './users';
@@ -79,6 +80,18 @@ export const configurationPolicies = pgTable('configuration_policies', {
   orgIdIdx: index('config_policies_org_id_idx').on(table.orgId),
   partnerIdIdx: index('config_policies_partner_id_idx').on(table.partnerId),
   statusIdx: index('config_policies_status_idx').on(table.status),
+}));
+
+// Coarse per-organization material clocks for desired-configuration exports.
+// Child definition/value tables advance these clocks through database-owned
+// triggers so an incremental traversal cannot miss a nested change.
+export const partnerExportConfigurationOrgState = pgTable('partner_export_configuration_org_state', {
+  resource: varchar('resource', { length: 40 }).notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  updatedAt: timestamp('updated_at', { precision: 3 }).defaultNow().notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.resource, table.orgId] }),
+  orgIdIdx: index('partner_export_configuration_org_state_org_id_idx').on(table.orgId),
 }));
 
 export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {

@@ -4,6 +4,7 @@ import { partnerDeviceRoutes } from './devices';
 import { partnerOrganizationRoutes } from './organizations';
 import { partnerInventoryRoutes } from './inventory';
 import { partnerRelationshipRoutes } from './relationships';
+import { partnerConfigurationRoutes } from './configuration';
 
 export const partnerApiRoutes = new Hono();
 
@@ -14,3 +15,4 @@ partnerApiRoutes.route('/', partnerOrganizationRoutes);
 partnerApiRoutes.route('/', partnerDeviceRoutes);
 partnerApiRoutes.route('/', partnerInventoryRoutes);
 partnerApiRoutes.route('/', partnerRelationshipRoutes);
+partnerApiRoutes.route('/', partnerConfigurationRoutes);

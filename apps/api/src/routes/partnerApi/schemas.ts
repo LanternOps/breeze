@@ -322,6 +322,151 @@ export const deviceRelationshipsExportEnvelopeSchema = createPartnerExportEnvelo
   partnerRelationshipExportRecordSchema,
 );
 
+const partnerExportJsonSchema = z.json();
+const partnerDefinitionScopeSchema = z.enum(['organization', 'partner']);
+const nullableDefinitionString = z.string().max(12_288).nullable();
+
+export const partnerConfigurationPolicyExportRecordSchema = strictPartnerExportRecordSchema({
+  sourceScope: partnerDefinitionScopeSchema,
+  name: z.string().min(1).max(255),
+  description: nullableDefinitionString,
+  status: z.enum(['active', 'inactive', 'archived']),
+  features: z.array(z.object({
+    id: z.string().uuid(),
+    type: z.string().min(1).max(100),
+    policyId: z.string().uuid().nullable(),
+    settings: partnerExportJsonSchema.nullable(),
+  }).strict()).max(500),
+});
+export const configurationPolicyExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerConfigurationPolicyExportRecordSchema,
+);
+
+export const partnerConfigurationAssignmentExportRecordSchema = strictPartnerExportRecordSchema({
+  policyId: z.string().uuid(),
+  policyName: z.string().min(1).max(255),
+  sourceScope: partnerDefinitionScopeSchema,
+  level: z.enum(['partner', 'organization', 'site', 'device_group', 'device']),
+  targetId: z.string().uuid(),
+  priority: z.number().int(),
+  roleFilter: z.array(z.string().min(1).max(30)).max(100).nullable(),
+  osFilter: z.array(z.string().min(1).max(10)).max(100).nullable(),
+});
+export const configurationAssignmentExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerConfigurationAssignmentExportRecordSchema,
+);
+
+export const partnerScriptExportRecordSchema = strictPartnerExportRecordSchema({
+  sourceScope: partnerDefinitionScopeSchema,
+  name: z.string().min(1).max(255),
+  description: nullableDefinitionString,
+  category: z.string().max(100).nullable(),
+  osTypes: z.array(z.string().min(1).max(50)).max(20),
+  language: z.enum(['powershell', 'bash', 'python', 'cmd']),
+  content: z.string().max(12_288),
+  parameters: partnerExportJsonSchema.nullable(),
+  timeoutSeconds: z.number().int().positive(),
+  runAs: z.enum(['system', 'user', 'elevated']),
+  version: z.number().int().positive(),
+  exitCodeSeverityMapping: partnerExportJsonSchema.nullable(),
+});
+export const scriptExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerScriptExportRecordSchema,
+);
+
+export const partnerAutomationExportRecordSchema = strictPartnerExportRecordSchema({
+  sourceScope: partnerDefinitionScopeSchema,
+  name: z.string().min(1).max(255),
+  description: nullableDefinitionString,
+  enabled: z.boolean(),
+  trigger: partnerExportJsonSchema,
+  conditions: partnerExportJsonSchema.nullable(),
+  actions: z.array(partnerExportJsonSchema).max(500),
+  onFailure: z.enum(['stop', 'continue', 'notify']),
+  notificationTargets: partnerExportJsonSchema.nullable(),
+  dependencies: z.array(z.object({
+    resource: z.literal('scripts'),
+    id: z.string().uuid(),
+  }).strict()).max(500),
+});
+export const automationExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerAutomationExportRecordSchema,
+);
+
+const partnerBackupRestoreSchema = z.object({
+  types: z.array(z.enum(['full', 'selective', 'bare_metal'])).max(3),
+  notes: z.string().max(1000).nullable(),
+}).strict();
+const partnerBackupCommonShape = {
+  sourceScope: partnerDefinitionScopeSchema,
+  name: z.string().min(1).max(200),
+  schedule: partnerExportJsonSchema.nullable(),
+  retention: partnerExportJsonSchema.nullable(),
+  exclusions: z.array(z.string().max(2000)).max(500),
+  restore: partnerBackupRestoreSchema,
+};
+export const partnerBackupDestinationExportRecordSchema = strictPartnerExportRecordSchema({
+  kind: z.literal('destination'),
+  ...partnerBackupCommonShape,
+  sourceScope: z.literal('organization'),
+  type: z.enum(['file', 'system_image', 'database', 'application']),
+  provider: z.enum(['local', 's3', 'azure_blob', 'google_cloud', 'backblaze']),
+  compression: z.boolean(),
+  encryption: z.boolean(),
+  active: z.boolean(),
+  default: z.boolean(),
+});
+export const partnerBackupProfileExportRecordSchema = strictPartnerExportRecordSchema({
+  kind: z.literal('profile'),
+  ...partnerBackupCommonShape,
+  description: nullableDefinitionString,
+  active: z.boolean(),
+  selections: partnerExportJsonSchema,
+  destinationId: z.string().uuid().nullable(),
+});
+export const partnerBackupPolicyExportRecordSchema = strictPartnerExportRecordSchema({
+  kind: z.literal('policy'),
+  ...partnerBackupCommonShape,
+  sourceScope: z.literal('organization'),
+  enabled: z.boolean(),
+  destinationId: z.string().uuid(),
+  targets: partnerExportJsonSchema,
+  gfs: partnerExportJsonSchema.nullable(),
+  legalHold: z.boolean(),
+  legalHoldReason: nullableDefinitionString,
+  bandwidthLimitMbps: z.number().int().positive().nullable(),
+  backupWindowStart: z.string().max(5).nullable(),
+  backupWindowEnd: z.string().max(5).nullable(),
+  priority: z.number().int().nullable(),
+});
+export const partnerBackupConfigurationExportRecordSchema = z.discriminatedUnion('kind', [
+  partnerBackupDestinationExportRecordSchema,
+  partnerBackupProfileExportRecordSchema,
+  partnerBackupPolicyExportRecordSchema,
+]);
+export const backupConfigurationExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerBackupConfigurationExportRecordSchema,
+);
+
+export const partnerCustomFieldExportRecordSchema = strictPartnerExportRecordSchema({
+  sourceScope: partnerDefinitionScopeSchema,
+  name: z.string().min(1).max(100),
+  fieldKey: z.string().min(1).max(100),
+  type: z.enum(['text', 'number', 'boolean', 'dropdown', 'date']),
+  options: partnerExportJsonSchema.nullable(),
+  required: z.boolean(),
+  defaultValue: partnerExportJsonSchema.nullable(),
+  deviceTypes: z.array(z.string().min(1).max(50)).max(100).nullable(),
+  values: z.array(z.object({
+    deviceId: z.string().uuid(),
+    value: partnerExportJsonSchema,
+  }).strict()).max(500),
+  valueCollection: partnerExportCollectionSchema,
+});
+export const customFieldExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerCustomFieldExportRecordSchema,
+);
+
 export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {
   schemaVersion: '1';
   snapshotAt: string;
