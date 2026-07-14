@@ -68,7 +68,7 @@ function connectionOutcome(
 export interface CustomerGraphReadConnectionDto {
   id: string;
   tenantId: string | null;
-  clientId: string;
+  clientId: string | null;
   displayName: string | null;
   status: CustomerGraphReadConnectionSnapshot['status'];
   manifestVersion: number;
@@ -104,7 +104,7 @@ function toConnectionDto(value: ConnectionWithHealth): CustomerGraphReadConnecti
   return {
     id: value.id,
     tenantId: value.tenantId,
-    clientId: value.clientId,
+    clientId: value.clientId === '' ? null : value.clientId,
     displayName: value.displayName,
     status: value.status,
     manifestVersion: value.permissionManifestVersion,

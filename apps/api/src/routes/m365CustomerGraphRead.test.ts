@@ -159,7 +159,7 @@ beforeEach(() => {
   mocks.retest.mockResolvedValue(connection());
   mocks.disconnect.mockResolvedValue(connection({
     tenantId: null, clientId: '', displayName: null, status: 'revoked',
-    permissionManifestVersion: 0, observedGrants: [], grantsVerifiedAt: null,
+    permissionManifestVersion: 2, observedGrants: [], grantsVerifiedAt: null,
     lastVerifiedAt: null, grantHealth: undefined,
   }));
   mocks.buildBindingCookie.mockReturnValue('binding-cookie=opaque; HttpOnly; SameSite=Lax');
@@ -359,6 +359,22 @@ describe('scoped connection mutations', () => {
     );
 
     expect(response.status).toBe(200);
+    await expect(response.clone().json()).resolves.toMatchObject({
+      connection: {
+        id: CONNECTION_ID,
+        tenantId: null,
+        clientId: null,
+        displayName: null,
+        status: 'revoked',
+        manifestVersion: 2,
+        observedGrants: [],
+        missingGrants: [],
+        unexpectedGrants: [],
+        grantsVerifiedAt: null,
+        lastVerifiedAt: null,
+        lastErrorCode: null,
+      },
+    });
     expect(mocks.audit).toHaveBeenCalledTimes(1);
     expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       event: 'm365.customer_graph_read.disconnected', outcome: 'revoked',
