@@ -34,6 +34,7 @@ type PublicError = {
 };
 
 function routeResource(path: string): PartnerExportResource | null {
+  if (path.endsWith('/')) return null;
   const segments = path.split('/').filter(Boolean);
   const candidate = segments.at(-1);
   return segments.at(-2) === 'partner-api' && candidate && RESOURCE_SET.has(candidate)
@@ -149,7 +150,7 @@ async function writePartnerExportAudit(
 export const partnerExportAuditMiddleware: MiddlewareHandler = async (c, next) => {
   const resource = c.req.method === 'GET' ? routeResource(c.req.path) : null;
   const startedAt = Date.now();
-  c.set('partnerExportAuditManaged', true);
+  if (resource) c.set('partnerExportAuditManaged', true);
 
   await next();
 

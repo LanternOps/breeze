@@ -492,6 +492,42 @@ describe('partnerApiAuthMiddleware', () => {
     );
   });
 
+  it.each([
+    ['unsupported GET', 'GET', '/api/v1/partner-api/not-a-resource?cursor=must-not-enter-audit'],
+    ['unsupported method', 'POST', '/api/v1/partner-api/organizations?cursor=must-not-enter-audit'],
+    ['trailing path', 'GET', '/api/v1/partner-api/organizations/?cursor=must-not-enter-audit'],
+  ] as const)('preserves exactly one bounded legacy audit for an authenticated %s', async (_label, method, path) => {
+    mockBootstrap();
+    const app = new Hono();
+    app.use('*', partnerExportAuditMiddleware);
+    app.use('*', partnerApiAuthMiddleware);
+
+    const response = await app.request(path, {
+      method,
+      headers: { 'X-API-Key': RAW_KEY },
+    });
+
+    expect(response.status).toBe(404);
+    expect(mocks.writeAuditEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'partner_api.request',
+        result: 'failure',
+        details: expect.objectContaining({
+          method,
+          path: path.split('?')[0],
+          status: 404,
+        }),
+      }),
+    );
+    const auditJson = JSON.stringify(mocks.writeAuditEvent.mock.calls);
+    expect(auditJson).not.toContain('partner_api.export');
+    expect(auditJson).not.toContain('must-not-enter-audit');
+    expect(auditJson).not.toContain(RAW_KEY);
+    expect(auditJson).not.toContain(createHash('sha256').update(RAW_KEY).digest('hex'));
+  });
+
   it('awaits both last-used and audit completion after the held request context closes', async () => {
     mockBootstrap();
     const update = deferred<void>();
