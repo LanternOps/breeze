@@ -17,8 +17,10 @@
  * org's default destination).
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import postgres from 'postgres';
 import { afterEach, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
@@ -31,6 +33,7 @@ import {
   configPolicyBackupSettings,
   configPolicyAssignments,
   devices,
+  organizations,
   partnerExportConfigurationOrgState,
   sites,
 } from '../../db/schema';
@@ -43,6 +46,91 @@ const BACKUP_PARITY_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-27-c-backup-feature-settings-parity.sql',
 );
+const BACKUP_SERIALIZATION_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-08-01-b-serialize-backup-policy-references.sql',
+);
+const DATABASE_URL = process.env.DATABASE_URL
+  ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForBackendLockWait(backendPid: number): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const [row] = await getTestDb().execute<{ waiting: boolean }>(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_stat_activity
+        WHERE pid = ${backendPid}
+          AND state = 'active'
+          AND cardinality(pg_catalog.pg_blocking_pids(pid)) > 0
+      ) AS waiting
+    `);
+    if (row?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`backup relationship mover backend ${backendPid} never waited on a lock`);
+}
+
+async function waitForBackendIntegrityLockWait(backendPid: number): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const [row] = await getTestDb().execute<{ waiting: boolean }>(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_locks
+        WHERE pid = ${backendPid}
+          AND locktype = 'advisory'
+          AND classid = 1000302
+          AND NOT granted
+      ) AS waiting
+    `);
+    if (row?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`backup relationship backend ${backendPid} never waited in namespace 1000302`);
+}
+
+async function backupCandidateLocks(backendPid: number, candidateId: string): Promise<{
+  profile: boolean;
+  destination: boolean;
+}> {
+  const [row] = await getTestDb().execute<{ profile: boolean; destination: boolean }>(sql`
+    SELECT
+      EXISTS (
+        SELECT 1 FROM pg_catalog.pg_locks
+        WHERE pid = ${backendPid}
+          AND locktype = 'advisory'
+          AND classid = 1000302
+          AND objid = (hashtext(${'ref:backup_profiles:' + candidateId})::bigint & 4294967295)
+          AND granted
+      ) AS profile,
+      EXISTS (
+        SELECT 1 FROM pg_catalog.pg_locks
+        WHERE pid = ${backendPid}
+          AND locktype = 'advisory'
+          AND classid = 1000302
+          AND objid = (hashtext(${'ref:backup_configs:' + candidateId})::bigint & 4294967295)
+          AND granted
+      ) AS destination
+  `);
+  return row ?? { profile: false, destination: false };
+}
+
+async function captureSqlState(work: () => Promise<unknown>): Promise<string | undefined> {
+  try {
+    await work();
+    return undefined;
+  } catch (error) {
+    const wrapped = error as { code?: string; cause?: { code?: string } };
+    return wrapped.cause?.code ?? wrapped.code;
+  }
+}
 
 const createdProfiles: string[] = [];
 const createdConfigs: string[] = [];
@@ -532,6 +620,360 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     expect(await configurationClock(orgA.id)).toEqual(before);
   });
 
+  it('rejects an organization partner move that would orphan a partner-wide profile reference', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const org = await createOrganization({ partnerId: partnerA.id });
+    const [profile] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values({
+      name: 'Organization reverse partner profile', orgId: null, partnerId: partnerA.id,
+      selections: SERVER_SELECTIONS,
+    }).returning());
+    if (!profile) throw new Error('organization reverse profile insert failed');
+    createdProfiles.push(profile.id);
+    const { link } = await seedOrgPolicyWithLink(org.id);
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await db.update(configPolicyFeatureLinks)
+        .set({ featurePolicyId: profile.id })
+        .where(eq(configPolicyFeatureLinks.id, link.id));
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: link.id, orgId: org.id, partnerId: null,
+        backupProfileId: profile.id, schedule: {}, retention: {},
+      });
+    });
+
+    expect(await captureSqlState(() => withDbAccessContext(SYSTEM_CTX, () =>
+      db.update(organizations)
+        .set({ partnerId: partnerB.id })
+        .where(eq(organizations.id, org.id))))).toBe('23503');
+    const [unchanged] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, org.id)));
+    expect(unchanged?.partnerId).toBe(partnerA.id);
+  });
+
+  it('serializes an uncommitted normalized destination reference with a destination owner move', async () => {
+    const admin = getTestDb();
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const [profile] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values({
+      name: 'Concurrent normalized profile', orgId: orgA.id, partnerId: null,
+      selections: SERVER_SELECTIONS,
+    }).returning());
+    const [destination] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
+      orgId: orgA.id, name: 'Concurrent normalized destination', type: 'file',
+      provider: 's3', providerConfig: {},
+    }).returning());
+    const [policy] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(configurationPolicies).values({
+      name: 'Concurrent normalized backup policy', orgId: orgA.id, partnerId: null, status: 'active',
+    }).returning());
+    if (!profile || !destination || !policy) throw new Error('concurrent backup fixture insert failed');
+    createdProfiles.push(profile.id);
+    createdConfigs.push(destination.id);
+    createdPolicies.push(policy.id);
+
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const mover = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const inserted = deferred<{ linkId: string; settingsId: string }>();
+    const releaseHolder = deferred<void>();
+    const moverEntered = deferred<number>();
+    let holderWork: Promise<void> | undefined;
+    let moverWork: Promise<string | undefined> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        const [link] = await tx<{ id: string }[]>`
+          INSERT INTO public.config_policy_feature_links
+            (config_policy_id, feature_type, feature_policy_id)
+          VALUES (${policy.id}, 'backup', ${profile.id})
+          RETURNING id
+        `;
+        if (!link) throw new Error('concurrent backup link insert failed');
+        const [settings] = await tx<{ id: string }[]>`
+          INSERT INTO public.config_policy_backup_settings
+            (feature_link_id, org_id, partner_id, backup_profile_id,
+             destination_config_id, schedule, retention)
+          VALUES (${link.id}, ${orgA.id}, NULL, ${profile.id}, ${destination.id}, '{}'::jsonb, '{}'::jsonb)
+          RETURNING id
+        `;
+        if (!settings) throw new Error('concurrent backup settings insert failed');
+        inserted.resolve({ linkId: link.id, settingsId: settings.id });
+        await releaseHolder.promise;
+      });
+      const insertedRows = await inserted.promise;
+
+      moverWork = captureSqlState(() => mover.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
+        if (!backend) throw new Error('missing backup mover backend pid');
+        moverEntered.resolve(backend.pid);
+        await tx`
+          UPDATE public.backup_configs
+          SET org_id = ${orgB.id}
+          WHERE id = ${destination.id}
+        `;
+      }));
+      await waitForBackendLockWait(await moverEntered.promise);
+      releaseHolder.resolve();
+      await holderWork;
+      expect(await moverWork).toBe('23503');
+
+      await expect(admin.execute(sql`
+        SELECT public.breeze_validate_config_policy_backup_settings(
+          settings.feature_link_id, settings.org_id, settings.partner_id,
+          settings.backup_profile_id, settings.destination_config_id
+        )
+        FROM public.config_policy_backup_settings settings
+        WHERE settings.id = ${insertedRows.settingsId}::uuid
+      `)).resolves.toBeDefined();
+      const [parity] = await admin.execute<{ valid: boolean }>(sql`
+        SELECT public.breeze_backup_feature_settings_parity_is_valid(
+          ${insertedRows.linkId}::uuid
+        ) AS valid
+      `);
+      expect(parity?.valid).toBe(true);
+    } finally {
+      releaseHolder.resolve();
+      await Promise.allSettled([holderWork, moverWork].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 1 });
+      await mover.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  it('co-locks profile and destination candidates with the same physical UUID', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const sharedId = randomUUID();
+    const [destination] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
+      id: sharedId, orgId: orgA.id, name: 'Shared candidate destination', type: 'file',
+      provider: 's3', providerConfig: {},
+    }).returning());
+    if (!destination) throw new Error('shared candidate destination insert failed');
+    createdConfigs.push(destination.id);
+
+    const configMover = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const profileInserter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const configMoved = deferred<void>();
+    const releaseConfigMove = deferred<void>();
+    const profileEntered = deferred<number>();
+    const profileInserted = deferred<void>();
+    const releaseProfileInsert = deferred<void>();
+    let configBackendPid: number | undefined;
+    let configWork: Promise<void> | undefined;
+    let profileWork: Promise<string | undefined> | undefined;
+    try {
+      configWork = configMover.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
+        if (!backend) throw new Error('missing config candidate backend pid');
+        configBackendPid = backend.pid;
+        await tx`UPDATE public.backup_configs SET org_id = ${orgB.id} WHERE id = ${sharedId}`;
+        configMoved.resolve();
+        await releaseConfigMove.promise;
+      });
+      await configMoved.promise;
+      expect(await backupCandidateLocks(configBackendPid!, sharedId)).toEqual({
+        profile: true, destination: true,
+      });
+
+      profileWork = captureSqlState(() => profileInserter.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
+        if (!backend) throw new Error('missing profile candidate backend pid');
+        profileEntered.resolve(backend.pid);
+        await tx`
+          INSERT INTO public.backup_profiles
+            (id, name, org_id, partner_id, selections)
+          VALUES (${sharedId}, 'Shared candidate profile', ${orgA.id}, NULL, ${JSON.stringify(SERVER_SELECTIONS)}::jsonb)
+        `;
+        profileInserted.resolve();
+        await releaseProfileInsert.promise;
+      }));
+      await waitForBackendIntegrityLockWait(await profileEntered.promise);
+      releaseConfigMove.resolve();
+      await configWork;
+      await profileInserted.promise;
+      expect(await backupCandidateLocks(await profileEntered.promise, sharedId)).toEqual({
+        profile: true, destination: true,
+      });
+      releaseProfileInsert.resolve();
+      expect(await profileWork).toBeUndefined();
+      createdProfiles.push(sharedId);
+    } finally {
+      releaseConfigMove.resolve();
+      releaseProfileInsert.resolve();
+      await Promise.allSettled([configWork, profileWork].filter(Boolean) as Promise<unknown>[]);
+      await configMover.end({ timeout: 1 });
+      await profileInserter.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  it('serializes same-UUID profile and destination reverse writers on both candidate identities', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const sharedId = randomUUID();
+    const [destination] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
+      id: sharedId, orgId: orgA.id, name: 'Reverse race destination', type: 'file',
+      provider: 's3', providerConfig: {},
+    }).returning());
+    const [profile] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values({
+      id: sharedId, name: 'Reverse race profile', orgId: orgA.id, partnerId: null,
+      selections: SERVER_SELECTIONS,
+    }).returning());
+    if (!destination || !profile) throw new Error('reverse candidate race fixture insert failed');
+    createdConfigs.push(sharedId);
+    createdProfiles.push(sharedId);
+
+    const profileMover = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const configMover = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const profileMoved = deferred<number>();
+    const releaseProfileMove = deferred<void>();
+    const configEntered = deferred<number>();
+    const configMoved = deferred<void>();
+    const releaseConfigMove = deferred<void>();
+    let profileWork: Promise<string | undefined> | undefined;
+    let configWork: Promise<string | undefined> | undefined;
+    try {
+      profileWork = captureSqlState(() => profileMover.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
+        if (!backend) throw new Error('missing reverse profile backend pid');
+        await tx`UPDATE public.backup_profiles SET org_id = ${orgB.id} WHERE id = ${sharedId}`;
+        profileMoved.resolve(backend.pid);
+        await releaseProfileMove.promise;
+      }));
+      const profilePid = await profileMoved.promise;
+      expect(await backupCandidateLocks(profilePid, sharedId)).toEqual({
+        profile: true, destination: true,
+      });
+
+      configWork = captureSqlState(() => configMover.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
+        if (!backend) throw new Error('missing reverse config backend pid');
+        configEntered.resolve(backend.pid);
+        await tx`UPDATE public.backup_configs SET org_id = ${orgB.id} WHERE id = ${sharedId}`;
+        configMoved.resolve();
+        await releaseConfigMove.promise;
+      }));
+      const configPid = await configEntered.promise;
+      await waitForBackendIntegrityLockWait(configPid);
+      releaseProfileMove.resolve();
+      expect(await profileWork).toBeUndefined();
+      await configMoved.promise;
+      expect(await backupCandidateLocks(configPid, sharedId)).toEqual({
+        profile: true, destination: true,
+      });
+      releaseConfigMove.resolve();
+      expect(await configWork).toBeUndefined();
+    } finally {
+      releaseProfileMove.resolve();
+      releaseConfigMove.resolve();
+      await Promise.allSettled([profileWork, configWork].filter(Boolean) as Promise<unknown>[]);
+      await profileMover.end({ timeout: 1 });
+      await configMover.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  it('locks every bulk settings candidate, rejects owner moves, and preserves destination SET NULL deletes', async () => {
+    const admin = getTestDb();
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const profiles = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values([
+      { name: 'Bulk profile A', orgId: orgA.id, partnerId: null, selections: SERVER_SELECTIONS },
+      { name: 'Bulk profile B', orgId: orgA.id, partnerId: null, selections: SERVER_SELECTIONS },
+    ]).returning());
+    const destinations = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values([
+      { orgId: orgA.id, name: 'Bulk destination A', type: 'file', provider: 's3', providerConfig: {} },
+      { orgId: orgA.id, name: 'Bulk destination B', type: 'file', provider: 's3', providerConfig: {} },
+    ]).returning());
+    if (profiles.length !== 2 || destinations.length !== 2) {
+      throw new Error('bulk backup serialization fixture insert failed');
+    }
+    createdProfiles.push(...profiles.map((row) => row.id));
+    createdConfigs.push(...destinations.map((row) => row.id));
+
+    const settingsIds: string[] = [];
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      for (let index = 0; index < 2; index += 1) {
+        const [policy] = await db.insert(configurationPolicies).values({
+          name: `Bulk serialization policy ${index}`, orgId: orgA.id, partnerId: null, status: 'active',
+        }).returning();
+        if (!policy) throw new Error('bulk backup policy insert failed');
+        createdPolicies.push(policy.id);
+        const [link] = await db.insert(configPolicyFeatureLinks).values({
+          configPolicyId: policy.id, featureType: 'backup', featurePolicyId: profiles[index]!.id,
+        }).returning();
+        const [settings] = await db.insert(configPolicyBackupSettings).values({
+          featureLinkId: link!.id, orgId: orgA.id, partnerId: null,
+          backupProfileId: profiles[index]!.id,
+          destinationConfigId: destinations[index]!.id,
+          schedule: {}, retention: {},
+        }).returning();
+        if (!settings) throw new Error('bulk backup settings insert failed');
+        settingsIds.push(settings.id);
+      }
+    });
+
+    const bulkWriter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const bulkUpdated = deferred<number>();
+    const releaseBulkUpdate = deferred<void>();
+    let bulkWork: Promise<void> | undefined;
+    try {
+      bulkWork = bulkWriter.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
+        if (!backend) throw new Error('missing bulk settings backend pid');
+        await tx`
+          UPDATE public.config_policy_backup_settings
+          SET destination_config_id = CASE id
+            WHEN ${settingsIds[0]!}::uuid THEN ${destinations[1]!.id}::uuid
+            WHEN ${settingsIds[1]!}::uuid THEN ${destinations[0]!.id}::uuid
+            ELSE destination_config_id
+          END
+          WHERE id IN (${settingsIds[0]!}::uuid, ${settingsIds[1]!}::uuid)
+        `;
+        bulkUpdated.resolve(backend.pid);
+        await releaseBulkUpdate.promise;
+      });
+      const bulkPid = await bulkUpdated.promise;
+      for (const candidateId of [
+        profiles[0]!.id, profiles[1]!.id, destinations[0]!.id, destinations[1]!.id,
+      ]) {
+        expect(await backupCandidateLocks(bulkPid, candidateId)).toEqual({
+          profile: true, destination: true,
+        });
+      }
+      releaseBulkUpdate.resolve();
+      await bulkWork;
+    } finally {
+      releaseBulkUpdate.resolve();
+      await Promise.allSettled([bulkWork].filter(Boolean) as Promise<unknown>[]);
+      await bulkWriter.end({ timeout: 1 });
+    }
+
+    expect(await captureSqlState(() => admin.execute(sql`
+      UPDATE public.backup_profiles
+      SET org_id = ${orgB.id}::uuid
+      WHERE id IN (${profiles[0]!.id}::uuid, ${profiles[1]!.id}::uuid)
+    `))).toBe('23503');
+    expect(await captureSqlState(() => admin.execute(sql`
+      DELETE FROM public.backup_configs
+      WHERE id IN (${destinations[0]!.id}::uuid, ${destinations[1]!.id}::uuid)
+    `))).toBeUndefined();
+
+    const [remaining] = await admin.execute<{
+      profiles: number; destinations: number; nulledDestinations: number;
+    }>(sql`
+      SELECT
+        (SELECT count(*)::integer FROM public.backup_profiles
+          WHERE id IN (${profiles[0]!.id}::uuid, ${profiles[1]!.id}::uuid)) AS profiles,
+        (SELECT count(*)::integer FROM public.backup_configs
+          WHERE id IN (${destinations[0]!.id}::uuid, ${destinations[1]!.id}::uuid)) AS destinations,
+        (SELECT count(*)::integer FROM public.config_policy_backup_settings
+          WHERE id IN (${settingsIds[0]!}::uuid, ${settingsIds[1]!}::uuid)
+            AND destination_config_id IS NULL) AS "nulledDestinations"
+    `);
+    expect(remaining).toEqual({ profiles: 2, destinations: 0, nulledDestinations: 2 });
+  }, 20_000);
+
   it('a partner-owned settings row (org_id NULL) is visible to its partner but not another partner, and the XOR CHECK holds', async () => {
     const partnerA = await createPartner();
     const partnerB = await createPartner();
@@ -903,31 +1345,139 @@ describe('backup feature-link / normalized-settings parity', () => {
       }))).resolves.toBeDefined();
   });
 
-  it('migration is idempotent and keeps deferred parity helpers private', async () => {
-    const migration = readFileSync(BACKUP_PARITY_MIGRATION_FILE, 'utf8');
+  it('migrations are idempotent and keep serialization, parity, and export trigger contracts intact', async () => {
+    const parityMigration = readFileSync(BACKUP_PARITY_MIGRATION_FILE, 'utf8');
+    const serializationMigration = readFileSync(BACKUP_SERIALIZATION_MIGRATION_FILE, 'utf8');
     const adminDb = getTestDb();
-    await expect(adminDb.execute(sql.raw(migration))).resolves.toBeDefined();
-    await expect(adminDb.execute(sql.raw(migration))).resolves.toBeDefined();
+    await expect(adminDb.execute(sql.raw(parityMigration))).resolves.toBeDefined();
+    await expect(adminDb.execute(sql.raw(parityMigration))).resolves.toBeDefined();
+    await expect(adminDb.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
+    await expect(adminDb.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
     await ensureAppRole();
     const [result] = await adminDb.execute<{
-      validate: boolean; enforce: boolean; deferredLink: boolean; deferredSettings: boolean;
+      validate: boolean;
+      enforce: boolean;
+      serializeSettings: boolean;
+      serializeReverse: boolean;
+      publicSerializeSettings: boolean;
+      publicSerializeReverse: boolean;
+      fixedSecurityDefinerConfig: boolean;
+      fixedPathBodies: boolean;
+      appSuper: boolean;
+      appBypassRls: boolean;
+      deferredParityCount: number;
+      normalizedExportCount: number;
+      targetExportCount: number;
+      serializationTriggers: string[];
     }>(sql`
+      WITH serialization_functions AS (
+        SELECT p.* FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname IN ('breeze_enforce_backup_settings_stmt', 'breeze_revalidate_backup_refs_stmt')
+      ), serialization_trigger_rows AS (
+        SELECT c.relname || '.' || t.tgname AS name, t.tgtype
+        FROM pg_catalog.pg_trigger t
+        JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+        WHERE t.tgfoid IN (SELECT oid FROM serialization_functions)
+          AND NOT t.tgisinternal
+      )
       SELECT
-        has_function_privilege('breeze_app', 'public.breeze_backup_feature_settings_parity_is_valid(uuid)', 'EXECUTE') AS validate,
-        has_function_privilege('breeze_app', 'public.breeze_enforce_backup_feature_settings_parity()', 'EXECUTE') AS enforce,
-        EXISTS (
-          SELECT 1 FROM pg_catalog.pg_trigger
-          WHERE tgname = 'config_policy_feature_links_backup_settings_parity'
-            AND tgdeferrable AND tginitdeferred
-        ) AS "deferredLink",
-        EXISTS (
-          SELECT 1 FROM pg_catalog.pg_trigger
-          WHERE tgname = 'config_policy_backup_settings_feature_parity'
-            AND tgdeferrable AND tginitdeferred
-        ) AS "deferredSettings"
+        has_function_privilege(
+          'breeze_app', 'public.breeze_backup_feature_settings_parity_is_valid(uuid)', 'EXECUTE'
+        ) AS validate,
+        has_function_privilege(
+          'breeze_app', 'public.breeze_enforce_backup_feature_settings_parity()', 'EXECUTE'
+        ) AS enforce,
+        has_function_privilege(
+          'breeze_app', 'public.breeze_enforce_backup_settings_stmt()', 'EXECUTE'
+        ) AS "serializeSettings",
+        has_function_privilege(
+          'breeze_app', 'public.breeze_revalidate_backup_refs_stmt()', 'EXECUTE'
+        ) AS "serializeReverse",
+        has_function_privilege(
+          'public', 'public.breeze_enforce_backup_settings_stmt()', 'EXECUTE'
+        ) AS "publicSerializeSettings",
+        has_function_privilege(
+          'public', 'public.breeze_revalidate_backup_refs_stmt()', 'EXECUTE'
+        ) AS "publicSerializeReverse",
+        (
+          SELECT count(*) = 2 AND bool_and(
+            prosecdef
+            AND proconfig @> ARRAY[
+              'search_path=pg_catalog, public', 'breeze.scope=system',
+              'breeze.accessible_org_ids=', 'breeze.accessible_partner_ids='
+            ]::text[]
+          ) FROM serialization_functions
+        ) AS "fixedSecurityDefinerConfig",
+        (
+          SELECT count(*) = 2
+            AND bool_and(pg_catalog.strpos(pg_catalog.pg_get_functiondef(oid), 'EXECUTE format') = 0)
+          FROM serialization_functions
+        ) AS "fixedPathBodies",
+        (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = 'breeze_app') AS "appSuper",
+        (SELECT rolbypassrls FROM pg_catalog.pg_roles WHERE rolname = 'breeze_app') AS "appBypassRls",
+        (
+          SELECT count(*)::integer FROM pg_catalog.pg_trigger
+          WHERE tgname IN (
+            'config_policy_feature_links_backup_settings_parity',
+            'config_policy_backup_settings_feature_parity'
+          ) AND tgdeferrable AND tginitdeferred
+        ) AS "deferredParityCount",
+        (
+          SELECT count(*)::integer FROM pg_catalog.pg_trigger t
+          JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+          WHERE c.relname = 'config_policy_backup_settings'
+            AND t.tgname IN (
+              'breeze_partner_export_normalized_insert',
+              'breeze_partner_export_normalized_update',
+              'breeze_partner_export_normalized_delete'
+            ) AND (t.tgtype & 1) = 0
+        ) AS "normalizedExportCount",
+        (
+          SELECT count(*)::integer FROM pg_catalog.pg_trigger t
+          JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+          WHERE c.relname IN ('backup_profiles', 'backup_configs')
+            AND t.tgname IN (
+              'breeze_partner_export_configuration_insert',
+              'breeze_partner_export_configuration_update',
+              'breeze_partner_export_configuration_delete'
+            ) AND (t.tgtype & 1) = 0
+        ) AS "targetExportCount",
+        (
+          SELECT array_agg(name ORDER BY name) FROM serialization_trigger_rows
+          WHERE (tgtype & 1) = 0
+        ) AS "serializationTriggers"
     `);
     expect(result).toEqual({
-      validate: false, enforce: false, deferredLink: true, deferredSettings: true,
+      validate: false,
+      enforce: false,
+      serializeSettings: false,
+      serializeReverse: false,
+      publicSerializeSettings: false,
+      publicSerializeReverse: false,
+      fixedSecurityDefinerConfig: true,
+      fixedPathBodies: true,
+      appSuper: false,
+      appBypassRls: false,
+      deferredParityCount: 2,
+      normalizedExportCount: 3,
+      targetExportCount: 6,
+      serializationTriggers: [
+        'backup_configs.aa_backup_refs_config_delete',
+        'backup_configs.aa_backup_refs_config_update',
+        'backup_profiles.aa_backup_refs_profile_delete',
+        'backup_profiles.aa_backup_refs_profile_insert',
+        'backup_profiles.aa_backup_refs_profile_update',
+        'config_policy_backup_settings.aa_backup_settings_delete',
+        'config_policy_backup_settings.aa_backup_settings_insert',
+        'config_policy_backup_settings.aa_backup_settings_update',
+        'config_policy_feature_links.ab_backup_refs_link_delete',
+        'config_policy_feature_links.ab_backup_refs_link_update',
+        'configuration_policies.ab_backup_refs_policy_delete',
+        'configuration_policies.ab_backup_refs_policy_update',
+        'organizations.ab_backup_refs_org_update',
+      ],
     });
   });
 });
