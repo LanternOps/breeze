@@ -24,6 +24,8 @@ const (
 	ChangeTypeNetwork     ChangeType = "network"
 	ChangeTypeTask        ChangeType = "scheduled_task"
 	ChangeTypeUserAccount ChangeType = "user_account"
+	ChangeTypeHardware    ChangeType = "hardware"
+	ChangeTypeOS          ChangeType = "os_version"
 )
 
 // ChangeAction represents the type of detected change.
@@ -72,6 +74,23 @@ type TrackedUserAccount struct {
 	Locked   bool   `json:"locked"`
 }
 
+// HardwareState is the subset of hardware inventory the change tracker diffs.
+type HardwareState struct {
+	RAMTotalMB   uint64 `json:"ramTotalMb"`
+	CPUModel     string `json:"cpuModel"`
+	CPUCores     int    `json:"cpuCores"`
+	DiskTotalGB  uint64 `json:"diskTotalGb"`
+	BIOSVersion  string `json:"biosVersion"`
+	SerialNumber string `json:"serialNumber"`
+	Motherboard  string `json:"motherboard"`
+}
+
+// SystemState is the OS identity the change tracker diffs.
+type SystemState struct {
+	OSVersion string `json:"osVersion"`
+	OSBuild   string `json:"osBuild"`
+}
+
 // Snapshot represents the current state of trackable items.
 type Snapshot struct {
 	Timestamp       time.Time                       `json:"timestamp"`
@@ -81,6 +100,8 @@ type Snapshot struct {
 	NetworkAdapters map[string]NetworkAdapterInfo   `json:"networkAdapters"`
 	ScheduledTasks  map[string]TrackedScheduledTask `json:"scheduledTasks"`
 	UserAccounts    map[string]TrackedUserAccount   `json:"userAccounts"`
+	Hardware        *HardwareState                  `json:"hardware,omitempty"`
+	System          *SystemState                    `json:"system,omitempty"`
 }
 
 // ChangeTrackerCollector tracks changes in system configuration.
@@ -287,6 +308,8 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 		startupItems   []TrackedStartupItem
 		scheduledTasks []TrackedScheduledTask
 		userAccounts   []TrackedUserAccount
+		hardware       *HardwareInfo
+		systemInfo     *SystemInfo
 
 		softwareErr       error
 		servicesErr       error
@@ -294,16 +317,19 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 		startupItemsErr   error
 		scheduledTasksErr error
 		userAccountsErr   error
+		hardwareErr       error
+		systemInfoErr     error
 	)
 
 	softwareCollector := NewSoftwareCollector()
 	serviceCollector := NewServiceCollector()
 	invCollector := NewInventoryCollector()
+	hwCollector := NewHardwareCollector()
 
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(7)
 	go func() {
 		defer wg.Done()
 		software, softwareErr = collectWithTimeout(ctx, c.collectorTimeout, func(_ context.Context) ([]SoftwareItem, error) {
@@ -333,6 +359,15 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 	go func() {
 		defer wg.Done()
 		userAccounts, userAccountsErr = collectWithTimeout(ctx, c.collectorTimeout, c.collectUserAccounts)
+	}()
+	go func() {
+		defer wg.Done()
+		hardware, hardwareErr = collectWithTimeout(ctx, c.collectorTimeout, func(_ context.Context) (*HardwareInfo, error) {
+			return hwCollector.CollectHardware()
+		})
+		systemInfo, systemInfoErr = collectWithTimeout(ctx, c.collectorTimeout, func(_ context.Context) (*SystemInfo, error) {
+			return hwCollector.CollectSystemInfo()
+		})
 	}()
 	wg.Wait()
 
@@ -410,6 +445,36 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 			key := userAccountKey(account)
 			snapshot.UserAccounts[key] = account
 		}
+	}
+
+	if hardwareErr != nil || hardware == nil {
+		if hardwareErr != nil {
+			slog.Warn("hardware collection failed, using previous snapshot", "error", hardwareErr.Error())
+		}
+		if c.lastSnapshot != nil {
+			snapshot.Hardware = c.lastSnapshot.Hardware
+		}
+	} else {
+		snapshot.Hardware = &HardwareState{
+			RAMTotalMB:   hardware.RAMTotalMB,
+			CPUModel:     hardware.CPUModel,
+			CPUCores:     hardware.CPUCores,
+			DiskTotalGB:  hardware.DiskTotalGB,
+			BIOSVersion:  hardware.BIOSVersion,
+			SerialNumber: hardware.SerialNumber,
+			Motherboard:  strings.TrimSpace(hardware.MotherboardManufacturer + " " + hardware.MotherboardProduct),
+		}
+	}
+
+	if systemInfoErr != nil || systemInfo == nil {
+		if systemInfoErr != nil {
+			slog.Warn("system info collection failed, using previous snapshot", "error", systemInfoErr.Error())
+		}
+		if c.lastSnapshot != nil {
+			snapshot.System = c.lastSnapshot.System
+		}
+	} else {
+		snapshot.System = &SystemState{OSVersion: systemInfo.OSVersion, OSBuild: systemInfo.OSBuild}
 	}
 
 	c.ensureSnapshotMaps(snapshot)
@@ -964,6 +1029,8 @@ func parseChangeIgnoreRules(raw string) []changeIgnoreRule {
 		ChangeTypeNetwork:     {},
 		ChangeTypeTask:        {},
 		ChangeTypeUserAccount: {},
+		ChangeTypeHardware:    {},
+		ChangeTypeOS:          {},
 	}
 
 	rules := make([]changeIgnoreRule, 0)

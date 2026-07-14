@@ -66,6 +66,22 @@ func TestChangeTrackerCollectChanges_DetectsDrift(t *testing.T) {
 	expectChange(t, changes, ChangeTypeUserAccount, ChangeActionAdded, "bob")
 }
 
+func TestChangeTrackerSnapshotCapturesHardwareAndOS(t *testing.T) {
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	collector := NewChangeTrackerCollector(snapshotPath)
+	collector.gatherSnapshot = func() (*Snapshot, error) { return baselineSnapshot(), nil }
+
+	if _, err := collector.CollectChanges(); err != nil {
+		t.Fatalf("CollectChanges error: %v", err)
+	}
+	if collector.lastSnapshot.Hardware == nil || collector.lastSnapshot.Hardware.RAMTotalMB == 0 {
+		t.Fatalf("expected hardware captured in snapshot, got %+v", collector.lastSnapshot.Hardware)
+	}
+	if collector.lastSnapshot.System == nil || collector.lastSnapshot.System.OSVersion == "" {
+		t.Fatalf("expected OS captured in snapshot, got %+v", collector.lastSnapshot.System)
+	}
+}
+
 func TestChangeTrackerCollectChanges_LoadsSnapshotFromDisk(t *testing.T) {
 	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
 	first := NewChangeTrackerCollector(snapshotPath)
@@ -141,6 +157,19 @@ func baselineSnapshot() *Snapshot {
 				Disabled: false,
 				Locked:   false,
 			},
+		},
+		Hardware: &HardwareState{
+			RAMTotalMB:   16384,
+			CPUModel:     "Intel Core i7",
+			CPUCores:     8,
+			DiskTotalGB:  512,
+			BIOSVersion:  "1.2.3",
+			SerialNumber: "SN-12345",
+			Motherboard:  "Acme Corp Model X",
+		},
+		System: &SystemState{
+			OSVersion: "12.6",
+			OSBuild:   "21G115",
 		},
 	}
 }
