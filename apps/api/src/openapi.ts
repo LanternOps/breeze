@@ -1123,7 +1123,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'registerPartner',
         tags: ['Auth'],
         summary: 'Register a new partner (MSP)',
-        description: 'Self-service MSP/company signup. Creates a partner, admin role, user, and associates them. Rate limited to 3 per hour per IP.',
+        description:
+          'Self-service MSP/company signup (email-first, SR2-21). This endpoint creates NOTHING: it parks a pending registration and sends a confirmation email. The partner, admin role, user, and auto-login session are created only when the confirmation link is opened (POST /auth/verify-email). The response is a uniform { success, message } — identical whether or not the address already has an account (anti-enumeration). Rate limited to 3 per hour per IP.',
         security: [],
         requestBody: {
           required: true,
@@ -1145,17 +1146,17 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
         responses: {
           '200': {
-            description: 'Partner registration successful',
+            description:
+              'Confirmation email dispatched (or would have been). Uniform body — no account is created here and no session is returned; the same response is sent whether or not the address already exists.',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
                   properties: {
-                    user: { $ref: '#/components/schemas/User' },
-                    partner: { $ref: '#/components/schemas/Partner' },
-                    tokens: { $ref: '#/components/schemas/Tokens' },
-                    mfaRequired: { type: 'boolean' }
-                  }
+                    success: { type: 'boolean', enum: [true] },
+                    message: { type: 'string' }
+                  },
+                  required: ['success', 'message']
                 }
               }
             }

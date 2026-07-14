@@ -1,10 +1,14 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Stable spy so `expect(mockLogin).not.toHaveBeenCalled()` is meaningful — the
+// selector must hand back the SAME login fn on every render, not a fresh one.
+const { mockLogin } = vi.hoisted(() => ({ mockLogin: vi.fn() }));
+
 vi.mock('../../stores/auth', () => ({
   useAuthStore: Object.assign(
     (selector: (s: { login: ReturnType<typeof vi.fn> }) => unknown) =>
-      selector({ login: vi.fn() }),
+      selector({ login: mockLogin }),
     {},
   ),
   apiRegisterPartner: vi.fn(),
@@ -20,8 +24,11 @@ import { apiRegisterPartner } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { useFeaturesStore } from '../../stores/featuresStore';
 
-// The page now gates on the runtime registration flag (#1308). Seed the store
-// to "loaded + enabled" so the form renders; the disabled path has its own test.
+const mockApiRegisterPartner = vi.mocked(apiRegisterPartner);
+const mockNavigateTo = vi.mocked(navigateTo);
+
+// The page gates on the runtime registration flag (#1308). Seed the store to
+// "loaded + enabled" so the form renders; the disabled path has its own test.
 function setRegistration(enabled: boolean, loaded = true) {
   useFeaturesStore.setState({
     features: { billing: false, support: false },
@@ -31,14 +38,7 @@ function setRegistration(enabled: boolean, loaded = true) {
   });
 }
 
-const baseSuccess = {
-  success: true as const,
-  user: { id: 'u1', email: 'jane@acme.test', name: 'Jane', mfaEnabled: false },
-  partner: { id: 'p1', name: 'Acme', slug: 'acme', status: 'active' },
-  tokens: { accessToken: 'a', refreshToken: 'r', expiresInSeconds: 900 },
-};
-
-async function fillAndSubmit() {
+async function submitValidForm() {
   fireEvent.input(screen.getByLabelText(/company name/i), { target: { value: 'Acme Co' } });
   fireEvent.input(screen.getByLabelText(/full name/i), { target: { value: 'Jane Doe' } });
   fireEvent.input(screen.getByLabelText(/work email/i), { target: { value: 'jane@acme.test' } });
@@ -48,7 +48,7 @@ async function fillAndSubmit() {
   fireEvent.click(screen.getByRole('button', { name: /create company account/i }));
 }
 
-describe('PartnerRegisterPage navigation after signup', () => {
+describe('PartnerRegisterPage — SR2-21 email-first signup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setRegistration(true);
@@ -63,46 +63,20 @@ describe('PartnerRegisterPage navigation after signup', () => {
     expect(screen.queryByLabelText(/company name/i)).toBeNull();
   });
 
-  it('billing-hook redirectUrl wins over next', async () => {
-    vi.mocked(apiRegisterPartner).mockResolvedValueOnce({
-      ...baseSuccess,
-      redirectUrl: '/billing/onboarding',
-    });
-    render(<PartnerRegisterPage next="/oauth/consent?uid=abc" />);
-
-    await fillAndSubmit();
-
-    await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/billing/onboarding');
-  });
-
-  it('falls back to next when no redirectUrl is supplied', async () => {
-    vi.mocked(apiRegisterPartner).mockResolvedValueOnce(baseSuccess);
-    render(<PartnerRegisterPage next="/oauth/consent?uid=abc" />);
-
-    await fillAndSubmit();
-
-    await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
-  });
-
-  it('falls back to "/" when neither redirectUrl nor next is supplied', async () => {
-    vi.mocked(apiRegisterPartner).mockResolvedValueOnce(baseSuccess);
+  it('SR2-21: a successful signup shows "check your email" and does NOT log the user in', async () => {
+    mockApiRegisterPartner.mockResolvedValue({ success: true, message: 'If registration can proceed…' });
     render(<PartnerRegisterPage />);
-
-    await fillAndSubmit();
-
-    await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/');
+    await submitValidForm();
+    expect(await screen.findByTestId('register-check-email')).toBeInTheDocument();
+    expect(mockLogin).not.toHaveBeenCalled();
+    expect(mockNavigateTo).not.toHaveBeenCalled();
   });
 
-  it('rewrites unsafe next to "/" before navigating', async () => {
-    vi.mocked(apiRegisterPartner).mockResolvedValueOnce(baseSuccess);
-    render(<PartnerRegisterPage next="//evil.example.com" />);
-
-    await fillAndSubmit();
-
-    await waitFor(() => expect(navigateTo).toHaveBeenCalled());
-    expect(navigateTo).toHaveBeenCalledWith('/');
+  it('shows the same "check your email" panel for an address that already has an account', async () => {
+    // Same server response — the UI must not branch on it either (anti-enumeration).
+    mockApiRegisterPartner.mockResolvedValue({ success: true, message: 'If registration can proceed…' });
+    render(<PartnerRegisterPage />);
+    await submitValidForm();
+    expect(await screen.findByTestId('register-check-email')).toBeInTheDocument();
   });
 });

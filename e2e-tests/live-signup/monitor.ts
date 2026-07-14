@@ -8,7 +8,6 @@ import { printReport, type PhaseResult, type RegionResult } from './report';
 import { preflight } from './phases/preflight';
 import { registerViaApi, type SignupResult } from './phases/apiSmoke';
 import { registerViaUi } from './phases/uiFlow';
-import { verifyEmail } from './phases/verifyEmail';
 import { simulatePaymentAndAssertActivation } from './phases/simulatePayment';
 import { purgePartner, sweepStaleCanaries } from './phases/cleanup';
 
@@ -38,31 +37,37 @@ async function runRegion(region: Region, opts: {
   const runId = makeRunId();
   const phases: PhaseResult[] = [];
   const created: SignupResult[] = [];
-  let uiRecipient: string | null = null;
 
   phases.push(await timed('preflight', () => preflight(region)));
   if (!phases[0].ok) {
     return { region: region.key, phases, ok: false };
   }
 
+  // SR2-21 step-1 smoke: register-partner is email-first and creates nothing,
+  // so this identity is never verified and needs no cleanup.
   const idA = makeIdentity(runId, 'api');
-  phases.push(await timed('apiSmoke', async () => {
-    await registerViaApi(region, idA, (r) => created.push(r));
-  }));
+  phases.push(await timed('apiSmoke', () => registerViaApi(region, idA)));
 
   let uiResult: SignupResult | null = null;
   if (!opts.skipUi) {
     const idB = makeIdentity(runId, 'ui');
-    uiRecipient = idB.email;
+    // uiFlow now owns BOTH steps: submit the form (asserting the check-email
+    // panel + logged-out state), then read the mailbox and drive the
+    // verify-email page to completion. The account is created + the session
+    // minted at step 2, so the SignupResult (partnerId + accessToken) comes
+    // from there. This also satisfies the payment invariant: email_verified_at
+    // is set (inside uiFlow) before simulate-payment runs.
     phases.push(await timed('uiFlow', async () => {
-      uiResult = await registerViaUi(region, idB, (r) => created.push(r));
+      uiResult = await registerViaUi(
+        region,
+        idB,
+        { resendApiKey: opts.resendKey, verify: !opts.skipVerify },
+        (r) => created.push(r),
+      );
     }));
 
     if (uiResult !== null && !opts.skipVerify) {
       const capturedUiResult: SignupResult = uiResult;
-      // verifyEmail MUST run before payment: partnerGuard only reconciles pending→active
-      // when BOTH email_verified_at and payment_method_attached_at are set.
-      phases.push(await timed('verifyEmail', () => verifyEmail(region, uiRecipient!, opts.resendKey)));
       phases.push(await timed('payment', () => simulatePaymentAndAssertActivation({
         region,
         partnerId: capturedUiResult.partnerId,
