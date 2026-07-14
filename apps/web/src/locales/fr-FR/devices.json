@@ -531,6 +531,8 @@
     "activeNetworkConnections": "Connexions réseau actives",
     "ipHistory": "IP Histoire",
     "historicalPublicAndPrivateIpAddresses": "Adresses publiques et privées historiques IP",
+    "changeHistory": "Historique des Modifications",
+    "changeHistoryTitle": "Modifications de configuration et d’inventaire suivies pour cet appareil",
     "diskCleanup": "Nettoyage des disques",
     "diskUsageAnalysisAndCleanup": "Analyse et nettoyage de l’utilisation du disque",
     "bootPerf": "Perf. de démarrage",
