@@ -299,21 +299,32 @@ describe('generateSecurityCompliancePostureReport', () => {
 
   it('lists native and managed products once with unique scoped coverage', async () => {
     mockGeneratorQueries({
+      2: [
+        { id: 'dev-1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ' },
+        { id: 'dev-2', hostname: 'pc-2', osType: 'windows', siteName: 'HQ' },
+        { id: 'dev-3', hostname: 'pc-3', osType: 'windows', siteName: 'Remote' },
+        { id: 'dev-4', hostname: 'pc-4', osType: 'windows', siteName: 'Remote' },
+        { id: 'dev-5', hostname: 'pc-5', osType: 'windows', siteName: 'HQ' },
+        { id: 'dev-6', hostname: 'pc-6', osType: 'windows', siteName: 'Remote' },
+      ],
       3: [
         { deviceId: 'dev-1', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
-        { deviceId: 'dev-2', provider: 'sentinelone', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
-        { deviceId: 'dev-3', provider: 'sentinelone', realTimeProtection: false, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-2', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-3', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-4', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-5', provider: 'sentinelone', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-6', provider: 'sentinelone', realTimeProtection: false, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
       ],
-      4: [{ deviceId: 'dev-2' }, { deviceId: 'dev-3' }],
+      4: [{ deviceId: 'dev-5' }, { deviceId: 'dev-6' }],
     });
 
     const summary = (await generateSecurityCompliancePostureReport(ORG, {})).summary as any;
+    expect(summary.securityProducts.filter((p: any) => p.product === 'Defender')).toEqual([
+      expect.objectContaining({ category: 'antivirus', deviceCoverage: 4, active: true }),
+    ]);
     expect(summary.securityProducts.filter((p: any) => p.product === 'SentinelOne')).toEqual([
       expect.objectContaining({ category: 'edr', deviceCoverage: 2, active: true }),
     ]);
-    expect(summary.securityProducts).toContainEqual(
-      expect.objectContaining({ product: 'Defender', category: 'antivirus', deviceCoverage: 1 }),
-    );
   });
 
   it('returns empty rows but a valid summary when no devices in scope', async () => {
