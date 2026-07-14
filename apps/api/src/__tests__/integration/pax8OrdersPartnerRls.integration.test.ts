@@ -18,6 +18,9 @@ import {
   pax8Integrations,
   pax8Orders,
   pax8OrderLines,
+  catalogItems,
+  contracts,
+  contractLines,
 } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 
@@ -163,5 +166,106 @@ describe('Pax8 ordering partner-axis RLS and integrity (breeze_app)', () => {
         })
       )
     ).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  runDb('deleting a catalog item clears only catalog_item_id on its order line', async () => {
+    const { partnerA, orgA, orderA } = await seed();
+
+    const result = await withSystemDbAccessContext(async () => {
+      const [catalogItem] = await db
+        .insert(catalogItems)
+        .values({
+          partnerId: partnerA.id,
+          itemType: 'service',
+          name: 'Pax8-backed service',
+          unitPrice: '10.00',
+        })
+        .returning({ id: catalogItems.id });
+      if (!catalogItem) throw new Error('failed to seed catalog item');
+
+      const [orderLine] = await db
+        .insert(pax8OrderLines)
+        .values({
+          orderId: orderA.id,
+          partnerId: partnerA.id,
+          orgId: orgA.id,
+          action: 'new_subscription',
+          pax8ProductId: 'product-1',
+          catalogItemId: catalogItem.id,
+          billingTerm: 'Monthly',
+          quantity: '1.00',
+        })
+        .returning({ id: pax8OrderLines.id });
+      if (!orderLine) throw new Error('failed to seed catalog-backed order line');
+
+      await db.delete(catalogItems).where(eq(catalogItems.id, catalogItem.id));
+
+      const [remaining] = await db
+        .select({
+          catalogItemId: pax8OrderLines.catalogItemId,
+          partnerId: pax8OrderLines.partnerId,
+        })
+        .from(pax8OrderLines)
+        .where(eq(pax8OrderLines.id, orderLine.id));
+      return remaining;
+    });
+
+    expect(result).toEqual({ catalogItemId: null, partnerId: partnerA.id });
+  });
+
+  runDb('deleting a contract line clears only contract_line_id on its order line', async () => {
+    const { partnerA, orgA, orderA } = await seed();
+
+    const result = await withSystemDbAccessContext(async () => {
+      const [contract] = await db
+        .insert(contracts)
+        .values({
+          partnerId: partnerA.id,
+          orgId: orgA.id,
+          name: 'Pax8 contract',
+          intervalMonths: 1,
+          startDate: '2026-07-14',
+        })
+        .returning({ id: contracts.id });
+      if (!contract) throw new Error('failed to seed contract');
+
+      const [contractLine] = await db
+        .insert(contractLines)
+        .values({
+          contractId: contract.id,
+          orgId: orgA.id,
+          lineType: 'manual',
+          description: 'Pax8 subscription',
+          unitPrice: '10.00',
+        })
+        .returning({ id: contractLines.id });
+      if (!contractLine) throw new Error('failed to seed contract line');
+
+      const [orderLine] = await db
+        .insert(pax8OrderLines)
+        .values({
+          orderId: orderA.id,
+          partnerId: partnerA.id,
+          orgId: orgA.id,
+          action: 'cancel',
+          targetSubscriptionId: 'subscription-1',
+          contractLineId: contractLine.id,
+        })
+        .returning({ id: pax8OrderLines.id });
+      if (!orderLine) throw new Error('failed to seed contract-backed order line');
+
+      await db.delete(contractLines).where(eq(contractLines.id, contractLine.id));
+
+      const [remaining] = await db
+        .select({
+          contractLineId: pax8OrderLines.contractLineId,
+          orgId: pax8OrderLines.orgId,
+        })
+        .from(pax8OrderLines)
+        .where(eq(pax8OrderLines.id, orderLine.id));
+      return remaining;
+    });
+
+    expect(result).toEqual({ contractLineId: null, orgId: orgA.id });
   });
 });

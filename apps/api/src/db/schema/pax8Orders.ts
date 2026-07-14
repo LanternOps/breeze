@@ -94,11 +94,15 @@ export const pax8OrderLines = pgTable('pax8_order_lines', {
     foreignColumns: [organizations.id, organizations.partnerId],
     name: 'pax8_order_lines_org_partner_fkey',
   }).onDelete('cascade'),
+  // Drizzle cannot express PostgreSQL's column-list SET NULL action. The SQL
+  // migration narrows this to catalog_item_id so partner_id remains intact.
   catalogItemPartnerFk: foreignKey({
     columns: [table.catalogItemId, table.partnerId],
     foreignColumns: [catalogItems.id, catalogItems.partnerId],
     name: 'pax8_order_lines_catalog_item_partner_fkey',
   }).onDelete('set null'),
+  // Likewise, the SQL migration narrows SET NULL to contract_line_id so the
+  // required org_id tenancy-linkage column is never cleared.
   contractLineOrgFk: foreignKey({
     columns: [table.contractLineId, table.orgId],
     foreignColumns: [contractLines.id, contractLines.orgId],

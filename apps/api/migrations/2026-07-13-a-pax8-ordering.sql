@@ -88,10 +88,10 @@ CREATE TABLE IF NOT EXISTS pax8_order_lines (
     REFERENCES organizations(id, partner_id) ON DELETE CASCADE,
   CONSTRAINT pax8_order_lines_catalog_item_partner_fkey
     FOREIGN KEY (catalog_item_id, partner_id)
-    REFERENCES catalog_items(id, partner_id) ON DELETE SET NULL,
+    REFERENCES catalog_items(id, partner_id) ON DELETE SET NULL (catalog_item_id),
   CONSTRAINT pax8_order_lines_contract_line_org_fkey
     FOREIGN KEY (contract_line_id, org_id)
-    REFERENCES contract_lines(id, org_id) ON DELETE SET NULL
+    REFERENCES contract_lines(id, org_id) ON DELETE SET NULL (contract_line_id)
 );
 
 CREATE INDEX IF NOT EXISTS pax8_order_lines_order_idx ON pax8_order_lines(order_id);
