@@ -145,34 +145,28 @@ func (m *HelperLifecycleManager) reconcile() {
 	currentKeys := make(map[string]bool, len(sessions)*2)
 
 	for _, s := range sessions {
-		// Skip Session 0 (services) and non-interactive types.
-		if s.Session == "0" || s.Type == "services" {
-			continue
-		}
-
-		// Only target active or connected (lock screen after reboot) sessions.
-		if s.State != "active" && s.State != "connected" {
-			continue
-		}
-
 		// Spawn SYSTEM helper if missing, reset retry tracking when connected.
-		systemKey := s.Session + "-system"
-		currentKeys[systemKey] = true
-		if m.broker.HasHelperForWinSessionRole(s.Session, "system") {
-			m.resetTracked(systemKey)
-		} else {
-			m.spawnWithRetry(s.Session, "system")
+		if systemKey, desired := helperKeyFromDetected(s, "system"); desired {
+			trackKey := systemKey.String()
+			currentKeys[trackKey] = true
+			if m.broker.HasHelperForWinSessionRole(s.Session, systemKey.Role) {
+				m.resetTracked(trackKey)
+			} else {
+				m.spawnWithRetry(s.Session, systemKey.Role)
+			}
 		}
 
 		// Spawn user-token helper if missing. Only for active sessions
 		// (user is actually logged in); "connected" means lock screen
 		// where WTSQueryUserToken may fail.
-		userKey := s.Session + "-user"
-		currentKeys[userKey] = true
-		if m.broker.HasHelperForWinSessionRole(s.Session, "user") {
-			m.resetTracked(userKey)
-		} else if s.State == "active" {
-			m.spawnWithRetry(s.Session, "user")
+		if userKey, desired := helperKeyFromDetected(s, "user"); desired {
+			trackKey := userKey.String()
+			currentKeys[trackKey] = true
+			if m.broker.HasHelperForWinSessionRole(s.Session, userKey.Role) {
+				m.resetTracked(trackKey)
+			} else {
+				m.spawnWithRetry(s.Session, userKey.Role)
+			}
 		}
 	}
 
