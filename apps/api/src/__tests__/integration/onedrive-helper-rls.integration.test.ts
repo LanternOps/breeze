@@ -29,7 +29,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import postgres from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import {
   db,
   withDbAccessContext,
@@ -70,6 +70,45 @@ function deferred<T>(): Deferred<T> {
     resolve = res;
   });
   return { promise, resolve };
+}
+
+async function waitForRaceSignal<T>(
+  signal: Promise<T>,
+  worker: Promise<unknown>,
+  label: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`${label} did not report progress within 5 seconds`));
+    }, 5_000);
+  });
+  const workerStopped = worker.then<never>(
+    () => {
+      throw new Error(`${label} completed before reporting progress`);
+    },
+    (error: unknown) => {
+      throw new Error(`${label} failed before reporting progress`, { cause: error });
+    },
+  );
+
+  try {
+    return await Promise.race([signal, workerStopped, timedOut]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function closeRaceClients(...clients: Sql[]): Promise<void> {
+  const results = await Promise.allSettled(
+    clients.map((client) => client.end({ timeout: 1 })),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : []
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'failed to close OneDrive race database client(s)');
+  }
 }
 
 async function waitForExpectedRowOrFkLock(backendPid: number): Promise<void> {
@@ -173,13 +212,29 @@ async function restoreFeatureReferenceGates(): Promise<void> {
   await getTestDb().execute(sql.raw(migration));
 }
 
-async function captureSqlState(work: () => Promise<unknown>): Promise<string | undefined> {
+interface CapturedDatabaseError {
+  sqlState: string | undefined;
+  constraint: string | undefined;
+}
+
+async function captureDatabaseError(
+  work: () => Promise<unknown>,
+): Promise<CapturedDatabaseError | undefined> {
   try {
     await work();
     return undefined;
   } catch (error) {
-    const wrapped = error as { code?: string; cause?: { code?: string } };
-    return wrapped.cause?.code ?? wrapped.code;
+    const wrapped = error as {
+      code?: string;
+      constraint_name?: string;
+      constraint?: string;
+      cause?: { code?: string; constraint_name?: string; constraint?: string };
+    };
+    const databaseError = wrapped.cause ?? wrapped;
+    return {
+      sqlState: databaseError.code,
+      constraint: databaseError.constraint_name ?? databaseError.constraint,
+    };
   }
 }
 
@@ -649,14 +704,15 @@ describe('OneDrive normalized-reference serialization', () => {
     const inserted = deferred<void>();
     const releaseInsert = deferred<void>();
     const moverEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
     const mover = postgres(DATABASE_URL_APP, {
       max: 1,
+      connect_timeout: 5,
       connection: { application_name: `onedrive-policy-mover-${randomUUID()}` },
       onnotice: () => {},
     });
     let holderWork: Promise<void> | undefined;
-    let moverWork: Promise<string | undefined> | undefined;
+    let moverWork: Promise<CapturedDatabaseError | undefined> | undefined;
     try {
       const [role] = await holder<{ who: string; bypass: boolean }[]>`
         SELECT current_user AS who, rolbypassrls AS bypass
@@ -673,9 +729,9 @@ describe('OneDrive normalized-reference serialization', () => {
         inserted.resolve();
         await releaseInsert.promise;
       });
-      await inserted.promise;
+      await waitForRaceSignal(inserted.promise, holderWork, 'settings-insert holder');
 
-      moverWork = captureSqlState(() => mover.begin(async (tx) => {
+      moverWork = captureDatabaseError(() => mover.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
@@ -688,14 +744,19 @@ describe('OneDrive normalized-reference serialization', () => {
           WHERE id = ${fx.configPolicyA.id}
         `;
       }));
-      await waitForExpectedCAdvisoryLock(await moverEntered.promise, [
+      const moverPid = await waitForRaceSignal(
+        moverEntered.promise,
+        moverWork,
+        'policy mover',
+      );
+      await waitForExpectedCAdvisoryLock(moverPid, [
         `feature-link:${fx.featureLinkA.id}`,
         `policy:${fx.configPolicyA.id}`,
       ]);
       releaseInsert.resolve();
       await holderWork;
 
-      expect(await moverWork).toBe('23503');
+      expect(await moverWork).toMatchObject({ sqlState: '23503' });
       const [policy] = await getTestDb().select({ orgId: configurationPolicies.orgId })
         .from(configurationPolicies)
         .where(eq(configurationPolicies.id, fx.configPolicyA.id));
@@ -703,8 +764,7 @@ describe('OneDrive normalized-reference serialization', () => {
     } finally {
       releaseInsert.resolve();
       await Promise.allSettled([holderWork, moverWork].filter(Boolean) as Promise<unknown>[]);
-      await holder.end({ timeout: 1 });
-      await mover.end({ timeout: 1 });
+      await closeRaceClients(holder, mover);
     }
   }, 20_000);
 
@@ -713,14 +773,15 @@ describe('OneDrive normalized-reference serialization', () => {
     const moved = deferred<void>();
     const releaseMove = deferred<void>();
     const inserterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
     const inserter = postgres(DATABASE_URL_APP, {
       max: 1,
+      connect_timeout: 5,
       connection: { application_name: `onedrive-settings-inserter-${randomUUID()}` },
       onnotice: () => {},
     });
     let holderWork: Promise<void> | undefined;
-    let inserterWork: Promise<string | undefined> | undefined;
+    let inserterWork: Promise<CapturedDatabaseError | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
@@ -732,9 +793,9 @@ describe('OneDrive normalized-reference serialization', () => {
         moved.resolve();
         await releaseMove.promise;
       });
-      await moved.promise;
+      await waitForRaceSignal(moved.promise, holderWork, 'policy-move holder');
 
-      inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+      inserterWork = captureDatabaseError(() => inserter.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
@@ -746,14 +807,19 @@ describe('OneDrive normalized-reference serialization', () => {
           VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
         `;
       }));
-      await waitForExpectedCAdvisoryLock(await inserterEntered.promise, [
+      const inserterPid = await waitForRaceSignal(
+        inserterEntered.promise,
+        inserterWork,
+        'settings inserter',
+      );
+      await waitForExpectedCAdvisoryLock(inserterPid, [
         `feature-link:${fx.featureLinkA.id}`,
         `policy:${fx.configPolicyA.id}`,
       ]);
       releaseMove.resolve();
       await holderWork;
 
-      expect(await inserterWork).toBe('23503');
+      expect(await inserterWork).toMatchObject({ sqlState: '23503' });
       const rows = await getTestDb().select({ id: configPolicyOnedriveSettings.id })
         .from(configPolicyOnedriveSettings)
         .where(eq(configPolicyOnedriveSettings.featureLinkId, fx.featureLinkA.id));
@@ -761,8 +827,7 @@ describe('OneDrive normalized-reference serialization', () => {
     } finally {
       releaseMove.resolve();
       await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
-      await holder.end({ timeout: 1 });
-      await inserter.end({ timeout: 1 });
+      await closeRaceClients(holder, inserter);
     }
   }, 20_000);
 
@@ -771,10 +836,10 @@ describe('OneDrive normalized-reference serialization', () => {
     const inserted = deferred<void>();
     const releaseInsert = deferred<void>();
     const deleterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
-    const deleter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
+    const deleter = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
-    let deleterWork: Promise<string | undefined> | undefined;
+    let deleterWork: Promise<CapturedDatabaseError | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
@@ -785,9 +850,9 @@ describe('OneDrive normalized-reference serialization', () => {
         inserted.resolve();
         await releaseInsert.promise;
       });
-      await inserted.promise;
+      await waitForRaceSignal(inserted.promise, holderWork, 'settings-insert holder');
 
-      deleterWork = captureSqlState(() => deleter.begin(async (tx) => {
+      deleterWork = captureDatabaseError(() => deleter.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
@@ -799,7 +864,12 @@ describe('OneDrive normalized-reference serialization', () => {
           WHERE id = ${fx.featureLinkA.id}
         `;
       }));
-      await waitForExpectedRowOrFkLock(await deleterEntered.promise);
+      const deleterPid = await waitForRaceSignal(
+        deleterEntered.promise,
+        deleterWork,
+        'feature-link deleter',
+      );
+      await waitForExpectedRowOrFkLock(deleterPid);
       releaseInsert.resolve();
       await holderWork;
 
@@ -811,8 +881,7 @@ describe('OneDrive normalized-reference serialization', () => {
     } finally {
       releaseInsert.resolve();
       await Promise.allSettled([holderWork, deleterWork].filter(Boolean) as Promise<unknown>[]);
-      await holder.end({ timeout: 1 });
-      await deleter.end({ timeout: 1 });
+      await closeRaceClients(holder, deleter);
     }
   }, 20_000);
 
@@ -821,10 +890,10 @@ describe('OneDrive normalized-reference serialization', () => {
     const deleted = deferred<void>();
     const releaseDelete = deferred<void>();
     const inserterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
-    const inserter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
-    let inserterWork: Promise<string | undefined> | undefined;
+    let inserterWork: Promise<CapturedDatabaseError | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
@@ -835,9 +904,9 @@ describe('OneDrive normalized-reference serialization', () => {
         deleted.resolve();
         await releaseDelete.promise;
       });
-      await deleted.promise;
+      await waitForRaceSignal(deleted.promise, holderWork, 'feature-link-delete holder');
 
-      inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+      inserterWork = captureDatabaseError(() => inserter.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
@@ -849,16 +918,30 @@ describe('OneDrive normalized-reference serialization', () => {
           VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
         `;
       }));
-      await waitForExpectedRowOrFkLock(await inserterEntered.promise);
+      const inserterPid = await waitForRaceSignal(
+        inserterEntered.promise,
+        inserterWork,
+        'settings inserter after feature-link delete',
+      );
+      await waitForExpectedRowOrFkLock(inserterPid);
       releaseDelete.resolve();
       await holderWork;
 
-      expect(await inserterWork).toBe('23503');
+      expect(await inserterWork).toEqual({
+        sqlState: '23503',
+        constraint: 'config_policy_onedrive_settings_feature_link_id_fkey',
+      });
+      expect(await getTestDb().select({ id: configPolicyFeatureLinks.id })
+        .from(configPolicyFeatureLinks)
+        .where(eq(configPolicyFeatureLinks.id, fx.featureLinkA.id))).toHaveLength(0);
+      expect(await getTestDb().select({ id: configPolicyOnedriveSettings.id })
+        .from(configPolicyOnedriveSettings)
+        .where(eq(configPolicyOnedriveSettings.featureLinkId, fx.featureLinkA.id)))
+        .toHaveLength(0);
     } finally {
       releaseDelete.resolve();
       await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
-      await holder.end({ timeout: 1 });
-      await inserter.end({ timeout: 1 });
+      await closeRaceClients(holder, inserter);
     }
   }, 20_000);
 
@@ -872,10 +955,10 @@ describe('OneDrive normalized-reference serialization', () => {
     const inserted = deferred<void>();
     const releaseInsert = deferred<void>();
     const moverEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
-    const mover = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
+    const mover = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
-    let moverWork: Promise<string | undefined> | undefined;
+    let moverWork: Promise<CapturedDatabaseError | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
@@ -887,8 +970,8 @@ describe('OneDrive normalized-reference serialization', () => {
         inserted.resolve();
         await releaseInsert.promise;
       });
-      await inserted.promise;
-      moverWork = captureSqlState(() => mover.begin(async (tx) => {
+      await waitForRaceSignal(inserted.promise, holderWork, 'library-insert holder');
+      moverWork = captureDatabaseError(() => mover.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
@@ -901,10 +984,15 @@ describe('OneDrive normalized-reference serialization', () => {
           WHERE id = ${settings.id}
         `;
       }));
-      await waitForExpectedRowOrFkLock(await moverEntered.promise);
+      const moverPid = await waitForRaceSignal(
+        moverEntered.promise,
+        moverWork,
+        'settings owner mover',
+      );
+      await waitForExpectedRowOrFkLock(moverPid);
       releaseInsert.resolve();
       await holderWork;
-      expect(await moverWork).toBe('23503');
+      expect(await moverWork).toMatchObject({ sqlState: '23503' });
       const [persisted] = await getTestDb().select({ orgId: configPolicyOnedriveSettings.orgId })
         .from(configPolicyOnedriveSettings)
         .where(eq(configPolicyOnedriveSettings.id, settings.id));
@@ -912,8 +1000,7 @@ describe('OneDrive normalized-reference serialization', () => {
     } finally {
       releaseInsert.resolve();
       await Promise.allSettled([holderWork, moverWork].filter(Boolean) as Promise<unknown>[]);
-      await holder.end({ timeout: 1 });
-      await mover.end({ timeout: 1 });
+      await closeRaceClients(holder, mover);
     }
   }, 20_000);
 
@@ -927,10 +1014,10 @@ describe('OneDrive normalized-reference serialization', () => {
     const moved = deferred<void>();
     const releaseMove = deferred<void>();
     const inserterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
-    const inserter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
-    let inserterWork: Promise<string | undefined> | undefined;
+    let inserterWork: Promise<CapturedDatabaseError | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
@@ -942,8 +1029,8 @@ describe('OneDrive normalized-reference serialization', () => {
         moved.resolve();
         await releaseMove.promise;
       });
-      await moved.promise;
-      inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+      await waitForRaceSignal(moved.promise, holderWork, 'settings-owner-move holder');
+      inserterWork = captureDatabaseError(() => inserter.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
@@ -956,15 +1043,31 @@ describe('OneDrive normalized-reference serialization', () => {
           VALUES (${settings.id}, ${fx.orgA.id}, 'race-library-b', 'Race B', 'everyone')
         `;
       }));
-      await waitForExpectedRowOrFkLock(await inserterEntered.promise);
+      const inserterPid = await waitForRaceSignal(
+        inserterEntered.promise,
+        inserterWork,
+        'library inserter after settings owner move',
+      );
+      await waitForExpectedRowOrFkLock(inserterPid);
       releaseMove.resolve();
       await holderWork;
-      expect(await inserterWork).toBe('23503');
+      expect(await inserterWork).toEqual({
+        sqlState: '23503',
+        constraint: 'config_policy_onedrive_libraries_owner_match',
+      });
+      const [persisted] = await getTestDb().select({
+        featureLinkId: configPolicyOnedriveSettings.featureLinkId,
+        orgId: configPolicyOnedriveSettings.orgId,
+      }).from(configPolicyOnedriveSettings)
+        .where(eq(configPolicyOnedriveSettings.id, settings.id));
+      expect(persisted).toEqual({ featureLinkId: fx.featureLinkB.id, orgId: fx.orgB.id });
+      expect(await getTestDb().select({ id: configPolicyOnedriveLibraries.id })
+        .from(configPolicyOnedriveLibraries)
+        .where(eq(configPolicyOnedriveLibraries.settingsId, settings.id))).toHaveLength(0);
     } finally {
       releaseMove.resolve();
       await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
-      await holder.end({ timeout: 1 });
-      await inserter.end({ timeout: 1 });
+      await closeRaceClients(holder, inserter);
     }
   }, 20_000);
 
@@ -978,10 +1081,10 @@ describe('OneDrive normalized-reference serialization', () => {
     const inserted = deferred<void>();
     const releaseInsert = deferred<void>();
     const deleterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
-    const deleter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
+    const deleter = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
-    let deleterWork: Promise<string | undefined> | undefined;
+    let deleterWork: Promise<CapturedDatabaseError | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
@@ -993,9 +1096,9 @@ describe('OneDrive normalized-reference serialization', () => {
         inserted.resolve();
         await releaseInsert.promise;
       });
-      await inserted.promise;
+      await waitForRaceSignal(inserted.promise, holderWork, 'library-insert holder');
 
-      deleterWork = captureSqlState(() => deleter.begin(async (tx) => {
+      deleterWork = captureDatabaseError(() => deleter.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
@@ -1007,7 +1110,12 @@ describe('OneDrive normalized-reference serialization', () => {
           WHERE id = ${settings.id}
         `;
       }));
-      await waitForExpectedRowOrFkLock(await deleterEntered.promise);
+      const deleterPid = await waitForRaceSignal(
+        deleterEntered.promise,
+        deleterWork,
+        'settings deleter',
+      );
+      await waitForExpectedRowOrFkLock(deleterPid);
       releaseInsert.resolve();
       await holderWork;
 
@@ -1021,8 +1129,7 @@ describe('OneDrive normalized-reference serialization', () => {
     } finally {
       releaseInsert.resolve();
       await Promise.allSettled([holderWork, deleterWork].filter(Boolean) as Promise<unknown>[]);
-      await holder.end({ timeout: 1 });
-      await deleter.end({ timeout: 1 });
+      await closeRaceClients(holder, deleter);
     }
   }, 20_000);
 
@@ -1036,10 +1143,10 @@ describe('OneDrive normalized-reference serialization', () => {
     const deleted = deferred<void>();
     const releaseDelete = deferred<void>();
     const inserterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
-    const inserter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL_APP, { max: 1, connect_timeout: 5, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
-    let inserterWork: Promise<string | undefined> | undefined;
+    let inserterWork: Promise<CapturedDatabaseError | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
@@ -1050,9 +1157,9 @@ describe('OneDrive normalized-reference serialization', () => {
         deleted.resolve();
         await releaseDelete.promise;
       });
-      await deleted.promise;
+      await waitForRaceSignal(deleted.promise, holderWork, 'settings-delete holder');
 
-      inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+      inserterWork = captureDatabaseError(() => inserter.begin(async (tx) => {
         await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
@@ -1065,16 +1172,29 @@ describe('OneDrive normalized-reference serialization', () => {
           VALUES (${settings.id}, ${fx.orgA.id}, 'delete-race-b', 'Delete Race B', 'everyone')
         `;
       }));
-      await waitForExpectedRowOrFkLock(await inserterEntered.promise);
+      const inserterPid = await waitForRaceSignal(
+        inserterEntered.promise,
+        inserterWork,
+        'library inserter after settings delete',
+      );
+      await waitForExpectedRowOrFkLock(inserterPid);
       releaseDelete.resolve();
       await holderWork;
 
-      expect(await inserterWork).toBe('23503');
+      expect(await inserterWork).toEqual({
+        sqlState: '23503',
+        constraint: 'config_policy_onedrive_libraries_settings_id_fkey',
+      });
+      expect(await getTestDb().select({ id: configPolicyOnedriveSettings.id })
+        .from(configPolicyOnedriveSettings)
+        .where(eq(configPolicyOnedriveSettings.id, settings.id))).toHaveLength(0);
+      expect(await getTestDb().select({ id: configPolicyOnedriveLibraries.id })
+        .from(configPolicyOnedriveLibraries)
+        .where(eq(configPolicyOnedriveLibraries.settingsId, settings.id))).toHaveLength(0);
     } finally {
       releaseDelete.resolve();
       await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
-      await holder.end({ timeout: 1 });
-      await inserter.end({ timeout: 1 });
+      await closeRaceClients(holder, inserter);
     }
   }, 20_000);
 
@@ -1151,7 +1271,9 @@ describe('OneDrive normalized-reference serialization', () => {
       level: 'ROW' | 'STATEMENT';
       oldTransitionTable: string | null;
       newTransitionTable: string | null;
+      helperSchema: string;
       helper: string;
+      helperIdentityArguments: string;
     }
     const triggers = await admin.execute<OneDriveTriggerTuple>(sql`
       SELECT relation.relname AS relation,
@@ -1165,11 +1287,14 @@ describe('OneDrive normalized-reference serialization', () => {
         CASE WHEN (trigger.tgtype & 1) = 1 THEN 'ROW' ELSE 'STATEMENT' END AS level,
         trigger.tgoldtable AS "oldTransitionTable",
         trigger.tgnewtable AS "newTransitionTable",
-        proc.proname AS helper
+        proc_namespace.nspname AS "helperSchema",
+        proc.proname AS helper,
+        pg_catalog.pg_get_function_identity_arguments(proc.oid) AS "helperIdentityArguments"
       FROM pg_catalog.pg_trigger trigger
       JOIN pg_catalog.pg_class relation ON relation.oid = trigger.tgrelid
       JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
       JOIN pg_catalog.pg_proc proc ON proc.oid = trigger.tgfoid
+      JOIN pg_catalog.pg_namespace proc_namespace ON proc_namespace.oid = proc.pronamespace
       WHERE namespace.nspname = 'public'
         AND trigger.tgname LIKE 'a_onedrive_%'
         AND NOT trigger.tgisinternal
@@ -1184,7 +1309,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: 'old_rows',
         newTransitionTable: null,
+        helperSchema: 'public',
         helper: 'breeze_revalidate_onedrive_parent_statements',
+        helperIdentityArguments: '',
       },
       {
         relation: 'config_policy_feature_links',
@@ -1194,7 +1321,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: 'old_rows',
         newTransitionTable: 'new_rows',
+        helperSchema: 'public',
         helper: 'breeze_revalidate_onedrive_parent_statements',
+        helperIdentityArguments: '',
       },
       {
         relation: 'config_policy_onedrive_libraries',
@@ -1204,7 +1333,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: 'old_rows',
         newTransitionTable: null,
+        helperSchema: 'public',
         helper: 'breeze_enforce_onedrive_library_statements',
+        helperIdentityArguments: '',
       },
       {
         relation: 'config_policy_onedrive_libraries',
@@ -1214,7 +1345,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: null,
         newTransitionTable: 'new_rows',
+        helperSchema: 'public',
         helper: 'breeze_enforce_onedrive_library_statements',
+        helperIdentityArguments: '',
       },
       {
         relation: 'config_policy_onedrive_libraries',
@@ -1224,7 +1357,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: 'old_rows',
         newTransitionTable: 'new_rows',
+        helperSchema: 'public',
         helper: 'breeze_enforce_onedrive_library_statements',
+        helperIdentityArguments: '',
       },
       {
         relation: 'config_policy_onedrive_settings',
@@ -1234,7 +1369,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: 'old_rows',
         newTransitionTable: null,
+        helperSchema: 'public',
         helper: 'breeze_enforce_onedrive_settings_statements',
+        helperIdentityArguments: '',
       },
       {
         relation: 'config_policy_onedrive_settings',
@@ -1244,7 +1381,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: null,
         newTransitionTable: 'new_rows',
+        helperSchema: 'public',
         helper: 'breeze_enforce_onedrive_settings_statements',
+        helperIdentityArguments: '',
       },
       {
         relation: 'config_policy_onedrive_settings',
@@ -1254,7 +1393,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: 'old_rows',
         newTransitionTable: 'new_rows',
+        helperSchema: 'public',
         helper: 'breeze_enforce_onedrive_settings_statements',
+        helperIdentityArguments: '',
       },
       {
         relation: 'configuration_policies',
@@ -1264,7 +1405,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: 'old_rows',
         newTransitionTable: null,
+        helperSchema: 'public',
         helper: 'breeze_revalidate_onedrive_parent_statements',
+        helperIdentityArguments: '',
       },
       {
         relation: 'configuration_policies',
@@ -1274,7 +1417,9 @@ describe('OneDrive normalized-reference serialization', () => {
         level: 'STATEMENT',
         oldTransitionTable: 'old_rows',
         newTransitionTable: 'new_rows',
+        helperSchema: 'public',
         helper: 'breeze_revalidate_onedrive_parent_statements',
+        helperIdentityArguments: '',
       },
     ] satisfies OneDriveTriggerTuple[]);
 
