@@ -798,9 +798,9 @@ Pax8 integration and ordering routes require partner or system scope plus `billi
 | `GET` | `/pax8/orders` | No | List orders; optional `orgId` returns that organization's history |
 | `GET` | `/pax8/orders/:id` | No | Get `{ order, lines }` for an accessible order |
 | `POST` | `/pax8/orders` | Yes | Create or reuse the organization's mutable direct order |
-| `POST` | `/pax8/orders/:id/lines` | Yes | Stage a new subscription, quantity change, or cancellation |
-| `PATCH` | `/pax8/orders/:id/lines/:lineId` | Yes | Update commitment/provisioning values on a mutable new-subscription line |
-| `DELETE` | `/pax8/orders/:id/lines/:lineId` | Yes | Remove a line from a mutable order |
+| `POST` | `/pax8/orders/:id/lines` | Yes | Stage a new subscription, quantity change, or cancellation on a mutable direct order |
+| `PATCH` | `/pax8/orders/:id/lines/:lineId` | Yes | Update commitment/provisioning values on a mutable new-subscription line, including a quote-staged line |
+| `DELETE` | `/pax8/orders/:id/lines/:lineId` | Yes | Remove a line from a mutable direct order |
 | `POST` | `/pax8/orders/:id/preflight` | Yes | Mock-validate new-subscription lines with Pax8; returns the raw Pax8 body on `422` |
 | `POST` | `/pax8/orders/:id/submit` | Yes | Claim and execute the order once; returns per-line outcomes |
 | `POST` | `/pax8/orders/:id/reconcile` | Yes | Read Pax8 state to classify uncertain writes; never issues a Pax8 write |
@@ -894,9 +894,9 @@ Provision fields may have `valueType` `Input`, `Single-Value`, or `Multi-Value`.
 
 Order status is one of `draft`, `awaiting_details`, `ready`, `submitting`, `completed`, `partially_failed`, `failed`, or `cancelled`. Each line has a `submitState` of `pending`, `in_flight`, `succeeded`, `failed`, or `needs_reconcile`. `GET /pax8/orders?orgId=<uuid>` returns the organization's complete, newest-first history (up to 100); without `orgId`, it returns the accessible non-terminal partner queue. `GET /pax8/orders/:id` returns `{ data: { order, lines } }`.
 
-Stage lines with `POST /pax8/orders/:id/lines`. The body is strict and depends on `action`.
+Stage lines on a mutable **direct** order with `POST /pax8/orders/:id/lines`. The body is strict—unknown fields are rejected—and depends on `action`. Public callers cannot add lines to a quote-staged order.
 
-New subscription—`pax8ProductId`, `billingTerm`, and a quantity greater than zero are required:
+New subscription—`pax8ProductId`, `catalogItemId`, `billingTerm`, and a quantity greater than zero are required:
 
 ```json
 {
@@ -910,31 +910,34 @@ New subscription—`pax8ProductId`, `billingTerm`, and a quantity greater than z
 }
 ```
 
+The `pax8ProductId` and `catalogItemId` must be the exact active tuple returned by `GET /pax8/products`; both the Pax8 integration and catalog item must still be active when the line is staged and again when it is submitted. Do not mix a Pax8 product ID with a different catalog item. A direct new-subscription request cannot supply `contractLineId`.
+
 Existing subscription quantity—`targetSubscriptionId` and a quantity of zero or greater are required:
 
 ```json
 {
   "action": "change_quantity",
   "targetSubscriptionId": "subscription-id",
-  "quantity": "15",
-  "contractLineId": "44444444-4444-4444-8444-444444444444"
+  "quantity": "15"
 }
 ```
 
-Cancellation—`targetSubscriptionId` is required and `cancelDate` is optional (`YYYY-MM-DD`):
+Cancellation—`targetSubscriptionId` is required. Cancellation is immediate, not scheduled:
 
 ```json
 {
   "action": "cancel",
-  "targetSubscriptionId": "subscription-id",
-  "cancelDate": "2026-08-31",
-  "contractLineId": "44444444-4444-4444-8444-444444444444"
+  "targetSubscriptionId": "subscription-id"
 }
 ```
 
+For immediate cancellation, omit `cancelDate` as shown. If a caller includes it, use the current UTC calendar date (`YYYY-MM-DD`); future-dated cancellation is unsupported and rejected with `422` so Breeze cannot set the billing quantity to zero before Pax8 cancellation takes effect.
+
+For `change_quantity` and `cancel`, do **not** send `contractLineId`. The strict public schema rejects caller-controlled linkage. Breeze derives exactly one linked manual contract line from `targetSubscriptionId`, uses its manual quantity as billing truth, and fails closed if the link or quantity is missing or changes during authorization.
+
 Valid billing terms are `Monthly`, `Annual`, `2-Year`, `3-Year`, `One-Time`, `Trial`, and `Activation`. Quantity changes and cancellations are rejected with `422` when the active commitment cannot be determined or does not allow that action. A target subscription must belong to the order's organization. Only one change or cancellation may target a given subscription in an order.
 
-The line-create response is `{ data: <line> }` with `201`. `PATCH /pax8/orders/:id/lines/:lineId` accepts at least one of `commitmentTermId` (string or `null`) and `provisioningDetails`; it applies only to a mutable `new_subscription` line and deliberately preserves its quote/catalog/contract linkage. Deleting a mutable line returns `{ "removed": true }`.
+The line-create response is `{ data: <line> }` with `201`. `PATCH /pax8/orders/:id/lines/:lineId` accepts at least one of `commitmentTermId` (string or `null`) and `provisioningDetails`; it applies only to a mutable `new_subscription` line and deliberately preserves its quote/catalog/contract linkage. Public add and delete operations are direct-order-only. Quote-staged lines are immutable in membership: clients cannot add or delete them, and may only complete their commitment/provisioning values through this PATCH. Deleting a mutable direct-order line returns `{ "removed": true }`.
 
 #### Preflight, submit, and reconciliation
 
