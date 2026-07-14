@@ -19,6 +19,10 @@ const mocks = vi.hoisted(() => ({
   bootstrapHandler: vi.fn(),
   ledgerBegin: vi.fn(),
   ledgerComplete: vi.fn(),
+  writeAuditEvent: vi.fn(),
+  requestLikeFromSnapshot: vi.fn(),
+  rateLimiter: vi.fn(),
+  enforceIpAllowlist: vi.fn(),
 }));
 
 vi.mock('../config/env', () => ({
@@ -86,15 +90,15 @@ vi.mock('../services/aiGuardrails', () => ({
 }));
 
 vi.mock('../services/auditEvents', () => ({
-  writeAuditEvent: vi.fn(),
-  requestLikeFromSnapshot: vi.fn(),
+  writeAuditEvent: mocks.writeAuditEvent,
+  requestLikeFromSnapshot: mocks.requestLikeFromSnapshot,
 }));
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
 vi.mock('../services/rate-limit', () => ({
-  rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60_000) })),
+  rateLimiter: (...args: any[]) => mocks.rateLimiter(...args),
 }));
 vi.mock('../services/ipAllowlist', () => ({
-  enforceIpAllowlist: vi.fn(async () => ({ decision: 'allow' })),
+  enforceIpAllowlist: (...args: any[]) => mocks.enforceIpAllowlist(...args),
   IP_NOT_ALLOWED_BODY: { code: 'ip_not_allowed', error: 'Access denied from this IP address' },
   isBlocked: (decision: { decision: string }) => decision.decision === 'deny',
 }));
@@ -129,6 +133,13 @@ beforeEach(async () => {
     orgId: 'org-1',
   });
   mocks.ledgerComplete.mockReset().mockResolvedValue(undefined);
+  mocks.writeAuditEvent.mockReset();
+  mocks.requestLikeFromSnapshot.mockReset();
+  mocks.rateLimiter.mockReset().mockResolvedValue({
+    allowed: true,
+    resetAt: new Date(Date.now() + 60_000),
+  });
+  mocks.enforceIpAllowlist.mockReset().mockResolvedValue({ decision: 'allow' });
   await __loadMcpBootstrapForTests();
 });
 

@@ -862,10 +862,9 @@ describe('MCP transport integration', () => {
   it('keeps SSE queues partitioned per OAuth grant — distinct grants for the same user do NOT share a queue', async () => {
     // Regression test for mcpPrincipalKey() bucketing. Two access tokens
     // belonging to the same user but different OAuth grants must end up in
-    // separate sse queues; otherwise a leaked grant could replay another
-    // grant's responses. We exercise the bucketing via the per-key SSE
-    // session cap (5) — issuing 5 SSE GETs on grant A then a 6th on grant B
-    // must succeed (different bucket), while a 6th on grant A must 429.
+    // separate SSE queues. Keep each successful response open while asserting
+    // the cap, then cancel every reader and prove the same principal can fill
+    // its cap again without inheriting module-owned sessions from this phase.
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
 
@@ -884,66 +883,69 @@ describe('MCP transport integration', () => {
     };
     const grantB = { ...grantA, id: 'oauth:jti-b-1', oauthGrantId: 'grant-B', name: 'B' };
 
-    // 1) Open MCP_MAX_SSE_SESSIONS_PER_KEY (2) sessions on grant A. We must
-    //    abort each request immediately so the SSE handler doesn't hang the
-    //    test — the session is registered synchronously in the handler before
-    //    streamSSE starts pumping.
-    async function openSse(apiKey: any) {
+    async function openSse(
+      apiKey: typeof grantA,
+      readers: Array<ReadableStreamDefaultReader<Uint8Array>>,
+    ) {
       testState.apiKey = apiKey;
-      const ac = new AbortController();
-      const promise = mcpServerRoutes.request('/sse', {
+      const response = await mcpServerRoutes.request('/sse', {
         method: 'GET',
         headers: { 'X-API-Key': 'whatever' },
-        signal: ac.signal,
       });
-      // Yield so the handler runs at least up to sseSessionQueues.set().
-      await new Promise((r) => setTimeout(r, 10));
-      ac.abort();
-      try { await promise; } catch { /* aborted */ }
+      expect(response.status).toBe(200);
+      expect(response.body).not.toBeNull();
+
+      const reader = response.body!.getReader();
+      readers.push(reader);
+      const firstChunk = await reader.read();
+      expect(firstChunk.done).toBe(false);
+      expect(new TextDecoder().decode(firstChunk.value)).toContain('event: endpoint');
     }
-    await openSse(grantA);
-    await openSse(grantA);
 
-    // 2) A 3rd grant-A SSE attempt must 429 (per-key cap exhausted).
-    testState.apiKey = grantA;
-    const overA = await mcpServerRoutes.request('/sse', {
-      method: 'GET',
-      headers: { 'X-API-Key': 'whatever' },
-    });
-    expect(overA.status).toBe(429);
+    async function cancelReaders(
+      readers: Array<ReadableStreamDefaultReader<Uint8Array>>,
+    ) {
+      await Promise.all(readers.splice(0).map((reader) => reader.cancel()));
+      // The route poll loop sleeps for 100ms. Give aborted callbacks one poll
+      // turn to reach their finally blocks and clear keepalive intervals.
+      await new Promise((resolve) => setTimeout(resolve, 125));
+    }
 
-    // 3) A grant-B SSE attempt must succeed — it lives in its own bucket.
-    //    (We expect a 200 streaming response; abort immediately to avoid
-    //    leaving an open stream around.)
-    testState.apiKey = grantB;
-    const acB = new AbortController();
-    const bPromise = mcpServerRoutes.request('/sse', {
-      method: 'GET',
-      headers: { 'X-API-Key': 'whatever' },
-      signal: acB.signal,
-    });
-    await new Promise((r) => setTimeout(r, 10));
-    acB.abort();
-    let bRes: Response | null = null;
-    try { bRes = await bPromise; } catch { /* aborted */ }
-    // Status either 200 (already returned) or undefined (aborted before
-    // headers flushed). 429 would fail. Accept both 200 and an aborted
-    // throw — the lack of a 429 is the assertion that matters.
-    if (bRes) expect(bRes.status).toBe(200);
+    const liveReaders: Array<ReadableStreamDefaultReader<Uint8Array>> = [];
+    try {
+      await openSse(grantA, liveReaders);
+      await openSse(grantA, liveReaders);
 
-    // 4) Structural lock-in: the principalKey for an OAuth grant is
-    //    `oauth-grant:<grantId>`. An apiKey-id principalKey is the bare UUID
-    //    (e.g. "uuid-…"). The "oauth-grant:" prefix means a raw apiKey.id
-    //    cannot collide unless an apiKey row's id literally starts with
-    //    that prefix — which the codebase never produces. We document the
-    //    invariant rather than testing collision behavior directly.
-    const grantKey = (g: { id: string; oauthGrantId?: string | null }) =>
-      g.oauthGrantId ? `oauth-grant:${g.oauthGrantId}` : g.id;
-    expect(grantKey(grantA)).toBe('oauth-grant:grant-A');
-    expect(grantKey(grantB)).toBe('oauth-grant:grant-B');
-    expect(grantKey({ id: 'oauth:jti-a-1' })).toBe('oauth:jti-a-1');
-    expect(grantKey({ id: 'oauth:jti-a-1' }).startsWith('oauth-grant:')).toBe(false);
+      // Grant A has filled its per-principal cap.
+      testState.apiKey = grantA;
+      const overA = await mcpServerRoutes.request('/sse', {
+        method: 'GET',
+        headers: { 'X-API-Key': 'whatever' },
+      });
+      expect(overA.status).toBe(429);
 
+      // A distinct grant for the same user owns a separate queue bucket.
+      await openSse(grantB, liveReaders);
+
+      const grantKey = (grant: { id: string; oauthGrantId?: string | null }) =>
+        grant.oauthGrantId ? `oauth-grant:${grant.oauthGrantId}` : grant.id;
+      expect(grantKey(grantA)).toBe('oauth-grant:grant-A');
+      expect(grantKey(grantB)).toBe('oauth-grant:grant-B');
+      expect(grantKey({ id: 'oauth:jti-a-1' })).toBe('oauth:jti-a-1');
+      expect(grantKey({ id: 'oauth:jti-a-1' }).startsWith('oauth-grant:')).toBe(false);
+    } finally {
+      await cancelReaders(liveReaders);
+    }
+
+    // Cancellation must release both grant-A slots. Opening two fresh streams
+    // proves no prior session remains in the module-owned cap map.
+    const postCleanupReaders: Array<ReadableStreamDefaultReader<Uint8Array>> = [];
+    try {
+      await openSse(grantA, postCleanupReaders);
+      await openSse(grantA, postCleanupReaders);
+    } finally {
+      await cancelReaders(postCleanupReaders);
+    }
   });
 
   it('SSE endpoint event uses the configured public base URL scheme/host, not the raw request URL', async () => {
