@@ -142,7 +142,11 @@ Two preconditions enforced up front rather than eaten as a 422: the org must hav
 
 Quote lines already snapshot `catalog_item_id`, and `pax8_product_mappings` resolves a catalog item to a Pax8 product — so a Pax8-backed quote line is identifiable at accept time **with no schema change to quotes**.
 
-In the post-commit tail of `acceptQuote()` (alongside where it already mints the Stripe pay link), Breeze builds a `pax8_orders` row with `source='quote'`, one `new_subscription` line per Pax8-backed quote line, each carrying the `contract_line_id` that `quoteToContract` just created. It lands in `awaiting_details`: the customer bought it, the contract exists, and the only thing outstanding is provisioning input the customer could never have supplied.
+Staging happens **inside the accept transaction**, as a new Phase 5 immediately after Phase 4 (which already creates the draft contracts via `createContractWithLines`). Breeze builds a `pax8_orders` row with `source='quote'` and one `new_subscription` line per Pax8-backed quote line, each carrying the `contract_line_id` that Phase 4 just created. It lands in `awaiting_details`: the customer bought it, the contract exists, and the only thing outstanding is provisioning input the customer could never have supplied.
+
+It is deliberately **not** in the post-commit tail. That tail exists only for Redis/BullMQ side effects (`invoice.issued`, the PDF enqueue, the accept-token revoke) which must not fire if the transaction rolls back. Staging is a plain DB write with no external effect, and it must be atomic with the contracts it references — a staged order pointing at contract lines that were rolled back would be unfixable.
+
+`createContractWithLines()` returns only the contract, not its lines, so Phase 5 re-reads `contract_lines` for the contracts Phase 4 created and matches them to Pax8-backed quote lines on `catalog_item_id`, claiming each contract line at most once. A Pax8 quote line with `recurrence = 'one_time'` produces no contract line at all (it bills on the invoice), so its order line carries a null `contract_line_id` and performs no billing write on success.
 
 **A customer's approval never places a vendor order.** It stages one. A technician reviews and submits.
 
