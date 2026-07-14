@@ -276,6 +276,10 @@
     "newManualLine": "+ New manual line",
     "lineDescription": "Line description",
     "unitPriceEG3600": "Unit price (e.g. 36.00)",
+    "billingQuantity": "Breeze billing quantity",
+    "billingQuantityHelp": "Enter the quantity Breeze will use for billing. Pax8 reported quantity is observation-only.",
+    "billingQuantityRequired": "Enter a Breeze billing quantity.",
+    "billingQuantityInvalid": "Enter zero or a positive number with up to two decimal places.",
     "trackQuantityForDrift": "Track Pax8 reported quantity for drift (never overwrite Breeze billing)",
     "linkSubscription": "Link subscription"
   },

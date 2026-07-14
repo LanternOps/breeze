@@ -276,6 +276,10 @@
     "newManualLine": "+ Nova linha manual",
     "lineDescription": "Descrição da linha",
     "unitPriceEG3600": "Preço unitário (por exemplo, 36,00)",
+    "billingQuantity": "Quantidade de faturamento do Breeze",
+    "billingQuantityHelp": "Informe a quantidade que o Breeze usará no faturamento. A quantidade informada pela Pax8 é apenas uma observação.",
+    "billingQuantityRequired": "Informe uma quantidade de faturamento do Breeze.",
+    "billingQuantityInvalid": "Informe zero ou um número positivo com até duas casas decimais.",
     "trackQuantityForDrift": "Acompanhar a quantidade informada pelo Pax8 para detectar divergências (nunca sobrescreve a cobrança do Breeze)",
     "linkSubscription": "Vincular assinatura"
   },

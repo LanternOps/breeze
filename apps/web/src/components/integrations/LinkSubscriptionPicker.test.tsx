@@ -131,6 +131,14 @@ describe("LinkSubscriptionPicker", () => {
     fireEvent.change(screen.getByTestId("pax8-link-new-price"), {
       target: { value: "36.00" },
     });
+    const billingQuantity = screen.getByRole("textbox", {
+      name: "Breeze billing quantity",
+    });
+    expect(billingQuantity).toHaveValue("");
+    expect(billingQuantity).not.toHaveValue("5");
+    expect(billingQuantity).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Enter a Breeze billing quantity.")).toBeInTheDocument();
+    fireEvent.change(billingQuantity, { target: { value: "7.25" } });
     fireEvent.click(screen.getByTestId("pax8-link-submit"));
     await waitFor(() => expect(addContractLine).toHaveBeenCalled());
     const [cid, lineBody] = addContractLine.mock.calls[0];
@@ -138,11 +146,73 @@ describe("LinkSubscriptionPicker", () => {
     expect(lineBody).toMatchObject({
       lineType: "manual",
       unitPrice: "36.00",
-      manualQuantity: "5",
+      manualQuantity: "7.25",
       taxable: false,
     });
     const linkBody = JSON.parse(fetchWithAuth.mock.calls[0][1].body);
     expect(linkBody.contractLineId).toBe("line-new");
+  });
+
+  it("never defaults billing from the Pax8-reported quantity", async () => {
+    render(
+      <LinkSubscriptionPicker
+        integrationId="int-1"
+        subscription={{ ...sub, quantity: 987 }}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    await waitFor(() => screen.getByTestId("pax8-link-contract"));
+    fireEvent.change(screen.getByTestId("pax8-link-contract"), {
+      target: { value: "c1" },
+    });
+    await waitFor(() => screen.getByTestId("pax8-link-line"));
+    fireEvent.change(screen.getByTestId("pax8-link-line"), {
+      target: { value: "__new__" },
+    });
+    fireEvent.change(screen.getByTestId("pax8-link-new-price"), {
+      target: { value: "36.00" },
+    });
+
+    expect(screen.getByTestId("pax8-link-new-quantity")).toHaveValue("");
+    expect(screen.getByTestId("pax8-link-submit")).toBeDisabled();
+    expect(addContractLine).not.toHaveBeenCalled();
+  });
+
+  it("rejects blank, negative, and invalid billing quantities but accepts explicit zero", async () => {
+    render(
+      <LinkSubscriptionPicker
+        integrationId="int-1"
+        subscription={sub}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    await waitFor(() => screen.getByTestId("pax8-link-contract"));
+    fireEvent.change(screen.getByTestId("pax8-link-contract"), {
+      target: { value: "c1" },
+    });
+    await waitFor(() => screen.getByTestId("pax8-link-line"));
+    fireEvent.change(screen.getByTestId("pax8-link-line"), {
+      target: { value: "__new__" },
+    });
+    fireEvent.change(screen.getByTestId("pax8-link-new-price"), {
+      target: { value: "36.00" },
+    });
+    const quantity = screen.getByTestId("pax8-link-new-quantity");
+
+    for (const bad of ["", "-1", "abc", "1.234"]) {
+      fireEvent.change(quantity, { target: { value: bad } });
+      expect(quantity).toHaveAttribute("aria-invalid", "true");
+      expect(screen.getByTestId("pax8-link-submit")).toBeDisabled();
+    }
+    fireEvent.change(quantity, { target: { value: "0" } });
+    expect(quantity).toHaveAttribute("aria-invalid", "false");
+    expect(screen.getByTestId("pax8-link-submit")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("pax8-link-submit"));
+
+    await waitFor(() => expect(addContractLine).toHaveBeenCalled());
+    expect(addContractLine.mock.calls[0][1].manualQuantity).toBe("0");
   });
 
   it("keeps submit disabled for an invalid new-line price", async () => {
@@ -161,6 +231,9 @@ describe("LinkSubscriptionPicker", () => {
     await waitFor(() => screen.getByTestId("pax8-link-line"));
     fireEvent.change(screen.getByTestId("pax8-link-line"), {
       target: { value: "__new__" },
+    });
+    fireEvent.change(screen.getByTestId("pax8-link-new-quantity"), {
+      target: { value: "1" },
     });
     // Garbage and over-precise values must not satisfy MONEY_RE.
     for (const bad of ["abc", "36.999", ""]) {
@@ -197,13 +270,15 @@ describe("LinkSubscriptionPicker", () => {
     fireEvent.change(screen.getByTestId("pax8-link-line"), {
       target: { value: "__new__" },
     });
-    // Seeded to a clean 2-decimal value and submit is immediately enabled.
+    // The price may be seeded, but billing quantity must still be explicit.
     expect(
       (screen.getByTestId("pax8-link-new-price") as HTMLInputElement).value,
     ).toBe("42.50");
-    expect(
-      (screen.getByTestId("pax8-link-submit") as HTMLButtonElement).disabled,
-    ).toBe(false);
+    expect(screen.getByTestId("pax8-link-submit")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("pax8-link-new-quantity"), {
+      target: { value: "4" },
+    });
+    expect(screen.getByTestId("pax8-link-submit")).toBeEnabled();
     fireEvent.click(screen.getByTestId("pax8-link-submit"));
     await waitFor(() => expect(addContractLine).toHaveBeenCalled());
     expect(addContractLine.mock.calls[0][1]).toMatchObject({

@@ -64,6 +64,7 @@ export default function LinkSubscriptionPicker({
   const [newPrice, setNewPrice] = useState(() =>
     toPriceInput(subscription.unitPrice),
   );
+  const [newQuantity, setNewQuantity] = useState("");
   const [syncEnabled, setSyncEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,11 +114,18 @@ export default function LinkSubscriptionPicker({
   }, []);
 
   const newPriceValid = MONEY_RE.test(newPrice.trim());
+  const newQuantityValue = newQuantity.trim();
+  const newQuantityValid = MONEY_RE.test(newQuantityValue);
+  const newQuantityError = newQuantityValue === ""
+    ? t("linkSubscriptionPicker.billingQuantityRequired")
+    : !newQuantityValid
+      ? t("linkSubscriptionPicker.billingQuantityInvalid")
+      : null;
   const canSubmit =
     !busy &&
     contractId !== "" &&
     lineId !== "" &&
-    (lineId !== NEW_LINE || (newDesc.trim() !== "" && newPriceValid));
+    (lineId !== NEW_LINE || (newDesc.trim() !== "" && newPriceValid && newQuantityValid));
 
   const submit = useCallback(async () => {
     if (!canSubmit) return;
@@ -132,7 +140,7 @@ export default function LinkSubscriptionPicker({
               description: newDesc.trim(),
               unitPrice: newPrice.trim(),
               taxable: false,
-              manualQuantity: String(subscription.quantity ?? 0),
+              manualQuantity: newQuantityValue,
             }),
           errorFallback: t(
             "linkSubscriptionPicker.couldNotCreateTheContractLine",
@@ -180,6 +188,7 @@ export default function LinkSubscriptionPicker({
     contractId,
     newDesc,
     newPrice,
+    newQuantityValue,
     subscription,
     integrationId,
     syncEnabled,
@@ -248,7 +257,7 @@ export default function LinkSubscriptionPicker({
       </div>
 
       {lineId === NEW_LINE && (
-        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <div className="mt-2 grid gap-2 sm:grid-cols-3">
           <input
             type="text"
             value={newDesc}
@@ -266,6 +275,30 @@ export default function LinkSubscriptionPicker({
             data-testid="pax8-link-new-price"
             className="h-9 rounded-md border bg-background px-3 text-sm"
           />
+          <div className="space-y-1">
+            <label htmlFor="pax8-link-new-quantity" className="block text-xs font-medium">
+              {t("linkSubscriptionPicker.billingQuantity")}
+            </label>
+            <input
+              id="pax8-link-new-quantity"
+              type="text"
+              inputMode="decimal"
+              value={newQuantity}
+              onChange={(e) => setNewQuantity(e.target.value)}
+              aria-invalid={!newQuantityValid}
+              aria-describedby="pax8-link-new-quantity-help pax8-link-new-quantity-error"
+              data-testid="pax8-link-new-quantity"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm aria-invalid:border-destructive"
+            />
+            <p id="pax8-link-new-quantity-help" className="text-xs text-muted-foreground">
+              {t("linkSubscriptionPicker.billingQuantityHelp")}
+            </p>
+            {newQuantityError && (
+              <p id="pax8-link-new-quantity-error" role="alert" className="text-xs text-destructive">
+                {newQuantityError}
+              </p>
+            )}
+          </div>
         </div>
       )}
 

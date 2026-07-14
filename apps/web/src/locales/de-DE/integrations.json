@@ -276,6 +276,10 @@
     "newManualLine": "+ Neue manuelle Zeile",
     "lineDescription": "Zeilenbeschreibung",
     "unitPriceEG3600": "Stückpreis (z. B. 36,00)",
+    "billingQuantity": "Breeze-Abrechnungsmenge",
+    "billingQuantityHelp": "Geben Sie die Menge ein, die Breeze für die Abrechnung verwendet. Die von Pax8 gemeldete Menge dient nur zur Beobachtung.",
+    "billingQuantityRequired": "Geben Sie eine Breeze-Abrechnungsmenge ein.",
+    "billingQuantityInvalid": "Geben Sie null oder eine positive Zahl mit höchstens zwei Dezimalstellen ein.",
     "trackQuantityForDrift": "Von Pax8 gemeldete Menge auf Abweichungen prüfen (Breeze-Abrechnung nie überschreiben)",
     "linkSubscription": "Abonnement verknüpfen"
   },
