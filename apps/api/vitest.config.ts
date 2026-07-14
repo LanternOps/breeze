@@ -46,6 +46,11 @@ export default defineConfig({
       // beforeAll), so the unit runner's no-DB environment fails the suite on
       // connect. Belongs to vitest.integration.config.ts.
       'src/routes/agents/changes.integration.test.ts',
+      // Auth-email worker real-DB test (SR2-22): imports `__tests__/integration/setup`
+      // (real postgres pool + autoMigrate + real Redis) and lives in src/jobs/ — outside
+      // the `src/__tests__/integration/**` glob above — so the no-DB unit runner would
+      // fail it on connect. Belongs to vitest.integration.config.ts (already in its include).
+      'src/jobs/authEmailWorker.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {
