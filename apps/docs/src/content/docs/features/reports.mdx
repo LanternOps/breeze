@@ -235,7 +235,16 @@ The PDF also includes a **Recommended actions** section generated from whichever
 <Aside type="note">
   You can start this report straight from the report builder: pick the **Security & Compliance Posture (Insurance)** template card, then set the name, date-range preset, schedule, and output format like any other report. Once saved, it generates and downloads exactly like the rest of your reports (it appears in your reports list as "Security & Compliance Posture").
 
-  The template card covers the common case. A set of posture-specific fine-tuning options is **not** yet exposed as form controls in the builder and can only be set by editing the report's `config` through the API -- `POST /reports` / `PUT /reports/:id` / `POST /reports/generate` -- with a `config` object: `sites` (limit to specific sites), `windowDays` (recency window for "current" patch/AV data), `minPasswordLength`, `maxLocalAdmins`, `maxAvDefinitionsAgeDays`, and `includeCis` (add the CIS pass-rate section). If you don't set them, sensible defaults apply (30-day window, 8-character minimum password length, at most 2 local admins, 7-day AV-definition freshness, and CIS section included).
+  The posture template asks whether backup coverage is required. New template-created
+  reports default this option off for workstation-oriented assessments. When backup
+  is optional, the PDF still shows detected backup products and labels missing backup
+  as `Not required`; it does not create a remediation recommendation. Existing reports
+  that predate this option retain required-backup behavior.
+
+  API callers can set `config.backupRequired` together with `sites`, `windowDays`,
+  `minPasswordLength`, `maxLocalAdmins`, `maxAvDefinitionsAgeDays`, and `includeCis`.
+  Open vulnerability totals are scoped through tenant findings and the global CVE
+  catalog, and the PDF continues long security-product inventories onto another page.
 </Aside>
 
 ---
