@@ -30,7 +30,7 @@ The expected profile is `customer-graph-read`, manifest version `2`, Microsoft G
 | `Sites.Read.All` | `332a536c-c7ef-4017-ab91-336970924f0d` |
 | `User.Read.All` | `df021288-bdef-4463-88db-98f22de89214` |
 
-Do not use `Application.Read.All` as the ordinary “remove one permission” test. Without it, Microsoft Graph may deny the authoritative assignment query, so Breeze cannot truthfully calculate a current missing set. Scenario 7 tests that distinct last-known behavior.
+Do not use `Application.Read.All` as the ordinary missing-assignment test. Without it, Microsoft Graph may deny the authoritative assignment query, so Breeze cannot truthfully calculate a current missing set. Scenario 7 tests that distinct last-known behavior. Scenarios 6–8 must use only the approved tenant-local `appRoleAssignment` procedure below.
 
 ## Evidence key
 
@@ -57,9 +57,39 @@ During the first eligible consent, capture the Microsoft screen before accepting
 
 Screenshots may contain tenant/test account identity but must not contain an address bar, query string, code, state, cookie, token, or developer-tools panel. Microsoft may change explanatory copy; preserve what was actually displayed rather than substituting this runbook's wording. A name/ID mismatch, omitted role, or extra role is a stop condition.
 
+## Approved tenant-local assignment procedure for scenarios 6–8
+
+These drift tests change only the dedicated application's service-principal assignments inside the disposable tenant. They must never change the home multitenant application registration or its published permission manifest.
+
+Before scenario 6, an authorized Entra test operator and reviewer must:
+
+1. Lock the active directory context to the disposable tenant and record its redacted tenant-ID digest. Stop if the current tenant is ambiguous or different.
+2. Resolve the **client service principal** in that tenant by the fixed Customer Graph Read application `appId`, then verify both the resolved service-principal object ID and its exact `appId` before every write.
+3. Resolve the **resource service principal** in that tenant by Microsoft Graph resource application ID `00000003-0000-0000-c000-000000000000`, then verify its object ID and exact resource `appId` before every write.
+4. Snapshot the client service principal's complete tenant-local `appRoleAssignment` set as sorted `(resourceAppId, appRoleId)` pairs. It must equal the exact nine-role table above before a scenario begins.
+5. Snapshot and digest the home multitenant application object's published permission manifest, including `requiredResourceAccess`. Store only the approved sanitized digest/evidence reference.
+6. Obtain change approval naming the one exact target `appRoleId`, whether the action is create or delete, the disposable tenant digest, the resolved client/resource service-principal object-ID digests, the rollback assignment, operator, and reviewer.
+
+For each write, create or delete only the single target tenant-local `appRoleAssignment` whose principal is the resolved client service principal and whose resource is the resolved Microsoft Graph service principal. Do not use a generic “add/remove permission” portal action. Explicitly forbidden actions are:
+
+- editing the home multitenant app registration or any application object;
+- editing **API permissions** or `requiredResourceAccess`;
+- changing the fixed application ID, certificate, redirect URI, owners, or publisher settings;
+- mutating another enterprise application, another resource service principal, another tenant, or more than the one approved assignment;
+- using an unscoped/bulk permission-removal command or a command that resolves tenant/object IDs implicitly.
+
+This runbook intentionally provides no broad CLI command. Any separately approved automation must require explicit resolved object IDs and tenant context, show a no-write/dry verification of the exact principal/resource/app-role tuple, and stop unless the pre-write snapshot and home-manifest digest match the approved record.
+
+After **each** of scenarios 6, 7, and 8, restore the disposable tenant's exact nine tenant-local assignments before starting the next scenario. Re-snapshot and prove:
+
+- the sorted assignment set equals the nine `(resourceAppId, appRoleId)` pairs above;
+- only the intended disposable-tenant assignment set changed and was restored;
+- the home application manifest digest and `requiredResourceAccess` are unchanged;
+- no other tenant, service principal, application object, or app-role assignment changed.
+
 ## Acceptance matrix
 
-Run the scenarios in order. Restore the exact nine-grant manifest whenever a scenario says to restore it.
+Run the scenarios in order. For scenarios 6–8, use only the approved tenant-local assignment procedure and restore/verify the exact nine assignments after each scenario.
 
 | # | Scenario | Expected Breeze state | Expected stable error/outcome | Required evidence |
 |---:|---|---|---|---|
@@ -68,9 +98,9 @@ Run the scenarios in order. Restore the exact nine-grant manifest whenever a sce
 | 3 | Expired attempt | Attempt never becomes active or binds a tenant; start a fresh attempt afterward | Callback `consent_expired` for an expired signed browser binding | Start/expiry times, sanitized redirect, no executor call, no verified tenant binding |
 | 4 | Ineligible administrator | Fresh attempt remains `pending-consent`; tenant is not bound | `admin_role_required` | UI message, safe API/DB state, verification-failed audit/metric, signed-in role evidence without token/claims dump |
 | 5 | Cross-org duplicate tenant/profile | Org A remains `active`; Org B is not active and cannot own the same tenant/profile | Org B callback `tenant_already_bound`; no owning-org disclosure | Both org status snapshots, generic Org B message, unique ownership DB assertion, audit/metric |
-| 6 | Remove a normal required permission (not `Application.Read.All`) | Org A becomes `degraded`; authoritative observed set and `grants_verified_at` advance; missing list names the removed permission | `grant_missing` | Before/after Entra roles, Retest response, timestamps, drift/retest audit and metric |
-| 7 | Remove `Application.Read.All` | Org A becomes `degraded`; observed grants and `grants_verified_at` remain the prior **last-known** values; `last_verified_at` may advance for the bounded tenant probe | `grant_reconciliation_unavailable`, not `grant_missing` | UI “Last-known” label, before/after DB digests/timestamps, no fabricated current missing set, retest audit/metric |
-| 8 | Add an unexpected application permission | Org A becomes `degraded`; complete observed set contains the extra role and `grants_verified_at` advances | `grant_unexpected` | Entra extra role, UI/API unexpected group, DB metadata, drift/retest audit and metric |
+| 6 | Delete one approved ordinary tenant-local assignment (not `Application.Read.All`) | Org A becomes `degraded`; authoritative observed set and `grants_verified_at` advance; missing list names the deleted assignment | `grant_missing` | Pre/post exact assignment snapshots, unchanged home-manifest digest, Retest response, timestamps, drift/retest audit and metric |
+| 7 | Delete only the tenant-local `Application.Read.All` assignment | Org A becomes `degraded`; observed grants and `grants_verified_at` remain the prior **last-known** values; `last_verified_at` may advance for the bounded tenant probe | `grant_reconciliation_unavailable`, not `grant_missing` | UI “Last-known” label, assignment snapshots, unchanged home-manifest digest, DB digests/timestamps, retest audit/metric |
+| 8 | Create one pre-approved unexpected tenant-local assignment | Org A becomes `degraded`; complete observed set contains the extra role and `grants_verified_at` advances | `grant_unexpected` | Pre/post assignment snapshots, unchanged home-manifest digest, UI/API unexpected group, DB metadata, drift/retest audit and metric |
 | 9 | Re-consent restores exact grants | Org A returns `active`; observed equals the exact nine; timestamps advance | Callback `active`; `last_error_code` null | Consent, UI/API/DB exact equality, binding/retest audit as applicable |
 | 10 | Remove tenant-wide Microsoft consent and detect with Retest | Org A becomes `degraded`; prior observed grants and verification timestamp are retained, and no new Microsoft consent is inferred | `application_token_invalid` | Enterprise-app removal evidence, Retest result, unchanged last-known grant digest, retest audit/metric |
 | 11 | Executor outage and recovery | During outage an existing `active` row stays `active`; after recovery a successful Retest is `active` | During outage `executor_unavailable`; after recovery null | Health/reachability evidence, pre/outage/recovery DB state, executor request/metric evidence |
@@ -118,25 +148,27 @@ Use browser Back/Reload or a controlled test proxy that keeps sensitive query va
 
 ### 6. Missing ordinary grant
 
-1. Record the current observed-grant digest and timestamps.
-2. In Entra, remove exactly one manifest permission other than `Application.Read.All`; record its name and app-role ID.
+1. Complete the approved tenant-local procedure's tenant, client service-principal, Microsoft Graph resource service-principal, exact-nine assignment snapshot, home-manifest digest, and reviewer checks.
+2. Delete only the approved target tenant-local `appRoleAssignment`, selected by its exact assignment object and `appRoleId`. The target must be one of the nine roles other than `Application.Read.All`.
 3. Choose **Retest**. Confirm `degraded`, `grant_missing`, the removed grant in the missing group, an authoritative updated observed set, and a newer `grants_verified_at`.
-4. Restore the grant and admin consent before continuing.
+4. Recreate only that same tenant-local assignment using the previously verified client principal, Microsoft Graph resource principal, and app-role ID.
+5. Confirm the tenant-local set is exactly nine again, the home manifest/`requiredResourceAccess` digest is unchanged, and no other object or tenant changed before continuing.
 
 ### 7. Reconciliation unavailable after `Application.Read.All` removal
 
-1. Return Org A to active and record the observed-grant digest plus `grants_verified_at`.
-2. Remove only `Application.Read.All`, then choose **Retest**.
+1. Return Org A to active, repeat the approved tenant-local pre-write resolution/snapshot checks, and record the observed-grant digest plus `grants_verified_at`.
+2. Delete only the tenant-local `Application.Read.All` `appRoleAssignment` with app-role ID `9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30`, then choose **Retest**.
 3. Confirm `degraded` and `grant_reconciliation_unavailable`. The UI must say **Last-known observed permissions**.
 4. Confirm Breeze did not overwrite observed grants, did not advance `grants_verified_at`, and did not report `Application.Read.All` as an authoritative current `grant_missing` result. A successful bounded organization probe may advance `last_verified_at`.
-5. Restore `Application.Read.All` before continuing.
+5. Recreate only that same tenant-local assignment, verify the exact nine-role set is restored, verify the home manifest/`requiredResourceAccess` digest is unchanged, and confirm no other object or tenant changed before continuing.
 
 ### 8. Unexpected drift
 
-1. Add one harmless read-only Microsoft Graph application permission that is not in the nine-role manifest and grant it only in this disposable tenant.
-2. Choose **Retest**. Confirm `degraded`, `grant_unexpected`, complete observed grants, and the extra role in the unexpected alert.
-3. Confirm both `retested` and `grant_drift_detected` use the bounded `grant_unexpected` outcome.
-4. Remove the extra role before continuing.
+1. Repeat the approved tenant-local pre-write resolution/snapshot checks. The reviewer must approve one exact read-only Microsoft Graph `appRoleId` outside the nine-role manifest and its rollback before any write.
+2. Create only that one tenant-local `appRoleAssignment` from the resolved client service principal to the resolved Microsoft Graph resource service principal. Do not edit API permissions, an application object, or `requiredResourceAccess`.
+3. Choose **Retest**. Confirm `degraded`, `grant_unexpected`, complete observed grants, and the extra role in the unexpected alert.
+4. Confirm both `retested` and `grant_drift_detected` use the bounded `grant_unexpected` outcome.
+5. Delete only the created tenant-local assignment. Verify the exact nine-role set is restored, the home manifest/`requiredResourceAccess` digest is unchanged, and no other object or tenant changed before continuing.
 
 ### 9. Re-consent recovery
 
@@ -189,6 +221,21 @@ Run this review after scenarios 1, 9, 11, and 12. Record only pass/fail, query/r
 | Executor/runtime | Image history/config contains no credential material. Only the executor identity can read the pinned Key Vault version; the API/web/general worker identities receive access denied. Executor responses never include Microsoft tokens or certificate material. |
 
 The database exception above is intentional and must not be hidden: the design stores an opaque version-pinned `vault_ref` and version on the connection, and temporarily stores nonce/verifier only in a system-only one-time consent session. Acceptance requires the session to be consumed/deleted and the raw locator to remain confined to database/configuration boundaries, not a false assertion that these designed fields never exist.
+
+## Scenarios 6–8 drift-safety reviewer assertion
+
+The reviewer must mark every item pass before accepting scenarios 6–8:
+
+- [ ] The write was locked to the disposable tenant's explicit directory context.
+- [ ] The client service principal was resolved by and rechecked against the fixed Customer Graph Read `appId`.
+- [ ] The resource service principal was resolved by and rechecked against Microsoft Graph resource application ID `00000003-0000-0000-c000-000000000000`.
+- [ ] The exact target `appRoleId`, create/delete direction, resolved principal/resource object IDs, and rollback were approved before the write.
+- [ ] The complete tenant-local assignment set was snapshotted and equaled the exact nine roles before the scenario.
+- [ ] Only one target tenant-local `appRoleAssignment` was created or deleted; no generic permission operation was used.
+- [ ] The home multitenant app registration, API permissions, application object, and `requiredResourceAccess` were not edited.
+- [ ] The home application manifest digest was unchanged and evidence proves only the disposable tenant assignment set changed.
+- [ ] The exact nine tenant-local assignments were restored and verified after each scenario, before the next scenario and before cleanup.
+- [ ] No unscoped/bulk CLI command or implicit tenant/object resolution was used.
 
 ## Evidence record template
 
