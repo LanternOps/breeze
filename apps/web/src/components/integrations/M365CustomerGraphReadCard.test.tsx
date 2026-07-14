@@ -1,0 +1,419 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import M365CustomerGraphReadCard from "./M365CustomerGraphReadCard";
+import { fetchWithAuth } from "../../stores/auth";
+import { runAction } from "../../lib/runAction";
+import { navigateTo } from "@/lib/navigation";
+import { formatDateTime } from "@/lib/dateTimeFormat";
+
+const state = vi.hoisted(() => ({
+  currentOrgId: "11111111-1111-4111-8111-111111111111" as string | null,
+  jwtScope: "partner" as "partner" | "organization" | null,
+  jwtOrgId: null as string | null,
+  canWrite: true,
+}));
+
+vi.mock("../../stores/auth", () => ({
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+}));
+
+vi.mock("../../stores/orgStore", () => ({
+  useOrgStore: vi.fn((selector: (value: { currentOrgId: string | null }) => unknown) =>
+    selector({ currentOrgId: state.currentOrgId }),
+  ),
+}));
+
+vi.mock("../../lib/authScope", () => ({
+  getJwtClaims: vi.fn(() => ({
+    scope: state.jwtScope,
+    orgId: state.jwtOrgId,
+    partnerId: null,
+  })),
+}));
+
+vi.mock("../../lib/permissions", () => ({
+  usePermissions: vi.fn(() => ({
+    permissions: state.canWrite
+      ? [{ resource: "organizations", action: "write" }]
+      : [],
+    can: (resource: string, action: string) =>
+      state.canWrite && resource === "organizations" && action === "write",
+  })),
+}));
+
+vi.mock("../../lib/runAction", () => ({
+  runAction: vi.fn(async (options: {
+    request: () => Promise<Response>;
+    parseSuccess?: (value: unknown) => unknown;
+  }) => {
+    const response = await options.request();
+    const value = await response.json();
+    if (!response.ok) throw new Error("request failed");
+    return options.parseSuccess ? options.parseSuccess(value) : value;
+  }),
+  handleActionError: vi.fn(),
+}));
+
+vi.mock("@/lib/navigation", () => ({ navigateTo: vi.fn() }));
+
+vi.mock("@/lib/dateTimeFormat", () => ({
+  formatDateTime: vi.fn((value: string) => `formatted ${value}`),
+}));
+
+const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const runActionMock = vi.mocked(runAction);
+const navigateToMock = vi.mocked(navigateTo);
+const formatDateTimeMock = vi.mocked(formatDateTime);
+
+const ORG_A = "11111111-1111-4111-8111-111111111111";
+const ORG_B = "22222222-2222-4222-8222-222222222222";
+const CONNECTION_ID = "33333333-3333-4333-8333-333333333333";
+const GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000";
+const REQUIRED_GRANTS = [
+  ["9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30", "Application.Read.All"],
+  ["b0afded3-3588-46d8-8b3d-9842eff778da", "AuditLog.Read.All"],
+  ["7438b122-aefc-4978-80ed-43db9fcc7715", "Device.Read.All"],
+  ["dc377aa6-52d8-4e23-b271-2a7ae04cedf3", "DeviceManagementConfiguration.Read.All"],
+  ["2f51be20-0bb4-4fed-bf7b-db946066c75e", "DeviceManagementManagedDevices.Read.All"],
+  ["5b567255-7703-4780-807c-7be8301ae99b", "Group.Read.All"],
+  ["498476ce-e0fe-48b0-b801-37ba7e2685c6", "Organization.Read.All"],
+  ["332a536c-c7ef-4017-ab91-336970924f0d", "Sites.Read.All"],
+  ["df021288-bdef-4463-88db-98f22de89214", "User.Read.All"],
+].map(([appRoleId, value]) => ({
+  resourceApplicationId: GRAPH_APP_ID,
+  appRoleId,
+  value,
+}));
+
+function envelope(overrides: Record<string, unknown> = {}) {
+  return {
+    profile: {
+      id: "customer-graph-read",
+      displayName: "Customer Graph Read",
+      manifestVersion: 2,
+      requiredGrants: REQUIRED_GRANTS,
+    },
+    onboardingEnabled: true,
+    connection: null,
+    ...overrides,
+  };
+}
+
+function connection(overrides: Record<string, unknown> = {}) {
+  return {
+    id: CONNECTION_ID,
+    tenantId: "44444444-4444-4444-8444-444444444444",
+    clientId: "55555555-5555-4555-8555-555555555555",
+    displayName: "Northwind Tenant",
+    status: "active",
+    manifestVersion: 2,
+    observedGrants: REQUIRED_GRANTS,
+    missingGrants: [],
+    unexpectedGrants: [],
+    grantsVerifiedAt: "2026-07-14T18:00:00.000Z",
+    lastVerifiedAt: "2026-07-14T18:01:00.000Z",
+    lastErrorCode: null,
+    ...overrides,
+  };
+}
+
+function makeResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
+  return {
+    ok,
+    status,
+    statusText: ok ? "OK" : "Error",
+    json: vi.fn().mockResolvedValue(payload),
+  } as unknown as Response;
+}
+
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe("M365CustomerGraphReadCard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.currentOrgId = ORG_A;
+    state.jwtScope = "partner";
+    state.jwtOrgId = null;
+    state.canWrite = true;
+  });
+
+  it("renders the exact nine fixed permissions and no credential inputs for an empty envelope", async () => {
+    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope()));
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Customer Graph Read" }),
+    ).toBeInTheDocument();
+    for (const grant of REQUIRED_GRANTS) {
+      expect(screen.getByText(grant.value)).toBeInTheDocument();
+    }
+    expect(screen.getAllByTestId("required-grant")).toHaveLength(9);
+    expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+    expect(screen.queryAllByRole("textbox")).toHaveLength(0);
+    expect(screen.queryByLabelText(/client secret|certificate|vault/i)).not.toBeInTheDocument();
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      `/m365/connections?orgId=${ORG_A}`,
+    );
+  });
+
+  it("shows when onboarding is unavailable for the selected organization", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ onboardingEnabled: false })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(
+      await screen.findByText(
+        "Customer Graph Read onboarding is not enabled for this organization.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled();
+  });
+
+  it.each([
+    ["pending-consent", "Pending consent"],
+    ["verifying", "Verifying"],
+    ["active", "Active"],
+    ["degraded", "Degraded"],
+    ["suspended", "Suspended"],
+    ["revoked", "Revoked"],
+  ])("strictly accepts %s and renders its text status", async (status, label) => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status }) })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByText(label)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["unknown status", envelope({ connection: connection({ status: "connected" }) })],
+    ["unknown envelope field", { ...envelope(), extra: true }],
+    ["malformed grant", envelope({ profile: { ...envelope().profile, requiredGrants: [{ value: "User.Read.All" }] } })],
+    ["secret-shaped field", envelope({ connection: { ...connection(), clientSecret: "do-not-render" } })],
+  ])("fails closed for %s", async (_case, payload) => {
+    fetchWithAuthMock.mockResolvedValue(makeResponse(payload));
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Connection details are unavailable.",
+    );
+    expect(screen.queryByText("do-not-render")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+  });
+
+  it("shows tenant, manifest, grant groups, and formatted verification timestamps", async () => {
+    const missing = REQUIRED_GRANTS[0];
+    const unexpected = {
+      resourceApplicationId: GRAPH_APP_ID,
+      appRoleId: "66666666-6666-4666-8666-666666666666",
+      value: "Directory.Read.All",
+    };
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({
+        connection: connection({
+          status: "degraded",
+          observedGrants: REQUIRED_GRANTS.slice(1).concat(unexpected),
+          missingGrants: [missing],
+          unexpectedGrants: [unexpected],
+        }),
+      })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+    expect(screen.getByText("44444444-4444-4444-8444-444444444444")).toBeInTheDocument();
+    expect(screen.getByText("Manifest version 2")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Required permissions" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Observed permissions" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Missing permissions" })).toBeInTheDocument();
+    const warning = screen.getByRole("alert");
+    expect(warning).toHaveAccessibleName("Unexpected permissions detected");
+    expect(warning).toHaveTextContent("Directory.Read.All");
+    expect(formatDateTimeMock).toHaveBeenCalledWith("2026-07-14T18:00:00.000Z");
+    expect(formatDateTimeMock).toHaveBeenCalledWith("2026-07-14T18:01:00.000Z");
+    expect(screen.getByText("formatted 2026-07-14T18:00:00.000Z")).toBeInTheDocument();
+  });
+
+  it("labels retained observations as last known when grant reconciliation was unavailable", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "degraded",
+        lastErrorCode: "grant_reconciliation_unavailable",
+      }) })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByRole("heading", { name: "Last-known observed permissions" })).toBeInTheDocument();
+    expect(screen.getByText("Microsoft could not complete permission reconciliation. The observed list is the last known result.")).toBeInTheDocument();
+    expect(screen.queryByText("grant_reconciliation_unavailable")).not.toBeInTheDocument();
+  });
+
+  it("localizes known stable codes and never renders raw or unknown codes", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "degraded",
+        lastErrorCode: "admin_role_required",
+      }) })),
+    );
+    const { unmount } = render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByText("A Global Administrator or Privileged Role Administrator must grant consent.")).toBeInTheDocument();
+    expect(screen.queryByText("admin_role_required")).not.toBeInTheDocument();
+    unmount();
+
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "degraded",
+        lastErrorCode: "provider-secret-detail",
+      }) })),
+    );
+    render(<M365CustomerGraphReadCard />);
+    expect(await screen.findByText("Verification needs attention. Retest the connection or start consent again.")).toBeInTheDocument();
+    expect(screen.queryByText("provider-secret-detail")).not.toBeInTheDocument();
+  });
+
+  it("starts consent through runAction and navigates only to the validated server Microsoft URL", async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope()))
+      .mockResolvedValueOnce(makeResponse({ adminConsentUrl: "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=server-owned" }));
+
+    render(<M365CustomerGraphReadCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+
+    await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
+    expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
+      2,
+      `/m365/connections/customer-graph-read/consent?orgId=${ORG_A}`,
+      { method: "POST" },
+    );
+    expect(navigateToMock).toHaveBeenCalledWith(
+      "https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=server-owned",
+    );
+  });
+
+  it("rejects a non-Microsoft consent URL returned by the server", async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope()))
+      .mockResolvedValueOnce(makeResponse({ adminConsentUrl: "https://evil.example/consent" }));
+
+    render(<M365CustomerGraphReadCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+
+    await waitFor(() => expect(runActionMock).toHaveBeenCalledTimes(1));
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it("retests through runAction, prevents duplicate clicks, and reloads", async () => {
+    let finish!: (response: Response) => void;
+    const mutation = new Promise<Response>((resolve) => { finish = resolve; });
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })))
+      .mockReturnValueOnce(mutation)
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })));
+
+    render(<M365CustomerGraphReadCard />);
+    const retest = await screen.findByRole("button", { name: "Retest" });
+    fireEvent.click(retest);
+    fireEvent.click(retest);
+
+    expect(retest).toBeDisabled();
+    expect(runActionMock).toHaveBeenCalledTimes(1);
+    finish(makeResponse({ connection: connection() }));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(3));
+    expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
+      2,
+      `/m365/connections/${CONNECTION_ID}/retest?orgId=${ORG_A}`,
+      { method: "POST" },
+    );
+  });
+
+  it("warns that Microsoft consent remains, disconnects through runAction, and reloads", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })))
+      .mockResolvedValueOnce(makeResponse({ connection: connection({ status: "revoked" }) }))
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection({ status: "revoked" }) })));
+
+    render(<M365CustomerGraphReadCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect from Breeze" }));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(3));
+    expect(confirm).toHaveBeenCalledWith(
+      "Disconnecting stops Breeze from using this connection. Microsoft tenant-wide consent remains until a customer administrator removes it in Microsoft Entra.",
+    );
+    expect(runActionMock).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuthMock).toHaveBeenNthCalledWith(
+      2,
+      `/m365/connections/${CONNECTION_ID}/disconnect?orgId=${ORG_A}`,
+      { method: "POST" },
+    );
+    confirm.mockRestore();
+  });
+
+  it("disables every mutation without organizations:write", async () => {
+    state.canWrite = false;
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded" }) })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByRole("button", { name: "Re-consent" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Retest" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Disconnect from Breeze" })).toBeDisabled();
+  });
+
+  it("clears Org A metadata immediately when the subscribed organization changes", async () => {
+    const pending = deferredResponse();
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })))
+      .mockReturnValueOnce(pending.promise);
+    const view = render(<M365CustomerGraphReadCard />);
+    expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+
+    state.currentOrgId = ORG_B;
+    view.rerender(<M365CustomerGraphReadCard />);
+
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/m365/connections?orgId=${ORG_B}`,
+      ),
+    );
+    expect(screen.queryByText("Northwind Tenant")).not.toBeInTheDocument();
+    expect(screen.queryByText("44444444-4444-4444-8444-444444444444")).not.toBeInTheDocument();
+    pending.resolve(makeResponse(envelope()));
+  });
+
+  it("uses the JWT org only for organization-scoped sessions and blocks partner-wide mode", async () => {
+    state.currentOrgId = null;
+    state.jwtScope = "organization";
+    state.jwtOrgId = ORG_A;
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse(envelope()));
+    const view = render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByRole("button", { name: "Connect" })).toBeEnabled();
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(`/m365/connections?orgId=${ORG_A}`);
+    view.unmount();
+
+    vi.clearAllMocks();
+    state.jwtScope = "partner";
+    state.jwtOrgId = ORG_A;
+    render(<M365CustomerGraphReadCard />);
+    expect(await screen.findByText("Select an organization to manage Customer Graph Read.")).toBeInTheDocument();
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+  });
+});
