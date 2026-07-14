@@ -108,25 +108,31 @@ export function inspectM365ConsentBindingCookie(
   const key = signingKey(source);
   const encoded = extractCookie(cookieHeader);
   if (!key || !encoded) return { status: 'invalid' };
-  const parts = encoded.split('.');
-  if (parts.length !== 2 || !BASE64URL.test(parts[0]) || !BASE64URL.test(parts[1])) {
+  const [payload, signature, ...extraParts] = encoded.split('.');
+  if (
+    !payload
+    || !signature
+    || extraParts.length > 0
+    || !BASE64URL.test(payload)
+    || !BASE64URL.test(signature)
+  ) {
     return { status: 'invalid' };
   }
   let provided: Buffer;
   try {
-    provided = Buffer.from(parts[1], 'base64url');
+    provided = Buffer.from(signature, 'base64url');
   } catch {
     return { status: 'invalid' };
   }
-  if (provided.toString('base64url') !== parts[1]) return { status: 'invalid' };
-  const expected = mac(parts[0], key);
+  if (provided.toString('base64url') !== signature) return { status: 'invalid' };
+  const expected = mac(payload, key);
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
     return { status: 'invalid' };
   }
   let decoded: unknown;
   try {
-    const bytes = Buffer.from(parts[0], 'base64url');
-    if (bytes.toString('base64url') !== parts[0]) return { status: 'invalid' };
+    const bytes = Buffer.from(payload, 'base64url');
+    if (bytes.toString('base64url') !== payload) return { status: 'invalid' };
     decoded = JSON.parse(bytes.toString('utf8'));
   } catch {
     return { status: 'invalid' };
