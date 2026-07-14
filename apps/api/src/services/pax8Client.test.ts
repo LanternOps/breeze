@@ -256,3 +256,119 @@ describe('Pax8Client.getProductPricing', () => {
     expect(rows[1]).toMatchObject({ commitmentTerm: 'Monthly', partnerBuyRate: '20.00', suggestedRetailPrice: '25.00', currencyCode: 'USD' });
   });
 });
+
+function clientWith(fetchImpl: ReturnType<typeof vi.fn>) {
+  return new Pax8Client({
+    credentials: { clientId: 'id', clientSecret: 'secret', accessToken: 'tok', accessTokenExpiresAt: new Date(Date.now() + 3_600_000) },
+    fetch: fetchImpl as never,
+  });
+}
+
+describe('Pax8Client.updateSubscriptionQuantity', () => {
+  it('sends ONLY quantity — never price, partnerCost, or currencyCode', async () => {
+    const doFetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'sub-1', quantity: 11 }));
+    await clientWith(doFetch).updateSubscriptionQuantity('sub-1', 11);
+
+    const [url, init] = doFetch.mock.calls[0]!;
+    expect(url).toBe('https://api.pax8.com/v1/subscriptions/sub-1');
+    expect(init.method).toBe('PUT');
+    // The whole point: PUT is a partial update and price IS writable. A body
+    // with any extra key can silently overwrite the customer's rate.
+    expect(JSON.parse(init.body)).toEqual({ quantity: 11 });
+  });
+});
+
+describe('Pax8Client.cancelSubscription', () => {
+  it('DELETEs with no body and no cancelDate when none given', async () => {
+    const doFetch = vi.fn().mockResolvedValue({ ok: true, status: 204, text: async () => '' } as Response);
+    await clientWith(doFetch).cancelSubscription('sub-9');
+
+    const [url, init] = doFetch.mock.calls[0]!;
+    expect(url).toBe('https://api.pax8.com/v1/subscriptions/sub-9');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('passes cancelDate as a query param', async () => {
+    const doFetch = vi.fn().mockResolvedValue({ ok: true, status: 204, text: async () => '' } as Response);
+    await clientWith(doFetch).cancelSubscription('sub-9', '2026-09-01');
+    expect(doFetch.mock.calls[0]![0]).toBe('https://api.pax8.com/v1/subscriptions/sub-9?cancelDate=2026-09-01');
+  });
+});
+
+describe('Pax8Client.createOrder', () => {
+  it('posts companyId + lineItems and sets isMock when asked', async () => {
+    const doFetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'ord-1', lineItems: [{ id: 'li-1', subscriptionId: 'sub-1' }] }));
+    const res = await clientWith(doFetch).createOrder({
+      companyId: 'co-1',
+      lineItems: [{
+        lineItemNumber: 1,
+        productId: 'prod-1',
+        quantity: 5,
+        billingTerm: 'Monthly',
+        provisioningDetails: [{ key: 'msDomain', values: ['acme'] }],
+      }],
+    }, { isMock: true });
+
+    const [url, init] = doFetch.mock.calls[0]!;
+    expect(url).toBe('https://api.pax8.com/v1/orders?isMock=true');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      companyId: 'co-1',
+      lineItems: [{
+        lineItemNumber: 1, productId: 'prod-1', quantity: 5, billingTerm: 'Monthly',
+        provisioningDetails: [{ key: 'msDomain', values: ['acme'] }],
+      }],
+    });
+    expect(res.pax8OrderId).toBe('ord-1');
+    expect(res.lineItems[0]!.subscriptionId).toBe('sub-1');
+  });
+
+  it('surfaces Pax8 422 details verbatim on Pax8ApiError.body', async () => {
+    const body = { status: 422, message: 'Invalid order', details: [{ message: 'msDomain is required' }] };
+    const doFetch = vi.fn().mockResolvedValue({ ok: false, status: 422, text: async () => JSON.stringify(body) } as Response);
+    const err = await clientWith(doFetch).createOrder({ companyId: 'co-1', lineItems: [] }).catch((error) => error);
+
+    expect(err).toBeInstanceOf(Pax8ApiError);
+    expect(err).toMatchObject({ name: 'Pax8ApiError', status: 422 });
+    expect(err.body).toBe(JSON.stringify(body));
+  });
+});
+
+describe('Pax8Client.getProvisionDetails', () => {
+  it('returns the discoverable field descriptors', async () => {
+    const doFetch = vi.fn().mockResolvedValue(jsonResponse({ content: [
+      { key: 'msCustExists', label: 'Existing Microsoft account?', valueType: 'Single-Value', possibleValues: ['No', 'Yes'] },
+      { key: 'msDomain', label: 'Domain prefix', valueType: 'Input', possibleValues: null },
+    ] }));
+    const details = await clientWith(doFetch).getProvisionDetails('prod-1');
+    expect(doFetch.mock.calls[0]![0]).toBe('https://api.pax8.com/v1/products/prod-1/provision-details');
+    expect(details).toHaveLength(2);
+    expect(details[1]).toMatchObject({ key: 'msDomain', valueType: 'Input', possibleValues: null });
+  });
+});
+
+describe('Pax8Client.getProductDependencies', () => {
+  it('returns normalized commitment dependencies', async () => {
+    const doFetch = vi.fn().mockResolvedValue(jsonResponse({ commitmentDependencies: [{
+      id: 'commit-1',
+      term: 'Annual',
+      allowForQuantityIncrease: true,
+      allowForQuantityDecrease: false,
+      allowForEarlyCancellation: false,
+      cancellationFeeApplied: true,
+    }] }));
+
+    const dependencies = await clientWith(doFetch).getProductDependencies('prod-1');
+
+    expect(doFetch.mock.calls[0]![0]).toBe('https://api.pax8.com/v1/products/prod-1/dependencies');
+    expect(dependencies.commitments).toEqual([{
+      id: 'commit-1',
+      term: 'Annual',
+      allowForQuantityIncrease: true,
+      allowForQuantityDecrease: false,
+      allowForEarlyCancellation: false,
+      cancellationFeeApplied: true,
+    }]);
+  });
+});
