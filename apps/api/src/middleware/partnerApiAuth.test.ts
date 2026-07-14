@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import type { Context } from 'hono';
+import { Hono, type Context } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   dbSelect: vi.fn(),
   dbUpdate: vi.fn(),
   eq: vi.fn((left: unknown, right: unknown) => ({ left, right })),
+  inArray: vi.fn((left: unknown, right: unknown) => ({ left, right })),
   rateLimiter: vi.fn(),
   getRedis: vi.fn(),
   getTrustedClientIpOrUndefined: vi.fn(),
@@ -81,7 +82,7 @@ vi.mock('../db/schema', () => ({
 vi.mock('drizzle-orm', () => ({
   and: vi.fn((...conditions: unknown[]) => ({ conditions })),
   eq: mocks.eq,
-  inArray: vi.fn((left: unknown, right: unknown) => ({ left, right })),
+  inArray: mocks.inArray,
   isNull: vi.fn((value: unknown) => ({ isNull: value })),
 }));
 
@@ -96,7 +97,7 @@ vi.mock('../services/clientIp', () => ({
 }));
 
 vi.mock('../services/auditEvents', () => ({
-  writeAuditEvent: mocks.writeAuditEvent,
+  writeAuditEventAsync: mocks.writeAuditEvent,
 }));
 
 import { db, withDbAccessContext } from '../db';
@@ -209,11 +210,22 @@ function mockLastUsedUpdate() {
   return where;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('partnerApiAuthMiddleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.dbSelect.mockReset();
     mocks.dbUpdate.mockReset();
+    mocks.inArray.mockReset();
     mocks.rateLimiter.mockReset();
     mocks.getRedis.mockReset();
     mocks.getTrustedClientIpOrUndefined.mockReset();
@@ -226,6 +238,7 @@ describe('partnerApiAuthMiddleware', () => {
     mocks.getRedis.mockReturnValue({ redis: true });
     mocks.getTrustedClientIpOrUndefined.mockReturnValue('203.0.113.10');
     mocks.runOutsideDbContext.mockImplementation((fn: () => unknown) => fn());
+    mocks.writeAuditEvent.mockResolvedValue(undefined);
     mocks.rateLimiter.mockResolvedValue({
       allowed: true,
       remaining: 299,
@@ -258,11 +271,13 @@ describe('partnerApiAuthMiddleware', () => {
     mocks.rateLimiter.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt });
 
     const context = createContext('brz_sp_short');
-    await expect(partnerApiAuthMiddleware(context, vi.fn())).rejects.toMatchObject({
+    const next = vi.fn();
+    await expect(partnerApiAuthMiddleware(context, next)).rejects.toMatchObject({
       status: 429,
       message: 'Too many API key authentication attempts',
     });
     expect(db.select).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
     expect(rateLimiter).toHaveBeenCalledWith(
       { redis: true },
       'api_key_probe:203.0.113.10',
@@ -270,6 +285,18 @@ describe('partnerApiAuthMiddleware', () => {
       60,
     );
     expect(context._headers['Retry-After']).toBeDefined();
+  });
+
+  it('fails closed when the prelookup Redis limiter rejects', async () => {
+    mocks.rateLimiter.mockRejectedValueOnce(new Error('redis unavailable'));
+    const next = vi.fn();
+
+    await expect(partnerApiAuthMiddleware(createContext(), next)).rejects.toThrow(
+      'redis unavailable',
+    );
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
   });
 
   it('hashes a well-formed key and sanitizes an unknown hash failure', async () => {
@@ -321,7 +348,7 @@ describe('partnerApiAuthMiddleware', () => {
     });
   });
 
-  it('discovers usable organizations and invokes downstream under the exact partner RLS context', async () => {
+  it('discovers only active, non-deleted organizations under the exact partner RLS context', async () => {
     mockBootstrap();
     const context = createContext();
     const next = vi.fn(async () => {
@@ -333,6 +360,11 @@ describe('partnerApiAuthMiddleware', () => {
     await partnerApiAuthMiddleware(context, next);
 
     expect(next).toHaveBeenCalledOnce();
+    expect(mocks.eq).toHaveBeenCalledWith('organizations.status', 'active');
+    expect(mocks.inArray).not.toHaveBeenCalledWith(
+      'organizations.status',
+      expect.arrayContaining(['trial']),
+    );
     expect(context.get('partnerApiPrincipal')).toEqual({
       servicePrincipalId: PRINCIPAL_ID,
       keyId: KEY_ID,
@@ -363,14 +395,14 @@ describe('partnerApiAuthMiddleware', () => {
   it('closes system/request contexts before Redis, last-used update, and machine-use audit', async () => {
     mockBootstrap();
     const updateWhere = mockLastUsedUpdate();
+    let updateInsidePartnerContext: boolean | undefined;
     let auditInsidePartnerContext: boolean | undefined;
     mocks.rateLimiter.mockImplementation(async () => {
       expect(mocks.insideSystemContext).toBe(false);
       return { allowed: true, remaining: 5, resetAt: new Date(Date.now() + 60_000) };
     });
     mocks.runOutsideDbContext.mockImplementation((fn: () => unknown) => {
-      expect(mocks.insideSystemContext).toBe(false);
-      expect(mocks.insidePartnerContext).toBe(false);
+      updateInsidePartnerContext = mocks.insidePartnerContext;
       return fn();
     });
     mocks.writeAuditEvent.mockImplementation(() => {
@@ -380,6 +412,7 @@ describe('partnerApiAuthMiddleware', () => {
     await partnerApiAuthMiddleware(createContext(), vi.fn());
 
     expect(updateWhere).toHaveBeenCalled();
+    expect(updateInsidePartnerContext).toBe(false);
     expect(auditInsidePartnerContext).toBe(false);
     expect(mocks.writeAuditEvent).toHaveBeenCalledWith(
       expect.anything(),
@@ -390,16 +423,120 @@ describe('partnerApiAuthMiddleware', () => {
         action: 'partner_api.request',
         resourceType: 'service_principal',
         resourceId: PRINCIPAL_ID,
+        result: 'success',
         details: expect.objectContaining({
           principalType: 'service_principal',
           partnerId: PARTNER_ID,
           keyId: KEY_ID,
+          status: 200,
         }),
       }),
     );
     const auditJson = JSON.stringify(mocks.writeAuditEvent.mock.calls);
     expect(auditJson).not.toContain(RAW_KEY);
     expect(auditJson).not.toContain(createHash('sha256').update(RAW_KEY).digest('hex'));
+  });
+
+  it('awaits both last-used and audit completion after the held request context closes', async () => {
+    mockBootstrap();
+    const update = deferred<void>();
+    const audit = deferred<void>();
+    const updateWhere = vi.fn(() => update.promise);
+    mocks.dbUpdate.mockReturnValue({
+      set: vi.fn(() => ({ where: updateWhere })),
+    });
+    mocks.writeAuditEvent.mockReturnValue(audit.promise);
+    let settled = false;
+
+    const middleware = partnerApiAuthMiddleware(createContext(), vi.fn()).then(() => {
+      settled = true;
+    });
+
+    await vi.waitFor(() => {
+      expect(updateWhere).toHaveBeenCalledOnce();
+      expect(mocks.writeAuditEvent).toHaveBeenCalledOnce();
+    });
+    expect(settled).toBe(false);
+
+    update.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    audit.resolve();
+    await middleware;
+    expect(settled).toBe(true);
+  });
+
+  it('audits an explicit downstream error response as failure without replacing it', async () => {
+    mockBootstrap();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mocks.writeAuditEvent.mockImplementation(() => {
+      throw new Error('audit secret detail');
+    });
+    const app = new Hono();
+    app.use('*', partnerApiAuthMiddleware);
+    app.get('/explicit-error', (c) => c.json({ error: 'unprocessable' }, 422));
+
+    try {
+      const response = await app.request('/explicit-error', {
+        headers: { 'X-API-Key': RAW_KEY },
+      });
+
+      expect(response.status).toBe(422);
+      expect(await response.json()).toEqual({ error: 'unprocessable' });
+      expect(mocks.writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          result: 'failure',
+          details: expect.objectContaining({ status: 422 }),
+        }),
+      );
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to write partner API machine-use audit',
+      );
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain('audit secret detail');
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('preserves a downstream thrown error response when bookkeeping fails', async () => {
+    mockBootstrap();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mocks.runOutsideDbContext.mockImplementation(() => {
+      throw new Error('bookkeeping secret detail');
+    });
+    const app = new Hono();
+    app.onError((error, c) => c.json(
+      { error: error.message },
+      error.message === 'downstream boom' ? 503 : 500,
+    ));
+    app.use('*', partnerApiAuthMiddleware);
+    app.get('/throws', () => {
+      throw new Error('downstream boom');
+    });
+
+    try {
+      const response = await app.request('/throws', {
+        headers: { 'X-API-Key': RAW_KEY },
+      });
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'downstream boom' });
+      expect(mocks.writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          result: 'failure',
+          details: expect.objectContaining({ status: 503 }),
+        }),
+      );
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to update partner API key usage timestamp',
+      );
+      expect(JSON.stringify(consoleError.mock.calls)).not.toContain('bookkeeping secret detail');
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('applies a principal-specific rate limit after the system bootstrap closes', async () => {
@@ -412,8 +549,9 @@ describe('partnerApiAuthMiddleware', () => {
         return { allowed: false, remaining: 0, resetAt };
       });
     const context = createContext();
+    const next = vi.fn();
 
-    await expect(partnerApiAuthMiddleware(context, vi.fn())).rejects.toMatchObject({
+    await expect(partnerApiAuthMiddleware(context, next)).rejects.toMatchObject({
       status: 429,
       message: 'Partner API rate limit exceeded',
     });
@@ -425,6 +563,26 @@ describe('partnerApiAuthMiddleware', () => {
       3600,
     );
     expect(withDbAccessContext).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the principal Redis limiter rejects', async () => {
+    mockBootstrap();
+    mocks.rateLimiter
+      .mockResolvedValueOnce({
+        allowed: true,
+        remaining: 299,
+        resetAt: new Date(Date.now() + 60_000),
+      })
+      .mockRejectedValueOnce(new Error('principal limiter unavailable'));
+    const next = vi.fn();
+
+    await expect(partnerApiAuthMiddleware(createContext(), next)).rejects.toThrow(
+      'principal limiter unavailable',
+    );
+
+    expect(withDbAccessContext).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
   });
 });
 

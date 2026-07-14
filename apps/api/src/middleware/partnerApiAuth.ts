@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
@@ -15,7 +15,7 @@ import {
   servicePrincipals,
 } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
-import { writeAuditEvent } from '../services/auditEvents';
+import { writeAuditEventAsync } from '../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { ipMatchesAny, isValidIpOrCidr } from '../services/ipMatch';
 import {
@@ -133,7 +133,7 @@ async function bootstrapCredential(
       .from(organizations)
       .where(and(
         eq(organizations.partnerId, credential.partnerId),
-        inArray(organizations.status, ['active', 'trial']),
+        eq(organizations.status, 'active'),
         isNull(organizations.deletedAt),
       ));
 
@@ -159,44 +159,68 @@ function setRateLimitHeaders(
   c.header('X-RateLimit-Reset', String(Math.ceil(rateCheck.resetAt.getTime() / 1000)));
 }
 
-function recordMachineUse(
+async function settleBookkeeping(
+  work: () => void | Promise<void>,
+  sanitizedFailureMessage: string,
+): Promise<void> {
+  try {
+    await work();
+  } catch {
+    // Never include the caught error: database/audit errors can contain query
+    // parameters or other sensitive context. Bookkeeping must also never
+    // replace the downstream response or exception.
+    console.error(sanitizedFailureMessage);
+  }
+}
+
+async function recordMachineUse(
   c: Context,
   principal: PartnerApiPrincipalContext,
   result: 'success' | 'failure',
-): void {
-  void Promise.resolve(runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      await db
-        .update(servicePrincipalKeys)
-        .set({ lastUsedAt: new Date() })
-        .where(eq(servicePrincipalKeys.id, principal.keyId));
-    }),
-  )).catch(() => {
-    // The request has already completed. Do not surface DB details (which can
-    // contain query parameters) or alter the response for usage bookkeeping.
-    console.error('Failed to update partner API key usage timestamp');
-  });
+  status: number,
+): Promise<void> {
+  await Promise.all([
+    settleBookkeeping(
+      () => runOutsideDbContext(() =>
+        withSystemDbAccessContext(async () => {
+          await db
+            .update(servicePrincipalKeys)
+            .set({ lastUsedAt: new Date() })
+            .where(eq(servicePrincipalKeys.id, principal.keyId));
+        }),
+      ),
+      'Failed to update partner API key usage timestamp',
+    ),
+    settleBookkeeping(
+      () => writeAuditEventAsync(c, {
+        orgId: null,
+        actorType: 'api_key',
+        actorId: principal.keyId,
+        action: 'partner_api.request',
+        resourceType: 'service_principal',
+        resourceId: principal.servicePrincipalId,
+        result,
+        details: {
+          principalType: 'service_principal',
+          partnerId: principal.partnerId,
+          keyId: principal.keyId,
+          method: c.req.method.slice(0, 16),
+          path: c.req.path.slice(0, 256),
+          status,
+        },
+      }),
+      'Failed to write partner API machine-use audit',
+    ),
+  ]);
+}
 
-  try {
-    writeAuditEvent(c, {
-      orgId: null,
-      actorType: 'api_key',
-      actorId: principal.keyId,
-      action: 'partner_api.request',
-      resourceType: 'service_principal',
-      resourceId: principal.servicePrincipalId,
-      result,
-      details: {
-        principalType: 'service_principal',
-        partnerId: principal.partnerId,
-        keyId: principal.keyId,
-        method: c.req.method.slice(0, 16),
-        path: c.req.path.slice(0, 256),
-      },
-    });
-  } catch {
-    console.error('Failed to enqueue partner API machine-use audit');
+function downstreamStatus(c: Context, thrown: unknown): number {
+  const responseStatus = c.res?.status;
+  if (typeof responseStatus === 'number' && responseStatus >= 100) {
+    return responseStatus;
   }
+  if (thrown instanceof HTTPException) return thrown.status;
+  return thrown ? 500 : 200;
 }
 
 export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<void> {
@@ -235,7 +259,7 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
 
   c.set('partnerApiPrincipal', principal);
 
-  let result: 'success' | 'failure' = 'success';
+  let downstreamError: unknown;
   try {
     await withDbAccessContext({
       scope: 'partner',
@@ -246,13 +270,21 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
       userId: null,
     }, next);
   } catch (error) {
-    result = 'failure';
-    throw error;
-  } finally {
-    // withDbAccessContext has resolved/rejected before this finally runs, so
-    // neither bookkeeping nor async audit holds the request transaction open.
-    recordMachineUse(c, principal, result);
+    downstreamError = error;
   }
+
+  // Hono converts downstream throws handled by app.onError into c.error plus
+  // c.res before upstream middleware resumes. Direct middleware invocations
+  // can still reject, so account for both lifecycle shapes.
+  const status = downstreamStatus(c, downstreamError);
+  const result = downstreamError || c.error || status >= 400 ? 'failure' : 'success';
+
+  // withDbAccessContext has fully resolved/rejected before bookkeeping starts.
+  // Await both operations for deterministic completion while isolating their
+  // failures from the downstream response/error.
+  await recordMachineUse(c, principal, result, status);
+
+  if (downstreamError) throw downstreamError;
 }
 
 export function requirePartnerApiScope(
