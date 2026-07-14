@@ -386,8 +386,8 @@ pax8Routes.get('/subscriptions', partnerScopes, readPerm, zValidator('query', su
       lastSeenAt: pax8SubscriptionSnapshots.lastSeenAt,
       contractLineId: pax8ContractLineLinks.contractLineId,
       syncEnabled: pax8ContractLineLinks.syncEnabled,
-      lastAppliedQuantity: pax8ContractLineLinks.lastAppliedQuantity,
-      lastAppliedAt: pax8ContractLineLinks.lastAppliedAt,
+      lastObservedQuantity: pax8ContractLineLinks.lastObservedQuantity,
+      lastObservedAt: pax8ContractLineLinks.lastObservedAt,
     })
     .from(pax8SubscriptionSnapshots)
     .leftJoin(pax8CompanyMappings, and(

@@ -153,6 +153,7 @@ async function upsertSubscriptions(params: {
     status: truncate(sub.status, 40),
     billingTerm: truncate(sub.billingTerm, 40),
     quantity: sub.quantity,
+    quantityKnown: sub.quantityKnown,
     unitPrice: sub.unitPrice,
     unitCost: sub.unitCost,
     currencyCode: sub.currencyCode?.slice(0, 3).toUpperCase() ?? null,
@@ -179,6 +180,7 @@ async function upsertSubscriptions(params: {
         status: sql`excluded.status`,
         billingTerm: sql`excluded.billing_term`,
         quantity: sql`excluded.quantity`,
+        quantityKnown: sql`excluded.quantity_known`,
         unitPrice: sql`excluded.unit_price`,
         unitCost: sql`excluded.unit_cost`,
         currencyCode: sql`excluded.currency_code`,
@@ -229,7 +231,21 @@ async function upsertProductMappings(integrationId: string, partnerId: string, s
   return values.length;
 }
 
-export async function applyEnabledPax8ContractLineLinks(integrationId: string): Promise<{ applied: number; skipped: number }> {
+/**
+ * Records what Pax8 currently REPORTS for each linked subscription. It does NOT
+ * write contract_lines.manual_quantity — that was the old behavior and it was a
+ * billing bug: Pax8's API Subscription.quantity is stale and does not match the
+ * seat counts Pax8 actually invoices the partner for, so every sync_enabled link
+ * was feeding a wrong number into the contract billing sweep and out onto the
+ * customer's invoice.
+ *
+ * Breeze's order ledger (pax8_orders / pax8_order_lines) is the source of truth
+ * for billable quantity: we know what the customer has because every add, change,
+ * and cancel went through us. Pax8 is now only a DRIFT DETECTOR — see
+ * detectPax8Drift(), which surfaces the disagreement (someone changed seats in
+ * the Pax8 portal, bypassing Breeze) instead of silently overwriting the bill.
+ */
+export async function recordPax8SubscriptionObservations(integrationId: string): Promise<{ observed: number; skipped: number }> {
   const rows = await db
     .select({
       linkId: pax8ContractLineLinks.id,
@@ -245,7 +261,7 @@ export async function applyEnabledPax8ContractLineLinks(integrationId: string): 
     .innerJoin(contractLines, eq(pax8ContractLineLinks.contractLineId, contractLines.id))
     .where(and(eq(pax8ContractLineLinks.integrationId, integrationId), eq(pax8ContractLineLinks.syncEnabled, true)));
 
-  let applied = 0;
+  let observed = 0;
   let skipped = 0;
   for (const row of rows) {
     if (row.lineType !== 'manual' || !row.subscriptionOrgId || row.subscriptionOrgId !== row.lineOrgId || row.linkOrgId !== row.lineOrgId) {
@@ -253,15 +269,12 @@ export async function applyEnabledPax8ContractLineLinks(integrationId: string): 
       continue;
     }
     const now = new Date();
-    await db.update(contractLines)
-      .set({ manualQuantity: row.quantity })
-      .where(and(eq(contractLines.id, row.contractLineId), eq(contractLines.lineType, 'manual' as never)));
     await db.update(pax8ContractLineLinks)
-      .set({ lastAppliedQuantity: row.quantity, lastAppliedAt: now, updatedAt: now })
+      .set({ lastObservedQuantity: row.quantity, lastObservedAt: now, updatedAt: now })
       .where(eq(pax8ContractLineLinks.id, row.linkId));
-    applied++;
+    observed++;
   }
-  return { applied, skipped };
+  return { observed, skipped };
 }
 
 export interface Pax8SyncResult {
@@ -269,7 +282,7 @@ export interface Pax8SyncResult {
   companies: number;
   subscriptions: number;
   products: number;
-  appliedContractLines: number;
+  observedContractLines: number;
   skippedContractLines: number;
 }
 
@@ -314,7 +327,7 @@ export async function syncPax8Integration(integrationId: string): Promise<Pax8Sy
         mappedCompanies,
       });
       const productCount = await upsertProductMappings(integration.id, integration.partnerId, subscriptions);
-      const applied = await applyEnabledPax8ContractLineLinks(integration.id);
+      const observations = await recordPax8SubscriptionObservations(integration.id);
 
       await db.update(pax8Integrations).set({
         lastSyncAt: new Date(),
@@ -328,8 +341,8 @@ export async function syncPax8Integration(integrationId: string): Promise<Pax8Sy
         companies: companyCount,
         subscriptions: subscriptionCount,
         products: productCount,
-        appliedContractLines: applied.applied,
-        skippedContractLines: applied.skipped,
+        observedContractLines: observations.observed,
+        skippedContractLines: observations.skipped,
       };
     });
   } catch (err) {

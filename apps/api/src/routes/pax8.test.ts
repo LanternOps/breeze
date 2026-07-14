@@ -96,8 +96,8 @@ vi.mock('../db/schema', () => ({
     subscriptionSnapshotId: 'pax8_contract_line_links.subscription_snapshot_id',
     contractLineId: 'pax8_contract_line_links.contract_line_id',
     syncEnabled: 'pax8_contract_line_links.sync_enabled',
-    lastAppliedQuantity: 'pax8_contract_line_links.last_applied_quantity',
-    lastAppliedAt: 'pax8_contract_line_links.last_applied_at',
+    lastObservedQuantity: 'pax8_contract_line_links.last_applied_quantity',
+    lastObservedAt: 'pax8_contract_line_links.last_applied_at',
   },
 }));
 

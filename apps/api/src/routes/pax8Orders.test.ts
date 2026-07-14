@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   preflightOrder: vi.fn(),
   submitOrder: vi.fn(),
   reconcileOrder: vi.fn(),
+  detectPax8Drift: vi.fn(),
   writeRouteAudit: vi.fn(),
   createPax8ClientForIntegration: vi.fn(),
   getProvisionDetails: vi.fn(),
@@ -94,6 +95,8 @@ vi.mock('../services/pax8OrderSubmit', () => ({
   submitOrder: mocks.submitOrder,
   reconcileOrder: mocks.reconcileOrder,
 }));
+
+vi.mock('../services/pax8Drift', () => ({ detectPax8Drift: mocks.detectPax8Drift }));
 
 vi.mock('../services/pax8SyncService', () => ({
   createPax8ClientForIntegration: mocks.createPax8ClientForIntegration,
@@ -172,6 +175,7 @@ beforeEach(() => {
   mocks.preflightOrder.mockResolvedValue({ ok: true });
   mocks.submitOrder.mockResolvedValue({ orderId: ORDER_ID, status: 'completed', lines: [] });
   mocks.reconcileOrder.mockResolvedValue({ resolved: 1, stillUnknown: 0 });
+  mocks.detectPax8Drift.mockResolvedValue([]);
 });
 
 describe('Pax8 order route security and tenancy', () => {
@@ -198,6 +202,32 @@ describe('Pax8 order route security and tenancy', () => {
     const res = await request(`/orders?partnerId=${PARTNER_B}`);
     expect(res.status).toBe(403);
     expect(mocks.listPax8Orders).not.toHaveBeenCalled();
+  });
+
+  it('enforces authentication, billing permission, and partner scope on drift reads', async () => {
+    state.unauthenticated = true;
+    expect((await request(`/drift?integrationId=${INTEGRATION_ID}`)).status).toBe(401);
+
+    state.unauthenticated = false;
+    state.permissionDenied = true;
+    expect((await request(`/drift?integrationId=${INTEGRATION_ID}`)).status).toBe(403);
+
+    state.permissionDenied = false;
+    state.scope = 'organization';
+    expect((await request(`/drift?integrationId=${INTEGRATION_ID}`)).status).toBe(403);
+
+    state.scope = 'partner';
+    expect((await request(`/drift?integrationId=${INTEGRATION_ID}&partnerId=${PARTNER_B}`)).status).toBe(403);
+    expect(mocks.detectPax8Drift).not.toHaveBeenCalled();
+  });
+
+  it('requires system drift callers to choose a valid partner', async () => {
+    state.scope = 'system';
+    state.partnerId = null;
+    state.accessibleOrgIds = null;
+    expect((await request(`/drift?integrationId=${INTEGRATION_ID}`)).status).toBe(400);
+    expect((await request(`/drift?integrationId=${INTEGRATION_ID}&partnerId=not-a-uuid`)).status).toBe(400);
+    expect(mocks.detectPax8Drift).not.toHaveBeenCalled();
   });
 
   it('requires a valid requested partner for system scope', async () => {
@@ -262,6 +292,48 @@ describe('Pax8 order route security and tenancy', () => {
 });
 
 describe('Pax8 order route handlers', () => {
+  it('returns drift for the resolved partner after validating integration ownership', async () => {
+    const chain: Record<string, unknown> = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.limit = vi.fn(async () => [{ id: INTEGRATION_ID }]);
+    mocks.dbSelect.mockReturnValueOnce(chain);
+    mocks.detectPax8Drift.mockResolvedValueOnce([{ contractLineId: LINE_ID }]);
+    const res = await request(`/drift?integrationId=${INTEGRATION_ID}`);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ data: [{ contractLineId: LINE_ID }] });
+    expect(mocks.detectPax8Drift).toHaveBeenCalledWith({
+      partnerId: PARTNER_A,
+      integrationId: INTEGRATION_ID,
+    });
+    expect(mocks.runOutsideDbContext).not.toHaveBeenCalled();
+  });
+
+  it('does not require MFA for a read-only drift request', async () => {
+    state.mfaDenied = true;
+    const chain: Record<string, unknown> = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.limit = vi.fn(async () => [{ id: INTEGRATION_ID }]);
+    mocks.dbSelect.mockReturnValueOnce(chain);
+
+    expect((await request(`/drift?integrationId=${INTEGRATION_ID}`)).status).toBe(200);
+    expect(mocks.detectPax8Drift).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects missing, invalid, and foreign-partner drift integrations without reading drift', async () => {
+    expect((await request('/drift')).status).toBe(400);
+    expect((await request('/drift?integrationId=not-a-uuid')).status).toBe(400);
+
+    const chain: Record<string, unknown> = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => chain);
+    chain.limit = vi.fn(async () => []);
+    mocks.dbSelect.mockReturnValueOnce(chain);
+    expect((await request(`/drift?integrationId=${INTEGRATION_ID}`)).status).toBe(404);
+    expect(mocks.detectPax8Drift).not.toHaveBeenCalled();
+  });
+
   it('lists by org and returns order detail', async () => {
     expect((await request(`/orders?orgId=${ORG_A}`)).status).toBe(200);
     expect(mocks.listPax8Orders).toHaveBeenCalledWith({ partnerId: PARTNER_A, orgId: ORG_A });

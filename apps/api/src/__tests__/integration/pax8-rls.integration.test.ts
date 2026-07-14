@@ -1,6 +1,7 @@
 /**
  * Real-driver cross-tenant forge tests for the Pax8 billing-sync tables, plus a
- * functional test of the contract-line quantity-apply gate against real SQL.
+ * functional tests of observation bookkeeping and read-only drift detection
+ * against real SQL.
  *
  * Runs under vitest.integration.config.ts — code-under-test connects as the
  * unprivileged `breeze_app` role (rolbypassrls=f), so RLS is actually enforced.
@@ -44,7 +45,8 @@ import {
   contracts,
   contractLines,
 } from '../../db/schema';
-import { applyEnabledPax8ContractLineLinks, linkPax8SubscriptionToContractLine } from '../../services/pax8SyncService';
+import { linkPax8SubscriptionToContractLine, recordPax8SubscriptionObservations } from '../../services/pax8SyncService';
+import { detectPax8Drift } from '../../services/pax8Drift';
 import { createPartner, createOrganization } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -209,8 +211,8 @@ describe('pax8 partner-axis RLS (breeze_app)', () => {
   });
 });
 
-describe('applyEnabledPax8ContractLineLinks gate (breeze_app, real SQL)', () => {
-  runDb('applies only to enabled, manual, same-org, mapped links', async () => {
+describe('recordPax8SubscriptionObservations gate (breeze_app, real SQL)', () => {
+  runDb('records only enabled, manual, same-org, mapped links without changing billing quantity', async () => {
     const { partnerA, orgA, integrationA, snapshotA } = await seed();
 
     const result = await withSystemDbAccessContext(async () => {
@@ -218,7 +220,7 @@ describe('applyEnabledPax8ContractLineLinks gate (breeze_app, real SQL)', () => 
         partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01',
       }).returning({ id: contracts.id });
 
-      // (1) manual line linked to a mapped snapshot → should be applied (7.00)
+      // (1) manual line linked to a mapped snapshot → observed, never applied
       const [manualLine] = await db.insert(contractLines).values({
         contractId: contract!.id, orgId: orgA.id, lineType: 'manual', description: 'manual', unitPrice: '0.00', manualQuantity: '0.00',
       }).returning({ id: contractLines.id });
@@ -253,21 +255,21 @@ describe('applyEnabledPax8ContractLineLinks gate (breeze_app, real SQL)', () => 
         subscriptionSnapshotId: unmappedSnapshot!.id, contractLineId: unmappedLine!.id, syncEnabled: true,
       });
 
-      const applyResult = await applyEnabledPax8ContractLineLinks(integrationA.id);
+      const observationResult = await recordPax8SubscriptionObservations(integrationA.id);
 
       const rows = await db.select({ id: contractLines.id, qty: contractLines.manualQuantity, type: contractLines.lineType })
         .from(contractLines).where(eq(contractLines.contractId, contract!.id));
       const byId = new Map(rows.map((r) => [r.id, r]));
       return {
-        applyResult,
+        observationResult,
         manualQty: byId.get(manualLine!.id)?.qty,
         flatQty: byId.get(flatLine!.id)?.qty,
         unmappedQty: byId.get(unmappedLine!.id)?.qty,
       };
     });
 
-    expect(result.applyResult).toEqual({ applied: 1, skipped: 2 });
-    expect(result.manualQty).toBe('7.00'); // applied from snapshotA
+    expect(result.observationResult).toEqual({ observed: 1, skipped: 2 });
+    expect(result.manualQty).toBe('0.00'); // billing ledger remains authoritative
     expect(result.flatQty).toBeNull(); // non-manual untouched
     expect(result.unmappedQty).toBe('3.00'); // unmapped-snapshot link skipped
   });
@@ -303,5 +305,87 @@ describe('applyEnabledPax8ContractLineLinks gate (breeze_app, real SQL)', () => 
         })
       ).rejects.toThrow(/already linked to another Pax8 subscription/);
     });
+  });
+});
+
+describe('detectPax8Drift (breeze_app, real SQL)', () => {
+  runDb('returns only enabled, known, partner-owned quantity disagreements', async () => {
+    const { partnerA, partnerB, orgA, orgB, integrationA, snapshotA } = await seed();
+
+    const lineId = await withSystemDbAccessContext(async () => {
+      const [contract] = await db.insert(contracts).values({
+        partnerId: partnerA.id,
+        orgId: orgA.id,
+        name: 'Drift contract',
+        intervalMonths: 1,
+        startDate: '2026-01-01',
+      }).returning({ id: contracts.id });
+      const [line] = await db.insert(contractLines).values({
+        contractId: contract!.id,
+        orgId: orgA.id,
+        lineType: 'manual',
+        description: 'Seats',
+        unitPrice: '1.00',
+        manualQuantity: '5.00',
+      }).returning({ id: contractLines.id });
+      await db.insert(pax8ContractLineLinks).values({
+        integrationId: integrationA.id,
+        partnerId: partnerA.id,
+        orgId: orgA.id,
+        subscriptionSnapshotId: snapshotA.id,
+        contractLineId: line!.id,
+        syncEnabled: true,
+      });
+      return line!.id;
+    });
+
+    const input = { partnerId: partnerA.id, integrationId: integrationA.id };
+    const partnerAOrgCtx = { ...partnerCtx(partnerA.id), accessibleOrgIds: [orgA.id] };
+    const partnerBOrgCtx = { ...partnerCtx(partnerB.id), accessibleOrgIds: [orgB.id] };
+    await expect(withDbAccessContext(partnerAOrgCtx, () => detectPax8Drift(input)))
+      .resolves.toEqual([expect.objectContaining({
+        contractLineId: lineId,
+        orgId: orgA.id,
+        pax8SubscriptionId: 'pax8-sub-a',
+        breezeQuantity: '5.00',
+        pax8Quantity: '7.00',
+      })]);
+
+    await expect(withDbAccessContext(partnerBOrgCtx, () => detectPax8Drift(input)))
+      .resolves.toEqual([]);
+    await expect(withSystemDbAccessContext(() => detectPax8Drift({
+      partnerId: partnerB.id,
+      integrationId: integrationA.id,
+    }))).resolves.toEqual([]);
+
+    await withSystemDbAccessContext(() => db.update(pax8SubscriptionSnapshots)
+      .set({ orgId: null })
+      .where(eq(pax8SubscriptionSnapshots.id, snapshotA.id)));
+    await expect(withDbAccessContext(partnerAOrgCtx, () => detectPax8Drift(input)))
+      .resolves.toEqual([]);
+    await withSystemDbAccessContext(() => db.update(pax8SubscriptionSnapshots)
+      .set({ orgId: orgA.id })
+      .where(eq(pax8SubscriptionSnapshots.id, snapshotA.id)));
+
+    await withSystemDbAccessContext(() => db.update(pax8SubscriptionSnapshots)
+      .set({ quantity: '0.00', quantityKnown: false })
+      .where(eq(pax8SubscriptionSnapshots.id, snapshotA.id)));
+    await expect(withDbAccessContext(partnerAOrgCtx, () => detectPax8Drift(input)))
+      .resolves.toEqual([]);
+
+    await withSystemDbAccessContext(() => db.update(pax8SubscriptionSnapshots)
+      .set({ quantity: '5.00', quantityKnown: true })
+      .where(eq(pax8SubscriptionSnapshots.id, snapshotA.id)));
+    await expect(withDbAccessContext(partnerAOrgCtx, () => detectPax8Drift(input)))
+      .resolves.toEqual([]);
+
+    await withSystemDbAccessContext(() => db.update(pax8SubscriptionSnapshots)
+      .set({ quantity: '7.00' })
+      .where(eq(pax8SubscriptionSnapshots.id, snapshotA.id)));
+    await withSystemDbAccessContext(() => db.update(pax8ContractLineLinks)
+      .set({ syncEnabled: false })
+      .where(eq(pax8ContractLineLinks.contractLineId, lineId)));
+    await expect(withDbAccessContext(partnerAOrgCtx, () => detectPax8Drift(input)))
+      .resolves.toEqual([]);
   });
 });

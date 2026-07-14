@@ -14,6 +14,8 @@ const fetchDepths: number[] = [];
 const dbCallDepths: number[] = [];
 // `.set(payload)` calls (update writes) with the context depth at call time.
 const updatePayloads: Array<{ depth: number; payload: Record<string, unknown> }> = [];
+const insertPayloads: unknown[] = [];
+let subscriptionRecords: Array<Record<string, unknown>> = [];
 
 function chain(result: unknown) {
   const c: Record<string, unknown> = {};
@@ -21,7 +23,10 @@ function chain(result: unknown) {
     'from', 'where', 'limit', 'values', 'returning',
     'onConflictDoUpdate', 'onConflictDoNothing', 'innerJoin', 'leftJoin',
   ]) {
-    c[m] = vi.fn(() => c);
+  c[m] = vi.fn((payload?: unknown) => {
+    if (m === 'values') insertPayloads.push(payload);
+    return c;
+  });
   }
   c.set = vi.fn((payload: Record<string, unknown>) => {
     updatePayloads.push({ depth: contextDepth, payload });
@@ -91,7 +96,7 @@ const listCompanies = vi.fn(async () => {
 });
 const listSubscriptions = vi.fn(async () => {
   fetchDepths.push(contextDepth);
-  return [];
+  return subscriptionRecords;
 });
 
 vi.mock('./pax8Client', () => ({
@@ -118,6 +123,8 @@ describe('pax8SyncService — DB context boundaries (#1697)', () => {
     fetchDepths.length = 0;
     dbCallDepths.length = 0;
     updatePayloads.length = 0;
+    insertPayloads.length = 0;
+    subscriptionRecords = [];
   });
 
   it('fetches from Pax8 with no DB context held, but reads/writes inside one', async () => {
@@ -137,6 +144,40 @@ describe('pax8SyncService — DB context boundaries (#1697)', () => {
     }
 
     expect(result.integrationId).toBe('pax8-int-1');
+    expect(result).toMatchObject({ observedContractLines: 0 });
+  });
+
+  it('persists whether Pax8 supplied trustworthy subscription quantity evidence', async () => {
+    subscriptionRecords = [{
+      pax8SubscriptionId: 'sub-missing-quantity',
+      pax8CompanyId: 'company-1',
+      productId: null,
+      productName: 'Unknown quantity product',
+      vendorName: null,
+      vendorSkuId: null,
+      status: 'ACTIVE',
+      billingTerm: null,
+      quantity: '0.00',
+      quantityKnown: false,
+      unitPrice: null,
+      unitCost: null,
+      currencyCode: null,
+      startDate: null,
+      endDate: null,
+      billingStart: null,
+      commitmentTermEndDate: null,
+      raw: {},
+    }];
+
+    await syncPax8Integration('pax8-int-1');
+
+    expect(insertPayloads).toContainEqual([
+      expect.objectContaining({
+        pax8SubscriptionId: 'sub-missing-quantity',
+        quantity: '0.00',
+        quantityKnown: false,
+      }),
+    ]);
   });
 
   it('on fetch failure, records the failed status on a fresh context and re-throws the ORIGINAL error', async () => {

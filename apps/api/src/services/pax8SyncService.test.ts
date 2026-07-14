@@ -36,8 +36,8 @@ vi.mock('../db/schema', () => ({
     subscriptionSnapshotId: 'pax8_contract_line_links.subscription_snapshot_id',
     contractLineId: 'pax8_contract_line_links.contract_line_id',
     syncEnabled: 'pax8_contract_line_links.sync_enabled',
-    lastAppliedQuantity: 'pax8_contract_line_links.last_applied_quantity',
-    lastAppliedAt: 'pax8_contract_line_links.last_applied_at',
+    lastObservedQuantity: 'pax8_contract_line_links.last_applied_quantity',
+    lastObservedAt: 'pax8_contract_line_links.last_applied_at',
     updatedAt: 'pax8_contract_line_links.updated_at',
   },
   pax8Integrations: {
@@ -55,6 +55,7 @@ vi.mock('../db/schema', () => ({
     pax8CompanyId: 'pax8_subscription_snapshots.pax8_company_id',
     orgId: 'pax8_subscription_snapshots.org_id',
     quantity: 'pax8_subscription_snapshots.quantity',
+    quantityKnown: 'pax8_subscription_snapshots.quantity_known',
   },
 }));
 
@@ -64,7 +65,7 @@ vi.mock('./secretCrypto', () => ({
 }));
 
 import { db } from '../db';
-import { applyEnabledPax8ContractLineLinks, linkPax8SubscriptionToContractLine, mapPax8Company, unlinkPax8Subscription } from './pax8SyncService';
+import { linkPax8SubscriptionToContractLine, mapPax8Company, recordPax8SubscriptionObservations, unlinkPax8Subscription } from './pax8SyncService';
 
 function selectRowsOnce(rows: unknown[]) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -194,7 +195,7 @@ describe('pax8SyncService', () => {
     });
   });
 
-  it('applies quantities only for valid manual same-org links', async () => {
+  it('records valid subscription observations without writing contract line quantities', async () => {
     const joinChain = {
       innerJoin: vi.fn(() => joinChain),
       where: vi.fn(async () => [
@@ -221,11 +222,10 @@ describe('pax8SyncService', () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn(() => joinChain),
     } as any);
-    const lineUpdate = updateNoReturnOnce();
     const linkUpdate = updateNoReturnOnce();
 
-    await expect(applyEnabledPax8ContractLineLinks('integration-1')).resolves.toEqual({ applied: 1, skipped: 1 });
-    expect(lineUpdate.set).toHaveBeenCalledWith({ manualQuantity: '12.00' });
-    expect(linkUpdate.set).toHaveBeenCalledWith(expect.objectContaining({ lastAppliedQuantity: '12.00' }));
+    await expect(recordPax8SubscriptionObservations('integration-1')).resolves.toEqual({ observed: 1, skipped: 1 });
+    expect(db.update).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'contract_lines.id' }));
+    expect(linkUpdate.set).toHaveBeenCalledWith(expect.objectContaining({ lastObservedQuantity: '12.00' }));
   });
 });

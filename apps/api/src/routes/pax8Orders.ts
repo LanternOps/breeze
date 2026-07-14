@@ -24,6 +24,7 @@ import {
 } from '../services/pax8OrderService';
 import { preflightOrder, reconcileOrder, submitOrder } from '../services/pax8OrderSubmit';
 import { createPax8ClientForIntegration } from '../services/pax8SyncService';
+import { detectPax8Drift } from '../services/pax8Drift';
 import { PERMISSIONS } from '../services/permissions';
 import { captureException } from '../services/sentry';
 
@@ -59,6 +60,10 @@ const partnerQuerySchema = z.object({
 
 const orderListQuerySchema = partnerQuerySchema.extend({
   orgId: z.string().guid().optional(),
+});
+
+const driftQuerySchema = partnerQuerySchema.extend({
+  integrationId: z.string().guid(),
 });
 
 const orderIdSchema = z.object({ id: z.string().guid() });
@@ -246,6 +251,39 @@ pax8OrderRoutes.use('*', async (c, next) => {
   }
   await next();
 });
+
+pax8OrderRoutes.get(
+  '/drift',
+  partnerScopes,
+  billingManage,
+  zValidator('query', driftQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const partner = resolvePartnerId(auth, query.partnerId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    try {
+      const data = await withDbAccessContext(partnerDbContext(auth, partner.partnerId), async () => {
+        const [integration] = await db
+          .select({ id: pax8Integrations.id })
+          .from(pax8Integrations)
+          .where(and(
+            eq(pax8Integrations.id, query.integrationId),
+            eq(pax8Integrations.partnerId, partner.partnerId),
+          ))
+          .limit(1);
+        if (!integration) throw new Pax8OrderError('Pax8 integration not found.', 404);
+        return detectPax8Drift({
+          partnerId: partner.partnerId,
+          integrationId: integration.id,
+        });
+      });
+      return c.json({ data });
+    } catch (error) {
+      return routeError(c, error);
+    }
+  },
+);
 
 pax8OrderRoutes.get(
   '/orders',
