@@ -250,13 +250,22 @@ type Broker struct {
 	rateLimiter *ipc.RateLimiter
 	startTime   time.Time // broker creation time, used for watchdog uptime
 
-	mu           timedRWMutex
-	sessions     map[string]*Session   // sessionID -> Session
-	byIdentity   map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
-	staleHelpers map[string][]int      // winSessionID -> PIDs of disconnected helpers
-	consoleUser  string                // macOS: current console user ("loginwindow" at login screen)
-	backup       *backupHelper         // backup helper process and session
-	closed       bool
+	mu                      timedRWMutex
+	sessions                map[string]*Session   // sessionID -> Session
+	byIdentity              map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
+	staleHelpers            map[string][]int      // winSessionID -> PIDs of disconnected helpers
+	desiredHelperKeys       map[HelperKey]struct{}
+	helperByKey             map[HelperKey]*Session
+	helperByAuthKey         map[AuthenticatedHelperKey]*Session
+	helperReservations      map[uint64]*helperAuthReservation
+	helperKeyReservations   map[HelperKey]uint64
+	helperAuthReservations  map[AuthenticatedHelperKey]uint64
+	identityReservations    map[string]int
+	helperReservedVictims   map[*Session]uint64
+	nextHelperReservationID uint64
+	consoleUser             string        // macOS: current console user ("loginwindow" at login screen)
+	backup                  *backupHelper // backup helper process and session
+	closed                  bool
 
 	// snap is an atomically updated snapshot of sessions/byIdentity/consoleUser.
 	// Updated under b.mu.Lock() on every mutation. Read-only hot paths use
@@ -291,15 +300,23 @@ type Broker struct {
 // New creates a new session broker.
 func New(socketPath string, onMessage MessageHandler) *Broker {
 	b := &Broker{
-		socketPath:         socketPath,
-		rateLimiter:        ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
-		startTime:          time.Now(),
-		sessions:           make(map[string]*Session),
-		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
-		onMessage:          onMessage,
-		consoleSessionIDFn: GetConsoleSessionID,
-		goos:               runtime.GOOS,
+		socketPath:             socketPath,
+		rateLimiter:            ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
+		startTime:              time.Now(),
+		sessions:               make(map[string]*Session),
+		byIdentity:             make(map[string][]*Session),
+		staleHelpers:           make(map[string][]int),
+		desiredHelperKeys:      make(map[HelperKey]struct{}),
+		helperByKey:            make(map[HelperKey]*Session),
+		helperByAuthKey:        make(map[AuthenticatedHelperKey]*Session),
+		helperReservations:     make(map[uint64]*helperAuthReservation),
+		helperKeyReservations:  make(map[HelperKey]uint64),
+		helperAuthReservations: make(map[AuthenticatedHelperKey]uint64),
+		identityReservations:   make(map[string]int),
+		helperReservedVictims:  make(map[*Session]uint64),
+		onMessage:              onMessage,
+		consoleSessionIDFn:     GetConsoleSessionID,
+		goos:                   runtime.GOOS,
 	}
 	b.selfHashes = b.computeAllowedHashes()
 	b.publishSnapshotLocked() // initialise with empty maps
@@ -990,6 +1007,11 @@ func (b *Broker) HasHelperForWinSession(winSessionID string) bool {
 func (b *Broker) HasHelperForWinSessionRole(winSessionID, role string) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	if id, err := strconv.ParseUint(winSessionID, 10, 32); err == nil {
+		if owner := b.helperByKey[HelperKey{WindowsSessionID: uint32(id), Role: role}]; owner != nil {
+			return true
+		}
+	}
 	for _, s := range b.sessions {
 		if s.WinSessionID == winSessionID && s.HelperRole == role {
 			return true
@@ -1273,7 +1295,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	identityKey := creds.IdentityKey()
+	verifiedWinSessionID := peerWinSessionID(creds.PID)
+	identityKey := admissionIdentityKey(creds.IdentityKey(), verifiedWinSessionID, b.goos)
 
 	// Step 2: Rate limit check (per identity: UID on Unix, SID on Windows)
 	if !b.rateLimiter.Allow(identityKey) {
@@ -1282,13 +1305,17 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 3: Check max connections per identity. If the cap is hit, try to
-	// evict a single stranded session (idle > EvictIdleThreshold) so a
-	// reconnecting helper isn't permanently locked out by a dead predecessor.
-	// This is the cheap pre-auth reject path; the register step below
-	// re-runs the same check under a held write lock as the authoritative
-	// decision. See issue #443.
-	if !b.admitOrEvict(identityKey) {
+	// Step 3: Check max connections per identity. Windows defers any idle
+	// victim eviction to the authoritative registration step so a failed
+	// handshake cannot evict an existing helper. Unix retains its existing
+	// admit-or-evict behavior.
+	var preAuthAdmitted bool
+	if b.goos == "windows" {
+		preAuthAdmitted = b.canAdmitWithoutEviction(identityKey)
+	} else {
+		preAuthAdmitted = b.admitOrEvict(identityKey)
+	}
+	if !preAuthAdmitted {
 		b.mu.RLock()
 		identityCount := len(b.byIdentity[identityKey])
 		b.mu.RUnlock()
@@ -1506,8 +1533,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	// assist/user roles to the active console session. On non-Windows / failure
 	// this is "" and the console binding is inert (Unix path returns early).
 	verifiedWinSession := ""
-	if vsid := peerWinSessionID(creds.PID); vsid != 0 {
-		verifiedWinSession = fmt.Sprintf("%d", vsid)
+	if verifiedWinSessionID != 0 {
+		verifiedWinSession = fmt.Sprintf("%d", verifiedWinSessionID)
 	}
 	consoleWinSession := b.ConsoleSessionID()
 
@@ -1536,6 +1563,32 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	scopes := b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
+
+	var helperReservation *helperAuthReservation
+	if isWindowsLifecycleRole(b.goos, helperRole) {
+		helperKey := HelperKey{WindowsSessionID: verifiedWinSessionID, Role: helperRole}
+		helperReservation, err = b.reserveWindowsHelper(identityKey, creds.SID, helperKey)
+		if err != nil {
+			log.Warn("Windows helper admission rejected",
+				"identity", identityKey,
+				"sessionId", authReq.SessionID,
+				"helperKey", helperKey.String(),
+				"error", err.Error(),
+			)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted:  false,
+				Reason:    err.Error(),
+				Permanent: errors.Is(err, errDuplicateHelperKey) || errors.Is(err, errHelperKeyNotDesired),
+			})
+			conn.Close()
+			return
+		}
+		defer func() {
+			if helperReservation != nil {
+				b.releaseWindowsHelper(helperReservation)
+			}
+		}()
+	}
 
 	// Send auth response
 	authResp := ipc.AuthResponse{
@@ -1582,45 +1635,59 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.WinSessionID = fmt.Sprintf("%d", authReq.WinSessionID)
 	}
 
-	// Register session. Re-run tryAdmitLocked under the write lock: this
-	// is the authoritative cap check. Without it, two concurrent admits
-	// for the same identity could both pass admitOrEvict (or both see
-	// room after one of them evicted), then both append here and push the
-	// count past MaxConnectionsPerIdentity. Also captures any victim so we
-	// can Close() it outside the lock below.
-	b.mu.Lock()
-	admitted, victim := b.tryAdmitLocked(identityKey)
-	if !admitted {
-		b.mu.Unlock()
-		log.Warn("max connections exceeded at register (admit race)",
-			"identity", identityKey,
-			"sessionId", authReq.SessionID,
-		)
-		conn.Close()
-		return
-	}
-	b.sessions[authReq.SessionID] = session
-	b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
-	// Track backup helper session for direct access
-	if helperRole == backupipc.HelperRoleBackup {
-		if b.backup == nil {
-			b.backup = &backupHelper{}
-		}
-		b.backup.session = session
-	}
-	b.publishSnapshotLocked()
-	registerOnClosed := b.onSessionClosed
-	b.mu.Unlock()
-
-	if victim != nil {
-		if err := victim.Close(); err != nil {
-			log.Error("error closing evicted session at register",
-				"sessionId", victim.SessionID,
+	if helperReservation != nil {
+		if err := b.commitWindowsHelper(helperReservation, session); err != nil {
+			log.Warn("Windows helper admission changed before commit",
+				"identity", identityKey,
+				"sessionId", authReq.SessionID,
 				"error", err.Error(),
 			)
+			conn.Close()
+			return
 		}
-		if registerOnClosed != nil {
-			registerOnClosed(victim)
+		helperReservation = nil
+	} else {
+		// Register non-lifecycle sessions with the existing path. Re-run
+		// tryAdmitLocked under the write lock: this is the authoritative cap
+		// check for Unix, assist, watchdog, and backup helpers.
+		//
+		// Without it, two concurrent admits for the same identity could both
+		// pass the pre-auth check, then push the count past the cap. Also captures
+		// any victim so Close and observer callbacks run outside b.mu.
+		b.mu.Lock()
+		admitted, victim := b.tryAdmitLocked(identityKey)
+		if !admitted {
+			b.mu.Unlock()
+			log.Warn("max connections exceeded at register (admit race)",
+				"identity", identityKey,
+				"sessionId", authReq.SessionID,
+			)
+			conn.Close()
+			return
+		}
+		b.sessions[authReq.SessionID] = session
+		b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
+		// Track backup helper session for direct access
+		if helperRole == backupipc.HelperRoleBackup {
+			if b.backup == nil {
+				b.backup = &backupHelper{}
+			}
+			b.backup.session = session
+		}
+		b.publishSnapshotLocked()
+		registerOnClosed := b.onSessionClosed
+		b.mu.Unlock()
+
+		if victim != nil {
+			if err := victim.Close(); err != nil {
+				log.Error("error closing evicted session at register",
+					"sessionId", victim.SessionID,
+					"error", err.Error(),
+				)
+			}
+			if registerOnClosed != nil {
+				registerOnClosed(victim)
+			}
 		}
 	}
 
@@ -1663,7 +1730,10 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 // and records the PID as stale. Caller must hold b.mu.Lock(). Does NOT
 // Close() the session, publish a snapshot, or fire onSessionClosed; the
 // caller is responsible for those.
-func (b *Broker) removeSessionMapsLocked(session *Session) {
+func (b *Broker) removeSessionMapsLocked(session *Session) bool {
+	if b.sessions[session.SessionID] != session {
+		return false
+	}
 	delete(b.sessions, session.SessionID)
 
 	key := session.IdentityKey
@@ -1677,6 +1747,16 @@ func (b *Broker) removeSessionMapsLocked(session *Session) {
 	if len(b.byIdentity[key]) == 0 {
 		delete(b.byIdentity, key)
 	}
+	for helperKey, owner := range b.helperByKey {
+		if owner == session {
+			delete(b.helperByKey, helperKey)
+		}
+	}
+	for authKey, owner := range b.helperByAuthKey {
+		if owner == session {
+			delete(b.helperByAuthKey, authKey)
+		}
+	}
 
 	// Track the PID so it can be killed before spawning a replacement
 	// (Windows only — see trackStaleHelper; elsewhere this is a deliberate
@@ -1687,16 +1767,19 @@ func (b *Broker) removeSessionMapsLocked(session *Session) {
 		staleKey := session.WinSessionID + "-" + session.HelperRole
 		b.trackStaleHelper(staleKey, session.PID)
 	}
+	return true
 }
 
 func (b *Broker) removeSession(session *Session) {
 	b.mu.Lock()
-	b.removeSessionMapsLocked(session)
-	b.publishSnapshotLocked()
+	removed := b.removeSessionMapsLocked(session)
+	if removed {
+		b.publishSnapshotLocked()
+	}
 	onSessionClosed := b.onSessionClosed
 	b.mu.Unlock()
 
-	if onSessionClosed != nil {
+	if removed && onSessionClosed != nil {
 		onSessionClosed(session)
 	}
 }

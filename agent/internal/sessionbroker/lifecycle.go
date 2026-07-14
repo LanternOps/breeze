@@ -143,6 +143,16 @@ func (m *HelperLifecycleManager) reconcile() {
 	}
 
 	currentKeys := make(map[string]bool, len(sessions)*2)
+	desiredKeys := make(map[HelperKey]struct{}, len(sessions)*2)
+	for _, s := range sessions {
+		if key, desired := helperKeyFromDetected(s, "system"); desired {
+			desiredKeys[key] = struct{}{}
+		}
+		if key, desired := helperKeyFromDetected(s, "user"); desired {
+			desiredKeys[key] = struct{}{}
+		}
+	}
+	m.broker.UpdateDesiredHelperKeys(desiredKeys)
 
 	for _, s := range sessions {
 		// Spawn SYSTEM helper if missing, reset retry tracking when connected.

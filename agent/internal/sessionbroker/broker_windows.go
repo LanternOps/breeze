@@ -34,6 +34,9 @@ func (b *Broker) setupSocket() error {
 // peerWinSessionID returns the Windows session ID for the given process,
 // verified by the kernel via ProcessIdToSessionId. Returns 0 on failure.
 func peerWinSessionID(pid int) uint32 {
+	if pid <= 0 {
+		return 0
+	}
 	var sessionID uint32
 	if err := windows.ProcessIdToSessionId(uint32(pid), &sessionID); err != nil {
 		return 0
