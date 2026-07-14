@@ -146,6 +146,7 @@ import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
 import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { googleRoutes } from './routes/google';
+import { m365ConsentCallbackRoutes } from './routes/m365ConsentCallback';
 import { m365Routes } from './routes/m365';
 import { onedriveRoutes } from './routes/onedrive';
 import { drRoutes } from './routes/dr';
@@ -932,6 +933,7 @@ api.route('/browser-security', browserSecurityRoutes);
 api.route('/', m365CallbackRoute); // Public callback (no auth) — must precede c2c group
 api.route('/c2c', c2cRoutes);
 api.route('/google', googleRoutes);
+api.route('/m365', m365ConsentCallbackRoutes); // Public two-phase consent callback; mount before authenticated M365 routes
 api.route('/m365', m365Routes);
 api.route('/onedrive', onedriveRoutes);
 api.route('/dr', drRoutes);

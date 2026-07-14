@@ -1,0 +1,356 @@
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import type { CompleteConsentRequest, CompleteConsentResult } from '@breeze/shared/m365';
+import { and, eq } from 'drizzle-orm';
+import { Hono, type Context } from 'hono';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { m365Connections } from '../db/schema';
+import { writeAuditEvent } from '../services/auditEvents';
+import {
+  buildClearM365ConsentBindingCookie,
+  buildM365ConsentBindingCookie,
+  inspectM365ConsentBindingCookie,
+  type M365ConsentBrowserBinding,
+  type M365ConsentBindingPhase,
+} from '../services/m365ControlPlane/browserBinding';
+import {
+  applyIdentityVerificationResult,
+  markAdminConsentReturned,
+  markConsentAttemptFailed,
+  type ConsentAttemptSnapshot,
+  type CustomerGraphReadConnectionSnapshot,
+} from '../services/m365ControlPlane/connectionService';
+import {
+  consumeConsentSession,
+  createIdentityVerificationSession,
+  hashTenantHint,
+  type M365ConsentSession,
+} from '../services/m365ControlPlane/consentSessionService';
+import { createGraphReadExecutorClient } from '../services/m365ControlPlane/graphReadExecutorClient';
+import { buildMicrosoftIdentityAuthorizationUrl } from '../services/m365ControlPlane/microsoftAuthorization';
+import {
+  loadM365CustomerGraphReadRuntimeConfig,
+  type M365CustomerGraphReadRuntimeConfig,
+} from '../services/m365ControlPlane/runtimeConfig';
+
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export type ParsedM365ConsentCallback =
+  | { kind: 'admin_success'; state: string; tenantId: string }
+  | { kind: 'identity_success'; state: string; code: string }
+  | { kind: 'provider_error'; state: string };
+
+function single(params: URLSearchParams, name: string): string | null {
+  const values = params.getAll(name);
+  return values.length === 1 ? values[0] : null;
+}
+
+function validOpaque(value: string | null, maxLength: number): value is string {
+  return value !== null
+    && value.length > 0
+    && value.length <= maxLength
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+export function parseM365ConsentCallbackQuery(
+  phase: M365ConsentBindingPhase,
+  params: URLSearchParams,
+): ParsedM365ConsentCallback | null {
+  const keys = [...params.keys()];
+  if (new Set(keys).size !== keys.length) return null;
+  const state = single(params, 'state');
+  if (!validOpaque(state, 256)) return null;
+
+  const hasError = params.has('error');
+  const successKeys = phase === 'admin_consent'
+    ? new Set(['state', 'tenant', 'admin_consent'])
+    : new Set(['state', 'code']);
+  const errorKeys = new Set(['state', 'error', 'error_description']);
+
+  if (hasError) {
+    if (keys.some((key) => !errorKeys.has(key))) return null;
+    const error = single(params, 'error');
+    const description = params.has('error_description')
+      ? single(params, 'error_description')
+      : '';
+    if (!validOpaque(error, 128) || description === null || description.length > 4_096) return null;
+    return { kind: 'provider_error', state };
+  }
+
+  if (keys.some((key) => !successKeys.has(key)) || keys.length !== successKeys.size) return null;
+  if (phase === 'admin_consent') {
+    const tenantId = single(params, 'tenant');
+    if (!tenantId || !GUID.test(tenantId) || single(params, 'admin_consent') !== 'true') return null;
+    return { kind: 'admin_success', state, tenantId };
+  }
+  const code = single(params, 'code');
+  if (!validOpaque(code, 8_192)) return null;
+  return { kind: 'identity_success', state, code };
+}
+
+type PublicOutcome =
+  | 'active'
+  | 'degraded'
+  | 'consent_expired'
+  | 'consent_state_mismatch'
+  | 'consent_cancelled'
+  | 'admin_role_required'
+  | 'tenant_mismatch'
+  | 'tenant_already_bound'
+  | 'credential_unavailable'
+  | 'identity_token_invalid'
+  | 'application_token_invalid'
+  | 'grant_reconciliation_unavailable'
+  | 'grant_missing'
+  | 'grant_unexpected'
+  | 'manifest_stale'
+  | 'organization_probe_failed'
+  | 'executor_unavailable';
+
+const PUBLIC_OUTCOMES = new Set<PublicOutcome>([
+  'active', 'degraded', 'consent_expired', 'consent_state_mismatch',
+  'consent_cancelled', 'admin_role_required', 'tenant_mismatch',
+  'tenant_already_bound', 'credential_unavailable', 'identity_token_invalid',
+  'application_token_invalid', 'grant_reconciliation_unavailable', 'grant_missing',
+  'grant_unexpected', 'manifest_stale', 'organization_probe_failed', 'executor_unavailable',
+]);
+type SafeAuditOutcome = PublicOutcome | 'identity_verification_started';
+
+interface CallbackRuntimeConfig {
+  clientId: string;
+  callbackUrl: string;
+}
+
+interface CallbackDependencies {
+  verifyBindingCookie(cookieHeader: string | undefined): M365ConsentBrowserBinding | 'expired' | null;
+  buildBindingCookie(binding: M365ConsentBrowserBinding): string;
+  clearBindingCookie(): string;
+  loadAttempt(binding: M365ConsentBrowserBinding): Promise<ConsentAttemptSnapshot | null>;
+  consumeSession(input: Parameters<typeof consumeConsentSession>[0]): Promise<M365ConsentSession | null>;
+  markAdminReturned(input: ConsentAttemptSnapshot): Promise<CustomerGraphReadConnectionSnapshot>;
+  markAttemptFailed(input: ConsentAttemptSnapshot, outcome: string): Promise<CustomerGraphReadConnectionSnapshot>;
+  createIdentitySession(input: Parameters<typeof createIdentityVerificationSession>[0]): ReturnType<typeof createIdentityVerificationSession>;
+  completeIdentity(input: CompleteConsentRequest): Promise<CompleteConsentResult>;
+  applyIdentityResult(input: ConsentAttemptSnapshot, result: CompleteConsentResult): Promise<CustomerGraphReadConnectionSnapshot>;
+  loadConfig(): CallbackRuntimeConfig;
+  correlationId(): string;
+  audit(c: Context, attempt: ConsentAttemptSnapshot, phase: M365ConsentBindingPhase, outcome: SafeAuditOutcome): void;
+}
+
+async function loadAttemptFromBinding(
+  binding: M365ConsentBrowserBinding,
+): Promise<ConsentAttemptSnapshot | null> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = await db.select().from(m365Connections).where(and(
+      eq(m365Connections.id, binding.connectionId),
+      eq(m365Connections.profile, 'customer-graph-read'),
+      eq(m365Connections.consentAttemptId, binding.consentAttemptId),
+    )).limit(1);
+    const row = rows[0];
+    if (!row?.orgId || !row.consentAttemptId || row.profile !== 'customer-graph-read') return null;
+    return {
+      id: row.id,
+      orgId: row.orgId,
+      profile: 'customer-graph-read',
+      consentAttemptId: row.consentAttemptId,
+      status: row.status,
+    };
+  }));
+}
+
+function completeIdentityWithRuntime(input: CompleteConsentRequest): Promise<CompleteConsentResult> {
+  const config: M365CustomerGraphReadRuntimeConfig = loadM365CustomerGraphReadRuntimeConfig();
+  return createGraphReadExecutorClient({
+    executorUrl: config.executorUrl,
+    executorAudience: config.executorAudience,
+    signingPrivateJwk: config.executorSigningPrivateJwk,
+    signingKid: config.executorSigningKid,
+  }).completeIdentityVerification(input);
+}
+
+const defaultDependencies: CallbackDependencies = {
+  verifyBindingCookie: (header) => {
+    const inspected = inspectM365ConsentBindingCookie(header);
+    if (inspected.status === 'expired') return 'expired';
+    return inspected.status === 'valid' ? inspected.binding : null;
+  },
+  buildBindingCookie: (binding) => buildM365ConsentBindingCookie(binding),
+  clearBindingCookie: () => buildClearM365ConsentBindingCookie(),
+  loadAttempt: loadAttemptFromBinding,
+  consumeSession: consumeConsentSession,
+  markAdminReturned: markAdminConsentReturned,
+  markAttemptFailed: markConsentAttemptFailed,
+  createIdentitySession: createIdentityVerificationSession,
+  completeIdentity: completeIdentityWithRuntime,
+  applyIdentityResult: applyIdentityVerificationResult,
+  loadConfig: loadM365CustomerGraphReadRuntimeConfig,
+  correlationId: randomUUID,
+  audit(c, attempt, phase, outcome) {
+    writeAuditEvent(c, {
+      orgId: attempt.orgId,
+      actorType: 'system',
+      action: 'm365.customer_graph_read.consent_callback',
+      resourceType: 'm365_connection',
+      resourceId: attempt.id,
+      details: { consentAttemptId: attempt.consentAttemptId, phase, outcome },
+      result: outcome === 'active'
+        || outcome === 'degraded'
+        || outcome === 'identity_verification_started'
+        ? 'success'
+        : 'failure',
+    });
+  },
+};
+
+function constantTimeTextEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left, 'utf8');
+  const b = Buffer.from(right, 'utf8');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function outcomeFromConnection(value: CustomerGraphReadConnectionSnapshot): PublicOutcome {
+  if (value.status === 'active') return 'active';
+  if (value.status === 'degraded') return 'degraded';
+  return PUBLIC_OUTCOMES.has(value.lastErrorCode as PublicOutcome)
+    ? value.lastErrorCode as PublicOutcome
+    : 'executor_unavailable';
+}
+
+function errorOutcome(error: unknown): PublicOutcome {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (code === 'tenant_already_bound') return 'tenant_already_bound';
+    if (code === 'stale_attempt') return 'consent_state_mismatch';
+  }
+  return 'executor_unavailable';
+}
+
+export function createM365ConsentCallbackRoutes(
+  overrides: Partial<CallbackDependencies> = {},
+): Hono {
+  const dependencies = { ...defaultDependencies, ...overrides };
+  const routes = new Hono();
+
+  routes.get('/consent/callback', async (c) => {
+    const terminal = (
+      outcome: PublicOutcome,
+      attempt?: ConsentAttemptSnapshot,
+      phase?: M365ConsentBindingPhase,
+    ) => {
+      c.header('Set-Cookie', dependencies.clearBindingCookie(), { append: true });
+      if (attempt && phase) dependencies.audit(c, attempt, phase, outcome);
+      return c.redirect(`/integrations#m365/customer-graph-read/${outcome}`);
+    };
+
+    const binding = dependencies.verifyBindingCookie(c.req.header('cookie'));
+    if (binding === 'expired') return terminal('consent_expired');
+    if (!binding) return terminal('consent_state_mismatch');
+    const parsed = parseM365ConsentCallbackQuery(
+      binding.phase,
+      new URL(c.req.url).searchParams,
+    );
+    if (!parsed || !constantTimeTextEqual(parsed.state, binding.rawState)) {
+      return terminal('consent_state_mismatch');
+    }
+
+    const attempt = await dependencies.loadAttempt(binding);
+    const expectedStatus = binding.phase === 'admin_consent' ? 'pending-consent' : 'verifying';
+    if (!attempt || attempt.status !== expectedStatus) {
+      return terminal('consent_state_mismatch');
+    }
+
+    const session = await dependencies.consumeSession({
+      rawState: binding.rawState,
+      phase: binding.phase,
+      connectionId: binding.connectionId,
+      orgId: attempt.orgId,
+      consentAttemptId: binding.consentAttemptId,
+    });
+    if (!session) return terminal('consent_state_mismatch', attempt, binding.phase);
+
+    if (parsed.kind === 'provider_error') {
+      try {
+        await dependencies.markAttemptFailed(attempt, 'consent_cancelled');
+      } catch {
+        return terminal('consent_state_mismatch', attempt, binding.phase);
+      }
+      return terminal('consent_cancelled', attempt, binding.phase);
+    }
+
+    if (binding.phase === 'admin_consent' && parsed.kind === 'admin_success') {
+      try {
+        await dependencies.markAdminReturned(attempt);
+        const created = await dependencies.createIdentitySession({
+          connectionId: attempt.id,
+          orgId: attempt.orgId,
+          consentAttemptId: attempt.consentAttemptId,
+          userId: session.userId,
+          tenantHint: parsed.tenantId,
+        });
+        const config = dependencies.loadConfig();
+        c.header('Set-Cookie', dependencies.buildBindingCookie({
+          phase: 'identity_verification',
+          rawState: created.rawState,
+          connectionId: attempt.id,
+          consentAttemptId: attempt.consentAttemptId,
+          tenantHint: parsed.tenantId,
+        }), { append: true });
+        dependencies.audit(c, attempt, binding.phase, 'identity_verification_started');
+        return c.redirect(buildMicrosoftIdentityAuthorizationUrl({
+          tenantId: parsed.tenantId,
+          clientId: config.clientId,
+          redirectUri: config.callbackUrl,
+          state: created.rawState,
+          nonce: created.session.nonce ?? '',
+          codeChallenge: created.codeChallenge,
+        }));
+      } catch (error) {
+        return terminal(errorOutcome(error), attempt, binding.phase);
+      }
+    }
+
+    if (
+      binding.phase !== 'identity_verification'
+      || parsed.kind !== 'identity_success'
+      || !binding.tenantHint
+      || !session.tenantHintHash
+      || !session.nonce
+      || !session.codeVerifier
+    ) return terminal('consent_state_mismatch', attempt, binding.phase);
+
+    const actualTenantHash = hashTenantHint(binding.tenantHint);
+    if (!constantTimeTextEqual(actualTenantHash, session.tenantHintHash)) {
+      return terminal('tenant_mismatch', attempt, binding.phase);
+    }
+
+    let result: CompleteConsentResult;
+    try {
+      result = await dependencies.completeIdentity({
+        correlationId: dependencies.correlationId(),
+        consentAttemptId: attempt.consentAttemptId,
+        tenantHint: binding.tenantHint,
+        authorizationCode: parsed.code,
+        codeVerifier: session.codeVerifier,
+        nonce: session.nonce,
+        redirectUri: dependencies.loadConfig().callbackUrl,
+      });
+    } catch {
+      try {
+        await dependencies.markAttemptFailed(attempt, 'executor_unavailable');
+      } catch {
+        return terminal('consent_state_mismatch', attempt, binding.phase);
+      }
+      return terminal('executor_unavailable', attempt, binding.phase);
+    }
+
+    try {
+      const applied = await dependencies.applyIdentityResult(attempt, result);
+      return terminal(outcomeFromConnection(applied), attempt, binding.phase);
+    } catch (error) {
+      return terminal(errorOutcome(error), attempt, binding.phase);
+    }
+  });
+
+  return routes;
+}
+
+export const m365ConsentCallbackRoutes = createM365ConsentCallbackRoutes();
