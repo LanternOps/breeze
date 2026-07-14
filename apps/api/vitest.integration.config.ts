@@ -66,6 +66,11 @@ export default defineConfig({
       // the mocked `changes.test.ts` unit suite, so this drives the real
       // `changesRoutes` handler + RLS insert/select policies against Postgres.
       'src/routes/agents/changes.integration.test.ts',
+      // Co-located real-DB integration test for the SR2-22 auth-email worker:
+      // proves the OUT-OF-REQUEST worker's withSystemDbAccessContext wrap lets
+      // it FIND a FORCE-RLS `users` row (a contextless read would be 0 rows =
+      // "no such user" = silent password-reset breakage for everyone).
+      'src/jobs/authEmailWorker.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

@@ -153,6 +153,10 @@ vi.mock('./helpers', () => ({
   // (mfaEnabled defaults to false), but must exist as a callable default so
   // the branch doesn't throw when a test DOES enable MFA.
   userHasUsablePasskey: vi.fn(async () => false),
+  // SR2-22: /login now shares this timing-floor equalizer from ./helpers.
+  // Test-mode behaviour is a resolved no-op (the real helper skips the floor
+  // when NODE_ENV=test), so the suite stays fast and timing-agnostic.
+  authResponseFloorPromise: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('./ssoPolicy', () => ({

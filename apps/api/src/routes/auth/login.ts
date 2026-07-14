@@ -54,7 +54,8 @@ import {
   auditUserLoginFailure,
   auditLogin,
   userRequiresSetup,
-  userHasUsablePasskey
+  userHasUsablePasskey,
+  authResponseFloorPromise
 } from './helpers';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
@@ -95,27 +96,11 @@ function getDummyPasswordHash(): Promise<string> {
 // (fragile — any new denial branch added later silently regresses the
 // equalization), we floor the entire handler's wall-clock latency at a
 // fixed budget. Every response (success, 401, 429, MFA-required) waits
-// until at least LOGIN_RESPONSE_FLOOR_MS has elapsed.
+// until the shared AUTH_RESPONSE_FLOOR_MS budget has elapsed.
 //
-// Budget calibration: argon2id default params take ~100-200ms on prod
-// hardware; tenant-context DB joins add ~30-80ms; rate-limit Redis ops
-// add ~5-10ms. 350ms is a safe upper bound that comfortably exceeds the
-// slowest legitimate path while staying well below interactive-feel
-// thresholds (200ms = "instant", 500ms+ = "sluggish").
-//
-// Test/E2E mode skips the floor so the test suite stays fast — the unit
-// tests don't measure timing, only state.
-const LOGIN_RESPONSE_FLOOR_MS = 350;
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function loginResponseFloorPromise(): Promise<void> {
-  if (process.env.NODE_ENV === 'test') return Promise.resolve();
-  if (process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true') return Promise.resolve();
-  return delay(LOGIN_RESPONSE_FLOOR_MS);
-}
+// SR2-22 shares this exact equalizer (now `authResponseFloorPromise` in
+// ./helpers) with /forgot-password rather than defining a second one.
+const loginResponseFloorPromise = authResponseFloorPromise;
 
 // Task 10 helper: bump the per-account failure counter, and if THIS
 // attempt is the one that crossed the lockout threshold, fire a security

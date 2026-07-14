@@ -88,7 +88,11 @@ export const smsSendSchema = z.object({
 });
 
 export const forgotPasswordSchema = z.object({
-  email: z.string().email()
+  // SR2-22: trim before validating so a paste-padded address ("  a@b.com ")
+  // reaches the handler and is normalized identically to every other address —
+  // rather than 400ing pre-handler, which would itself be an input-shape oracle
+  // distinct from the uniform accepted response.
+  email: z.string().trim().email()
 });
 
 export const resetPasswordSchema = z.object({
