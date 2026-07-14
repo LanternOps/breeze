@@ -28,6 +28,7 @@
     "test:docker:up": "docker compose -f ../../docker-compose.test.yml up -d --wait",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:integration:watch": "vitest --config vitest.integration.config.ts",
+    "test:rls": "vitest run --config vitest.config.rls.ts",
     "test:rls-coverage": "vitest run --config vitest.config.rls-coverage.ts",
     "test:request-db-role": "vitest run --config vitest.config.request-db-role.ts",
     "test:site-scope-coverage": "vitest run --config vitest.config.site-scope-coverage.ts",

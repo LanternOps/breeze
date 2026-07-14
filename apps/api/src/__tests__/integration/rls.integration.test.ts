@@ -13,12 +13,35 @@
  *   4. Nested context detection skips re-wrapping in a new transaction
  *
  * RLS Functions (defined in migrations):
- *   - breeze_current_scope()     → reads 'breeze.scope'     (defaults to 'none')
- *   - breeze_accessible_org_ids()→ reads 'breeze.accessible_org_ids'
- *   - breeze_has_org_access(id)  → true if system scope OR id in accessible_org_ids
+ *   - breeze_current_scope()      → reads 'breeze.scope'  (defaults to 'none')
+ *   - breeze_accessible_org_ids() → reads 'breeze.accessible_org_ids'
+ *   - breeze_has_org_access(id)   → true if system scope OR id in accessible_org_ids
+ *   - breeze_current_partner_id() → reads 'breeze.current_partner_id'; backs the
+ *       partner-wide read branch of the dual-axis catalog policies
+ *       (migrations/2026-06-13-catalog-partner-read-branch.sql)
  *
  * Key security invariant: without withDbAccessContext, scope = 'none' and ALL
  * row-level policies return FALSE, meaning no data is visible or writable.
+ *
+ * SCOPE OF THIS FILE — read before adding to it.
+ * Despite the `.integration.` name, this is a MOCKED unit test: it stubs
+ * `postgres` and `drizzle-orm/postgres-js` at the module level and touches no
+ * database. It gates the APPLICATION half of the contract (which GUCs get
+ * stamped, and with what values). It cannot and does not prove that PostgreSQL
+ * enforces anything.
+ *
+ * The DB half is gated separately, against real Postgres, connecting as the
+ * unprivileged `breeze_app` role (RLS is bypassed by a superuser, which would
+ * render such tests vacuous):
+ *   - rls-coverage.integration.test.ts        → pnpm test:rls-coverage
+ *   - requestDatabaseRole.integration.test.ts → pnpm test:request-db-role
+ *   - the *PartnerRls.integration.test.ts cross-tenant forge suites
+ *
+ * Runner: vitest.config.rls.ts → `pnpm test:rls`, run by the blocking `test-api`
+ * CI job. (Until 2026-07 NOTHING ran this file: no package script referenced its
+ * config, the unit runner excludes `__tests__/integration/**`, and the
+ * integration runner excludes it by name. It silently carried a failing
+ * assertion — `toHaveLength(5)` vs the 6 GUCs actually set — for a month.)
  */
 import { describe, it, expect, vi, beforeEach, type MockedFunction } from 'vitest';
 
@@ -101,6 +124,33 @@ vi.mock('drizzle-orm/postgres-js', () => {
 // Now import the real db module (it will use the mocked postgres + drizzle)
 // ---------------------------------------------------------------------------
 import { withDbAccessContext, type DbAccessContext } from '../../db';
+
+// ---------------------------------------------------------------------------
+// The session GUCs withDbAccessContext must stamp on EVERY context entry.
+//
+// The exact SET matters, not just the count: every `breeze.*` setting read by an
+// RLS helper must be written on every entry. A GUC the app forgets to set does
+// not fail loudly — it silently falls back to the DB default, or to a leftover
+// value from an earlier transaction on the same pooled connection. That is
+// exactly how a tenant-isolation hole gets introduced.
+//
+// `breeze.current_partner_id` is the sixth. Added by 127c8774a (#1357), it is
+// load-bearing: `breeze_current_partner_id()` backs the partner-wide
+// (org_id IS NULL AND partner_id = ...) read branch of the dual-axis catalog
+// policies — see migrations/2026-06-13-catalog-partner-read-branch.sql.
+// The count assertion below sat at `5` for a month because no CI job ever ran
+// this file.
+// ---------------------------------------------------------------------------
+const EXPECTED_SESSION_GUCS = [
+  'breeze.scope',
+  'breeze.org_id',
+  'breeze.accessible_org_ids',
+  'breeze.accessible_partner_ids',
+  'breeze.user_id',
+  'breeze.current_partner_id',
+] as const;
+
+const EXPECTED_SESSION_GUC_COUNT = EXPECTED_SESSION_GUCS.length;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -191,7 +241,8 @@ describe('serializeAccessibleOrgIds (via withDbAccessContext)', () => {
       return 'done';
     });
 
-    // Call order: scope(0), org_id(1), accessible_org_ids(2), accessible_partner_ids(3), user_id(4)
+    // Call order: scope(0), org_id(1), accessible_org_ids(2),
+    // accessible_partner_ids(3), user_id(4), current_partner_id(5)
     return paramsByCall[2];
   }
 
@@ -353,7 +404,7 @@ describe('withDbAccessContext sets session variables', () => {
     expect(params['breeze.accessible_org_ids']).toBe('');
   });
 
-  it('always sets exactly five session variables per call', async () => {
+  it('always sets exactly the expected session variables per call', async () => {
     const settingNames: string[] = [];
 
     mockExecute.mockImplementation(async (sqlObj: object) => {
@@ -372,12 +423,10 @@ describe('withDbAccessContext sets session variables', () => {
       async () => 'ok'
     );
 
-    expect(settingNames).toHaveLength(5);
-    expect(settingNames).toContain('breeze.scope');
-    expect(settingNames).toContain('breeze.org_id');
-    expect(settingNames).toContain('breeze.accessible_org_ids');
-    expect(settingNames).toContain('breeze.accessible_partner_ids');
-    expect(settingNames).toContain('breeze.user_id');
+    // Compare as sets so a reordering of the set_config calls doesn't fail,
+    // but a missing/extra/renamed GUC does.
+    expect([...settingNames].sort()).toEqual([...EXPECTED_SESSION_GUCS].sort());
+    expect(settingNames).toHaveLength(EXPECTED_SESSION_GUCS.length);
   });
 
   it('wraps set_config calls in a transaction', async () => {
@@ -460,12 +509,10 @@ describe('deny-by-default when no context is set', () => {
 // ===========================================================================
 describe('nested context detection', () => {
   it('skips creating a new transaction when already inside a context', async () => {
-    let outerTransactionCount = 0;
-    let innerTransactionCount = 0;
+    let innerFnRan = false;
 
     mockTransaction.mockImplementation(
       async (callback: (tx: typeof mockTx) => Promise<unknown>) => {
-        outerTransactionCount++;
         return callback(mockTx as unknown as Parameters<typeof callback>[0]);
       }
     );
@@ -477,32 +524,36 @@ describe('nested context detection', () => {
     };
 
     await withDbAccessContext(systemContext, async () => {
-      // Simulate a nested call — in production this happens when middleware
-      // sets up a context and a service also calls withDbAccessContext.
-      // Because the ALS store is already set (by the outer call's
-      // dbContextStorage.run), the inner call should detect it and bypass
-      // creating a new transaction.
-      //
-      // NOTE: The inner call here runs OUTSIDE the real ALS boundary because
-      // we're testing with mocks. We use a separate counter to distinguish
-      // outer vs inner transaction attempts.
+      // In production this happens when middleware sets up a context and a
+      // service also calls withDbAccessContext. The outer call populated the
+      // ALS store (dbContextStorage.run), so the inner call must short-circuit
+      // (`if (dbContextStorage.getStore()) return fn()`) and NOT open a second
+      // transaction or re-issue set_config.
       await withDbAccessContext(systemContext, async () => {
-        innerTransactionCount++;
+        innerFnRan = true;
         return 'inner result';
       });
       return 'outer result';
     });
 
-    // Outer transaction must have started exactly once
-    expect(outerTransactionCount).toBe(1);
+    // Only `postgres` and `drizzle-orm/postgres-js` are mocked — the module's
+    // AsyncLocalStorage is the REAL one and IS populated inside the outer call.
+    // So nested suppression is genuinely observable here, and we assert it.
+    //
+    // (This previously asserted `outer + inner > 0`, which is true no matter
+    // what the code does — it could not fail. Its comment claimed the ALS "is
+    // not populated" under mocks; that is simply false. The security property
+    // below — an inner call must not re-open a transaction and re-stamp the
+    // session GUCs, which would let a nested call overwrite the outer tenant
+    // context — was therefore never actually tested.)
+    expect(innerFnRan).toBe(true);
 
-    // In the mock environment the ALS store is not populated (we replaced the
-    // entire drizzle module), so the inner call will also start a transaction.
-    // This test therefore documents the EXPECTED behavior in production where
-    // the real ALS is in use: only the outer transaction would fire.
-    // The assertion below verifies that the code path exists and is wired up
-    // correctly — a real integration against a live DB would show innerCount=0.
-    expect(outerTransactionCount + innerTransactionCount).toBeGreaterThan(0);
+    // Exactly ONE transaction for the outer call; the inner call opened none.
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+
+    // ...and the session GUCs were stamped exactly once (one full set), not
+    // twice. A second stamp would mean the inner context overwrote the outer.
+    expect(mockExecute).toHaveBeenCalledTimes(EXPECTED_SESSION_GUC_COUNT);
   });
 
   it('fn result is returned correctly from outer context', async () => {
@@ -616,14 +667,40 @@ describe('RLS function contracts (documented expectations)', () => {
   //     b) accessible_org_ids is empty array
   //     c) target_org_id not in accessible_org_ids
   it('documents the mapping from context to expected RLS grant/deny', () => {
-    // This test encodes the truth table as plain expectations so it serves as
-    // living documentation. Actual DB enforcement is tested in E2E tests.
+    // IMPORTANT — what this test is and is not.
+    //
+    // This is a MODEL of the SQL, not the SQL. It executes no queries. It exists
+    // as an executable statement of the contract; the DB's ACTUAL enforcement is
+    // gated separately and against real Postgres, connecting as the unprivileged
+    // `breeze_app` role (a superuser bypasses RLS and would make any such test
+    // vacuous):
+    //   - rls-coverage.integration.test.ts  (pnpm test:rls-coverage)
+    //   - requestDatabaseRole.integration.test.ts (pnpm test:request-db-role)
+    //   - the *PartnerRls.integration.test.ts cross-tenant forge suites
+    //
+    // Because it is only a model, it must mirror the SQL EXACTLY. The previous
+    // version did not — it was wrong in the PERMISSIVE direction, which is the
+    // dangerous direction for a document that future policy work is checked
+    // against. Specifically it claimed:
+    //     if (serializedOrgIds === null || serializedOrgIds === '*') return true;
+    // i.e. accessible_org_ids='*' GRANTS for ANY scope. The real SQL denies:
+    // breeze_accessible_org_ids() maps '*' → NULL, and breeze_has_org_access()
+    // then evaluates `target = ANY(NULL)` → NULL → COALESCE(NULL, FALSE) → FALSE
+    // for every non-system scope. Same for a NULL/absent GUC, which maps to
+    // ARRAY[]::uuid[] → DENY. The old model also omitted the `target_org_id IS
+    // NULL → FALSE` rule entirely.
+    //
+    // Reality is STRICTER than the old model, so this was a wrong specification
+    // rather than a live vulnerability — and '*' is only ever serialized for
+    // system scope (serializeAccessibleIds). But a "spec" that is laxer than the
+    // code is exactly what a future change gets justified against, so it is
+    // corrected here and the previously-missing rows are now asserted.
 
     type Scenario = {
       label: string;
       scope: string;
-      accessibleOrgIds: string | null; // serialized form
-      targetOrgId: string;
+      accessibleOrgIds: string | null; // serialized GUC form
+      targetOrgId: string | null;      // NULL models a NULL org_id column
       expected: 'GRANT' | 'DENY';
     };
 
@@ -631,10 +708,10 @@ describe('RLS function contracts (documented expectations)', () => {
     const ORG_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
     const scenarios: Scenario[] = [
-      // System scope: always grants
+      // System scope: always grants (short-circuits before the ids are read)
       { label: 'system scope grants all', scope: 'system', accessibleOrgIds: '*', targetOrgId: ORG_A, expected: 'GRANT' },
       { label: 'system scope grants unrelated org', scope: 'system', accessibleOrgIds: '*', targetOrgId: ORG_B, expected: 'GRANT' },
-      // None scope (deny-by-default): always denies
+      // None scope (deny-by-default): no GUCs set → ARRAY[] → denies
       { label: 'none scope denies', scope: 'none', accessibleOrgIds: null, targetOrgId: ORG_A, expected: 'DENY' },
       // Partner scope, matching org
       { label: 'partner scope grants matching org', scope: 'partner', accessibleOrgIds: `${ORG_A},${ORG_B}`, targetOrgId: ORG_A, expected: 'GRANT' },
@@ -646,24 +723,58 @@ describe('RLS function contracts (documented expectations)', () => {
       { label: 'org scope denies other org', scope: 'organization', accessibleOrgIds: ORG_A, targetOrgId: ORG_B, expected: 'DENY' },
       // Empty accessible_org_ids: always denies
       { label: 'empty accessible_org_ids denies all', scope: 'organization', accessibleOrgIds: '', targetOrgId: ORG_A, expected: 'DENY' },
+
+      // --- rows the old model got WRONG or omitted entirely ---
+      // '*' is the system sentinel. If it ever leaked onto a NON-system scope,
+      // the SQL still fails closed ('*' → NULL → ANY(NULL) → NULL → FALSE).
+      { label: "'*' on partner scope DENIES (fails closed, not unrestricted)", scope: 'partner', accessibleOrgIds: '*', targetOrgId: ORG_A, expected: 'DENY' },
+      { label: "'*' on organization scope DENIES (fails closed)", scope: 'organization', accessibleOrgIds: '*', targetOrgId: ORG_A, expected: 'DENY' },
+      // An absent GUC on a non-system scope → ARRAY[]::uuid[] → deny.
+      { label: 'absent accessible_org_ids on partner scope denies', scope: 'partner', accessibleOrgIds: null, targetOrgId: ORG_A, expected: 'DENY' },
+      // breeze_has_org_access() denies a NULL target outright, before the ANY().
+      { label: 'NULL target org_id denies on org scope', scope: 'organization', accessibleOrgIds: ORG_A, targetOrgId: null, expected: 'DENY' },
+      { label: 'NULL target org_id denies on partner scope', scope: 'partner', accessibleOrgIds: `${ORG_A},${ORG_B}`, targetOrgId: null, expected: 'DENY' },
+      // ...but system scope still grants a NULL target, because it returns TRUE
+      // before the NULL check is reached. (This is why partner-wide rows, which
+      // carry org_id IS NULL, are only readable from a system context or via the
+      // dedicated breeze_current_partner_id() branch — see CLAUDE.md #1105.)
+      { label: 'system scope grants even a NULL target org_id', scope: 'system', accessibleOrgIds: '*', targetOrgId: null, expected: 'GRANT' },
     ];
 
-    for (const scenario of scenarios) {
-      // Encode the grant/deny logic that the PostgreSQL functions implement.
-      // This mirrors `breeze_has_org_access` behaviour.
-      function simulateHasOrgAccess(
-        scope: string,
-        serializedOrgIds: string | null,
-        targetOrgId: string
-      ): boolean {
-        if (scope === 'system') return true;
-        if (scope === 'none') return false;
-        if (serializedOrgIds === null || serializedOrgIds === '*') return true;
-        if (serializedOrgIds === '') return false;
-        const ids = serializedOrgIds.split(',');
-        return ids.includes(targetOrgId);
-      }
+    /**
+     * Faithful port of the PostgreSQL functions in migrations/0008-tenant-rls.sql.
+     *
+     *   breeze_accessible_org_ids():
+     *     '*'          → NULL          (unrestricted sentinel)
+     *     NULL or ''   → ARRAY[]::uuid[]  (fail closed)
+     *     else         → string_to_array(raw, ',')::uuid[]
+     *
+     *   breeze_has_org_access(target):
+     *     scope = 'system'  → TRUE
+     *     target IS NULL    → FALSE
+     *     else              → COALESCE(target = ANY(ids), FALSE)
+     *                         (ANY(NULL) is NULL → COALESCE → FALSE)
+     */
+    function simulateAccessibleOrgIds(serialized: string | null): string[] | null {
+      if (serialized === '*') return null;              // NULL
+      if (serialized === null || serialized === '') return []; // ARRAY[]
+      return serialized.split(',');
+    }
 
+    function simulateHasOrgAccess(
+      scope: string,
+      serializedOrgIds: string | null,
+      targetOrgId: string | null
+    ): boolean {
+      if (scope === 'system') return true;
+      if (targetOrgId === null) return false;
+      const ids = simulateAccessibleOrgIds(serializedOrgIds);
+      // `= ANY(NULL)` yields NULL, and COALESCE(NULL, FALSE) → FALSE.
+      if (ids === null) return false;
+      return ids.includes(targetOrgId);
+    }
+
+    for (const scenario of scenarios) {
       const granted = simulateHasOrgAccess(
         scenario.scope,
         scenario.accessibleOrgIds,

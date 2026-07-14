@@ -130,6 +130,28 @@ jobs:
       - name: Run site-scope coverage contract test
         run: pnpm --filter=@breeze/api test:site-scope-coverage
 
+      # RLS session-context contract test (vitest.config.rls.ts). Gates the
+      # APPLICATION half of the tenant-isolation contract: that
+      # withDbAccessContext stamps exactly the `breeze.*` GUCs the RLS helpers
+      # read, with the right fail-closed values, and that a nested context does
+      # not re-open a transaction and overwrite the outer tenant scope.
+      #
+      # Until 2026-07 this file was run by NOTHING: no package.json script
+      # referenced its config, the unit runner excludes `__tests__/integration/**`,
+      # and the integration runner excludes it by name. It sat with a failing
+      # assertion (5 vs the 6 GUCs actually set) for a month. Hence this step.
+      #
+      # It belongs HERE, not in `integration-test`: it mocks `postgres` and
+      # `drizzle-orm/postgres-js` and touches no database, so — exactly like the
+      # site-scope step above — it runs in the fast, blocking job. Giving it a
+      # Postgres service it never connects to would be theatre. The DB half of
+      # the contract (real Postgres, unprivileged `breeze_app` role, so RLS is
+      # actually enforced rather than bypassed by a superuser) is gated by
+      # `test:integration`, `test:request-db-role` and `test:rls-coverage` in the
+      # blocking `integration-test` job.
+      - name: Run RLS session-context contract test
+        run: pnpm --filter=@breeze/api test:rls
+
   # Real-Postgres apply of every migration against an empty database.
   # Catches ordering bugs (issue #506) and any SQL error the static
   # autoMigrate.test.ts cannot see. Cheap (~1 min) and blocking on PRs.
