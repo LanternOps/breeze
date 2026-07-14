@@ -364,6 +364,7 @@ describe('customer Graph-read connection lifecycle', () => {
     })).resolves.toMatchObject({
       connection: { status: 'verifying' },
       identity: { rawState: 'identity-state', codeChallenge: 'challenge' },
+      actorId: ACTOR_ID,
     });
 
     expect(dbMocks.order).toEqual(['consume-admin-session', 'update', 'insert-identity-session']);

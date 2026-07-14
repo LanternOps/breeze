@@ -97,6 +97,7 @@ describe('M365 consent callback route', () => {
     const transitionAdminPhase = vi.fn().mockResolvedValue({
       connection: { status: 'verifying' },
       identity: { rawState: 'identity-state', codeChallenge: 'pkce-challenge' },
+      actorId: USER_ID,
     });
     const audit = vi.fn();
     const buildBindingCookie = vi.fn(() => 'new-binding=identity; Path=/api/v1/m365/consent/callback');
@@ -157,6 +158,7 @@ describe('M365 consent callback route', () => {
       profile: 'customer-graph-read',
       consentAttemptId: ATTEMPT_ID,
       outcome: 'identity_verification_started',
+      actorId: USER_ID,
     }));
   });
 
@@ -327,6 +329,7 @@ describe('M365 consent callback route', () => {
       outcome: 'active',
       correlationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
       verifiedTenantId: TENANT_ID,
+      actorId: USER_ID,
     }));
   });
 
@@ -341,6 +344,7 @@ describe('M365 consent callback route', () => {
     const completeIdentity = vi.fn();
     const applyIdentityResult = vi.fn();
     const markAttemptFailed = vi.fn();
+    const audit = vi.fn();
     const routes = createM365ConsentCallbackRoutes({
       verifyBindingCookie: vi.fn(() => identityBinding),
       clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
@@ -354,7 +358,7 @@ describe('M365 consent callback route', () => {
       completeIdentity,
       applyIdentityResult,
       markAttemptFailed,
-      audit: vi.fn(),
+      audit,
     });
     const app = new Hono().route('/api/v1/m365', routes);
 
@@ -368,16 +372,23 @@ describe('M365 consent callback route', () => {
     expect(completeIdentity).not.toHaveBeenCalled();
     expect(applyIdentityResult).not.toHaveBeenCalled();
     expect(markAttemptFailed).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.verification_failed',
+      outcome: 'tenant_mismatch',
+      actorId: USER_ID,
+    }));
   });
 
   it('validates the browser binding before loading or consuming state', async () => {
     const loadAttempt = vi.fn();
     const consumeSession = vi.fn();
+    const audit = vi.fn();
     const routes = createM365ConsentCallbackRoutes({
       verifyBindingCookie: vi.fn(() => null),
       clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
       loadAttempt,
       consumeSession,
+      audit,
     });
     const app = new Hono().route('/api/v1/m365', routes);
 
@@ -389,6 +400,7 @@ describe('M365 consent callback route', () => {
     expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
     expect(loadAttempt).not.toHaveBeenCalled();
     expect(consumeSession).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
   });
 
   it('maps a cryptographically valid expired binding to consent_expired before state lookup', async () => {
@@ -498,6 +510,7 @@ describe('M365 consent callback route', () => {
     expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       event: 'm365.customer_graph_read.verification_failed',
       outcome: 'consent_cancelled',
+      actorId: USER_ID,
     }));
     expect(JSON.stringify({ location: response.headers.get('location'), audit: audit.mock.calls }))
       .not.toContain('provider-secret-description');
@@ -553,9 +566,54 @@ describe('M365 consent callback route', () => {
       'm365.customer_graph_read.tenant_binding_verified',
       'm365.customer_graph_read.grant_drift_detected',
     ]);
-    expect(audit.mock.calls[1]?.[1]).toMatchObject({ outcome: 'grant_missing' });
+    expect(audit.mock.calls[0]?.[1]).toMatchObject({ actorId: USER_ID });
+    expect(audit.mock.calls[1]?.[1]).toMatchObject({
+      outcome: 'grant_missing',
+      actorId: USER_ID,
+    });
     expect(JSON.stringify(audit.mock.calls)).not.toMatch(
       /must-not-audit-admin|must-not-audit-nonce|must-not-audit-verifier|must-not-audit-code/,
     );
+  });
+
+  it('attributes an executor failure to the verified identity session user', async () => {
+    const identityBinding = {
+      phase: 'identity_verification' as const,
+      rawState: 'identity-state',
+      connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID,
+      tenantHint: TENANT_ID,
+    };
+    const audit = vi.fn();
+    const routes = createM365ConsentCallbackRoutes({
+      verifyBindingCookie: vi.fn(() => identityBinding),
+      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
+      loadAttempt: vi.fn().mockResolvedValue(attempt('verifying')),
+      consumeSession: vi.fn().mockResolvedValue({
+        userId: USER_ID,
+        tenantHintHash: tenantHintHash(TENANT_ID),
+        nonce: 'identity-nonce',
+        codeVerifier: 'v'.repeat(43),
+      }),
+      completeIdentity: vi.fn().mockRejectedValue(new Error('executor unavailable')),
+      markAttemptFailed: vi.fn().mockResolvedValue({ status: 'pending-consent' }),
+      loadConfig: vi.fn(() => ({
+        clientId: '22222222-2222-2222-2222-222222222222',
+        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
+      })),
+      audit,
+    });
+
+    const response = await new Hono().route('/api/v1/m365', routes).request(
+      '/api/v1/m365/consent/callback?state=identity-state&code=secret-code',
+    );
+
+    expect(response.headers.get('location')).toContain('/executor_unavailable');
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.verification_failed',
+      outcome: 'executor_unavailable',
+      actorId: USER_ID,
+    }));
+    expect(JSON.stringify(audit.mock.calls)).not.toContain('secret-code');
   });
 });

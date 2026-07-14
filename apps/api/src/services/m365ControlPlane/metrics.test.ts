@@ -87,6 +87,7 @@ describe('M365 customer Graph read observability', () => {
       consentAttemptId: '33333333-3333-4333-8333-333333333333',
       manifestVersion: 2,
       outcome: 'active',
+      actorId: '66666666-6666-4666-8666-666666666666',
       correlationId: '44444444-4444-4444-8444-444444444444',
       verifiedTenantId: '55555555-5555-4555-8555-555555555555',
       state: 'raw-state',
@@ -118,7 +119,8 @@ describe('M365 customer Graph read observability', () => {
         tenantId: '55555555-5555-4555-8555-555555555555',
       },
       result: 'success',
-      actorType: 'system',
+      actorType: 'user',
+      actorId: '66666666-6666-4666-8666-666666666666',
     });
     expect(JSON.stringify(writeAuditEvent.mock.calls)).not.toMatch(
       /raw-state|signed-cookie|secret-code|secret-nonce|secret-verifier|secret-executor-auth|secret-token|secret-cert|secret-key|secret-vault|secret-admin-id|secret-provider-description|secret-request-body/,

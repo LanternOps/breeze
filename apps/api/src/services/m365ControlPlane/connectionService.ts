@@ -373,6 +373,7 @@ export async function transitionAdminConsentToIdentity(input: {
 }): Promise<{
   connection: CustomerGraphReadConnectionSnapshot;
   identity: Awaited<ReturnType<typeof insertPreparedIdentityVerificationSessionInTransaction>>;
+  actorId: string;
 }> {
   if (input.attempt.status !== 'pending-consent') throw lifecycleError('stale_attempt');
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
@@ -398,7 +399,7 @@ export async function transitionAdminConsentToIdentity(input: {
       consentAttemptId: input.attempt.consentAttemptId,
       userId: adminSession.userId,
     }, input.prepared);
-    return { connection, identity };
+    return { connection, identity, actorId: adminSession.userId };
   }));
 }
 

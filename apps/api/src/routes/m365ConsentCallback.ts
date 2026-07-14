@@ -237,6 +237,7 @@ export function createM365ConsentCallbackRoutes(
     const terminalFailure = (
       outcome: PublicOutcome,
       attempt?: ConsentAttemptSnapshot,
+      actorId?: string,
     ) => {
       if (attempt) {
         dependencies.audit(c, {
@@ -248,6 +249,7 @@ export function createM365ConsentCallbackRoutes(
           manifestVersion: M365_PERMISSION_PROFILES['customer-graph-read'].version,
           outcome,
           correlationId,
+          ...(actorId ? { actorId } : {}),
         });
       } else {
         dependencies.metric('m365.customer_graph_read.verification_failed', outcome);
@@ -297,12 +299,14 @@ export function createM365ConsentCallbackRoutes(
       if (!attempt || attempt.status !== 'pending-consent') {
         return terminalFailure('consent_state_mismatch');
       }
+      let actorId: string;
       try {
-        await dependencies.transitionAdminPhase({
+        const transitioned = await dependencies.transitionAdminPhase({
           attempt,
           rawAdminState: binding.rawState,
           prepared,
         });
+        actorId = transitioned.actorId;
       } catch (error) {
         if (errorOutcome(error) === 'consent_state_mismatch') {
           return terminalFailure('consent_state_mismatch', attempt);
@@ -321,6 +325,7 @@ export function createM365ConsentCallbackRoutes(
         manifestVersion: M365_PERMISSION_PROFILES['customer-graph-read'].version,
         outcome: 'identity_verification_started',
         correlationId,
+        actorId,
       });
       return c.redirect(authorizationUrl);
     }
@@ -344,9 +349,9 @@ export function createM365ConsentCallbackRoutes(
       try {
         await dependencies.markAttemptFailed(attempt, 'consent_cancelled');
       } catch {
-        return terminalFailure('consent_state_mismatch', attempt);
+        return terminalFailure('consent_state_mismatch', attempt, session.userId);
       }
-      return terminalFailure('consent_cancelled', attempt);
+      return terminalFailure('consent_cancelled', attempt, session.userId);
     }
 
     if (
@@ -356,11 +361,11 @@ export function createM365ConsentCallbackRoutes(
       || !session.tenantHintHash
       || !session.nonce
       || !session.codeVerifier
-    ) return terminalFailure('consent_state_mismatch', attempt);
+    ) return terminalFailure('consent_state_mismatch', attempt, session.userId);
 
     const actualTenantHash = hashTenantHint(binding.tenantHint);
     if (!constantTimeTextEqual(actualTenantHash, session.tenantHintHash)) {
-      return terminalFailure('tenant_mismatch', attempt);
+      return terminalFailure('tenant_mismatch', attempt, session.userId);
     }
 
     let result: CompleteConsentResult;
@@ -378,9 +383,9 @@ export function createM365ConsentCallbackRoutes(
       try {
         await dependencies.markAttemptFailed(attempt, 'executor_unavailable');
       } catch {
-        return terminalFailure('consent_state_mismatch', attempt);
+        return terminalFailure('consent_state_mismatch', attempt, session.userId);
       }
-      return terminalFailure('executor_unavailable', attempt);
+      return terminalFailure('executor_unavailable', attempt, session.userId);
     }
 
     try {
@@ -400,6 +405,7 @@ export function createM365ConsentCallbackRoutes(
           manifestVersion: result.manifestVersion,
           correlationId,
           verifiedTenantId: result.tenantId,
+          actorId: session.userId,
         } as const;
         dependencies.audit(c, {
           ...event,
@@ -415,9 +421,9 @@ export function createM365ConsentCallbackRoutes(
         }
         return terminalRedirect(outcome);
       }
-      return terminalFailure(outcome, attempt);
+      return terminalFailure(outcome, attempt, session.userId);
     } catch (error) {
-      return terminalFailure(errorOutcome(error), attempt);
+      return terminalFailure(errorOutcome(error), attempt, session.userId);
     }
   });
 
