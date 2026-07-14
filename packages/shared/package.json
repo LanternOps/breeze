@@ -10,6 +10,7 @@
     "./types": "./src/types/index.ts",
     "./validators": "./src/validators/index.ts",
     "./constants": "./src/constants/index.ts",
+    "./m365": "./src/m365/index.ts",
     "./reportPdf": "./src/reportPdf/index.ts"
   },
   "scripts": {
