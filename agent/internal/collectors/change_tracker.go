@@ -990,7 +990,7 @@ func (c *ChangeTrackerCollector) diffHardware(current *Snapshot) []ChangeRecord 
 	prev := c.lastSnapshot.Hardware
 	cur := current.Hardware
 	if prev == nil || cur == nil {
-		return changes // first-run seed or unavailable: no events
+		return nil // first-run seed or unavailable: no events
 	}
 
 	emit := func(subject string, before, after any) {

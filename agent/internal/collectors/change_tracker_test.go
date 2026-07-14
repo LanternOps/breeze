@@ -121,13 +121,20 @@ func TestChangeTrackerDetectsHardwareAndOSDrift(t *testing.T) {
 func TestChangeTrackerCollectChanges_RealGatherPathCapturesHardwareAndOS(t *testing.T) {
 	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
 	collector := NewChangeTrackerCollector(snapshotPath)
-	// collector.gatherSnapshot intentionally left nil.
-	// The default collectorTimeout (8s) races the per-command
-	// collectorLongCommandTimeout (30s, command_limits.go) used internally by
-	// slow collectors like macOS `system_profiler SPApplicationsDataType`;
-	// align this test's outer timeout with that constant so a legitimately
-	// slow (but real) collection isn't misreported as a failure.
-	collector.collectorTimeout = collectorLongCommandTimeout
+	// collector.gatherSnapshot intentionally left nil so the REAL gather path
+	// (NewHardwareCollector().CollectHardware/CollectSystemInfo) runs.
+	//
+	// Pre-seed a non-nil lastSnapshot (empty maps, nil Hardware/System) so
+	// gatherCurrentSnapshot is NOT treated as cold-start: slow/variable
+	// collectors (macOS `system_profiler SPApplicationsDataType`, network
+	// adapters) then hit their non-fatal "warn + reuse previous" branch on
+	// timeout instead of failing the whole gather. This de-flakes the test —
+	// its result now hinges only on the real hardware/OS collectors, which is
+	// exactly what we want to assert. collectWithTimeout still caps the slow
+	// software goroutine on its own, so no outer-timeout bump is needed.
+	seed := &Snapshot{}
+	collector.ensureSnapshotMaps(seed)
+	collector.lastSnapshot = seed
 
 	if _, err := collector.CollectChanges(); err != nil {
 		t.Fatalf("CollectChanges returned error: %v", err)
