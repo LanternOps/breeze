@@ -64,11 +64,8 @@ vi.mock('../services/permissions', () => ({
   },
 }));
 
-vi.mock('../services/m365ControlPlane/connectionService', () => ({
-  deriveGrantHealth: (value: { observedGrants: unknown[] }) => ({
-    state: 'degraded', requiredGrants: [], observedGrants: value.observedGrants,
-    missingGrants: [], unexpectedGrants: [],
-  }),
+vi.mock('../services/m365ControlPlane/connectionService', async (importActual) => ({
+  ...await importActual<typeof import('../services/m365ControlPlane/connectionService')>(),
   listCustomerGraphReadConnections: mocks.list,
   initiateCustomerGraphReadConsent: mocks.initiate,
   retestCustomerGraphReadConnection: mocks.retest,
@@ -225,6 +222,26 @@ describe('GET /m365/connections', () => {
     const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
     expect(body.onboardingEnabled).toBe(false);
     expect(body.connection.id).toBe(CONNECTION_ID);
+  });
+
+  it('returns no definitive drift when the first verified reconciliation is unavailable', async () => {
+    mocks.list.mockResolvedValue([connection({
+      status: 'degraded',
+      observedGrants: [],
+      grantsVerifiedAt: null,
+      lastErrorCode: 'grant_reconciliation_unavailable',
+      grantHealth: undefined,
+    })]);
+
+    const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
+    expect(body.connection).toMatchObject({
+      status: 'degraded',
+      observedGrants: [],
+      missingGrants: [],
+      unexpectedGrants: [],
+      grantsVerifiedAt: null,
+      lastErrorCode: 'grant_reconciliation_unavailable',
+    });
   });
 });
 

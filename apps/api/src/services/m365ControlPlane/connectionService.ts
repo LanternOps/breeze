@@ -120,10 +120,13 @@ export function deriveGrantHealth(
   const required = requiredGrants(currentManifest);
   const requiredKeys = new Set(required.map(canonicalGrantKey));
   const observedKeys = new Set(row.observedGrants.map(canonicalGrantKey));
-  const missingGrants = required.filter((grant) => !observedKeys.has(canonicalGrantKey(grant)));
-  const unexpectedGrants = row.observedGrants.filter(
-    (grant) => !requiredKeys.has(canonicalGrantKey(grant)),
-  );
+  const hasAuthoritativeObservation = row.grantsVerifiedAt !== null;
+  const missingGrants = hasAuthoritativeObservation
+    ? required.filter((grant) => !observedKeys.has(canonicalGrantKey(grant)))
+    : [];
+  const unexpectedGrants = hasAuthoritativeObservation
+    ? row.observedGrants.filter((grant) => !requiredKeys.has(canonicalGrantKey(grant)))
+    : [];
 
   let state: GrantHealthState;
   if (row.permissionManifestVersion !== currentManifest.version) state = 'manifest-stale';

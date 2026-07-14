@@ -282,6 +282,29 @@ describe('customer Graph-read connection lifecycle', () => {
     expect(deriveGrantHealth(snapshot({ grantsVerifiedAt: null, observedGrants: [], status: 'degraded' }), manifest).state).toBe('degraded');
   });
 
+  it('does not claim definitive drift before the first authoritative grant observation', () => {
+    const manifest = M365_PERMISSION_PROFILES['customer-graph-read'];
+    const unknown = deriveGrantHealth(snapshot({
+      grantsVerifiedAt: null,
+      observedGrants: [],
+      status: 'degraded',
+      lastErrorCode: 'grant_reconciliation_unavailable',
+    }), manifest);
+    expect(unknown).toMatchObject({
+      state: 'degraded',
+      missingGrants: [],
+      unexpectedGrants: [],
+    });
+
+    const retained = deriveGrantHealth(snapshot({
+      grantsVerifiedAt: new Date('2026-07-14T16:00:00.000Z'),
+      observedGrants: REQUIRED.slice(1),
+      status: 'degraded',
+      lastErrorCode: 'grant_reconciliation_unavailable',
+    }), manifest);
+    expect(retained.missingGrants).toEqual([REQUIRED[0]]);
+  });
+
   it('initiates in one system transaction, deleting the old session before attempt rotation and inserting the new session last', async () => {
     dbMocks.selectResults.push([row({ status: 'degraded' })]);
     dbMocks.updateResults.push((set) => [row({ ...set })]);
