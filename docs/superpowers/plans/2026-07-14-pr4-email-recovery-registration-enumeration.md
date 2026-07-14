@@ -598,7 +598,7 @@ git commit -m "fix(auth): a locked account returns the generic login denial, not
 2. one `rateLimiter` call keyed on the **client**, not the email (`forgot:${rateLimitClient}`);
 3. `enqueuePasswordResetRequest(normalizedEmail)`;
 4. `return c.json({ success: true, message: 'If this email exists, a reset link will be sent.' })`.
-It performs **zero** DB reads, **zero** DB transactions, **zero** epoch advances, and **zero** email sends. There is no `if` on the email. That is what makes it constant-time: the observable latency is `Redis RTT + queue enqueue`, identical for `ceo@fortune500.com` and `asdf@asdf.invalid`. The rate-limit-exceeded branch already returns the same 200 success body (`password.ts:97-100`) — keep it.
+It performs **zero** DB reads, **zero** DB transactions, **zero** epoch advances, and **zero** email sends. There is no `if` on the email. That is what makes it constant-time: the observable latency is `Redis RTT + queue enqueue`, identical for `ceo@example.com` and `asdf@asdf.invalid`. The rate-limit-exceeded branch already returns the same 200 success body (`password.ts:97-100`) — keep it.
 
 Everything the old handler did conditionally moves into the worker, where the requester cannot observe it: eligibility resolution, the `password_reset_epoch` advance, the `reset:<hash>` envelope write, the email send, the `user.password.reset.requested` audit, and the `recordFailedLogin('reset_tenant_inactive')` anomaly metric.
 
