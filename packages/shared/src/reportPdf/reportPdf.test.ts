@@ -139,7 +139,8 @@ describe('buildReportPdf in Node (no DOM)', () => {
     }
     expect(text).toContain('continued');
     expect(text).toContain('Antivirus');
-    expect(text).toContain(' - 1 devices');
+    expect(text).toContain(' - 1 device');
+    expect(text).not.toContain(' - 1 devices');
   });
 
   it('renders optional missing backup neutrally and omits the backup recommendation', () => {

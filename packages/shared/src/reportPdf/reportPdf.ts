@@ -957,7 +957,9 @@ function drawPostureProductRow(doc: jsPDF, product: PostureProduct, y: number): 
   // Skip the category tag when the product name already conveys it
   // (avoids "Backup (local) (Backup)").
   const cat = product.product.toLowerCase().includes(catLabel.toLowerCase()) ? '' : ` (${catLabel})`;
-  const coverage = product.deviceCoverage != null ? ` - ${product.deviceCoverage} devices` : '';
+  const coverage = product.deviceCoverage != null
+    ? ` - ${product.deviceCoverage} device${product.deviceCoverage === 1 ? '' : 's'}`
+    : '';
   // Sync status is only interesting when it's a problem; success is machine
   // noise on a client-facing page.
   const syncOk = !product.lastSyncStatus || /^(ok|success|succeeded)$/i.test(product.lastSyncStatus);
