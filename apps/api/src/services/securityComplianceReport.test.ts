@@ -297,6 +297,25 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(names.join(' ')).toMatch(/umbrella|dns/);
   });
 
+  it('lists native and managed products once with unique scoped coverage', async () => {
+    mockGeneratorQueries({
+      3: [
+        { deviceId: 'dev-1', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-2', provider: 'sentinelone', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-3', provider: 'sentinelone', realTimeProtection: false, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+      ],
+      4: [{ deviceId: 'dev-2' }, { deviceId: 'dev-3' }],
+    });
+
+    const summary = (await generateSecurityCompliancePostureReport(ORG, {})).summary as any;
+    expect(summary.securityProducts.filter((p: any) => p.product === 'SentinelOne')).toEqual([
+      expect.objectContaining({ category: 'edr', deviceCoverage: 2, active: true }),
+    ]);
+    expect(summary.securityProducts).toContainEqual(
+      expect.objectContaining({ product: 'Defender', category: 'antivirus', deviceCoverage: 1 }),
+    );
+  });
+
   it('returns empty rows but a valid summary when no devices in scope', async () => {
     const svc = await import('./reportGenerationService');
     vi.mocked(svc.resolveSiteAllowedDeviceIds).mockResolvedValueOnce([]);

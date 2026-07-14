@@ -13,7 +13,13 @@
  * many in-scope devices lacked the data for that control.
  */
 
-export type PostureProductCategory = 'edr' | 'mdr' | 'dns_filtering' | 'backup' | 'identity';
+export type PostureProductCategory =
+  | 'antivirus'
+  | 'edr'
+  | 'mdr'
+  | 'dns_filtering'
+  | 'backup'
+  | 'identity';
 
 export type PostureProduct = {
   product: string;

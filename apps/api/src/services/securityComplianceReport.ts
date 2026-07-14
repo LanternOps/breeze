@@ -23,9 +23,15 @@ import {
   sites
 } from '../db/schema';
 import { securityCompliancePostureConfigSchema } from '../routes/reports/schemas';
-import type { PostureSummary, PostureProduct } from '@breeze/shared';
+import type { PostureSummary } from '@breeze/shared';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { resolveSiteAllowedDeviceIds, type ReportResult } from './reportGenerationService';
+import {
+  buildSecurityProductInventory,
+  categoryForEndpointProvider,
+  prettySecurityProvider,
+  type SecurityProductEvidence
+} from './securityComplianceReportProducts';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
 
 const pct = (num: number, denom: number): number =>
@@ -52,26 +58,11 @@ function protectionLabel(opts: {
 }): string {
   const parts = [...opts.managed];
   if (opts.nativeProvider && opts.nativeProvider !== 'other') {
-    parts.push(prettyProvider(opts.nativeProvider));
+    parts.push(prettySecurityProvider(opts.nativeProvider));
   }
   if (parts.length === 0) return 'None detected';
   const rtp = opts.rtp === true ? ' (RTP on)' : opts.rtp === false ? ' (RTP off)' : '';
   return parts.join(' + ') + rtp;
-}
-
-function prettyProvider(p: string): string {
-  const map: Record<string, string> = {
-    windows_defender: 'Defender',
-    sentinelone: 'SentinelOne',
-    crowdstrike: 'CrowdStrike',
-    bitdefender: 'Bitdefender',
-    sophos: 'Sophos',
-    malwarebytes: 'Malwarebytes',
-    eset: 'ESET',
-    kaspersky: 'Kaspersky',
-    elastic_defend: 'Elastic Defend'
-  };
-  return map[p] ?? p;
 }
 
 /**
@@ -455,14 +446,41 @@ export async function generateSecurityCompliancePostureReport(
   const dnsSyncStatus = dns?.lastSyncStatus ?? null;
   const dnsActive = Boolean(dns) && dnsSyncStatus !== 'error';
 
-  const securityProducts: PostureProduct[] = [];
-  if (huntressDevices.size > 0) securityProducts.push({ product: 'Huntress', category: 'mdr', active: true, lastSyncStatus: null, deviceCoverage: huntressDevices.size });
-  if (s1Devices.size > 0) securityProducts.push({ product: 'SentinelOne', category: 'edr', active: true, lastSyncStatus: null, deviceCoverage: s1Devices.size });
-  if (dns) securityProducts.push({ product: prettyDnsProvider(dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus, deviceCoverage: null });
-  if (backup) securityProducts.push({ product: `Backup (${backup.provider})`, category: 'backup', active: true, lastSyncStatus: null, deviceCoverage: null });
-  if (c2c) securityProducts.push({ product: `SaaS backup (${c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null, deviceCoverage: null });
-  if (m365) securityProducts.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null, deviceCoverage: null });
-  if (google) securityProducts.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null, deviceCoverage: null });
+  const productEvidence: SecurityProductEvidence[] = [];
+  if (huntressDevices.size > 0) {
+    productEvidence.push({
+      product: 'Huntress',
+      category: 'mdr',
+      active: true,
+      lastSyncStatus: null,
+      deviceIds: huntressDevices
+    });
+  }
+  if (s1Devices.size > 0) {
+    productEvidence.push({
+      product: 'SentinelOne',
+      category: 'edr',
+      active: true,
+      lastSyncStatus: null,
+      deviceIds: s1Devices
+    });
+  }
+  for (const row of ssRows) {
+    if (row.provider === 'other') continue;
+    productEvidence.push({
+      product: prettySecurityProvider(row.provider),
+      category: categoryForEndpointProvider(row.provider),
+      active: row.realTimeProtection === true,
+      lastSyncStatus: null,
+      deviceIds: [row.deviceId]
+    });
+  }
+  if (dns) productEvidence.push({ product: prettyDnsProvider(dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus });
+  if (backup) productEvidence.push({ product: `Backup (${backup.provider})`, category: 'backup', active: true, lastSyncStatus: null });
+  if (c2c) productEvidence.push({ product: `SaaS backup (${c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null });
+  if (m365) productEvidence.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null });
+  if (google) productEvidence.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null });
+  const securityProducts = buildSecurityProductInventory(productEvidence);
 
   const summary = {
       org: { id: orgRow?.id ?? orgId, name: orgRow?.name ?? 'Unknown' },
