@@ -481,7 +481,10 @@ describe('customer Graph-read connection lifecycle', () => {
 
   it('keeps caller-scoped read/write transactions short and performs executor HTTP between them', async () => {
     dbMocks.selectResults.push([row()]);
-    dbMocks.updateResults.push((set) => [row({ ...set })]);
+    dbMocks.updateResults.push(
+      (set) => [row({ ...set })],
+      (set) => [row({ ...set })],
+    );
     const executorClient = {
       completeIdentityVerification: vi.fn(),
       retestCustomerGraphRead: vi.fn(async () => {
@@ -508,9 +511,84 @@ describe('customer Graph-read connection lifecycle', () => {
     })).resolves.toMatchObject({ status: 'active' });
     expect(contextMocks.withCaller).toHaveBeenCalledTimes(2);
     expect(contextMocks.withSystem).not.toHaveBeenCalled();
+    expect(dbMocks.updateSets[0]).toMatchObject({
+      consentAttemptId: expect.not.stringMatching(ATTEMPT_ID),
+    });
     expect(executorClient.retestCustomerGraphRead).toHaveBeenCalledWith({
       correlationId: '99999999-9999-4999-8999-999999999999', tenantId: TENANT_ID,
     });
+  });
+
+  it('lets a newer retest result win while a slower prior operation becomes stale', async () => {
+    let firstClaimedAttempt = '';
+    let secondClaimedAttempt = '';
+    let markFirstStarted!: () => void;
+    let resolveFirst!: (result: RetestResult) => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const firstResult = new Promise<RetestResult>((resolve) => { resolveFirst = resolve; });
+    const result = (displayName: string, verifiedAt: string): RetestResult => ({
+      success: true,
+      tenantId: TENANT_ID,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: displayName,
+      manifestVersion: 2,
+      verifiedAt,
+      grantReconciliation: 'complete',
+      observedGrants: [...REQUIRED],
+      missingGrants: [],
+      unexpectedGrants: [],
+      grantsVerifiedAt: verifiedAt,
+    });
+
+    dbMocks.selectResults.push([row()]);
+    dbMocks.updateResults.push((set) => {
+      firstClaimedAttempt = set.consentAttemptId as string;
+      return [row({ ...set })];
+    });
+    const slowExecutor = {
+      completeIdentityVerification: vi.fn(),
+      retestCustomerGraphRead: vi.fn(() => {
+        markFirstStarted();
+        return firstResult;
+      }),
+    };
+    const first = retestCustomerGraphReadConnection({
+      id: CONNECTION_ID,
+      orgId: ORG_ID,
+      auth: auth(),
+      executorClient: slowExecutor,
+    });
+    await firstStarted;
+
+    expect(firstClaimedAttempt).toMatch(/^[0-9a-f-]{36}$/);
+    expect(firstClaimedAttempt).not.toBe(ATTEMPT_ID);
+    dbMocks.selectResults.push([row({ consentAttemptId: firstClaimedAttempt })]);
+    dbMocks.updateResults.push(
+      (set) => {
+        secondClaimedAttempt = set.consentAttemptId as string;
+        return [row({ consentAttemptId: firstClaimedAttempt, ...set })];
+      },
+      (set) => [row({ consentAttemptId: secondClaimedAttempt, ...set })],
+    );
+    const newer = await retestCustomerGraphReadConnection({
+      id: CONNECTION_ID,
+      orgId: ORG_ID,
+      auth: auth(),
+      executorClient: {
+        completeIdentityVerification: vi.fn(),
+        retestCustomerGraphRead: vi.fn(async () => result('Newer Result', '2026-07-14T18:00:00.000Z')),
+      },
+    });
+    expect(newer.displayName).toBe('Newer Result');
+    expect(secondClaimedAttempt).not.toBe(firstClaimedAttempt);
+
+    dbMocks.updateResults.push([]);
+    resolveFirst(result('Older Result', '2026-07-14T17:00:00.000Z'));
+    await expect(first).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(dbMocks.updateSets[2]).toMatchObject({ displayName: 'Newer Result' });
+    expect(dbMocks.updateSets[3]).toMatchObject({ displayName: 'Older Result' });
+    expect(JSON.stringify(dbMocks.updateWheres[2])).toContain(secondClaimedAttempt);
+    expect(JSON.stringify(dbMocks.updateWheres[3])).toContain(firstClaimedAttempt);
   });
 
   it('denies cross-org or revoked retest snapshots before executor use', async () => {
@@ -525,6 +603,7 @@ describe('customer Graph-read connection lifecycle', () => {
     dbMocks.updateResults.push((set) => [row({ ...set })]);
     await applyRetestResult(retestSnapshot, { success: false, errorCode: 'credential_unavailable' });
     expect(dbMocks.updateSets[0]).toMatchObject({ status: 'active', lastErrorCode: 'credential_unavailable' });
+    expect(JSON.stringify(dbMocks.updateWheres[0])).toContain(ATTEMPT_ID);
 
     dbMocks.updateResults.push((set) => [row({ ...set })]);
     const retained = await applyRetestResult(retestSnapshot, {

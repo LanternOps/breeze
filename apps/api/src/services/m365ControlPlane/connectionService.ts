@@ -510,12 +510,26 @@ export async function loadRetestSnapshot(input: {
       eq(m365Connections.profile, PROFILE),
       inArray(m365Connections.status, [...EXECUTABLE_STATUSES]),
     )).limit(1);
-    const value = rows[0] ? snapshot(rows[0]) : null;
-    if (!value) throw lifecycleError('connection_not_found');
-    if (!value.tenantId || !EXECUTABLE_STATUSES.includes(value.status as typeof EXECUTABLE_STATUSES[number])) {
+    const current = rows[0] ? snapshot(rows[0]) : null;
+    if (!current) throw lifecycleError('connection_not_found');
+    if (!current.tenantId || !EXECUTABLE_STATUSES.includes(current.status as typeof EXECUTABLE_STATUSES[number])) {
       throw lifecycleError('connection_not_executable');
     }
-    return { ...value, tenantId: value.tenantId, status: value.status as 'active' | 'degraded', auth: input.auth };
+
+    // Claim a unique operation generation before leaving the caller-scoped
+    // transaction. A later retest rotates it again, so delayed results can no
+    // longer satisfy the attempt/status CAS even when both operations leave
+    // the lifecycle status unchanged.
+    const claimed = await requireCasRow(await db.update(m365Connections).set({
+      consentAttemptId: randomUUID(),
+      updatedAt: new Date(),
+    }).where(attemptPredicate(current)).returning());
+    return {
+      ...claimed,
+      tenantId: current.tenantId,
+      status: claimed.status as 'active' | 'degraded',
+      auth: input.auth,
+    };
   });
 }
 
