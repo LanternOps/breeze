@@ -51,6 +51,10 @@ function timestamp(value: string, field: string): number {
   return Date.parse(validated.data);
 }
 
+export function normalizePartnerExportTimestamp(value: string, field = 'timestamp'): string {
+  return new Date(timestamp(value, field)).toISOString();
+}
+
 export function createPartnerExportTraversal(input: {
   updatedSince: string | null;
   cursor: PartnerExportCursor | null;
@@ -58,16 +62,18 @@ export function createPartnerExportTraversal(input: {
 }): PartnerExportTraversal {
   const now = input.now ?? new Date();
   if (!Number.isFinite(now.getTime())) throw paginationError('Partner export snapshot time is invalid.');
-  if (input.updatedSince !== null) timestamp(input.updatedSince, 'updatedSince');
+  const updatedSince = input.updatedSince === null
+    ? null
+    : normalizePartnerExportTimestamp(input.updatedSince, 'updatedSince');
   if (!input.cursor) {
     return {
-      mode: input.updatedSince === null ? 'full' : 'incremental',
-      updatedSince: input.updatedSince,
+      mode: updatedSince === null ? 'full' : 'incremental',
+      updatedSince,
       snapshotAt: now.toISOString(),
       after: null,
     };
   }
-  if (input.cursor.updatedSince !== input.updatedSince) {
+  if (input.cursor.updatedSince !== updatedSince) {
     throw paginationError('Partner export cursor filter does not match updatedSince.');
   }
   timestamp(input.cursor.snapshotAt, 'cursor snapshotAt');
@@ -75,8 +81,8 @@ export function createPartnerExportTraversal(input: {
     timestamp(input.cursor.lastUpdatedAt, 'cursor lastUpdatedAt');
   }
   return {
-    mode: input.updatedSince === null ? 'full' : 'incremental',
-    updatedSince: input.updatedSince,
+    mode: updatedSince === null ? 'full' : 'incremental',
+    updatedSince,
     snapshotAt: input.cursor.snapshotAt,
     after: {
       lastUpdatedAt: input.cursor.lastUpdatedAt,

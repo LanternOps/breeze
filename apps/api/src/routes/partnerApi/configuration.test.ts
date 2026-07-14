@@ -48,6 +48,7 @@ import {
   configurationAssignmentExportEnvelopeSchema,
   configurationPolicyExportEnvelopeSchema,
   customFieldExportEnvelopeSchema,
+  customFieldValueExportEnvelopeSchema,
   scriptExportEnvelopeSchema,
 } from './schemas';
 
@@ -58,6 +59,7 @@ const ROUTES = [
   ['/automations', 'configuration:read', automationExportEnvelopeSchema],
   ['/backup-configurations', 'backup-configuration:read', backupConfigurationExportEnvelopeSchema],
   ['/custom-fields', 'custom-fields:read', customFieldExportEnvelopeSchema],
+  ['/custom-field-values', 'custom-fields:read', customFieldValueExportEnvelopeSchema],
 ] as const;
 
 function row(id: string, orgId: string, definition: Record<string, unknown>, updatedAt = UPDATED_AT) {
@@ -120,6 +122,8 @@ describe('partner desired-configuration exports', () => {
       id: SOURCE_A, orgId: ORG_A, sourceScope: 'organization', name: 'Server baseline',
       features: [{ id: SOURCE_B, type: 'patch', settings: { rebootPolicy: 'if_required' } }],
     });
+    const policyQuery = new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]).sql.toLowerCase();
+    expect(policyQuery).toContain('breeze_partner_export_effective_policy_settings');
 
     mocks.queryResults.push([row(SOURCE_B, ORG_A, {
       policyId: SOURCE_A, policyName: 'Server baseline', sourceScope: 'organization', level: 'site',
@@ -222,38 +226,44 @@ describe('partner desired-configuration exports', () => {
       dependencies: [{ resource: 'scripts', id: SOURCE_B }],
     });
     expect(JSON.stringify(body)).not.toMatch(/lastRunAt|runCount|logs|output/);
+    const renderedQuery = new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]).sql.toLowerCase();
+    expect(renderedQuery).toContain('eo.material_updated_at as updated_at');
+    expect(renderedQuery).not.toContain('greatest(a.updated_at');
   });
 
-  it('exports safe backup destination metadata, schedules, retention, exclusions, and restore capabilities', async () => {
+  it('exports real backup metadata and explicitly reports the missing durable restore procedure', async () => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       kind: 'destination', sourceScope: 'organization', name: 'Primary offsite', type: 'system_image',
       provider: 's3', compression: true, encryption: true, active: true, default: true,
       schedule: { cron: '0 2 * * *', timezone: 'America/Denver' },
       retention: { daily: 14, monthly: 12 }, exclusions: ['/var/cache'],
-      restore: { types: ['full', 'selective', 'bare_metal'], notes: null },
+      completenessGaps: [{ code: 'restore_procedure_unavailable' }],
     })]);
     const body = await (await request('/backup-configurations', 'backup-configuration:read')).json();
     expect(backupConfigurationExportEnvelopeSchema.parse(body).data[0]).toMatchObject({
       kind: 'destination', provider: 's3', retention: { daily: 14, monthly: 12 },
-      exclusions: ['/var/cache'], restore: { types: ['full', 'selective', 'bare_metal'] },
+      exclusions: ['/var/cache'], completenessGaps: [{ code: 'restore_procedure_unavailable' }],
     });
     const renderedQuery = new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]).sql.toLowerCase();
     for (const forbidden of ['provider_config', 'encryption_key', 'backup_jobs', 'backup_snapshots', 'restore_jobs']) {
       expect(renderedQuery).not.toContain(forbidden);
     }
+    expect(renderedQuery).not.toContain('greatest(bc.updated_at');
+    expect(renderedQuery).not.toContain('greatest(bp.updated_at');
+    expect(renderedQuery).not.toContain('greatest(pol.updated_at');
   });
 
-  it('exports custom-field definitions and per-device values as one all-or-blocked definition', async () => {
+  it('exports custom-field definitions without embedding a permanently truncated value collection', async () => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'partner', name: 'Rack', fieldKey: 'rack', type: 'text', options: null,
       required: false, defaultValue: null, deviceTypes: ['server'],
-      values: [{ deviceId: DEVICE_ID, value: 'DC1-R07' }],
-      valueCollection: { total: 1, included: 1, complete: true, reason: null },
     })]);
     const body = await (await request('/custom-fields', 'custom-fields:read')).json();
     expect(customFieldExportEnvelopeSchema.parse(body).data[0]).toMatchObject({
-      id: SOURCE_A, orgId: ORG_A, fieldKey: 'rack', values: [{ deviceId: DEVICE_ID, value: 'DC1-R07' }],
+      id: SOURCE_A, orgId: ORG_A, fieldKey: 'rack',
     });
+    expect(body.data[0]).not.toHaveProperty('values');
+    expect(body.data[0]).not.toHaveProperty('valueCollection');
   });
 
   it('blocks a secret-semantic custom definition and value without leaking the value or its hash', async () => {
@@ -261,8 +271,7 @@ describe('partner desired-configuration exports', () => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'partner', name: 'local_admin_password', fieldKey: 'local_admin_password',
       type: 'text', options: null, required: false, defaultValue: null, deviceTypes: ['server'],
-      values: [{ deviceId: DEVICE_ID, value: secretValue }],
-      valueCollection: { total: 1, included: 1, complete: true, reason: null },
+      exampleValue: secretValue,
     })]);
     const body = await (await request('/custom-fields', 'custom-fields:read')).json();
     expect(body.data).toEqual([]);
@@ -275,11 +284,33 @@ describe('partner desired-configuration exports', () => {
     expect(serialized).not.toContain('Summer2026');
   });
 
+  it('pages more than 500 custom-field value devices without duplicate or skipped identities', async () => {
+    const field = { definitionId: SOURCE_A, name: 'Rack', fieldKey: 'rack', type: 'text', value: 'DC1-R07' };
+    const firstPage = Array.from({ length: 501 }, (_, index) => row(
+      `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      ORG_A,
+      { fields: [field], collection: { total: 1, included: 1, complete: true, reason: null } },
+    ));
+    mocks.queryResults.push(firstPage);
+    const first = await (await request('/custom-field-values?limit=500', 'custom-fields:read')).json();
+    expect(customFieldValueExportEnvelopeSchema.parse(first)).toMatchObject({ hasMore: true });
+    expect(first.data).toHaveLength(500);
+
+    mocks.queryResults.push([firstPage[500]!]);
+    const second = await (await request(
+      `/custom-field-values?limit=500&cursor=${encodeURIComponent(first.nextCursor)}`,
+      'custom-fields:read',
+    )).json();
+    expect(customFieldValueExportEnvelopeSchema.parse(second)).toMatchObject({ hasMore: false });
+    const ids = [...first.data, ...second.data].map((record) => `${record.id}:${record.orgId}`);
+    expect(ids).toHaveLength(501);
+    expect(new Set(ids).size).toBe(501);
+  });
+
   it('fans partner definitions out with stable composite pagination identity', async () => {
     const definition = {
       sourceScope: 'partner', name: 'Inventory label', fieldKey: 'inventory_label', type: 'text',
-      options: null, required: false, defaultValue: null, deviceTypes: null, values: [],
-      valueCollection: { total: 0, included: 0, complete: true, reason: null },
+      options: null, required: false, defaultValue: null, deviceTypes: null,
     };
     mocks.queryResults.push([row(SOURCE_A, ORG_A, definition), row(SOURCE_A, ORG_B, definition)]);
     const first = await (await request('/custom-fields?limit=1', 'custom-fields:read')).json();
@@ -326,8 +357,10 @@ function sampleDefinition(path: string): Record<string, unknown> {
     case '/automations':
       return { sourceScope: 'organization', name: 'A', description: null, enabled: true, trigger: { type: 'manual' }, conditions: null, actions: [{ type: 'reboot' }], onFailure: 'stop', notificationTargets: null, dependencies: [] };
     case '/backup-configurations':
-      return { kind: 'profile', sourceScope: 'organization', name: 'B', description: null, active: true, selections: {}, destinationId: null, schedule: null, retention: null, exclusions: [], restore: { types: [], notes: null } };
+      return { kind: 'profile', sourceScope: 'organization', name: 'B', description: null, active: true, selections: {}, destinationId: null, schedule: null, retention: null, exclusions: [], completenessGaps: [{ code: 'restore_procedure_unavailable' }] };
+    case '/custom-field-values':
+      return { fields: [{ definitionId: SOURCE_A, name: 'C', fieldKey: 'c', type: 'text', value: 'safe' }], collection: { total: 1, included: 1, complete: true, reason: null } };
     default:
-      return { sourceScope: 'organization', name: 'C', fieldKey: 'c', type: 'text', options: null, required: false, defaultValue: null, deviceTypes: null, values: [], valueCollection: { total: 0, included: 0, complete: true, reason: null } };
+      return { sourceScope: 'organization', name: 'C', fieldKey: 'c', type: 'text', options: null, required: false, defaultValue: null, deviceTypes: null };
   }
 }

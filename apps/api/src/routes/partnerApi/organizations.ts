@@ -98,7 +98,9 @@ export function parseExportQuery(
   }
 
   try {
-    const updatedSince = parsed.data.updatedSince ?? null;
+    const updatedSince = parsed.data.updatedSince
+      ? new Date(parsed.data.updatedSince).toISOString()
+      : null;
     const filters = {
       orgId: parsed.data.orgId ?? null,
       siteId: supportsSiteFilter ? parsed.data.siteId ?? null : null,

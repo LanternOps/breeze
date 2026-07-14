@@ -29,6 +29,11 @@ exports[`desired-configuration DTO safety contract > validates and snapshots the
 exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for backup-configurations 1`] = `
 {
   "active": "boolean",
+  "completenessGaps": [
+    {
+      "code": "string",
+    },
+  ],
   "compression": "boolean",
   "default": "boolean",
   "encryption": "boolean",
@@ -38,12 +43,6 @@ exports[`desired-configuration DTO safety contract > validates and snapshots the
   "name": "string",
   "orgId": "string",
   "provider": "string",
-  "restore": {
-    "notes": "object",
-    "types": [
-      "string",
-    ],
-  },
   "retention": "object",
   "revision": "string",
   "schedule": "object",
@@ -96,6 +95,31 @@ exports[`desired-configuration DTO safety contract > validates and snapshots the
 }
 `;
 
+exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for custom-field-values 1`] = `
+{
+  "collection": {
+    "complete": "boolean",
+    "included": "number",
+    "reason": "object",
+    "total": "number",
+  },
+  "fields": [
+    {
+      "definitionId": "string",
+      "fieldKey": "string",
+      "name": "string",
+      "type": "string",
+      "value": "string",
+    },
+  ],
+  "id": "string",
+  "orgId": "string",
+  "revision": "string",
+  "siteId": "object",
+  "sourceUpdatedAt": "string",
+}
+`;
+
 exports[`desired-configuration DTO safety contract > validates and snapshots the reviewed field set for custom-fields 1`] = `
 {
   "defaultValue": "object",
@@ -111,13 +135,6 @@ exports[`desired-configuration DTO safety contract > validates and snapshots the
   "sourceScope": "string",
   "sourceUpdatedAt": "string",
   "type": "string",
-  "valueCollection": {
-    "complete": "boolean",
-    "included": "number",
-    "reason": "object",
-    "total": "number",
-  },
-  "values": [],
 }
 `;
 

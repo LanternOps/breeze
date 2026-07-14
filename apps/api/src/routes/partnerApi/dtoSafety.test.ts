@@ -6,6 +6,7 @@ import {
   configurationAssignmentExportEnvelopeSchema,
   configurationPolicyExportEnvelopeSchema,
   customFieldExportEnvelopeSchema,
+  customFieldValueExportEnvelopeSchema,
   scriptExportEnvelopeSchema,
 } from './schemas';
 
@@ -22,8 +23,9 @@ const cases = [
   ['configuration-assignments', configurationAssignmentExportEnvelopeSchema, { policyId: ID, policyName: 'P', sourceScope: 'organization', level: 'organization', targetId: ORG_ID, priority: 0, roleFilter: null, osFilter: null }],
   ['scripts', scriptExportEnvelopeSchema, { sourceScope: 'organization', name: 'S', description: null, category: null, osTypes: ['linux'], language: 'bash', content: 'true', parameters: null, timeoutSeconds: 30, runAs: 'system', version: 1, exitCodeSeverityMapping: null }],
   ['automations', automationExportEnvelopeSchema, { sourceScope: 'organization', name: 'A', description: null, enabled: true, trigger: { type: 'manual' }, conditions: null, actions: [{ type: 'reboot' }], onFailure: 'stop', notificationTargets: null, dependencies: [] }],
-  ['backup-configurations', backupConfigurationExportEnvelopeSchema, { kind: 'destination', sourceScope: 'organization', name: 'B', type: 'file', provider: 'local', compression: true, encryption: false, active: true, default: true, schedule: null, retention: null, exclusions: [], restore: { types: ['full'], notes: null } }],
-  ['custom-fields', customFieldExportEnvelopeSchema, { sourceScope: 'organization', name: 'C', fieldKey: 'c', type: 'text', options: null, required: false, defaultValue: null, deviceTypes: null, values: [], valueCollection: { total: 0, included: 0, complete: true, reason: null } }],
+  ['backup-configurations', backupConfigurationExportEnvelopeSchema, { kind: 'destination', sourceScope: 'organization', name: 'B', type: 'file', provider: 'local', compression: true, encryption: false, active: true, default: true, schedule: null, retention: null, exclusions: [], completenessGaps: [{ code: 'restore_procedure_unavailable' }] }],
+  ['custom-fields', customFieldExportEnvelopeSchema, { sourceScope: 'organization', name: 'C', fieldKey: 'c', type: 'text', options: null, required: false, defaultValue: null, deviceTypes: null }],
+  ['custom-field-values', customFieldValueExportEnvelopeSchema, { fields: [{ definitionId: ID, name: 'C', fieldKey: 'c', type: 'text', value: 'safe' }], collection: { total: 1, included: 1, complete: true, reason: null } }],
 ] as const;
 
 function fieldShape(value: unknown): unknown {

@@ -74,6 +74,7 @@ The initial routes and exact scopes are:
 | `GET /api/v1/partner-api/automations` | `configuration:read` |
 | `GET /api/v1/partner-api/backup-configurations` | `backup-configuration:read` |
 | `GET /api/v1/partner-api/custom-fields` | `custom-fields:read` |
+| `GET /api/v1/partner-api/custom-field-values` | `custom-fields:read` |
 
 ---
 
@@ -489,7 +490,7 @@ git commit -m "feat(api): export reconstruction inventory"
 
 - [ ] **Step 1: Write failing route and leakage tests**
 
-Cover org-owned and partner-owned definitions, effective-organization fan-out, policies/assignments, rebuild-safe scripts and parameters, automation steps/dependencies, backup destinations/schedules/retention/exclusions/restore metadata, and custom-field definitions/values. Add malicious fixtures with `password`, `token`, `privateKey`, `authorization`, `providerConfig`, `encryptionKey`, embedded credentials, and bounded high-entropy secret patterns.
+Cover org-owned and partner-owned definitions, effective-organization fan-out, policies/assignments, rebuild-safe scripts and parameters, automation steps/dependencies, backup destinations/schedules/retention/exclusions/restore completeness, and custom-field definitions/values. `/custom-fields` pages definition identity `(definitionId, orgId)`; `/custom-field-values` pages device-oriented rows with identity `(deviceId, orgId)` under the same exact scope and standard signed cursor/snapshot contract. This split keeps value arrays bounded and permits complete traversal beyond 500 devices without mixed or duplicate page identities. Add malicious fixtures with `password`, `token`, `privateKey`, `authorization`, `providerConfig`, `encryptionKey`, embedded credentials, and bounded high-entropy secret patterns. Script `content` is intentionally conservative: any bounded credential-semantic identifier token, including quoted or CLI-prefixed forms, blocks the whole record even in comments or help text; callers receive the explicit `blocked` completeness signal instead of potentially secret-bearing content.
 
 - [ ] **Step 2: Run and confirm failure**
 
@@ -548,7 +549,7 @@ Capture counts/duration in the route, leave the held request DB context, then ca
 
 - [ ] **Step 4: Add the 10,000-device k6 traversal**
 
-Cursor-walk every resource, require one stable `snapshotAt` per traversal, reject duplicate `(resource, id, orgId)` tuples, record bytes/pages/retries/duration, and fail when the 15-minute incremental budget is exceeded or runs overlap indefinitely. Record 429/5xx and pool saturation separately.
+Cursor-walk every resource, including definition-only `custom-fields` and device-oriented `custom-field-values`, require one stable `snapshotAt` per traversal, reject duplicate `(resource, id, orgId)` tuples, record bytes/pages/retries/duration, and fail when the 15-minute incremental budget is exceeded or runs overlap indefinitely. Record 429/5xx and pool saturation separately.
 
 Use the seeded load run and `EXPLAIN (ANALYZE, BUFFERS)` to measure the new material-watermark predicates, including the device/hardware `GREATEST` expression. Add dedicated incremental indexes only where the Task 8 query evidence shows a material scan or sort bottleneck; do not guess at expression or partial indexes before the representative 10,000-device traversal exists.
 

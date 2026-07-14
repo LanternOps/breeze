@@ -2,7 +2,7 @@ import './setup';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { eq, sql } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { db as appDb, withDbAccessContext } from '../../db';
 import { ensureAppRole } from '../../db/ensureAppRole';
@@ -10,6 +10,7 @@ import {
   automations,
   backupConfigs,
   configPolicyAssignments,
+  configPolicyBackupSettings,
   configPolicyFeatureLinks,
   configurationPolicies,
   customFieldDefinitions,
@@ -22,6 +23,13 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+vi.mock('../../config/env', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config/env')>();
+  return {
+    ...actual,
+    PARTNER_API_CURSOR_SIGNING_KEY: Buffer.from('0123456789abcdef0123456789abcdef', 'utf8'),
+  };
+});
 const MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-24-partner-export-configuration-material-state.sql',
@@ -71,6 +79,56 @@ describe('partner desired-configuration material watermarks', () => {
     expect((await stateClock(org.id, 'configuration-assignments')).getTime()).toBeGreaterThan(afterAssignment.getTime());
   });
 
+  runDb('normalized backup settings are canonical, clocked, and all-or-blocked when unsafe', async () => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [policy] = await db.insert(configurationPolicies).values({
+      orgId: org.id, name: 'Canonical backup policy', status: 'active',
+    }).returning();
+    if (!policy) throw new Error('policy insert failed');
+    const [link] = await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policy.id, featureType: 'backup',
+      inlineSettings: { schedule: { staleMirror: true } },
+    }).returning();
+    if (!link) throw new Error('feature link insert failed');
+    await db.insert(configPolicyAssignments).values({
+      configPolicyId: policy.id, level: 'organization', targetId: org.id,
+    });
+    const [settings] = await db.insert(configPolicyBackupSettings).values({
+      featureLinkId: link.id, orgId: org.id, partnerId: null,
+      schedule: { frequency: 'daily', time: '02:00' },
+      retention: { daily: 14, monthly: 12 }, paths: ['/srv/data'],
+      backupMode: 'file', targets: { excludes: ['/srv/cache'] },
+    }).returning();
+    if (!settings) throw new Error('backup settings insert failed');
+
+    const app = configurationExportApp(partner.id, org.id);
+    const first = await app.request('/configuration-policies');
+    const firstBody = await first.json() as { data: Array<{ features: Array<{ settings: unknown }> }> };
+    expect(firstBody.data[0]!.features[0]!.settings).toEqual({
+      schedule: { frequency: 'daily', time: '02:00' },
+      retention: { daily: 14, monthly: 12 }, paths: ['/srv/data'],
+      backupMode: 'file', targets: { excludes: ['/srv/cache'] },
+    });
+    expect(JSON.stringify(firstBody)).not.toContain('staleMirror');
+
+    const before = await stateClock(org.id, 'configuration-policies');
+    await db.update(configPolicyBackupSettings).set({
+      targets: { password: 'hunter2' }, updatedAt: sql`clock_timestamp()`,
+    }).where(eq(configPolicyBackupSettings.id, settings.id));
+    expect((await stateClock(org.id, 'configuration-policies')).getTime()).toBeGreaterThan(before.getTime());
+    const unsafe = await app.request('/configuration-policies');
+    const unsafeBody = await unsafe.json() as { data: unknown[]; blocked?: Array<{ id: string; orgId: string }> };
+    expect(unsafeBody.data).toEqual([]);
+    expect(unsafeBody.blocked).toEqual([expect.objectContaining({ id: policy.id, orgId: org.id })]);
+    expect(JSON.stringify(unsafeBody)).not.toContain('hunter2');
+
+    const beforeDelete = await stateClock(org.id, 'configuration-policies');
+    await db.delete(configPolicyBackupSettings).where(eq(configPolicyBackupSettings.id, settings.id));
+    expect((await stateClock(org.id, 'configuration-policies')).getTime()).toBeGreaterThan(beforeDelete.getTime());
+  });
+
   runDb('partner-owned library changes touch every owned org while another partner remains unchanged', async () => {
     const db = getTestDb();
     const partner = await createPartner();
@@ -103,8 +161,20 @@ describe('partner desired-configuration material watermarks', () => {
     }).returning();
     if (!automation) throw new Error('automation insert failed');
     const automationBefore = await stateClock(org.id, 'automations');
-    await db.update(automations).set({ lastRunAt: new Date(), runCount: 1 }).where(eq(automations.id, automation.id));
+    const app = configurationExportApp(partner.id, org.id);
+    const automationInitial = await app.request('/automations');
+    expect(automationInitial.status).toBe(200);
+    const automationInitialBody = await automationInitial.json() as { data: Array<{ sourceUpdatedAt: string }> };
+    const automationSourceClock = automationInitialBody.data[0]!.sourceUpdatedAt;
+    await db.update(automations).set({
+      lastRunAt: new Date(), runCount: 1, updatedAt: sql`clock_timestamp()`,
+    }).where(eq(automations.id, automation.id));
     expect(await stateClock(org.id, 'automations')).toEqual(automationBefore);
+    const automationAfter = await app.request('/automations');
+    const automationAfterBody = await automationAfter.json() as { data: Array<{ sourceUpdatedAt: string }> };
+    expect(automationAfterBody.data[0]!.sourceUpdatedAt).toBe(automationSourceClock);
+    const automationIncremental = await app.request(`/automations?updatedSince=${encodeURIComponent(automationSourceClock)}`);
+    expect((await automationIncremental.json() as { data: unknown[] }).data).toEqual([]);
 
     const [destination] = await db.insert(backupConfigs).values({
       orgId: org.id, name: 'Provider-only destination', type: 'file', provider: 's3',
@@ -114,8 +184,12 @@ describe('partner desired-configuration material watermarks', () => {
     const backupBefore = await stateClock(org.id, 'backup-configurations');
     await db.update(backupConfigs).set({
       providerCapabilities: { multipart: true }, providerCapabilitiesCheckedAt: new Date(),
+      updatedAt: sql`clock_timestamp()`,
     }).where(eq(backupConfigs.id, destination.id));
     expect(await stateClock(org.id, 'backup-configurations')).toEqual(backupBefore);
+    const backupIncremental = await app.request(`/backup-configurations?updatedSince=${encodeURIComponent(backupBefore.toISOString())}`);
+    expect(backupIncremental.status, await backupIncremental.clone().text()).toBe(200);
+    expect((await backupIncremental.json() as { data: unknown[] }).data).toEqual([]);
   });
 
   runDb('device custom-field value changes advance custom-field state without granting app mutation access', async () => {
@@ -163,7 +237,61 @@ describe('partner desired-configuration material watermarks', () => {
       .rejects.toMatchObject({ cause: expect.objectContaining({ code: '42501' }) });
   });
 
-  runDb('all six routes execute under app-role RLS and cannot expose another partner', async () => {
+  runDb('custom-field values traverse more than 500 devices and secret-semantic definitions block safely', async () => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    await db.insert(customFieldDefinitions).values({
+      orgId: org.id, name: 'Rack', fieldKey: 'rack', type: 'text',
+    });
+    await db.insert(devices).values(Array.from({ length: 501 }, (_, index) => ({
+      orgId: org.id,
+      siteId: site.id,
+      agentId: `task7-page-${String(index).padStart(4, '0')}-${crypto.randomUUID()}`.slice(0, 64),
+      hostname: `task7-page-${String(index).padStart(4, '0')}`,
+      osType: 'linux' as const,
+      osVersion: '1',
+      architecture: 'amd64',
+      agentVersion: '1',
+      customFields: { rack: `R-${index}` },
+    })));
+    const app = configurationExportApp(partner.id, org.id);
+    const first = await app.request('/custom-field-values?limit=500');
+    expect(first.status, await first.clone().text()).toBe(200);
+    const firstBody = await first.json() as {
+      data: Array<{ id: string; orgId: string }>;
+      nextCursor: string | null;
+      hasMore: boolean;
+    };
+    expect(firstBody).toMatchObject({ hasMore: true });
+    expect(firstBody.data).toHaveLength(500);
+    const second = await app.request(`/custom-field-values?limit=500&cursor=${encodeURIComponent(firstBody.nextCursor!)}`);
+    expect(second.status, await second.clone().text()).toBe(200);
+    const secondBody = await second.json() as { data: Array<{ id: string; orgId: string }>; hasMore: boolean };
+    expect(secondBody).toMatchObject({ hasMore: false });
+    expect(secondBody.data).toHaveLength(1);
+    const identities = [...firstBody.data, ...secondBody.data].map((row) => `${row.id}:${row.orgId}`);
+    expect(new Set(identities).size).toBe(501);
+
+    await db.insert(customFieldDefinitions).values({
+      orgId: org.id, name: 'local_admin_password', fieldKey: 'local_admin_password', type: 'text',
+    });
+    const victim = firstBody.data[0]!;
+    await db.update(devices).set({
+      customFields: { rack: 'R-safe', local_admin_password: 'Summer2026!' },
+    }).where(eq(devices.id, victim.id));
+    const definitions = await app.request('/custom-fields');
+    const definitionsBody = await definitions.json() as { blocked?: Array<{ id: string }>; data: unknown[] };
+    expect(definitionsBody.blocked).toEqual([expect.objectContaining({ orgId: org.id })]);
+    expect(JSON.stringify(definitionsBody)).not.toContain('local_admin_password');
+    const values = await app.request('/custom-field-values');
+    const valuesBody = await values.json() as { blocked?: Array<{ id: string }>; data: unknown[] };
+    expect(valuesBody.blocked).toContainEqual(expect.objectContaining({ id: victim.id, orgId: org.id }));
+    expect(JSON.stringify(valuesBody)).not.toContain('Summer2026');
+  });
+
+  runDb('all seven routes execute under app-role RLS and cannot expose another partner', async () => {
     const db = getTestDb();
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -192,6 +320,7 @@ describe('partner desired-configuration material watermarks', () => {
     for (const path of [
       '/configuration-policies', '/configuration-assignments', '/scripts',
       '/automations', '/backup-configurations', '/custom-fields',
+      '/custom-field-values',
     ]) {
       const response = await app.request(path);
       expect(response.status, `${path}: ${await response.clone().text()}`).toBe(200);
@@ -224,7 +353,7 @@ function configurationExportApp(partnerId: string, orgId: string): Hono {
 
 async function stateClock(orgId: string, resource: string): Promise<Date> {
   const [row] = await getTestDb().execute<{ updatedAt: Date | string }>(sql`
-    SELECT updated_at AS "updatedAt"
+    SELECT updated_at AT TIME ZONE 'UTC' AS "updatedAt"
     FROM public.partner_export_configuration_org_state
     WHERE org_id = ${orgId}::uuid AND resource = ${resource}
   `);

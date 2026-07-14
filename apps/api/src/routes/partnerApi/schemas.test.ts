@@ -27,7 +27,7 @@ const baseRecord = {
 };
 
 describe('partner export schemas', () => {
-  it('defines the exact resource names for all twelve public routes', () => {
+  it('defines the exact resource names for all thirteen public routes', () => {
     expect(PARTNER_EXPORT_RESOURCES).toEqual([
       'organizations',
       'sites',
@@ -41,6 +41,7 @@ describe('partner export schemas', () => {
       'automations',
       'backup-configurations',
       'custom-fields',
+      'custom-field-values',
     ]);
     for (const resource of PARTNER_EXPORT_RESOURCES) {
       expect(partnerExportResourceSchema.parse(resource)).toBe(resource);

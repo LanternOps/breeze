@@ -20,6 +20,7 @@ import {
   configurationAssignmentExportEnvelopeSchema,
   configurationPolicyExportEnvelopeSchema,
   customFieldExportEnvelopeSchema,
+  customFieldValueExportEnvelopeSchema,
   scriptExportEnvelopeSchema,
   type PartnerExportResource,
 } from './schemas';
@@ -40,6 +41,7 @@ const CONFIGURATION_FAILURE = {
   automations: 'Partner automation export failed.',
   'backup-configurations': 'Partner backup configuration export failed.',
   'custom-fields': 'Partner custom field export failed.',
+  'custom-field-values': 'Partner custom field value export failed.',
 } as const;
 
 function uuidArray(values: readonly string[]): SQL {
@@ -54,11 +56,12 @@ function effectiveOrganizations(
   resource: keyof typeof CONFIGURATION_FAILURE,
 ): SQL {
   const ids = query.orgId ? [query.orgId] : principal.accessibleOrgIds;
+  const stateResource = resource === 'custom-field-values' ? 'custom-fields' : resource;
   return sql`
     SELECT o.id, o.partner_export_updated_at, state.updated_at AS material_updated_at
     FROM public.organizations o
     JOIN public.partner_export_configuration_org_state state
-      ON state.org_id = o.id AND state.resource = ${resource}
+      ON state.org_id = o.id AND state.resource = ${stateResource}
     WHERE o.partner_id = ${principal.partnerId}::uuid
       AND o.id = ANY(${uuidArray(ids)})
   `;
@@ -140,13 +143,7 @@ function policySource(principal: PartnerApiPrincipalContext, query: ExportQueryI
     )
     SELECT cp.id, ao.org_id,
       cp.created_at,
-      GREATEST(
-        cp.updated_at,
-        COALESCE(features.updated_at, cp.updated_at),
-        COALESCE(assignments.updated_at, cp.updated_at),
-        ao.material_updated_at,
-        CASE WHEN cp.org_id IS NULL THEN ao.partner_export_updated_at ELSE cp.updated_at END
-      ) AS updated_at,
+      ao.material_updated_at AS updated_at,
       jsonb_build_object(
         'sourceScope', CASE WHEN cp.org_id IS NULL THEN 'partner' ELSE 'organization' END,
         'name', cp.name,
@@ -165,7 +162,9 @@ function policySource(principal: PartnerApiPrincipalContext, query: ExportQueryI
           'id', fl.id,
           'type', fl.feature_type,
           'policyId', fl.feature_policy_id,
-          'settings', fl.inline_settings
+          'settings', public.breeze_partner_export_effective_policy_settings(
+            fl.id, fl.feature_type::text, fl.inline_settings
+          )
         ) ORDER BY fl.feature_type, fl.id) AS items,
         MAX(fl.updated_at) AS updated_at
       FROM public.config_policy_feature_links fl
@@ -183,9 +182,7 @@ function assignmentSource(principal: PartnerApiPrincipalContext, query: ExportQu
   return sql`
     WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'configuration-assignments')})
     SELECT a.id, resolved.org_id, a.created_at,
-      GREATEST(cp.updated_at, a.created_at, resolved.material_updated_at,
-        CASE WHEN cp.org_id IS NULL THEN resolved.partner_export_updated_at ELSE cp.updated_at END
-      ) AS updated_at,
+      resolved.material_updated_at AS updated_at,
       jsonb_build_object(
         'policyId', cp.id,
         'policyName', cp.name,
@@ -208,9 +205,7 @@ function scriptSource(principal: PartnerApiPrincipalContext, query: ExportQueryI
   return sql`
     WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'scripts')})
     SELECT s.id, eo.id AS org_id, s.created_at,
-      GREATEST(s.updated_at, eo.material_updated_at,
-        CASE WHEN s.org_id IS NULL THEN eo.partner_export_updated_at ELSE s.updated_at END
-      ) AS updated_at,
+      eo.material_updated_at AS updated_at,
       jsonb_build_object(
         'sourceScope', CASE WHEN s.org_id IS NULL THEN 'partner' ELSE 'organization' END,
         'name', s.name, 'description', s.description, 'category', s.category,
@@ -230,9 +225,7 @@ function automationSource(principal: PartnerApiPrincipalContext, query: ExportQu
   return sql`
     WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'automations')})
     SELECT a.id, eo.id AS org_id, a.created_at,
-      GREATEST(a.updated_at, eo.material_updated_at,
-        CASE WHEN a.org_id IS NULL THEN eo.partner_export_updated_at ELSE a.updated_at END
-      ) AS updated_at,
+      eo.material_updated_at AS updated_at,
       jsonb_build_object(
         'sourceScope', CASE WHEN a.org_id IS NULL THEN 'partner' ELSE 'organization' END,
         'name', a.name, 'description', a.description, 'enabled', a.enabled,
@@ -258,23 +251,20 @@ function automationSource(principal: PartnerApiPrincipalContext, query: ExportQu
 function backupSource(principal: PartnerApiPrincipalContext, query: ExportQueryInput): SQL {
   return sql`
     WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'backup-configurations')})
-    SELECT bc.id, eo.id AS org_id, bc.created_at, GREATEST(bc.updated_at, eo.material_updated_at) AS updated_at,
+    SELECT bc.id, eo.id AS org_id, bc.created_at, eo.material_updated_at AS updated_at,
       jsonb_build_object(
         'kind', 'destination', 'sourceScope', 'organization', 'name', bc.name,
         'type', bc.type, 'provider', bc.provider, 'compression', bc.compression,
         'encryption', bc.encryption, 'active', bc.is_active, 'default', bc.is_default,
         'schedule', bc.schedule, 'retention', bc.retention, 'exclusions', '[]'::jsonb,
-        'restore', jsonb_build_object('types', '[]'::jsonb, 'notes', NULL)
+        'completenessGaps', jsonb_build_array(jsonb_build_object('code', 'restore_procedure_unavailable'))
       ) AS definition
     FROM public.backup_configs bc
     JOIN effective_orgs eo ON eo.id = bc.org_id
 
     UNION ALL
 
-    SELECT bp.id, eo.id AS org_id, bp.created_at,
-      GREATEST(bp.updated_at, eo.material_updated_at,
-        CASE WHEN bp.org_id IS NULL THEN eo.partner_export_updated_at ELSE bp.updated_at END
-      ) AS updated_at,
+    SELECT bp.id, eo.id AS org_id, bp.created_at, eo.material_updated_at AS updated_at,
       jsonb_build_object(
         'kind', 'profile',
         'sourceScope', CASE WHEN bp.org_id IS NULL THEN 'partner' ELSE 'organization' END,
@@ -284,7 +274,7 @@ function backupSource(principal: PartnerApiPrincipalContext, query: ExportQueryI
         'exclusions', CASE
           WHEN jsonb_typeof(bp.selections #> '{file,excludes}') = 'array' THEN bp.selections #> '{file,excludes}'
           ELSE '[]'::jsonb END,
-        'restore', jsonb_build_object('types', '[]'::jsonb, 'notes', NULL)
+        'completenessGaps', jsonb_build_array(jsonb_build_object('code', 'restore_procedure_unavailable'))
       ) AS definition
     FROM public.backup_profiles bp
     JOIN effective_orgs eo ON bp.org_id = eo.id
@@ -292,14 +282,14 @@ function backupSource(principal: PartnerApiPrincipalContext, query: ExportQueryI
 
     UNION ALL
 
-    SELECT pol.id, eo.id AS org_id, pol.created_at, GREATEST(pol.updated_at, eo.material_updated_at) AS updated_at,
+    SELECT pol.id, eo.id AS org_id, pol.created_at, eo.material_updated_at AS updated_at,
       jsonb_build_object(
         'kind', 'policy', 'sourceScope', 'organization', 'name', pol.name,
         'enabled', pol.enabled, 'destinationId', pol.config_id,
         'schedule', pol.schedule, 'retention', pol.retention, 'targets', pol.targets,
         'exclusions', CASE WHEN jsonb_typeof(pol.targets->'exclusions') = 'array'
           THEN pol.targets->'exclusions' ELSE '[]'::jsonb END,
-        'restore', jsonb_build_object('types', '[]'::jsonb, 'notes', NULL),
+        'completenessGaps', jsonb_build_array(jsonb_build_object('code', 'restore_procedure_unavailable')),
         'gfs', pol.gfs_config, 'legalHold', COALESCE(pol.legal_hold, false),
         'legalHoldReason', pol.legal_hold_reason,
         'bandwidthLimitMbps', pol.bandwidth_limit_mbps,
@@ -318,43 +308,59 @@ function customFieldSource(principal: PartnerApiPrincipalContext, query: ExportQ
   return sql`
     WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'custom-fields')})
     SELECT f.id, eo.id AS org_id, f.created_at,
-      GREATEST(f.updated_at, eo.material_updated_at,
-        COALESCE(values.updated_at, f.updated_at),
-        CASE WHEN f.org_id IS NULL THEN eo.partner_export_updated_at ELSE f.updated_at END
-      ) AS updated_at,
+      eo.material_updated_at AS updated_at,
       jsonb_build_object(
         'sourceScope', CASE WHEN f.org_id IS NULL THEN 'partner' ELSE 'organization' END,
         'name', f.name, 'fieldKey', f.field_key, 'type', f.type,
         'options', f.options, 'required', f.required, 'defaultValue', f.default_value,
-        'deviceTypes', f.device_types,
-        'values', COALESCE(values.items, '[]'::jsonb),
-        'valueCollection', jsonb_build_object(
-          'total', COALESCE(values.total, 0),
-          'included', COALESCE(values.included, 0),
-          'complete', COALESCE(values.total, 0) = COALESCE(values.included, 0),
-          'reason', CASE WHEN COALESCE(values.total, 0) = COALESCE(values.included, 0)
-            THEN NULL ELSE 'collection_limit_exceeded' END
-        )
+        'deviceTypes', f.device_types
       ) AS definition
     FROM public.custom_field_definitions f
     JOIN effective_orgs eo ON f.org_id = eo.id
       OR (f.org_id IS NULL AND f.partner_id = ${principal.partnerId}::uuid)
-    LEFT JOIN LATERAL (
+  `;
+}
+
+function customFieldValueSource(principal: PartnerApiPrincipalContext, query: ExportQueryInput): SQL {
+  return sql`
+    WITH effective_orgs AS (${effectiveOrganizations(principal, query, 'custom-field-values')})
+    SELECT d.id, eo.id AS org_id, d.created_at, eo.material_updated_at AS updated_at,
+      jsonb_build_object(
+        'fields', COALESCE(values.items, '[]'::jsonb),
+        'collection', jsonb_build_object(
+          'total', values.total,
+          'included', values.included,
+          'complete', values.total = values.included,
+          'reason', CASE WHEN values.total = values.included
+            THEN NULL ELSE 'collection_limit_exceeded' END
+        )
+      ) AS definition
+    FROM public.devices d
+    JOIN effective_orgs eo ON eo.id = d.org_id
+    JOIN LATERAL (
       SELECT
-        jsonb_agg(jsonb_build_object('deviceId', selected.id, 'value', selected.value)
-                  ORDER BY selected.id) AS items,
+        jsonb_agg(jsonb_build_object(
+          'definitionId', selected.id,
+          'name', selected.name,
+          'fieldKey', selected.field_key,
+          'type', selected.type,
+          'value', selected.value
+        ) ORDER BY selected.field_key, selected.id) AS items,
         COUNT(*)::integer AS included,
-        MAX(selected.updated_at) AS updated_at,
-        (SELECT COUNT(*)::integer FROM public.devices all_devices
-         WHERE all_devices.org_id = eo.id AND all_devices.custom_fields ? f.field_key) AS total
+        (SELECT COUNT(*)::integer
+         FROM public.custom_field_definitions all_fields
+         WHERE (all_fields.org_id = eo.id
+             OR (all_fields.org_id IS NULL AND all_fields.partner_id = ${principal.partnerId}::uuid))
+           AND d.custom_fields ? all_fields.field_key) AS total
       FROM (
-        SELECT d.id, d.custom_fields->f.field_key AS value, d.partner_export_updated_at AS updated_at
-        FROM public.devices d
-        WHERE d.org_id = eo.id AND d.custom_fields ? f.field_key
-        ORDER BY d.id
+        SELECT f.id, f.name, f.field_key, f.type, d.custom_fields->f.field_key AS value
+        FROM public.custom_field_definitions f
+        WHERE (f.org_id = eo.id OR (f.org_id IS NULL AND f.partner_id = ${principal.partnerId}::uuid))
+          AND d.custom_fields ? f.field_key
+        ORDER BY f.field_key, f.id
         LIMIT 500
       ) selected
-    ) values ON true
+    ) values ON values.total > 0
   `;
 }
 
@@ -366,6 +372,7 @@ function sourceQuery(resource: PartnerExportResource, principal: PartnerApiPrinc
     case 'automations': return automationSource(principal, query);
     case 'backup-configurations': return backupSource(principal, query);
     case 'custom-fields': return customFieldSource(principal, query);
+    case 'custom-field-values': return customFieldValueSource(principal, query);
     default: throw new TypeError(`Unsupported desired configuration resource: ${resource}`);
   }
 }
@@ -415,3 +422,5 @@ partnerConfigurationRoutes.get('/backup-configurations', requirePartnerApiScope(
   exportResource(c, 'backup-configurations', backupConfigurationExportEnvelopeSchema));
 partnerConfigurationRoutes.get('/custom-fields', requirePartnerApiScope('custom-fields:read'), (c) =>
   exportResource(c, 'custom-fields', customFieldExportEnvelopeSchema));
+partnerConfigurationRoutes.get('/custom-field-values', requirePartnerApiScope('custom-fields:read'), (c) =>
+  exportResource(c, 'custom-field-values', customFieldValueExportEnvelopeSchema));

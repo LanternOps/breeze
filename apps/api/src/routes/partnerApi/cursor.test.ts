@@ -87,6 +87,26 @@ describe('partner export cursor', () => {
     expect(encodePartnerExportCursor(reordered, KEY)).toBe(token);
   });
 
+  it('normalizes equivalent offset timestamps before binding and traversal', () => {
+    const offsetCursor = {
+      ...cursor,
+      updatedSince: '2026-07-12T12:00:00-06:00',
+      lastUpdatedAt: '2026-07-13T11:00:00-06:00',
+      snapshotAt: '2026-07-13T12:00:00-06:00',
+      expiresAt: '2026-07-14T12:00:00-06:00',
+    } satisfies PartnerExportCursor;
+    const token = encodePartnerExportCursor(offsetCursor, KEY);
+    expect(decodePartnerExportCursor(token, expected, KEY, new Date('2026-07-13T19:00:00.000Z')))
+      .toEqual(cursor);
+    expect(createPartnerExportTraversal({
+      updatedSince: '2026-07-12T12:00:00-06:00', cursor: null,
+      now: new Date('2026-07-13T18:00:00.000Z'),
+    })).toMatchObject({
+      updatedSince: '2026-07-12T18:00:00.000Z',
+      snapshotAt: '2026-07-13T18:00:00.000Z',
+    });
+  });
+
   it('rejects payload and signature tampering with the same structured 400', () => {
     const token = encodePartnerExportCursor(cursor, KEY);
     const [payload, signature] = token.split('.') as [string, string];

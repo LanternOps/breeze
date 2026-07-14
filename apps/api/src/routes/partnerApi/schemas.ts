@@ -13,6 +13,7 @@ export const PARTNER_EXPORT_RESOURCES = [
   'automations',
   'backup-configurations',
   'custom-fields',
+  'custom-field-values',
 ] as const;
 
 export const partnerExportResourceSchema = z.enum(PARTNER_EXPORT_RESOURCES);
@@ -393,17 +394,15 @@ export const automationExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
   partnerAutomationExportRecordSchema,
 );
 
-const partnerBackupRestoreSchema = z.object({
-  types: z.array(z.enum(['full', 'selective', 'bare_metal'])).max(3),
-  notes: z.string().max(1000).nullable(),
-}).strict();
 const partnerBackupCommonShape = {
   sourceScope: partnerDefinitionScopeSchema,
   name: z.string().min(1).max(200),
   schedule: partnerExportJsonSchema.nullable(),
   retention: partnerExportJsonSchema.nullable(),
   exclusions: z.array(z.string().max(2000)).max(500),
-  restore: partnerBackupRestoreSchema,
+  completenessGaps: z.array(z.object({
+    code: z.literal('restore_procedure_unavailable'),
+  }).strict()).max(1),
 };
 export const partnerBackupDestinationExportRecordSchema = strictPartnerExportRecordSchema({
   kind: z.literal('destination'),
@@ -457,14 +456,23 @@ export const partnerCustomFieldExportRecordSchema = strictPartnerExportRecordSch
   required: z.boolean(),
   defaultValue: partnerExportJsonSchema.nullable(),
   deviceTypes: z.array(z.string().min(1).max(50)).max(100).nullable(),
-  values: z.array(z.object({
-    deviceId: z.string().uuid(),
-    value: partnerExportJsonSchema,
-  }).strict()).max(500),
-  valueCollection: partnerExportCollectionSchema,
 });
 export const customFieldExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
   partnerCustomFieldExportRecordSchema,
+);
+
+export const partnerCustomFieldValueExportRecordSchema = strictPartnerExportRecordSchema({
+  fields: z.array(z.object({
+    definitionId: z.string().uuid(),
+    name: z.string().min(1).max(100),
+    fieldKey: z.string().min(1).max(100),
+    type: z.enum(['text', 'number', 'boolean', 'dropdown', 'date']),
+    value: partnerExportJsonSchema,
+  }).strict()).max(500),
+  collection: partnerExportCollectionSchema,
+});
+export const customFieldValueExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerCustomFieldValueExportRecordSchema,
 );
 
 export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {

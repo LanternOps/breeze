@@ -9,6 +9,7 @@ import {
   partnerExportTimestampSchema,
   type PartnerExportResource,
 } from './schemas';
+import { normalizePartnerExportTimestamp } from './pagination';
 
 export { PARTNER_EXPORT_CURSOR_MAX_LENGTH } from './schemas';
 
@@ -93,6 +94,20 @@ function signPayload(encodedPayload: string, key: Buffer): Buffer {
     .digest();
 }
 
+function normalizeCursor(cursor: PartnerExportCursor): PartnerExportCursor {
+  return {
+    ...cursor,
+    snapshotAt: normalizePartnerExportTimestamp(cursor.snapshotAt, 'cursor snapshotAt'),
+    updatedSince: cursor.updatedSince === null
+      ? null
+      : normalizePartnerExportTimestamp(cursor.updatedSince, 'cursor updatedSince'),
+    lastUpdatedAt: cursor.lastUpdatedAt === null
+      ? null
+      : normalizePartnerExportTimestamp(cursor.lastUpdatedAt, 'cursor lastUpdatedAt'),
+    expiresAt: normalizePartnerExportTimestamp(cursor.expiresAt, 'cursor expiresAt'),
+  };
+}
+
 function decodeCanonicalBase64Url(segment: string): Buffer {
   if (!segment || !/^[A-Za-z0-9_-]+$/u.test(segment)) throw new PartnerExportCursorError();
   const decoded = Buffer.from(segment, 'base64url');
@@ -107,7 +122,7 @@ export function encodePartnerExportCursor(
   assertSigningKey(signingKey);
   const parsed = partnerExportCursorSchema.safeParse(cursor);
   if (!parsed.success) throw new PartnerExportCursorError();
-  const encodedPayload = Buffer.from(canonicalJsonStringify(parsed.data), 'utf8').toString('base64url');
+  const encodedPayload = Buffer.from(canonicalJsonStringify(normalizeCursor(parsed.data)), 'utf8').toString('base64url');
   const token = `${encodedPayload}.${signPayload(encodedPayload, signingKey).toString('base64url')}`;
   if (!partnerExportCursorTokenSchema.safeParse(token).success) throw new PartnerExportCursorError();
   return token;
@@ -147,11 +162,14 @@ export function decodePartnerExportCursor(
     if (canonicalPayload !== encodedPayload) throw new PartnerExportCursorError();
     const parsed = partnerExportCursorSchema.safeParse(raw);
     if (!parsed.success) throw new PartnerExportCursorError();
-    const cursor = parsed.data;
+    const cursor = normalizeCursor(parsed.data);
+    const expectedUpdatedSince = expected.updatedSince === null
+      ? null
+      : normalizePartnerExportTimestamp(expected.updatedSince, 'updatedSince');
     if (
       cursor.partnerId !== expected.partnerId
       || cursor.resource !== expected.resource
-      || cursor.updatedSince !== expected.updatedSince
+      || cursor.updatedSince !== expectedUpdatedSince
       || canonicalJsonStringify(cursor.filters) !== canonicalJsonStringify(expected.filters)
       || Date.parse(cursor.expiresAt) <= now.getTime()
     ) {
