@@ -39,15 +39,25 @@ vi.mock('../db', () => {
   // `.where(...)` needs to be both awaitable (for queries that don't call
   // .limit — e.g. resolvePartnerAccessibleOrgIds' org enumeration) AND
   // provide a `.limit(...)` continuation (for the membership lookup).
-  const rows = [{ partnerId: 'partner-1', orgAccess: 'all', orgIds: null, id: 'org-1' }];
+  //
+  // `roleId` is REQUIRED on the membership row: getUserPermissions returns null
+  // for a row without a usable role, and buildAuthFromApiKey now fails CLOSED on
+  // null perms (SR2-15). This row models a legitimate creator who HAS a role but
+  // NO site restriction (siteIds null → allowedSiteIds undefined → all sites),
+  // which is exactly the "unrestricted creator" these tests assert.
+  const rows = [{ partnerId: 'partner-1', orgAccess: 'all', orgIds: null, id: 'org-1', roleId: 'role-1', siteIds: null }];
   const makeWhere = () => {
     const thenable = Promise.resolve(rows) as Promise<typeof rows> & { limit: (n: number) => Promise<typeof rows> };
     thenable.limit = async () => rows;
     return thenable;
   };
+  // buildPerms resolves role→permissions via `.innerJoin(...).where(...)`, so the
+  // chain must offer innerJoin (returning a `.where` continuation) alongside the
+  // direct `.where` used by the membership/org-enumeration selects.
+  const makeFrom = () => ({ where: makeWhere, innerJoin: () => ({ where: makeWhere }) });
   return {
     db: {
-      select: () => ({ from: () => ({ where: makeWhere }) }),
+      select: () => ({ from: makeFrom }),
     },
     hasDbAccessContext: vi.fn(() => true),
     getCurrentDbAccessContext: vi.fn(() => undefined),

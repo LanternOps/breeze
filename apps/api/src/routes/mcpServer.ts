@@ -465,6 +465,20 @@ async function buildCheckedAuthFromApiKey(
     createdBy: apiKey.createdBy,
   });
 
+  // SR2-15 fail-closed: buildAuthFromApiKey returns null when the key's creator
+  // has no resolvable authority for the owning org. Deny the request rather than
+  // fabricate an all-sites org auth context.
+  if (!auth) {
+    return c.json(
+      {
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32001, message: 'API key creator has no access to this organization' },
+      },
+      403,
+    );
+  }
+
   if (auth.scope === 'partner' && auth.partnerId) {
     let decision;
     try {
@@ -1823,7 +1837,7 @@ async function buildAuthFromApiKey(apiKey: {
   partnerId: string | null;
   name: string;
   createdBy: string;
-}): Promise<AuthContext> {
+}): Promise<AuthContext | null> {
   const user = {
     id: apiKey.createdBy,
     email: `apikey-${apiKey.name}@breeze.local`,
@@ -1853,7 +1867,25 @@ async function buildAuthFromApiKey(apiKey: {
       partnerId: partnerId || undefined,
       orgId: apiKey.orgId,
     });
-    const allowedSiteIds = creatorPerms?.allowedSiteIds;
+    // SR2-15 fail-closed: getUserPermissions returns null when the creating user
+    // has NO resolvable authority for this org — neither an organization_users
+    // role on the org NOR a partner_users role on the owning partner (e.g. a
+    // still-`active` user stripped of the membership this key derives from). We
+    // must NOT let that null collapse through the old `creatorPerms?.allowedSiteIds`
+    // into `undefined`, which siteAccessCheck() reads as "full access to EVERY
+    // site in the org" — the identical value a legitimate full-access admin gets.
+    // A key delegates its creator's authority; with none to delegate, the key has
+    // none. Reject it (buildCheckedAuthFromApiKey maps null → 403).
+    //
+    // Unaffected: a legitimate full-access admin returns a NON-null perms object
+    // whose allowedSiteIds is undefined (state 2) — still all-sites; a
+    // site-restricted creator returns a non-null object with an explicit list
+    // (state 3) — restriction preserved. A partner-admin-minted key resolves via
+    // the partner axis to a non-null object, so those keep working too.
+    if (!creatorPerms) {
+      return null;
+    }
+    const allowedSiteIds = creatorPerms.allowedSiteIds;
     return {
       user,
       token: {} as AuthContext['token'],
