@@ -72,15 +72,32 @@ describe('recursive export safety', () => {
     ['compound local admin password', { content: 'LOCAL_ADMIN_PASSWORD=Summer2026!' }],
     ['exported API key', { content: "export API_KEY='ordinary-low-entropy'" }],
     ['quoted CMD set', { content: 'set "PASSWORD=hunter2"' }],
+    ['CMD setx', { content: 'setx PASSWORD hunter2' }],
+    ['compound CMD setx', { content: 'setx DB_PASSWORD hunter2' }],
+    ['JSON password', { content: '{"password":"hunter2"}' }],
+    ['compound JSON password', { content: '{"DB_PASSWORD": "hunter2"}' }],
     ['PowerShell password', { content: "$Password = 'Summer2026!'" }],
     ['PowerShell secure string', { content: "ConvertTo-SecureString 'Summer2026!' -AsPlainText -Force" }],
     ['PowerShell named secure string', { content: "ConvertTo-SecureString -String 'Summer2026!' -AsPlainText -Force" }],
+    ['PowerShell reordered secure string', { content: "ConvertTo-SecureString -AsPlainText -Force -String 'Summer2026!'" }],
+    ['database URI userinfo', { content: 'DATABASE_URL=postgres://admin:hunter2@db.example/app' }],
     ['authorization assignment', { content: 'Authorization = Basic dXNlcjpwYXNz' }],
   ])('rejects low-entropy credential assignment syntax: %s', (_name, definition) => {
     expect(inspectDefinitionForSecrets(definition)).toMatchObject({
       safe: false,
       reason: 'secret_detected',
     });
+  });
+
+  it.each([
+    'echo password rotation policy',
+    'PASSWORD',
+    'setx INSTALL_MODE production',
+    'ConvertTo-SecureString $encryptedBlob',
+    'DATABASE_URL=postgres://db.example/app',
+    '{"passwordPolicy":"rotate_every_90_days"}',
+  ])('allows nearby benign script content: %s', (content) => {
+    expect(inspectDefinitionForSecrets({ content })).toEqual({ safe: true });
   });
 
   it.each(['local_admin_password', 'backup-api-token', 'serviceCredential'])

@@ -35,8 +35,7 @@ const SECRET_VALUE_PATTERNS = [
   /\bauthorization\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9+/=_-]{12,}/iu,
   /\b(?:gh[oprsu]_|sk-(?:live|test)?-?|xox[baprs]-)[A-Za-z0-9_-]{20,}/u,
   /\bAKIA[0-9A-Z]{16}\b/u,
-  /\bhttps?:\/\/[^\s/:@]+:[^\s/@]+@/iu,
-  /\bConvertTo-SecureString\s+(?:-String\s+)?(?:"[^"\r\n]+"|'[^'\r\n]+')\s+-AsPlainText\b/iu,
+  /\b[a-z][a-z0-9+.-]{1,31}:\/\/[^\s/:@]+:[^\s/@]+@/iu,
 ] as const;
 
 type CanonicalJson = null | boolean | number | string | CanonicalJson[] | { [key: string]: CanonicalJson };
@@ -114,13 +113,87 @@ function windowContainsHighEntropyToken(window: string): boolean {
   return candidates.some(candidateLooksHighEntropy);
 }
 
+interface ScriptToken {
+  value: string;
+  quoted: boolean;
+}
+
+function tokenizeCredentialSyntax(value: string): ScriptToken[] {
+  const tokens: ScriptToken[] = [];
+  let index = 0;
+  while (index < value.length && tokens.length < MAX_VISITED_VALUES) {
+    const character = value[index]!;
+    if (/\s|[,{}()[\];|&]/u.test(character)) {
+      index += 1;
+      continue;
+    }
+    if (character === '=' || character === ':' || character === '$') {
+      tokens.push({ value: character, quoted: false });
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      const quote = character;
+      let content = '';
+      index += 1;
+      while (index < value.length && value[index] !== quote) {
+        if (value[index] === '\\' && index + 1 < value.length) index += 1;
+        content += value[index]!;
+        index += 1;
+      }
+      if (index < value.length) index += 1;
+      tokens.push({ value: content, quoted: true });
+      continue;
+    }
+    const start = index;
+    while (index < value.length && !/[\s,{}()[\];|&=:$"']/u.test(value[index]!)) index += 1;
+    if (index > start) tokens.push({ value: value.slice(start, index), quoted: false });
+    else index += 1;
+  }
+  return tokens;
+}
+
+function isCredentialIdentifier(value: string): boolean {
+  if (!/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u.test(value)) return false;
+  const parts = splitFieldName(value);
+  const compact = parts.at(-1) ?? '';
+  const words = parts.slice(0, -1);
+  return FORBIDDEN_FIELD_TOKENS.has(compact)
+    || FORBIDDEN_FIELD_TOKENS.has(words.at(-1) ?? '');
+}
+
+function hasFollowingValue(tokens: ScriptToken[], index: number): boolean {
+  const value = tokens[index];
+  return value !== undefined && value.value.length > 0 && !['=', ':', '$'].includes(value.value);
+}
+
 function containsCredentialAssignment(value: string): boolean {
-  const assignments = value.matchAll(
-    /(?:^|[\s;|&])(?:export\s+|setx?\s+)?["']?\$?(?:env:)?([A-Za-z][A-Za-z0-9_-]{0,127})\s*(?:=|:)\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s;]+)/gimu,
-  );
-  for (const assignment of assignments) {
-    if (splitFieldName(assignment[1] ?? '').some((token) => FORBIDDEN_FIELD_TOKENS.has(token))) {
-      return true;
+  const tokens = tokenizeCredentialSyntax(value);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const current = tokens[index]!.value;
+    const lower = current.toLowerCase();
+
+    if ((lower === 'set' || lower === 'setx') && tokens[index + 1]?.quoted) {
+      if (containsCredentialAssignment(tokens[index + 1]!.value)) return true;
+    }
+    if (lower === 'setx' && isCredentialIdentifier(tokens[index + 1]?.value ?? '')
+      && hasFollowingValue(tokens, index + 2)) return true;
+
+    let identifierIndex = index;
+    if (current === '$') identifierIndex += 1;
+    if ((tokens[identifierIndex]?.value ?? '').toLowerCase() === 'env'
+      && tokens[identifierIndex + 1]?.value === ':') identifierIndex += 2;
+    if (isCredentialIdentifier(tokens[identifierIndex]?.value ?? '')
+      && ['=', ':'].includes(tokens[identifierIndex + 1]?.value ?? '')
+      && hasFollowingValue(tokens, identifierIndex + 2)) return true;
+
+    if (lower === 'convertto-securestring') {
+      const commandTokens = tokens.slice(index + 1);
+      const hasPlainText = commandTokens.some((token) => token.value.toLowerCase() === '-asplaintext');
+      const namedValue = commandTokens.findIndex((token) => token.value.toLowerCase() === '-string');
+      const hasNamedValue = namedValue >= 0 && hasFollowingValue(commandTokens, namedValue + 1);
+      const hasPositionalValue = commandTokens.some((token) => token.value && !token.value.startsWith('-'));
+      if (hasPlainText && (hasNamedValue || hasPositionalValue)) return true;
     }
   }
   return false;
@@ -129,9 +202,12 @@ function containsCredentialAssignment(value: string): boolean {
 function isSecretLikeValue(value: string): boolean {
   return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))
     || containsCredentialAssignment(value)
-    || (/^[A-Za-z0-9_.-]{1,128}$/u.test(value)
-      && splitFieldName(value).some((token) => FORBIDDEN_FIELD_TOKENS.has(token)))
     || windowContainsHighEntropyToken(value);
+}
+
+function isSemanticIdentifierPath(path: string): boolean {
+  const key = path.split('.').at(-1)?.toLowerCase();
+  return key === 'fieldkey' || key === 'name';
 }
 
 function safePathComponent(component: string): string {
@@ -190,7 +266,10 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
         traversalStopped = true;
         return;
       }
-      if (!(trustedRevision && SHA256_PATTERN.test(value)) && isSecretLikeValue(value)) addPath(path);
+      if (!(trustedRevision && SHA256_PATTERN.test(value)) && (
+        isSecretLikeValue(value)
+        || (isSemanticIdentifierPath(path) && isCredentialIdentifier(value))
+      )) addPath(path);
       return;
     }
     if (!value || typeof value !== 'object') return;
