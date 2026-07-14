@@ -58,6 +58,12 @@ import {
   recordCommandDispatch,
   recordFailedLogin,
 } from '../services/anomalyMetrics';
+import {
+  getS1MetricsSnapshot,
+  recordS1ActionDispatch,
+  recordS1ActionPollTransition,
+  recordS1SyncRun,
+} from '../services/sentinelOne/metrics';
 
 function mockRollupTrendRows(selectMock: ReturnType<typeof vi.fn>, rows: unknown[]) {
   selectMock.mockReturnValueOnce({
@@ -297,6 +303,22 @@ describe('metrics routes', () => {
         { labels: { decision: 'encrypt_completed' }, value: 1 }
       ])
     );
+  });
+
+  it('clears SentinelOne snapshot state when resetting metrics', () => {
+    recordS1SyncRun('sync-integration', 'success', 25);
+    recordS1ActionDispatch('isolate', 'accepted');
+    recordS1ActionPollTransition('completed');
+
+    expect(getS1MetricsSnapshot().syncRuns).toHaveLength(1);
+
+    resetMetricsForTesting();
+
+    expect(getS1MetricsSnapshot()).toEqual({
+      syncRuns: [],
+      actionDispatches: [],
+      actionPollTransitions: [],
+    });
   });
 
   it('records backup operational metrics', async () => {

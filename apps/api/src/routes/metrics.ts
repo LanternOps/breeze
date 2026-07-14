@@ -26,6 +26,7 @@ import {
 } from '../services/backupMetrics';
 import {
   getS1MetricsSnapshot,
+  resetS1MetricsForTesting,
   setS1MetricsRecorder
 } from '../services/sentinelOne/metrics';
 import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
@@ -690,6 +691,7 @@ export function resetMetricsForTesting(): void {
   METRICS_INCLUDE_ORG_ID = resolveMetricsIncludeOrgId();
   METRICS_SCRAPE_IP_ALLOWLIST = parseCsvSet(process.env.METRICS_SCRAPE_IP_ALLOWLIST);
 
+  resetS1MetricsForTesting();
   register.resetMetrics();
   initializeMetricDefaults();
 
