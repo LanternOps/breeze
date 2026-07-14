@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { eq, sql } from 'drizzle-orm';
-import postgres from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { expect, it } from 'vitest';
 import { configurationPolicies } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
@@ -31,6 +31,45 @@ function deferred<T>(): Deferred<T> {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+async function waitForRaceSignal<T>(
+  signal: Promise<T>,
+  worker: Promise<unknown>,
+  label: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`${label} did not report progress within 5 seconds`));
+    }, 5_000);
+  });
+  const workerStopped = worker.then<never>(
+    () => {
+      throw new Error(`${label} completed before reporting progress`);
+    },
+    (error: unknown) => {
+      throw new Error(`${label} failed before reporting progress`, { cause: error });
+    },
+  );
+
+  try {
+    return await Promise.race([signal, workerStopped, timedOut]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function closeRaceClients(...clients: Sql[]): Promise<void> {
+  const results = await Promise.allSettled(
+    clients.map((client) => client.end({ timeout: 1 })),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : []
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'failed to close feature-reference race database client(s)');
+  }
 }
 
 async function waitForBackendLockWait(backendPid: number): Promise<void> {
@@ -99,7 +138,11 @@ runDb('serializes an automation link insert against a referenced policy owner mo
       linkInserted.resolve();
       await releaseLinkInsert.promise;
     });
-    await linkInserted.promise;
+    await waitForRaceSignal(
+      linkInserted.promise,
+      holderWork,
+      'feature-link insert holder',
+    );
 
     moverWork = captureSqlState(() => mover.begin(async (tx) => {
       await tx`SELECT pg_catalog.set_config('application_name', ${applicationName}, true)`;
@@ -112,7 +155,11 @@ runDb('serializes an automation link insert against a referenced policy owner mo
         WHERE id = ${targetPolicy.id}
       `;
     }));
-    const moverBackendPid = await moverEntered.promise;
+    const moverBackendPid = await waitForRaceSignal(
+      moverEntered.promise,
+      moverWork,
+      'referenced-policy mover',
+    );
 
     // The link insert's configuration-material watermark update holds the
     // transaction open.  The target-policy update runs reverse validation
@@ -140,8 +187,7 @@ runDb('serializes an automation link insert against a referenced policy owner mo
   } finally {
     releaseLinkInsert.resolve();
     await Promise.allSettled([holderWork, moverWork].filter(Boolean) as Promise<unknown>[]);
-    await holder.end({ timeout: 1 });
-    await mover.end({ timeout: 1 });
+    await closeRaceClients(holder, mover);
     await admin.delete(configurationPolicies).where(eq(configurationPolicies.id, parentPolicy.id));
     await admin.delete(configurationPolicies).where(eq(configurationPolicies.id, targetPolicy.id));
   }
@@ -172,7 +218,11 @@ runDb('makes a link insert wait for and reject a committed referenced-policy own
       moved.resolve();
       await releaseMove.promise;
     });
-    await moved.promise;
+    await waitForRaceSignal(
+      moved.promise,
+      holderWork,
+      'referenced-policy move holder',
+    );
     inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
       if (!backend) throw new Error('missing opposite link backend pid');
@@ -181,15 +231,19 @@ runDb('makes a link insert wait for and reject a committed referenced-policy own
         (config_policy_id, feature_type, feature_policy_id)
         VALUES (${parentPolicy.id}, 'automation', ${targetPolicy.id})`;
     }));
-    await waitForBackendLockWait(await inserterEntered.promise);
+    const inserterPid = await waitForRaceSignal(
+      inserterEntered.promise,
+      inserterWork,
+      'feature-link inserter',
+    );
+    await waitForBackendLockWait(inserterPid);
     releaseMove.resolve();
     await holderWork;
     expect(await inserterWork).toBe('23503');
   } finally {
     releaseMove.resolve();
     await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
-    await holder.end({ timeout: 1 });
-    await inserter.end({ timeout: 1 });
+    await closeRaceClients(holder, inserter);
     await admin.delete(configurationPolicies).where(eq(configurationPolicies.id, parentPolicy.id));
     await admin.delete(configurationPolicies).where(eq(configurationPolicies.id, targetPolicy.id));
   }
@@ -224,7 +278,11 @@ runDb('makes a link insert wait for and reject a committed organization partner 
       moved.resolve();
       await releaseMove.promise;
     });
-    await moved.promise;
+    await waitForRaceSignal(
+      moved.promise,
+      holderWork,
+      'organization move holder',
+    );
     inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
       if (!backend) throw new Error('missing organization link backend pid');
@@ -233,15 +291,19 @@ runDb('makes a link insert wait for and reject a committed organization partner 
         (config_policy_id, feature_type, feature_policy_id)
         VALUES (${parentPolicy.id}, 'patch', ${ring.id})`;
     }));
-    await waitForBackendLockWait(await inserterEntered.promise);
+    const inserterPid = await waitForRaceSignal(
+      inserterEntered.promise,
+      inserterWork,
+      'organization feature-link inserter',
+    );
+    await waitForBackendLockWait(inserterPid);
     releaseMove.resolve();
     await holderWork;
     expect(await inserterWork).toBe('23503');
   } finally {
     releaseMove.resolve();
     await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
-    await holder.end({ timeout: 1 });
-    await inserter.end({ timeout: 1 });
+    await closeRaceClients(holder, inserter);
     await admin.delete(configurationPolicies).where(eq(configurationPolicies.id, parentPolicy.id));
     await admin.execute(sql`DELETE FROM public.patch_policies WHERE id = ${ring.id}`);
   }
@@ -275,7 +337,11 @@ runDb('makes a typed link insert wait for and reject a committed software target
       moved.resolve();
       await releaseMove.promise;
     });
-    await moved.promise;
+    await waitForRaceSignal(
+      moved.promise,
+      holderWork,
+      'typed target move holder',
+    );
     inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
       if (!backend) throw new Error('missing typed link backend pid');
@@ -284,15 +350,19 @@ runDb('makes a typed link insert wait for and reject a committed software target
         (config_policy_id, feature_type, feature_policy_id)
         VALUES (${parentPolicy.id}, 'software_policy', ${target.id})`;
     }));
-    await waitForBackendLockWait(await inserterEntered.promise);
+    const inserterPid = await waitForRaceSignal(
+      inserterEntered.promise,
+      inserterWork,
+      'typed feature-link inserter',
+    );
+    await waitForBackendLockWait(inserterPid);
     releaseMove.resolve();
     await holderWork;
     expect(await inserterWork).toBe('23503');
   } finally {
     releaseMove.resolve();
     await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
-    await holder.end({ timeout: 1 });
-    await inserter.end({ timeout: 1 });
+    await closeRaceClients(holder, inserter);
     await admin.delete(configurationPolicies).where(eq(configurationPolicies.id, parentPolicy.id));
     await admin.execute(sql`DELETE FROM public.software_policies WHERE id = ${target.id}`);
   }

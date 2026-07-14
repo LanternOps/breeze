@@ -2,7 +2,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import postgres from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { createOrganization, createPartner } from './db-utils';
@@ -33,6 +33,45 @@ function deferred<T>(): Deferred<T> {
   let resolve!: Deferred<T>['resolve'];
   const promise = new Promise<T>((res) => { resolve = res; });
   return { promise, resolve };
+}
+
+async function waitForRaceSignal<T>(
+  signal: Promise<T>,
+  worker: Promise<unknown>,
+  label: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`${label} did not report progress within 5 seconds`));
+    }, 5_000);
+  });
+  const workerStopped = worker.then<never>(
+    () => {
+      throw new Error(`${label} completed before reporting progress`);
+    },
+    (error: unknown) => {
+      throw new Error(`${label} failed before reporting progress`, { cause: error });
+    },
+  );
+
+  try {
+    return await Promise.race([signal, workerStopped, timedOut]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function closeRaceClients(...clients: Sql[]): Promise<void> {
+  const results = await Promise.allSettled(
+    clients.map((client) => client.end({ timeout: 1 })),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : []
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'failed to close feature-reference gate client(s)');
+  }
 }
 
 async function waitForAdvisoryGate(backendPid: number): Promise<void> {
@@ -204,7 +243,11 @@ runDb('takes the gate as breeze_app before target row locking in a link DELETE/t
       linkDeleted.resolve();
       await releaseLinkDelete.promise;
     });
-    await linkDeleted.promise;
+    await waitForRaceSignal(
+      linkDeleted.promise,
+      linkWork,
+      'feature-link delete holder',
+    );
     targetWork = sqlState(() => targetWriter.begin(async (tx) => {
       await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
@@ -212,7 +255,12 @@ runDb('takes the gate as breeze_app before target row locking in a link DELETE/t
       targetEntered.resolve(backend.pid);
       await tx`DELETE FROM public.software_policies WHERE id = ${target.id}`;
     }));
-    await waitForAdvisoryGate(await targetEntered.promise);
+    const targetPid = await waitForRaceSignal(
+      targetEntered.promise,
+      targetWork,
+      'target deleter',
+    );
+    await waitForAdvisoryGate(targetPid);
     releaseLinkDelete.resolve();
     await linkWork;
     expect(await targetWork, 'the race must neither deadlock (40P01) nor reject').toBeUndefined();
@@ -226,8 +274,7 @@ runDb('takes the gate as breeze_app before target row locking in a link DELETE/t
   } finally {
     releaseLinkDelete.resolve();
     await Promise.allSettled([linkWork, targetWork].filter(Boolean) as Promise<unknown>[]);
-    await linkWriter.end({ timeout: 1 });
-    await targetWriter.end({ timeout: 1 });
+    await closeRaceClients(linkWriter, targetWriter);
   }
 }, 20_000);
 
@@ -270,7 +317,11 @@ runDb('serializes reverse writes to sensitive-data candidates with one UUID', as
       firstMoved.resolve();
       await releaseFirst.promise;
     });
-    await firstMoved.promise;
+    await waitForRaceSignal(
+      firstMoved.promise,
+      firstWork,
+      'sensitive-data mover',
+    );
     secondWork = sqlState(() => second.begin(async (tx) => {
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
       if (!backend) throw new Error('missing sensitive fallback backend');
@@ -278,7 +329,12 @@ runDb('serializes reverse writes to sensitive-data candidates with one UUID', as
       await tx`UPDATE public.configuration_policies SET org_id = ${orgB.id}
         WHERE id = ${candidateId}`;
     }));
-    await waitForAdvisoryGate(await secondEntered.promise);
+    const secondPid = await waitForRaceSignal(
+      secondEntered.promise,
+      secondWork,
+      'sensitive-data fallback mover',
+    );
+    await waitForAdvisoryGate(secondPid);
     releaseFirst.resolve();
     await firstWork;
     expect(await secondWork).toBe('23503');
@@ -291,8 +347,7 @@ runDb('serializes reverse writes to sensitive-data candidates with one UUID', as
   } finally {
     releaseFirst.resolve();
     await Promise.allSettled([firstWork, secondWork].filter(Boolean) as Promise<unknown>[]);
-    await first.end({ timeout: 1 });
-    await second.end({ timeout: 1 });
+    await closeRaceClients(first, second);
   }
 }, 20_000);
 
@@ -348,7 +403,11 @@ runDb('serializes backup profile removal against its same-UUID legacy candidate 
       profileRemoved.resolve();
       await releaseRemoval.promise;
     });
-    await profileRemoved.promise;
+    await waitForRaceSignal(
+      profileRemoved.promise,
+      firstWork,
+      'backup-profile removal holder',
+    );
     secondWork = sqlState(() => second.begin(async (tx) => {
       const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
       if (!backend) throw new Error('missing legacy backup backend');
@@ -356,7 +415,12 @@ runDb('serializes backup profile removal against its same-UUID legacy candidate 
       await tx`UPDATE public.backup_configs SET org_id = ${orgB.id}
         WHERE id = ${candidateId}`;
     }));
-    await waitForAdvisoryGate(await legacyEntered.promise);
+    const legacyPid = await waitForRaceSignal(
+      legacyEntered.promise,
+      secondWork,
+      'legacy backup mover',
+    );
+    await waitForAdvisoryGate(legacyPid);
     releaseRemoval.resolve();
     await firstWork;
     expect(await secondWork).toBe('23503');
@@ -371,8 +435,7 @@ runDb('serializes backup profile removal against its same-UUID legacy candidate 
   } finally {
     releaseRemoval.resolve();
     await Promise.allSettled([firstWork, secondWork].filter(Boolean) as Promise<unknown>[]);
-    await first.end({ timeout: 1 });
-    await second.end({ timeout: 1 });
+    await closeRaceClients(first, second);
   }
 }, 20_000);
 
@@ -427,7 +490,11 @@ for (const scenario of [
         retargeted.resolve();
         await releaseRetarget.promise;
       });
-      await retargeted.promise;
+      await waitForRaceSignal(
+        retargeted.promise,
+        firstWork,
+        'feature-link retarget holder',
+      );
       secondWork = sqlState(() => second.begin(async (tx) => {
         const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
         if (!backend) throw new Error('missing retarget target backend');
@@ -439,7 +506,12 @@ for (const scenario of [
             WHERE id = ${scenario.newTargetId}`;
         }
       }));
-      await waitForAdvisoryGate(await targetEntered.promise);
+      const targetPid = await waitForRaceSignal(
+        targetEntered.promise,
+        secondWork,
+        'retarget target writer',
+      );
+      await waitForAdvisoryGate(targetPid);
       releaseRetarget.resolve();
       await firstWork;
       expect(await secondWork).toBe('23503');
@@ -455,8 +527,7 @@ for (const scenario of [
     } finally {
       releaseRetarget.resolve();
       await Promise.allSettled([firstWork, secondWork].filter(Boolean) as Promise<unknown>[]);
-      await first.end({ timeout: 1 });
-      await second.end({ timeout: 1 });
+      await closeRaceClients(first, second);
     }
   }, 20_000);
 }
@@ -477,23 +548,27 @@ runDb('does not collide with the adjacent advisory-lock namespace', async () => 
   const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
   const writer = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
   let holderWork: Promise<void> | undefined;
+  let writerWork: Promise<string | undefined> | undefined;
   try {
     holderWork = holder.begin(async (tx) => {
       await tx`SELECT pg_catalog.pg_advisory_xact_lock(1000301, -2147483648)`;
       adjacentLocked.resolve();
       await releaseAdjacent.promise;
     });
-    await adjacentLocked.promise;
-    const state = await sqlState(() => writer.begin(async (tx) => {
+    await waitForRaceSignal(
+      adjacentLocked.promise,
+      holderWork,
+      'adjacent-namespace lock holder',
+    );
+    writerWork = sqlState(() => writer.begin(async (tx) => {
       await tx`SET LOCAL lock_timeout = '750ms'`;
       await tx`UPDATE public.software_policies SET org_id = org_id WHERE id = ${target.id}`;
     }));
-    expect(state).toBeUndefined();
+    expect(await writerWork).toBeUndefined();
   } finally {
     releaseAdjacent.resolve();
-    await Promise.allSettled([holderWork].filter(Boolean) as Promise<unknown>[]);
-    await holder.end({ timeout: 1 });
-    await writer.end({ timeout: 1 });
+    await Promise.allSettled([holderWork, writerWork].filter(Boolean) as Promise<unknown>[]);
+    await closeRaceClients(holder, writer);
   }
 }, 20_000);
 

@@ -20,7 +20,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import postgres from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { afterEach, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
@@ -61,6 +61,45 @@ function deferred<T>() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+async function waitForRaceSignal<T>(
+  signal: Promise<T>,
+  worker: Promise<unknown>,
+  label: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`${label} did not report progress within 5 seconds`));
+    }, 5_000);
+  });
+  const workerStopped = worker.then<never>(
+    () => {
+      throw new Error(`${label} completed before reporting progress`);
+    },
+    (error: unknown) => {
+      throw new Error(`${label} failed before reporting progress`, { cause: error });
+    },
+  );
+
+  try {
+    return await Promise.race([signal, workerStopped, timedOut]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function closeRaceClients(...clients: Sql[]): Promise<void> {
+  const results = await Promise.allSettled(
+    clients.map((client) => client.end({ timeout: 1 })),
+  );
+  const failures = results.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : []
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'failed to close backup race database client(s)');
+  }
 }
 
 async function waitForBackendLockWait(backendPid: number): Promise<void> {
@@ -717,7 +756,11 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         inserted.resolve({ linkId: link.id, settingsId: settings.id });
         await releaseHolder.promise;
       });
-      const insertedRows = await inserted.promise;
+      const insertedRows = await waitForRaceSignal(
+        inserted.promise,
+        holderWork,
+        'backup-settings insert holder',
+      );
 
       moverWork = captureSqlState(() => mover.begin(async (tx) => {
         const [backend] = await tx<{ pid: number }[]>`SELECT pg_catalog.pg_backend_pid() AS pid`;
@@ -729,7 +772,12 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
           WHERE id = ${destination.id}
         `;
       }));
-      await waitForBackendLockWait(await moverEntered.promise);
+      const moverPid = await waitForRaceSignal(
+        moverEntered.promise,
+        moverWork,
+        'backup-destination mover',
+      );
+      await waitForBackendLockWait(moverPid);
       releaseHolder.resolve();
       await holderWork;
       expect(await moverWork).toBe('23503');
@@ -751,8 +799,7 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     } finally {
       releaseHolder.resolve();
       await Promise.allSettled([holderWork, moverWork].filter(Boolean) as Promise<unknown>[]);
-      await holder.end({ timeout: 1 });
-      await mover.end({ timeout: 1 });
+      await closeRaceClients(holder, mover);
     }
   }, 20_000);
 
@@ -787,7 +834,11 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         configMoved.resolve();
         await releaseConfigMove.promise;
       });
-      await configMoved.promise;
+      await waitForRaceSignal(
+        configMoved.promise,
+        configWork,
+        'backup-config candidate mover',
+      );
       expect(await backupCandidateLocks(configBackendPid!, sharedId)).toEqual({
         profile: true, destination: true,
       });
@@ -804,11 +855,20 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         profileInserted.resolve();
         await releaseProfileInsert.promise;
       }));
-      await waitForBackendIntegrityLockWait(await profileEntered.promise);
+      const profilePid = await waitForRaceSignal(
+        profileEntered.promise,
+        profileWork,
+        'backup-profile candidate inserter',
+      );
+      await waitForBackendIntegrityLockWait(profilePid);
       releaseConfigMove.resolve();
       await configWork;
-      await profileInserted.promise;
-      expect(await backupCandidateLocks(await profileEntered.promise, sharedId)).toEqual({
+      await waitForRaceSignal(
+        profileInserted.promise,
+        profileWork,
+        'backup-profile candidate insert',
+      );
+      expect(await backupCandidateLocks(profilePid, sharedId)).toEqual({
         profile: true, destination: true,
       });
       releaseProfileInsert.resolve();
@@ -818,8 +878,7 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
       releaseConfigMove.resolve();
       releaseProfileInsert.resolve();
       await Promise.allSettled([configWork, profileWork].filter(Boolean) as Promise<unknown>[]);
-      await configMover.end({ timeout: 1 });
-      await profileInserter.end({ timeout: 1 });
+      await closeRaceClients(configMover, profileInserter);
     }
   }, 20_000);
 
@@ -857,7 +916,11 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         profileMoved.resolve(backend.pid);
         await releaseProfileMove.promise;
       }));
-      const profilePid = await profileMoved.promise;
+      const profilePid = await waitForRaceSignal(
+        profileMoved.promise,
+        profileWork,
+        'backup-profile reverse mover',
+      );
       expect(await backupCandidateLocks(profilePid, sharedId)).toEqual({
         profile: true, destination: true,
       });
@@ -870,11 +933,19 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         configMoved.resolve();
         await releaseConfigMove.promise;
       }));
-      const configPid = await configEntered.promise;
+      const configPid = await waitForRaceSignal(
+        configEntered.promise,
+        configWork,
+        'backup-config reverse mover',
+      );
       await waitForBackendIntegrityLockWait(configPid);
       releaseProfileMove.resolve();
       expect(await profileWork).toBeUndefined();
-      await configMoved.promise;
+      await waitForRaceSignal(
+        configMoved.promise,
+        configWork,
+        'backup-config reverse move',
+      );
       expect(await backupCandidateLocks(configPid, sharedId)).toEqual({
         profile: true, destination: true,
       });
@@ -884,8 +955,7 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
       releaseProfileMove.resolve();
       releaseConfigMove.resolve();
       await Promise.allSettled([profileWork, configWork].filter(Boolean) as Promise<unknown>[]);
-      await profileMover.end({ timeout: 1 });
-      await configMover.end({ timeout: 1 });
+      await closeRaceClients(profileMover, configMover);
     }
   }, 20_000);
 
@@ -950,7 +1020,11 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         bulkUpdated.resolve(backend.pid);
         await releaseBulkUpdate.promise;
       });
-      const bulkPid = await bulkUpdated.promise;
+      const bulkPid = await waitForRaceSignal(
+        bulkUpdated.promise,
+        bulkWork,
+        'bulk backup-settings writer',
+      );
       for (const candidateId of [
         profiles[0]!.id, profiles[1]!.id, destinations[0]!.id, destinations[1]!.id,
       ]) {
@@ -963,7 +1037,7 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     } finally {
       releaseBulkUpdate.resolve();
       await Promise.allSettled([bulkWork].filter(Boolean) as Promise<unknown>[]);
-      await bulkWriter.end({ timeout: 1 });
+      await closeRaceClients(bulkWriter);
     }
 
     expect(await captureSqlState(() => admin.execute(sql`
