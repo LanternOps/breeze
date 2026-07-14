@@ -45,6 +45,15 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
       consentMocks.validStates.add(rawState);
       return { rawState, session: {} };
     }),
+    consumeAdmin: vi.fn(async (input: { rawState: string }) => {
+      dbMocks.order.push('consume-admin-session');
+      if (!consentMocks.validStates.delete(input.rawState)) return null;
+      return { userId: '66666666-6666-4666-8666-666666666666' };
+    }),
+    insertIdentity: vi.fn(async (_owner: unknown, prepared: Record<string, unknown>) => {
+      dbMocks.order.push('insert-identity-session');
+      return { rawState: prepared.rawState, codeChallenge: prepared.codeChallenge, session: {} };
+    }),
   },
   columns: {
     id: { name: 'id' }, orgId: { name: 'org_id' }, tenantId: { name: 'tenant_id' },
@@ -141,6 +150,8 @@ vi.mock('../../middleware/auth', () => ({
 vi.mock('./consentSessionService', () => ({
   deleteConsentSessionsForAttemptInTransaction: consentMocks.deleteAttempt,
   createAdminConsentSessionInTransaction: consentMocks.createAdmin,
+  consumeConsentSessionInTransaction: consentMocks.consumeAdmin,
+  insertPreparedIdentityVerificationSessionInTransaction: consentMocks.insertIdentity,
 }));
 
 vi.mock('./runtimeConfig', () => ({
@@ -166,6 +177,7 @@ import {
   initiateCustomerGraphReadConsent,
   loadRetestSnapshot,
   markAdminConsentReturned,
+  transitionAdminConsentToIdentity,
   retestCustomerGraphReadConnection,
   type ConsentAttemptSnapshot,
   type CustomerGraphReadConnectionSnapshot,
@@ -332,6 +344,62 @@ describe('customer Graph-read connection lifecycle', () => {
     expect(JSON.stringify(dbMocks.updateWheres[0])).toContain(ATTEMPT_ID);
     expect(JSON.stringify(dbMocks.updateWheres[0])).toContain('pending-consent');
   });
+
+  it('atomically consumes admin state, CAS-transitions, and inserts the prepared identity session', async () => {
+    consentMocks.validStates.add('admin-state');
+    dbMocks.updateResults.push((set) => [row({ status: 'pending-consent', ...set })]);
+    const prepared = {
+      rawState: 'identity-state',
+      tenantHintHash: 'a'.repeat(64),
+      nonce: 'nonce',
+      codeVerifier: 'v'.repeat(43),
+      codeChallenge: 'challenge',
+      expiresAt: new Date('2026-07-14T16:10:00.000Z'),
+    };
+
+    await expect(transitionAdminConsentToIdentity({
+      attempt: attempt('pending-consent'),
+      rawAdminState: 'admin-state',
+      prepared,
+    })).resolves.toMatchObject({
+      connection: { status: 'verifying' },
+      identity: { rawState: 'identity-state', codeChallenge: 'challenge' },
+    });
+
+    expect(dbMocks.order).toEqual(['consume-admin-session', 'update', 'insert-identity-session']);
+    expect(contextMocks.runOutside).toHaveBeenCalledOnce();
+    expect(contextMocks.withSystem).toHaveBeenCalledOnce();
+    expect(consentMocks.insertIdentity).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: CONNECTION_ID,
+      orgId: ORG_ID,
+      consentAttemptId: ATTEMPT_ID,
+      userId: ACTOR_ID,
+    }), prepared);
+  });
+
+  it.each(['consume', 'cas', 'identity-insert'] as const)(
+    'propagates %s transition failure through the single rollback transaction',
+    async (step) => {
+      consentMocks.validStates.add('admin-state');
+      if (step === 'consume') consentMocks.consumeAdmin.mockRejectedValueOnce(new Error('consume failed'));
+      if (step === 'cas') dbMocks.updateResults.push(() => { throw new Error('cas failed'); });
+      else dbMocks.updateResults.push((set) => [row({ status: 'pending-consent', ...set })]);
+      if (step === 'identity-insert') {
+        consentMocks.insertIdentity.mockRejectedValueOnce(new Error('insert failed'));
+      }
+
+      await expect(transitionAdminConsentToIdentity({
+        attempt: attempt('pending-consent'),
+        rawAdminState: 'admin-state',
+        prepared: {
+          rawState: 'identity-state', tenantHintHash: 'a'.repeat(64), nonce: 'nonce',
+          codeVerifier: 'v'.repeat(43), codeChallenge: 'challenge',
+          expiresAt: new Date('2026-07-14T16:10:00.000Z'),
+        },
+      })).rejects.toThrow();
+      expect(contextMocks.withSystem).toHaveBeenCalledOnce();
+    },
+  );
 
   it('binds a verified tenant once and computes active only from exact current grants', async () => {
     dbMocks.updateResults.push((set) => [row({ tenantId: null, status: 'verifying', ...set })]);

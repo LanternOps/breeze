@@ -88,11 +88,16 @@ describe('M365 consent callback route', () => {
     const identityCreated = {
       rawState: 'identity-state',
       codeChallenge: 'pkce-challenge',
-      session: { nonce: 'identity-nonce' },
+      nonce: 'identity-nonce',
+      codeVerifier: 'v'.repeat(43),
+      tenantHintHash: tenantHintHash(TENANT_ID),
+      expiresAt: new Date('2026-07-14T12:10:00.000Z'),
     };
-    const consumeSession = vi.fn().mockResolvedValue({ userId: USER_ID });
-    const markAdminReturned = vi.fn().mockResolvedValue({ status: 'verifying' });
-    const createIdentitySession = vi.fn().mockResolvedValue(identityCreated);
+    const consumeSession = vi.fn();
+    const transitionAdminPhase = vi.fn().mockResolvedValue({
+      connection: { status: 'verifying' },
+      identity: { rawState: 'identity-state', codeChallenge: 'pkce-challenge' },
+    });
     const buildBindingCookie = vi.fn(() => 'new-binding=identity; Path=/api/v1/m365/consent/callback');
     const routes = createM365ConsentCallbackRoutes({
       verifyBindingCookie: vi.fn(() => adminBinding),
@@ -105,8 +110,8 @@ describe('M365 consent callback route', () => {
         status: 'pending-consent',
       }),
       consumeSession,
-      markAdminReturned,
-      createIdentitySession,
+      prepareIdentitySession: vi.fn(() => identityCreated),
+      transitionAdminPhase,
       loadConfig: vi.fn(() => ({
         clientId: '22222222-2222-2222-2222-222222222222',
         callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
@@ -131,17 +136,11 @@ describe('M365 consent callback route', () => {
       code_challenge: 'pkce-challenge',
       code_challenge_method: 'S256',
     });
-    expect(consumeSession).toHaveBeenCalledWith(expect.objectContaining({
-      rawState: 'admin-state',
-      phase: 'admin_consent',
-      connectionId: CONNECTION_ID,
-      orgId: ORG_ID,
-      consentAttemptId: ATTEMPT_ID,
-    }));
-    expect(markAdminReturned).toHaveBeenCalled();
-    expect(createIdentitySession).toHaveBeenCalledWith(expect.objectContaining({
-      tenantHint: TENANT_ID,
-      userId: USER_ID,
+    expect(consumeSession).not.toHaveBeenCalled();
+    expect(transitionAdminPhase).toHaveBeenCalledWith(expect.objectContaining({
+      attempt: attempt('pending-consent'),
+      rawAdminState: 'admin-state',
+      prepared: identityCreated,
     }));
     expect(buildBindingCookie).toHaveBeenCalledWith(expect.objectContaining({
       phase: 'identity_verification',
@@ -149,6 +148,91 @@ describe('M365 consent callback route', () => {
       tenantHint: TENANT_ID,
     }));
     expect(response.headers.get('set-cookie')).toContain('new-binding=identity');
+  });
+
+  it.each(['config', 'prepare', 'cookie', 'url'] as const)(
+    'preflights %s before any admin state lookup or mutation',
+    async (failure) => {
+      const adminBinding = {
+        phase: 'admin_consent' as const,
+        rawState: 'admin-state',
+        connectionId: CONNECTION_ID,
+        consentAttemptId: ATTEMPT_ID,
+        tenantHint: null,
+      };
+      const loadAttempt = vi.fn();
+      const transitionAdminPhase = vi.fn();
+      const loadConfig = vi.fn(() => ({
+        clientId: '22222222-2222-2222-2222-222222222222',
+        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
+      }));
+      const prepareIdentitySession = vi.fn(() => ({
+        rawState: 'identity-state', tenantHintHash: tenantHintHash(TENANT_ID),
+        nonce: 'nonce', codeVerifier: 'v'.repeat(43), codeChallenge: 'challenge',
+        expiresAt: new Date('2026-07-14T12:10:00.000Z'),
+      }));
+      const buildBindingCookie = vi.fn(() => 'new-binding=identity');
+      const buildIdentityUrl = vi.fn(() => 'https://login.microsoftonline.com/tenant/authorize');
+      if (failure === 'config') loadConfig.mockImplementation(() => { throw new Error('config failed'); });
+      if (failure === 'prepare') prepareIdentitySession.mockImplementation(() => { throw new Error('prepare failed'); });
+      if (failure === 'cookie') buildBindingCookie.mockImplementation(() => { throw new Error('cookie failed'); });
+      if (failure === 'url') buildIdentityUrl.mockImplementation(() => { throw new Error('url failed'); });
+      const routes = createM365ConsentCallbackRoutes({
+        verifyBindingCookie: vi.fn(() => adminBinding),
+        loadAttempt,
+        transitionAdminPhase,
+        loadConfig,
+        prepareIdentitySession,
+        buildBindingCookie,
+        buildIdentityUrl,
+      });
+      const app = new Hono().route('/api/v1/m365', routes);
+
+      const response = await app.request(
+        `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
+      );
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get('set-cookie')).toBeNull();
+      expect(loadAttempt).not.toHaveBeenCalled();
+      expect(transitionAdminPhase).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves the retry cookie when the atomic admin transition rolls back', async () => {
+    const adminBinding = {
+      phase: 'admin_consent' as const,
+      rawState: 'admin-state',
+      connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID,
+      tenantHint: null,
+    };
+    const transitionAdminPhase = vi.fn().mockRejectedValue(new Error('identity insert failed'));
+    const routes = createM365ConsentCallbackRoutes({
+      verifyBindingCookie: vi.fn(() => adminBinding),
+      loadAttempt: vi.fn().mockResolvedValue(attempt('pending-consent')),
+      loadConfig: vi.fn(() => ({
+        clientId: '22222222-2222-2222-2222-222222222222',
+        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
+      })),
+      prepareIdentitySession: vi.fn(() => ({
+        rawState: 'identity-state', tenantHintHash: tenantHintHash(TENANT_ID),
+        nonce: 'nonce', codeVerifier: 'v'.repeat(43), codeChallenge: 'challenge',
+        expiresAt: new Date('2026-07-14T12:10:00.000Z'),
+      })),
+      buildBindingCookie: vi.fn(() => 'new-binding=identity'),
+      buildIdentityUrl: vi.fn(() => 'https://login.microsoftonline.com/tenant/authorize'),
+      transitionAdminPhase,
+    });
+    const app = new Hono().route('/api/v1/m365', routes);
+
+    const response = await app.request(
+      `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('set-cookie')).toBeNull();
+    expect(transitionAdminPhase).toHaveBeenCalledOnce();
   });
 
   it('completes identity outside state consumption and redirects only to the active fragment', async () => {
@@ -311,7 +395,23 @@ describe('M365 consent callback route', () => {
       tenantHint: null,
     };
     const completeIdentity = vi.fn();
-    const consumeSession = vi.fn().mockResolvedValue(null);
+    const consumeSession = vi.fn();
+    const transitionAdminPhase = vi.fn().mockRejectedValue(
+      Object.assign(new Error('stale_attempt'), { code: 'stale_attempt' }),
+    );
+    const adminPreflight = {
+      loadConfig: vi.fn(() => ({
+        clientId: '22222222-2222-2222-2222-222222222222',
+        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
+      })),
+      prepareIdentitySession: vi.fn(() => ({
+        rawState: 'identity-state', tenantHintHash: tenantHintHash(TENANT_ID),
+        nonce: 'nonce', codeVerifier: 'v'.repeat(43), codeChallenge: 'challenge',
+        expiresAt: new Date('2026-07-14T12:10:00.000Z'),
+      })),
+      buildBindingCookie: vi.fn(() => 'new-binding=identity'),
+      buildIdentityUrl: vi.fn(() => 'https://login.microsoftonline.com/tenant/authorize'),
+    };
     const routes = createM365ConsentCallbackRoutes({
       verifyBindingCookie: vi.fn(() => adminBinding),
       clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
@@ -319,6 +419,8 @@ describe('M365 consent callback route', () => {
       consumeSession,
       completeIdentity,
       audit: vi.fn(),
+      transitionAdminPhase,
+      ...adminPreflight,
     });
     const app = new Hono().route('/api/v1/m365', routes);
 
@@ -334,12 +436,14 @@ describe('M365 consent callback route', () => {
       clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
       loadAttempt: staleLoad,
       consumeSession,
+      transitionAdminPhase,
+      ...adminPreflight,
     });
     const staleApp = new Hono().route('/api/v1/m365', staleRoutes);
     await staleApp.request(
       `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
     );
-    expect(consumeSession).toHaveBeenCalledTimes(1);
+    expect(consumeSession).not.toHaveBeenCalled();
   });
 
   it('sanitizes provider errors and clears the cookie on the terminal path', async () => {

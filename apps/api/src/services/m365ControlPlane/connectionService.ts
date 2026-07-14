@@ -12,8 +12,11 @@ import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext
 import { m365Connections, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import {
+  consumeConsentSessionInTransaction,
   createAdminConsentSessionInTransaction,
   deleteConsentSessionsForAttemptInTransaction,
+  insertPreparedIdentityVerificationSessionInTransaction,
+  type PreparedIdentityVerificationSession,
 } from './consentSessionService';
 import {
   createGraphReadExecutorClient,
@@ -355,6 +358,48 @@ export async function markAdminConsentReturned(
       updatedAt: new Date(),
     }).where(attemptPredicate(input)).returning(),
   )));
+}
+
+/**
+ * Advances admin consent to identity verification in one system transaction.
+ * Any consume, CAS, or insert failure rolls back the entire phase change, so
+ * the original admin callback remains retryable and no identity session can be
+ * orphaned.
+ */
+export async function transitionAdminConsentToIdentity(input: {
+  attempt: ConsentAttemptSnapshot;
+  rawAdminState: string;
+  prepared: PreparedIdentityVerificationSession;
+}): Promise<{
+  connection: CustomerGraphReadConnectionSnapshot;
+  identity: Awaited<ReturnType<typeof insertPreparedIdentityVerificationSessionInTransaction>>;
+}> {
+  if (input.attempt.status !== 'pending-consent') throw lifecycleError('stale_attempt');
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const adminSession = await consumeConsentSessionInTransaction({
+      rawState: input.rawAdminState,
+      phase: 'admin_consent',
+      connectionId: input.attempt.id,
+      orgId: input.attempt.orgId,
+      consentAttemptId: input.attempt.consentAttemptId,
+    });
+    if (!adminSession) throw lifecycleError('stale_attempt');
+
+    const connection = await requireCasRow(await db.update(m365Connections).set({
+      status: 'verifying',
+      consentedAt: new Date(),
+      lastErrorCode: null,
+      updatedAt: new Date(),
+    }).where(attemptPredicate(input.attempt)).returning());
+
+    const identity = await insertPreparedIdentityVerificationSessionInTransaction({
+      connectionId: input.attempt.id,
+      orgId: input.attempt.orgId,
+      consentAttemptId: input.attempt.consentAttemptId,
+      userId: adminSession.userId,
+    }, input.prepared);
+    return { connection, identity };
+  }));
 }
 
 export async function markConsentAttemptFailed(

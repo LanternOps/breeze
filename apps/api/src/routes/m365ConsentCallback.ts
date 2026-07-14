@@ -14,16 +14,17 @@ import {
 } from '../services/m365ControlPlane/browserBinding';
 import {
   applyIdentityVerificationResult,
-  markAdminConsentReturned,
   markConsentAttemptFailed,
+  transitionAdminConsentToIdentity,
   type ConsentAttemptSnapshot,
   type CustomerGraphReadConnectionSnapshot,
 } from '../services/m365ControlPlane/connectionService';
 import {
   consumeConsentSession,
-  createIdentityVerificationSession,
   hashTenantHint,
+  prepareIdentityVerificationSession,
   type M365ConsentSession,
+  type PreparedIdentityVerificationSession,
 } from '../services/m365ControlPlane/consentSessionService';
 import { createGraphReadExecutorClient } from '../services/m365ControlPlane/graphReadExecutorClient';
 import { buildMicrosoftIdentityAuthorizationUrl } from '../services/m365ControlPlane/microsoftAuthorization';
@@ -126,9 +127,10 @@ interface CallbackDependencies {
   clearBindingCookie(): string;
   loadAttempt(binding: M365ConsentBrowserBinding): Promise<ConsentAttemptSnapshot | null>;
   consumeSession(input: Parameters<typeof consumeConsentSession>[0]): Promise<M365ConsentSession | null>;
-  markAdminReturned(input: ConsentAttemptSnapshot): Promise<CustomerGraphReadConnectionSnapshot>;
   markAttemptFailed(input: ConsentAttemptSnapshot, outcome: string): Promise<CustomerGraphReadConnectionSnapshot>;
-  createIdentitySession(input: Parameters<typeof createIdentityVerificationSession>[0]): ReturnType<typeof createIdentityVerificationSession>;
+  prepareIdentitySession(input: { tenantHint: string }): PreparedIdentityVerificationSession;
+  buildIdentityUrl(input: Parameters<typeof buildMicrosoftIdentityAuthorizationUrl>[0]): string;
+  transitionAdminPhase(input: Parameters<typeof transitionAdminConsentToIdentity>[0]): ReturnType<typeof transitionAdminConsentToIdentity>;
   completeIdentity(input: CompleteConsentRequest): Promise<CompleteConsentResult>;
   applyIdentityResult(input: ConsentAttemptSnapshot, result: CompleteConsentResult): Promise<CustomerGraphReadConnectionSnapshot>;
   loadConfig(): CallbackRuntimeConfig;
@@ -177,9 +179,10 @@ const defaultDependencies: CallbackDependencies = {
   clearBindingCookie: () => buildClearM365ConsentBindingCookie(),
   loadAttempt: loadAttemptFromBinding,
   consumeSession: consumeConsentSession,
-  markAdminReturned: markAdminConsentReturned,
   markAttemptFailed: markConsentAttemptFailed,
-  createIdentitySession: createIdentityVerificationSession,
+  prepareIdentitySession: prepareIdentityVerificationSession,
+  buildIdentityUrl: buildMicrosoftIdentityAuthorizationUrl,
+  transitionAdminPhase: transitionAdminConsentToIdentity,
   completeIdentity: completeIdentityWithRuntime,
   applyIdentityResult: applyIdentityVerificationResult,
   loadConfig: loadM365CustomerGraphReadRuntimeConfig,
@@ -252,6 +255,54 @@ export function createM365ConsentCallbackRoutes(
       return terminal('consent_state_mismatch');
     }
 
+    if (binding.phase === 'admin_consent' && parsed.kind === 'admin_success') {
+      let prepared: PreparedIdentityVerificationSession;
+      let preparedCookie: string;
+      let authorizationUrl: string;
+      try {
+        const config = dependencies.loadConfig();
+        prepared = dependencies.prepareIdentitySession({ tenantHint: parsed.tenantId });
+        preparedCookie = dependencies.buildBindingCookie({
+          phase: 'identity_verification',
+          rawState: prepared.rawState,
+          connectionId: binding.connectionId,
+          consentAttemptId: binding.consentAttemptId,
+          tenantHint: parsed.tenantId,
+        });
+        authorizationUrl = dependencies.buildIdentityUrl({
+          tenantId: parsed.tenantId,
+          clientId: config.clientId,
+          redirectUri: config.callbackUrl,
+          state: prepared.rawState,
+          nonce: prepared.nonce,
+          codeChallenge: prepared.codeChallenge,
+        });
+      } catch {
+        return c.json({ error: 'M365 consent callback temporarily unavailable' }, 503);
+      }
+
+      const attempt = await dependencies.loadAttempt(binding);
+      if (!attempt || attempt.status !== 'pending-consent') {
+        return terminal('consent_state_mismatch');
+      }
+      try {
+        await dependencies.transitionAdminPhase({
+          attempt,
+          rawAdminState: binding.rawState,
+          prepared,
+        });
+      } catch (error) {
+        if (errorOutcome(error) === 'consent_state_mismatch') {
+          return terminal('consent_state_mismatch', attempt, binding.phase);
+        }
+        return c.json({ error: 'M365 consent callback temporarily unavailable' }, 503);
+      }
+
+      c.header('Set-Cookie', preparedCookie, { append: true });
+      dependencies.audit(c, attempt, binding.phase, 'identity_verification_started');
+      return c.redirect(authorizationUrl);
+    }
+
     const attempt = await dependencies.loadAttempt(binding);
     const expectedStatus = binding.phase === 'admin_consent' ? 'pending-consent' : 'verifying';
     if (!attempt || attempt.status !== expectedStatus) {
@@ -274,38 +325,6 @@ export function createM365ConsentCallbackRoutes(
         return terminal('consent_state_mismatch', attempt, binding.phase);
       }
       return terminal('consent_cancelled', attempt, binding.phase);
-    }
-
-    if (binding.phase === 'admin_consent' && parsed.kind === 'admin_success') {
-      try {
-        await dependencies.markAdminReturned(attempt);
-        const created = await dependencies.createIdentitySession({
-          connectionId: attempt.id,
-          orgId: attempt.orgId,
-          consentAttemptId: attempt.consentAttemptId,
-          userId: session.userId,
-          tenantHint: parsed.tenantId,
-        });
-        const config = dependencies.loadConfig();
-        c.header('Set-Cookie', dependencies.buildBindingCookie({
-          phase: 'identity_verification',
-          rawState: created.rawState,
-          connectionId: attempt.id,
-          consentAttemptId: attempt.consentAttemptId,
-          tenantHint: parsed.tenantId,
-        }), { append: true });
-        dependencies.audit(c, attempt, binding.phase, 'identity_verification_started');
-        return c.redirect(buildMicrosoftIdentityAuthorizationUrl({
-          tenantId: parsed.tenantId,
-          clientId: config.clientId,
-          redirectUri: config.callbackUrl,
-          state: created.rawState,
-          nonce: created.session.nonce ?? '',
-          codeChallenge: created.codeChallenge,
-        }));
-      } catch (error) {
-        return terminal(errorOutcome(error), attempt, binding.phase);
-      }
     }
 
     if (

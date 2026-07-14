@@ -37,6 +37,15 @@ export interface CreatedConsentSession {
   session: M365ConsentSession;
 }
 
+export interface PreparedIdentityVerificationSession {
+  rawState: string;
+  tenantHintHash: string;
+  nonce: string;
+  codeVerifier: string;
+  codeChallenge: string;
+  expiresAt: Date;
+}
+
 function generateRandomValue(): string {
   return randomBytes(RANDOM_VALUE_BYTES).toString('base64url');
 }
@@ -101,20 +110,51 @@ export async function createAdminConsentSession(
 export function createIdentityVerificationSessionInTransaction(
   input: ConsentSessionOwnerInput & { tenantHint: string },
 ): Promise<CreatedConsentSession & { codeChallenge: string }> {
+  return insertPreparedIdentityVerificationSessionInTransaction(
+    {
+      connectionId: input.connectionId,
+      orgId: input.orgId,
+      consentAttemptId: input.consentAttemptId,
+      userId: input.userId,
+    },
+    prepareIdentityVerificationSession({ tenantHint: input.tenantHint }),
+  );
+}
+
+export function prepareIdentityVerificationSession(input: {
+  tenantHint: string;
+}): PreparedIdentityVerificationSession {
   const codeVerifier = generateRandomValue();
   const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
-  const nonce = generateRandomValue();
-
-  return insertConsentSessionInTransaction({
-    connectionId: input.connectionId,
-    orgId: input.orgId,
-    consentAttemptId: input.consentAttemptId,
-    userId: input.userId,
-    phase: 'identity_verification',
+  return {
+    rawState: generateRandomValue(),
     tenantHintHash: hashTenantHint(input.tenantHint),
-    nonce,
+    nonce: generateRandomValue(),
     codeVerifier,
-  }).then((created) => ({ ...created, codeChallenge }));
+    codeChallenge,
+    expiresAt: new Date(Date.now() + CONSENT_SESSION_TTL_MS),
+  };
+}
+
+export async function insertPreparedIdentityVerificationSessionInTransaction(
+  input: ConsentSessionOwnerInput,
+  prepared: PreparedIdentityVerificationSession,
+): Promise<CreatedConsentSession & { codeChallenge: string }> {
+  const rows = await db.insert(m365ConsentSessions).values({
+    ...input,
+    stateHash: sha256Hex(prepared.rawState),
+    profile: CUSTOMER_GRAPH_READ_PROFILE,
+    phase: 'identity_verification',
+    tenantHintHash: prepared.tenantHintHash,
+    nonce: prepared.nonce,
+    codeVerifier: prepared.codeVerifier,
+    expiresAt: prepared.expiresAt,
+  }).onConflictDoNothing({
+    target: m365ConsentSessions.stateHash,
+  }).returning();
+  const session = rows[0];
+  if (!session) throw new Error('m365_consent_state_collision');
+  return { rawState: prepared.rawState, session, codeChallenge: prepared.codeChallenge };
 }
 
 export async function createIdentityVerificationSession(
@@ -128,18 +168,24 @@ export async function createIdentityVerificationSession(
 export async function consumeConsentSession(
   input: ConsumeConsentSessionInput,
 ): Promise<M365ConsentSession | null> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const rows = await db.delete(m365ConsentSessions).where(and(
-      eq(m365ConsentSessions.stateHash, sha256Hex(input.rawState)),
-      eq(m365ConsentSessions.phase, input.phase),
-      gt(m365ConsentSessions.expiresAt, sql`now()`),
-      eq(m365ConsentSessions.connectionId, input.connectionId),
-      eq(m365ConsentSessions.orgId, input.orgId),
-      eq(m365ConsentSessions.profile, CUSTOMER_GRAPH_READ_PROFILE),
-      eq(m365ConsentSessions.consentAttemptId, input.consentAttemptId),
-    )).returning();
-    return rows[0] ?? null;
-  }));
+  return runOutsideDbContext(() => withSystemDbAccessContext(
+    () => consumeConsentSessionInTransaction(input),
+  ));
+}
+
+export async function consumeConsentSessionInTransaction(
+  input: ConsumeConsentSessionInput,
+): Promise<M365ConsentSession | null> {
+  const rows = await db.delete(m365ConsentSessions).where(and(
+    eq(m365ConsentSessions.stateHash, sha256Hex(input.rawState)),
+    eq(m365ConsentSessions.phase, input.phase),
+    gt(m365ConsentSessions.expiresAt, sql`now()`),
+    eq(m365ConsentSessions.connectionId, input.connectionId),
+    eq(m365ConsentSessions.orgId, input.orgId),
+    eq(m365ConsentSessions.profile, CUSTOMER_GRAPH_READ_PROFILE),
+    eq(m365ConsentSessions.consentAttemptId, input.consentAttemptId),
+  )).returning();
+  return rows[0] ?? null;
 }
 
 /**

@@ -73,9 +73,12 @@ vi.mock('../../db', () => ({
 import { m365ConsentSessions } from '../../db/schema';
 import {
   consumeConsentSession,
+  consumeConsentSessionInTransaction,
   createAdminConsentSession,
   createAdminConsentSessionInTransaction,
   createIdentityVerificationSession,
+  insertPreparedIdentityVerificationSessionInTransaction,
+  prepareIdentityVerificationSession,
   deleteConsentSessionsForAttempt,
   deleteConsentSessionsForAttemptInTransaction,
   hashTenantHint,
@@ -197,6 +200,33 @@ describe('M365 consent sessions', () => {
     expect(JSON.stringify(dbMocks.insertedValues[0])).not.toContain(TENANT_ID);
   });
 
+  it('prepares identity artifacts without DB access and inserts those exact artifacts in the caller transaction', async () => {
+    const prepared = prepareIdentityVerificationSession({ tenantHint: TENANT_ID });
+
+    expect(dbMocks.insertedValues).toEqual([]);
+    expect(contextMocks.runOutside).not.toHaveBeenCalled();
+    expect(contextMocks.withSystem).not.toHaveBeenCalled();
+    expect(Buffer.from(prepared.rawState, 'base64url')).toHaveLength(32);
+    expect(Buffer.from(prepared.nonce, 'base64url')).toHaveLength(32);
+    expect(Buffer.from(prepared.codeVerifier, 'base64url')).toHaveLength(32);
+    expect(prepared.codeChallenge).toBe(
+      createHash('sha256').update(prepared.codeVerifier).digest('base64url'),
+    );
+
+    const inserted = await insertPreparedIdentityVerificationSessionInTransaction(owner, prepared);
+
+    expect(inserted.rawState).toBe(prepared.rawState);
+    expect(inserted.codeChallenge).toBe(prepared.codeChallenge);
+    expect(dbMocks.insertedValues).toEqual([expect.objectContaining({
+      stateHash: createHash('sha256').update(prepared.rawState).digest('hex'),
+      phase: 'identity_verification',
+      tenantHintHash: hashTenantHint(TENANT_ID),
+      nonce: prepared.nonce,
+      codeVerifier: prepared.codeVerifier,
+      expiresAt: prepared.expiresAt,
+    })]);
+  });
+
   it('hashes canonical tenant hints as a fixed-width SHA-256 value', () => {
     const expected = createHash('sha256').update(TENANT_ID).digest('hex');
 
@@ -239,6 +269,22 @@ describe('M365 consent sessions', () => {
         { op: 'eq', column: m365ConsentSessions.consentAttemptId, value: ATTEMPT_ID },
       ],
     });
+  });
+
+  it('exposes exact session consumption inside an existing system transaction', async () => {
+    const stored = sessionRow();
+    dbMocks.deleteResults.push([stored]);
+
+    await expect(consumeConsentSessionInTransaction({
+      rawState: 'one-time-state',
+      phase: 'admin_consent',
+      connectionId: CONNECTION_ID,
+      orgId: ORG_ID,
+      consentAttemptId: ATTEMPT_ID,
+    })).resolves.toEqual(stored);
+
+    expect(contextMocks.runOutside).not.toHaveBeenCalled();
+    expect(contextMocks.withSystem).not.toHaveBeenCalled();
   });
 
   it.each([
