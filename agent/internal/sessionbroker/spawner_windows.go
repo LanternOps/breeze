@@ -5,6 +5,7 @@ package sessionbroker
 import (
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -34,6 +35,7 @@ type spawnedHelperOps struct {
 	waitForSingleObject    func(windows.Handle, uint32) (uint32, error)
 	getExitCodeProcess     func(windows.Handle, *uint32) error
 	closeHandle            func(windows.Handle) error
+	sleep                  func(time.Duration)
 }
 
 func defaultSpawnedHelperOps() *spawnedHelperOps {
@@ -42,6 +44,7 @@ func defaultSpawnedHelperOps() *spawnedHelperOps {
 		waitForSingleObject:    windows.WaitForSingleObject,
 		getExitCodeProcess:     windows.GetExitCodeProcess,
 		closeHandle:            windows.CloseHandle,
+		sleep:                  time.Sleep,
 	}
 }
 
@@ -465,8 +468,36 @@ func reapStandaloneHelper(waitHandle windows.Handle, spawner *windowsHelperSpawn
 	reapStandaloneHelperWithOps(waitHandle, spawner, defaultSpawnedHelperOps())
 }
 
+const (
+	standaloneReaperInitialBackoff = 100 * time.Millisecond
+	standaloneReaperMaxBackoff     = 5 * time.Second
+)
+
 func reapStandaloneHelperWithOps(waitHandle windows.Handle, spawner *windowsHelperSpawner, ops *spawnedHelperOps) {
-	_, _ = ops.waitForSingleObject(waitHandle, windows.INFINITE)
-	_ = ops.closeHandle(waitHandle)
-	_ = spawner.Close()
+	backoff := standaloneReaperInitialBackoff
+	attempt := 0
+	for {
+		event, err := ops.waitForSingleObject(waitHandle, windows.INFINITE)
+		if err == nil && event == windows.WAIT_OBJECT_0 {
+			_ = ops.closeHandle(waitHandle)
+			_ = spawner.Close()
+			return
+		}
+
+		attempt++
+		if attempt == 1 || attempt%12 == 0 {
+			log.Warn("standalone helper wait did not confirm process exit; retaining Job ownership",
+				"attempt", attempt,
+				"event", event,
+				"error", err,
+			)
+		}
+		ops.sleep(backoff)
+		if backoff < standaloneReaperMaxBackoff {
+			backoff *= 2
+			if backoff > standaloneReaperMaxBackoff {
+				backoff = standaloneReaperMaxBackoff
+			}
+		}
+	}
 }

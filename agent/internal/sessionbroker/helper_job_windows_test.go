@@ -424,6 +424,130 @@ func TestStandaloneHelperJobReaperRetainsJobUntilProcessExit(t *testing.T) {
 	}
 }
 
+func TestStandaloneHelperJobReaperRetriesUnconfirmedWaitResults(t *testing.T) {
+	waitErr := errors.New("wait failed")
+	tests := []struct {
+		name         string
+		firstResults []struct {
+			event uint32
+			err   error
+		}
+	}{
+		{
+			name: "wait error",
+			firstResults: []struct {
+				event uint32
+				err   error
+			}{
+				{event: windows.WAIT_FAILED, err: waitErr},
+			},
+		},
+		{
+			name: "unexpected events",
+			firstResults: []struct {
+				event uint32
+				err   error
+			}{
+				{event: uint32(windows.WAIT_TIMEOUT)},
+				{event: windows.WAIT_ABANDONED},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := &fakeHelperJob{}
+			spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{})
+			waitHandle := windows.Handle(88)
+			waitCalls := 0
+			closeCalls := 0
+			var sleeps []time.Duration
+			reapStandaloneHelperWithOps(waitHandle, spawner, &spawnedHelperOps{
+				waitForSingleObject: func(handle windows.Handle, timeout uint32) (uint32, error) {
+					if handle != waitHandle {
+						t.Fatalf("wait handle = %d, want retained handle %d", handle, waitHandle)
+					}
+					if timeout != windows.INFINITE {
+						t.Fatalf("wait timeout = %d, want INFINITE", timeout)
+					}
+					call := waitCalls
+					waitCalls++
+					if call < len(tt.firstResults) {
+						return tt.firstResults[call].event, tt.firstResults[call].err
+					}
+					return windows.WAIT_OBJECT_0, nil
+				},
+				closeHandle: func(handle windows.Handle) error {
+					if handle != waitHandle {
+						t.Fatalf("closed handle = %d, want %d", handle, waitHandle)
+					}
+					closeCalls++
+					return nil
+				},
+				sleep: func(delay time.Duration) {
+					if _, closes := job.counts(); closes != 0 {
+						t.Fatalf("job closed before authoritative process exit: close calls = %d", closes)
+					}
+					if closeCalls != 0 {
+						t.Fatalf("wait handle closed before authoritative process exit: close calls = %d", closeCalls)
+					}
+					sleeps = append(sleeps, delay)
+				},
+			})
+
+			wantWaits := len(tt.firstResults) + 1
+			if waitCalls != wantWaits {
+				t.Fatalf("wait calls = %d, want %d", waitCalls, wantWaits)
+			}
+			if len(sleeps) != len(tt.firstResults) {
+				t.Fatalf("sleep calls = %d, want %d", len(sleeps), len(tt.firstResults))
+			}
+			if closeCalls != 1 {
+				t.Fatalf("wait handle close calls = %d, want 1", closeCalls)
+			}
+			if _, closes := job.counts(); closes != 1 {
+				t.Fatalf("job close calls = %d, want 1", closes)
+			}
+		})
+	}
+}
+
+func TestStandaloneHelperJobReaperBoundsRetryBackoff(t *testing.T) {
+	job := &fakeHelperJob{}
+	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{})
+	waitCalls := 0
+	var sleeps []time.Duration
+	reapStandaloneHelperWithOps(windows.Handle(88), spawner, &spawnedHelperOps{
+		waitForSingleObject: func(windows.Handle, uint32) (uint32, error) {
+			waitCalls++
+			if waitCalls <= 10 {
+				return windows.WAIT_FAILED, errors.New("transient wait failure")
+			}
+			return windows.WAIT_OBJECT_0, nil
+		},
+		closeHandle: func(windows.Handle) error { return nil },
+		sleep: func(delay time.Duration) {
+			sleeps = append(sleeps, delay)
+		},
+	})
+	if len(sleeps) != 10 {
+		t.Fatalf("sleep calls = %d, want 10", len(sleeps))
+	}
+	if sleeps[0] != standaloneReaperInitialBackoff {
+		t.Fatalf("initial backoff = %v, want %v", sleeps[0], standaloneReaperInitialBackoff)
+	}
+	for i, delay := range sleeps {
+		if delay > standaloneReaperMaxBackoff {
+			t.Fatalf("backoff[%d] = %v, exceeds cap %v", i, delay, standaloneReaperMaxBackoff)
+		}
+		if i > 0 && delay < sleeps[i-1] {
+			t.Fatalf("backoff decreased: %v then %v", sleeps[i-1], delay)
+		}
+	}
+	if sleeps[len(sleeps)-1] != standaloneReaperMaxBackoff {
+		t.Fatalf("final backoff = %v, want cap %v", sleeps[len(sleeps)-1], standaloneReaperMaxBackoff)
+	}
+}
+
 func TestWindowsHelperSpawnerClosePreventsLaterSpawn(t *testing.T) {
 	job := &fakeHelperJob{}
 	createCalls := 0
