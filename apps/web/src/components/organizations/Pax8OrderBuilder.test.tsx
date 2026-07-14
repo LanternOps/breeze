@@ -243,14 +243,33 @@ describe('Pax8 order mutation affordances', () => {
   });
 
   it.each([
-    ['a needs-reconcile line', 'draft', ['needs_reconcile']],
-    ['an in-flight line', 'draft', ['in_flight']],
+    ['a needs-reconcile parent with a needs-reconcile line', 'needs_reconcile', ['needs_reconcile']],
+    ['a needs-reconcile parent with an in-flight line', 'needs_reconcile', ['in_flight']],
+    ['a submitting parent with an in-flight line', 'submitting', ['in_flight']],
     ['a submitting order whose lines are all pending', 'submitting', ['pending', 'pending']],
   ] as const)('offers recovery for %s', (_label, status, submitStates) => {
     render(<Pax8OrderBuilder bundle={orderBundle({ status, submitStates: [...submitStates] })} products={[product]} onReload={vi.fn()} onBack={vi.fn()} />);
 
     expect(screen.getByTestId('pax8-reconcile')).toBeEnabled();
     expect(screen.queryByTestId('pax8-submit')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['draft', ['in_flight']],
+    ['awaiting_details', ['needs_reconcile']],
+  ] as const)('does not offer recovery for malformed %s parent state', (status, submitStates) => {
+    render(<Pax8OrderBuilder bundle={orderBundle({ status, submitStates: [...submitStates] })} products={[product]} onReload={vi.fn()} onBack={vi.fn()} />);
+
+    expect(screen.queryByTestId('pax8-reconcile')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pax8-submit')).not.toBeInTheDocument();
+  });
+
+  it('uses a WCAG-AA dark recovery treatment with visible hover and focus states', () => {
+    render(<Pax8OrderBuilder bundle={orderBundle({ status: 'submitting', submitStates: ['in_flight'] })} products={[product]} onReload={vi.fn()} onBack={vi.fn()} />);
+
+    expect(screen.getByTestId('pax8-reconcile')).toHaveClass(
+      'bg-amber-800', 'text-white', 'hover:bg-amber-900', 'focus-visible:ring-2',
+    );
   });
 
   it('does not offer false recovery for submitting orders with a completed line', () => {

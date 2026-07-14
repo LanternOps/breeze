@@ -83,6 +83,10 @@ export interface AddPax8OrderLineRequest {
   targetSubscriptionId?: string;
   cancelDate?: string;
 }
+export interface UpdatePax8OrderLineRequest {
+  commitmentTermId?: string | null;
+  provisioningDetails?: ProvisioningValue[];
+}
 export interface Pax8Company {
   pax8CompanyId: string;
   pax8CompanyName: string;
@@ -142,7 +146,7 @@ export const createPax8Order = (orgId: string) =>
   fetchWithAuth('/pax8/orders', { method: 'POST', ...json({ orgId }) });
 export const addPax8OrderLine = (orderId: string, body: AddPax8OrderLineRequest) =>
   fetchWithAuth(`/pax8/orders/${encodeURIComponent(orderId)}/lines`, { method: 'POST', ...json(body) });
-export const updatePax8OrderLine = (orderId: string, lineId: string, body: unknown) =>
+export const updatePax8OrderLine = (orderId: string, lineId: string, body: UpdatePax8OrderLineRequest) =>
   fetchWithAuth(`/pax8/orders/${encodeURIComponent(orderId)}/lines/${encodeURIComponent(lineId)}`, {
     method: 'PATCH', ...json(body),
   });

@@ -6,6 +6,7 @@ import {
   listPax8Orders,
   readData,
   updatePax8OrderLine,
+  type UpdatePax8OrderLineRequest,
 } from './pax8Orders';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -15,6 +16,13 @@ beforeEach(() => vi.clearAllMocks());
 describe('Pax8 ordering API client', () => {
   it('does not expose tenant linkage as client-controlled add-line input', () => {
     expectTypeOf<AddPax8OrderLineRequest>().not.toHaveProperty('contractLineId');
+  });
+
+  it('limits staged-line PATCH input to provisioning fields', () => {
+    expectTypeOf<UpdatePax8OrderLineRequest>().not.toHaveProperty('contractLineId');
+    expectTypeOf<UpdatePax8OrderLineRequest>().not.toHaveProperty('action');
+    expectTypeOf<UpdatePax8OrderLineRequest>().not.toHaveProperty('quantity');
+    expectTypeOf<UpdatePax8OrderLineRequest>().not.toHaveProperty('pax8ProductId');
   });
   it('scopes the order list to the selected organization', () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response());
