@@ -12,6 +12,7 @@ export interface QuoteForContract {
 }
 
 export interface QuoteLineForContract {
+  sourceQuoteLineId: string;
   recurrence: 'one_time' | 'monthly' | 'annual';
   customerVisible: boolean;
   name: string | null;
@@ -32,6 +33,8 @@ export interface NewContractLineSpec {
   manualQuantity?: string | null;
   siteId?: string | null;
   sortOrder?: number;
+  /** In-memory Phase 4 → Phase 5 correlation only; never persisted. */
+  sourceQuoteLineId?: string | null;
 }
 
 export interface NewContractSpec {
@@ -105,7 +108,12 @@ export function buildContractSpecsFromQuote(
         unitPrice: l.unitPrice,
         manualQuantity: l.quantity,
         taxable: l.taxable,
-        catalogItemId: null, // drop the catalog link so billing uses the frozen quote price, not the live catalog price
+        // Deliberately drop the catalog link: generated invoices treat linked
+        // contract lines as live catalog pricing. The accepted quote price is
+        // frozen and must never be re-resolved later.
+        catalogItemId: null,
+        // Non-persisted correlation consumed immediately by acceptQuote Phase 5.
+        sourceQuoteLineId: l.sourceQuoteLineId,
         sortOrder: i,
       })),
     });

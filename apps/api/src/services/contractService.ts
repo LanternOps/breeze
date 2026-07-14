@@ -433,9 +433,16 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 // a bare request handler — a contextless/org-only call hits the partner-axis writes'
 // RLS WITH CHECK and fails (now a typed CONTRACT_CREATE_FAILED, previously a 0-row
 // silent write). Always lands status='draft'; the MSP activates later.
-export async function createContractWithLines(
+export interface CreatedContractWithLines {
+  contract: typeof contracts.$inferSelect;
+  lines: Array<{ id: string; sourceQuoteLineId: string | null; sortOrder: number }>;
+}
+
+/** Detailed Phase-4 variant that returns an in-memory quote-line correlation.
+ * `sourceQuoteLineId` is intentionally never persisted on contract_lines. */
+export async function createContractWithLinesDetailed(
   spec: NewContractSpec,
-): Promise<typeof contracts.$inferSelect> {
+): Promise<CreatedContractWithLines> {
   const [contract] = await db
     .insert(contracts)
     .values({
@@ -462,6 +469,7 @@ export async function createContractWithLines(
     );
   }
 
+  const createdLines: CreatedContractWithLines['lines'] = [];
   for (let i = 0; i < spec.lines.length; i++) {
     const l = spec.lines[i]!;
     const [insertedLine] = await db.insert(contractLines).values({
@@ -483,7 +491,18 @@ export async function createContractWithLines(
         500, 'CONTRACT_LINE_CREATE_FAILED',
       );
     }
+    createdLines.push({
+      id: insertedLine.id,
+      sourceQuoteLineId: l.sourceQuoteLineId ?? null,
+      sortOrder: l.sortOrder ?? i,
+    });
   }
 
-  return contract;
+  return { contract, lines: createdLines };
+}
+
+export async function createContractWithLines(
+  spec: NewContractSpec,
+): Promise<typeof contracts.$inferSelect> {
+  return (await createContractWithLinesDetailed(spec)).contract;
 }

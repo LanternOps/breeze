@@ -117,7 +117,7 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
         captureException(err instanceof Error ? err : new Error(String(err)));
       }
     }
-    return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl, payDeferred } });
+    return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
   } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
 });
 
