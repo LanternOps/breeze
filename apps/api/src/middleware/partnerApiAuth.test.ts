@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Hono, type Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -537,6 +538,66 @@ describe('partnerApiAuthMiddleware', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it('audits a direct DB-context rejection as 500 and rethrows only after bookkeeping', async () => {
+    mockBootstrap();
+    const directError = new Error('database context failed');
+    const audit = deferred<void>();
+    const context = createContext();
+    context.res = new Response(null, { status: 200 });
+    vi.mocked(withDbAccessContext).mockRejectedValueOnce(directError);
+    let auditInsidePartnerContext: boolean | undefined;
+    mocks.writeAuditEvent.mockImplementation(() => {
+      auditInsidePartnerContext = mocks.insidePartnerContext;
+      return audit.promise;
+    });
+    const next = vi.fn();
+    let settled = false;
+
+    const outcome = partnerApiAuthMiddleware(context, next).then(
+      () => null,
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+
+    await vi.waitFor(() => expect(mocks.writeAuditEvent).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    expect(next).not.toHaveBeenCalled();
+    expect(auditInsidePartnerContext).toBe(false);
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        result: 'failure',
+        details: expect.objectContaining({ status: 500 }),
+      }),
+    );
+
+    audit.resolve();
+    expect(await outcome).toBe(directError);
+    expect(settled).toBe(true);
+  });
+
+  it('uses an explicit direct HTTPException status instead of a stale response status', async () => {
+    mockBootstrap();
+    const directError = new HTTPException(409, { message: 'context conflict' });
+    const context = createContext();
+    context.res = new Response(null, { status: 200 });
+    vi.mocked(withDbAccessContext).mockRejectedValueOnce(directError);
+    const next = vi.fn();
+
+    await expect(partnerApiAuthMiddleware(context, next)).rejects.toBe(directError);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        result: 'failure',
+        details: expect.objectContaining({ status: 409 }),
+      }),
+    );
   });
 
   it('applies a principal-specific rate limit after the system bootstrap closes', async () => {

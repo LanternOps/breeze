@@ -215,12 +215,14 @@ async function recordMachineUse(
 }
 
 function downstreamStatus(c: Context, thrown: unknown): number {
+  if (thrown) {
+    return thrown instanceof HTTPException ? thrown.status : 500;
+  }
   const responseStatus = c.res?.status;
   if (typeof responseStatus === 'number' && responseStatus >= 100) {
     return responseStatus;
   }
-  if (thrown instanceof HTTPException) return thrown.status;
-  return thrown ? 500 : 200;
+  return 200;
 }
 
 export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<void> {
