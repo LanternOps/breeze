@@ -27,6 +27,13 @@ import { getOrCreateDraftOrder, listPax8Orders } from '../../services/pax8OrderS
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+const READY_COMPANY_METADATA = {
+  contacts: [{ types: [
+    { type: 'Admin', primary: true },
+    { type: 'Billing', primary: true },
+    { type: 'Technical', primary: true },
+  ] }],
+};
 
 function partnerContext(partnerId: string): DbAccessContext {
   return {
@@ -73,6 +80,8 @@ async function seed() {
       pax8CompanyId: 'pax8-co-a',
       pax8CompanyName: 'Customer A',
       orgId: orgA.id,
+      status: 'Active',
+      metadata: READY_COMPANY_METADATA,
     });
 
     const [orderA] = await db

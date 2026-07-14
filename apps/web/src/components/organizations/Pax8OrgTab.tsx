@@ -128,12 +128,15 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
     if (!selectedOrderId) { setBundle(null); return; }
     setBundleLoading(true);
     try {
-      setBundle(await getPax8Order(selectedOrderId).then((response) => readData<Pax8OrderBundle>(response, t('pax8.errors.loadOrder'))));
+      const loaded = await getPax8Order(selectedOrderId)
+        .then((response) => readData<Pax8OrderBundle>(response, t('pax8.errors.loadOrder')));
+      if (loaded.order.orgId !== orgId) throw new Error(t('pax8.errors.foreignOrder'));
+      setBundle(loaded);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : t('pax8.errors.loadOrder'));
       setBundle(null);
     } finally { setBundleLoading(false); }
-  }, [selectedOrderId, t]);
+  }, [orgId, selectedOrderId, t]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void loadBundle(); }, [loadBundle]);
@@ -145,7 +148,7 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
 
   const mappedCompany = companies.find((company) => company.mappedOrgId === orgId && !company.ignored) ?? null;
   const mappingOptions = companies.filter((company) => !company.ignored && (!company.mappedOrgId || company.mappedOrgId === orgId));
-  const mappingReady = mappedCompany?.status?.toLowerCase() === 'active';
+  const mappingReady = mappedCompany?.orderReady === true;
 
   const selectOrder = (id: string | null) => {
     setSelectedOrderId(id);
@@ -175,11 +178,21 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
   const singleCommitment = async (subscription: Pax8Subscription): Promise<Pax8Commitment | null> => {
     if (!subscription.productId) return null;
     const dependencies = await getProductDependencies(subscription.productId).then((response) => readData<Pax8ProductDependencies>(response, t('pax8.errors.loadProduct')));
-    if (dependencies.commitments.length !== 1) {
+    if (subscription.activeCommitmentAmbiguous) {
       setActionError(t('pax8.subscriptions.commitmentUnavailable'));
       return null;
     }
-    return dependencies.commitments[0]!;
+    if (subscription.activeCommitmentId) {
+      const matches = dependencies.commitments.filter(
+        (commitment) => commitment.id === subscription.activeCommitmentId,
+      );
+      if (matches.length === 1) return matches[0]!;
+      setActionError(t('pax8.subscriptions.commitmentUnavailable'));
+      return null;
+    }
+    if (dependencies.commitments.length === 1) return dependencies.commitments[0]!;
+    setActionError(t('pax8.subscriptions.commitmentUnavailable'));
+    return null;
   };
 
   const stageQuantity = async (subscription: Pax8Subscription, target: string) => {

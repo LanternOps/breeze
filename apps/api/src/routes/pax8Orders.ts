@@ -92,7 +92,6 @@ const addLineSchema = z.object({
   targetSubscriptionId: z.string().trim().min(1).max(64).optional(),
   cancelDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   contractLineId: z.string().guid().optional(),
-  sortOrder: z.number().int().min(0).max(100_000).optional(),
 }).strict();
 
 const updateLineSchema = z.object({

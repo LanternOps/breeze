@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PAX8_BILLING_TERMS, type Pax8BillingTerm, type Pax8OrderAction } from '@breeze/shared';
-import { and, asc, desc, eq, inArray, notInArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, max, notInArray, sql, type SQL } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
@@ -17,6 +17,7 @@ import {
   catalogItems,
 } from '../db/schema';
 import { createPax8ClientForIntegration } from './pax8SyncService';
+import { pax8CompanyOrderReadiness } from './pax8CompanyReadiness';
 import type { Pax8Commitment } from './pax8Client';
 
 export class Pax8OrderError extends Error {
@@ -46,7 +47,6 @@ export interface AddOrderLineInput {
   cancelDate?: string;
   contractLineId?: string;
   sourceQuoteLineId?: string;
-  sortOrder?: number;
 }
 
 /** Stable per-order. The unique index on (partner_id, dedupe_key) is what makes
@@ -209,15 +209,26 @@ function activeCommitmentIds(raw: unknown): string[] {
   return [...ids];
 }
 
+export function snapshotActiveCommitmentEvidence(raw: unknown): {
+  activeCommitmentId: string | null;
+  activeCommitmentAmbiguous: boolean;
+} {
+  const ids = activeCommitmentIds(raw);
+  return {
+    activeCommitmentId: ids.length === 1 ? ids[0]! : null,
+    activeCommitmentAmbiguous: ids.length > 1,
+  };
+}
+
 function activeCommitment(raw: unknown, commitments: Pax8Commitment[]): Pax8Commitment {
-  const activeIds = activeCommitmentIds(raw);
-  if (activeIds.length > 1) {
+  const evidence = snapshotActiveCommitmentEvidence(raw);
+  if (evidence.activeCommitmentAmbiguous) {
     throw new Pax8OrderError(
       'The Pax8 subscription snapshot contains ambiguous active commitment identifiers.',
       422,
     );
   }
-  const [activeId] = activeIds;
+  const activeId = evidence.activeCommitmentId;
   if (activeId) {
     const matches = commitments.filter((commitment) => commitment.id === activeId);
     if (matches.length === 1) return matches[0]!;
@@ -290,6 +301,37 @@ function validateActionPayload(input: AddOrderLineInput): void {
   }
 }
 
+function requireCompanyOrderReady(mapping: {
+  status?: string | null;
+  metadata?: unknown;
+}): void {
+  if (!pax8CompanyOrderReadiness(mapping.status, mapping.metadata).orderReady) {
+    throw new Pax8OrderError(
+      'The mapped Pax8 company is not ready for ordering. It must be Active with primary Admin, Billing, and Technical contacts.',
+      422,
+    );
+  }
+}
+
+async function requireCurrentCompanyOrderReady(order: Pax8OrderRow): Promise<void> {
+  const mappings = await db
+    .select({
+      status: pax8CompanyMappings.status,
+      metadata: pax8CompanyMappings.metadata,
+    })
+    .from(pax8CompanyMappings)
+    .where(and(
+      eq(pax8CompanyMappings.integrationId, order.integrationId),
+      eq(pax8CompanyMappings.partnerId, order.partnerId),
+      eq(pax8CompanyMappings.orgId, order.orgId),
+      eq(pax8CompanyMappings.ignored, false),
+    ));
+  if (mappings.length !== 1) {
+    throw new Pax8OrderError('Resolve the Pax8 company mapping before staging this order.', 422);
+  }
+  requireCompanyOrderReady(mappings[0]!);
+}
+
 export async function getOrCreateDraftOrder(input: {
   partnerId: string;
   orgId: string;
@@ -311,6 +353,7 @@ export async function getOrCreateDraftOrder(input: {
       409,
     );
   }
+  requireCompanyOrderReady(mapping);
 
   const existing = await findMutableDirectOrder(input.partnerId, input.orgId);
   if (existing) return existing;
@@ -345,6 +388,9 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
   const order = await withPartnerDbContext(input.partnerId, () =>
     loadOrder(input.partnerId, input.orderId));
   requireMutableOrder(order);
+  if (order.source === 'direct') {
+    await withPartnerDbContext(input.partnerId, () => requireCurrentCompanyOrderReady(order));
+  }
   validateActionPayload(input);
 
   if (input.action === 'change_quantity' || input.action === 'cancel') {
@@ -401,6 +447,19 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
     if (!lockedOrder) throw new Pax8OrderError('Pax8 order not found.', 404);
     requireMutableOrder(lockedOrder);
 
+    const [position] = await db
+      .select({ maxSortOrder: max(pax8OrderLines.sortOrder) })
+      .from(pax8OrderLines)
+      .where(and(
+        eq(pax8OrderLines.partnerId, lockedOrder.partnerId),
+        eq(pax8OrderLines.orgId, lockedOrder.orgId),
+        eq(pax8OrderLines.orderId, lockedOrder.id),
+      ));
+    const sortOrder = Number(position?.maxSortOrder ?? -1) + 1;
+    if (!Number.isSafeInteger(sortOrder) || sortOrder > 100_000) {
+      throw new Pax8OrderError('The Pax8 order has too many lines.', 422);
+    }
+
     return db
       .insert(pax8OrderLines)
       .values({
@@ -419,7 +478,7 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
         cancelDate: input.cancelDate,
         contractLineId: input.contractLineId,
         sourceQuoteLineId: input.sourceQuoteLineId,
-        sortOrder: input.sortOrder ?? 0,
+        sortOrder,
       })
       .returning();
   });
@@ -528,7 +587,8 @@ export async function getOrderWithLines(input: {
     .where(and(
       eq(pax8OrderLines.partnerId, input.partnerId),
       eq(pax8OrderLines.orderId, input.orderId),
-    ));
+    ))
+    .orderBy(asc(pax8OrderLines.sortOrder), asc(pax8OrderLines.id));
   return { order, lines };
 }
 

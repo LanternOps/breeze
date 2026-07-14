@@ -612,6 +612,14 @@ describe('Pax8 order route handlers', () => {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'unknown' }),
     });
     expect(badLine.status).toBe(400);
+    const clientOwnedPosition = await request(`/orders/${ORDER_ID}/lines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'new_subscription', pax8ProductId: 'prod-1', billingTerm: 'Monthly',
+        quantity: '1.00', sortOrder: 99,
+      }),
+    });
+    expect(clientOwnedPosition.status).toBe(400);
     expect(mocks.addOrderLine).not.toHaveBeenCalled();
     expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
   });

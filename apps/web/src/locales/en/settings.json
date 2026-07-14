@@ -2486,7 +2486,7 @@
     "mapping": {
       "title": "Company mapping", "company": "Pax8 company", "choose": "Choose a company", "map": "Map company",
       "empty": "Map this organization to its Pax8 company before ordering.", "noIntegration": "Connect and sync Pax8 in partner integrations first.",
-      "unknownStatus": "Status not reported", "activeRequired": "The mapped Pax8 company must be Active before an order can be staged."
+      "unknownStatus": "Status not reported", "activeRequired": "The mapped Pax8 company must be Active with primary Admin, Billing, and Technical contacts before an order can be staged."
     },
     "subscriptions": {
       "title": "Subscription ledger", "description": "Breeze quantities are authoritative for billing. Pax8 values are last-known observations.",
@@ -2512,14 +2512,14 @@
       "editDetails": "Edit details", "remove": "Remove line", "editProvisioning": "Provisioning details", "saveDetails": "Save details", "cancelEdit": "Cancel",
       "reviewSubmit": "Preflight and submit", "reconcile": "Reconcile", "completed": "Order completed"
     },
-    "provisioning": { "optional": "Optional", "none": "This product reports no provisioning fields.", "unsupported": "Pax8 returned an unsupported field type." },
+    "provisioning": { "optional": "Optional", "none": "This product reports no provisioning fields.", "unsupported": "Pax8 returned an unsupported field type.", "clear": "Clear {{field}}", "clearButton": "Clear" },
     "toasts": {
       "companyMapped": "Pax8 company mapped", "draftReady": "Pax8 draft ready", "changeStaged": "Quantity change staged", "cancelStaged": "Cancellation staged",
       "lineAdded": "Product added to the order", "lineUpdated": "Provisioning details saved", "lineRemoved": "Order line removed",
       "preflightPassed": "Pax8 preflight passed", "submitted": "Pax8 order submitted", "submitNeedsAttention": "Pax8 order finished with items that need attention", "reconciled": "Pax8 order reconciled"
     },
     "errors": {
-      "load": "Pax8 data could not be loaded.", "loadOrder": "The Pax8 order could not be loaded.", "loadProduct": "Product requirements could not be loaded.",
+      "load": "Pax8 data could not be loaded.", "loadOrder": "The Pax8 order could not be loaded.", "foreignOrder": "This Pax8 order belongs to another organization.", "loadProduct": "Product requirements could not be loaded.",
       "mapCompany": "The Pax8 company could not be mapped.", "createDraft": "The Pax8 draft could not be created.", "stageChange": "The quantity change could not be staged.",
       "stageCancel": "The cancellation could not be staged.", "addLine": "The product could not be added.", "updateLine": "Provisioning details could not be saved.",
       "removeLine": "The order line could not be removed.", "preflight": "Pax8 preflight failed.", "submit": "The Pax8 order could not be submitted.", "reconcile": "The Pax8 order could not be reconciled."

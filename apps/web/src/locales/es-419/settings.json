@@ -2431,7 +2431,7 @@
     "mapping": {
       "title": "Asociación de empresa", "company": "Empresa de Pax8", "choose": "Elegir una empresa", "map": "Asociar empresa",
       "empty": "Asocia esta organización con su empresa de Pax8 antes de pedir.", "noIntegration": "Primero conecta y sincroniza Pax8 en las integraciones del socio.",
-      "unknownStatus": "Estado no informado", "activeRequired": "La empresa asociada de Pax8 debe estar activa antes de preparar un pedido."
+      "unknownStatus": "Estado no informado", "activeRequired": "La empresa asociada de Pax8 debe estar activa y tener contactos principales de Administración, Facturación y Soporte técnico."
     },
     "subscriptions": {
       "title": "Registro de suscripciones", "description": "Las cantidades de Breeze son la fuente de facturación. Los valores de Pax8 son observaciones recientes.",
@@ -2454,14 +2454,14 @@
       "editDetails": "Editar detalles", "remove": "Quitar línea", "editProvisioning": "Detalles de aprovisionamiento", "saveDetails": "Guardar detalles", "cancelEdit": "Cancelar",
       "reviewSubmit": "Validar y enviar", "reconcile": "Conciliar", "completed": "Pedido completado"
     },
-    "provisioning": { "optional": "Opcional", "none": "Este producto no informa campos de aprovisionamiento.", "unsupported": "Pax8 devolvió un tipo de campo no compatible." },
+    "provisioning": { "optional": "Opcional", "none": "Este producto no informa campos de aprovisionamiento.", "unsupported": "Pax8 devolvió un tipo de campo no compatible.", "clear": "Borrar {{field}}", "clearButton": "Borrar" },
     "toasts": {
       "companyMapped": "Empresa de Pax8 asociada", "draftReady": "Borrador de Pax8 listo", "changeStaged": "Cambio de cantidad preparado", "cancelStaged": "Cancelación preparada",
       "lineAdded": "Producto agregado al pedido", "lineUpdated": "Detalles de aprovisionamiento guardados", "lineRemoved": "Línea de pedido eliminada",
       "preflightPassed": "Validación de Pax8 aprobada", "submitted": "Pedido de Pax8 enviado", "submitNeedsAttention": "Algunos elementos necesitan atención", "reconciled": "Pedido de Pax8 conciliado"
     },
     "errors": {
-      "load": "No se pudieron cargar los datos de Pax8.", "loadOrder": "No se pudo cargar el pedido de Pax8.", "loadProduct": "No se pudieron cargar los requisitos del producto.",
+      "load": "No se pudieron cargar los datos de Pax8.", "loadOrder": "No se pudo cargar el pedido de Pax8.", "foreignOrder": "Este pedido de Pax8 pertenece a otra organización.", "loadProduct": "No se pudieron cargar los requisitos del producto.",
       "mapCompany": "No se pudo asociar la empresa de Pax8.", "createDraft": "No se pudo crear el borrador de Pax8.", "stageChange": "No se pudo preparar el cambio de cantidad.",
       "stageCancel": "No se pudo preparar la cancelación.", "addLine": "No se pudo agregar el producto.", "updateLine": "No se pudieron guardar los detalles de aprovisionamiento.",
       "removeLine": "No se pudo quitar la línea del pedido.", "preflight": "Falló la validación de Pax8.", "submit": "No se pudo enviar el pedido de Pax8.", "reconcile": "No se pudo conciliar el pedido de Pax8."

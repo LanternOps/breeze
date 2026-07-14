@@ -36,7 +36,9 @@ vi.mock('../db/schema', () => new Proxy({
     id: 'pax8_order_lines.id',
     orderId: 'pax8_order_lines.order_id',
     partnerId: 'pax8_order_lines.partner_id',
+    orgId: 'pax8_order_lines.org_id',
     action: 'pax8_order_lines.action',
+    sortOrder: 'pax8_order_lines.sort_order',
   },
   pax8CompanyMappings: {
     partnerId: 'pax8_company_mappings.partner_id',
@@ -195,7 +197,18 @@ function selectRowsOnce(rows: unknown[]) {
 }
 
 function mockCompanyMappingLookup(mapping: Record<string, unknown> | null) {
-  selectRowsOnce(mapping ? [{ orgId: 'o1', ...mapping }] : []);
+  selectRowsOnce(mapping ? [{
+    orgId: 'o1',
+    status: 'Active',
+    metadata: {
+      contacts: [{ types: [
+        { type: 'Admin', primary: true },
+        { type: 'Billing', primary: true },
+        { type: 'Technical', primary: true },
+      ] }],
+    },
+    ...mapping,
+  }] : []);
 }
 
 function mockOrder(overrides: Record<string, unknown> = {}) {
@@ -289,6 +302,28 @@ describe('getOrCreateDraftOrder', () => {
       });
   });
 
+  it.each([
+    ['contact evidence is absent', { metadata: null }],
+    ['the company is inactive', { status: 'Inactive' }],
+    ['the primary admin contact is missing', { metadata: { contacts: [{ types: [
+      { type: 'Billing', primary: true }, { type: 'Technical', primary: true },
+    ] }] } }],
+    ['the primary billing contact is missing', { metadata: { contacts: [{ types: [
+      { type: 'Admin', primary: true }, { type: 'Technical', primary: true },
+    ] }] } }],
+    ['the primary technical contact is missing', { metadata: { contacts: [{ types: [
+      { type: 'Admin', primary: true }, { type: 'Billing', primary: true },
+    ] }] } }],
+  ])('fails closed before creating a draft when %s', async (_name, mapping) => {
+    mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1', ...mapping });
+    selectRowsOnce([]);
+    insertReturningOnce([{ ...baseOrder, id: 'should-not-create' }]);
+
+    await expect(getOrCreateDraftOrder({ partnerId: 'p1', orgId: 'o1', actorUserId: 'u1' }))
+      .rejects.toMatchObject({ status: 422, message: expect.stringContaining('ready') });
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
   it('reuses the existing open draft rather than creating a second one', async () => {
     mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
     selectRowsOnce([{ ...baseOrder, id: 'ord-existing' }]);
@@ -344,6 +379,34 @@ describe('getOrCreateDraftOrder', () => {
 });
 
 describe('addOrderLine', () => {
+  it('fails closed before staging a direct line when company contact evidence is absent', async () => {
+    mocks.db.select.mockImplementation((selection?: Record<string, unknown>) => {
+      let rows: unknown[] = [];
+      const chain: Record<string, any> = {};
+      chain.from = vi.fn((table: unknown) => {
+        rows = Object.prototype.hasOwnProperty.call(selection ?? {}, 'maxSortOrder')
+          ? [{ maxSortOrder: null }]
+          : containsValue(table, 'pax8_company_mappings.ignored')
+            ? [{ orgId: 'o1', pax8CompanyId: 'co-1', integrationId: 'i1', status: 'Active', metadata: null }]
+            : [{ ...baseOrder, source: 'direct' }];
+        return chain;
+      });
+      chain.where = vi.fn(() => chain);
+      chain.for = vi.fn(() => chain);
+      chain.limit = vi.fn(async () => rows);
+      chain.then = (resolve: (value: unknown[]) => unknown, reject: (error: unknown) => unknown) =>
+        Promise.resolve(rows).then(resolve, reject);
+      return chain;
+    });
+    insertReturningOnce([{ id: 'should-not-stage' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
+      pax8ProductId: 'prod-1', billingTerm: 'Monthly', quantity: '1.00',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('ready') });
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
   it('rejects a change_quantity whose commitment forbids a decrease', async () => {
     mockOrder();
     mockSubscriptionSnapshot();
@@ -595,6 +658,7 @@ describe('addOrderLine', () => {
       return new Promise((resolve) => { resolveDependencies = resolve; });
     });
     mockOrder();
+    selectRowsOnce([{ maxSortOrder: null }]);
     insertReturningOnce([{ id: 'line-1', orderId: 'ord-1', partnerId: 'p1', orgId: 'o1', action: 'change_quantity' }]);
 
     const pending = addOrderLine({
@@ -703,6 +767,7 @@ describe('addOrderLine', () => {
   it('inserts a valid new subscription line with order tenancy fields', async () => {
     mockOrder({ status: 'awaiting_details' });
     mockOrder({ status: 'awaiting_details' });
+    selectRowsOnce([{ maxSortOrder: null }]);
     const insert = insertReturningOnce([{
       id: 'line-1',
       orderId: 'ord-1',
@@ -728,7 +793,35 @@ describe('addOrderLine', () => {
       orgId: 'o1',
       action: 'new_subscription',
       submitState: 'pending',
+      sortOrder: 0,
     }));
+  });
+
+  it('allocates distinct deterministic positions for consecutive direct lines', async () => {
+    const orders = [
+      [{ ...baseOrder }], [{ ...baseOrder }],
+      [{ ...baseOrder }], [{ ...baseOrder }],
+    ];
+    const positions = [[{ maxSortOrder: null }], [{ maxSortOrder: 0 }]];
+    mocks.db.select.mockImplementation((selection?: Record<string, unknown>) => queryChain(
+      Object.prototype.hasOwnProperty.call(selection ?? {}, 'maxSortOrder')
+        ? positions.shift() ?? []
+        : orders.shift() ?? [],
+    ));
+    const firstInsert = insertReturningOnce([{ id: 'line-1' }]);
+    const secondInsert = insertReturningOnce([{ id: 'line-2' }]);
+
+    await addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
+      pax8ProductId: 'prod-1', billingTerm: 'Monthly', quantity: '1.00',
+    });
+    await addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
+      pax8ProductId: 'prod-2', billingTerm: 'Monthly', quantity: '2.00',
+    });
+
+    expect(firstInsert.values).toHaveBeenCalledWith(expect.objectContaining({ sortOrder: 0 }));
+    expect(secondInsert.values).toHaveBeenCalledWith(expect.objectContaining({ sortOrder: 1 }));
   });
 
   it('rejects when the order becomes immutable before the final insert', async () => {

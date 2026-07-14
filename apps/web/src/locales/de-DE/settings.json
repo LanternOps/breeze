@@ -2432,7 +2432,7 @@
     "mapping": {
       "title": "Unternehmenszuordnung", "company": "Pax8-Unternehmen", "choose": "Unternehmen auswählen", "map": "Unternehmen zuordnen",
       "empty": "Diese Organisation vor der Bestellung ihrem Pax8-Unternehmen zuordnen.", "noIntegration": "Zuerst Pax8 in den Partnerintegrationen verbinden und synchronisieren.",
-      "unknownStatus": "Status nicht gemeldet", "activeRequired": "Das zugeordnete Pax8-Unternehmen muss vor dem Vormerken einer Bestellung aktiv sein."
+      "unknownStatus": "Status nicht gemeldet", "activeRequired": "Das zugeordnete Pax8-Unternehmen muss aktiv sein und primäre Admin-, Abrechnungs- und Technikkontakte haben."
     },
     "subscriptions": {
       "title": "Abonnement-Ledger", "description": "Breeze-Mengen sind für die Abrechnung maßgeblich. Pax8-Werte sind die zuletzt beobachteten Werte.",
@@ -2455,14 +2455,14 @@
       "editDetails": "Details bearbeiten", "remove": "Position entfernen", "editProvisioning": "Bereitstellungsdetails", "saveDetails": "Details speichern", "cancelEdit": "Abbrechen",
       "reviewSubmit": "Vorprüfung und senden", "reconcile": "Abgleichen", "completed": "Bestellung abgeschlossen"
     },
-    "provisioning": { "optional": "Freiwillig", "none": "Dieses Produkt meldet keine Bereitstellungsfelder.", "unsupported": "Pax8 hat einen nicht unterstützten Feldtyp zurückgegeben." },
+    "provisioning": { "optional": "Freiwillig", "none": "Dieses Produkt meldet keine Bereitstellungsfelder.", "unsupported": "Pax8 hat einen nicht unterstützten Feldtyp zurückgegeben.", "clear": "{{field}} löschen", "clearButton": "Löschen" },
     "toasts": {
       "companyMapped": "Pax8-Unternehmen zugeordnet", "draftReady": "Pax8-Entwurf bereit", "changeStaged": "Mengenänderung vorgemerkt", "cancelStaged": "Kündigung vorgemerkt",
       "lineAdded": "Produkt zur Bestellung hinzugefügt", "lineUpdated": "Bereitstellungsdetails gespeichert", "lineRemoved": "Bestellposition entfernt",
       "preflightPassed": "Pax8-Vorprüfung bestanden", "submitted": "Pax8-Bestellung gesendet", "submitNeedsAttention": "Einige Positionen benötigen Aufmerksamkeit", "reconciled": "Pax8-Bestellung abgeglichen"
     },
     "errors": {
-      "load": "Pax8-Daten konnten nicht geladen werden.", "loadOrder": "Die Pax8-Bestellung konnte nicht geladen werden.", "loadProduct": "Produktanforderungen konnten nicht geladen werden.",
+      "load": "Pax8-Daten konnten nicht geladen werden.", "loadOrder": "Die Pax8-Bestellung konnte nicht geladen werden.", "foreignOrder": "Diese Pax8-Bestellung gehört zu einer anderen Organisation.", "loadProduct": "Produktanforderungen konnten nicht geladen werden.",
       "mapCompany": "Das Pax8-Unternehmen konnte nicht zugeordnet werden.", "createDraft": "Der Pax8-Entwurf konnte nicht erstellt werden.", "stageChange": "Die Mengenänderung konnte nicht vorgemerkt werden.",
       "stageCancel": "Die Kündigung konnte nicht vorgemerkt werden.", "addLine": "Das Produkt konnte nicht hinzugefügt werden.", "updateLine": "Bereitstellungsdetails konnten nicht gespeichert werden.",
       "removeLine": "Die Bestellposition konnte nicht entfernt werden.", "preflight": "Pax8-Vorprüfung fehlgeschlagen.", "submit": "Die Pax8-Bestellung konnte nicht gesendet werden.", "reconcile": "Die Pax8-Bestellung konnte nicht abgeglichen werden."

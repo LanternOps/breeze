@@ -41,6 +41,28 @@ describe('Pax8 provisioning details', () => {
     expect(select.required).toBe(false);
   });
 
+  it('clears an optional Single-Value field without adding a synthetic select option', async () => {
+    const onChange = vi.fn();
+    function Harness() {
+      const [value, setValue] = useState<Array<{ key: string; values: string[] }>>([]);
+      return <Pax8ProvisioningForm
+        fields={[{ key: 'region', label: 'Region', valueType: 'Single-Value', possibleValues: ['US', 'CA'] }]}
+        value={value}
+        onChange={(next) => { setValue(next); onChange(next); }}
+      />;
+    }
+    render(<Harness />);
+
+    const select = screen.getByTestId('pax8-provision-region') as HTMLSelectElement;
+    await userEvent.selectOptions(select, 'CA');
+    expect([...select.options].map((option) => option.value)).toEqual(['US', 'CA']);
+    await userEvent.click(screen.getByRole('button', { name: /clear region/i }));
+
+    expect(onChange).toHaveBeenLastCalledWith([]);
+    expect(select.value).toBe('');
+    expect([...select.options].map((option) => option.value)).toEqual(['US', 'CA']);
+  });
+
   it('keeps every field optional and supports an accessible native multiselect', async () => {
     const onChange = vi.fn();
     function Harness() {
@@ -107,6 +129,43 @@ describe('Pax8 preflight errors', () => {
 
     await userEvent.click(screen.getByTestId('pax8-submit'));
     expect(await screen.findByTestId('pax8-line-error-line-1')).toHaveTextContent('Tenant domain must be supplied.');
+    expect(submitPax8Order).not.toHaveBeenCalled();
+  });
+
+  it('correlates a raw lineItemNumber 2 error to the second sorted line', async () => {
+    vi.mocked(preflightPax8Order).mockResolvedValue(new Response(JSON.stringify({
+      details: [{ lineItemNumber: 2, message: 'Second line needs a tenant domain.' }],
+    }), { status: 422, headers: { 'content-type': 'application/json' } }));
+
+    const line = (id: string, sortOrder: number) => ({
+      id, orderId: '44444444-4444-4444-8444-444444444444', action: 'new_subscription' as const,
+      submitState: 'pending' as const, pax8ProductId: 'prod-1', catalogItemId: 'cat-1', billingTerm: 'Monthly',
+      commitmentTermId: null, quantity: '1.00', provisioningDetails: [], targetSubscriptionId: null,
+      resultSubscriptionId: null, contractLineId: `contract-${id}`, sourceQuoteLineId: null,
+      error: null, sortOrder,
+    });
+    render(<Pax8OrderBuilder
+      bundle={{
+        order: {
+          id: '44444444-4444-4444-8444-444444444444', integrationId: 'integration-1',
+          partnerId: 'partner-1', orgId: 'org-1', pax8CompanyId: 'company-1', status: 'draft',
+          source: 'direct', sourceQuoteId: null, pax8OrderId: null, error: null, submittedAt: null,
+          createdAt: '2026-07-14T00:00:00Z', updatedAt: '2026-07-14T00:00:00Z',
+        },
+        lines: [line('line-1', 0), line('line-2', 1)],
+      }}
+      products={[{
+        pax8ProductId: 'prod-1', catalogItemId: 'cat-1', catalogName: 'Microsoft 365', catalogSku: null,
+        catalogDescription: null, productName: 'Microsoft 365', vendorSkuId: null,
+        billingFrequency: 'monthly', commitmentTermMonths: null,
+      }]}
+      onReload={vi.fn()}
+      onBack={vi.fn()}
+    />);
+
+    await userEvent.click(screen.getByTestId('pax8-submit'));
+    expect(await screen.findByTestId('pax8-line-error-line-2')).toHaveTextContent('Second line needs a tenant domain.');
+    expect(screen.queryByTestId('pax8-line-error-line-1')).not.toBeInTheDocument();
     expect(submitPax8Order).not.toHaveBeenCalled();
   });
 });

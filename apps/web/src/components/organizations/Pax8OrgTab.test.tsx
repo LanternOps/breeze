@@ -10,6 +10,9 @@ import {
   listPax8Subscriptions,
   getProductDependencies,
   addPax8OrderLine,
+  getPax8Order,
+  preflightPax8Order,
+  submitPax8Order,
 } from '../../lib/api/pax8Orders';
 
 vi.mock('../../lib/api/pax8Orders', async (importOriginal) => {
@@ -22,6 +25,9 @@ vi.mock('../../lib/api/pax8Orders', async (importOriginal) => {
     listPax8Subscriptions: vi.fn(),
     getProductDependencies: vi.fn(),
     addPax8OrderLine: vi.fn(),
+    getPax8Order: vi.fn(),
+    preflightPax8Order: vi.fn(),
+    submitPax8Order: vi.fn(),
   };
 });
 
@@ -125,5 +131,91 @@ describe('Pax8 organization mapping state', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/does not allow quantity increases/i);
     expect(addPax8OrderLine).not.toHaveBeenCalled();
+  });
+
+  it('uses the snapshot active commitment when multiple dependency commitments exist', async () => {
+    vi.mocked(listPax8Companies).mockImplementation(() => response({ data: [{
+      pax8CompanyId: 'company-1', pax8CompanyName: 'Acme', status: 'Active', mappedOrgId: 'org-1',
+      mappedOrgName: 'Acme', ignored: false, lastSeenAt: null, orderReady: true,
+      primaryAdminReady: true, primaryBillingReady: true, primaryTechnicalReady: true,
+    }], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Subscriptions).mockImplementation(() => response({ data: [{
+      id: 'snapshot-1', pax8SubscriptionId: 'sub-1', productId: 'prod-1', productName: 'Microsoft 365',
+      status: 'Active', breezeQuantity: '5.00', quantity: '5.00', quantityKnown: true,
+      activeCommitmentId: 'active', activeCommitmentAmbiguous: false,
+      lastSeenAt: '2026-07-14T00:00:00Z', contractLineId: 'contract-line-1',
+    }], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Orders).mockImplementation(() => response({ data: [{
+      id: '44444444-4444-4444-8444-444444444444', integrationId: 'integration-1', partnerId: 'partner-1',
+      orgId: 'org-1', pax8CompanyId: 'company-1', status: 'draft', source: 'direct', sourceQuoteId: null,
+      pax8OrderId: null, error: null, submittedAt: null, createdAt: '2026-07-14T00:00:00Z', updatedAt: '2026-07-14T00:00:00Z',
+    }] }));
+    vi.mocked(listPax8Products).mockImplementation(() => response({ data: [{
+      pax8ProductId: 'prod-1', catalogItemId: 'cat-1', catalogName: 'Microsoft 365',
+    }] }));
+    vi.mocked(getProductDependencies).mockImplementation(() => response({ data: { commitments: [
+      { id: 'other', term: 'Annual', allowForQuantityIncrease: false, allowForQuantityDecrease: false, allowForEarlyCancellation: false, cancellationFeeApplied: false },
+      { id: 'active', term: 'Monthly', allowForQuantityIncrease: true, allowForQuantityDecrease: true, allowForEarlyCancellation: true, cancellationFeeApplied: false },
+    ] } }));
+    vi.mocked(addPax8OrderLine).mockImplementation(() => response({ data: { id: 'line-1' } }));
+
+    render(<Pax8OrgTab orgId="org-1" />);
+    const quantity = await screen.findByRole('spinbutton', { name: /target quantity/i });
+    await userEvent.clear(quantity);
+    await userEvent.type(quantity, '6');
+    await userEvent.click(screen.getByRole('button', { name: /stage change/i }));
+
+    await vi.waitFor(() => expect(addPax8OrderLine).toHaveBeenCalledTimes(1));
+  });
+
+  it('fails closed when the snapshot active commitment forbids the requested action', async () => {
+    vi.mocked(listPax8Companies).mockImplementation(() => response({ data: [{
+      pax8CompanyId: 'company-1', pax8CompanyName: 'Acme', status: 'Active', mappedOrgId: 'org-1',
+      mappedOrgName: 'Acme', ignored: false, lastSeenAt: null, orderReady: true,
+      primaryAdminReady: true, primaryBillingReady: true, primaryTechnicalReady: true,
+    }], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Subscriptions).mockImplementation(() => response({ data: [{
+      id: 'snapshot-1', pax8SubscriptionId: 'sub-1', productId: 'prod-1', productName: 'Microsoft 365',
+      status: 'Active', breezeQuantity: '5.00', quantity: '5.00', quantityKnown: true,
+      activeCommitmentId: 'blocked', activeCommitmentAmbiguous: false,
+      lastSeenAt: '2026-07-14T00:00:00Z', contractLineId: 'contract-line-1',
+    }], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Orders).mockImplementation(() => response({ data: [] }));
+    vi.mocked(listPax8Products).mockImplementation(() => response({ data: [] }));
+    vi.mocked(getProductDependencies).mockImplementation(() => response({ data: { commitments: [
+      { id: 'allowed', term: 'Annual', allowForQuantityIncrease: true, allowForQuantityDecrease: true, allowForEarlyCancellation: true, cancellationFeeApplied: false },
+      { id: 'blocked', term: 'Monthly', allowForQuantityIncrease: false, allowForQuantityDecrease: true, allowForEarlyCancellation: true, cancellationFeeApplied: false },
+    ] } }));
+
+    render(<Pax8OrgTab orgId="org-1" />);
+    const quantity = await screen.findByRole('spinbutton', { name: /target quantity/i });
+    await userEvent.clear(quantity);
+    await userEvent.type(quantity, '6');
+    await userEvent.click(screen.getByRole('button', { name: /stage change/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/does not allow quantity increases/i);
+    expect(addPax8OrderLine).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for a deep-linked order belonging to another organization', async () => {
+    window.location.hash = '#pax8/44444444-4444-4444-8444-444444444444';
+    vi.mocked(listPax8Companies).mockImplementation(() => response({ data: [], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Subscriptions).mockImplementation(() => response({ data: [], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Orders).mockImplementation(() => response({ data: [] }));
+    vi.mocked(listPax8Products).mockImplementation(() => response({ data: [] }));
+    vi.mocked(getPax8Order).mockImplementation(() => response({ data: {
+      order: {
+        id: '44444444-4444-4444-8444-444444444444', integrationId: 'integration-1', partnerId: 'partner-1',
+        orgId: 'org-2', pax8CompanyId: 'company-2', status: 'draft', source: 'direct', sourceQuoteId: null,
+        pax8OrderId: null, error: null, submittedAt: null, createdAt: '2026-07-14T00:00:00Z', updatedAt: '2026-07-14T00:00:00Z',
+      }, lines: [],
+    } }));
+
+    render(<Pax8OrgTab orgId="org-1" />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/organization/i);
+    expect(screen.queryByTestId('pax8-submit')).not.toBeInTheDocument();
+    expect(preflightPax8Order).not.toHaveBeenCalled();
+    expect(submitPax8Order).not.toHaveBeenCalled();
   });
 });

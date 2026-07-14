@@ -1,5 +1,5 @@
 import type { Pax8OrderStatus, Pax8SubmitState } from '@breeze/shared';
-import { and, eq, getTableColumns, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, getTableColumns, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
@@ -20,6 +20,7 @@ import type {
   SubmitResult,
 } from './pax8OrderSubmit';
 import { createPax8ClientForIntegration } from './pax8SyncService';
+import { pax8CompanyOrderReadiness } from './pax8CompanyReadiness';
 
 const SUBMITTABLE_STATUSES = ['draft', 'awaiting_details', 'ready'] as const;
 
@@ -73,12 +74,17 @@ async function findOrderLines(order: Pax8OrderRow): Promise<Pax8OrderLineRow[]> 
       eq(pax8OrderLines.partnerId, order.partnerId),
       eq(pax8OrderLines.orgId, order.orgId),
       eq(pax8OrderLines.orderId, order.id),
-    ));
+    ))
+    .orderBy(asc(pax8OrderLines.sortOrder), asc(pax8OrderLines.id));
 }
 
 async function resolveCompany(order: Pax8OrderRow): Promise<string> {
   const mappings = await db
-    .select({ pax8CompanyId: pax8CompanyMappings.pax8CompanyId })
+    .select({
+      pax8CompanyId: pax8CompanyMappings.pax8CompanyId,
+      status: pax8CompanyMappings.status,
+      metadata: pax8CompanyMappings.metadata,
+    })
     .from(pax8CompanyMappings)
     .where(and(
       eq(pax8CompanyMappings.integrationId, order.integrationId),
@@ -92,6 +98,12 @@ async function resolveCompany(order: Pax8OrderRow): Promise<string> {
   }
   if (mappings.length !== 1) {
     throw new Pax8OrderError('Multiple Pax8 companies are mapped to this organization; resolve the mapping before ordering.', 422);
+  }
+  if (!pax8CompanyOrderReadiness(mappings[0]!.status, mappings[0]!.metadata).orderReady) {
+    throw new Pax8OrderError(
+      'The mapped Pax8 company is not ready for ordering. It must be Active with primary Admin, Billing, and Technical contacts.',
+      422,
+    );
   }
   return mappings[0]!.pax8CompanyId;
 }

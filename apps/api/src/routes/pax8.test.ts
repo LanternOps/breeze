@@ -69,6 +69,7 @@ vi.mock('../db/schema', () => ({
     ignored: 'pax8_company_mappings.ignored',
     lastSeenAt: 'pax8_company_mappings.last_seen_at',
     updatedAt: 'pax8_company_mappings.updated_at',
+    metadata: 'pax8_company_mappings.metadata',
     integrationId: 'pax8_company_mappings.integration_id',
     partnerId: 'pax8_company_mappings.partner_id',
   },
@@ -90,6 +91,7 @@ vi.mock('../db/schema', () => ({
     unitCost: 'pax8_subscription_snapshots.unit_cost',
     currencyCode: 'pax8_subscription_snapshots.currency_code',
     lastSeenAt: 'pax8_subscription_snapshots.last_seen_at',
+    raw: 'pax8_subscription_snapshots.raw',
   },
   pax8ContractLineLinks: {
     id: 'pax8_contract_line_links.id',
@@ -207,6 +209,16 @@ function mockSubscriptionSelectOnce(integrationRows: unknown[], snapshotRows: un
   return { whereSpy, getConditions: () => whereConditions };
 }
 
+function mockCompanySelectOnce(integrationRows: unknown[], companyRows: unknown[]) {
+  mockSelectOnce(integrationRows);
+  const chain: Record<string, any> = {};
+  chain.from = vi.fn(() => chain);
+  chain.leftJoin = vi.fn(() => chain);
+  chain.where = vi.fn(() => chain);
+  chain.orderBy = vi.fn(async () => companyRows);
+  vi.mocked(db.select).mockReturnValueOnce(chain as any);
+}
+
 describe('pax8 routes', () => {
   let app: Hono;
 
@@ -235,6 +247,30 @@ describe('pax8 routes', () => {
     });
 
     expect(res.status).toBe(403);
+  });
+
+  it('GET /companies returns bounded ordering readiness without contact PII or metadata', async () => {
+    const integration = { id: '44444444-4444-4444-4444-444444444444', partnerId: authState.partnerId };
+    mockCompanySelectOnce([integration], [{
+      pax8CompanyId: 'company-1', pax8CompanyName: 'Acme', status: 'Active', mappedOrgId: ORG_A,
+      mappedOrgName: 'Acme', ignored: false, lastSeenAt: null, updatedAt: null,
+      metadata: {
+        contacts: [{ email: 'private@example.com', types: [
+          { type: 'Admin', primary: true }, { type: 'Billing', primary: true }, { type: 'Technical', primary: true },
+        ] }],
+      },
+    }]);
+
+    const res = await app.request('/pax8/companies');
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.data[0]).toMatchObject({
+      statusActive: true, primaryAdminReady: true, primaryBillingReady: true,
+      primaryTechnicalReady: true, orderReady: true,
+    });
+    expect(body.data[0]).not.toHaveProperty('metadata');
+    expect(JSON.stringify(body)).not.toContain('private@example.com');
   });
 
   it('requires credentials when creating a Pax8 integration', async () => {
@@ -479,6 +515,24 @@ describe('pax8 routes', () => {
       quantity: 'pax8_subscription_snapshots.quantity',
       quantityKnown: 'pax8_subscription_snapshots.quantity_known',
     });
+  });
+
+  it('GET /subscriptions projects active commitment evidence without exposing the raw snapshot', async () => {
+    const integration = { id: '44444444-4444-4444-4444-444444444444', partnerId: authState.partnerId };
+    mockSubscriptionSelectOnce([integration], [{
+      id: 'snap-1', orgId: ORG_A,
+      raw: { commitment: { id: 'active-commitment', secret: 'do-not-return' } },
+    }]);
+
+    const res = await app.request(`/pax8/subscriptions?orgId=${ORG_A}`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.data[0]).toMatchObject({
+      activeCommitmentId: 'active-commitment', activeCommitmentAmbiguous: false,
+    });
+    expect(body.data[0]).not.toHaveProperty('raw');
+    expect(JSON.stringify(body)).not.toContain('do-not-return');
   });
 
   it('GET /subscriptions with inaccessible orgId returns 403', async () => {

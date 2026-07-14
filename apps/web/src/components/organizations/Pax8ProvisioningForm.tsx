@@ -42,16 +42,32 @@ export function Pax8ProvisioningForm({
               </span>
             </label>
             {field.valueType === 'Single-Value' ? (
-              <select
-                id={id}
-                data-testid={id}
-                value={values[0] ?? ''}
-                disabled={disabled}
-                onChange={(event) => update(field.key, [event.target.value])}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50"
-              >
-                {possibleValues.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
+              <div className="flex items-center gap-2">
+                <select
+                  id={id}
+                  data-testid={id}
+                  ref={(element) => {
+                    if (element && values.length === 0) element.selectedIndex = -1;
+                  }}
+                  value={values[0] ?? ''}
+                  disabled={disabled}
+                  onChange={(event) => update(field.key, [event.target.value])}
+                  className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-50"
+                >
+                  {possibleValues.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+                {values.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    aria-label={t('pax8.provisioning.clear', { field: field.label || field.key })}
+                    onClick={() => update(field.key, [])}
+                    className="rounded-md border px-2 py-2 text-xs hover:bg-muted disabled:opacity-50"
+                  >
+                    {t('pax8.provisioning.clearButton')}
+                  </button>
+                )}
+              </div>
             ) : field.valueType === 'Multi-Value' ? (
               <select
                 id={id}

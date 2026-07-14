@@ -18,6 +18,13 @@ import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+const READY_COMPANY_METADATA = {
+  contacts: [{ types: [
+    { type: 'Admin', primary: true },
+    { type: 'Billing', primary: true },
+    { type: 'Technical', primary: true },
+  ] }],
+};
 
 async function seedOrder(options: { action?: 'new_subscription' | 'cancel' } = {}) {
   return withSystemDbAccessContext(async () => {
@@ -38,6 +45,8 @@ async function seedOrder(options: { action?: 'new_subscription' | 'cancel' } = {
       pax8CompanyId: 'company-1',
       pax8CompanyName: 'Acme',
       orgId: org.id,
+      status: 'Active',
+      metadata: READY_COMPANY_METADATA,
     });
     const [contract] = await db.insert(contracts).values({
       partnerId: partner.id,

@@ -79,6 +79,11 @@ export interface Pax8Company {
   mappedOrgName: string | null;
   ignored: boolean;
   lastSeenAt: string | null;
+  statusActive?: boolean;
+  primaryAdminReady?: boolean;
+  primaryBillingReady?: boolean;
+  primaryTechnicalReady?: boolean;
+  orderReady?: boolean;
 }
 export interface Pax8Subscription {
   id: string;
@@ -92,6 +97,8 @@ export interface Pax8Subscription {
   quantityKnown: boolean;
   lastSeenAt: string | null;
   contractLineId?: string | null;
+  activeCommitmentId?: string | null;
+  activeCommitmentAmbiguous?: boolean;
 }
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
