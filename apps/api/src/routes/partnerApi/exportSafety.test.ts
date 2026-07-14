@@ -4,6 +4,7 @@ import {
   buildSafeBlockedRecord,
   canonicalJsonStringify,
   computePartnerExportRevision,
+  inspectCredentialSyntax,
   inspectDefinitionForSecrets,
   safelyExportDefinition,
 } from './exportSafety';
@@ -74,6 +75,7 @@ describe('recursive export safety', () => {
     ['quoted CMD set', { content: 'set "PASSWORD=hunter2"' }],
     ['CMD setx', { content: 'setx PASSWORD hunter2' }],
     ['compound CMD setx', { content: 'setx DB_PASSWORD hunter2' }],
+    ['machine CMD setx', { content: 'setx /M DB_PASSWORD hunter2' }],
     ['JSON password', { content: '{"password":"hunter2"}' }],
     ['compound JSON password', { content: '{"DB_PASSWORD": "hunter2"}' }],
     ['PowerShell password', { content: "$Password = 'Summer2026!'" }],
@@ -81,6 +83,7 @@ describe('recursive export safety', () => {
     ['PowerShell named secure string', { content: "ConvertTo-SecureString -String 'Summer2026!' -AsPlainText -Force" }],
     ['PowerShell reordered secure string', { content: "ConvertTo-SecureString -AsPlainText -Force -String 'Summer2026!'" }],
     ['database URI userinfo', { content: 'DATABASE_URL=postgres://admin:hunter2@db.example/app' }],
+    ['recovery key assignment', { content: 'RECOVERY_KEY=ABC-123' }],
     ['authorization assignment', { content: 'Authorization = Basic dXNlcjpwYXNz' }],
   ])('rejects low-entropy credential assignment syntax: %s', (_name, definition) => {
     expect(inspectDefinitionForSecrets(definition)).toMatchObject({
@@ -100,13 +103,26 @@ describe('recursive export safety', () => {
     expect(inspectDefinitionForSecrets({ content })).toEqual({ safe: true });
   });
 
-  it.each(['local_admin_password', 'backup-api-token', 'serviceCredential'])
+  it.each([
+    'local_admin_password', 'backup-api-token', 'serviceCredential',
+    'recovery_key', 'bitlocker_recovery_key', 'password_value',
+    'credential_value', 'secret_note', 'token_backup',
+  ])
     ('rejects a secret-semantic identifier value: %s', (fieldKey) => {
       expect(inspectDefinitionForSecrets({ fieldKey, value: 'Summer2026!' })).toMatchObject({
         safe: false,
         reason: 'secret_detected',
       });
     });
+
+  it('keeps credential syntax inspection linear at the maximum inspectable size', () => {
+    const content = 'echo ordinary setting; '.repeat(1000)
+      .slice(0, PARTNER_EXPORT_MAX_INSPECTABLE_STRING_LENGTH)
+      .padEnd(PARTNER_EXPORT_MAX_INSPECTABLE_STRING_LENGTH, '.');
+    const result = inspectCredentialSyntax(content);
+    expect(result.secretLike).toBe(false);
+    expect(result.operations).toBeLessThanOrEqual(content.length * 3 + 10);
+  });
 
   it('trusts only the derived revision field instead of exempting arbitrary hashes', () => {
     const revision = 'a3f15d4c9e78b260a3f15d4c9e78b260a3f15d4c9e78b260a3f15d4c9e78b260';

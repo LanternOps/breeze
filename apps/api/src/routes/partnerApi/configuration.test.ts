@@ -161,6 +161,7 @@ describe('partner desired-configuration exports', () => {
     'set "PASSWORD=hunter2"',
     'setx PASSWORD hunter2',
     'setx DB_PASSWORD hunter2',
+    'setx /M DB_PASSWORD hunter2',
     '{"password":"hunter2"}',
     '{"DB_PASSWORD": "hunter2"}',
     "$Password = 'Summer2026!'",
@@ -168,6 +169,7 @@ describe('partner desired-configuration exports', () => {
     "ConvertTo-SecureString -String 'Summer2026!' -AsPlainText -Force",
     "ConvertTo-SecureString -AsPlainText -Force -String 'Summer2026!'",
     'DATABASE_URL=postgres://admin:hunter2@db.example/app',
+    'RECOVERY_KEY=ABC-123',
   ])('blocks the whole script for low-entropy credential syntax without leaking derived metadata: %s', async (content) => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'organization', name: 'Unsafe rebuild', description: null, category: 'build',

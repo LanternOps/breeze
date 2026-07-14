@@ -21,6 +21,8 @@ const FORBIDDEN_FIELD_TOKENS = new Set([
   'refreshtoken',
   'privatekey',
   'providerconfig',
+  'recoverykey',
+  'bitlockerrecoverykey',
   'password',
   'passwd',
   'pwd',
@@ -118,12 +120,19 @@ interface ScriptToken {
   quoted: boolean;
 }
 
-function tokenizeCredentialSyntax(value: string): ScriptToken[] {
+function tokenizeCredentialSyntax(value: string): { tokens: ScriptToken[]; operations: number } {
   const tokens: ScriptToken[] = [];
+  let operations = 0;
   let index = 0;
   while (index < value.length && tokens.length < MAX_VISITED_VALUES) {
+    operations += 1;
     const character = value[index]!;
-    if (/\s|[,{}()[\];|&]/u.test(character)) {
+    if (character === '\n' || character === '\r' || character === ';' || character === '|' || character === '&') {
+      tokens.push({ value: ';', quoted: false });
+      index += 1;
+      continue;
+    }
+    if (/\s|[,{}()[\]]/u.test(character)) {
       index += 1;
       continue;
     }
@@ -137,6 +146,7 @@ function tokenizeCredentialSyntax(value: string): ScriptToken[] {
       let content = '';
       index += 1;
       while (index < value.length && value[index] !== quote) {
+        operations += 1;
         if (value[index] === '\\' && index + 1 < value.length) index += 1;
         content += value[index]!;
         index += 1;
@@ -146,11 +156,14 @@ function tokenizeCredentialSyntax(value: string): ScriptToken[] {
       continue;
     }
     const start = index;
-    while (index < value.length && !/[\s,{}()[\];|&=:$"']/u.test(value[index]!)) index += 1;
+    while (index < value.length && !/[\s,{}()[\];|&=:$"']/u.test(value[index]!)) {
+      operations += 1;
+      index += 1;
+    }
     if (index > start) tokens.push({ value: value.slice(start, index), quoted: false });
     else index += 1;
   }
-  return tokens;
+  return { tokens, operations };
 }
 
 function isCredentialIdentifier(value: string): boolean {
@@ -162,22 +175,41 @@ function isCredentialIdentifier(value: string): boolean {
     || FORBIDDEN_FIELD_TOKENS.has(words.at(-1) ?? '');
 }
 
+function isSecretSemanticIdentifier(value: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u.test(value)
+    && splitFieldName(value).some((part) => FORBIDDEN_FIELD_TOKENS.has(part));
+}
+
 function hasFollowingValue(tokens: ScriptToken[], index: number): boolean {
   const value = tokens[index];
   return value !== undefined && value.value.length > 0 && !['=', ':', '$'].includes(value.value);
 }
 
-function containsCredentialAssignment(value: string): boolean {
-  const tokens = tokenizeCredentialSyntax(value);
+export function inspectCredentialSyntax(value: string): { secretLike: boolean; operations: number } {
+  const tokenized = tokenizeCredentialSyntax(value);
+  const { tokens } = tokenized;
+  let operations = tokenized.operations;
   for (let index = 0; index < tokens.length; index += 1) {
+    operations += 1;
     const current = tokens[index]!.value;
     const lower = current.toLowerCase();
 
     if ((lower === 'set' || lower === 'setx') && tokens[index + 1]?.quoted) {
-      if (containsCredentialAssignment(tokens[index + 1]!.value)) return true;
+      const nested = inspectCredentialSyntax(tokens[index + 1]!.value);
+      operations += nested.operations;
+      if (nested.secretLike) return { secretLike: true, operations };
     }
-    if (lower === 'setx' && isCredentialIdentifier(tokens[index + 1]?.value ?? '')
-      && hasFollowingValue(tokens, index + 2)) return true;
+    if (lower === 'setx') {
+      let identifierIndex = index + 1;
+      while (/^[/-][A-Za-z]+$/u.test(tokens[identifierIndex]?.value ?? '')) {
+        operations += 1;
+        identifierIndex += 1;
+      }
+      if (isCredentialIdentifier(tokens[identifierIndex]?.value ?? '')
+        && hasFollowingValue(tokens, identifierIndex + 1)) {
+        return { secretLike: true, operations };
+      }
+    }
 
     let identifierIndex = index;
     if (current === '$') identifierIndex += 1;
@@ -185,18 +217,31 @@ function containsCredentialAssignment(value: string): boolean {
       && tokens[identifierIndex + 1]?.value === ':') identifierIndex += 2;
     if (isCredentialIdentifier(tokens[identifierIndex]?.value ?? '')
       && ['=', ':'].includes(tokens[identifierIndex + 1]?.value ?? '')
-      && hasFollowingValue(tokens, identifierIndex + 2)) return true;
+      && hasFollowingValue(tokens, identifierIndex + 2)) return { secretLike: true, operations };
 
     if (lower === 'convertto-securestring') {
-      const commandTokens = tokens.slice(index + 1);
-      const hasPlainText = commandTokens.some((token) => token.value.toLowerCase() === '-asplaintext');
-      const namedValue = commandTokens.findIndex((token) => token.value.toLowerCase() === '-string');
-      const hasNamedValue = namedValue >= 0 && hasFollowingValue(commandTokens, namedValue + 1);
-      const hasPositionalValue = commandTokens.some((token) => token.value && !token.value.startsWith('-'));
-      if (hasPlainText && (hasNamedValue || hasPositionalValue)) return true;
+      let hasPlainText = false;
+      let hasNamedValue = false;
+      let hasPositionalValue = false;
+      let cursor = index + 1;
+      while (cursor < tokens.length && tokens[cursor]!.value !== ';') {
+        operations += 1;
+        const commandValue = tokens[cursor]!.value;
+        const commandLower = commandValue.toLowerCase();
+        if (commandLower === '-asplaintext') hasPlainText = true;
+        if (commandLower === '-string' && hasFollowingValue(tokens, cursor + 1)) hasNamedValue = true;
+        if (commandValue && !commandValue.startsWith('-')) hasPositionalValue = true;
+        cursor += 1;
+      }
+      if (hasPlainText && (hasNamedValue || hasPositionalValue)) return { secretLike: true, operations };
+      index = cursor;
     }
   }
-  return false;
+  return { secretLike: false, operations };
+}
+
+function containsCredentialAssignment(value: string): boolean {
+  return inspectCredentialSyntax(value).secretLike;
 }
 
 function isSecretLikeValue(value: string): boolean {
@@ -268,7 +313,7 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
       }
       if (!(trustedRevision && SHA256_PATTERN.test(value)) && (
         isSecretLikeValue(value)
-        || (isSemanticIdentifierPath(path) && isCredentialIdentifier(value))
+        || (isSemanticIdentifierPath(path) && isSecretSemanticIdentifier(value))
       )) addPath(path);
       return;
     }
