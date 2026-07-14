@@ -318,7 +318,7 @@ export async function initiateCustomerGraphReadConsent(
         credentialDomain: PROFILE,
         vaultRef: config.vaultRef,
         credentialVersion: config.credentialVersion,
-        permissionManifestVersion: 0,
+        permissionManifestVersion: M365_PERMISSION_PROFILES[PROFILE].version,
         observedGrants: [],
         consentAttemptId: nextAttemptId,
         status: 'pending-consent',

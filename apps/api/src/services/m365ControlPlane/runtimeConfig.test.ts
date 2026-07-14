@@ -157,10 +157,24 @@ describe('M365 customer Graph-read runtime config', () => {
     ['non-hex credential version', { M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION: 'version-1' }, /CREDENTIAL_VERSION/],
     ['mismatched vault version', { M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION: 'f'.repeat(32) }, /VAULT_REF.*CREDENTIAL_VERSION|CREDENTIAL_VERSION.*VAULT_REF/],
     ['non-HTTPS executor URL', { M365_GRAPH_READ_EXECUTOR_URL: 'http://m365-graph-read.internal.example.test' }, /EXECUTOR_URL/],
+    ['executor base path', { M365_GRAPH_READ_EXECUTOR_URL: 'https://m365-graph-read.internal.example.test/internal' }, /EXECUTOR_URL/],
+    ['executor trailing path', { M365_GRAPH_READ_EXECUTOR_URL: 'https://m365-graph-read.internal.example.test/v1/' }, /EXECUTOR_URL/],
+    ['executor repeated slash path', { M365_GRAPH_READ_EXECUTOR_URL: 'https://m365-graph-read.internal.example.test//' }, /EXECUTOR_URL/],
+    ['executor query', { M365_GRAPH_READ_EXECUTOR_URL: 'https://m365-graph-read.internal.example.test/?route=other' }, /EXECUTOR_URL/],
+    ['executor fragment', { M365_GRAPH_READ_EXECUTOR_URL: 'https://m365-graph-read.internal.example.test/#other' }, /EXECUTOR_URL/],
+    ['executor credentials', { M365_GRAPH_READ_EXECUTOR_URL: 'https://user:password@m365-graph-read.internal.example.test/' }, /EXECUTOR_URL/],
     ['wrong executor audience', { M365_GRAPH_READ_EXECUTOR_AUDIENCE: 'another-service' }, /EXECUTOR_AUDIENCE/],
     ['empty signing kid', { M365_GRAPH_READ_EXECUTOR_SIGNING_KID: ' ' }, /SIGNING_KID/],
   ])('rejects %s', (_label, overrides, error) => {
     expect(() => loadM365CustomerGraphReadRuntimeConfig(validEnv(overrides))).toThrow(error);
+  });
+
+  it('stores the executor as a normalized HTTPS origin with no path suffix', () => {
+    const config = loadM365CustomerGraphReadRuntimeConfig(validEnv({
+      M365_GRAPH_READ_EXECUTOR_URL: 'https://M365-GRAPH-READ.INTERNAL.EXAMPLE.TEST:443/',
+    }));
+
+    expect(config.executorUrl).toBe('https://m365-graph-read.internal.example.test');
   });
 
   it('requires an absolute signing JWK file path', () => {

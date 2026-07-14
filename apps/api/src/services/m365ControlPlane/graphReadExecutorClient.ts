@@ -47,6 +47,38 @@ function unavailable(): GraphReadExecutorClientError {
   return new GraphReadExecutorClientError();
 }
 
+function exactExecutorOrigin(value: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw unavailable();
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username !== ''
+    || parsed.password !== ''
+    || parsed.pathname !== '/'
+    || parsed.search !== ''
+    || parsed.hash !== ''
+  ) throw unavailable();
+  return new URL(parsed.origin);
+}
+
+function operationEndpoint(origin: URL, operation: ExecutorOperation): string {
+  const expectedPath = operation === 'complete-consent' ? '/v1/complete-consent' : '/v1/retest';
+  const endpoint = new URL(expectedPath, origin);
+  if (
+    endpoint.origin !== origin.origin
+    || endpoint.pathname !== expectedPath
+    || endpoint.search !== ''
+    || endpoint.hash !== ''
+    || endpoint.username !== ''
+    || endpoint.password !== ''
+  ) throw unavailable();
+  return endpoint.toString();
+}
+
 function exactJsonContentType(response: Response): boolean {
   const value = response.headers.get('content-type')?.toLowerCase();
   return value === 'application/json' || value === 'application/json; charset=utf-8';
@@ -94,7 +126,7 @@ async function readBoundedResponse(response: Response, maxBytes: number): Promis
 export function createGraphReadExecutorClient(
   config: GraphReadExecutorClientConfig,
 ): GraphReadExecutorClient {
-  const executorUrl = config.executorUrl.replace(/\/$/, '');
+  const executorOrigin = exactExecutorOrigin(config.executorUrl);
   const request = config.fetch ?? globalThis.fetch;
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -136,7 +168,7 @@ export function createGraphReadExecutorClient(
         .setJti(randomUUID())
         .sign(await signingKey());
 
-      const response = await request(`${executorUrl}/v1/${operation}`, {
+      const response = await request(operationEndpoint(executorOrigin, operation), {
         method: 'POST',
         redirect: 'error',
         signal: AbortSignal.timeout(timeoutMs),

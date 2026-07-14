@@ -302,6 +302,7 @@ describe('customer Graph-read connection lifecycle', () => {
 
     await expect(initiateCustomerGraphReadConsent({ orgId: ORG_ID, actorId: ACTOR_ID }))
       .rejects.toThrow('insert failed');
+    expect(dbMocks.insertedValues[0]).toMatchObject({ permissionManifestVersion: 2 });
     expect(consentMocks.createAdmin).not.toHaveBeenCalled();
   });
 

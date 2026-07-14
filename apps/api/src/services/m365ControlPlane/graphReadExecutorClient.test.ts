@@ -136,4 +136,111 @@ describe('Graph-read executor client', () => {
     expect(error).toMatchObject({ code: 'executor_unavailable', message: 'executor_unavailable' });
     expect(String(error)).not.toContain('provider body secret');
   });
+
+  it.each([
+    'https://executor.internal.example.test/internal',
+    'https://executor.internal.example.test/v1/',
+    'https://executor.internal.example.test//',
+    'https://executor.internal.example.test/?route=other',
+    'https://executor.internal.example.test/#other',
+    'https://user:password@executor.internal.example.test/',
+  ])('rejects non-origin executor configuration before sending to %s', async (executorUrl) => {
+    const { privateJwk } = await signingFixture();
+    const fetchMock = vi.fn();
+
+    expect(() => createGraphReadExecutorClient({
+      executorUrl,
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+    })).toThrowError(GraphReadExecutorClientError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('strict-rejects caller-selected fields before any executor request', async () => {
+    const { privateJwk } = await signingFixture();
+    const fetchMock = vi.fn();
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+    });
+    const error = await client.retestCustomerGraphRead({
+      correlationId: CORRELATION_ID,
+      tenantId: TENANT_ID,
+      graphUrl: 'https://attacker.example.test',
+    } as never).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ code: 'executor_unavailable', message: 'executor_unavailable' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(String(error)).not.toContain('attacker');
+  });
+
+  it('rejects an oversized declared response without reading or leaking its body', async () => {
+    const { privateJwk } = await signingFixture();
+    const fetchMock = vi.fn(async () => new Response('provider-body-secret', {
+      headers: { 'content-type': 'application/json', 'content-length': '4096' },
+    }));
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+      maxResponseBytes: 16,
+    });
+
+    const error = await client.retestCustomerGraphRead({ correlationId: CORRELATION_ID, tenantId: TENANT_ID })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: 'executor_unavailable', message: 'executor_unavailable' });
+    expect(String(error)).not.toContain('provider-body-secret');
+  });
+
+  it('enforces cumulative streamed bytes when a smaller Content-Length lies', async () => {
+    const { privateJwk } = await signingFixture();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('12345678'));
+        controller.enqueue(new TextEncoder().encode('901234567'));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn(async () => new Response(stream, {
+      headers: { 'content-type': 'application/json', 'content-length': '2' },
+    }));
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+      maxResponseBytes: 16,
+    });
+
+    await expect(client.retestCustomerGraphRead({ correlationId: CORRELATION_ID, tenantId: TENANT_ID }))
+      .rejects.toMatchObject({ code: 'executor_unavailable' });
+  });
+
+  it('aborts a genuinely stalled executor request at the configured timeout', async () => {
+    const { privateJwk } = await signingFixture();
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      }));
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+      timeoutMs: 5,
+    });
+
+    await expect(client.retestCustomerGraphRead({ correlationId: CORRELATION_ID, tenantId: TENANT_ID }))
+      .rejects.toMatchObject({ code: 'executor_unavailable', message: 'executor_unavailable' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
 });

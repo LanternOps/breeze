@@ -77,10 +77,17 @@ function parseExecutorUrl(source: Environment): string {
   } catch {
     throw new Error('M365_GRAPH_READ_EXECUTOR_URL must be a valid HTTPS URL');
   }
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
-    throw new Error('M365_GRAPH_READ_EXECUTOR_URL must be a valid HTTPS URL');
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username
+    || parsed.password
+    || parsed.pathname !== '/'
+    || parsed.search !== ''
+    || parsed.hash !== ''
+  ) {
+    throw new Error('M365_GRAPH_READ_EXECUTOR_URL must be an origin-only HTTPS URL');
   }
-  return parsed.toString().replace(/\/$/, '');
+  return parsed.origin;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
