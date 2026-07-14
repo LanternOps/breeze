@@ -212,4 +212,3 @@ Expected: checks pass and no device-change-history or .githooks files appear.
     gh pr create --base main --head docs/readme-sponsors-contributors --title "docs: recognize Breeze sponsors and contributors" --body-file /tmp/breeze-community-pr.md
 
 The PR body must summarize funding, automatic public recognition, privacy, workflow triggers, tests, and the expected sponsor empty state while GitHub reviews the listing.
-
