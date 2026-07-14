@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import autoTable, { type CellHookData } from 'jspdf-autotable';
-import type { PostureControls, PostureSummary } from '../types/postureReport';
+import type { PostureControls, PostureProduct, PostureSummary } from '../types/postureReport';
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
 
 /**
@@ -518,7 +518,7 @@ function renderPostureCover(
   summary: PostureSummary,
   opts: BuildOpts,
   agg: PostureAggregates,
-): void {
+): PostureProduct[] {
   const c = summary.controls ?? {};
   const p = summary.privilegedAccess ?? {};
   const deviceCount = summary.deviceCount ?? 0;
@@ -619,32 +619,31 @@ function renderPostureCover(
   const productReserve = products.length > 0 ? 13.5 : 0;
   y = drawRecommendedActions(doc, summary, agg, y + 2.5, productReserve);
 
-  if (products.length > 0 && y + 8 < PAGE.footY - 9) {
+  let overflow: PostureProduct[] = [];
+  if (products.length > 0) {
     y = drawSectionHeading(doc, 'Security products in use', y + 2.5);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(9);
-    for (const prod of products) {
-      if (y > PAGE.footY - 9) break; // never draw into the glossary/footer
-      const catLabel = PRODUCT_CATEGORY_LABELS[prod.category] ?? prod.category;
-      // Skip the category tag when the product name already conveys it
-      // (avoids "Backup (local) (Backup)").
-      const cat = prod.product.toLowerCase().includes(catLabel.toLowerCase()) ? '' : ` (${catLabel})`;
-      const coverage = prod.deviceCoverage != null ? ` — ${prod.deviceCoverage} devices` : '';
-      // Sync status is only interesting when it's a problem; "[sync: success]"
-      // is machine noise on a client-facing page.
-      const syncOk = !prod.lastSyncStatus || /^(ok|success|succeeded)$/i.test(prod.lastSyncStatus);
-      const sync = syncOk ? '' : ` — sync ${prod.lastSyncStatus}`;
-      const degraded = prod.active === false ? ' — not reporting' : '';
-      set.fill(doc, prod.active === false ? C.warning : C.success);
-      doc.circle(PAGE.mx + 1.4, y - 1.2, 1.2, 'F');
-      set.text(doc, C.ink);
-      doc.text(`${prod.product}${cat}${coverage}`, PAGE.mx + 5, y);
-      if (sync || degraded) {
-        const baseW = doc.getTextWidth(`${prod.product}${cat}${coverage}`);
-        set.text(doc, C.warning);
-        doc.text(`${sync}${degraded}`, PAGE.mx + 5 + baseW, y);
-      }
-      y += 5.2;
+    const bottomY = PAGE.footY - 9;
+    const fullCapacity = Math.max(0, Math.floor((bottomY - y) / POSTURE_PRODUCT_ROW_HEIGHT) + 1);
+    const needsContinuation = products.length > fullCapacity;
+    // When products overflow, leave a full line below the rendered rows for
+    // the explicit continuation notice instead of silently clipping a name.
+    const coverCapacity = needsContinuation
+      ? Math.max(0, Math.floor((bottomY - POSTURE_PRODUCT_CONTINUATION_SPACE - y) / POSTURE_PRODUCT_ROW_HEIGHT))
+      : products.length;
+    const coverProducts = products.slice(0, coverCapacity);
+    for (const product of coverProducts) {
+      y = drawPostureProductRow(doc, product, y);
+    }
+    overflow = products.slice(coverProducts.length);
+    if (overflow.length > 0) {
+      set.text(doc, C.muted);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.text(
+        `+ ${overflow.length} product${overflow.length === 1 ? '' : 's'} continued on the next page`,
+        PAGE.mx + 5,
+        y,
+      );
     }
   }
 
@@ -658,6 +657,7 @@ function renderPostureCover(
     PAGE.mx,
     PAGE.footY - 2,
   );
+  return overflow;
 }
 
 // ----------------------------------------------------------------------------
@@ -941,12 +941,70 @@ const OS_LABELS: Record<string, string> = {
 };
 
 const PRODUCT_CATEGORY_LABELS: Record<string, string> = {
+  antivirus: 'Antivirus',
   edr: 'EDR',
   mdr: 'MDR',
   dns_filtering: 'DNS filtering',
   backup: 'Backup',
   identity: 'Identity',
 };
+
+const POSTURE_PRODUCT_ROW_HEIGHT = 5.2;
+const POSTURE_PRODUCT_CONTINUATION_SPACE = 4;
+
+function drawPostureProductRow(doc: jsPDF, product: PostureProduct, y: number): number {
+  const catLabel = PRODUCT_CATEGORY_LABELS[product.category] ?? product.category;
+  // Skip the category tag when the product name already conveys it
+  // (avoids "Backup (local) (Backup)").
+  const cat = product.product.toLowerCase().includes(catLabel.toLowerCase()) ? '' : ` (${catLabel})`;
+  const coverage = product.deviceCoverage != null ? ` - ${product.deviceCoverage} devices` : '';
+  // Sync status is only interesting when it's a problem; success is machine
+  // noise on a client-facing page.
+  const syncOk = !product.lastSyncStatus || /^(ok|success|succeeded)$/i.test(product.lastSyncStatus);
+  const sync = syncOk ? '' : ` - sync ${product.lastSyncStatus}`;
+  const degraded = product.active === false ? ' - not reporting' : '';
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  set.fill(doc, product.active === false ? C.warning : C.success);
+  doc.circle(PAGE.mx + 1.4, y - 1.2, 1.2, 'F');
+  set.text(doc, C.ink);
+  doc.text(`${product.product}${cat}${coverage}`, PAGE.mx + 5, y);
+  if (sync || degraded) {
+    const baseW = doc.getTextWidth(`${product.product}${cat}${coverage}`);
+    set.text(doc, C.warning);
+    doc.text(`${sync}${degraded}`, PAGE.mx + 5 + baseW, y);
+  }
+  return y + POSTURE_PRODUCT_ROW_HEIGHT;
+}
+
+function renderPostureProductContinuation(
+  doc: jsPDF,
+  products: PostureProduct[],
+  opts: BuildOpts,
+): void {
+  let remaining = [...products];
+  while (remaining.length > 0) {
+    doc.addPage('a4', 'landscape');
+    let y = drawTitleBlock(
+      doc,
+      'Security products in use',
+      '',
+      'Continued from the posture summary',
+      PAGE.bandH + 8,
+    );
+    const rowsPerPage = Math.max(
+      1,
+      Math.floor((PAGE.footY - 12 - y) / POSTURE_PRODUCT_ROW_HEIGHT),
+    );
+    const pageProducts = remaining.slice(0, rowsPerPage);
+    for (const product of pageProducts) {
+      y = drawPostureProductRow(doc, product, y);
+    }
+    remaining = remaining.slice(pageProducts.length);
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+  }
+}
 
 /** Colour for a posture body cell, keyed by column. null = inherit default ink. */
 function postureCellColor(key: string, raw: unknown): RGB | null {
@@ -1224,10 +1282,11 @@ export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
       },
       { criticalCount: 0, unprotectedCount: 0 },
     );
-    renderPostureCover(doc, opts.summary as PostureSummary, opts, agg);
+    const overflowProducts = renderPostureCover(doc, opts.summary as PostureSummary, opts, agg);
     // Draw chrome on the cover page (no autotable runs on it).
     drawHeaderBand(doc, opts);
     drawFooter(doc, opts);
+    renderPostureProductContinuation(doc, overflowProducts, opts);
     if (records.length > 0) {
       renderPostureTable(doc, records, opts);
     }

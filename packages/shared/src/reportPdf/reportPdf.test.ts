@@ -28,10 +28,14 @@ const execSummary: ExecutiveSummary = {
 };
 const opts = { generatedAt: 'Jul 1, 2026, 9:00 AM', timezone: 'UTC' };
 
+function pdfCommandPages(doc: ReturnType<typeof buildReportPdf>): string[] {
+  return ((doc.internal as unknown as { pages: Array<string[] | undefined> }).pages ?? [])
+    .filter((page): page is string[] => Array.isArray(page))
+    .map((page) => page.join('\n'));
+}
+
 function pdfCommandText(doc: ReturnType<typeof buildReportPdf>): string {
-  return ((doc.internal as unknown as { pages: string[][] }).pages ?? [])
-    .flat()
-    .join('\n');
+  return pdfCommandPages(doc).join('\n');
 }
 
 describe('buildPostureBackupMetric', () => {
@@ -69,6 +73,52 @@ describe('buildReportPdf in Node (no DOM)', () => {
     const doc = buildReportPdf(postureRows, { ...opts, reportType: 'security_compliance_posture', summary: postureSummary });
     expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(2);
     expect(Buffer.from(doc.output('arraybuffer')).byteLength).toBeGreaterThan(1000);
+  });
+
+  it('renders Huntress, SentinelOne, and Defender from the reference-like inventory', () => {
+    const summary: PostureSummary = {
+      ...postureSummary,
+      securityProducts: [
+        { product: 'Huntress', category: 'mdr', active: true, deviceCoverage: 6 },
+        { product: 'SentinelOne', category: 'edr', active: true, deviceCoverage: 4 },
+        { product: 'Defender', category: 'antivirus', active: true, deviceCoverage: 4 },
+      ],
+    };
+    const rowsWithoutProductNames = postureRows.map((row) => ({ ...row, protection: 'Device protection' }));
+    const doc = buildReportPdf(rowsWithoutProductNames, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary,
+    });
+    const text = pdfCommandText(doc);
+    expect(text).toContain('Huntress');
+    expect(text).toContain('SentinelOne');
+    expect(text).toContain('Defender');
+    const pages = pdfCommandPages(doc);
+    const continuationPage = pages.findIndex((page) => page.includes('Continued from the posture summary'));
+    const detailPage = pages.findIndex((page) => page.includes('Per-device detail'));
+    expect(continuationPage).toBeGreaterThan(0);
+    expect(detailPage).toBeGreaterThan(continuationPage);
+  });
+
+  it('continues a large product inventory without dropping names', () => {
+    const products = Array.from({ length: 24 }, (_, index) => ({
+      product: `Security Product ${index + 1} End`,
+      category: 'antivirus' as const,
+      active: true,
+      deviceCoverage: index + 1,
+    }));
+    const doc = buildReportPdf([], {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary: { ...postureSummary, securityProducts: products },
+    });
+    const text = pdfCommandText(doc);
+    for (const product of products) expect(text).toContain(product.product);
+    expect(doc.getNumberOfPages()).toBeGreaterThan(1);
+    expect(text).toContain('continued');
+    expect(text).toContain('Antivirus');
+    expect(text).toContain(' - 1 devices');
   });
 
   it('renders optional missing backup neutrally and omits the backup recommendation', () => {
