@@ -12,6 +12,7 @@ import {
   uniqueIndex,
   foreignKey,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { partners, organizations } from './orgs';
 import { users } from './users';
 import { catalogItems } from './catalog';
@@ -40,6 +41,9 @@ export const pax8Orders = pgTable('pax8_orders', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   dedupeKeyIdx: uniqueIndex('pax8_orders_dedupe_key_uq').on(table.partnerId, table.dedupeKey),
+  oneMutableDirectPerOrgIdx: uniqueIndex('pax8_orders_one_mutable_direct_per_org_uq')
+    .on(table.partnerId, table.orgId)
+    .where(sql`${table.source} = 'direct' AND ${table.status} IN ('draft', 'awaiting_details')`),
   idPartnerOrgIdx: uniqueIndex('pax8_orders_id_partner_org_idx')
     .on(table.id, table.partnerId, table.orgId),
   partnerIdx: index('pax8_orders_partner_idx').on(table.partnerId),

@@ -5,15 +5,20 @@ const mocks = vi.hoisted(() => ({
     select: vi.fn(),
     insert: vi.fn(),
     delete: vi.fn(),
+    transaction: vi.fn(),
   },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withDbAccessContext: vi.fn(),
   createPax8ClientForIntegration: vi.fn(),
   getProductDependencies: vi.fn(),
+  contextDepth: 0,
+  contextExits: 0,
 }));
 
 vi.mock('../db', () => ({
   db: mocks.db,
   runOutsideDbContext: mocks.runOutsideDbContext,
+  withDbAccessContext: mocks.withDbAccessContext,
 }));
 
 vi.mock('../db/schema', () => new Proxy({
@@ -23,6 +28,7 @@ vi.mock('../db/schema', () => new Proxy({
     partnerId: 'pax8_orders.partner_id',
     orgId: 'pax8_orders.org_id',
     status: 'pax8_orders.status',
+    source: 'pax8_orders.source',
   },
   pax8OrderLines: {
     id: 'pax8_order_lines.id',
@@ -91,6 +97,28 @@ function queryChain(rows: unknown[]) {
   return chain;
 }
 
+function containsValue(value: unknown, expected: unknown, seen = new WeakSet<object>()): boolean {
+  if (value === expected) return true;
+  if (!value || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  return Object.values(value).some((nested) => containsValue(nested, expected, seen));
+}
+
+function queryChainByPredicate(rowsWithoutDirectFilter: unknown[], rowsWithDirectFilter: unknown[]) {
+  let rows = rowsWithoutDirectFilter;
+  const chain: Record<string, unknown> = {};
+  chain.from = vi.fn(() => chain);
+  chain.where = vi.fn((condition: unknown) => {
+    rows = containsValue(condition, 'direct') ? rowsWithDirectFilter : rowsWithoutDirectFilter;
+    return chain;
+  });
+  chain.limit = vi.fn(async () => rows);
+  chain.then = (resolve: (value: unknown[]) => unknown, reject: (error: unknown) => unknown) =>
+    Promise.resolve(rows).then(resolve, reject);
+  return chain;
+}
+
 function selectRowsOnce(rows: unknown[]) {
   mocks.db.select.mockReturnValueOnce(queryChain(rows));
 }
@@ -122,6 +150,12 @@ function insertReturningOnce(rows: unknown[]) {
   return { values, returning };
 }
 
+function insertRejectingOnce(error: unknown) {
+  const returning = vi.fn(async () => { throw error; });
+  const values = vi.fn(() => ({ returning }));
+  mocks.db.insert.mockReturnValueOnce({ values });
+}
+
 function deleteReturningOnce(rows: unknown[]) {
   const returning = vi.fn(async () => rows);
   const where = vi.fn(() => ({ returning }));
@@ -130,7 +164,28 @@ function deleteReturningOnce(rows: unknown[]) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  mocks.db.select.mockReset();
+  mocks.db.insert.mockReset();
+  mocks.db.delete.mockReset();
+  mocks.db.transaction.mockReset();
+  mocks.runOutsideDbContext.mockReset();
+  mocks.withDbAccessContext.mockReset();
+  mocks.createPax8ClientForIntegration.mockReset();
+  mocks.getProductDependencies.mockReset();
+  mocks.contextDepth = 0;
+  mocks.contextExits = 0;
+  mocks.runOutsideDbContext.mockImplementation((fn: () => unknown) => fn());
+  mocks.withDbAccessContext.mockImplementation(async (_context: unknown, fn: () => unknown) => {
+    mocks.contextDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      mocks.contextDepth -= 1;
+      mocks.contextExits += 1;
+    }
+  });
+  mocks.db.transaction.mockImplementation((fn: (tx: { insert: typeof mocks.db.insert }) => unknown) =>
+    fn({ insert: mocks.db.insert }));
 });
 
 describe('getOrCreateDraftOrder', () => {
@@ -152,6 +207,30 @@ describe('getOrCreateDraftOrder', () => {
 
     expect(order.id).toBe('ord-existing');
     expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse an awaiting-details quote order as the direct draft', async () => {
+    mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
+    mocks.db.select.mockReturnValueOnce(queryChainByPredicate(
+      [{ ...baseOrder, id: 'quote-order', source: 'quote', status: 'awaiting_details' }],
+      [],
+    ));
+    insertReturningOnce([{ ...baseOrder, id: 'direct-order', source: 'direct' }]);
+
+    const order = await getOrCreateDraftOrder({ partnerId: 'p1', orgId: 'o1', actorUserId: 'u1' });
+
+    expect(order.id).toBe('direct-order');
+  });
+
+  it('returns the winning direct draft when its insert loses the unique-index race', async () => {
+    mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
+    selectRowsOnce([]);
+    insertRejectingOnce({ cause: { code: '23505', constraint_name: 'pax8_orders_one_mutable_direct_per_org_uq' } });
+    selectRowsOnce([{ ...baseOrder, id: 'winning-order', source: 'direct' }]);
+
+    const order = await getOrCreateDraftOrder({ partnerId: 'p1', orgId: 'o1', actorUserId: 'u1' });
+
+    expect(order.id).toBe('winning-order');
   });
 
   it('creates a direct draft with a stable per-order dedupe key', async () => {
@@ -198,7 +277,24 @@ describe('addOrderLine', () => {
       message: expect.stringContaining('decrease'),
     });
 
-    expect(mocks.runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(mocks.runOutsideDbContext).toHaveBeenCalled();
+  });
+
+  it('uses the active commitment for a decrease instead of an unrelated permissive commitment', async () => {
+    mockOrder();
+    mockSubscriptionSnapshot({ raw: { commitmentTermId: 'blocked' } });
+    mockDependencies({
+      commitments: [
+        { id: 'allowed', allowForQuantityDecrease: true, allowForQuantityIncrease: true, allowForEarlyCancellation: true },
+        { id: 'blocked', allowForQuantityDecrease: false, allowForQuantityIncrease: true, allowForEarlyCancellation: true },
+      ],
+    });
+    insertReturningOnce([{ id: 'wrongly-authorized-line' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'change_quantity',
+      targetSubscriptionId: 'sub-1', quantity: '5.00',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('decrease') });
   });
 
   it('rejects a change_quantity whose commitment forbids an increase', async () => {
@@ -222,6 +318,43 @@ describe('addOrderLine', () => {
     })).rejects.toMatchObject({
       status: 422,
       message: expect.stringContaining('increase'),
+    });
+  });
+
+  it('uses a nested active commitment for an increase instead of an unrelated permissive commitment', async () => {
+    mockOrder();
+    mockSubscriptionSnapshot({ raw: { commitment: { id: 'blocked' } } });
+    mockDependencies({
+      commitments: [
+        { id: 'allowed', allowForQuantityDecrease: true, allowForQuantityIncrease: true, allowForEarlyCancellation: true },
+        { id: 'blocked', allowForQuantityDecrease: true, allowForQuantityIncrease: false, allowForEarlyCancellation: true },
+      ],
+    });
+    insertReturningOnce([{ id: 'wrongly-authorized-line' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'change_quantity',
+      targetSubscriptionId: 'sub-1', quantity: '11.00',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('increase') });
+  });
+
+  it('fails closed when multiple commitments exist but the active one is unknown', async () => {
+    mockOrder();
+    mockSubscriptionSnapshot({ raw: {} });
+    mockDependencies({
+      commitments: [
+        { id: 'allowed', allowForQuantityDecrease: true, allowForQuantityIncrease: true, allowForEarlyCancellation: true },
+        { id: 'blocked', allowForQuantityDecrease: false, allowForQuantityIncrease: false, allowForEarlyCancellation: false },
+      ],
+    });
+    insertReturningOnce([{ id: 'wrongly-authorized-line' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'change_quantity',
+      targetSubscriptionId: 'sub-1', quantity: '5.00',
+    })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining('active commitment'),
     });
   });
 
@@ -294,6 +427,67 @@ describe('addOrderLine', () => {
       status: 422,
       message: expect.stringContaining('cancellation'),
     });
+  });
+
+  it('uses a vendor-cased nested commitment id for cancellation authorization', async () => {
+    mockOrder();
+    mockSubscriptionSnapshot({ raw: { commitmentTerm: { commitmentTermID: 'blocked' } } });
+    mockDependencies({
+      commitments: [
+        { id: 'allowed', allowForQuantityDecrease: true, allowForQuantityIncrease: true, allowForEarlyCancellation: true },
+        { id: 'blocked', allowForQuantityDecrease: true, allowForQuantityIncrease: true, allowForEarlyCancellation: false },
+      ],
+    });
+    insertReturningOnce([{ id: 'wrongly-authorized-line' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'cancel', targetSubscriptionId: 'sub-1',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('cancellation') });
+  });
+
+  it('closes every partner DB context before awaiting the dependency HTTP call', async () => {
+    mockOrder();
+    mockSubscriptionSnapshot({ raw: { commitmentId: 'c1' } });
+    let resolveDependencies!: (value: { commitments: Array<Record<string, unknown>> }) => void;
+    let clientLookupDepth = -1;
+    mocks.createPax8ClientForIntegration.mockImplementationOnce(async () => {
+      clientLookupDepth = mocks.contextDepth;
+      return { integration: { id: 'i1', partnerId: 'p1' }, client: { getProductDependencies: mocks.getProductDependencies } };
+    });
+    let httpDepth = -1;
+    let contextExitsAtHttp = -1;
+    mocks.getProductDependencies.mockImplementationOnce(() => {
+      httpDepth = mocks.contextDepth;
+      contextExitsAtHttp = mocks.contextExits;
+      return new Promise((resolve) => { resolveDependencies = resolve; });
+    });
+    insertReturningOnce([{ id: 'line-1', orderId: 'ord-1', partnerId: 'p1', orgId: 'o1', action: 'change_quantity' }]);
+
+    const pending = addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'change_quantity',
+      targetSubscriptionId: 'sub-1', quantity: '5.00',
+    });
+    await vi.waitFor(() => expect(mocks.getProductDependencies).toHaveBeenCalledTimes(1));
+
+    const insertStartedBeforeHttpResolved = mocks.db.insert.mock.calls.length > 0;
+    resolveDependencies({
+      commitments: [{ id: 'c1', allowForQuantityDecrease: true, allowForQuantityIncrease: true, allowForEarlyCancellation: true }],
+    });
+    await expect(pending).resolves.toMatchObject({ id: 'line-1' });
+
+    expect(clientLookupDepth).toBe(1);
+    expect(httpDepth).toBe(0);
+    expect(contextExitsAtHttp).toBe(3);
+    expect(insertStartedBeforeHttpResolved).toBe(false);
+    expect(mocks.contextDepth).toBe(0);
+    expect(mocks.contextExits).toBe(4);
+    for (const [context] of mocks.withDbAccessContext.mock.calls) {
+      expect(context).toMatchObject({
+        scope: 'partner',
+        accessiblePartnerIds: ['p1'],
+        currentPartnerId: 'p1',
+      });
+    }
   });
 
   it('rejects a new subscription without a product', async () => {

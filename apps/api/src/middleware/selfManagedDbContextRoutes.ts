@@ -65,6 +65,10 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/sso\/providers\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/sso\/providers\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/sso\/providers\/[^/]+\/test\/?$/ },
+  // Pax8 order line authoring may fetch product commitment dependencies. The
+  // service re-enters short partner-scoped DB contexts around each DB phase,
+  // with the Pax8 HTTP request running after those contexts close.
+  { method: 'POST', pattern: /^\/api\/v1\/pax8\/orders\/[^/]+\/lines\/?$/ },
 ];
 
 /**

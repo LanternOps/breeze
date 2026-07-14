@@ -7,7 +7,7 @@
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import {
   db,
   withDbAccessContext,
@@ -16,13 +16,15 @@ import {
 } from '../../db';
 import {
   pax8Integrations,
+  pax8CompanyMappings,
   pax8Orders,
   pax8OrderLines,
   catalogItems,
   contracts,
   contractLines,
 } from '../../db/schema';
-import { createOrganization, createPartner } from './db-utils';
+import { getOrCreateDraftOrder } from '../../services/pax8OrderService';
+import { createOrganization, createPartner, createUser } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -64,6 +66,14 @@ async function seed() {
     const orgB = await createOrganization({ partnerId: partnerB.id });
     const integrationA = await seedIntegration(partnerA.id);
     const integrationB = await seedIntegration(partnerB.id);
+
+    await db.insert(pax8CompanyMappings).values({
+      integrationId: integrationA.id,
+      partnerId: partnerA.id,
+      pax8CompanyId: 'pax8-co-a',
+      pax8CompanyName: 'Customer A',
+      orgId: orgA.id,
+    });
 
     const [orderA] = await db
       .insert(pax8Orders)
@@ -149,6 +159,30 @@ describe('Pax8 ordering partner-axis RLS and integrity (breeze_app)', () => {
         })
       )
     ).rejects.toMatchObject({ cause: { code: '23505' } });
+  });
+
+  runDb('concurrent direct draft creation returns one DB-enforced winner without reusing the quote order', async () => {
+    const { partnerA, orgA, orderA } = await seed();
+    const actor = await createUser({ partnerId: partnerA.id });
+    const input = { partnerId: partnerA.id, orgId: orgA.id, actorUserId: actor.id };
+
+    const [first, second] = await Promise.all([
+      withPartnerContext(partnerA.id, () => getOrCreateDraftOrder(input)),
+      withPartnerContext(partnerA.id, () => getOrCreateDraftOrder(input)),
+    ]);
+
+    expect(first.id).toBe(second.id);
+    expect(first.id).not.toBe(orderA.id);
+    const mutableDirect = await withSystemDbAccessContext(() => db
+      .select({ id: pax8Orders.id })
+      .from(pax8Orders)
+      .where(and(
+        eq(pax8Orders.partnerId, partnerA.id),
+        eq(pax8Orders.orgId, orgA.id),
+        eq(pax8Orders.source, 'direct'),
+        inArray(pax8Orders.status, ['draft', 'awaiting_details']),
+      )));
+    expect(mutableDirect).toEqual([{ id: first.id }]);
   });
 
   runDb('rejects a cancel line carrying a quantity (action payload CHECK)', async () => {
