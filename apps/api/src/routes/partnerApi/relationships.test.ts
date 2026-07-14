@@ -7,6 +7,7 @@ const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
 const PARTNER_ID = '33333333-3333-4333-8333-333333333333';
 const SITE_ID = '44444444-4444-4444-8444-444444444444';
+const OTHER_SITE_ID = '44444444-4444-4444-8444-444444444445';
 const DEVICE_A = '55555555-5555-4555-8555-555555555555';
 const DEVICE_B = '66666666-6666-4666-8666-666666666666';
 const DEVICE_BATCH_A = '91111111-1111-4111-8111-111111111111';
@@ -176,7 +177,7 @@ describe('partner durable relationship export', () => {
     ]));
   });
 
-  it('resolves topology and link endpoints in the same organization and site', async () => {
+  it('resolves topology endpoints in the same organization/site and link peers in the same organization', async () => {
     results.push([], []);
     expect((await request('/partner-api/device-relationships')).status).toBe(200);
     const dialect = new PgDialect();
@@ -185,7 +186,7 @@ describe('partner durable relationship export', () => {
 
     const peerQuery = dialect.sqlToQuery(deviceProjection.peerEdges as SQL);
     expect(peerQuery.sql).toContain('p.org_id = "devices"."org_id"');
-    expect(peerQuery.sql).toContain('p.site_id = "devices"."site_id"');
+    expect(peerQuery.sql).not.toContain('p.site_id = "devices"."site_id"');
 
     const topologyQuery = dialect.sqlToQuery(siteProjection.topologyEdges as SQL);
     expect(topologyQuery.sql.match(/exists/gi)).toHaveLength(4);
@@ -196,7 +197,32 @@ describe('partner durable relationship export', () => {
     expect(topologyQuery.sql).toContain("'printer'");
   });
 
-  it('builds relationship child IDs with the RFC-normalizing SQL helper', async () => {
+  it('limits discovered topology endpoints to the exact exported 500-item equipment set', async () => {
+    results.push([], []);
+    expect((await request('/partner-api/device-relationships')).status).toBe(200);
+    const dialect = new PgDialect();
+    for (const field of ['topologyEdges', 'edgeCount'] as const) {
+      const query = dialect.sqlToQuery(mocks.projections[1]![field] as SQL);
+      expect(query.params.filter((value) => value === 500)).toHaveLength(2);
+      expect(query.sql.match(/ORDER BY endpoint_asset\.id LIMIT/gu)).toHaveLength(2);
+    }
+  });
+
+  it('preserves a same-org device link when the peer is at another site', async () => {
+    results.push([{
+      ...row(),
+      peerEdges: [{ deviceId: DEVICE_B, orgId: ORG_ID, siteId: OTHER_SITE_ID, role: 'guest' }],
+      edgeCount: 6,
+    }]);
+    results.push([]);
+    const response = await request('/partner-api/device-relationships');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0].edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'device_link', to: { type: 'device', id: DEVICE_B } }),
+    ]));
+  });
+
+  it('builds relationship child IDs from canonical JSON arrays through the text SQL overload', async () => {
     results.push([], []);
     expect((await request('/partner-api/device-relationships')).status).toBe(200);
     const projection = mocks.projections[0]!;
@@ -209,7 +235,15 @@ describe('partner durable relationship export', () => {
       const query = dialect.sqlToQuery(projection[field] as SQL);
       expect(query.sql).toContain('breeze_partner_export_stable_uuid');
       expect(query.sql).not.toContain('md5(');
+      expect(query.sql).toContain('array_to_json(ARRAY[');
+      expect(query.sql).not.toContain("|| ':' ||");
       expect(query.params).toContain(namespace);
+      if (field === 'addressEdges') {
+        expect(query.sql).toContain('JOIN LATERAL');
+        expect(query.sql).toContain('current_interface.interface_name = a.interface_name');
+        expect(query.sql).toContain('a.mac_address IS NOT NULL AND current_interface.mac_address = a.mac_address');
+        expect(query.sql).toContain('resolved_interface.mac_address');
+      }
     }
   });
 

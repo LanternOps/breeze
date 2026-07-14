@@ -18,6 +18,7 @@ const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
 const mocks = vi.hoisted(() => ({
   select: vi.fn(), execute: vi.fn(), accessibleOrgIds: [] as string[],
   projections: [] as Array<Record<string, unknown>>,
+  builders: [] as any[],
 }));
 vi.mock('../../db', () => ({
   db: { select: mocks.select, execute: mocks.execute }, hasDbAccessContext: () => true,
@@ -50,6 +51,7 @@ function query(result: QueryResult) {
     where: vi.fn(() => builder), orderBy: vi.fn(() => builder), limit: vi.fn(() => promise),
     then: promise.then.bind(promise),
   };
+  mocks.builders.push(builder);
   return builder;
 }
 
@@ -107,7 +109,8 @@ function request(path: string, scope = 'inventory:read', apiKey = 'test-key') {
 
 describe('partner reconstruction inventory exports', () => {
   beforeEach(() => {
-    vi.clearAllMocks(); results = []; mocks.accessibleOrgIds = [ORG_ID]; mocks.projections.length = 0;
+    vi.clearAllMocks(); results = []; mocks.accessibleOrgIds = [ORG_ID];
+    mocks.projections.length = 0; mocks.builders.length = 0;
     mocks.select.mockImplementation((projection: Record<string, unknown>) => {
       mocks.projections.push(projection);
       return query(results.shift() ?? []);
@@ -204,7 +207,45 @@ describe('partner reconstruction inventory exports', () => {
     expect((await response.json()).data[0].addresses).toEqual([]);
   });
 
-  it('builds RFC-normalized interface, address, and VM identities in SQL', async () => {
+  it('resolves history by interface name, preferring an exact MAC and accepting a null history MAC', async () => {
+    const source = inventoryRow();
+    const exactId = '72222222-2222-4222-8222-222222222224';
+    const fallbackId = '72222222-2222-4222-8222-222222222225';
+    const interfaces = [
+      { id: fallbackId, name: 'Bonded', macAddress: '00:00:00:00:00:01', primary: false },
+      { id: exactId, name: 'Bonded', macAddress: '00:00:00:00:00:02', primary: false },
+    ];
+    results.push([{
+      ...source,
+      interfaces,
+      interfaceCount: 2,
+      addresses: [
+        { ...source.addresses[0], id: '73333333-3333-4333-8333-333333333335', interfaceName: 'Bonded', macAddress: '00:00:00:00:00:02' },
+        { ...source.addresses[1], id: '73333333-3333-4333-8333-333333333336', interfaceName: 'Bonded', macAddress: null },
+      ],
+      addressCount: 2,
+    }]);
+    results.push([]);
+    const response = await request('/partner-api/device-inventory');
+    expect(response.status).toBe(200);
+    const addresses = (await response.json()).data[0].addresses;
+    expect(addresses[0].interfaceId).toBe(exactId);
+    expect(addresses[1].interfaceId).toBe(fallbackId);
+  });
+
+  it.each(['/device-inventory', '/device-software'])('requires a same-org site join for device rows on %s', async (path) => {
+    results.push([]);
+    if (path === '/device-inventory') results.push([]);
+    expect((await request(`/partner-api${path}`)).status).toBe(200);
+    const builder = mocks.builders[0]!;
+    expect(builder.innerJoin).toHaveBeenCalled();
+    const condition = builder.innerJoin.mock.calls[0]![1] as SQL;
+    const rendered = new PgDialect().sqlToQuery(condition).sql;
+    expect(rendered).toContain('"sites"."id" = "devices"."site_id"');
+    expect(rendered).toContain('"sites"."org_id" = "devices"."org_id"');
+  });
+
+  it('builds derived identities from canonical JSON arrays through the text SQL overload', async () => {
     results.push([], []);
     expect((await request('/partner-api/device-inventory')).status).toBe(200);
     const projection = mocks.projections[0]!;
@@ -217,7 +258,15 @@ describe('partner reconstruction inventory exports', () => {
       const query = dialect.sqlToQuery(projection[field] as SQL);
       expect(query.sql).toContain('breeze_partner_export_stable_uuid');
       expect(query.sql).not.toContain('md5(');
+      expect(query.sql).toContain('array_to_json(ARRAY[');
+      expect(query.sql).not.toContain("|| ':' ||");
       expect(query.params).toContain(namespace);
+      if (field === 'addresses') {
+        expect(query.sql).toContain('JOIN LATERAL');
+        expect(query.sql).toContain('current_interface.interface_name = a.interface_name');
+        expect(query.sql).toContain('a.mac_address IS NOT NULL AND current_interface.mac_address = a.mac_address');
+        expect(query.sql).toContain('resolved_interface.mac_address');
+      }
     }
   });
 

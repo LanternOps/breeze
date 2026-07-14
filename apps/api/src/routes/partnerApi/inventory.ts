@@ -36,7 +36,6 @@ import {
 } from './schemas';
 import {
   PARTNER_EXPORT_DERIVED_ID_NAMESPACE,
-  stablePartnerExportInterfaceUuid,
 } from './identity';
 
 export const PARTNER_INVENTORY_CHILD_LIMIT = 500;
@@ -131,20 +130,33 @@ function projectDeviceInventory(input: unknown) {
     id: networkInterface.id, name: String(networkInterface.name ?? networkInterface.interfaceName ?? '').slice(0, 1000),
     macAddress: nullableString(networkInterface.macAddress, 17), primary: boolean(networkInterface.primary ?? networkInterface.isPrimary),
   }));
-  const interfaceByName = new Map(interfaces.map((entry) => [entry.name, entry.id]));
-  const interfaceIds = new Set(interfaces.map((entry) => String(entry.id)));
-  const addresses = array(row.addresses, PARTNER_INVENTORY_CHILD_LIMIT).map((address) => {
+  const interfacesByName = new Map<string, typeof interfaces>();
+  for (const networkInterface of interfaces) {
+    const candidates = interfacesByName.get(networkInterface.name) ?? [];
+    candidates.push(networkInterface);
+    interfacesByName.set(networkInterface.name, candidates);
+  }
+  for (const candidates of interfacesByName.values()) {
+    candidates.sort((left, right) => {
+      if (left.macAddress === null && right.macAddress !== null) return 1;
+      if (left.macAddress !== null && right.macAddress === null) return -1;
+      const macComparison = String(left.macAddress ?? '').localeCompare(String(right.macAddress ?? ''));
+      return macComparison !== 0 ? macComparison : String(left.id).localeCompare(String(right.id));
+    });
+  }
+  const addresses = array(row.addresses, PARTNER_INVENTORY_CHILD_LIMIT).flatMap((address) => {
     const assignment = String(address.assignment ?? address.assignmentType ?? 'unknown');
     const interfaceName = String(address.interfaceName ?? '').slice(0, 1000);
-    return {
+    const historyMacAddress = typeof address.macAddress === 'string' ? address.macAddress : null;
+    const candidates = interfacesByName.get(interfaceName) ?? [];
+    const resolvedInterface = (historyMacAddress
+      ? candidates.find((candidate) => candidate.macAddress === historyMacAddress)
+      : undefined) ?? candidates[0];
+    if (!resolvedInterface) return [];
+    return [{
       id: address.id,
-      interfaceId: address.interfaceId ?? interfaceByName.get(interfaceName)
-        ?? stablePartnerExportInterfaceUuid(
-          String(row.subjectId),
-          interfaceName,
-          typeof address.macAddress === 'string' ? address.macAddress : null,
-        ),
-      interfaceName,
+      interfaceId: resolvedInterface.id,
+      interfaceName: resolvedInterface.name,
       address: String(address.address ?? address.ipAddress ?? '').slice(0, 45),
       family: address.family ?? address.ipType ?? 'ipv4', assignment,
       reservationEligible: assignment === 'static',
@@ -154,8 +166,8 @@ function projectDeviceInventory(input: unknown) {
         : [],
       active: boolean(address.active ?? address.isActive), firstSeenAt: timestamp(address.firstSeenAt ?? address.firstSeen),
       deactivatedAt: address.deactivatedAt ? timestamp(address.deactivatedAt) : null,
-    };
-  }).filter((address) => interfaceIds.has(String(address.interfaceId)));
+    }];
+  });
   const virtualMachines = array(row.virtualMachines, PARTNER_INVENTORY_CHILD_LIMIT).map((vm) => ({
     id: vm.id, externalId: String(vm.externalId ?? vm.vmId ?? '').slice(0, 64),
     name: String(vm.name ?? vm.vmName ?? '').slice(0, 256), generation: nonnegativeInteger(vm.generation),
@@ -254,7 +266,7 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
       SELECT jsonb_build_object(
         'id', public.breeze_partner_export_stable_uuid(
           ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.interface},
-          n.device_id::text || ':' || n.interface_name || ':' || COALESCE(n.mac_address, '')
+          array_to_json(ARRAY[n.device_id::text, n.interface_name, COALESCE(n.mac_address, '')]::text[])::text
         ),
         'name', n.interface_name, 'macAddress', n.mac_address, 'primary', n.is_primary
       ) item FROM ${deviceNetwork} n WHERE n.device_id = ${devices.id} AND n.org_id = ${devices.orgId}
@@ -265,23 +277,32 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
       SELECT jsonb_build_object(
         'id', public.breeze_partner_export_stable_uuid(
           ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.address},
-          a.device_id::text || ':' || a.interface_name || ':' || a.ip_address || ':' || a.ip_type
+          array_to_json(ARRAY[a.device_id::text, resolved_interface.interface_name, a.ip_address, a.ip_type]::text[])::text
         ),
         'interfaceId', public.breeze_partner_export_stable_uuid(
           ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.interface},
-          a.device_id::text || ':' || a.interface_name || ':' || COALESCE(a.mac_address, '')
+          array_to_json(ARRAY[
+            a.device_id::text, resolved_interface.interface_name, COALESCE(resolved_interface.mac_address, '')
+          ]::text[])::text
         ),
-        'interfaceName', a.interface_name, 'address', a.ip_address, 'family', a.ip_type,
+        'interfaceName', resolved_interface.interface_name, 'macAddress', a.mac_address,
+        'address', a.ip_address, 'family', a.ip_type,
         'assignment', a.assignment_type, 'subnetMask', a.subnet_mask, 'gateway', a.gateway,
         'dnsServers', COALESCE(a.dns_servers, ARRAY[]::text[]), 'active', a.is_active,
         'firstSeenAt', a.first_seen, 'deactivatedAt', a.deactivated_at
-      ) item FROM ${deviceIpHistory} a WHERE a.device_id = ${devices.id} AND a.org_id = ${devices.orgId}
-        AND EXISTS (
-          SELECT 1 FROM ${deviceNetwork} current_interface
-          WHERE current_interface.device_id = a.device_id AND current_interface.org_id = a.org_id
-            AND current_interface.interface_name = a.interface_name
-            AND current_interface.mac_address IS NOT DISTINCT FROM a.mac_address
-        )
+      ) item FROM ${deviceIpHistory} a
+      JOIN LATERAL (
+        SELECT current_interface.interface_name, current_interface.mac_address
+        FROM ${deviceNetwork} current_interface
+        WHERE current_interface.device_id = a.device_id AND current_interface.org_id = a.org_id
+          AND current_interface.interface_name = a.interface_name
+        ORDER BY
+          CASE WHEN a.mac_address IS NOT NULL AND current_interface.mac_address = a.mac_address THEN 0 ELSE 1 END,
+          current_interface.mac_address ASC NULLS LAST,
+          current_interface.id
+        LIMIT 1
+      ) resolved_interface ON TRUE
+      WHERE a.device_id = ${devices.id} AND a.org_id = ${devices.orgId}
       ORDER BY a.interface_name, a.ip_address, a.ip_type LIMIT ${PARTNER_INVENTORY_CHILD_LIMIT}
     ) bounded), '[]'::jsonb)`,
     addressCount: sql<number>`(
@@ -291,7 +312,6 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
           SELECT 1 FROM ${deviceNetwork} current_interface
           WHERE current_interface.device_id = a.device_id AND current_interface.org_id = a.org_id
             AND current_interface.interface_name = a.interface_name
-            AND current_interface.mac_address IS NOT DISTINCT FROM a.mac_address
         )
     )`,
     warranty: sql<unknown>`(
@@ -302,7 +322,7 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
       SELECT jsonb_build_object(
         'id', public.breeze_partner_export_stable_uuid(
           ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.virtualMachine},
-          v.device_id::text || ':' || v.vm_id
+          array_to_json(ARRAY[v.device_id::text, v.vm_id]::text[])::text
         ),
         'externalId', v.vm_id, 'name', v.vm_name, 'generation', v.generation,
         'memoryMb', v.memory_mb, 'processorCount', v.processor_count,
@@ -312,6 +332,7 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
     ) bounded), '[]'::jsonb)`,
     virtualMachineCount: sql<number>`(SELECT COUNT(*)::integer FROM ${hypervVms} v WHERE v.device_id = ${devices.id} AND v.org_id = ${devices.orgId})`,
   }).from(devices)
+    .innerJoin(sites, and(eq(sites.id, devices.siteId), eq(sites.orgId, devices.orgId)))
     .leftJoin(partnerExportDeviceMaterialState, and(
       eq(partnerExportDeviceMaterialState.deviceId, devices.id), eq(partnerExportDeviceMaterialState.orgId, devices.orgId),
     ))
@@ -376,6 +397,7 @@ async function selectSoftwareRows(orgIds: string[], query: ExportQueryInput) {
     ) bounded), '[]'::jsonb)`,
     softwareCount: sql<number>`(SELECT COUNT(*)::integer FROM ${softwareInventory} s WHERE s.device_id = ${devices.id} AND s.org_id = ${devices.orgId})`,
   }).from(devices)
+    .innerJoin(sites, and(eq(sites.id, devices.siteId), eq(sites.orgId, devices.orgId)))
     .leftJoin(partnerExportDeviceMaterialState, and(
       eq(partnerExportDeviceMaterialState.deviceId, devices.id), eq(partnerExportDeviceMaterialState.orgId, devices.orgId),
     ))
