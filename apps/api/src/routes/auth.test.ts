@@ -920,7 +920,13 @@ describe('auth routes', () => {
       expect(ipCalls[0]?.[2]).toBe(10);
     });
 
-    it('Task 10: returns 429 with locked message when isAccountLocked is true (even on correct password)', async () => {
+    // SR2-23: this test used to assert `429 { error: /locked/i }`. That response
+    // was an account-existence oracle — unknown emails never lock, so an
+    // attacker who saw it had confirmed the address had an account without ever
+    // guessing a password. The lockout is unchanged (a correct password on a
+    // locked account still mints nothing); only the externally visible response
+    // is now the same generic 401 every other denial returns.
+    it('Task 10 + SR2-23: denies a locked account with the generic 401 (even on correct password) — no lockout oracle', async () => {
       vi.mocked(isAccountLocked).mockResolvedValue(true);
       vi.mocked(verifyPassword).mockResolvedValue(true);
       vi.mocked(db.select).mockReturnValue({
@@ -944,9 +950,16 @@ describe('auth routes', () => {
         body: JSON.stringify({ email: 'victim@x.com', password: 'right-password' })
       });
 
-      expect(res.status).toBe(429);
+      expect(res.status).toBe(401);
       const body = await res.json();
-      expect(body.error).toMatch(/locked/i);
+      expect(body).toEqual({ error: 'Invalid email or password' });
+      expect(JSON.stringify(body)).not.toMatch(/lock/i);
+      expect(body.retryAfter).toBeUndefined();
+      expect(res.headers.get('retry-after')).toBeNull();
+      // The locked path must still pay the argon2 cost — if it short-circuited
+      // before the verify it would answer faster than a live account and the
+      // oracle would just move into the response latency.
+      expect(verifyPassword).toHaveBeenCalledWith('$argon2id$hash', 'right-password');
       // Correct password verified but we MUST NOT mint tokens for a locked account.
       expect(createTokenPair).not.toHaveBeenCalled();
     });
