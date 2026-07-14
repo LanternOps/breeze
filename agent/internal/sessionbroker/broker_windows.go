@@ -4,6 +4,7 @@ package sessionbroker
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
@@ -14,7 +15,7 @@ import (
 // excludes service accounts, batch jobs, and network logons.
 const pipeSecurity = "D:P(A;;GA;;;SY)(A;;GRGW;;;IU)"
 
-func (b *Broker) setupSocket() error {
+func (b *Broker) setupSocket() (net.Listener, error) {
 	cfg := &winio.PipeConfig{
 		SecurityDescriptor: pipeSecurity,
 		InputBufferSize:    64 * 1024,
@@ -23,14 +24,10 @@ func (b *Broker) setupSocket() error {
 
 	listener, err := winio.ListenPipe(b.socketPath, cfg)
 	if err != nil {
-		return fmt.Errorf("listen pipe %s: %w", b.socketPath, err)
-	}
-
-	if !b.publishListener(listener) {
-		return fmt.Errorf("broker acceptance already stopped")
+		return nil, fmt.Errorf("listen pipe %s: %w", b.socketPath, err)
 	}
 	log.Info("named pipe listener created", "pipe", b.socketPath)
-	return nil
+	return listener, nil
 }
 
 // peerWinSessionID returns the Windows session ID for the given process,

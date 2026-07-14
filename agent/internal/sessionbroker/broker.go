@@ -269,11 +269,12 @@ type Broker struct {
 	backup                  *backupHelper // backup helper process and session
 	closed                  bool
 
-	acceptMu          sync.Mutex
-	acceptStopped     bool
-	preAuthConns      map[net.Conn]bool // true once verified auth is being published
-	preAuthHandlers   sync.WaitGroup
-	beforePreAuthRead func() // test barrier; set before Listen/startAcceptedConnection
+	acceptMu               sync.Mutex
+	acceptStopped          bool
+	preAuthConns           map[net.Conn]bool // true once verified auth is being published
+	preAuthHandlers        sync.WaitGroup
+	beforePreAuthRead      func() // test barrier; set before Listen/startAcceptedConnection
+	afterListenerPublished func() // test barrier; set before Listen
 
 	// snap is an atomically updated snapshot of sessions/byIdentity/consoleUser.
 	// Updated under b.mu.Lock() on every mutation. Read-only hot paths use
@@ -472,8 +473,19 @@ func (b *Broker) SetConsoleUser(username string) {
 
 // Listen starts the IPC listener. Blocks until stopChan is closed.
 func (b *Broker) Listen(stopChan <-chan struct{}) error {
-	if err := b.setupSocket(); err != nil {
+	listener, err := b.setupSocket()
+	if err != nil {
 		return fmt.Errorf("sessionbroker: setup socket: %w", err)
+	}
+	return b.listenOn(listener, stopChan)
+}
+
+func (b *Broker) listenOn(listener net.Listener, stopChan <-chan struct{}) error {
+	if !b.publishListener(listener) {
+		return nil
+	}
+	if b.afterListenerPublished != nil {
+		b.afterListenerPublished()
 	}
 
 	log.Info("session broker listening", "path", b.socketPath)
@@ -482,7 +494,6 @@ func (b *Broker) Listen(stopChan <-chan struct{}) error {
 	go b.idleReaper(stopChan)
 
 	// Accept loop
-	listener := b.currentListener()
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -549,6 +560,16 @@ func (b *Broker) HasHelperKeyOwner(key HelperKey) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.helperByKey[key] != nil
+}
+
+func (b *Broker) helperKeyOwnerPID(key HelperKey) (uint32, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	owner := b.helperByKey[key]
+	if owner == nil || owner.PID <= 0 {
+		return 0, owner != nil
+	}
+	return uint32(owner.PID), true
 }
 
 func (b *Broker) whileHelperKeyOwnedBy(key HelperKey, session *Session, fn func()) bool {

@@ -282,6 +282,12 @@ func (m *HelperLifecycleManager) spawnKey(key HelperKey) {
 		return
 	}
 	go m.watchProcess(entry)
+	if m.broker != nil {
+		if ownerPID, owned := m.broker.helperKeyOwnerPID(key); owned && ownerPID != process.ProcessID() {
+			m.stopTrackedKey(key)
+			return
+		}
+	}
 	log.Info("proactively spawned helper in session", "helperKey", key.String(), "pid", process.ProcessID())
 }
 
@@ -320,6 +326,10 @@ func (m *HelperLifecycleManager) stopKey(key HelperKey) {
 	if m.broker != nil {
 		m.broker.TerminateHelperKey(key)
 	}
+	m.stopTrackedKey(key)
+}
+
+func (m *HelperLifecycleManager) stopTrackedKey(key HelperKey) {
 	entry := m.registry.beginStop(key)
 	if entry == nil {
 		return
@@ -417,9 +427,18 @@ func (m *HelperLifecycleManager) sessionAuthenticated(session *Session) {
 	if m.broker == nil {
 		return
 	}
+	rollbackProactive := false
 	m.broker.whileHelperKeyOwnedBy(key, session, func() {
+		trackedPID := m.registry.processID(key)
+		if trackedPID != 0 && trackedPID != uint32(session.PID) {
+			rollbackProactive = true
+			return
+		}
 		m.registry.markConnected(key, uint32(session.PID), session)
 	})
+	if rollbackProactive {
+		m.stopTrackedKey(key)
+	}
 }
 
 func (m *HelperLifecycleManager) sessionClosed(session *Session) {

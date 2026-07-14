@@ -167,6 +167,76 @@ type fakeHelperSpawner struct {
 	closed    int
 }
 
+type blockingHelperSpawner struct {
+	process helperProcess
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingHelperSpawner) Spawn(HelperKey) (helperProcess, error) {
+	close(s.entered)
+	<-s.release
+	return s.process, nil
+}
+
+func (*blockingHelperSpawner) Close() error { return nil }
+
+func TestScheduledHelperPublishedDuringSpawnRollsBackProactiveProcess(t *testing.T) {
+	b := New("scheduled-spawn-race-"+t.Name(), nil)
+	key := HelperKey{WindowsSessionID: 7, Role: "system"}
+	proactive := newFakeHelperProcess(4060)
+	spawner := &blockingHelperSpawner{
+		process: proactive,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	m := newHelperLifecycleManager(b, fakeLifecycleDetector{}, nil, spawner)
+	m.gracePeriod = 0
+	m.finalWait = 100 * time.Millisecond
+	m.mu.Lock()
+	m.desired[key] = true
+	m.mu.Unlock()
+	t.Cleanup(func() {
+		proactive.markExited(1)
+		m.Stop()
+		b.Close()
+	})
+
+	spawnDone := make(chan struct{})
+	go func() {
+		m.spawnKey(key)
+		close(spawnDone)
+	}()
+	<-spawner.entered // owner check and registry reservation have completed
+
+	scheduledProcess := newFakeOwnedPeerProcess(6060)
+	scheduledSession := newOwnedSession(t, b, key, scheduledProcess)
+	b.fireLifecycleSessionAuthenticated(scheduledSession)
+	close(spawner.release)
+	<-spawnDone
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, terminated, closed := proactive.counts()
+		if terminated == 1 && closed == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("proactive rollback counts terminate=%d close=%d, want 1 each", terminated, closed)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if proactive.Alive() {
+		t.Fatal("proactive duplicate remains alive after scheduled owner publication")
+	}
+	if !b.HasHelperKeyOwner(key) {
+		t.Fatal("scheduled helper lost logical ownership during proactive rollback")
+	}
+	if terminated, closed := scheduledProcess.counts(); terminated != 0 || closed != 0 {
+		t.Fatalf("scheduled owner terminate=%d close=%d, want 0 each", terminated, closed)
+	}
+}
+
 func (s *fakeHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

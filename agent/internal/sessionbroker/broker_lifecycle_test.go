@@ -93,6 +93,31 @@ func TestListenerCreatedDuringStopIsRefusedAndClosed(t *testing.T) {
 	}
 }
 
+func TestListenStopBetweenPublicationAndAcceptCaptureDoesNotPanic(t *testing.T) {
+	b := New("listener-handoff-"+t.Name(), nil)
+	listener := newCloseTrackingListener()
+	stopChan := make(chan struct{})
+	b.afterListenerPublished = func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := b.StopAcceptingAndWait(ctx); err != nil {
+			t.Fatalf("StopAcceptingAndWait: %v", err)
+		}
+		close(stopChan)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- b.listenOn(listener, stopChan) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Listen: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Listen did not return after stop between publication and accept capture")
+	}
+}
+
 func newFakeOwnedPeerProcess(pid uint32) *fakeOwnedPeerProcess {
 	return &fakeOwnedPeerProcess{pid: pid, alive: true}
 }
