@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 // Regression test for issue #506. A `localeCompare` sort places
@@ -60,18 +60,22 @@ describe('migration ordering', () => {
     return refs;
   }
 
-  it('every referenced table is created in the same file or an earlier one', () => {
-    const files = readdirSync(migrationsDir)
+  it('every referenced table is created in the same file or an earlier one', async () => {
+    const files = (await readdir(migrationsDir))
       .filter((name) => MIGRATION_FILE_PATTERN.test(name))
       .sort((a, b) => a.localeCompare(b));
 
     expect(files.length).toBeGreaterThan(0);
 
+    const migrations = await Promise.all(files.map(async (file) => ({
+      file,
+      sql: await readFile(path.join(migrationsDir, file), 'utf8'),
+    })));
+
     const created = new Set<string>();
     const violations: string[] = [];
 
-    for (const file of files) {
-      const sql = readFileSync(path.join(migrationsDir, file), 'utf8');
+    for (const { file, sql } of migrations) {
       // Add tables created in this file BEFORE checking references so a
       // file that creates a table and immediately alters or self-references
       // it passes.

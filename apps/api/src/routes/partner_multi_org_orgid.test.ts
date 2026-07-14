@@ -17,8 +17,9 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { orgRoutes } from './orgs';
 
-const { authState, canAccessOrgSpy, ORG_A, ORG_B, FOREIGN_ORG } = vi.hoisted(() => {
+const { authState, canAccessOrgSpy, dbSelectDelegate, ORG_A, ORG_B, FOREIGN_ORG } = vi.hoisted(() => {
   const ORG_A = '11111111-1111-1111-1111-111111111111';
   const ORG_B = '22222222-2222-2222-2222-222222222222';
   const FOREIGN_ORG = '33333333-3333-3333-3333-333333333333';
@@ -38,6 +39,7 @@ const { authState, canAccessOrgSpy, ORG_A, ORG_B, FOREIGN_ORG } = vi.hoisted(() 
     // vi.clearAllMocks() in beforeEach clears call history but keeps this impl.
     canAccessOrgSpy: vi.fn((id: string) =>
       Array.isArray(state.accessibleOrgIds) && state.accessibleOrgIds.includes(id)),
+    dbSelectDelegate: vi.fn(),
   };
 });
 
@@ -92,7 +94,7 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null },
   db: {
-    select: vi.fn(() => chainMock([{ count: 0 }])),
+    select: vi.fn((...args: unknown[]) => dbSelectDelegate(...args)),
     insert: vi.fn(() => chainMock([])),
     update: vi.fn(() => chainMock(undefined)),
     delete: vi.fn(() => chainMock(undefined)),
@@ -143,6 +145,7 @@ vi.mock('../db/schema', () => ({
   discoveryProfiles: { id: 'id', orgId: 'orgId', siteId: 'siteId' },
   discoveryJobs: { id: 'id', status: 'status', completedAt: 'completedAt', errors: 'errors', updatedAt: 'updatedAt' },
   discoveredAssets: { id: 'id', orgId: 'orgId' },
+  sites: { id: 'id', orgId: 'orgId', createdAt: 'createdAt' },
   huntressIntegrations: {
     id: 'id',
     orgId: 'orgId',
@@ -224,8 +227,14 @@ vi.mock('../services/permissions', () => ({
 // Tests
 // ---------------------------------------------------------------------------
 
+const orgApp = new Hono().route('/orgs', orgRoutes);
+
 beforeEach(() => {
   vi.clearAllMocks();
+  dbSelectDelegate
+    .mockReset()
+    .mockImplementationOnce(() => chainMock([{ count: 0 }]))
+    .mockImplementation(() => chainMock([]));
   // Default: partner-scope user with TWO accessible orgs.
   authState.scope = 'partner';
   authState.orgId = null;
@@ -436,44 +445,45 @@ describe('issue #723: GET /orgs/sites organizationId precedence', () => {
     // precedence resolves the explicit ORG_A, buggy precedence the ambient
     // ORG_B.
     authState.accessibleOrgIds = [ORG_A, ORG_B];
-    const { orgRoutes } = await import('./orgs');
-    const app = new Hono().route('/orgs', orgRoutes);
 
-    await app.request(`/orgs/sites?organizationId=${ORG_A}&orgId=${ORG_B}`, {
+    const res = await orgApp.request(`/orgs/sites?organizationId=${ORG_A}&orgId=${ORG_B}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer t' },
     });
 
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      data: [],
+      pagination: { page: 1, limit: 50, total: 0 },
+    });
     expect(canAccessOrgSpy).toHaveBeenCalledWith(ORG_A);
     expect(canAccessOrgSpy).not.toHaveBeenCalledWith(ORG_B);
   });
 
   it('does not 403 when the explicit organizationId is accessible but the auto-injected ambient orgId is not', async () => {
     authState.accessibleOrgIds = [ORG_A];
-    const { orgRoutes } = await import('./orgs');
-    const app = new Hono().route('/orgs', orgRoutes);
 
     // Simulates fetchWithAuth appending &orgId=<activeOrg=ORG_B> to a page
     // request that explicitly asked for organizationId=ORG_A. Buggy precedence
     // resolves the inaccessible ORG_B -> 403; correct precedence resolves the
     // explicit, accessible ORG_A and proceeds (must not be denied).
-    const res = await app.request(`/orgs/sites?organizationId=${ORG_A}&orgId=${ORG_B}`, {
+    const res = await orgApp.request(`/orgs/sites?organizationId=${ORG_A}&orgId=${ORG_B}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer t' },
     });
 
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(200);
+    expect(canAccessOrgSpy).toHaveBeenCalledWith(ORG_A);
+    expect(canAccessOrgSpy).not.toHaveBeenCalledWith(ORG_B);
   });
 
   it('honors the explicit organizationId over an accessible ambient orgId (precedence flipped, not fallthrough)', async () => {
     authState.accessibleOrgIds = [ORG_A];
-    const { orgRoutes } = await import('./orgs');
-    const app = new Hono().route('/orgs', orgRoutes);
 
     // Explicit organizationId points at the inaccessible ORG_B while the
     // ambient orgId is the accessible ORG_A. The explicit value must win, so
     // access must be denied. Buggy precedence resolves ORG_A and does NOT 403.
-    const res = await app.request(`/orgs/sites?organizationId=${ORG_B}&orgId=${ORG_A}`, {
+    const res = await orgApp.request(`/orgs/sites?organizationId=${ORG_B}&orgId=${ORG_A}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer t' },
     });
@@ -483,12 +493,10 @@ describe('issue #723: GET /orgs/sites organizationId precedence', () => {
 
   it('still scopes by orgId when no organizationId is supplied (fallback unchanged)', async () => {
     authState.accessibleOrgIds = [ORG_A];
-    const { orgRoutes } = await import('./orgs');
-    const app = new Hono().route('/orgs', orgRoutes);
 
     // Only the ambient orgId is present and it is foreign -> must still be
     // denied (guards that the orgId fallback is preserved by the fix).
-    const res = await app.request(`/orgs/sites?orgId=${FOREIGN_ORG}`, {
+    const res = await orgApp.request(`/orgs/sites?orgId=${FOREIGN_ORG}`, {
       method: 'GET',
       headers: { Authorization: 'Bearer t' },
     });
