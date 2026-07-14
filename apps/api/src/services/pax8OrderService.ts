@@ -164,6 +164,13 @@ function numericQuantity(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function sameNumericQuantity(left: string | null | undefined, right: string | null | undefined): boolean {
+  if (left === null || left === undefined || right === null || right === undefined) return false;
+  const leftNumber = Number(left);
+  const rightNumber = Number(right);
+  return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber === rightNumber;
+}
+
 type JsonRecord = Record<string, unknown>;
 
 const COMMITMENT_ID_KEYS = [
@@ -455,6 +462,20 @@ export async function validateDirectOrderLinesForSubmit(
     if (line.contractLineId !== linked.contractLineId) {
       throw new Pax8OrderError('The staged contract line no longer matches the target Pax8 subscription.', 409);
     }
+    if (line.action === 'change_quantity') {
+      if (line.authorizedBaselineQuantity === null) {
+        throw new Pax8OrderError(
+          'This legacy quantity change has no authorization baseline; remove and stage it again.',
+          409,
+        );
+      }
+      if (!sameNumericQuantity(line.authorizedBaselineQuantity, linked.manualQuantity)) {
+        throw new Pax8OrderError(
+          'The linked Breeze contract quantity changed since this Pax8 action was authorized; remove and stage it again.',
+          409,
+        );
+      }
+    }
     validated.push({ ...line, contractLineId: linked.contractLineId });
   }
   return validated;
@@ -679,11 +700,10 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
         if (!Number.isFinite(initialBaseline) || !Number.isFinite(finalBaseline)) {
           throw new Pax8OrderError('The linked Breeze manual contract quantity is invalid.', 422);
         }
-        // The vendor dependency decision was made against the initial Breeze
-        // baseline. A concurrent billing edit can change direction, so fail
-        // closed and let the technician author against the fresh value.
-        const requested = Number(input.quantity);
-        if (Math.sign(requested - initialBaseline) !== Math.sign(requested - finalBaseline)) {
+        // The vendor dependency decision was made against this exact Breeze
+        // baseline. Any concurrent billing edit invalidates that authorization,
+        // even if it happens to preserve direction today.
+        if (initialBaseline !== finalBaseline) {
           throw new Pax8OrderError(
             'The Breeze contract quantity changed while validating this action; stage it again.',
             409,
@@ -718,6 +738,7 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
         billingTerm: input.billingTerm,
         commitmentTermId: input.commitmentTermId,
         quantity: input.quantity,
+        authorizedBaselineQuantity: input.action === 'change_quantity' ? authoringBaseline : undefined,
         provisioningDetails: input.provisioningDetails ?? [],
         targetSubscriptionId: input.targetSubscriptionId,
         cancelDate: input.cancelDate,

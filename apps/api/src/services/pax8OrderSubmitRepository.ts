@@ -290,12 +290,6 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
       }
       assertSubmittable(existing);
       const companyId = await resolveCompany(existing);
-      let lines = await findOrderLines(existing);
-      if (lines.length === 0) throw new Pax8OrderError('Add at least one line before submitting the Pax8 order.', 422);
-      for (const line of lines) {
-        if (line.action === 'cancel') requireImmediateCancelDate(line.cancelDate);
-      }
-      lines = await validateDirectOrderLinesForSubmit(existing, lines);
       const now = new Date();
       const [claimed] = await db
         .update(pax8Orders)
@@ -326,9 +320,18 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
       if (!claimed) {
         throw new Pax8OrderError('Another submit won the order claim, or an earlier write requires reconciliation.', 409);
       }
+      // The parent transition owns the row lock that every authoring mutation
+      // must acquire. Read only after that lock: if PATCH committed first we
+      // see its values; if this claim won, PATCH wakes to a non-mutable parent.
+      let lines = await findOrderLines(claimed);
+      if (lines.length === 0) throw new Pax8OrderError('Add at least one line before submitting the Pax8 order.', 422);
       if (lines.some((line) => line.submitState !== 'pending')) {
         throw new Pax8OrderError('An earlier Pax8 line write requires reconciliation.', 409);
       }
+      for (const line of lines) {
+        if (line.action === 'cancel') requireImmediateCancelDate(line.cancelDate);
+      }
+      lines = await validateDirectOrderLinesForSubmit(claimed, lines);
       const targets = lines
         .filter((line) => line.action !== 'new_subscription')
         .map((line) => line.targetSubscriptionId);

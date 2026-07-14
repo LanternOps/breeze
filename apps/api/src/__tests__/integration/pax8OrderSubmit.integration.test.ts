@@ -18,6 +18,7 @@ import {
 import { Pax8ApiError } from '../../services/pax8Client';
 import { createPax8OrderSubmitService } from '../../services/pax8OrderSubmit';
 import { pax8OrderSubmitRepository } from '../../services/pax8OrderSubmitRepository';
+import { updateOrderLine } from '../../services/pax8OrderService';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -172,6 +173,22 @@ function successfulClient() {
   };
 }
 
+async function seedChangeOrder(options: { baseline: string | null; current: string }) {
+  const fixture = await seedOrder({ action: 'cancel' });
+  await withSystemDbAccessContext(async () => {
+    await db.update(contractLines)
+      .set({ manualQuantity: options.current })
+      .where(eq(contractLines.id, fixture.contractLine.id));
+    await db.update(pax8OrderLines).set({
+      action: 'change_quantity',
+      quantity: '15.00',
+      cancelDate: null,
+      authorizedBaselineQuantity: options.baseline,
+    }).where(eq(pax8OrderLines.id, fixture.line.id));
+  });
+  return fixture;
+}
+
 describe('Pax8 submit pipeline (real Postgres)', () => {
   runDb('rejects unready direct and quote-staged orders before client creation or writes', async () => {
     for (const source of ['direct', 'quote'] as const) {
@@ -270,6 +287,113 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
     })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('active') });
 
     expect(client.createOrder).not.toHaveBeenCalled();
+  });
+
+  runDb('fails closed when the manual quantity changed after direction authorization', async () => {
+    const fixture = await seedChangeOrder({ baseline: '10.00', current: '20.00' });
+    const client = successfulClient();
+    const { service, createClient } = serviceHarness(client);
+
+    await expect(service.submitOrder({
+      partnerId: fixture.partner.id,
+      orderId: fixture.order.id,
+      actorUserId: fixture.user.id,
+    })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('changed') });
+
+    expect(createClient).not.toHaveBeenCalled();
+    expect(client.updateSubscriptionQuantity).not.toHaveBeenCalled();
+    const state = await withSystemDbAccessContext(async () => {
+      const [orderRow] = await db.select().from(pax8Orders).where(eq(pax8Orders.id, fixture.order.id));
+      const [lineRow] = await db.select().from(pax8OrderLines).where(eq(pax8OrderLines.id, fixture.line.id));
+      const [billing] = await db.select().from(contractLines).where(eq(contractLines.id, fixture.contractLine.id));
+      return { orderRow, lineRow, billing };
+    });
+    expect(state.orderRow?.status).toBe('ready');
+    expect(state.lineRow?.submitState).toBe('pending');
+    expect(state.billing?.manualQuantity).toBe('20.00');
+  });
+
+  runDb('fails closed for a legacy quantity change without an authorization baseline', async () => {
+    const fixture = await seedChangeOrder({ baseline: null, current: '10.00' });
+    const client = successfulClient();
+
+    await expect(serviceWithClient(client).submitOrder({
+      partnerId: fixture.partner.id,
+      orderId: fixture.order.id,
+      actorUserId: fixture.user.id,
+    })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('baseline') });
+    expect(client.updateSubscriptionQuantity).not.toHaveBeenCalled();
+  });
+
+  runDb('submits an unchanged authorized baseline and records the new billing quantity', async () => {
+    const fixture = await seedChangeOrder({ baseline: '10.00', current: '10.00' });
+    const client = successfulClient();
+
+    await serviceWithClient(client).submitOrder({
+      partnerId: fixture.partner.id,
+      orderId: fixture.order.id,
+      actorUserId: fixture.user.id,
+    });
+
+    expect(client.updateSubscriptionQuantity).toHaveBeenCalledWith('subscription-cancel', 15);
+    const [billing] = await withSystemDbAccessContext(() => db.select()
+      .from(contractLines).where(eq(contractLines.id, fixture.contractLine.id)));
+    expect(billing?.manualQuantity).toBe('15.00');
+  });
+
+  runDb('uses post-lock PATCH values when PATCH wins and rejects PATCH when claim wins', async () => {
+    const patchWins = await seedOrder();
+    await withSystemDbAccessContext(() => db.update(pax8Orders)
+      .set({ status: 'awaiting_details' })
+      .where(eq(pax8Orders.id, patchWins.order.id)));
+    let locked!: () => void;
+    const lockedPromise = new Promise<void>((resolve) => { locked = resolve; });
+    let release!: () => void;
+    const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+    const patchTransaction = getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM pax8_orders WHERE id = ${patchWins.order.id} FOR UPDATE`);
+      locked();
+      await releasePromise;
+      await tx.update(pax8OrderLines).set({
+        commitmentTermId: 'patched-commitment',
+        provisioningDetails: [{ key: 'domain', values: ['patched.example'] }],
+      }).where(eq(pax8OrderLines.id, patchWins.line.id));
+    });
+    await lockedPromise;
+    const patchWinsClient = successfulClient();
+    const submitPending = serviceWithClient(patchWinsClient).submitOrder({
+      partnerId: patchWins.partner.id,
+      orderId: patchWins.order.id,
+      actorUserId: patchWins.user.id,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(patchWinsClient.createOrder).not.toHaveBeenCalled();
+    release();
+    await patchTransaction;
+    await submitPending;
+    expect(patchWinsClient.createOrder).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      lineItems: [expect.objectContaining({
+        commitmentTermId: 'patched-commitment',
+        provisioningDetails: [{ key: 'domain', values: ['patched.example'] }],
+      })],
+    }));
+
+    const claimWins = await seedOrder();
+    await withSystemDbAccessContext(() => db.update(pax8Orders)
+      .set({ status: 'awaiting_details' })
+      .where(eq(pax8Orders.id, claimWins.order.id)));
+    const claimWinsClient = successfulClient();
+    await serviceWithClient(claimWinsClient).submitOrder({
+      partnerId: claimWins.partner.id,
+      orderId: claimWins.order.id,
+      actorUserId: claimWins.user.id,
+    });
+    await expect(updateOrderLine({
+      partnerId: claimWins.partner.id,
+      orderId: claimWins.order.id,
+      lineId: claimWins.line.id,
+      provisioningDetails: [{ key: 'domain', values: ['too-late.example'] }],
+    })).rejects.toMatchObject({ status: 409 });
   });
 
   runDb('atomically claims one submit, persists billing success, and keeps rejected billing untouched', async () => {
@@ -473,6 +597,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       action: 'change_quantity',
       targetSubscriptionId: 'subscription-cancel',
       quantity: '2.00',
+      authorizedBaselineQuantity: '7.00',
       contractLineId: duplicateFixture.contractLine.id,
     }));
     const duplicateClient = successfulClient();

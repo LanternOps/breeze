@@ -74,6 +74,7 @@ export const pax8OrderLines = pgTable('pax8_order_lines', {
   billingTerm: varchar('billing_term', { length: 20 }),
   commitmentTermId: varchar('commitment_term_id', { length: 64 }),
   quantity: numeric('quantity', { precision: 12, scale: 2 }),
+  authorizedBaselineQuantity: numeric('authorized_baseline_quantity', { precision: 12, scale: 2 }),
   provisioningDetails: jsonb('provisioning_details').notNull().default([]),
   targetSubscriptionId: varchar('target_subscription_id', { length: 64 }),
   cancelDate: date('cancel_date'),

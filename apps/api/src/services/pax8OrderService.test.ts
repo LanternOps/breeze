@@ -39,6 +39,7 @@ vi.mock('../db/schema', () => new Proxy({
     orgId: 'pax8_order_lines.org_id',
     action: 'pax8_order_lines.action',
     sortOrder: 'pax8_order_lines.sort_order',
+    authorizedBaselineQuantity: 'pax8_order_lines.authorized_baseline_quantity',
   },
   pax8CompanyMappings: {
     partnerId: 'pax8_company_mappings.partner_id',
@@ -114,6 +115,7 @@ import {
   listPax8Orders,
   removeOrderLine,
   updateOrderLine,
+  validateDirectOrderLinesForSubmit,
 } from './pax8OrderService';
 
 const baseOrder = {
@@ -714,6 +716,30 @@ describe('addOrderLine', () => {
     expect(mocks.createPax8ClientForIntegration).not.toHaveBeenCalled();
   });
 
+  it('fails closed at submit validation for a legacy change line without an authorization baseline', async () => {
+    selectRowsOnce([{ contractLineId: 'contract-line-1', manualQuantity: '10.00' }]);
+
+    await expect(validateDirectOrderLinesForSubmit(
+      { ...baseOrder, source: 'direct' } as never,
+      [{
+        id: 'line-1', action: 'change_quantity', targetSubscriptionId: 'sub-1',
+        contractLineId: 'contract-line-1', authorizedBaselineQuantity: null,
+      } as never],
+    )).rejects.toMatchObject({ status: 409, message: expect.stringContaining('baseline') });
+  });
+
+  it('fails closed at submit when the linked Breeze quantity changed since authorization', async () => {
+    selectRowsOnce([{ contractLineId: 'contract-line-1', manualQuantity: '20.00' }]);
+
+    await expect(validateDirectOrderLinesForSubmit(
+      { ...baseOrder, source: 'direct' } as never,
+      [{
+        id: 'line-1', action: 'change_quantity', targetSubscriptionId: 'sub-1',
+        contractLineId: 'contract-line-1', authorizedBaselineQuantity: '10.00',
+      } as never],
+    )).rejects.toMatchObject({ status: 409, message: expect.stringContaining('changed') });
+  });
+
   it('rejects a same-org but unrelated caller contract line and never stages it', async () => {
     mockOrder();
     mockSubscriptionSnapshot();
@@ -839,6 +865,7 @@ describe('addOrderLine', () => {
     expect(mocks.contextExits).toBe(6);
     expect(insert.values).toHaveBeenCalledWith(expect.objectContaining({
       contractLineId: 'contract-line-1',
+      authorizedBaselineQuantity: '10.00',
     }));
     expect(finalMapping.for).toHaveBeenCalledWith('share');
     for (const [context] of mocks.withDbAccessContext.mock.calls) {
