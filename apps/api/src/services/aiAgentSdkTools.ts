@@ -1212,7 +1212,7 @@ export function createBreezeMcpServer(
         deviceId: uuid.optional(),
         startTime: z.string().datetime({ offset: true }).optional(),
         endTime: z.string().datetime({ offset: true }).optional(),
-        changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account']).optional(),
+        changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account', 'hardware', 'os_version']).optional(),
         changeAction: z.enum(['added', 'removed', 'modified', 'updated']).optional(),
         limit: z.number().int().min(1).max(500).optional(),
       },

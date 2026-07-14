@@ -61,6 +61,11 @@ export default defineConfig({
       // Forever-suppression exclusion — SQL predicates the mocked unit tests
       // (which ignore the WHERE clause) can't verify.
       'src/services/warrantyAlertEvaluator.integration.test.ts',
+      // Co-located real-DB integration test for #2502 Phase 2 (hardware +
+      // os_version change types): a pg enum constraint can't be validated by
+      // the mocked `changes.test.ts` unit suite, so this drives the real
+      // `changesRoutes` handler + RLS insert/select policies against Postgres.
+      'src/routes/agents/changes.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
