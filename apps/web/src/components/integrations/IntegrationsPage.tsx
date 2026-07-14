@@ -20,6 +20,10 @@ import HuntressIntegration from "./HuntressIntegration";
 import MonitoringIntegration from "./MonitoringIntegration";
 import GoogleWorkspaceIntegration from "./GoogleWorkspaceIntegration";
 import M365Integration from "./M365Integration";
+import M365CustomerGraphReadCard, {
+  M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS,
+  type M365CustomerGraphReadCallbackResult,
+} from "./M365CustomerGraphReadCard";
 import Pax8Integration from "./Pax8Integration";
 import TdSynnexCatalogPanel from "../settings/TdSynnexCatalogPanel";
 import TdSynnexEcExpressPanel from "../settings/TdSynnexEcExpressPanel";
@@ -122,9 +126,24 @@ function parseHash(fallbackTab: TabId): {
   identitySub?: IdentitySubTab;
   distributorSub?: DistributorSubTab;
   accountingSub?: AccountingSubTab;
+  customerGraphReadResult?: M365CustomerGraphReadCallbackResult;
+  consumeCustomerGraphReadResult?: boolean;
 } {
   if (typeof window === "undefined") return { tab: fallbackTab };
   const hash = window.location.hash.replace(/^#/, "");
+  const customerGraphReadPrefix = "m365/customer-graph-read/";
+  if (hash.startsWith(customerGraphReadPrefix)) {
+    const candidate = hash.slice(customerGraphReadPrefix.length);
+    const customerGraphReadResult = M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS.find(
+      (result) => result === candidate,
+    );
+    return {
+      tab: "identity",
+      identitySub: "m365",
+      customerGraphReadResult,
+      consumeCustomerGraphReadResult: true,
+    };
+  }
   if (tabs.some((t) => t.id === hash)) return { tab: hash as TabId };
   if (securitySubTabs.some((s) => s.id === hash))
     return { tab: "security", securitySub: hash as SecuritySubTab };
@@ -162,6 +181,10 @@ export default function IntegrationsPage({
   const [identitySubTab, setIdentitySubTab] = useState<IdentitySubTab>("google");
   const [distributorSubTab, setDistributorSubTab] = useState<DistributorSubTab>("pax8");
   const [accountingSubTab, setAccountingSubTab] = useState<AccountingSubTab>("quickbooks");
+  const [customerGraphReadCallback, setCustomerGraphReadCallback] = useState<{
+    result: M365CustomerGraphReadCallbackResult | null;
+    refreshKey: number;
+  }>({ result: null, refreshKey: 0 });
 
   // Adopt the hash post-commit / pre-paint (no visible flash of the fallback
   // tab), and keep following it for back/forward and externally-changed hashes.
@@ -175,6 +198,21 @@ export default function IntegrationsPage({
       if (parsed.identitySub) setIdentitySubTab(parsed.identitySub);
       if (parsed.distributorSub) setDistributorSubTab(parsed.distributorSub);
       if (parsed.accountingSub) setAccountingSubTab(parsed.accountingSub);
+      if (parsed.consumeCustomerGraphReadResult) {
+        setCustomerGraphReadCallback((current) => ({
+          result: parsed.customerGraphReadResult ?? null,
+          refreshKey: current.refreshKey + 1,
+        }));
+        window.history.replaceState(
+          window.history.state,
+          "",
+          `${window.location.pathname}${window.location.search}#m365`,
+        );
+      } else {
+        setCustomerGraphReadCallback((current) =>
+          current.result === null ? current : { ...current, result: null },
+        );
+      }
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
@@ -383,7 +421,13 @@ export default function IntegrationsPage({
         <GoogleWorkspaceIntegration />
       )}
       {activeTab === "identity" && identitySubTab === "m365" && (
-        <M365Integration />
+        <div className="space-y-6">
+          <M365Integration />
+          <M365CustomerGraphReadCard
+            callbackResult={customerGraphReadCallback.result}
+            callbackRefreshKey={customerGraphReadCallback.refreshKey}
+          />
+        </div>
       )}
       {activeTab === "distributors" && isOrgScoped && (
         <p

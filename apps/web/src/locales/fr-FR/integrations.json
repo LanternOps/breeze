@@ -6,6 +6,10 @@
     "loading": "Chargement de la connexion de lecture Microsoft Graph du client.",
     "unavailable": "Les détails de la connexion ne sont pas disponibles.",
     "onboardingUnavailable": "L’intégration de lecture Microsoft Graph du client n’est pas activée pour cette organisation.",
+    "callback": {
+      "active": "Le consentement Microsoft est terminé. L’état actualisé de la connexion est affiché ci-dessous.",
+      "degraded": "Le consentement Microsoft est terminé, mais la connexion nécessite une intervention. Les détails actualisés sont affichés ci-dessous."
+    },
     "tenant": "Locataire vérifié",
     "tenantId": "ID du locataire",
     "manifest": "Manifeste des autorisations",
@@ -354,7 +358,7 @@
     "connectionVerifiedAndSaved": "Connexion vérifiée et enregistrée.",
     "microsoft365": "Microsoft 365",
     "connectAnEntraAzureADAppRegistrationSo": "Connectez une inscription à une application Entra (Azure AD) afin que l’assistant IA puisse gérer les utilisateurs et les groupes pour le locataire de cette organisation. ",
-    "microsoft365IntegrationIsNotEnabledOnThis": "L’intégration Microsoft 365 n’est pas activée sur cette instance. ",
+    "microsoft365IntegrationIsNotEnabledOnThis": "La connexion directe héritée n’est pas activée sur cette instance. ",
     "anAdministratorEnablesItBySetting": "Un administrateur l’active en définissant",
     "onTheAPIServerThenReloadingThisPage": "sur le serveur API, puis je recharge cette page. ",
     "connectAnEntraAzureADAppRegistrationSo2": "Connectez une inscription à une application Entra (Azure AD) afin que l’assistant IA puisse rechercher les utilisateurs, gérer des groupes, désactiver les comptes et réinitialiser les mots de passe du locataire de cette organisation. ",

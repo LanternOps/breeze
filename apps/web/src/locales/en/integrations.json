@@ -6,6 +6,10 @@
     "loading": "Loading Customer Graph Read connection.",
     "unavailable": "Connection details are unavailable.",
     "onboardingUnavailable": "Customer Graph Read onboarding is not enabled for this organization.",
+    "callback": {
+      "active": "Microsoft consent completed. The refreshed connection status is shown below.",
+      "degraded": "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."
+    },
     "tenant": "Verified tenant",
     "tenantId": "Tenant ID",
     "manifest": "Permission manifest",
@@ -354,7 +358,7 @@
     "connectionVerifiedAndSaved": "Connection verified and saved.",
     "microsoft365": "Microsoft 365",
     "connectAnEntraAzureADAppRegistrationSo": "Connect an Entra (Azure AD) app registration so the AI assistant can manage users and groups for this organization's tenant. ",
-    "microsoft365IntegrationIsNotEnabledOnThis": "Microsoft 365 integration is not enabled on this instance. ",
+    "microsoft365IntegrationIsNotEnabledOnThis": "Legacy direct connection is not enabled on this instance. ",
     "anAdministratorEnablesItBySetting": "An administrator enables it by setting",
     "onTheAPIServerThenReloadingThisPage": "on the API server, then reloading this page. ",
     "connectAnEntraAzureADAppRegistrationSo2": "Connect an Entra (Azure AD) app registration so the AI assistant can look up users, manage groups, disable accounts, and reset passwords for this organization's tenant. ",

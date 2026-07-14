@@ -213,6 +213,38 @@ describe("M365CustomerGraphReadCard", () => {
   });
 
   it.each([
+    ["active", "Microsoft consent completed. The refreshed connection status is shown below."],
+    ["degraded", "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."],
+    ["consent_expired", "The consent session expired. Start consent again."],
+    ["executor_unavailable", "The verification service is unavailable. Retest later."],
+  ] as const)("shows safe callback copy for %s and refreshes once", async (callbackResult, message) => {
+    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope()));
+
+    render(<M365CustomerGraphReadCard callbackResult={callbackResult} />);
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+    expect(document.body).not.toHaveTextContent(/authorization[_ -]?code|access[_ -]?token|tenant hint/i);
+  });
+
+  it("refreshes once per callback event, including a repeated result, without refreshing when only clearing the banner", async () => {
+    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope()));
+    const view = render(<M365CustomerGraphReadCard />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+
+    view.rerender(<M365CustomerGraphReadCard callbackResult="tenant_mismatch" callbackRefreshKey={1} />);
+    expect(await screen.findByText("Microsoft returned a different tenant. Start consent again for this organization.")).toBeInTheDocument();
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+
+    view.rerender(<M365CustomerGraphReadCard callbackResult="tenant_mismatch" callbackRefreshKey={2} />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(3));
+
+    view.rerender(<M365CustomerGraphReadCard callbackResult={null} callbackRefreshKey={2} />);
+    expect(screen.queryByText("Microsoft returned a different tenant. Start consent again for this organization.")).not.toBeInTheDocument();
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
     ["pending-consent", "Pending consent"],
     ["verifying", "Verifying"],
     ["active", "Active"],

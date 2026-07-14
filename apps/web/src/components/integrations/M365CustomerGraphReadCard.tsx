@@ -49,6 +49,19 @@ const STABLE_ERROR_CODES = [
 ] as const;
 type StableErrorCode = (typeof STABLE_ERROR_CODES)[number];
 
+export const M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS = [
+  "active",
+  "degraded",
+  ...STABLE_ERROR_CODES,
+] as const;
+export type M365CustomerGraphReadCallbackResult =
+  (typeof M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS)[number];
+
+interface M365CustomerGraphReadCardProps {
+  callbackResult?: M365CustomerGraphReadCallbackResult | null;
+  callbackRefreshKey?: number;
+}
+
 type Grant = {
   resourceApplicationId: string;
   appRoleId: string;
@@ -265,7 +278,10 @@ function GrantList({ grants, testId }: { grants: Grant[]; testId?: string }) {
   );
 }
 
-export default function M365CustomerGraphReadCard() {
+export default function M365CustomerGraphReadCard({
+  callbackResult = null,
+  callbackRefreshKey = 0,
+}: M365CustomerGraphReadCardProps) {
   const { t } = useTranslation("integrations");
   const currentOrgId = useOrgStore((value) => value.currentOrgId);
   const { can } = usePermissions();
@@ -318,7 +334,7 @@ export default function M365CustomerGraphReadCard() {
   useEffect(() => {
     void load(scope);
     return () => { scope.requestSequence += 1; };
-  }, [load, scope]);
+  }, [callbackRefreshKey, load, scope]);
 
   const scopedRequest = useCallback(async (
     target: OrgGeneration,
@@ -469,6 +485,13 @@ export default function M365CustomerGraphReadCard() {
       ? t(`m365CustomerGraphRead.errors.${connection.lastErrorCode}`)
       : t("m365CustomerGraphRead.errors.unknown");
   }, [connection, t]);
+  const callbackCopy = callbackResult === "active"
+    ? t("m365CustomerGraphRead.callback.active")
+    : callbackResult === "degraded"
+      ? t("m365CustomerGraphRead.callback.degraded")
+      : callbackResult
+        ? t(`m365CustomerGraphRead.errors.${callbackResult}`)
+        : null;
 
   return (
     <section className="rounded-xl border bg-card p-5 sm:p-6" aria-labelledby="customer-graph-read-title">
@@ -489,6 +512,19 @@ export default function M365CustomerGraphReadCard() {
           </span>
         )}
       </div>
+
+      {callbackCopy && (
+        <p
+          role={callbackResult === "active" ? "status" : "alert"}
+          className={`mt-6 rounded-md p-3 text-sm ${
+            callbackResult === "active"
+              ? "bg-success/10 text-foreground"
+              : "border border-warning/40 bg-warning/10 text-foreground"
+          }`}
+        >
+          {callbackCopy}
+        </p>
+      )}
 
       {loadState === "unavailable" && (
         <p className="mt-6 rounded-md bg-muted p-4 text-sm text-muted-foreground">{t("m365CustomerGraphRead.selectOrganization")}</p>

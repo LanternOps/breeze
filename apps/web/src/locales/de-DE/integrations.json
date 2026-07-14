@@ -6,6 +6,10 @@
     "loading": "Customer-Graph-Read-Verbindung wird geladen.",
     "unavailable": "Verbindungsdetails sind nicht verfügbar.",
     "onboardingUnavailable": "Der Kunden-Graph-Lesezugriff ist für diese Organisation nicht aktiviert.",
+    "callback": {
+      "active": "Die Microsoft-Zustimmung wurde abgeschlossen. Der aktualisierte Verbindungsstatus wird unten angezeigt.",
+      "degraded": "Die Microsoft-Zustimmung wurde abgeschlossen, aber die Verbindung erfordert Aufmerksamkeit. Die aktualisierten Details werden unten angezeigt."
+    },
     "tenant": "Verifizierter Mandant",
     "tenantId": "Mandanten-ID",
     "manifest": "Berechtigungsmanifest",
@@ -354,7 +358,7 @@
     "connectionVerifiedAndSaved": "Verbindung überprüft und gespeichert.",
     "microsoft365": "Microsoft 365",
     "connectAnEntraAzureADAppRegistrationSo": "Verbinden Sie eine Entra (Azure AD)-App-Registrierung, damit der KI-Assistent Benutzer und Gruppen für den Mandanten dieser Organisation verwalten kann.",
-    "microsoft365IntegrationIsNotEnabledOnThis": "Die Microsoft 365-Integration ist auf dieser Instanz nicht aktiviert.",
+    "microsoft365IntegrationIsNotEnabledOnThis": "Die direkte Legacy-Verbindung ist auf dieser Instanz nicht aktiviert.",
     "anAdministratorEnablesItBySetting": "Ein Administrator aktiviert es durch Einstellung",
     "onTheAPIServerThenReloadingThisPage": "auf dem API-Server, dann Neuladen dieser Seite.",
     "connectAnEntraAzureADAppRegistrationSo2": "Verbinden Sie eine Entra (Azure AD)-App-Registrierung, damit der KI-Assistent nach Benutzern suchen, Gruppen verwalten, Konten deaktivieren und Kennwörter für den Mandanten dieser Organisation zurücksetzen kann.",
