@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sendVerificationEmailMock = vi.fn(async () => undefined);
+const sendEmailChangedMock = vi.fn(async () => undefined);
+const { runPostCommitCleanupMock } = vi.hoisted(() => ({
+  runPostCommitCleanupMock: vi.fn(async () => ({
+    redisOk: true,
+    permissionCacheOk: true,
+    oauthOk: true,
+  })),
+}));
 
 vi.mock('../../db', () => ({
   db: { select: vi.fn() },
@@ -28,7 +36,12 @@ vi.mock('../../services', () => ({
 vi.mock('../../services/email', () => ({
   getEmailService: vi.fn(() => ({
     sendVerificationEmail: sendVerificationEmailMock,
+    sendEmailChanged: sendEmailChangedMock,
   })),
+}));
+
+vi.mock('../../services/authLifecycle', () => ({
+  runPostCommitCleanup: runPostCommitCleanupMock,
 }));
 
 vi.mock('../../services/emailVerification', () => ({
@@ -111,21 +124,44 @@ describe('POST /verify-email', () => {
     );
   });
 
-  it('returns 400 with the token error code when consume fails', async () => {
+  it('returns a GENERIC 400 that does not leak the reason when consume fails, but audits the real reason', async () => {
     vi.mocked(consumeVerificationToken).mockResolvedValueOnce({ ok: false, error: 'expired' });
     const res = await postJson('/verify-email', { token: 'x' });
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body).toEqual({ error: 'expired' });
+    // The public body is uniform — no 'expired' leak.
+    expect(body).toEqual({ error: 'Invalid or expired verification link' });
+    // ...but the audit still records the precise reason for forensics.
     expect(writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'auth.email_verify_failed', reason: 'expired' })
     );
   });
 
-  it('returns 200 with verified payload on success', async () => {
+  // Enumeration-oracle guard: 'address_changed' vs 'invalid' vs 'email_taken'
+  // would tell the holder of a random token whether it existed and how it
+  // failed. Every failure reason MUST produce one identical public body.
+  it('every failure reason produces one identical public body', async () => {
+    for (const reason of [
+      'invalid',
+      'expired',
+      'consumed',
+      'superseded',
+      'address_changed',
+      'no_pending_email',
+      'email_taken',
+    ] as const) {
+      vi.mocked(consumeVerificationToken).mockResolvedValueOnce({ ok: false, error: reason });
+      const res = await postJson('/verify-email', { token: 't' });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid or expired verification link' });
+    }
+  });
+
+  it('returns 200 with verified payload on signup success', async () => {
     vi.mocked(consumeVerificationToken).mockResolvedValueOnce({
       ok: true,
+      purpose: 'signup',
       partnerId: 'p-1',
       userId: 'u-1',
       email: 'a@b.com',
@@ -144,6 +180,40 @@ describe('POST /verify-email', () => {
     expect(writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'auth.email_verified', result: 'success', userId: 'u-1' })
+    );
+    // The signup path does NOT run the sign-out cleanup or completion notice.
+    expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+    expect(sendEmailChangedMock).not.toHaveBeenCalled();
+  });
+
+  it('email_change success: runs post-commit cleanup, sends completion notice to the OLD address, returns purpose', async () => {
+    vi.mocked(consumeVerificationToken).mockResolvedValueOnce({
+      ok: true,
+      purpose: 'email_change',
+      partnerId: 'p-1',
+      userId: 'u-1',
+      email: 'new@b.com',
+      previousEmail: 'old@b.com',
+      autoActivated: false,
+    });
+
+    const res = await postJson('/verify-email', { token: 'good' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ verified: true, purpose: 'email_change', email: 'new@b.com' });
+
+    expect(runPostCommitCleanupMock).toHaveBeenCalledWith('u-1');
+    // Completion notice goes to the OLD (abandoned) address, pending:false.
+    expect(sendEmailChangedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'old@b.com', newEmail: 'new@b.com', pending: false })
+    );
+    expect(writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'auth.email.change.committed',
+        result: 'success',
+        userId: 'u-1',
+      })
     );
   });
 

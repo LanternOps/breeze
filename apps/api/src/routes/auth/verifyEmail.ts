@@ -12,6 +12,7 @@ import {
   invalidateOpenTokens,
 } from '../../services/emailVerification';
 import { authMiddleware } from '../../middleware/auth';
+import { runPostCommitCleanup } from '../../services/authLifecycle';
 import { getClientRateLimitKey, writeAuthAudit } from './helpers';
 
 const { db, withSystemDbAccessContext } = dbModule;
@@ -47,12 +48,65 @@ verifyEmailRoutes.post(
     const result = await consumeVerificationToken(token);
 
     if (!result.ok) {
+      // The real reason is AUDIT-ONLY. Returning it verbatim
+      // ('address_changed' vs 'invalid' vs 'email_taken') is an enumeration
+      // oracle: it tells the holder of a random token whether the token existed
+      // and how it failed. Every failure gets ONE identical public body.
       writeAuthAudit(c, {
         action: 'auth.email_verify_failed',
         result: 'failure',
         reason: result.error,
       });
-      return c.json({ error: result.error }, 400);
+      return c.json({ error: 'Invalid or expired verification link' }, 400);
+    }
+
+    // SR2-17: the pending address has just been swapped in, the user has been
+    // signed out durably (auth_epoch + family revoke committed in the same
+    // transaction), and now the hot-path cleanup + completion notice run
+    // out-of-band. Kept OUT of the consume transaction on purpose: they are
+    // best-effort side effects (Redis cutoff, permission cache, OAuth grant
+    // sweep, email) that must not roll back a committed identity change.
+    if (result.purpose === 'email_change') {
+      const cleanup = await runPostCommitCleanup(result.userId);
+
+      const previousEmail = result.previousEmail;
+      if (previousEmail) {
+        const emailService = getEmailService();
+        if (emailService) {
+          // The completion notice goes to the OLD (now-abandoned) address: the
+          // change it was warned about at initiation has now taken effect.
+          await emailService
+            .sendEmailChanged({ to: previousEmail, newEmail: result.email, pending: false })
+            .catch((err: unknown) => {
+              console.error('[verify-email] email-change completion notice failed', err);
+            });
+        } else {
+          console.warn('[verify-email] Email service not configured; completion notice not sent');
+        }
+      }
+
+      writeAuthAudit(c, {
+        action: 'auth.email.change.committed',
+        result: 'success',
+        userId: result.userId,
+        email: result.email,
+        details: {
+          partnerId: result.partnerId,
+          previousEmail,
+          newEmail: result.email,
+          // The durable revoke committed with the swap; these flags record
+          // whether the best-effort out-of-band cleanup fully succeeded.
+          redisCutoffOk: cleanup.redisOk,
+          permissionCacheOk: cleanup.permissionCacheOk,
+          oauthRevocationOk: cleanup.oauthOk,
+        },
+      });
+
+      return c.json({
+        verified: true,
+        purpose: 'email_change' as const,
+        email: result.email,
+      });
     }
 
     writeAuthAudit(c, {

@@ -4,6 +4,8 @@ import { nanoid } from 'nanoid';
 import { db, withSystemDbAccessContext } from '../db';
 import { emailVerificationTokens, partners, users } from '../db/schema';
 import { shouldActivatePendingPartner, activatePartnerRow } from './partnerActivation';
+import { advanceUserEpochs, revokeAllRefreshFamilies } from './authLifecycle';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -88,10 +90,34 @@ export type ConsumeFailureReason =
   // from 'superseded' (a NEWER link was sent) on purpose: no newer link exists,
   // so telling the user "use the most recent email" would send them looking for
   // one that was never sent. The caller must offer a resend instead.
-  | 'address_changed';
+  | 'address_changed'
+  // SR2-17 (email_change only). The user has no pending_email at commit — the
+  // pending state was cancelled or already committed by another link. Nothing
+  // to swap; fail closed rather than resurrect a stale address.
+  | 'no_pending_email'
+  // SR2-17 (email_change only). The pending address was claimed by another
+  // account between request and click. The swap hit users_email_unique (23505)
+  // and the WHOLE transaction rolled back — this row is untouched (pending NOT
+  // cleared, email NOT moved, no session revocation).
+  | 'email_taken';
 
 export type ConsumeResult =
-  | { ok: true; partnerId: string; userId: string; email: string; autoActivated: boolean }
+  | {
+      ok: true;
+      // 'signup' proved a brand-new partner's address; 'email_change' swapped a
+      // pending address in on an existing account. The route branches on this to
+      // fire the post-commit sign-out cleanup + completion notice only for the
+      // change path.
+      purpose: 'signup' | 'email_change';
+      partnerId: string;
+      userId: string;
+      email: string;
+      // Only on the 'email_change' branch: the address that was authoritative
+      // BEFORE the swap. The completion notice is sent to it (the abandoned
+      // mailbox's owner must hear that the change committed).
+      previousEmail?: string;
+      autoActivated: boolean;
+    }
   | { ok: false; error: ConsumeFailureReason };
 
 /**
@@ -108,8 +134,9 @@ export type ConsumeResult =
 export async function consumeVerificationToken(rawToken: string): Promise<ConsumeResult> {
   const tokenHash = hashToken(rawToken);
 
-  return withSystemDbAccessContext(() =>
-    db.transaction(async (tx) => {
+  return withSystemDbAccessContext(async () => {
+    try {
+      return await db.transaction(async (tx) => {
       const [row] = await tx
         .select({
           id: emailVerificationTokens.id,
@@ -117,6 +144,7 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
           userId: emailVerificationTokens.userId,
           email: emailVerificationTokens.email,
           emailEpoch: emailVerificationTokens.emailEpoch,
+          purpose: emailVerificationTokens.purpose,
           expiresAt: emailVerificationTokens.expiresAt,
           consumedAt: emailVerificationTokens.consumedAt,
           supersededAt: emailVerificationTokens.supersededAt,
@@ -139,6 +167,110 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
       }
       if (row.expiresAt.getTime() <= Date.now()) {
         return { ok: false, error: 'expired' as const };
+      }
+
+      // SR2-17 commit. A purpose='email_change' token proves control of the
+      // PENDING address only; redeeming it SWAPS pending_email into email and
+      // signs the user out (the sign-out #2428 deferred at request time, now
+      // that the change is proven). All of it — token claim, swap, epoch
+      // advance, family revoke — is ONE transaction: any failure rolls the
+      // whole thing back, never a half-committed "email moved but sessions
+      // survived" (or vice versa) state. The `purpose` branch is a security
+      // boundary: a signup token can never drive this path and vice versa,
+      // because they check DIFFERENT live-row columns.
+      if (row.purpose === 'email_change') {
+        const now = new Date();
+
+        // FOR UPDATE is load-bearing (same reason the signup branch takes it):
+        // without it, an email change committing concurrently is a check-then-
+        // act and this stale token could swap in an address the user has since
+        // abandoned. Locking the row serializes the two.
+        const [liveUser] = await tx
+          .select({
+            email: users.email,
+            pendingEmail: users.pendingEmail,
+            emailEpoch: users.emailEpoch,
+            name: users.name,
+          })
+          .from(users)
+          .where(eq(users.id, row.userId))
+          .limit(1)
+          .for('update');
+
+        if (!liveUser) {
+          return { ok: false, error: 'superseded' as const };
+        }
+
+        // The pending state must still exist, must still be the address this
+        // token was issued for, and must still be the generation it was issued
+        // under. Any cancellation/replacement advanced email_epoch and fails
+        // here — a stale link cannot resurrect an abandoned address.
+        if (!liveUser.pendingEmail) {
+          return { ok: false, error: 'no_pending_email' as const };
+        }
+        if (
+          liveUser.pendingEmail.toLowerCase() !== row.email.toLowerCase() ||
+          row.emailEpoch === null ||
+          row.emailEpoch !== liveUser.emailEpoch
+        ) {
+          // Unlike the signup branch, a NULL token epoch is NOT tolerated here.
+          // No purpose='email_change' row can predate the 2026-07-18 migration,
+          // so a NULL epoch on one is corruption — fail closed.
+          return { ok: false, error: 'address_changed' as const };
+        }
+
+        const claimed = await tx
+          .update(emailVerificationTokens)
+          .set({ consumedAt: now })
+          .where(
+            and(
+              eq(emailVerificationTokens.id, row.id),
+              isNull(emailVerificationTokens.consumedAt),
+              isNull(emailVerificationTokens.supersededAt)
+            )
+          )
+          .returning({ id: emailVerificationTokens.id });
+        if (claimed.length === 0) {
+          return { ok: false, error: 'consumed' as const };
+        }
+
+        const previousEmail = liveUser.email;
+
+        // THE SWAP. Global email uniqueness is enforced by users_email_unique —
+        // if another account took this address while the link sat in a mailbox,
+        // this UPDATE raises 23505 and the WHOLE transaction (including the
+        // token claim above) rolls back. We do NOT pre-check-then-write: the
+        // constraint is the "exactly one winner" arbiter. The raised 23505
+        // propagates out of db.transaction so the rollback is unconditional;
+        // the outer catch below maps it to the fail-closed 'email_taken'.
+        await tx
+          .update(users)
+          .set({
+            email: liveUser.pendingEmail,
+            emailVerifiedAt: now,
+            pendingEmail: null,
+            pendingEmailRequestedAt: null,
+            updatedAt: now,
+          })
+          .where(eq(users.id, row.userId));
+
+        // The recovery surface has NOW moved. Advance auth_epoch (every access
+        // token minted for the old identity dies on its next request) and
+        // email_epoch (every other outstanding artifact bound to this address
+        // dies), and durably revoke every refresh family — all inside THIS
+        // transaction, so a rollback undoes the sign-out with the swap.
+        await advanceUserEpochs(tx, row.userId, { auth: true, email: true });
+        await revokeAllRefreshFamilies(tx, row.userId, 'email-change-committed');
+
+        return {
+          ok: true as const,
+          purpose: 'email_change' as const,
+          partnerId: row.partnerId,
+          userId: row.userId,
+          email: liveUser.pendingEmail,
+          previousEmail,
+          autoActivated: false,
+        };
       }
 
       // #2428: the token only proves control of the address it was ISSUED for.
@@ -244,13 +376,25 @@ export async function consumeVerificationToken(rawToken: string): Promise<Consum
 
       return {
         ok: true as const,
+        purpose: 'signup' as const,
         partnerId: row.partnerId,
         userId: row.userId,
         email: row.email,
         autoActivated: shouldAutoActivate,
       };
-    })
-  );
+      });
+    } catch (err) {
+      // The only unique-violating write reachable inside the transaction is the
+      // email_change swap against users_email_unique. A 23505 there aborts and
+      // rolls back the whole transaction (token claim + swap together), so the
+      // loser's row is left entirely untouched. Map it to the fail-closed
+      // 'email_taken'; any other error is a real fault and propagates.
+      if (isPgUniqueViolation(err, 'users_email_unique')) {
+        return { ok: false, error: 'email_taken' as const };
+      }
+      throw err;
+    }
+  });
 }
 
 /**

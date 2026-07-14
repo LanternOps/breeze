@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 // Captured SET payloads from the pending-email transaction.
 const { setCalls, updateReturning } = vi.hoisted(() => ({
@@ -83,4 +85,28 @@ describe('requestPendingEmailChange (SR2-17)', () => {
     expect(vi.mocked(generateVerificationToken)).not.toHaveBeenCalled();
     expect(vi.mocked(invalidateOpenTokens)).not.toHaveBeenCalled();
   });
+});
+
+// SR2-17 IdP non-matching guard-bite. The design property is: "an IdP asserting
+// the pending (unverified) address must not match the user." Both IdP login
+// paths resolve the user by `users.email` ONLY. Because pending_email is a
+// SEPARATE column, they structurally cannot match it — that is the whole point.
+//
+// This is a property to PIN, not to implement: it would be silently lost the day
+// someone "helpfully" adds an `OR pending_email = <asserted>` for convenience.
+// The structural bite reads the real source and fails RED the moment either IdP
+// matcher so much as references the pending column.
+describe('IdP paths never read pending_email (SR2-17 structural guard-bite)', () => {
+  const IDP_FILES = [
+    join(__dirname, '../middleware/cfAccessLogin.ts'),
+    join(__dirname, '../routes/sso.ts'),
+  ];
+
+  for (const file of IDP_FILES) {
+    it(`${file.split('/').slice(-2).join('/')} does not reference pending_email / pendingEmail`, () => {
+      const src = readFileSync(file, 'utf8');
+      // Matches pending_email (SQL/column) and pendingEmail (Drizzle field).
+      expect(/pending_?[eE]mail/.test(src)).toBe(false);
+    });
+  }
 });

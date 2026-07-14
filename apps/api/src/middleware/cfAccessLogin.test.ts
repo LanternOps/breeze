@@ -349,6 +349,29 @@ describe('cfAccessLoginMiddleware', () => {
     expect(called()).toBe(true);
   });
 
+  // SR2-17: an IdP asserting a PENDING (unverified) address must NOT match the
+  // user. The lookup is keyed on users.email ONLY, so an asserted address that
+  // exists only as someone's pending_email resolves to no row — the middleware
+  // must fall through to password auth, never mint a session for the unproven
+  // address. (Seeded as userRow=null: the users.email lookup finds nothing.)
+  it('an IdP asserting a PENDING (unverified) address does not match — falls through, mints nothing', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: { email: 'pending@corp.com', sub: 'cf-1', aud: envState.audience, iss: `https://${envState.teamDomain}`, exp: 999, iat: 1 },
+    };
+    dbState.userRow = null; // no user has this as their VERIFIED users.email
+    const { next, called } = createNext();
+    const res = await cfAccessLoginMiddleware(
+      createContext({ 'Cf-Access-Jwt-Assertion': 'tok' }),
+      next
+    );
+    expect(called()).toBe(true);
+    expect(res).toBeUndefined();
+    expect(tokenState.lastPayload).toBeNull(); // no token minted
+    expect(tokenState.mintCalls).toEqual([]);
+  });
+
   it('falls through when the matching user is inactive and audits the denial', async () => {
     envState.enabled = true;
     verifyState.next = {
