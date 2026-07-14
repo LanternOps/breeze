@@ -9,7 +9,7 @@ const MAX_FIELD_PATHS = 20;
 const MAX_FIELD_PATH_LENGTH = 256;
 const MAX_DEPTH = 32;
 const MAX_VISITED_VALUES = 10_000;
-const STRING_SCAN_WINDOW = 4096;
+export const PARTNER_EXPORT_MAX_INSPECTABLE_STRING_LENGTH = 12_288;
 
 const FORBIDDEN_FIELD_TOKENS = new Set([
   'authorization',
@@ -114,10 +114,8 @@ function windowContainsHighEntropyToken(window: string): boolean {
 }
 
 function isSecretLikeValue(value: string): boolean {
-  return boundedWindows(value, STRING_SCAN_WINDOW).some((window) => (
-    SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(window))
-    || windowContainsHighEntropyToken(window)
-  ));
+  return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))
+    || windowContainsHighEntropyToken(value);
 }
 
 function safePathComponent(component: string): string {
@@ -153,6 +151,15 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
     }
   };
 
+  const canDereferenceChild = (path: string, depth: number): boolean => {
+    if (depth > MAX_DEPTH || visited >= MAX_VISITED_VALUES) {
+      addPath(path);
+      traversalStopped = true;
+      return false;
+    }
+    return true;
+  };
+
   const visit = (value: unknown, path: string, depth: number, trustedRevision = false): void => {
     if (traversalStopped) return;
     visited += 1;
@@ -162,6 +169,11 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
       return;
     }
     if (typeof value === 'string') {
+      if (value.length > PARTNER_EXPORT_MAX_INSPECTABLE_STRING_LENGTH) {
+        addPath(path);
+        traversalStopped = true;
+        return;
+      }
       if (!(trustedRevision && SHA256_PATTERN.test(value)) && isSecretLikeValue(value)) addPath(path);
       return;
     }
@@ -176,7 +188,10 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
       if (Array.isArray(value)) {
         for (let index = 0; index < value.length; index += 1) {
           if (traversalStopped) break;
-          visit(value[index], appendArrayPath(path, index), depth + 1);
+          const childPath = appendArrayPath(path, index);
+          const childDepth = depth + 1;
+          if (!canDereferenceChild(childPath, childDepth)) break;
+          visit(value[index], childPath, childDepth);
         }
         return;
       }
@@ -186,8 +201,10 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
         if (!Object.hasOwn(record, key)) continue;
         const childPath = appendObjectPath(path, key);
         if (isForbiddenFieldName(key)) addPath(childPath);
+        const childDepth = depth + 1;
+        if (!canDereferenceChild(childPath, childDepth)) break;
         const child = record[key];
-        visit(child, childPath, depth + 1, childPath === 'revision');
+        visit(child, childPath, childDepth, childPath === 'revision');
       }
     } finally {
       ancestors.delete(value);

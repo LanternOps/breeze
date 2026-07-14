@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PARTNER_EXPORT_MAX_INSPECTABLE_STRING_LENGTH,
   buildSafeBlockedRecord,
   canonicalJsonStringify,
   computePartnerExportRevision,
@@ -35,6 +36,7 @@ describe('canonical partner export revisions', () => {
 
 describe('recursive export safety', () => {
   const embeddedCredential = 'QWxhZGRpbjpvcGVuIHNlc2FtZQ9xY7vK2mN4pR8sT6uV0wX3zA5bC7dE';
+  const maxInspectableStringLength = 12_288;
 
   it.each([
     ['password', { nested: { password: 'ordinary-looking-value' } }],
@@ -120,6 +122,62 @@ describe('recursive export safety', () => {
     })).toEqual({ safe: true });
   });
 
+  it('fully inspects every permitted string position without former window gaps', () => {
+    expect(PARTNER_EXPORT_MAX_INSPECTABLE_STRING_LENGTH).toBe(maxInspectableStringLength);
+    for (const offset of [4080, 5000, 8170, 10_000]) {
+      const command = `${'.'.repeat(offset)}${embeddedCredential}${'.'.repeat(
+        maxInspectableStringLength - offset - embeddedCredential.length,
+      )}`;
+      expect(command).toHaveLength(maxInspectableStringLength);
+      expect(inspectDefinitionForSecrets({ command })).toMatchObject({
+        safe: false,
+        reason: 'secret_detected',
+      });
+    }
+  });
+
+  it('detects an entropy token split around former scan-window boundaries', () => {
+    const command = `${' '.repeat(4090)}${embeddedCredential} ordinary trailing script text`;
+    expect(inspectDefinitionForSecrets({ command })).toMatchObject({
+      safe: false,
+      reason: 'secret_detected',
+    });
+  });
+
+  it('fails closed on secrets placed at multiple former sampled-window gaps', () => {
+    for (const offset of [6000, 14_000]) {
+      const command = `${'.'.repeat(offset)}${embeddedCredential}`.padEnd(20_000, '.');
+      expect(inspectDefinitionForSecrets({ command })).toMatchObject({
+        safe: false,
+        reason: 'secret_detected',
+      });
+    }
+  });
+
+  it('allows a safe string at the exact limit and blocks every longer string', () => {
+    const exactLimit = 'echo ordinary safe script text; '.padEnd(maxInspectableStringLength, '.');
+    expect(exactLimit).toHaveLength(maxInspectableStringLength);
+    expect(inspectDefinitionForSecrets({ command: exactLimit })).toEqual({ safe: true });
+
+    const overLimit = `${exactLimit}.`;
+    expect(overLimit).toHaveLength(maxInspectableStringLength + 1);
+    const result = safelyExportDefinition(
+      { resource: 'scripts', id: ID, orgId: ORG_ID },
+      { command: overLimit },
+    );
+    expect(result).toMatchObject({
+      safe: false,
+      blocked: {
+        resource: 'scripts',
+        id: ID,
+        orgId: ORG_ID,
+        reason: 'secret_detected',
+      },
+    });
+    expect(result).not.toHaveProperty('definition');
+    expect(JSON.stringify(result)).not.toContain(overLimit);
+  });
+
   it('stops immediately after a depth or visited-value limit violation', () => {
     let deep: Record<string, unknown> = { leaf: true };
     for (let depth = 0; depth < 34; depth += 1) deep = { next: deep };
@@ -151,6 +209,61 @@ describe('recursive export safety', () => {
 
     expect(() => inspectDefinitionForSecrets(guardedSparse)).not.toThrow();
     expect(indexedReads).toBeLessThanOrEqual(10_001);
+  });
+
+  it('never dereferences the child that would exceed the visit budget', () => {
+    const values = new Array<unknown>(10_000);
+    let overBudgetRead = false;
+    const guardedValues = new Proxy(values, {
+      get(target, property, receiver) {
+        if (property === '9999') {
+          overBudgetRead = true;
+          throw new Error('the 10,001st value was dereferenced');
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    let result: ReturnType<typeof safelyExportDefinition> | undefined;
+    expect(() => {
+      result = safelyExportDefinition(
+        { resource: 'scripts', id: ID, orgId: ORG_ID },
+        guardedValues,
+      );
+    }).not.toThrow();
+    expect(overBudgetRead).toBe(false);
+    expect(result).toMatchObject({
+      safe: false,
+      blocked: { reason: 'secret_detected' },
+    });
+    expect(result).not.toHaveProperty('definition');
+  });
+
+  it('never dereferences a getter whose child would exceed the depth budget', () => {
+    let overDepthRead = false;
+    let definition: Record<string, unknown> = {};
+    Object.defineProperty(definition, 'overDepth', {
+      enumerable: true,
+      get() {
+        overDepthRead = true;
+        throw new Error('the over-depth child was dereferenced');
+      },
+    });
+    for (let depth = 0; depth < 32; depth += 1) definition = { next: definition };
+
+    let result: ReturnType<typeof safelyExportDefinition> | undefined;
+    expect(() => {
+      result = safelyExportDefinition(
+        { resource: 'configuration-policies', id: ID, orgId: ORG_ID },
+        definition,
+      );
+    }).not.toThrow();
+    expect(overDepthRead).toBe(false);
+    expect(result).toMatchObject({
+      safe: false,
+      blocked: { reason: 'secret_detected' },
+    });
+    expect(result).not.toHaveProperty('definition');
   });
 
   it('rejects the whole definition and emits only safe bounded blocked metadata', () => {
