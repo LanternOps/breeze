@@ -65,7 +65,7 @@ async function insertDevice(orgId: string, siteId: string): Promise<{ id: string
 async function submitChanges(orgId: string, agentId: string, changes: unknown[]) {
   const app = new Hono();
   app.route('/agents', changesRoutes);
-  return withDbAccessContext(agentRequestContext(orgId), () =>
+  return withDbAccessContext(agentRequestContext(orgId), async () =>
     app.request(`/agents/${agentId}/changes`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
