@@ -136,23 +136,13 @@ func (m *HelperLifecycleManager) Start(ctx context.Context) {
 
 // reconcile ensures both SYSTEM and user helpers are running in every eligible session.
 func (m *HelperLifecycleManager) reconcile() {
-	sessions, err := m.detector.ListSessions()
+	sessions, err := m.broker.refreshDesiredHelperKeys(m.detector)
 	if err != nil {
 		log.Warn("lifecycle: failed to list sessions", "error", err.Error())
 		return
 	}
 
 	currentKeys := make(map[string]bool, len(sessions)*2)
-	desiredKeys := make(map[HelperKey]struct{}, len(sessions)*2)
-	for _, s := range sessions {
-		if key, desired := helperKeyFromDetected(s, "system"); desired {
-			desiredKeys[key] = struct{}{}
-		}
-		if key, desired := helperKeyFromDetected(s, "user"); desired {
-			desiredKeys[key] = struct{}{}
-		}
-	}
-	m.broker.UpdateDesiredHelperKeys(desiredKeys)
 
 	for _, s := range sessions {
 		// Spawn SYSTEM helper if missing, reset retry tracking when connected.
@@ -213,11 +203,20 @@ func (m *HelperLifecycleManager) handleSCMEvent(evt SCMSessionEvent) {
 			ts.fatalExitUntil = time.Time{}
 		}
 		m.mu.Unlock()
+		if _, err := m.broker.refreshDesiredHelperKeys(m.detector); err != nil {
+			log.Warn("lifecycle: failed to refresh desired helpers for session event",
+				"sessionId", sessionID,
+				"error", err.Error(),
+			)
+			return
+		}
 
-		if !m.broker.HasHelperForWinSessionRole(sessionID, "system") {
+		systemKey := HelperKey{WindowsSessionID: evt.SessionID, Role: "system"}
+		if m.broker.helperKeyDesired(systemKey) && !m.broker.HasHelperForWinSessionRole(sessionID, systemKey.Role) {
 			m.spawnWithRetry(sessionID, "system")
 		}
-		if !m.broker.HasHelperForWinSessionRole(sessionID, "user") {
+		userKey := HelperKey{WindowsSessionID: evt.SessionID, Role: "user"}
+		if m.broker.helperKeyDesired(userKey) && !m.broker.HasHelperForWinSessionRole(sessionID, userKey.Role) {
 			m.spawnWithRetry(sessionID, "user")
 		}
 	case wtsSessionLogoff, wtsSessionTerminate:

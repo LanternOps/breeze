@@ -1296,45 +1296,19 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	verifiedWinSessionID := peerWinSessionID(creds.PID)
-	identityKey := admissionIdentityKey(creds.IdentityKey(), verifiedWinSessionID, b.goos)
-
-	// Step 2: Rate limit check (per identity: UID on Unix, SID on Windows)
-	if !b.rateLimiter.Allow(identityKey) {
-		log.Warn("connection rate limited", "identity", identityKey, "pid", creds.PID)
-		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeRateLimited, "connection rate limited", false)
-		return
-	}
-
-	// Step 3: Check max connections per identity. Windows defers any idle
-	// victim eviction to the authoritative registration step so a failed
-	// handshake cannot evict an existing helper. Unix retains its existing
-	// admit-or-evict behavior.
-	var preAuthAdmitted bool
-	if b.goos == "windows" {
-		preAuthAdmitted = b.canAdmitWithoutEviction(identityKey)
-	} else {
-		preAuthAdmitted = b.admitOrEvict(identityKey)
-	}
-	if !preAuthAdmitted {
-		b.mu.RLock()
-		identityCount := len(b.byIdentity[identityKey])
-		b.mu.RUnlock()
-		log.Warn("max connections exceeded", "identity", identityKey, "count", identityCount)
-		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeMaxConnsExceeded, "too many connections for identity", false)
-		return
-	}
+	baseIdentityKey := creds.IdentityKey()
 
 	// Wrap connection
 	conn := ipc.NewConn(rawConn)
 
-	// Step 4: Read auth request
+	// Step 2: Read auth request
 	// (Moved ahead of binary-path verification so the hash from the auth
 	// request can serve as the authoritative binary identity signal —
 	// Windows cross-session spawns produce process paths that don't always
 	// match our allowlist after path normalization. See issue #387 part D.)
 	env, err := conn.Recv()
 	if err != nil {
-		log.Warn("auth request read failed", "identity", identityKey, "error", err.Error())
+		log.Warn("auth request read failed", "identity", baseIdentityKey, "error", err.Error())
 		conn.Close()
 		return
 	}
@@ -1352,7 +1326,46 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 5: Verify protocol version
+	// Determine helper role before selecting the admission identity. Windows
+	// system/user helpers are scoped by kernel SID + Windows session; assist,
+	// watchdog, and backup retain the legacy SID bucket. Unknown roles use the
+	// legacy bucket for rate/cap enforcement before permanent rejection.
+	helperRole := authReq.HelperRole
+	if helperRole == "" {
+		helperRole = ipc.HelperRoleSystem
+	}
+	roleKnown := true
+	switch helperRole {
+	case ipc.HelperRoleSystem, ipc.HelperRoleUser, ipc.HelperRoleWatchdog, ipc.HelperRoleAssist, backupipc.HelperRoleBackup:
+	default:
+		roleKnown = false
+	}
+	identityKey := helperAdmissionIdentityKey(baseIdentityKey, verifiedWinSessionID, b.goos, helperRole)
+
+	// Step 3: Rate and connection quotas are authoritative after the bounded auth
+	// request reveals the role. Lifecycle roles reserve without pre-auth
+	// eviction; every other role keeps the previous admit-or-evict behavior.
+	if !b.rateLimiter.Allow(identityKey) {
+		log.Warn("connection rate limited", "identity", identityKey, "pid", creds.PID)
+		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeRateLimited, "connection rate limited", false)
+		return
+	}
+	var preAuthAdmitted bool
+	if isWindowsLifecycleRole(b.goos, helperRole) {
+		preAuthAdmitted = b.canAdmitWithoutEviction(identityKey)
+	} else {
+		preAuthAdmitted = b.admitOrEvict(identityKey)
+	}
+	if !preAuthAdmitted {
+		b.mu.RLock()
+		identityCount := len(b.byIdentity[identityKey])
+		b.mu.RUnlock()
+		log.Warn("max connections exceeded", "identity", identityKey, "count", identityCount)
+		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeMaxConnsExceeded, "too many connections for identity", false)
+		return
+	}
+
+	// Step 4: Verify protocol version
 	if authReq.ProtocolVersion != ipc.ProtocolVersion {
 		log.Warn("protocol version mismatch", "got", authReq.ProtocolVersion, "want", ipc.ProtocolVersion)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
@@ -1363,14 +1376,24 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		conn.Close()
 		return
 	}
+	if !roleKnown {
+		log.Warn("unknown helper role", "role", helperRole, "identity", identityKey, "pid", creds.PID)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "unknown helper role",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
 
-	// Step 6: Verify identity — SID on Windows, UID on Unix.
+	// Step 5: Verify identity — SID on Windows, UID on Unix.
 	// The watchdog role is exempt from identity claim validation: it runs
 	// as SYSTEM but its IPCClient doesn't self-report a SID or a usable
 	// UID (Go's os.Getuid() returns -1 on Windows → uint32 overflow).
 	// The kernel-verified creds from GetPeerCredentials (step 1) are
 	// sufficient — a caller can't fake them on a named pipe / Unix socket.
-	if authReq.HelperRole != ipc.HelperRoleWatchdog {
+	if helperRole != ipc.HelperRoleWatchdog {
 		if runtime.GOOS == "windows" {
 			if authReq.SID == "" {
 				log.Warn("auth missing SID on Windows", "pid", creds.PID)
@@ -1406,7 +1429,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	// Step 7: Verify binary path and hash from kernel-resolved peer metadata.
+	// Step 6: Verify binary path and hash from kernel-resolved peer metadata.
 	// Do not trust authReq.BinaryHash: any local peer can self-report it.
 	if strings.TrimSpace(creds.BinaryPath) == "" {
 		log.Warn("rejecting helper connection: peer binary path unresolved",
@@ -1437,7 +1460,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 8: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
+	// Step 7: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
 	if len(b.selfHashes) == 0 {
 		log.Error("rejecting helper connection: helper binary hash allowlist unavailable",
 			"identity", identityKey,
@@ -1487,7 +1510,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 9: Reject duplicate session IDs
+	// Step 8: Reject duplicate session IDs
 	b.mu.RLock()
 	if _, exists := b.sessions[authReq.SessionID]; exists {
 		b.mu.RUnlock()
@@ -1509,25 +1532,6 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Determine helper role and scopes. Default to "system" for backward compat
-	// with helpers that don't send the role field.
-	helperRole := authReq.HelperRole
-	if helperRole == "" {
-		helperRole = ipc.HelperRoleSystem
-	}
-	switch helperRole {
-	case ipc.HelperRoleSystem, ipc.HelperRoleUser, ipc.HelperRoleWatchdog, ipc.HelperRoleAssist, backupipc.HelperRoleBackup:
-	default:
-		log.Warn("unknown helper role", "role", helperRole, "identity", identityKey, "pid", creds.PID)
-		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-			Accepted:  false,
-			Reason:    "unknown helper role",
-			Permanent: true,
-		})
-		conn.Close()
-		return
-	}
-
 	// Kernel-verify the peer's Windows session id (from peer PID, via
 	// ProcessIdToSessionId) BEFORE the role gate so the gate can bind the
 	// assist/user roles to the active console session. On non-Windows / failure
@@ -1538,7 +1542,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 	consoleWinSession := b.ConsoleSessionID()
 
-	// Step 10: Validate role matches peer identity to prevent privilege escalation.
+	// Step 9: Validate role matches peer identity to prevent privilege escalation.
 	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user/assist
 	// helpers must NOT run as SYSTEM. This prevents a non-SYSTEM process from
 	// claiming system role to get desktop scopes, or SYSTEM from claiming user
@@ -1647,47 +1651,13 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 		helperReservation = nil
 	} else {
-		// Register non-lifecycle sessions with the existing path. Re-run
-		// tryAdmitLocked under the write lock: this is the authoritative cap
-		// check for Unix, assist, watchdog, and backup helpers.
-		//
-		// Without it, two concurrent admits for the same identity could both
-		// pass the pre-auth check, then push the count past the cap. Also captures
-		// any victim so Close and observer callbacks run outside b.mu.
-		b.mu.Lock()
-		admitted, victim := b.tryAdmitLocked(identityKey)
-		if !admitted {
-			b.mu.Unlock()
+		if err := b.registerNonLifecycleSession(identityKey, helperRole, session); err != nil {
 			log.Warn("max connections exceeded at register (admit race)",
 				"identity", identityKey,
 				"sessionId", authReq.SessionID,
 			)
 			conn.Close()
 			return
-		}
-		b.sessions[authReq.SessionID] = session
-		b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
-		// Track backup helper session for direct access
-		if helperRole == backupipc.HelperRoleBackup {
-			if b.backup == nil {
-				b.backup = &backupHelper{}
-			}
-			b.backup.session = session
-		}
-		b.publishSnapshotLocked()
-		registerOnClosed := b.onSessionClosed
-		b.mu.Unlock()
-
-		if victim != nil {
-			if err := victim.Close(); err != nil {
-				log.Error("error closing evicted session at register",
-					"sessionId", victim.SessionID,
-					"error", err.Error(),
-				)
-			}
-			if registerOnClosed != nil {
-				registerOnClosed(victim)
-			}
 		}
 	}
 

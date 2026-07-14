@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
@@ -43,6 +44,13 @@ func admissionIdentityKey(base string, peerSession uint32, goos string) string {
 	return fmt.Sprintf("windows:%s:session:%d", base, peerSession)
 }
 
+func helperAdmissionIdentityKey(base string, peerSession uint32, goos, role string) string {
+	if !isWindowsLifecycleRole(goos, role) {
+		return base
+	}
+	return admissionIdentityKey(base, peerSession, goos)
+}
+
 func isWindowsLifecycleRole(goos, role string) bool {
 	return goos == "windows" && (role == ipc.HelperRoleSystem || role == ipc.HelperRoleUser)
 }
@@ -63,6 +71,34 @@ func (b *Broker) UpdateDesiredHelperKeys(desired map[HelperKey]struct{}) {
 		}
 	}
 	b.mu.Unlock()
+}
+
+// refreshDesiredHelperKeys obtains one detector snapshot and publishes every
+// eligible lifecycle key from it before callers inspect broker connections or
+// spawn helpers.
+func (b *Broker) refreshDesiredHelperKeys(detector SessionDetector) ([]DetectedSession, error) {
+	sessions, err := detector.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	desired := make(map[HelperKey]struct{}, len(sessions)*2)
+	for _, session := range sessions {
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleSystem); ok {
+			desired[key] = struct{}{}
+		}
+		if key, ok := helperKeyFromDetected(session, ipc.HelperRoleUser); ok {
+			desired[key] = struct{}{}
+		}
+	}
+	b.UpdateDesiredHelperKeys(desired)
+	return sessions, nil
+}
+
+func (b *Broker) helperKeyDesired(key HelperKey) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	_, desired := b.desiredHelperKeys[key]
+	return desired
 }
 
 // reserveWindowsHelper atomically reserves both a Windows session/role key and
@@ -185,6 +221,41 @@ func (b *Broker) canAdmitWithoutEviction(identityKey string) bool {
 	return b.idleQuotaVictimLocked(identityKey) != nil
 }
 
+// registerNonLifecycleSession preserves the original authoritative
+// registration path for Unix and Windows assist/watchdog/backup helpers.
+func (b *Broker) registerNonLifecycleSession(identityKey, helperRole string, session *Session) error {
+	b.mu.Lock()
+	admitted, victim := b.tryAdmitLocked(identityKey)
+	if !admitted {
+		b.mu.Unlock()
+		return errMaxConnectionsPerIdentity
+	}
+	b.sessions[session.SessionID] = session
+	b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
+	if helperRole == backupipc.HelperRoleBackup {
+		if b.backup == nil {
+			b.backup = &backupHelper{}
+		}
+		b.backup.session = session
+	}
+	b.publishSnapshotLocked()
+	onClosed := b.onSessionClosed
+	b.mu.Unlock()
+
+	if victim != nil {
+		if err := victim.Close(); err != nil {
+			log.Error("error closing evicted session at register",
+				"sessionId", victim.SessionID,
+				"error", err.Error(),
+			)
+		}
+		if onClosed != nil {
+			onClosed(victim)
+		}
+	}
+	return nil
+}
+
 // commitWindowsHelper revalidates and atomically publishes a reserved helper.
 // Any displaced session is closed and observed only after b.mu is released.
 func (b *Broker) commitWindowsHelper(reservation *helperAuthReservation, session *Session) error {
@@ -229,6 +300,8 @@ func (b *Broker) commitWindowsHelper(reservation *helperAuthReservation, session
 		return failLocked(errDuplicateHelperKey)
 	}
 
+	victim := reservation.victim
+	projectedIdentityCount := b.effectiveIdentityCountLocked(reservation.identityKey, nil)
 	if reservation.victim != nil {
 		if b.helperReservedVictims[reservation.victim] != reservation.id {
 			return failLocked(errHelperReservationInvalid)
@@ -239,8 +312,16 @@ func (b *Broker) commitWindowsHelper(reservation *helperAuthReservation, session
 				return failLocked(errDuplicateHelperKey)
 			}
 		case helperReservationIdleQuota:
-			if b.sessions[reservation.victim.SessionID] != reservation.victim ||
-				reservation.victim.IdentityKey != reservation.identityKey ||
+			victimPresent := b.sessions[reservation.victim.SessionID] == reservation.victim
+			if !victimPresent {
+				// effectiveIdentityCountLocked does not subtract a removed victim.
+				victim = nil
+			} else if projectedIdentityCount+1 <= MaxConnectionsPerIdentity {
+				// Another disconnect relaxed the quota after reserve. Keep the idle
+				// session and account for it in the final projected count.
+				victim = nil
+				projectedIdentityCount++
+			} else if reservation.victim.IdentityKey != reservation.identityKey ||
 				reservation.victim.IdleDuration() <= EvictIdleThreshold {
 				return failLocked(errMaxConnectionsPerIdentity)
 			}
@@ -248,11 +329,10 @@ func (b *Broker) commitWindowsHelper(reservation *helperAuthReservation, session
 			return failLocked(errHelperReservationInvalid)
 		}
 	}
-	if b.effectiveIdentityCountLocked(reservation.identityKey, nil) > MaxConnectionsPerIdentity {
+	if projectedIdentityCount > MaxConnectionsPerIdentity {
 		return failLocked(errMaxConnectionsPerIdentity)
 	}
 
-	victim := reservation.victim
 	if victim != nil {
 		b.removeSessionMapsLocked(victim)
 	}

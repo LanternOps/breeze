@@ -1,6 +1,7 @@
 package sessionbroker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -10,6 +11,65 @@ import (
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
+
+type admissionTestDetector struct {
+	sessions []DetectedSession
+	err      error
+}
+
+func (d admissionTestDetector) ListSessions() ([]DetectedSession, error) {
+	return d.sessions, d.err
+}
+
+func (d admissionTestDetector) WatchSessions(context.Context) <-chan SessionEvent {
+	return make(chan SessionEvent)
+}
+
+func TestRefreshDesiredHelperKeysPublishesCompleteSnapshot(t *testing.T) {
+	b := New("test", nil)
+	detector := admissionTestDetector{sessions: []DetectedSession{
+		{Session: "7", State: "active"},
+		{Session: "8", State: "connected"},
+		{Session: "0", State: "active", Type: "services"},
+	}}
+
+	sessions, err := b.refreshDesiredHelperKeys(detector)
+	if err != nil {
+		t.Fatalf("refreshDesiredHelperKeys: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("refreshed sessions = %d, want 3", len(sessions))
+	}
+
+	want := map[HelperKey]struct{}{
+		{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}: {},
+		{WindowsSessionID: 7, Role: ipc.HelperRoleUser}:   {},
+		{WindowsSessionID: 8, Role: ipc.HelperRoleSystem}: {},
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if len(b.desiredHelperKeys) != len(want) {
+		t.Fatalf("desired keys = %v, want %v", b.desiredHelperKeys, want)
+	}
+	for key := range want {
+		if _, ok := b.desiredHelperKeys[key]; !ok {
+			t.Fatalf("desired snapshot missing %v", key)
+		}
+	}
+}
+
+func TestDesiredSnapshotRejectsSCMKeyAbsentFromDetector(t *testing.T) {
+	b := New("test", nil)
+	_, err := b.refreshDesiredHelperKeys(admissionTestDetector{sessions: []DetectedSession{
+		{Session: "8", State: "active"},
+	}})
+	if err != nil {
+		t.Fatalf("refreshDesiredHelperKeys: %v", err)
+	}
+	if b.helperKeyDesired(HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}) {
+		t.Fatal("SCM event key absent from detector snapshot was considered desired")
+	}
+}
 
 func TestWindowsPreAuthCapacityCheckDoesNotEvict(t *testing.T) {
 	b := New("test", nil)
@@ -57,6 +117,91 @@ func TestAdmissionIdentityKeyWindowsIncludesSession(t *testing.T) {
 	}
 	if got := admissionIdentityKey("1000", 7, "linux"); got != "1000" {
 		t.Fatalf("Unix key changed: %q", got)
+	}
+}
+
+func TestWindowsAdmissionIdentityAndRateBucketsAreRoleAware(t *testing.T) {
+	b := New("test", nil)
+	systemSID := "S-1-5-18"
+	userSID := "S-1-5-21-100"
+	systemKey := helperAdmissionIdentityKey(systemSID, 7, "windows", ipc.HelperRoleSystem)
+	userKey := helperAdmissionIdentityKey(systemSID, 7, "windows", ipc.HelperRoleUser)
+	otherSessionSystemKey := helperAdmissionIdentityKey(systemSID, 8, "windows", ipc.HelperRoleSystem)
+	assistKey := helperAdmissionIdentityKey(userSID, 7, "windows", ipc.HelperRoleAssist)
+	watchdogKey := helperAdmissionIdentityKey(systemSID, 7, "windows", ipc.HelperRoleWatchdog)
+	backupKey := helperAdmissionIdentityKey(systemSID, 7, "windows", backupipc.HelperRoleBackup)
+
+	if systemKey != userKey {
+		t.Fatalf("lifecycle roles in one Windows session split identity buckets: %q != %q", systemKey, userKey)
+	}
+	if systemKey == otherSessionSystemKey {
+		t.Fatalf("system helpers in distinct Windows sessions shared %q", systemKey)
+	}
+	for role, pair := range map[string][2]string{
+		ipc.HelperRoleAssist:       {assistKey, userSID},
+		ipc.HelperRoleWatchdog:     {watchdogKey, systemSID},
+		backupipc.HelperRoleBackup: {backupKey, systemSID},
+	} {
+		if pair[0] != pair[1] {
+			t.Fatalf("%s identity key = %q, want legacy SID %q", role, pair[0], pair[1])
+		}
+	}
+
+	for i := 0; i < RateLimitAttempts; i++ {
+		if !b.rateLimiter.Allow(watchdogKey) {
+			t.Fatalf("legacy bucket rejected attempt %d before limit", i+1)
+		}
+	}
+	if b.rateLimiter.Allow(backupKey) {
+		t.Fatal("backup did not share the legacy SID rate-limit bucket")
+	}
+	if !b.rateLimiter.Allow(assistKey) {
+		t.Fatal("assist did not retain its independent user-SID rate-limit bucket")
+	}
+	if !b.rateLimiter.Allow(systemKey) || !b.rateLimiter.Allow(otherSessionSystemKey) {
+		t.Fatal("session-scoped lifecycle rate-limit buckets were not independent of the legacy SID bucket")
+	}
+}
+
+func TestWindowsNonLifecycleRegistrationUsesLegacyIdentityAndQuota(t *testing.T) {
+	roles := []string{ipc.HelperRoleAssist, ipc.HelperRoleWatchdog, backupipc.HelperRoleBackup}
+	for _, role := range roles {
+		t.Run(role, func(t *testing.T) {
+			b := New("test", nil)
+			b.goos = "windows"
+			base := "S-1-5-18"
+			var clients []*ipc.Conn
+			defer func() {
+				for _, client := range clients {
+					_ = client.Close()
+				}
+			}()
+
+			for i := 0; i < MaxConnectionsPerIdentity; i++ {
+				session, client := newPairedSession(t, fmt.Sprintf("%s-%d", role, i), base)
+				clients = append(clients, client)
+				session.HelperRole = role
+				session.WinSessionID = "7"
+				if err := b.registerNonLifecycleSession(base, role, session); err != nil {
+					t.Fatalf("register %d: %v", i, err)
+				}
+			}
+			if got := len(b.byIdentity[base]); got != MaxConnectionsPerIdentity {
+				t.Fatalf("legacy identity registrations = %d, want %d", got, MaxConnectionsPerIdentity)
+			}
+			if len(b.helperByKey) != 0 || len(b.helperReservations) != 0 {
+				t.Fatalf("non-lifecycle role entered logical reservation state: owners=%d reservations=%d",
+					len(b.helperByKey), len(b.helperReservations))
+			}
+
+			overLimit, client := newPairedSession(t, role+"-over-limit", base)
+			clients = append(clients, client)
+			overLimit.HelperRole = role
+			overLimit.WinSessionID = "7"
+			if err := b.registerNonLifecycleSession(base, role, overLimit); !errors.Is(err, errMaxConnectionsPerIdentity) {
+				t.Fatalf("over-limit registration err=%v, want errMaxConnectionsPerIdentity", err)
+			}
+		})
 	}
 }
 
@@ -199,6 +344,69 @@ func TestReleaseReservationAfterAcceptedWriteFailure(t *testing.T) {
 		if got := b.SessionByID(session.SessionID); got != session {
 			t.Fatalf("existing session %q was evicted: got %p, want %p", session.SessionID, got, session)
 		}
+	}
+}
+
+func TestCommitKeepsReservedIdleVictimWhenQuotaRelaxes(t *testing.T) {
+	b := New("test", nil)
+	b.goos = "windows"
+	identity := admissionIdentityKey("S-1-5-18", 7, "windows")
+	var existing []*Session
+	var clients []*ipc.Conn
+	defer func() {
+		for _, client := range clients {
+			_ = client.Close()
+		}
+	}()
+
+	b.mu.Lock()
+	for i := 0; i < MaxConnectionsPerIdentity; i++ {
+		session, client := newPairedSession(t, fmt.Sprintf("quota-existing-%d", i), identity)
+		clients = append(clients, client)
+		session.WinSessionID = "7"
+		session.HelperRole = ipc.HelperRoleAssist
+		session.LastSeen = time.Now()
+		if i == 0 {
+			session.LastSeen = time.Now().Add(-(EvictIdleThreshold + time.Minute))
+		}
+		existing = append(existing, session)
+		b.sessions[session.SessionID] = session
+		b.byIdentity[identity] = append(b.byIdentity[identity], session)
+	}
+	b.publishSnapshotLocked()
+	b.mu.Unlock()
+
+	key := HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
+	b.UpdateDesiredHelperKeys(map[HelperKey]struct{}{key: {}})
+	reservation, err := b.reserveWindowsHelper(identity, "S-1-5-18", key)
+	if err != nil {
+		t.Fatalf("reserveWindowsHelper: %v", err)
+	}
+	if reservation.victim != existing[0] {
+		t.Fatalf("reserved victim = %p, want %p", reservation.victim, existing[0])
+	}
+
+	if err := existing[1].Close(); err != nil {
+		t.Fatalf("close disconnected session: %v", err)
+	}
+	b.removeSession(existing[1])
+
+	replacement, client := newPairedSession(t, "quota-replacement", identity)
+	clients = append(clients, client)
+	replacement.WinSessionID = "7"
+	replacement.HelperRole = ipc.HelperRoleSystem
+	if err := b.commitWindowsHelper(reservation, replacement); err != nil {
+		t.Fatalf("commitWindowsHelper: %v", err)
+	}
+
+	if existing[0].IsClosed() {
+		t.Fatal("commit closed the idle victim after quota pressure disappeared")
+	}
+	if got := b.SessionByID(existing[0].SessionID); got != existing[0] {
+		t.Fatalf("idle victim was unnecessarily evicted: got %p, want %p", got, existing[0])
+	}
+	if got := len(b.byIdentity[identity]); got != MaxConnectionsPerIdentity {
+		t.Fatalf("identity sessions after relaxed commit = %d, want %d", got, MaxConnectionsPerIdentity)
 	}
 }
 
@@ -345,5 +553,33 @@ func TestDesiredKeyRemovalInvalidatesReservation(t *testing.T) {
 	}
 	if b.SessionByID(session.SessionID) != nil {
 		t.Fatal("invalidated reservation published a session")
+	}
+}
+
+func TestCommitAfterBrokerShutdownReleasesReservationWithoutPublishing(t *testing.T) {
+	b := New("test", nil)
+	b.goos = "windows"
+	key := HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleSystem}
+	identity := admissionIdentityKey("S-1-5-18", 7, "windows")
+	b.UpdateDesiredHelperKeys(map[HelperKey]struct{}{key: {}})
+	reservation, err := b.reserveWindowsHelper(identity, "S-1-5-18", key)
+	if err != nil {
+		t.Fatalf("reserveWindowsHelper: %v", err)
+	}
+	b.Close()
+
+	session, client := newPairedSession(t, "shutdown-candidate", identity)
+	defer client.Close()
+	session.WinSessionID = "7"
+	session.HelperRole = ipc.HelperRoleSystem
+	if err := b.commitWindowsHelper(reservation, session); !errors.Is(err, errBrokerClosed) {
+		t.Fatalf("commit err=%v, want errBrokerClosed", err)
+	}
+	if len(b.helperReservations) != 0 || len(b.identityReservations) != 0 {
+		t.Fatalf("shutdown commit leaked reservation state: reservations=%d identity=%d",
+			len(b.helperReservations), len(b.identityReservations))
+	}
+	if b.SessionByID(session.SessionID) != nil {
+		t.Fatal("shutdown commit published candidate session")
 	}
 }

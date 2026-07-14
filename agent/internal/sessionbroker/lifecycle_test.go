@@ -7,6 +7,29 @@ import (
 	"time"
 )
 
+func TestHandleSCMEventDoesNotSpawnBeforeDetectorPublishesEventKey(t *testing.T) {
+	broker := New(`\\.\pipe\test-scm-desired-order-`+t.Name(), nil)
+	m := NewHelperLifecycleManager(broker, nil)
+	m.detector = admissionTestDetector{sessions: []DetectedSession{
+		{Session: "8", State: "active"},
+	}}
+
+	m.handleSCMEvent(SCMSessionEvent{EventType: wtsSessionLogon, SessionID: 7})
+
+	if broker.helperKeyDesired(HelperKey{WindowsSessionID: 7, Role: "system"}) ||
+		broker.helperKeyDesired(HelperKey{WindowsSessionID: 7, Role: "user"}) {
+		t.Fatal("SCM event key absent from detector was published as desired")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, spawned := m.tracked["7-system"]; spawned {
+		t.Fatal("system helper spawned before detector published eligibility")
+	}
+	if _, spawned := m.tracked["7-user"]; spawned {
+		t.Fatal("user helper spawned before detector published eligibility")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Priority 4: fatalExitUntil suppression in spawnWithRetry
 // ---------------------------------------------------------------------------
