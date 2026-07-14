@@ -9,12 +9,12 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
-import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
 import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 
 import { securityMiddleware } from './middleware/security';
+import { requestPathLogger } from './middleware/requestPathLogger';
 import { bodyLimitForPath } from './middleware/bodyLimit';
 import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
@@ -325,7 +325,7 @@ const resolveCorsOrigin = createCorsOriginResolver({
 });
 
 // Global middleware
-app.use('*', logger());
+app.use('*', requestPathLogger());
 app.use(
   '*',
   secureHeaders({
