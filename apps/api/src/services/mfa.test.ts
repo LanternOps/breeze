@@ -129,4 +129,15 @@ describe('mfa service', () => {
       expect(await consumeMFAToken(secret, code, 'user-1')).toBe(false);
     });
   });
+
+  describe('dead-code guard', () => {
+    it('does not export a non-consuming verifyMFAToken', async () => {
+      const mod = (await import('./mfa')) as Record<string, unknown>;
+      // A non-consuming TOTP verifier lets a sniffed live code be replayed
+      // across multiple critical actions inside its ~90s window. consumeMFAToken
+      // is the only permitted verifier (SR2-24). Keep this guard: re-adding a
+      // plain verifier must fail CI, not just review.
+      expect(mod.verifyMFAToken).toBeUndefined();
+    });
+  });
 });

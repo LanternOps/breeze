@@ -60,7 +60,6 @@ vi.mock('../services', () => ({
   }),
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn(),
-  verifyMFAToken: vi.fn(),
   generateOTPAuthURL: vi.fn(),
   generateQRCode: vi.fn(),
   generateRecoveryCodes: vi.fn(),

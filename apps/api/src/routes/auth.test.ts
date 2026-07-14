@@ -15,7 +15,6 @@ vi.mock('../services', () => ({
   }),
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn().mockReturnValue('MFASECRET123'),
-  verifyMFAToken: vi.fn(),
   consumeMFAToken: vi.fn(),
   generateOTPAuthURL: vi.fn().mockReturnValue('otpauth://totp/...'),
   generateQRCode: vi.fn().mockResolvedValue('data:image/png;base64,...'),
@@ -245,7 +244,6 @@ import {
   isPasswordStrong,
   createTokenPair,
   verifyToken,
-  verifyMFAToken,
   consumeMFAToken,
   generateRecoveryCodes,
   invalidateAllUserSessions,
@@ -1458,7 +1456,7 @@ describe('auth routes', () => {
   // the code with the CONSUMING verifier so the accepted time step is
   // recorded and cannot be replayed at login within its validity window.
   describe('POST /auth/mfa/verify — setup confirmation consumes the TOTP step (SR2-24)', () => {
-    it('confirms setup via consumeMFAToken, not the plain (non-consuming) verifyMFAToken', async () => {
+    it('confirms setup via the consuming consumeMFAToken verifier', async () => {
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({
           secret: 'SETUPSECRET123',
@@ -1493,7 +1491,6 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(200);
       expect(consumeMFAToken).toHaveBeenCalledWith('SETUPSECRET123', '123456', 'user-123');
-      expect(verifyMFAToken).not.toHaveBeenCalled();
     });
   });
 
@@ -2413,7 +2410,6 @@ describe('auth routes', () => {
       // SR2-24: /mfa/enable must use the consuming verifier so the accepted
       // step is recorded and cannot be replayed at login.
       expect(consumeMFAToken).toHaveBeenCalledWith('MFASECRET123', '123456', 'user-123');
-      expect(verifyMFAToken).not.toHaveBeenCalled();
     });
 
     // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
