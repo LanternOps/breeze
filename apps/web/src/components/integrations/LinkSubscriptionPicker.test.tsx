@@ -61,6 +61,25 @@ beforeEach(() => {
 });
 
 describe("LinkSubscriptionPicker", () => {
+  it("explains that observation tracking detects drift without overwriting billing", async () => {
+    render(
+      <LinkSubscriptionPicker
+        integrationId="int-1"
+        subscription={sub}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Track Pax8 reported quantity for drift (never overwrite Breeze billing)",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Link subscription")).toBeInTheDocument();
+    expect(screen.queryByText(/keep quantity in sync/i)).toBeNull();
+  });
+
   it("links to an existing manual line", async () => {
     render(
       <LinkSubscriptionPicker

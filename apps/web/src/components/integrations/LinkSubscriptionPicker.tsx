@@ -277,7 +277,7 @@ export default function LinkSubscriptionPicker({
             onChange={(e) => setSyncEnabled(e.target.checked)}
             data-testid="pax8-link-sync"
           />
-          {t("linkSubscriptionPicker.keepQuantityInSync")}
+          {t("linkSubscriptionPicker.trackQuantityForDrift")}
         </label>
         <div className="flex gap-2">
           <button
@@ -296,7 +296,7 @@ export default function LinkSubscriptionPicker({
             data-testid="pax8-link-submit"
             className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
-            {t("linkSubscriptionPicker.link")}
+            {t("linkSubscriptionPicker.linkSubscription")}
           </button>
         </div>
       </div>

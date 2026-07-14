@@ -779,7 +779,7 @@ Bulk endpoints accept a list of IDs and return per-item results, so partial succ
 
 ### Distributor Integrations
 
-Pax8 integration and ordering routes require partner or system scope plus `billing:manage`. An organization-scoped token is refused even when it can access the target organization. Partner-scoped callers use the partner from their token; system-scoped callers supply `partnerId` in the query or body accepted by the route. Every mutation is MFA-gated and audited.
+Pax8 integration and ordering routes require partner or system scope plus `billing:manage`. An organization-scoped token is refused even when it can access the target organization. Partner-scoped callers use the partner from their token. System-scoped callers supply `partnerId` only on routes that accept it and require it for system scope. Company map and subscription link/unlink routes instead derive the partner from their tenant-scoped `integrationId`. Every mutation is MFA-gated and audited.
 
 | Method | Path | MFA | Description |
 |---|---|---|---|

@@ -108,6 +108,34 @@ beforeEach(() => {
 });
 
 describe("Pax8Integration subscription actions", () => {
+  it("describes links as observation tracking without promising billing quantity sync", async () => {
+    routeFetch(true);
+    render(<Pax8Integration />);
+
+    await waitFor(() =>
+      screen.getByTestId("pax8-subscription-sub-linked"),
+    );
+    expect(screen.getByText("Pax8 reported")).toBeInTheDocument();
+    expect(screen.getByText("observing quantity")).toBeInTheDocument();
+    expect(screen.getByText("Pause observations")).toBeInTheDocument();
+    expect(screen.getByText("Link for observation")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Linking never overwrites the Breeze billing quantity/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/sync quantities automatically/i)).toBeNull();
+  });
+
+  it("labels a disabled observation link as paused and offers resume", async () => {
+    routeFetch(false);
+    render(<Pax8Integration />);
+
+    await waitFor(() =>
+      screen.getByTestId("pax8-subscription-sub-linked"),
+    );
+    expect(screen.getByText("observation paused")).toBeInTheDocument();
+    expect(screen.getByText("Resume observations")).toBeInTheDocument();
+  });
+
   it("unlinks a linked subscription via DELETE", async () => {
     routeFetch(true);
     render(<Pax8Integration />);
@@ -137,8 +165,8 @@ describe("Pax8Integration subscription actions", () => {
     await waitFor(() => screen.getByTestId("mock-picker-done"));
   });
 
-  it("pauses sync by POSTing syncEnabled:false for a currently-syncing link", async () => {
-    routeFetch(true); // sub-linked starts syncEnabled: true
+  it("pauses observations by POSTing syncEnabled:false for an observed link", async () => {
+    routeFetch(true); // sub-linked starts with observation tracking enabled
     render(<Pax8Integration />);
     await waitFor(() =>
       screen.getByTestId("pax8-subscription-togglesync-sub-linked"),

@@ -61,19 +61,19 @@ Pax8 connects with your Pax8 **OAuth client credentials**. Once connected, Breez
   Existing links with `sync_enabled` will **stop automatically updating contract-line quantities from Pax8**. This is intentional: the quantity reported by the Pax8 subscription API does not reliably match the quantity Pax8 invoices. The Breeze order ledger and its linked manual contract-line quantity are now the billing source of truth. Scheduled sync records Pax8's reported quantity for comparison and surfaces drift instead of silently changing customer billing.
 </Aside>
 
-**Subscription actions**
+**Subscription links on the Integrations page**
 
-A subscription only becomes linkable after its company is mapped to a Breeze organization. Each subscription row then offers:
+A subscription only becomes linkable after its company is mapped to a Breeze organization. On **Integrations → Distributors → Pax8**, each subscription row offers:
 
 | Action | Description |
 |--------|-------------|
-| **Link** | Connect the subscription to a contract line (or create a new manual line) |
-| **Change** | Re-point the subscription to a different contract line |
-| **Pause** | Stop recording Pax8 quantity observations for this link while keeping the link intact |
-| **Resume** | Resume recording observations and drift detection for this link |
+| **Link for observation** | Connect the subscription to a contract line (or create a new manual line) |
+| **Change link** | Re-point the subscription to a different contract line |
+| **Pause observations** | Stop recording Pax8 quantity observations for this link while keeping the link intact |
+| **Resume observations** | Resume recording observations and drift detection for this link |
 | **Unlink** | Remove the connection between the subscription and the contract line |
 
-The **Breeze quantity** shown for a linked subscription is the manual contract-line quantity used for billing. **Pax8 reported** is the latest known subscription quantity from Pax8. A **Drift** badge means both values are known and disagree. A missing or unknown Pax8 quantity is not treated as zero and does not produce a drift warning.
+These Integrations-page actions manage the contract-line link and whether scheduled sync records observations; that table's **Pax8 reported** column is not a Breeze billing quantity. To compare quantities or stage an order action, open the mapped organization's **Pax8** tab. The organization tab shows **Breeze quantity** (the authoritative manual contract-line billing quantity), **Pax8 reported** (the latest known observation), and a **Drift** badge when both values are known and disagree. A missing or unknown Pax8 quantity is not treated as zero and does not produce a drift warning.
 
 ### Prepare an organization for ordering
 
@@ -82,7 +82,7 @@ Ordering is managed from the organization's **Pax8** settings tab, but remains a
 1. Sync the integration so the Pax8 company, subscriptions, and product mappings are current.
 2. Open **Settings → Organizations → _organization_ → Pax8**, or go directly to `/settings/organizations/<org-id>#pax8`.
 3. Map exactly one Pax8 company to the organization.
-4. Confirm the mapped company is **Active** in Pax8 and has primary **Admin**, **Billing**, and **Technical** contacts. Breeze does not expose contact details here; it only shows whether each ordering prerequisite is present.
+4. Confirm the mapped company is **Active** in Pax8 and has primary **Admin**, **Billing**, and **Technical** contacts. The organization tab shows the Pax8 company status. When the mapping is not order-ready, it shows one combined warning; it does not show contact details or separate indicators for the three contact roles.
 5. Link recurring subscriptions to the corresponding manual contract lines. A linked line is required before the organization tab can stage a quantity change or cancellation.
 
 The **New order** action stays unavailable until the company mapping is order-ready and at least one active Product Catalog item is mapped to a Pax8 product.

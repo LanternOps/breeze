@@ -392,10 +392,10 @@ export default function Pax8Integration() {
                 syncEnabled: !sub.syncEnabled,
               }),
             }),
-          errorFallback: t("pax8Integration.couldNotUpdateSync"),
+          errorFallback: t("pax8Integration.couldNotUpdateObservationTracking"),
           successMessage: sub.syncEnabled
-            ? t("pax8Integration.syncPaused")
-            : t("pax8Integration.syncResumed"),
+            ? t("pax8Integration.observationsPaused")
+            : t("pax8Integration.observationsResumed"),
           onUnauthorized: UNAUTHORIZED,
         });
         void reloadSubscriptions();
@@ -407,7 +407,10 @@ export default function Pax8Integration() {
           });
           return;
         }
-        handleActionError(err, t("pax8Integration.couldNotUpdateSync"));
+        handleActionError(
+          err,
+          t("pax8Integration.couldNotUpdateObservationTracking"),
+        );
       }
     },
     [integration, reloadSubscriptions],
@@ -823,7 +826,7 @@ export default function Pax8Integration() {
           </h2>
           <p className="mb-4 text-sm text-muted-foreground">
             {t(
-              "pax8Integration.licenseSubscriptionsPulledFromPax8LinkASubscription",
+              "pax8Integration.subscriptionObservationDescription",
             )}
           </p>
           {subscriptions.length === 0 ? (
@@ -888,8 +891,8 @@ export default function Pax8Integration() {
                         <div className="flex flex-wrap gap-2">
                           <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
                             {sub.syncEnabled
-                              ? t("pax8Integration.syncing")
-                              : t("pax8Integration.linked")}
+                              ? t("pax8Integration.observingQuantity")
+                              : t("pax8Integration.observationPaused")}
                           </span>
                           <button
                             type="button"
@@ -897,7 +900,7 @@ export default function Pax8Integration() {
                             data-testid={`pax8-subscription-change-${sub.id}`}
                             className="text-xs underline hover:text-foreground"
                           >
-                            {t("pax8Integration.change")}
+                            {t("pax8Integration.changeLink")}
                           </button>
                           <button
                             type="button"
@@ -906,8 +909,8 @@ export default function Pax8Integration() {
                             className="text-xs underline hover:text-foreground"
                           >
                             {sub.syncEnabled
-                              ? t("pax8Integration.pause")
-                              : t("pax8Integration.resume")}
+                              ? t("pax8Integration.pauseObservations")
+                              : t("pax8Integration.resumeObservations")}
                           </button>
                           <button
                             type="button"
@@ -925,7 +928,7 @@ export default function Pax8Integration() {
                           data-testid={`pax8-subscription-link-${sub.id}`}
                           className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
                         >
-                          {t("pax8Integration.link")}
+                          {t("pax8Integration.linkForObservation")}
                         </button>
                       )}
                     </td>
