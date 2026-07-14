@@ -79,6 +79,19 @@ export interface Pax8OrderResult {
   lineItems: Array<{ lineItemNumber: number | null; productId: string | null; subscriptionId: string | null }>;
 }
 
+export interface Pax8OrderRecord {
+  pax8OrderId: string;
+  pax8CompanyId: string;
+  createdDate: string | null;
+  lineItems: Array<{
+    lineItemNumber: number | null;
+    productId: string | null;
+    quantity: string;
+    subscriptionId: string | null;
+  }>;
+  raw: JsonRecord;
+}
+
 export interface Pax8ProvisionDetail {
   key: string;
   label: string | null;
@@ -253,6 +266,33 @@ function normalizeSubscription(value: unknown): Pax8SubscriptionRecord | null {
   };
 }
 
+function normalizeOrder(value: unknown): Pax8OrderRecord | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const id = firstString(record, ['id', 'orderId', 'order_id']);
+  const companyId =
+    firstString(record, ['companyId', 'company_id', 'customerId', 'customer_id']) ??
+    firstNestedString(record, [['company', ['id', 'companyId']], ['customer', ['id', 'companyId']]]);
+  if (!id || !companyId) return null;
+  const lineItems = extractArray(record.lineItems).map((value) => {
+    const line = asRecord(value);
+    if (!line) return null;
+    return {
+      lineItemNumber: firstNumber(line, ['lineItemNumber', 'line_item_number']),
+      productId: firstString(line, ['productId', 'product_id']),
+      quantity: normalizeQuantity(line.quantity),
+      subscriptionId: firstString(line, ['subscriptionId', 'subscription_id']),
+    };
+  }).filter((line): line is Pax8OrderRecord['lineItems'][number] => line !== null);
+  return {
+    pax8OrderId: id,
+    pax8CompanyId: companyId,
+    createdDate: normalizeIsoDate(record.createdDate ?? record.created_date),
+    lineItems,
+    raw: record,
+  };
+}
+
 function normalizeProduct(value: unknown): Pax8ProductRecord | null {
   const record = asRecord(value);
   if (!record) return null;
@@ -312,9 +352,15 @@ export class Pax8Client {
     return rows.map(normalizeCompany).filter((row): row is Pax8CompanyRecord => row !== null);
   }
 
-  async listSubscriptions(opts: { limit?: number } = {}): Promise<Pax8SubscriptionRecord[]> {
-    const rows = await this.fetchPaged('/subscriptions', opts.limit);
+  async listSubscriptions(opts: { limit?: number; companyId?: string } = {}): Promise<Pax8SubscriptionRecord[]> {
+    const rows = await this.fetchPaged('/subscriptions', opts.limit, { companyId: opts.companyId });
     return rows.map(normalizeSubscription).filter((row): row is Pax8SubscriptionRecord => row !== null);
+  }
+
+  /** Read-only company order listing used only by human-triggered reconcile. */
+  async listOrders(opts: { limit?: number; companyId: string }): Promise<Pax8OrderRecord[]> {
+    const rows = await this.fetchPaged('/orders', opts.limit, { companyId: opts.companyId });
+    return rows.map(normalizeOrder).filter((row): row is Pax8OrderRecord => row !== null);
   }
 
   async listProducts(opts: { limit?: number; vendorName?: string } = {}): Promise<Pax8ProductRecord[]> {

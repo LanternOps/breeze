@@ -40,6 +40,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/pax8/orders/ord-1/lines'],
     ['POST', '/api/v1/pax8/orders/ord-1/lines/'],
     ['post', '/api/v1/pax8/orders/ord-1/lines'], // method is case-insensitive
+    // Pax8 submit/reconcile phases make outbound calls between short DB txns.
+    ['POST', '/api/v1/pax8/orders/ord-1/preflight'],
+    ['POST', '/api/v1/pax8/orders/ord-1/preflight/'],
+    ['POST', '/api/v1/pax8/orders/ord-1/submit'],
+    ['POST', '/api/v1/pax8/orders/ord-1/submit/'],
+    ['POST', '/api/v1/pax8/orders/ord-1/reconcile'],
+    ['POST', '/api/v1/pax8/orders/ord-1/reconcile/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -85,6 +92,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/pax8/orders/ord-1/lines', 'Pax8 line authoring is POST-only'],
     ['POST', '/api/v1/pax8/orders//lines', 'Pax8 order id must not be empty'],
     ['POST', '/api/v1/pax8/orders/ord-1/lines/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/pax8/orders/ord-1/preflight', 'Pax8 preflight is POST-only'],
+    ['GET', '/api/v1/pax8/orders/ord-1/submit', 'Pax8 submit is POST-only'],
+    ['GET', '/api/v1/pax8/orders/ord-1/reconcile', 'Pax8 reconcile is POST-only'],
+    ['POST', '/api/v1/pax8/orders//submit', 'Pax8 order id must not be empty'],
+    ['POST', '/api/v1/pax8/orders/ord-1/submit/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

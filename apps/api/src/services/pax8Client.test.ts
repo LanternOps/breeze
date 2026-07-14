@@ -335,6 +335,54 @@ describe('Pax8Client.createOrder', () => {
   });
 });
 
+describe('Pax8Client reconciliation reads', () => {
+  it('lists only the requested company subscriptions', async () => {
+    const doFetch = vi.fn().mockResolvedValue(jsonResponse({ content: [], last: true }));
+    await clientWith(doFetch).listSubscriptions({ companyId: 'company/a' });
+
+    expect(doFetch.mock.calls[0]![0]).toBe(
+      'https://api.pax8.com/v1/subscriptions?companyId=company%2Fa&page=0&size=200',
+    );
+    expect(doFetch.mock.calls[0]![1].method).toBe('GET');
+  });
+
+  it('lists and normalizes company orders without issuing a write', async () => {
+    const doFetch = vi.fn().mockResolvedValue(jsonResponse({
+      content: [{
+        id: 'order-1',
+        companyId: 'company-1',
+        createdDate: '2026-07-14',
+        lineItems: [{
+          lineItemNumber: 3,
+          productId: 'product-1',
+          quantity: 7,
+          subscriptionId: 'subscription-1',
+        }],
+      }],
+      last: true,
+    }));
+
+    const orders = await clientWith(doFetch).listOrders({ companyId: 'company-1' });
+
+    expect(doFetch.mock.calls[0]![0]).toBe(
+      'https://api.pax8.com/v1/orders?companyId=company-1&page=0&size=200',
+    );
+    expect(doFetch.mock.calls[0]![1].method).toBe('GET');
+    expect(orders).toEqual([{
+      pax8OrderId: 'order-1',
+      pax8CompanyId: 'company-1',
+      createdDate: '2026-07-14',
+      lineItems: [{
+        lineItemNumber: 3,
+        productId: 'product-1',
+        quantity: '7.00',
+        subscriptionId: 'subscription-1',
+      }],
+      raw: expect.any(Object),
+    }]);
+  });
+});
+
 describe('Pax8Client.getProvisionDetails', () => {
   it('returns the discoverable field descriptors', async () => {
     const doFetch = vi.fn().mockResolvedValue(jsonResponse({ content: [
