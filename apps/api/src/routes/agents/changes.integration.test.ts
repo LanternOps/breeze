@@ -85,16 +85,16 @@ describe('device change ingest — hardware & os_version (real Postgres, #2502 P
         changeType: 'hardware',
         changeAction: 'modified',
         subject: 'Memory',
-        beforeValue: { totalMb: 4096 },
-        afterValue: { totalMb: 8192 },
+        beforeValue: { value: '4 GB' },
+        afterValue: { value: '8 GB' },
       },
       {
         timestamp: new Date().toISOString(),
         changeType: 'os_version',
         changeAction: 'updated',
         subject: 'Operating System',
-        beforeValue: { version: '22H2' },
-        afterValue: { version: '23H2' },
+        beforeValue: { version: '22H2', build: '22621.3007' },
+        afterValue: { version: '23H2', build: '22631.3007' },
       },
     ]);
 

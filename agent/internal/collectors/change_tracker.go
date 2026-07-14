@@ -1003,7 +1003,14 @@ func (c *ChangeTrackerCollector) diffHardware(current *Snapshot) []ChangeRecord 
 	}
 
 	if prev.RAMTotalMB != cur.RAMTotalMB {
-		emit("Memory", prev.RAMTotalMB, cur.RAMTotalMB)
+		// Emit as rounded GB strings ("4 GB → 8 GB") rather than raw MB.
+		prevGB := (prev.RAMTotalMB + 512) / 1024
+		curGB := (cur.RAMTotalMB + 512) / 1024
+		changes = append(changes, ChangeRecord{
+			Timestamp: now, ChangeType: ChangeTypeHardware, ChangeAction: ChangeActionModified, Subject: "Memory",
+			BeforeValue: map[string]any{"value": fmt.Sprintf("%d GB", prevGB)},
+			AfterValue:  map[string]any{"value": fmt.Sprintf("%d GB", curGB)},
+		})
 	}
 	if prev.CPUModel != cur.CPUModel || prev.CPUCores != cur.CPUCores {
 		changes = append(changes, ChangeRecord{
@@ -1013,7 +1020,12 @@ func (c *ChangeTrackerCollector) diffHardware(current *Snapshot) []ChangeRecord 
 		})
 	}
 	if prev.DiskTotalGB != cur.DiskTotalGB {
-		emit("Storage", prev.DiskTotalGB, cur.DiskTotalGB)
+		// DiskTotalGB is already GB — render with a unit ("256 GB → 512 GB").
+		changes = append(changes, ChangeRecord{
+			Timestamp: now, ChangeType: ChangeTypeHardware, ChangeAction: ChangeActionModified, Subject: "Storage",
+			BeforeValue: map[string]any{"value": fmt.Sprintf("%d GB", prev.DiskTotalGB)},
+			AfterValue:  map[string]any{"value": fmt.Sprintf("%d GB", cur.DiskTotalGB)},
+		})
 	}
 	if prev.BIOSVersion != cur.BIOSVersion {
 		changes = append(changes, ChangeRecord{

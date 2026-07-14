@@ -136,9 +136,20 @@ function badgeClassForAction(value: string): string {
 }
 
 // Renders a single before/after value. Objects become compact `key: val` pairs;
-// scalars stringify directly.
+// scalars stringify directly. A single-key `{ value: … }` wrapper (how the agent
+// emits Memory/Storage/BIOS/etc.) renders as just the value — no `value:` prefix —
+// so a Memory record reads `4 GB → 8 GB`.
 function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 1 && entries[0][0] === "value") {
+      const val = entries[0][1];
+      return val !== null && typeof val === "object"
+        ? JSON.stringify(val)
+        : String(val);
+    }
+  }
   if (typeof value === "object") {
     return Object.entries(value as Record<string, unknown>)
       .map(([key, val]) =>

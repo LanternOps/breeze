@@ -1207,7 +1207,7 @@ export function createBreezeMcpServer(
 
     tool(
       'query_change_log',
-      'Search device configuration changes (software, services, startup, network, scheduled tasks, and user accounts).',
+      'Search device configuration changes such as software installs/updates, service changes, startup drift, network changes, scheduled task changes, user account changes, hardware changes (memory/CPU/disk/BIOS/serial), and OS version updates.',
       {
         deviceId: uuid.optional(),
         startTime: z.string().datetime({ offset: true }).optional(),
