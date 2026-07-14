@@ -16,8 +16,10 @@ import {
   configurationPolicies,
   customFieldDefinitions,
   devices,
+  organizations,
   partnerExportConfigurationOrgState,
   scripts,
+  sites,
 } from '../../db/schema';
 import { partnerConfigurationRoutes } from '../../routes/partnerApi/configuration';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -59,6 +61,10 @@ const PATCH_EXPORT_TYPESCRIPT_VALIDATION_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-27-e-patch-export-typescript-validation.sql',
 );
+const CUSTOM_VALUE_MOVE_OWNERS_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-31-device-custom-value-move-owners.sql',
+);
 
 describe('partner desired-configuration material watermarks', () => {
   runDb('migration is idempotent and creates forced org-axis RLS', async () => {
@@ -72,6 +78,59 @@ describe('partner desired-configuration material watermarks', () => {
       WHERE oid = 'public.partner_export_configuration_org_state'::regclass
     `);
     expect(state).toEqual({ enabled: true, forced: true });
+  });
+
+  runDb('custom-value move ownership migration is idempotent, ordered, and private', async () => {
+    const db = getTestDb();
+    const migration = readFileSync(CUSTOM_VALUE_MOVE_OWNERS_MIGRATION_FILE, 'utf8');
+    await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
+
+    const triggers = await db.execute<{ name: string; enabled: string }>(sql`
+      SELECT tgname AS name, tgenabled AS enabled
+      FROM pg_catalog.pg_trigger
+      WHERE tgrelid = 'public.devices'::regclass
+        AND NOT tgisinternal
+        AND tgname IN (
+          'breeze_partner_export_custom_values_update',
+          'breeze_partner_export_z_custom_values_update'
+        )
+      ORDER BY tgname
+    `);
+    expect(triggers).toEqual([
+      { name: 'breeze_partner_export_z_custom_values_update', enabled: 'O' },
+    ]);
+
+    const [functionState] = await db.execute<{
+      securityDefiner: boolean;
+      configuration: string | null;
+      publicExecute: boolean;
+      appExecute: boolean;
+    }>(sql`
+      SELECT p.prosecdef AS "securityDefiner",
+        array_to_string(p.proconfig, ',') AS configuration,
+        EXISTS (
+          SELECT 1
+          FROM pg_catalog.aclexplode(
+            COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+          ) privilege
+          WHERE privilege.grantee = 0
+            AND privilege.privilege_type = 'EXECUTE'
+        ) AS "publicExecute",
+        has_function_privilege(
+          'breeze_app',
+          'public.breeze_partner_export_custom_values_update()',
+          'EXECUTE'
+        ) AS "appExecute"
+      FROM pg_catalog.pg_proc p
+      WHERE p.oid = 'public.breeze_partner_export_custom_values_update()'::regprocedure
+    `);
+    expect(functionState).toEqual({
+      securityDefiner: true,
+      configuration: 'search_path=pg_catalog, public',
+      publicExecute: false,
+      appExecute: false,
+    });
   });
 
   runDb('tenant-integrity and canonical parity migrations are idempotent and keep helpers private', async () => {
@@ -583,6 +642,106 @@ describe('partner desired-configuration material watermarks', () => {
       .set({ updatedAt: new Date('2000-01-01T00:00:00.000Z') })
       .where(eq(partnerExportConfigurationOrgState.orgId, org.id))))
       .rejects.toMatchObject({ cause: expect.objectContaining({ code: '42501' }) });
+  });
+
+  runDb.each([
+    {
+      direction: 'low-to-high with unchanged values',
+      sourceOrgId: '10000000-0000-4000-8000-000000000001',
+      targetOrgId: 'f0000000-0000-4000-8000-000000000002',
+      changedValue: false,
+    },
+    {
+      direction: 'low-to-high with changed values',
+      sourceOrgId: '10000000-0000-4000-8000-000000000001',
+      targetOrgId: 'f0000000-0000-4000-8000-000000000002',
+      changedValue: true,
+    },
+    {
+      direction: 'high-to-low with unchanged values',
+      sourceOrgId: 'f0000000-0000-4000-8000-000000000002',
+      targetOrgId: '10000000-0000-4000-8000-000000000001',
+      changedValue: false,
+    },
+    {
+      direction: 'high-to-low with changed values',
+      sourceOrgId: 'f0000000-0000-4000-8000-000000000002',
+      targetOrgId: '10000000-0000-4000-8000-000000000001',
+      changedValue: true,
+    },
+  ])('device org/site move $direction touches both custom-field owners', async ({
+    sourceOrgId,
+    targetOrgId,
+    changedValue,
+  }) => {
+    const db = getTestDb();
+    const partner = await createPartner();
+    await db.insert(organizations).values([
+      {
+        id: '10000000-0000-4000-8000-000000000001',
+        partnerId: partner.id,
+        name: 'Deterministic low organization',
+        slug: `custom-move-low-${crypto.randomUUID()}`,
+      },
+      {
+        id: 'f0000000-0000-4000-8000-000000000002',
+        partnerId: partner.id,
+        name: 'Deterministic high organization',
+        slug: `custom-move-high-${crypto.randomUUID()}`,
+      },
+    ]);
+    const [sourceSite, targetSite] = await db.insert(sites).values([
+      { orgId: sourceOrgId, name: 'Custom value move source' },
+      { orgId: targetOrgId, name: 'Custom value move target' },
+    ]).returning();
+    if (!sourceSite || !targetSite) throw new Error('custom value move site seed failed');
+    await db.insert(customFieldDefinitions).values([
+      { orgId: sourceOrgId, name: 'Rack', fieldKey: 'rack', type: 'text' },
+      { orgId: targetOrgId, name: 'Rack', fieldKey: 'rack', type: 'text' },
+    ]);
+    const [device] = await db.insert(devices).values({
+      orgId: sourceOrgId,
+      siteId: sourceSite.id,
+      agentId: `custom-move-${crypto.randomUUID()}`.slice(0, 64),
+      hostname: 'custom-value-moving-device',
+      osType: 'linux',
+      osVersion: '1',
+      architecture: 'amd64',
+      agentVersion: '1',
+      customFields: { rack: 'source-rack' },
+    }).returning();
+    if (!device) throw new Error('custom value move device seed failed');
+
+    const sourceBefore = await stateClock(sourceOrgId, 'custom-fields');
+    const targetBefore = await stateClock(targetOrgId, 'custom-fields');
+    const sourceApp = configurationExportApp(partner.id, sourceOrgId);
+    const targetApp = configurationExportApp(partner.id, targetOrgId);
+    const sourceInitial = await sourceApp.request('/custom-field-values');
+    const targetInitial = await targetApp.request('/custom-field-values');
+    expect(sourceInitial.status, await sourceInitial.clone().text()).toBe(200);
+    expect(targetInitial.status, await targetInitial.clone().text()).toBe(200);
+    expect((await sourceInitial.json() as { data: unknown[] }).data).toHaveLength(1);
+    expect((await targetInitial.json() as { data: unknown[] }).data).toEqual([]);
+
+    await expect(db.update(devices).set({
+      orgId: targetOrgId,
+      siteId: targetSite.id,
+      ...(changedValue ? { customFields: { rack: 'target-rack' } } : {}),
+    }).where(eq(devices.id, device.id))).resolves.toBeDefined();
+
+    expect((await stateClock(sourceOrgId, 'custom-fields')).getTime())
+      .toBeGreaterThan(sourceBefore.getTime());
+    expect((await stateClock(targetOrgId, 'custom-fields')).getTime())
+      .toBeGreaterThan(targetBefore.getTime());
+    const sourceAfter = await sourceApp.request('/custom-field-values');
+    const targetAfter = await targetApp.request('/custom-field-values');
+    expect(sourceAfter.status, await sourceAfter.clone().text()).toBe(200);
+    expect(targetAfter.status, await targetAfter.clone().text()).toBe(200);
+    expect((await sourceAfter.json() as { data: unknown[] }).data).toEqual([]);
+    const targetBody = await targetAfter.json() as { data: Array<{ value: string }> };
+    expect(targetBody.data).toEqual([
+      expect.objectContaining({ value: changedValue ? 'target-rack' : 'source-rack' }),
+    ]);
   });
 
   runDb('custom-field values traverse more than 500 definitions on one device and block secret semantics', async () => {
