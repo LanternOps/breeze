@@ -221,7 +221,7 @@ describe('MicrosoftGraphClient', () => {
   it.each([
     ['plain HTTP', `http://graph.microsoft.com/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments?$skiptoken=x`],
     ['lookalike host', `https://graph.microsoft.com.evil.example/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments?$skiptoken=x`],
-    ['userinfo', `https://attacker@graph.microsoft.com/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments?$skiptoken=x`],
+    ['userinfo', `https://attacker:@graph.microsoft.com/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments?$skiptoken=x`],
     ['non-default port', `https://graph.microsoft.com:444/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments?$skiptoken=x`],
     ['fragment', `https://graph.microsoft.com/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments?$skiptoken=x#secret`],
     ['different version', `https://graph.microsoft.com/beta/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments?$skiptoken=x`],
