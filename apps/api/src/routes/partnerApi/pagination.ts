@@ -58,12 +58,7 @@ export function createPartnerExportTraversal(input: {
 }): PartnerExportTraversal {
   const now = input.now ?? new Date();
   if (!Number.isFinite(now.getTime())) throw paginationError('Partner export snapshot time is invalid.');
-  if (
-    input.updatedSince !== null
-    && timestamp(input.updatedSince, 'updatedSince') >= now.getTime()
-  ) {
-    throw paginationError('Partner export updatedSince must precede the snapshot.');
-  }
+  if (input.updatedSince !== null) timestamp(input.updatedSince, 'updatedSince');
   if (!input.cursor) {
     return {
       mode: input.updatedSince === null ? 'full' : 'incremental',

@@ -12,9 +12,13 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
-const MIGRATION_FILE = join(
+const MEMBERSHIP_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-17-device-group-membership-touch.sql',
+);
+const WATERMARK_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-18-partner-export-org-locks.sql',
 );
 
 async function seedDeviceAndGroup() {
@@ -50,15 +54,21 @@ async function seedDeviceAndGroup() {
     name: 'Reconstruction group',
   }).returning();
   if (!device || !destinationDevice || !group) throw new Error('membership fixture insert failed');
-  return { db, device, destinationDevice, group, org, partner, baseline };
+  const watermarkRows = await db.select({ updatedAt: devices.partnerExportUpdatedAt })
+    .from(devices).where(eq(devices.orgId, org.id));
+  const exportBaseline = new Date(Math.max(...watermarkRows.map((row) => row.updatedAt.getTime())));
+  return { db, device, destinationDevice, group, org, partner, baseline, exportBaseline };
 }
 
 describe('partner device membership incremental change contract', () => {
   runDb('migration is idempotent', async () => {
     const db = getTestDb();
-    const migration = readFileSync(MIGRATION_FILE, 'utf8');
-    await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
-    await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
+    const migration = readFileSync(MEMBERSHIP_MIGRATION_FILE, 'utf8');
+    const watermarkMigration = readFileSync(WATERMARK_MIGRATION_FILE, 'utf8');
+    for (let pass = 0; pass < 2; pass += 1) {
+      await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
+      await expect(db.execute(sql.raw(watermarkMigration))).resolves.toBeDefined();
+    }
     expect(migration.match(/FOR EACH STATEMENT/gu)).toHaveLength(3);
     expect(migration).toMatch(/REFERENCING NEW TABLE AS new_memberships/gu);
     expect(migration).toMatch(/REFERENCING OLD TABLE AS old_memberships/gu);
@@ -103,7 +113,7 @@ describe('partner device membership incremental change contract', () => {
   });
 
   runDb('membership-only insert re-emits the bounded group fact after updatedSince', async () => {
-    const { device, group, org, partner, baseline } = await seedDeviceAndGroup();
+    const { device, group, org, partner, exportBaseline } = await seedDeviceAndGroup();
     const context = partnerContext(partner.id, org.id);
     await withDbAccessContext(context, () => appDb.insert(deviceGroupMemberships).values({
       deviceId: device.id,
@@ -122,12 +132,18 @@ describe('partner device membership incremental change contract', () => {
         accessibleOrgIds: [org.id],
         rateLimit: 600,
       });
-      await withDbAccessContext(context, next);
+      await withDbAccessContext(context, async () => {
+        await appDb.execute(sql`SELECT public.breeze_partner_export_lock_partners_shared(
+          ARRAY[${partner.id}::uuid]
+        )`);
+        await next();
+      });
     });
     app.route('/', partnerDeviceRoutes);
 
-    const response = await app.request(`/devices?updatedSince=${encodeURIComponent(baseline.toISOString())}`);
-    expect(response.status).toBe(200);
+    const response = await app.request(`/devices?updatedSince=${encodeURIComponent(exportBaseline.toISOString())}`);
+    const errorBody = response.status === 200 ? '' : await response.clone().text();
+    expect(response.status, errorBody).toBe(200);
     const envelope = deviceExportEnvelopeSchema.parse(await response.json());
     expect(envelope.data).toHaveLength(1);
     expect(envelope.data[0]).toMatchObject({

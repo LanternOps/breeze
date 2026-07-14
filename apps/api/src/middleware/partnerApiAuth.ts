@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
-  withDbAccessContext,
+  withResolvedDbAccessContext,
   withSystemDbAccessContext,
 } from '../db';
 import {
@@ -40,7 +40,7 @@ declare module 'hono' {
   }
 }
 
-type CredentialBootstrap = PartnerApiPrincipalContext;
+type CredentialBootstrap = Omit<PartnerApiPrincipalContext, 'accessibleOrgIds'>;
 
 const PARTNER_API_KEY_PATTERN = /^brz_sp_[A-Za-z0-9_-]{43}$/;
 const AUTH_REQUIRED_MESSAGE = 'Partner API authentication required';
@@ -128,22 +128,12 @@ async function bootstrapCredential(
       throw invalidCredentials();
     }
 
-    const activeOrganizations = await db
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(and(
-        eq(organizations.partnerId, credential.partnerId),
-        eq(organizations.status, 'active'),
-        isNull(organizations.deletedAt),
-      ));
-
     return {
       servicePrincipalId: credential.servicePrincipalId,
       keyId: credential.keyId,
       partnerId: credential.partnerId,
       name: credential.name,
       scopes: validatedScopes.scopes,
-      accessibleOrgIds: activeOrganizations.map((organization) => organization.id),
       rateLimit: credential.rateLimit,
     };
   });
@@ -240,16 +230,16 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
   }
 
   const trustedClientIp = getTrustedClientIpOrUndefined(c);
-  const principal = await bootstrapCredential(hashPartnerApiKey(rawKey), trustedClientIp);
+  const bootstrap = await bootstrapCredential(hashPartnerApiKey(rawKey), trustedClientIp);
 
   // Redis work must happen after the short system transaction has closed.
   const rateCheck = await rateLimiter(
     getRedis(),
-    `partner_api_rate:${principal.servicePrincipalId}:${principal.keyId}`,
-    principal.rateLimit,
+    `partner_api_rate:${bootstrap.servicePrincipalId}:${bootstrap.keyId}`,
+    bootstrap.rateLimit,
     3600,
   );
-  setRateLimitHeaders(c, principal.rateLimit, rateCheck);
+  setRateLimitHeaders(c, bootstrap.rateLimit, rateCheck);
 
   if (!rateCheck.allowed) {
     c.header('Retry-After', String(Math.max(
@@ -259,18 +249,48 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
     throw new HTTPException(429, { message: 'Partner API rate limit exceeded' });
   }
 
-  c.set('partnerApiPrincipal', principal);
-
+  // Credential identity is already validated. Keep it available for bounded
+  // machine-use bookkeeping even if the lock-protected organization discovery
+  // or RLS context switch itself fails before downstream routing begins.
+  let principal: PartnerApiPrincipalContext = { ...bootstrap, accessibleOrgIds: [] };
   let downstreamError: unknown;
   try {
-    await withDbAccessContext({
-      scope: 'partner',
-      orgId: null,
-      accessibleOrgIds: principal.accessibleOrgIds,
-      accessiblePartnerIds: [principal.partnerId],
-      currentPartnerId: principal.partnerId,
-      userId: null,
-    }, next);
+    await withResolvedDbAccessContext(async () => {
+      // Hold partner discovery shared from allowlist discovery through the
+      // route query. Organization visibility writers take the exclusive form,
+      // so a newly-active org cannot be stamped before this request's
+      // watermark yet remain absent from its discovered allowlist.
+      await db.execute(sql`SELECT public.breeze_partner_export_lock_partners_shared(
+        ARRAY[${bootstrap.partnerId}::uuid]
+      )`);
+      const activeOrganizations = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(and(
+          eq(organizations.partnerId, bootstrap.partnerId),
+          eq(organizations.status, 'active'),
+          isNull(organizations.deletedAt),
+        ));
+      const resolvedPrincipal: PartnerApiPrincipalContext = {
+        ...bootstrap,
+        accessibleOrgIds: activeOrganizations.map((organization) => organization.id),
+      };
+      return {
+        context: {
+          scope: 'partner' as const,
+          orgId: null,
+          accessibleOrgIds: resolvedPrincipal.accessibleOrgIds,
+          accessiblePartnerIds: [bootstrap.partnerId],
+          currentPartnerId: bootstrap.partnerId,
+          userId: null,
+        },
+        value: resolvedPrincipal,
+      };
+    }, async (resolvedPrincipal) => {
+      principal = resolvedPrincipal;
+      c.set('partnerApiPrincipal', resolvedPrincipal);
+      await next();
+    });
   } catch (error) {
     downstreamError = error;
   }

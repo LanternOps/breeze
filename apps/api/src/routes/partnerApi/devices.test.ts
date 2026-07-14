@@ -11,8 +11,11 @@ const GROUP_ID = '77777777-7777-4777-8777-777777777777';
 const CREATED_AT = new Date('2026-07-10T12:00:00.000Z');
 const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
 
-const mocks = vi.hoisted(() => ({ select: vi.fn() }));
-vi.mock('../../db', () => ({ db: { select: mocks.select } }));
+const mocks = vi.hoisted(() => ({ select: vi.fn(), execute: vi.fn() }));
+vi.mock('../../db', () => ({
+  db: { select: mocks.select, execute: mocks.execute },
+  hasDbAccessContext: () => true,
+}));
 vi.mock('../../config/env', () => ({
   PARTNER_API_CURSOR_SIGNING_KEY: Buffer.from('0123456789abcdef0123456789abcdef', 'utf8'),
 }));
@@ -75,6 +78,7 @@ describe('partner foundational device export', () => {
     vi.clearAllMocks();
     results = [];
     mocks.select.mockImplementation(() => query(results.shift() ?? []));
+    mocks.execute.mockResolvedValue([{ snapshotAt: new Date() }]);
     app = new Hono();
     app.route('/partner-api', partnerApiRoutes);
   });
@@ -96,6 +100,13 @@ describe('partner foundational device export', () => {
     results.push([]);
     const body = await (await request('/partner-api/devices')).json();
     expect(deviceExportEnvelopeSchema.parse(body)).toMatchObject({ data: [], hasMore: false, nextCursor: null });
+  });
+
+  it('takes shared organization watermark locks before selecting devices', async () => {
+    results.push([]);
+    expect((await request('/partner-api/devices')).status).toBe(200);
+    expect(mocks.execute).toHaveBeenCalledOnce();
+    expect(mocks.execute.mock.invocationCallOrder[0]).toBeLessThan(mocks.select.mock.invocationCallOrder[0]!);
   });
 
   it('exports a strict reconstruction DTO and group identifiers', async () => {
@@ -180,6 +191,8 @@ describe('partner foundational device export', () => {
     results.push([{ ...device(), groupIds, groupCount: 501 }]);
     const body = await (await request('/partner-api/devices')).json();
     const record = deviceExportEnvelopeSchema.parse(body).data[0];
+    expect(record).toBeDefined();
+    if (!record) throw new Error('expected one exported device');
     expect(record.groupIds).toEqual(groupIds);
     expect(record.groupMembership).toEqual({
       total: 501, included: 500, complete: false, reason: 'membership_limit_exceeded',

@@ -11,11 +11,13 @@ import { getPartnerExportFetchLimit } from './pagination';
 import { deviceExportEnvelopeSchema } from './schemas';
 import {
   buildEnvelope,
+  bindPartnerExportSnapshot,
   normalizeSourceRow,
   paginationConditions,
   paginationOrder,
   parseExportQuery,
 } from './organizations';
+import { acquirePartnerExportReadLocks } from './consistency';
 
 export const PARTNER_DEVICE_GROUP_ID_LIMIT = 500;
 
@@ -31,13 +33,15 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
     if (orgIds.length === 0) return c.json(deviceExportEnvelopeSchema.parse(buildEnvelope({
       resource: 'devices', partnerId: principal.partnerId, rows: [], query: parsed, makeRecord: () => ({}),
     })));
+    const lockSnapshotAt = await acquirePartnerExportReadLocks(orgIds);
+    bindPartnerExportSnapshot(parsed, lockSnapshotAt);
     // Hardware identity is part of this DTO. Fold its change timestamp into
     // the device keyset so an inventory refresh is not missed merely because
     // the parent device row itself was untouched.
     const effectiveUpdatedAt = sql<Date>`GREATEST(
-      ${devices.updatedAt},
-      COALESCE(${deviceHardware.updatedAt}, ${devices.updatedAt})
-    )`.mapWith(devices.updatedAt);
+      ${devices.partnerExportUpdatedAt},
+      COALESCE(${deviceHardware.partnerExportUpdatedAt}, ${devices.partnerExportUpdatedAt})
+    )`.mapWith(devices.partnerExportUpdatedAt);
     const conditions = [
       inArray(devices.orgId, orgIds),
       ...(parsed.siteId ? [eq(devices.siteId, parsed.siteId)] : []),
@@ -46,7 +50,7 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
         orgId: devices.orgId,
         createdAt: devices.createdAt,
         updatedAt: effectiveUpdatedAt,
-        updatedAtParam: devices.updatedAt,
+        updatedAtParam: devices.partnerExportUpdatedAt,
       }, parsed.traversal),
     ];
     const rows = await db.select({

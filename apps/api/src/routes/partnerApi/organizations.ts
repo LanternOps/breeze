@@ -33,6 +33,7 @@ import {
   type PartnerExportBlockedRecord,
   type PartnerExportResource,
 } from './schemas';
+import { acquirePartnerExportReadLocks } from './consistency';
 
 const CURSOR_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const UUID_SCHEMA = z.string().uuid();
@@ -115,6 +116,17 @@ export function parseExportQuery(
     if (isKnownClientError(error)) return clientError(c, error);
     throw error;
   }
+}
+
+export function bindPartnerExportSnapshot(query: ExportQueryInput, snapshotAt: Date): void {
+  if (query.traversal.after) return;
+  if (
+    query.updatedSince !== null
+    && Date.parse(query.updatedSince) >= snapshotAt.getTime()
+  ) {
+    throw new PartnerExportPaginationError('Partner export updatedSince must precede the database snapshot.');
+  }
+  query.traversal.snapshotAt = snapshotAt.toISOString();
 }
 
 export function paginationConditions(
@@ -229,6 +241,8 @@ partnerOrganizationRoutes.get('/organizations', requirePartnerApiScope('organiza
     if (orgIds.length === 0) return c.json(organizationExportEnvelopeSchema.parse(buildEnvelope({
       resource: 'organizations', partnerId: principal.partnerId, rows: [], query: parsed, makeRecord: () => ({}),
     })));
+    const lockSnapshotAt = await acquirePartnerExportReadLocks(orgIds);
+    bindPartnerExportSnapshot(parsed, lockSnapshotAt);
     const rows = await db.select({
       id: organizations.id,
       orgId: organizations.id,
@@ -236,12 +250,12 @@ partnerOrganizationRoutes.get('/organizations', requirePartnerApiScope('organiza
       slug: organizations.slug,
       type: organizations.type,
       createdAt: organizations.createdAt,
-      updatedAt: organizations.updatedAt,
+      updatedAt: organizations.partnerExportUpdatedAt,
     }).from(organizations).where(and(
       eq(organizations.partnerId, principal.partnerId),
       inArray(organizations.id, orgIds),
-      ...paginationConditions({ id: organizations.id, orgId: organizations.id, createdAt: organizations.createdAt, updatedAt: organizations.updatedAt }, parsed.traversal),
-    )).orderBy(...paginationOrder({ id: organizations.id, orgId: organizations.id, updatedAt: organizations.updatedAt }, parsed.traversal))
+      ...paginationConditions({ id: organizations.id, orgId: organizations.id, createdAt: organizations.createdAt, updatedAt: organizations.partnerExportUpdatedAt }, parsed.traversal),
+    )).orderBy(...paginationOrder({ id: organizations.id, orgId: organizations.id, updatedAt: organizations.partnerExportUpdatedAt }, parsed.traversal))
       .limit(getPartnerExportFetchLimit(parsed.limit));
     const normalized = rows.map((row) => normalizeSourceRow({ ...row, siteId: null }));
     const envelope = buildEnvelope({
@@ -267,14 +281,16 @@ partnerOrganizationRoutes.get('/sites', requirePartnerApiScope('sites:read'), as
     if (orgIds.length === 0) return c.json(siteExportEnvelopeSchema.parse(buildEnvelope({
       resource: 'sites', partnerId: principal.partnerId, rows: [], query: parsed, makeRecord: () => ({}),
     })));
+    const lockSnapshotAt = await acquirePartnerExportReadLocks(orgIds);
+    bindPartnerExportSnapshot(parsed, lockSnapshotAt);
     const rows = await db.select({
       id: sites.id, orgId: sites.orgId, siteId: sites.id, name: sites.name,
       address: sites.address, timezone: sites.timezone, contact: sites.contact,
-      createdAt: sites.createdAt, updatedAt: sites.updatedAt,
+      createdAt: sites.createdAt, updatedAt: sites.partnerExportUpdatedAt,
     }).from(sites).where(and(
       inArray(sites.orgId, orgIds),
-      ...paginationConditions({ id: sites.id, orgId: sites.orgId, createdAt: sites.createdAt, updatedAt: sites.updatedAt }, parsed.traversal),
-    )).orderBy(...paginationOrder({ id: sites.id, orgId: sites.orgId, updatedAt: sites.updatedAt }, parsed.traversal))
+      ...paginationConditions({ id: sites.id, orgId: sites.orgId, createdAt: sites.createdAt, updatedAt: sites.partnerExportUpdatedAt }, parsed.traversal),
+    )).orderBy(...paginationOrder({ id: sites.id, orgId: sites.orgId, updatedAt: sites.partnerExportUpdatedAt }, parsed.traversal))
       .limit(getPartnerExportFetchLimit(parsed.limit));
     const normalized = rows.map(normalizeSourceRow);
     const envelope = buildEnvelope({

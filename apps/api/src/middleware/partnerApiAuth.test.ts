@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   dbSelect: vi.fn(),
+  dbExecute: vi.fn(),
   dbUpdate: vi.fn(),
   eq: vi.fn((left: unknown, right: unknown) => ({ left, right })),
   inArray: vi.fn((left: unknown, right: unknown) => ({ left, right })),
@@ -22,6 +23,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../db', () => ({
   db: {
     select: mocks.dbSelect,
+    execute: mocks.dbExecute,
     update: mocks.dbUpdate,
   },
   runOutsideDbContext: mocks.runOutsideDbContext,
@@ -40,6 +42,22 @@ vi.mock('../db', () => ({
     mocks.insidePartnerContext = true;
     try {
       return await fn();
+    } finally {
+      mocks.insidePartnerContext = false;
+    }
+  }),
+  withResolvedDbAccessContext: vi.fn(async (
+    resolve: () => Promise<{ context: unknown; value: unknown }>,
+    fn: (value: unknown) => Promise<unknown>,
+  ) => {
+    expect(mocks.insideSystemContext).toBe(false);
+    mocks.insideSystemContext = true;
+    const resolved = await resolve();
+    mocks.insideSystemContext = false;
+    mocks.partnerContexts.push(resolved.context);
+    mocks.insidePartnerContext = true;
+    try {
+      return await fn(resolved.value);
     } finally {
       mocks.insidePartnerContext = false;
     }
@@ -85,6 +103,7 @@ vi.mock('drizzle-orm', () => ({
   eq: mocks.eq,
   inArray: mocks.inArray,
   isNull: vi.fn((value: unknown) => ({ isNull: value })),
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 
 vi.mock('../services', () => ({
@@ -101,7 +120,7 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEventAsync: mocks.writeAuditEvent,
 }));
 
-import { db, withDbAccessContext } from '../db';
+import { db, withResolvedDbAccessContext } from '../db';
 import { rateLimiter } from '../services';
 import {
   partnerApiAuthMiddleware,
@@ -225,6 +244,7 @@ describe('partnerApiAuthMiddleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.dbSelect.mockReset();
+    mocks.dbExecute.mockReset();
     mocks.dbUpdate.mockReset();
     mocks.inArray.mockReset();
     mocks.rateLimiter.mockReset();
@@ -240,6 +260,7 @@ describe('partnerApiAuthMiddleware', () => {
     mocks.getTrustedClientIpOrUndefined.mockReturnValue('203.0.113.10');
     mocks.runOutsideDbContext.mockImplementation((fn: () => unknown) => fn());
     mocks.writeAuditEvent.mockResolvedValue(undefined);
+    mocks.dbExecute.mockResolvedValue([]);
     mocks.rateLimiter.mockResolvedValue({
       allowed: true,
       remaining: 299,
@@ -375,14 +396,7 @@ describe('partnerApiAuthMiddleware', () => {
       accessibleOrgIds: [ORG_1, ORG_2],
       rateLimit: 600,
     });
-    expect(withDbAccessContext).toHaveBeenCalledWith({
-      scope: 'partner',
-      orgId: null,
-      accessibleOrgIds: [ORG_1, ORG_2],
-      accessiblePartnerIds: [PARTNER_ID],
-      currentPartnerId: PARTNER_ID,
-      userId: null,
-    }, expect.any(Function));
+    expect(withResolvedDbAccessContext).toHaveBeenCalledOnce();
     expect(mocks.partnerContexts).toEqual([{
       scope: 'partner',
       orgId: null,
@@ -546,7 +560,7 @@ describe('partnerApiAuthMiddleware', () => {
     const audit = deferred<void>();
     const context = createContext();
     context.res = new Response(null, { status: 200 });
-    vi.mocked(withDbAccessContext).mockRejectedValueOnce(directError);
+    vi.mocked(withResolvedDbAccessContext).mockRejectedValueOnce(directError);
     let auditInsidePartnerContext: boolean | undefined;
     mocks.writeAuditEvent.mockImplementation(() => {
       auditInsidePartnerContext = mocks.insidePartnerContext;
@@ -585,7 +599,7 @@ describe('partnerApiAuthMiddleware', () => {
     const directError = new HTTPException(409, { message: 'context conflict' });
     const context = createContext();
     context.res = new Response(null, { status: 200 });
-    vi.mocked(withDbAccessContext).mockRejectedValueOnce(directError);
+    vi.mocked(withResolvedDbAccessContext).mockRejectedValueOnce(directError);
     const next = vi.fn();
 
     await expect(partnerApiAuthMiddleware(context, next)).rejects.toBe(directError);
@@ -623,7 +637,7 @@ describe('partnerApiAuthMiddleware', () => {
       600,
       3600,
     );
-    expect(withDbAccessContext).not.toHaveBeenCalled();
+    expect(withResolvedDbAccessContext).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -642,7 +656,7 @@ describe('partnerApiAuthMiddleware', () => {
       'principal limiter unavailable',
     );
 
-    expect(withDbAccessContext).not.toHaveBeenCalled();
+    expect(withResolvedDbAccessContext).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
   });
 });

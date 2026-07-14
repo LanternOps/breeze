@@ -192,11 +192,11 @@ describe('partner export snapshot and keyset pagination', () => {
     expect(getPartnerExportFetchLimit(500)).toBe(501);
     expect(() => normalizePartnerExportLimit('0')).toThrow(/limit/i);
     expect(() => normalizePartnerExportLimit('1.5')).toThrow(/limit/i);
-    expect(() => createPartnerExportTraversal({
+    expect(createPartnerExportTraversal({
       updatedSince: '2026-07-14T18:00:00.000Z',
       cursor: null,
       now: new Date('2026-07-13T18:00:00.000Z'),
-    })).toThrow(/updatedSince/i);
+    })).toMatchObject({ updatedSince: '2026-07-14T18:00:00.000Z' });
   });
 
   it('uses full traversal id/org keys and createdAt snapshot membership', () => {

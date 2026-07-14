@@ -11,9 +11,13 @@ const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
 
 const mocks = vi.hoisted(() => ({
   select: vi.fn(),
+  execute: vi.fn(),
 }));
 
-vi.mock('../../db', () => ({ db: { select: mocks.select } }));
+vi.mock('../../db', () => ({
+  db: { select: mocks.select, execute: mocks.execute },
+  hasDbAccessContext: () => true,
+}));
 vi.mock('../../config/env', () => ({
   PARTNER_API_CURSOR_SIGNING_KEY: Buffer.from('0123456789abcdef0123456789abcdef', 'utf8'),
 }));
@@ -80,6 +84,7 @@ describe('partner organization and site exports', () => {
     vi.clearAllMocks();
     results = [];
     mocks.select.mockImplementation(() => query(results.shift() ?? []));
+    mocks.execute.mockResolvedValue([{ snapshotAt: new Date() }]);
     app = new Hono();
     app.route('/partner-api', partnerApiRoutes);
   });
@@ -111,6 +116,16 @@ describe('partner organization and site exports', () => {
     const body = await (await request(`/partner-api${path}`, scope)).json();
     const schema = path === '/organizations' ? organizationExportEnvelopeSchema : siteExportEnvelopeSchema;
     expect(schema.parse(body)).toMatchObject({ schemaVersion: '1', data: [], hasMore: false, nextCursor: null });
+  });
+
+  it.each([
+    ['/organizations', 'organizations:read'],
+    ['/sites', 'sites:read'],
+  ])('takes shared organization watermark locks before selecting %s', async (path, scope) => {
+    results.push([]);
+    expect((await request(`/partner-api${path}`, scope)).status).toBe(200);
+    expect(mocks.execute).toHaveBeenCalledOnce();
+    expect(mocks.execute.mock.invocationCallOrder[0]).toBeLessThan(mocks.select.mock.invocationCallOrder[0]!);
   });
 
   it('exports only narrow organization mapping fields', async () => {
