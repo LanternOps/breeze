@@ -132,6 +132,23 @@ async function captureSqlState(work: () => Promise<unknown>): Promise<string | u
   }
 }
 
+async function captureSqlCause(work: () => Promise<unknown>): Promise<{
+  code?: string;
+  constraint_name?: string;
+} | undefined> {
+  try {
+    await work();
+    return undefined;
+  } catch (error) {
+    const wrapped = error as {
+      code?: string;
+      constraint_name?: string;
+      cause?: { code?: string; constraint_name?: string };
+    };
+    return wrapped.cause ?? wrapped;
+  }
+}
+
 const createdProfiles: string[] = [];
 const createdConfigs: string[] = [];
 const createdPolicies: string[] = [];
@@ -1359,6 +1376,10 @@ describe('backup feature-link / normalized-settings parity', () => {
       orgId: orgA.id, name: 'Non-bypass destination A', type: 'file',
       provider: 's3', providerConfig: {},
     }).returning());
+    const [destinationA2] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
+      orgId: orgA.id, name: 'Non-bypass destination A2', type: 'file',
+      provider: 's3', providerConfig: {},
+    }).returning());
     const [destinationB] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
       orgId: orgB.id, name: 'Non-bypass destination B', type: 'file',
       provider: 's3', providerConfig: {},
@@ -1367,11 +1388,11 @@ describe('backup feature-link / normalized-settings parity', () => {
       db.insert(configurationPolicies).values({
         name: 'Non-bypass policy A', orgId: orgA.id, partnerId: null, status: 'active',
       }).returning());
-    if (!profileA || !destinationA || !destinationB || !policyA) {
+    if (!profileA || !destinationA || !destinationA2 || !destinationB || !policyA) {
       throw new Error('non-bypass backup fixture insert failed');
     }
     createdProfiles.push(profileA.id);
-    createdConfigs.push(destinationA.id, destinationB.id);
+    createdConfigs.push(destinationA.id, destinationA2.id, destinationB.id);
     createdPolicies.push(policyA.id);
     const [linkA, settingsA] = await withDbAccessContext(SYSTEM_CTX, async () => {
       const [link] = await db.insert(configPolicyFeatureLinks).values({
@@ -1443,19 +1464,37 @@ describe('backup feature-link / normalized-settings parity', () => {
         )`);
       };
 
-      expect(await captureSqlState(() => admin.transaction(async (tx) => {
+      await expect(admin.transaction(async (tx) => {
+        await setUnrelatedCallerContext(tx);
+        await tx.update(configPolicyBackupSettings)
+          .set({ destinationConfigId: destinationA2.id })
+          .where(eq(configPolicyBackupSettings.id, settingsA.id));
+      })).resolves.toBeUndefined();
+      const [forwardUpdated] = await admin.select({
+        destinationConfigId: configPolicyBackupSettings.destinationConfigId,
+      }).from(configPolicyBackupSettings)
+        .where(eq(configPolicyBackupSettings.id, settingsA.id));
+      expect(forwardUpdated?.destinationConfigId).toBe(destinationA2.id);
+
+      expect(await captureSqlCause(() => admin.transaction(async (tx) => {
         await setUnrelatedCallerContext(tx);
         await tx.update(configPolicyBackupSettings)
           .set({ destinationConfigId: destinationB.id })
           .where(eq(configPolicyBackupSettings.id, settingsA.id));
-      }))).toBe('23503');
+      }))).toMatchObject({
+        code: '23503',
+        constraint_name: 'config_policy_backup_settings_destination_owner_fk',
+      });
 
-      expect(await captureSqlState(() => admin.transaction(async (tx) => {
+      expect(await captureSqlCause(() => admin.transaction(async (tx) => {
         await setUnrelatedCallerContext(tx);
         await tx.update(backupProfiles)
           .set({ orgId: orgB.id })
           .where(eq(backupProfiles.id, profileA.id));
-      }))).toBe('23503');
+      }))).toMatchObject({
+        code: '23503',
+        constraint_name: 'config_policy_backup_settings_profile_owner_fk',
+      });
 
       const [unchanged] = await admin.select({
         destinationConfigId: configPolicyBackupSettings.destinationConfigId,
@@ -1463,7 +1502,7 @@ describe('backup feature-link / normalized-settings parity', () => {
       }).from(configPolicyBackupSettings)
         .innerJoin(backupProfiles, eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId))
         .where(eq(configPolicyBackupSettings.id, settingsA.id));
-      expect(unchanged).toEqual({ destinationConfigId: destinationA.id, profileOrgId: orgA.id });
+      expect(unchanged).toEqual({ destinationConfigId: destinationA2.id, profileOrgId: orgA.id });
     } finally {
       const quotedCurrent = `"${current.roleName.replaceAll('"', '""')}"`;
       await admin.execute(sql.raw(`REASSIGN OWNED BY ${ownerRole} TO ${quotedCurrent}`));
