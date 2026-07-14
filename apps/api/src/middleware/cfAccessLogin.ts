@@ -23,6 +23,7 @@ import {
 import { getRedis } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { TenantInactiveError } from '../services/tenantStatus';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import {
   auditUserLoginFailure,
@@ -159,10 +160,31 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     // totp/sms. The helper fails closed, so a probe error just hides the
     // alternate rather than blocking this CF-Access MFA challenge.
     const passkeyAvailable = await userHasUsablePasskey(user.id);
+    // SR2-06: bind the pending record to the live auth/mfa epochs + status +
+    // effective allowed methods at issuance — same shape/rationale as the
+    // password /login handler (login.ts), so the shared TOTP/SMS/passkey
+    // completion paths (mfa.ts, passkeys.ts) can validate it via
+    // parsePendingMfa/evaluatePendingMfa rather than treating it as a legacy
+    // (rejected) record.
+    const pendingEpochs = await getUserEpochs(user.id);
+    if (!pendingEpochs) throw new Error('user epochs unavailable at MFA temp-token issuance');
+    const pendingPolicy = await getEffectiveMfaPolicy({
+      scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
+    });
+    const PENDING_TTL_SECONDS = 300;
     await redis.setex(
       `mfa:pending:${tempToken}`,
-      300,
-      JSON.stringify({ userId: user.id, mfaMethod, passkeyAvailable })
+      PENDING_TTL_SECONDS,
+      JSON.stringify({
+        userId: user.id,
+        mfaMethod,
+        passkeyAvailable,
+        authEpoch: pendingEpochs.authEpoch,
+        mfaEpoch: pendingEpochs.mfaEpoch,
+        statusExpectation: user.status,
+        allowedMethods: pendingPolicy.allowedMethods,
+        expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
+      })
     );
     return c.json({
       mfaRequired: true,

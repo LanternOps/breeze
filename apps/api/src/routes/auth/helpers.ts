@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partnerUsers, organizationUsers, organizations, userPasskeys } from '../../db/schema';
 import {
@@ -9,11 +9,14 @@ import {
   getTrustedClientIp,
   getRedis,
   rateLimiter,
-  verifyPassword
+  verifyPassword,
+  getUserEpochs
 } from '../../services';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { consumeMFAToken } from '../../services/mfa';
+import { validateStepUpGrant, consumeStepUpGrant } from '../../services/mfaStepUpGrant';
+import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../../services/auditEvents';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
@@ -198,6 +201,82 @@ export async function requireFreshMfaStepUp(
     return c.json({ error: 'Invalid credentials' }, 401);
   }
 
+  return null;
+}
+
+// ============================================
+// Existing-factor step-up for factor addition (SR2-20)
+// ============================================
+
+/**
+ * True when the account already has ANY active MFA factor (TOTP, SMS, or a
+ * non-disabled passkey). Drives the SR2-20 gate: initial enrollment (no
+ * factor yet) stays password-only; adding a factor to an ALREADY-PROTECTED
+ * account additionally requires a fresh existing-factor step-up grant.
+ *
+ * Runs under system DB access: several callers (e.g. `/mfa/enable`,
+ * `/passkeys/register/*`) call this from within their own request-scoped
+ * (user-id-scoped) RLS context, where it would still resolve correctly, but
+ * system context keeps this probe uniform regardless of caller context.
+ */
+export async function userIsMfaProtected(userId: string): Promise<boolean> {
+  const [row] = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        mfaEnabled: users.mfaEnabled,
+        passkeyCount: sql<number>`(SELECT COUNT(*)::int FROM user_passkeys WHERE user_id = ${userId} AND disabled_at IS NULL)`,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+  );
+  return row?.mfaEnabled === true || Number(row?.passkeyCount ?? 0) > 0;
+}
+
+/**
+ * Enforce the SR2-20 existing-factor step-up on a factor-ADDITION endpoint.
+ * No-factor accounts (initial enrollment) pass with password-only (returns
+ * null) — this avoids a chicken-and-egg lockout. Already-protected accounts
+ * must present a fresh grant bound to the live epochs + this session's
+ * `sid`; the binding is re-checked against the LIVE row here (not just at
+ * mint time) so a factor change since the grant was minted (which bumps
+ * `mfa_epoch` + revokes refresh families) invalidates it.
+ *
+ * `opts.consume: false` = non-consuming validate (register/options, which is
+ * followed by a separate /verify that consumes the SAME grant).
+ * `opts.consume: true` = single-use consume (every terminal factor write:
+ * /mfa/enable, setup-confirm, /mfa/sms/enable, /passkeys/register/verify).
+ *
+ * Returns a 403/503 Response to short-circuit the caller, or null to proceed.
+ */
+export async function enforceExistingFactorStepUp(
+  c: Context,
+  auth: AuthContext,
+  grantId: string | undefined,
+  opts: { consume: boolean },
+): Promise<Response | null> {
+  if (!(await userIsMfaProtected(auth.user.id))) return null;
+
+  const epochs = await getUserEpochs(auth.user.id);
+  if (!epochs || !auth.token.sid) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const bind = {
+    userId: auth.user.id,
+    operation: 'add_factor' as const,
+    authEpoch: epochs.authEpoch,
+    mfaEpoch: epochs.mfaEpoch,
+    sid: auth.token.sid,
+  };
+
+  const ok = grantId
+    ? (opts.consume ? await consumeStepUpGrant(grantId, bind) : await validateStepUpGrant(grantId, bind))
+    : false;
+
+  if (!ok) {
+    return c.json({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }, 403);
+  }
   return null;
 }
 
@@ -436,6 +515,83 @@ export function hashRecoveryCode(code: string): string {
 
 export function hashRecoveryCodes(codes: string[]): string[] {
   return codes.map(hashRecoveryCode);
+}
+
+// ============================================
+// Pending MFA session helpers (SR2-06)
+// ============================================
+
+export interface PendingMfaRecord {
+  userId: string;
+  mfaMethod: 'totp' | 'sms' | 'passkey';
+  passkeyAvailable: boolean;
+  authEpoch: number;
+  mfaEpoch: number;
+  statusExpectation: string;
+  allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
+  expiresAt: number;
+}
+
+/**
+ * Strict parse of a `mfa:pending:<tempToken>` value. Returns null for the
+ * legacy bare-userId form or any record missing the epoch/status binding
+ * (SR2-06): those predate this rollout and must force a fresh login rather than
+ * complete with no live re-check.
+ */
+export function parsePendingMfa(raw: string): PendingMfaRecord | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null; // legacy bare-userId string
+  }
+  const method = parsed.mfaMethod;
+  const am = parsed.allowedMethods as Record<string, unknown> | undefined;
+  if (
+    typeof parsed.userId !== 'string' ||
+    (method !== 'totp' && method !== 'sms' && method !== 'passkey') ||
+    typeof parsed.authEpoch !== 'number' ||
+    typeof parsed.mfaEpoch !== 'number' ||
+    typeof parsed.statusExpectation !== 'string' ||
+    typeof parsed.expiresAt !== 'number' ||
+    !am || typeof am !== 'object'
+  ) {
+    return null;
+  }
+  return {
+    userId: parsed.userId,
+    mfaMethod: method,
+    passkeyAvailable: parsed.passkeyAvailable === true,
+    authEpoch: parsed.authEpoch,
+    mfaEpoch: parsed.mfaEpoch,
+    statusExpectation: parsed.statusExpectation,
+    allowedMethods: {
+      totp: am.totp !== false,
+      sms: am.sms !== false,
+      passkey: am.passkey !== false,
+    },
+    expiresAt: parsed.expiresAt,
+  };
+}
+
+/**
+ * Compare a pending record against the live user row. MFA assurance is valid
+ * only for the current MFA config + status (invariants 6/7). Any factor change
+ * bumps mfa_epoch; any account-wide change bumps auth_epoch; a suspend flips
+ * status — all of which must invalidate an in-flight MFA session.
+ */
+export function evaluatePendingMfa(
+  record: PendingMfaRecord,
+  live: { status: string; authEpoch: number; mfaEpoch: number },
+): { ok: true } | { ok: false; reason: 'expired' | 'epoch_mismatch' | 'status_changed' } {
+  if (record.expiresAt <= Date.now()) return { ok: false, reason: 'expired' };
+  if (record.authEpoch !== live.authEpoch || record.mfaEpoch !== live.mfaEpoch) {
+    return { ok: false, reason: 'epoch_mismatch' };
+  }
+  if (live.status !== 'active' || record.statusExpectation !== live.status) {
+    return { ok: false, reason: 'status_changed' };
+  }
+  return { ok: true };
 }
 
 // ============================================

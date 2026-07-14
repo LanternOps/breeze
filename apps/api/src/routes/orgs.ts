@@ -31,6 +31,27 @@ import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 
+/**
+ * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
+ * `security.allowedMethods` and drop the alias key so it is never persisted.
+ * Canonical wins on conflict. Mutates and returns the same settings object.
+ */
+function foldAllowedMfaMethodsAlias(settings: unknown): unknown {
+  if (!settings || typeof settings !== 'object') return settings;
+  const s = settings as Record<string, unknown>;
+  const security = s.security;
+  if (!security || typeof security !== 'object') return settings;
+  const sec = security as Record<string, unknown>;
+  if (sec.allowedMfaMethods && typeof sec.allowedMfaMethods === 'object') {
+    sec.allowedMethods = {
+      ...(sec.allowedMfaMethods as Record<string, unknown>),
+      ...((sec.allowedMethods as Record<string, unknown> | undefined) ?? {}),
+    };
+    delete sec.allowedMfaMethods;
+  }
+  return settings;
+}
+
 export const orgRoutes = new Hono();
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
@@ -293,6 +314,11 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
 orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(), zValidator('json', createPartnerSchema), async (c) => {
   const auth = c.get('auth');
   const data = c.req.valid('json');
+  // M8: fold the legacy `security.allowedMfaMethods` alias into the canonical
+  // `security.allowedMethods` on CREATE too — the update paths already do, and
+  // without this a create carrying the alias persists a key the resolver ignores
+  // (silent no-op the alias-fold set out to kill).
+  data.settings = foldAllowedMfaMethodsAlias(data.settings);
 
   const clash = await db
     .select({ id: partners.id })
@@ -385,6 +411,10 @@ const partnerSettingsSchema = z.object({
     expirationDays: z.number().int().min(0).optional(),
     requireMfa: z.boolean().optional(),
     allowedMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
+    // Legacy input alias. Accepted so older clients don't 400, folded into
+    // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
+    // persisted as a second source of truth.
+    allowedMfaMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
     sessionTimeout: z.number().int().min(1).optional(),
     maxSessions: z.number().int().min(1).optional(),
     ipAllowlist: z
@@ -617,6 +647,7 @@ orgRoutes.patch(
   // (fail-open). Incoming security fields still override individually, and an
   // explicit `ipAllowlist: []` still clears the list deliberately.
   if (body.settings?.security) {
+    foldAllowedMfaMethodsAlias(body.settings); // canonicalize before deep-merge
     newSettings.security = {
       ...((currentSettings.security as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.security,
@@ -789,6 +820,15 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   }
 
   if (updates.settings !== undefined) {
+    // Fold the legacy `security.allowedMfaMethods` alias into the canonical
+    // `security.allowedMethods` before anything else touches settings. This
+    // is a wholesale-replace path (updatePartnerSchema uses `settings: z.any()`),
+    // so without this fold a caller sending the alias key here would persist
+    // it verbatim as a second, un-canonicalized key — the resolver only reads
+    // `security.allowedMethods`, so that would silently no-op the MFA-method
+    // change (see foldAllowedMfaMethodsAlias above).
+    updates.settings = foldAllowedMfaMethodsAlias(updates.settings);
+
     // Wholesale settings write: keep an active security.ipAllowlist unless the
     // caller explicitly clears it (see preserveIpAllowlistOnOmit).
     if (updates.settings && typeof updates.settings === 'object' && !Array.isArray(updates.settings)) {
@@ -1129,6 +1169,8 @@ orgRoutes.patch(
 orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', createOrganizationSchema), async (c) => {
   const auth = c.get('auth');
   const data = c.req.valid('json');
+  // M8: canonicalize the MFA allowed-methods alias on CREATE (see /partners).
+  data.settings = foldAllowedMfaMethodsAlias(data.settings);
 
   let targetPartnerId: string | null = null;
 
@@ -1237,6 +1279,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWrite, re
 
   if (data.settings) {
     const settingsObj = data.settings as Record<string, unknown>;
+    foldAllowedMfaMethodsAlias(data.settings);
 
     // Reject a malformed agent-update maintenance window before any DB work
     // (issue #1963). This is the path getOrgAgentUpdatePolicy reads, so without

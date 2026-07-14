@@ -1,4 +1,35 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mfaVerifySchema } from './schemas';
+
+// SR2-09: mfaVerifySchema must accept a 6-digit TOTP/SMS code OR the
+// `XXXX-XXXX` recovery-code form, and the `method` enum must include
+// 'recovery'. The handler (mfa.ts) routes on `method`, not on shape alone.
+describe('mfaVerifySchema (SR2-09 recovery-code login)', () => {
+  it('accepts a 6-digit code with method: totp', () => {
+    const result = mfaVerifySchema.safeParse({ code: '123456', method: 'totp' });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an XXXX-XXXX recovery code with method: recovery', () => {
+    const result = mfaVerifySchema.safeParse({ code: 'ABCD-2345', method: 'recovery' });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a lowercase recovery code (normalization happens in the handler)', () => {
+    const result = mfaVerifySchema.safeParse({ code: 'abcd-2345', method: 'recovery' });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a code that is neither 6 digits nor XXXX-XXXX', () => {
+    const result = mfaVerifySchema.safeParse({ code: 'not-a-code' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a method outside totp/sms/recovery', () => {
+    const result = mfaVerifySchema.safeParse({ code: '123456', method: 'push' });
+    expect(result.success).toBe(false);
+  });
+});
 
 describe('auth feature flag defaults', () => {
   const originalEnableRegistration = process.env.ENABLE_REGISTRATION;

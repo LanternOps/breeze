@@ -91,9 +91,23 @@ describe('POST /auth/mfa/passkey/verify — passkey metadata persists under RLS 
     if (!redis) throw new Error('Redis unavailable in integration environment');
     const tempToken = `test-passkey-mfa-${user.id}`;
     tempTokens.push(tempToken);
+    // SR2-06: the pending record now carries the epoch/status binding
+    // captured at login — parsePendingMfa is strict, so a bare/legacy record
+    // is rejected outright. `createUser` rows default to authEpoch/mfaEpoch=1
+    // and status='active' (see db/schema/users.ts), which this record must
+    // match for the live re-check in the verify handler to succeed.
     await redis.set(
       `mfa:pending:${tempToken}`,
-      JSON.stringify({ userId: user.id, mfaMethod: 'passkey', passkeyAvailable: true }),
+      JSON.stringify({
+        userId: user.id,
+        mfaMethod: 'passkey',
+        passkeyAvailable: true,
+        authEpoch: 1,
+        mfaEpoch: 1,
+        statusExpectation: 'active',
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        expiresAt: Date.now() + 5 * 60 * 1000,
+      }),
       'EX',
       300
     );

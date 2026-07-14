@@ -42,10 +42,21 @@ export const registerPartnerSchema = z.object({
   })
 });
 
+// TOTP/SMS codes are 6 digits; recovery codes are `XXXX-XXXX` (8 [A-Z0-9]
+// with a hyphen). Accept either shape here; the handler routes on `method`.
+const totpOrSmsCode = /^\d{6}$/;
+const recoveryCode = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/i;
 export const mfaVerifySchema = z.object({
-  code: z.string().length(6),
+  code: z.string().refine(
+    (v) => totpOrSmsCode.test(v.trim()) || recoveryCode.test(v.trim()),
+    { message: 'Invalid code format' },
+  ),
   tempToken: z.string().optional(),
-  method: z.enum(['totp', 'sms']).optional()
+  method: z.enum(['totp', 'sms', 'recovery']).optional(),
+  // SR2-20: presented on setup-confirm (Case 2 — no tempToken) so an
+  // already-protected account's TOTP-add can satisfy the existing-factor
+  // step-up gate. Ignored on Case 1 (login completion).
+  stepUpGrantId: z.string().optional(),
 });
 
 export const phoneVerifySchema = z.object({
@@ -56,11 +67,20 @@ export const phoneVerifySchema = z.object({
 export const phoneConfirmSchema = z.object({
   phoneNumber: z.string().regex(/^\+[1-9]\d{6,14}$/),
   code: z.string().length(6),
-  currentPassword: z.string().min(1).max(256)
+  currentPassword: z.string().min(1).max(256),
+  // SR2-20/C1: an ALREADY-PROTECTED account cannot verify/replace its phone
+  // with a password alone — that would let a stolen-token + phished-password
+  // attacker swap in their own number and then pass the SMS step-up. Required
+  // (via enforceExistingFactorStepUp) only when a factor already exists; initial
+  // enrollment (no factor yet) still passes password-only.
+  stepUpGrantId: z.string().optional()
 });
 
 export const smsMfaEnableSchema = z.object({
-  currentPassword: z.string().min(1).max(256)
+  currentPassword: z.string().min(1).max(256),
+  // SR2-20: existing-factor step-up grant required when the account is
+  // already MFA-protected (see enforceExistingFactorStepUp in ./helpers).
+  stepUpGrantId: z.string().optional()
 });
 
 export const smsSendSchema = z.object({
@@ -84,6 +104,21 @@ export const changePasswordSchema = z.object({
 export const mfaEnableSchema = z.object({
   code: z.string().length(6)
 });
+
+// SR2-20: `POST /auth/mfa/step-up` proof-of-existing-factor request. Accepts
+// ALL factor types (not just the account's primary method) so a passkey-only
+// user is never locked out of adding a second factor. The passkey assertion
+// is shape-checked here only (`.passthrough()`) and cryptographically
+// verified downstream by verifyPasskeyAuthentication (passkeys.ts) — this
+// file deliberately does NOT import passkeys.ts's webAuthnCredentialSchema to
+// avoid a schemas.ts <-> passkeys.ts import cycle.
+const stepUpSixDigit = z.string().refine((v) => /^\d{6}$/.test(v.trim()), { message: 'Invalid code' });
+const stepUpAssertion = z.object({ id: z.string().min(1) }).passthrough();
+export const mfaStepUpSchema = z.discriminatedUnion('method', [
+  z.object({ method: z.literal('totp'), code: stepUpSixDigit }),
+  z.object({ method: z.literal('sms'), code: stepUpSixDigit }),
+  z.object({ method: z.literal('passkey'), credential: stepUpAssertion }),
+]);
 
 export const acceptInviteSchema = z.object({
   token: z.string().min(1),

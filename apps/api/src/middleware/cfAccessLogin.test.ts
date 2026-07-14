@@ -13,6 +13,10 @@ vi.mock('../config/env', () => ({
   cfAccessTeamDomain: () => envState.teamDomain,
   cfAccessAud: () => envState.audience,
   cfAccessTrustsMfa: () => envState.trustsMfa,
+  // SR2-06: the MFA temp-token branch now resolves the effective MFA policy
+  // (getEffectiveMfaPolicy) to bind allowedMethods onto the pending record —
+  // that service reads this kill-switch flag.
+  mfaForcePartnerAdmin: () => false,
 }));
 
 const verifyState = vi.hoisted(() => ({
@@ -54,7 +58,12 @@ vi.mock('../db', () => {
       thenable.limit = limit;
       return thenable;
     });
-    const from = vi.fn(() => ({ where, limit }));
+    // getEffectiveMfaPolicy's roleForceMfa lookup (real service, unmocked —
+    // resolveCurrentUserTokenContext is stubbed, but the policy resolver
+    // isn't) chains `.from(partnerUsers).innerJoin(roles, ...)` before
+    // `.where().limit()`. `innerJoin` just re-exposes the same where/limit
+    // pair so both the plain and joined query shapes resolve to `rows`.
+    const from = vi.fn(() => ({ where, limit, innerJoin: vi.fn(() => ({ where, limit })) }));
     return { from };
   }
   return {

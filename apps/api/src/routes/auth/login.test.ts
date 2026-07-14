@@ -1,4 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Mutable flag so the "MFA enrollment enforcement" describe block below can
+// flip ENABLE_2FA to true for its tests while every other describe block in
+// this file keeps the file's long-standing ENABLE_2FA=false default. vi.mock
+// factories are hoisted above this, but vi.hoisted() return values are
+// hoisted too (and evaluated first), so the factory closure below can read
+// this box live on every property access — see cfAccessRedirectLogin.test.ts
+// for the same pattern with other mutable mock state.
+const enable2faState = vi.hoisted(() => ({ value: false }));
 
 vi.mock('../../db', () => ({
   db: {
@@ -139,6 +148,11 @@ vi.mock('./helpers', () => ({
   ),
   auditLogin: vi.fn(),
   userRequiresSetup: vi.fn(() => false),
+  // #2153: probed at login inside the MFA-required branch to advertise a
+  // passkey as an alternate factor. Not exercised by most tests in this file
+  // (mfaEnabled defaults to false), but must exist as a callable default so
+  // the branch doesn't throw when a test DOES enable MFA.
+  userHasUsablePasskey: vi.fn(async () => false),
 }));
 
 vi.mock('./ssoPolicy', () => ({
@@ -150,9 +164,22 @@ vi.mock('./schemas', async () => {
   const actual = await vi.importActual<typeof import('./schemas')>('./schemas');
   return {
     ...actual,
-    ENABLE_2FA: false,
+    get ENABLE_2FA() {
+      return enable2faState.value;
+    },
   };
 });
+
+// Default: policy never requires MFA, so the vast majority of tests in this
+// file (written before the resolver existed) don't need to know about it.
+// The enrollment-enforcement describe block below overrides this per test.
+vi.mock('../../services/mfaPolicy', () => ({
+  getEffectiveMfaPolicy: vi.fn(async () => ({
+    required: false,
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+  })),
+}));
 
 vi.mock('../../services/ipAllowlist', () => ({
   enforceIpAllowlist: vi.fn(),
@@ -177,6 +204,7 @@ import {
   isTokenIssuedBeforePasswordChange,
   getUserEpochs,
   getRefreshFamily,
+  getRedis,
 } from '../../services';
 import { revokeRefreshFamilyById } from '../../services/authLifecycle';
 import { authMiddleware } from '../../middleware/auth';
@@ -184,6 +212,7 @@ import { enforceIpAllowlist } from '../../services/ipAllowlist';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { createAuditLogAsync } from '../../services/auditService';
 import { TenantInactiveError } from '../../services/tenantStatus';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import {
   resolveCurrentUserTokenContext,
   NoTenantMembershipError,
@@ -490,6 +519,167 @@ describe('POST /login — mints aep/mep/sid from the live user row', () => {
     vi.mocked(getUserEpochs).mockResolvedValue(null);
     const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
     expect(res.status).toBe(401);
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+});
+
+// SR2-05 / Task 3: login must never mint vacuous mfa=true for an unenrolled
+// user when the effective policy (org/partner requireMfa OR a force_mfa
+// role, resolved via getEffectiveMfaPolicy) requires MFA. Instead it mints
+// mfa=false and signals mfaEnrollmentRequired so the client routes to
+// /auth/mfa/setup — the middleware's exempt paths admit that flow; every
+// other route then 428s until the user enrolls.
+describe('POST /login — MFA enrollment enforcement via effective policy (SR2-05)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    enable2faState.value = true;
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: false,
+      mfaSecret: null,
+      mfaMethod: null,
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    // A prior describe block ("mints aep/mep/sid") overrides getUserEpochs
+    // to resolve null in one of its tests; clearAllMocks() doesn't reset
+    // mock implementations (only call history), so restore a valid epoch
+    // pair here rather than inheriting that leaked null across files.
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+  });
+
+  afterEach(() => {
+    enable2faState.value = false;
+  });
+
+  it('mints mfa:false and returns mfaEnrollmentRequired:true for an unenrolled user when policy requires MFA', async () => {
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: true,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+      source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false },
+    });
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.mfaEnrollmentRequired).toBe(true);
+    expect(body.enrollUrl).toBe('/auth/mfa/setup');
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: false }),
+      expect.anything()
+    );
+  });
+
+  it('mints mfa:true and mfaEnrollmentRequired:false as today when policy does not require MFA', async () => {
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.mfaEnrollmentRequired).toBe(false);
+    expect(body.enrollUrl).toBeUndefined();
+    expect(createTokenPair).toHaveBeenCalledWith(
+      expect.objectContaining({ mfa: true }),
+      expect.anything()
+    );
+  });
+});
+
+// SR2-06: the `mfa:pending:<tempToken>` Redis record must carry the live
+// auth/mfa epochs, account status, and effective allowed methods captured AT
+// LOGIN, so every completion path (mfa.ts TOTP/SMS, passkeys.ts) can detect a
+// factor/status change that happened during the 5-minute MFA window and
+// reject rather than mint stale assurance.
+describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    process.env.E2E_MODE = 'true';
+    enable2faState.value = true;
+    vi.mocked(enforceIpAllowlist).mockResolvedValue({ decision: 'allow' });
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: true,
+      mfaSecret: 'secret',
+      mfaMethod: 'totp',
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    // A prior describe block ("mints aep/mep/sid") overrides getUserEpochs to
+    // resolve null in one of its tests; clearAllMocks() doesn't reset mock
+    // implementations (only call history), so restore a valid epoch pair here
+    // rather than inheriting that leaked null across files.
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 5 });
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
+  });
+
+  afterEach(() => {
+    enable2faState.value = false;
+  });
+
+  it('writes the live epochs, status, and effective allowed methods onto the pending record', async () => {
+    const setexMock = vi.fn(async (_key: string, _ttlSeconds: number, _value: string) => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.mfaRequired).toBe(true);
+
+    expect(getUserEpochs).toHaveBeenCalledWith('user-1');
+    expect(setexMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^mfa:pending:/),
+      300,
+      expect.any(String),
+    );
+    const written = JSON.parse(setexMock.mock.calls[0]?.[2] as string) as Record<string, unknown>;
+    expect(written).toMatchObject({
+      userId: 'user-1',
+      mfaMethod: 'totp',
+      authEpoch: 3,
+      mfaEpoch: 5,
+      statusExpectation: 'active',
+      allowedMethods: { totp: true, sms: false, passkey: true },
+    });
+    expect(typeof written.expiresAt).toBe('number');
+    expect(written.expiresAt as number).toBeGreaterThan(Date.now());
+  });
+
+  it('fails closed with a generic 401 and mints nothing when the epoch read returns null', async () => {
+    vi.mocked(getUserEpochs).mockResolvedValue(null);
+    const setexMock = vi.fn(async () => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ error: 'Invalid email or password' });
+    expect(setexMock).not.toHaveBeenCalled();
     expect(createTokenPair).not.toHaveBeenCalled();
   });
 });
