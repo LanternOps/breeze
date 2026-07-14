@@ -91,7 +91,8 @@ function localAdminCount(summary: unknown): number | null {
 function emptySummary(
   orgRow: { id: string; name: string } | undefined,
   generatedAt: string,
-  includeCis = true
+  includeCis = true,
+  backupRequired = true
 ) {
   return {
     org: { id: orgRow?.id ?? '', name: orgRow?.name ?? 'Unknown' },
@@ -114,6 +115,7 @@ function emptySummary(
       cisIncluded: includeCis,
       cisAssessedCount: 0,
       identityProviderConnected: false,
+      backupRequired,
       backupConfigured: false,
       backupEncrypted: null,
       dnsFilteringActive: false,
@@ -170,7 +172,7 @@ export async function generateSecurityCompliancePostureReport(
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(orgRow, generatedAt, cfg.includeCis)
+      summary: emptySummary(orgRow, generatedAt, cfg.includeCis, cfg.backupRequired)
     };
   }
 
@@ -199,7 +201,7 @@ export async function generateSecurityCompliancePostureReport(
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(orgRow, generatedAt, cfg.includeCis)
+      summary: emptySummary(orgRow, generatedAt, cfg.includeCis, cfg.backupRequired)
     };
   }
 
@@ -505,6 +507,7 @@ export async function generateSecurityCompliancePostureReport(
         // Proves an identity provider is CONNECTED, not that MFA is enforced.
         // Real MFA enforcement is privilegedAccess.mfaStepUpEnforced.
         identityProviderConnected: Boolean(m365 || google),
+        backupRequired: cfg.backupRequired,
         backupConfigured: Boolean(backup || c2c),
         backupEncrypted: backup ? Boolean(backup.encryption) : null,
         dnsFilteringActive: dnsActive,

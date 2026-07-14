@@ -24,7 +24,8 @@ export const securityCompliancePostureConfigSchema = z.object({
   maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional().default(7),
   // Include the CIS hardening section. Defaults on; renders "Not yet assessed"
   // until baseline scans exist, or is omitted entirely when set false.
-  includeCis: z.boolean().optional().default(true)
+  includeCis: z.boolean().optional().default(true),
+  backupRequired: z.boolean().optional().default(true)
 });
 
 const securityCompliancePostureConfigFields = {
@@ -33,7 +34,8 @@ const securityCompliancePostureConfigFields = {
   minPasswordLength: z.number().int().min(1).max(64).optional(),
   maxLocalAdmins: z.number().int().min(0).max(50).optional(),
   maxAvDefinitionsAgeDays: z.number().int().min(1).max(365).optional(),
-  includeCis: z.boolean().optional()
+  includeCis: z.boolean().optional(),
+  backupRequired: z.boolean().optional()
 };
 
 /**

@@ -138,6 +138,19 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(c.passwordComplexityPct).toBe(50);
   });
 
+  it('carries the backup requirement without changing posture score', async () => {
+    mockGeneratorQueries();
+    const summary = (await generateSecurityCompliancePostureReport(ORG, {
+      backupRequired: false,
+    })).summary as any;
+    expect(summary.controls.backupRequired).toBe(false);
+    expect(summary.controls.backupConfigured).toBe(true);
+    expect(summary.securityProducts).toContainEqual(
+      expect.objectContaining({ category: 'backup' }),
+    );
+    expect(summary.postureScore).toBe(82);
+  });
+
   it('summarizes privileged access from PAM tables', async () => {
     mockGeneratorQueries();
     const r = await generateSecurityCompliancePostureReport(ORG, {});
@@ -331,10 +344,18 @@ describe('generateSecurityCompliancePostureReport', () => {
     const svc = await import('./reportGenerationService');
     vi.mocked(svc.resolveSiteAllowedDeviceIds).mockResolvedValueOnce([]);
     mockGeneratorQueries();
-    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const r = await generateSecurityCompliancePostureReport(ORG, { backupRequired: false });
     expect(r.rows).toEqual([]);
     expect((r.summary as any).deviceCount).toBe(0);
+    expect((r.summary as any).controls.backupRequired).toBe(false);
     // No devices assessed → null ("N/A"), never a misleading 0%.
     expect((r.summary as any).controls.edrCoveragePct).toBeNull();
+  });
+
+  it('carries backupRequired when the device query returns no rows', async () => {
+    mockGeneratorQueries({ 2: [] });
+    const r = await generateSecurityCompliancePostureReport(ORG, { backupRequired: false });
+    expect(r.rows).toEqual([]);
+    expect((r.summary as any).controls.backupRequired).toBe(false);
   });
 });

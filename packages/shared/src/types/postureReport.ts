@@ -47,6 +47,7 @@ export type PostureControls = {
   cisAssessedCount?: number;
   /** Proves an identity provider is CONNECTED, not that MFA is enforced. */
   identityProviderConnected?: boolean;
+  backupRequired?: boolean;
   backupConfigured?: boolean;
   backupEncrypted?: boolean | null;
   dnsFilteringActive?: boolean;

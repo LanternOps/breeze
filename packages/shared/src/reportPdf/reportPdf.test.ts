@@ -28,11 +28,63 @@ const execSummary: ExecutiveSummary = {
 };
 const opts = { generatedAt: 'Jul 1, 2026, 9:00 AM', timezone: 'UTC' };
 
+function pdfCommandText(doc: ReturnType<typeof buildReportPdf>): string {
+  return ((doc.internal as unknown as { pages: string[][] }).pages ?? [])
+    .flat()
+    .join('\n');
+}
+
 describe('buildReportPdf in Node (no DOM)', () => {
   it('renders the posture cover + device table', () => {
     const doc = buildReportPdf(postureRows, { ...opts, reportType: 'security_compliance_posture', summary: postureSummary });
     expect(doc.getNumberOfPages()).toBeGreaterThanOrEqual(2);
     expect(Buffer.from(doc.output('arraybuffer')).byteLength).toBeGreaterThan(1000);
+  });
+
+  it('renders optional missing backup neutrally and omits the backup recommendation', () => {
+    const summary: PostureSummary = {
+      ...postureSummary,
+      controls: {
+        ...postureSummary.controls,
+        backupRequired: false,
+        backupConfigured: false,
+      },
+    };
+    const text = pdfCommandText(buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary,
+    }));
+    expect(text).toContain('Not required');
+    expect(text).not.toContain('Configure backups');
+  });
+
+  it('renders configured optional backup neutrally without removing the evidence', () => {
+    const summary: PostureSummary = {
+      ...postureSummary,
+      controls: {
+        ...postureSummary.controls,
+        backupRequired: false,
+        backupConfigured: true,
+      },
+    };
+    expect(pdfCommandText(buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary,
+    }))).toContain('Optional; configured');
+  });
+
+  it('keeps missing backup required for legacy summaries', () => {
+    const summary: PostureSummary = {
+      ...postureSummary,
+      controls: { ...postureSummary.controls, backupConfigured: false },
+    };
+    expect(pdfCommandText(buildReportPdf(postureRows, {
+      ...opts,
+      reportType: 'security_compliance_posture',
+      summary,
+    }))).toContain('Configure backups');
   });
 
   it('renders a generic table for row reports', () => {

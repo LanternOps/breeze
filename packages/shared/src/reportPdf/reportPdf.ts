@@ -573,16 +573,23 @@ function renderPostureCover(
         : `${c.cisAvgPassRate}% (${c.cisAssessedCount ?? 0}/${deviceCount})`;
     protectionMetrics.push({ label: 'CIS hardening', value: cisVal, status: pctStatus(c.cisAvgPassRate, 90, 70), target: '>=90%' });
   }
+  const backupRequired = c.backupRequired !== false;
+  const backupValue = backupRequired
+    ? `${yesNo(c.backupConfigured)}${c.backupConfigured && c.backupEncrypted ? ' (encrypted)' : ''}`
+    : c.backupConfigured
+      ? 'Optional; configured'
+      : 'Not required';
+  const backupMetric: Metric = {
+    label: 'Backup',
+    value: backupValue,
+    status: backupRequired ? boolStatus(c.backupConfigured) : 'neutral',
+  };
   const accessMetrics: Metric[] = [
     { label: 'Host firewall', value: pctStr(c.firewallPct), status: pctStatus(c.firewallPct), target: '>=95%' },
     { label: 'Password complexity', value: pctStr(c.passwordComplexityPct), status: pctStatus(c.passwordComplexityPct), target: '>=90%' },
     { label: 'Local-admin exposure', value: pctStr(c.localAdminExposurePct), status: pctStatus(c.localAdminExposurePct == null ? null : 100 - c.localAdminExposurePct), target: '<=10%' },
     { label: 'Identity provider connected', value: yesNo(c.identityProviderConnected), status: boolStatus(c.identityProviderConnected) },
-    {
-      label: 'Backup configured',
-      value: `${yesNo(c.backupConfigured)}${c.backupConfigured && c.backupEncrypted ? ' (encrypted)' : ''}`,
-      status: boolStatus(c.backupConfigured),
-    },
+    backupMetric,
     { label: 'DNS filtering active', value: yesNo(c.dnsFilteringActive), status: boolStatus(c.dnsFilteringActive) },
   ];
   y = drawMetricGrid(doc, [...protectionMetrics, ...accessMetrics], y);
@@ -668,8 +675,8 @@ function buildRecommendations(summary: PostureSummary, agg: PostureAggregates): 
   if (agg.criticalCount > 0) {
     recs.push({ severity: 'bad', text: `Remediate ${agg.criticalCount} critical patch/vulnerability finding${agg.criticalCount === 1 ? '' : 's'} (see per-device detail).` });
   }
-  if (c.backupConfigured === false) {
-    recs.push({ severity: 'bad', text: 'Configure backups — no backup solution is currently detected for this organization.' });
+  if (c.backupRequired !== false && c.backupConfigured === false) {
+    recs.push({ severity: 'bad', text: 'Configure backups - no backup solution is currently detected for this organization.' });
   }
   if (p.mfaStepUpEnforced === false) {
     recs.push({ severity: 'bad', text: 'Enforce MFA step-up so privileged actions require a second factor.' });

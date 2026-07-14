@@ -76,4 +76,20 @@ describe('report config schema', () => {
     const updated = updateReportSchema.parse({ config: { schedule: { date: 1 } } });
     expect(updated.config?.schedule).toEqual({ date: '1' });
   });
+
+  it('preserves posture backupRequired on create and update', () => {
+    const created = createReportSchema.parse({
+      name: 'Workstation posture',
+      type: 'security_compliance_posture',
+      schedule: 'one_time',
+      format: 'pdf',
+      config: { backupRequired: false },
+    });
+    expect(created.config.backupRequired).toBe(false);
+
+    const updated = updateReportSchema.parse({
+      config: { backupRequired: true },
+    });
+    expect(updated.config?.backupRequired).toBe(true);
+  });
 });
