@@ -263,24 +263,25 @@ export function createMicrosoftGraphClient(
     budget: RequestBudget,
   ): Promise<string> {
     try {
-      const path = '/v1.0/servicePrincipals';
-      const principals = await collection(
-        graphUrl('/servicePrincipals', {
-          '$filter': `appId eq '${config.applicationId}'`,
+      const principal = await request(
+        graphUrl(`/servicePrincipals(appId='${config.applicationId}')`, {
           '$select': 'id,appId',
         }),
-        path,
         accessToken,
         budget,
       );
-      if (principals.length !== 1 || !isRecord(principals[0])) {
+      if (budget.items + 1 > maxItemCount) {
         throw failure('application_token_invalid');
       }
-      const { id, appId } = principals[0];
-      if (!CANONICAL_UUID.test(String(id)) || appId !== config.applicationId) {
+      budget.items += 1;
+      if (!isRecord(principal)) {
         throw failure('application_token_invalid');
       }
-      return id as string;
+      const { id, appId } = principal;
+      if (typeof id !== 'string' || !CANONICAL_UUID.test(id) || appId !== config.applicationId) {
+        throw failure('application_token_invalid');
+      }
+      return id;
     } catch {
       throw failure('application_token_invalid');
     }

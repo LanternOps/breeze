@@ -45,11 +45,11 @@ function routes(overrides: Partial<{
       }),
     },
     {
-      path: '/v1.0/servicePrincipals',
-      search: { '$filter': `appId eq '${APPLICATION_ID}'`, '$select': 'id,appId' },
-      response: json(overrides.application ?? {
-        value: [{ id: APPLICATION_SP_ID, appId: APPLICATION_ID }],
-      }),
+      path: `/v1.0/servicePrincipals(appId='${APPLICATION_ID}')`,
+      search: { '$select': 'id,appId' },
+      response: json('application' in overrides
+        ? overrides.application
+        : { id: APPLICATION_SP_ID, appId: APPLICATION_ID }),
     },
     {
       path: `/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments`,
@@ -136,19 +136,47 @@ describe('MicrosoftGraphClient', () => {
     }
   });
 
-  it('requires exactly one service principal for the fixed profile client ID', async () => {
+  it('strictly validates the fixed profile own-service-principal proof', async () => {
     for (const application of [
-      { value: [] },
-      { value: [
-        { id: APPLICATION_SP_ID, appId: APPLICATION_ID },
-        { id: '77777777-7777-4777-8777-777777777777', appId: APPLICATION_ID },
-      ] },
-      { value: [{ id: APPLICATION_SP_ID, appId: '88888888-8888-4888-8888-888888888888' }] },
+      null,
+      [],
+      { value: [{ id: APPLICATION_SP_ID, appId: APPLICATION_ID }] },
+      { id: APPLICATION_SP_ID, appId: '88888888-8888-4888-8888-888888888888' },
+      { id: 42, appId: APPLICATION_ID },
     ]) {
       const { graph } = client(routes({ application }));
       await expect(graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN }))
         .rejects.toMatchObject({ code: 'application_token_invalid', message: 'application_token_invalid' });
     }
+  });
+
+  it('preserves own-service-principal proof when assignment reconciliation is denied', async () => {
+    const expected: Route[] = [
+      {
+        path: '/v1.0/organization',
+        search: { '$select': 'id,displayName' },
+        response: json({ value: [{ id: TENANT_ID, displayName: 'Contoso Ltd' }] }),
+      },
+      {
+        path: `/v1.0/servicePrincipals(appId='${APPLICATION_ID}')`,
+        search: { '$select': 'id,appId' },
+        response: json({ id: APPLICATION_SP_ID, appId: APPLICATION_ID }),
+      },
+      {
+        path: `/v1.0/servicePrincipals/${APPLICATION_SP_ID}/appRoleAssignments`,
+        response: new Response('provider-secret', { status: 403 }),
+      },
+    ];
+    const { graph, fetch, assertComplete } = client(expected);
+
+    await expect(graph.probeTenant({ tenantId: TENANT_ID, accessToken: ACCESS_TOKEN })).resolves.toEqual({
+      tenantId: TENANT_ID,
+      applicationId: APPLICATION_ID,
+      organizationDisplayName: 'Contoso Ltd',
+      observedGrants: null,
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    assertComplete();
   });
 
   it('follows every valid assignment page and returns sorted unique grants', async () => {

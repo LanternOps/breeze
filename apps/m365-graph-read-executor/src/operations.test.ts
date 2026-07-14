@@ -31,7 +31,20 @@ describe('executor operations', () => {
       redirectUri: CALLBACK_URL,
     }, dependencies());
 
-    expect(result).toMatchObject({ success: true, grantReconciliation: 'unavailable', errorCode: 'grant_reconciliation_unavailable' });
+    expect(result).toMatchObject({
+      success: true,
+      tenantId: TENANT_ID,
+      applicationId: CLIENT_ID,
+      organizationDisplayName: 'Example',
+      manifestVersion: 2,
+      grantReconciliation: 'unavailable',
+      errorCode: 'grant_reconciliation_unavailable',
+      observedGrants: null,
+      missingGrants: null,
+      unexpectedGrants: null,
+      grantsVerifiedAt: null,
+      administratorObjectId: '55555555-5555-4555-8555-555555555555',
+    });
   });
 
   it('fails closed when the application proof does not match the fixed configured app', async () => {
