@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildReportPdf } from './reportPdf';
+import { buildPostureBackupMetric, buildReportPdf } from './reportPdf';
 import type { PostureSummary } from '../types/postureReport';
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
 
@@ -33,6 +33,36 @@ function pdfCommandText(doc: ReturnType<typeof buildReportPdf>): string {
     .flat()
     .join('\n');
 }
+
+describe('buildPostureBackupMetric', () => {
+  it.each([false, true])(
+    'renders optional backup neutrally when configured=%s',
+    (backupConfigured) => {
+      expect(buildPostureBackupMetric({
+        backupRequired: false,
+        backupConfigured,
+      })).toEqual({
+        label: 'Backup',
+        value: backupConfigured ? 'Optional; configured' : 'Not required',
+        status: 'neutral',
+      });
+    },
+  );
+
+  it.each([
+    { backupConfigured: false, status: 'bad' },
+    { backupConfigured: true, status: 'good' },
+  ] as const)(
+    'keeps legacy backup configured=$backupConfigured status=$status',
+    ({ backupConfigured, status }) => {
+      expect(buildPostureBackupMetric({ backupConfigured })).toEqual({
+        label: 'Backup',
+        value: backupConfigured ? 'Yes' : 'No',
+        status,
+      });
+    },
+  );
+});
 
 describe('buildReportPdf in Node (no DOM)', () => {
   it('renders the posture cover + device table', () => {

@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import autoTable, { type CellHookData } from 'jspdf-autotable';
-import type { PostureSummary } from '../types/postureReport';
+import type { PostureControls, PostureSummary } from '../types/postureReport';
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
 
 /**
@@ -497,6 +497,20 @@ function pctStatus(v: number | null | undefined, good = 90, warn = 60): MetricSt
   return 'bad';
 }
 
+export function buildPostureBackupMetric(controls: PostureControls) {
+  const backupRequired = controls.backupRequired !== false;
+  const backupValue = backupRequired
+    ? `${yesNo(controls.backupConfigured)}${controls.backupConfigured && controls.backupEncrypted ? ' (encrypted)' : ''}`
+    : controls.backupConfigured
+      ? 'Optional; configured'
+      : 'Not required';
+  return {
+    label: 'Backup',
+    value: backupValue,
+    status: backupRequired ? boolStatus(controls.backupConfigured) : 'neutral',
+  } satisfies Metric;
+}
+
 type PostureAggregates = { criticalCount: number; unprotectedCount: number };
 
 function renderPostureCover(
@@ -573,17 +587,7 @@ function renderPostureCover(
         : `${c.cisAvgPassRate}% (${c.cisAssessedCount ?? 0}/${deviceCount})`;
     protectionMetrics.push({ label: 'CIS hardening', value: cisVal, status: pctStatus(c.cisAvgPassRate, 90, 70), target: '>=90%' });
   }
-  const backupRequired = c.backupRequired !== false;
-  const backupValue = backupRequired
-    ? `${yesNo(c.backupConfigured)}${c.backupConfigured && c.backupEncrypted ? ' (encrypted)' : ''}`
-    : c.backupConfigured
-      ? 'Optional; configured'
-      : 'Not required';
-  const backupMetric: Metric = {
-    label: 'Backup',
-    value: backupValue,
-    status: backupRequired ? boolStatus(c.backupConfigured) : 'neutral',
-  };
+  const backupMetric = buildPostureBackupMetric(c);
   const accessMetrics: Metric[] = [
     { label: 'Host firewall', value: pctStr(c.firewallPct), status: pctStatus(c.firewallPct), target: '>=95%' },
     { label: 'Password complexity', value: pctStr(c.passwordComplexityPct), status: pctStatus(c.passwordComplexityPct), target: '>=90%' },
