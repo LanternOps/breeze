@@ -24,8 +24,12 @@
  * Each it() re-seeds fresh — matching every sibling *-rls.integration.test.ts.
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
+import postgres from 'postgres';
 import {
   db,
   withDbAccessContext,
@@ -41,8 +45,55 @@ import {
   devices,
 } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
+import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+const DATABASE_URL = process.env.DATABASE_URL
+  ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
+const ONEDRIVE_SERIALIZATION_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-08-01-c-serialize-onedrive-policy-references.sql',
+);
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>['resolve'];
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+async function waitForBackendLockWait(backendPid: number): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    const rows = await getTestDb().execute<{ waiting: boolean }>(sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_stat_activity
+        WHERE pid = ${backendPid}
+          AND state = 'active'
+          AND cardinality(pg_catalog.pg_blocking_pids(pid)) > 0
+      ) AS waiting
+    `);
+    if (rows[0]?.waiting) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`OneDrive reference backend ${backendPid} never waited on a lock`);
+}
+
+async function captureSqlState(work: () => Promise<unknown>): Promise<string | undefined> {
+  try {
+    await work();
+    return undefined;
+  } catch (error) {
+    const wrapped = error as { code?: string; cause?: { code?: string } };
+    return wrapped.cause?.code ?? wrapped.code;
+  }
+}
 
 interface Fixture {
   partnerA: { id: string };
@@ -236,7 +287,7 @@ describe('config_policy_onedrive_settings RLS isolation (breeze_app)', () => {
           .set({ orgId: fx.orgB.id })
           .where(eq(configPolicyOnedriveSettings.id, settingsId))
       )
-    ).rejects.toMatchObject({ cause: { code: '23503' } });
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
   runDb('blocks same-org settings from referencing another org feature link', async () => {
@@ -407,7 +458,7 @@ describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
           .set({ orgId: fx.orgB.id })
           .where(eq(configPolicyOnedriveLibraries.id, libraryId))
       )
-    ).rejects.toMatchObject({ cause: { code: '23503' } });
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
   runDb('blocks same-org library from referencing another org settings row', async () => {
@@ -493,6 +544,577 @@ describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
     );
     expect(survivors).toHaveLength(1);
   });
+});
+
+describe('OneDrive normalized-reference serialization', () => {
+  runDb('rejects a policy owner move that waited behind a concurrent settings insert', async () => {
+    const fx = await seedFixture();
+    const inserted = deferred<void>();
+    const releaseInsert = deferred<void>();
+    const moverEntered = deferred<number>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const mover = postgres(DATABASE_URL, {
+      max: 1,
+      connection: { application_name: `onedrive-policy-mover-${randomUUID()}` },
+      onnotice: () => {},
+    });
+    let holderWork: Promise<void> | undefined;
+    let moverWork: Promise<string | undefined> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        await tx`
+          INSERT INTO public.config_policy_onedrive_settings (feature_link_id, org_id)
+          VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
+        `;
+        inserted.resolve();
+        await releaseInsert.promise;
+      });
+      await inserted.promise;
+
+      moverWork = captureSqlState(() => mover.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`
+          SELECT pg_catalog.pg_backend_pid() AS pid
+        `;
+        if (!backend) throw new Error('missing OneDrive policy mover backend');
+        moverEntered.resolve(backend.pid);
+        await tx`
+          UPDATE public.configuration_policies
+          SET org_id = ${fx.orgB.id}, updated_at = now()
+          WHERE id = ${fx.configPolicyA.id}
+        `;
+      }));
+      await waitForBackendLockWait(await moverEntered.promise);
+      releaseInsert.resolve();
+      await holderWork;
+
+      expect(await moverWork).toBe('23503');
+      const [policy] = await getTestDb().select({ orgId: configurationPolicies.orgId })
+        .from(configurationPolicies)
+        .where(eq(configurationPolicies.id, fx.configPolicyA.id));
+      expect(policy?.orgId).toBe(fx.orgA.id);
+    } finally {
+      releaseInsert.resolve();
+      await Promise.allSettled([holderWork, moverWork].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 1 });
+      await mover.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  runDb('makes a settings insert wait for and reject a committed policy owner move', async () => {
+    const fx = await seedFixture();
+    const moved = deferred<void>();
+    const releaseMove = deferred<void>();
+    const inserterEntered = deferred<number>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL, {
+      max: 1,
+      connection: { application_name: `onedrive-settings-inserter-${randomUUID()}` },
+      onnotice: () => {},
+    });
+    let holderWork: Promise<void> | undefined;
+    let inserterWork: Promise<string | undefined> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        await tx`
+          UPDATE public.configuration_policies
+          SET org_id = ${fx.orgB.id}, updated_at = now()
+          WHERE id = ${fx.configPolicyA.id}
+        `;
+        moved.resolve();
+        await releaseMove.promise;
+      });
+      await moved.promise;
+
+      inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`
+          SELECT pg_catalog.pg_backend_pid() AS pid
+        `;
+        if (!backend) throw new Error('missing OneDrive settings inserter backend');
+        inserterEntered.resolve(backend.pid);
+        await tx`
+          INSERT INTO public.config_policy_onedrive_settings (feature_link_id, org_id)
+          VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
+        `;
+      }));
+      await waitForBackendLockWait(await inserterEntered.promise);
+      releaseMove.resolve();
+      await holderWork;
+
+      expect(await inserterWork).toBe('23503');
+      const rows = await getTestDb().select({ id: configPolicyOnedriveSettings.id })
+        .from(configPolicyOnedriveSettings)
+        .where(eq(configPolicyOnedriveSettings.featureLinkId, fx.featureLinkA.id));
+      expect(rows).toHaveLength(0);
+    } finally {
+      releaseMove.resolve();
+      await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 1 });
+      await inserter.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  runDb('serializes a feature-link delete after a concurrent settings insert', async () => {
+    const fx = await seedFixture();
+    const inserted = deferred<void>();
+    const releaseInsert = deferred<void>();
+    const deleterEntered = deferred<number>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const deleter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let holderWork: Promise<void> | undefined;
+    let deleterWork: Promise<string | undefined> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        await tx`
+          INSERT INTO public.config_policy_onedrive_settings (feature_link_id, org_id)
+          VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
+        `;
+        inserted.resolve();
+        await releaseInsert.promise;
+      });
+      await inserted.promise;
+
+      deleterWork = captureSqlState(() => deleter.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`
+          SELECT pg_catalog.pg_backend_pid() AS pid
+        `;
+        if (!backend) throw new Error('missing OneDrive feature-link deleter backend');
+        deleterEntered.resolve(backend.pid);
+        await tx`
+          DELETE FROM public.config_policy_feature_links
+          WHERE id = ${fx.featureLinkA.id}
+        `;
+      }));
+      await waitForBackendLockWait(await deleterEntered.promise);
+      releaseInsert.resolve();
+      await holderWork;
+
+      expect(await deleterWork).toBeUndefined();
+      expect(await getTestDb().select({ id: configPolicyOnedriveSettings.id })
+        .from(configPolicyOnedriveSettings)
+        .where(eq(configPolicyOnedriveSettings.featureLinkId, fx.featureLinkA.id)))
+        .toHaveLength(0);
+    } finally {
+      releaseInsert.resolve();
+      await Promise.allSettled([holderWork, deleterWork].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 1 });
+      await deleter.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  runDb('makes a settings insert reject after a concurrent feature-link delete commits', async () => {
+    const fx = await seedFixture();
+    const deleted = deferred<void>();
+    const releaseDelete = deferred<void>();
+    const inserterEntered = deferred<number>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let holderWork: Promise<void> | undefined;
+    let inserterWork: Promise<string | undefined> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        await tx`
+          DELETE FROM public.config_policy_feature_links
+          WHERE id = ${fx.featureLinkA.id}
+        `;
+        deleted.resolve();
+        await releaseDelete.promise;
+      });
+      await deleted.promise;
+
+      inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`
+          SELECT pg_catalog.pg_backend_pid() AS pid
+        `;
+        if (!backend) throw new Error('missing post-delete OneDrive settings inserter backend');
+        inserterEntered.resolve(backend.pid);
+        await tx`
+          INSERT INTO public.config_policy_onedrive_settings (feature_link_id, org_id)
+          VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
+        `;
+      }));
+      await waitForBackendLockWait(await inserterEntered.promise);
+      releaseDelete.resolve();
+      await holderWork;
+
+      expect(await inserterWork).toBe('23503');
+    } finally {
+      releaseDelete.resolve();
+      await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 1 });
+      await inserter.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  runDb('rejects a settings owner move that waited behind a concurrent library insert', async () => {
+    const fx = await seedFixture();
+    const [settings] = await getTestDb().insert(configPolicyOnedriveSettings).values({
+      featureLinkId: fx.featureLinkA.id,
+      orgId: fx.orgA.id,
+    }).returning({ id: configPolicyOnedriveSettings.id });
+    if (!settings) throw new Error('missing OneDrive settings race row');
+    const inserted = deferred<void>();
+    const releaseInsert = deferred<void>();
+    const moverEntered = deferred<number>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const mover = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let holderWork: Promise<void> | undefined;
+    let moverWork: Promise<string | undefined> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        await tx`
+          INSERT INTO public.config_policy_onedrive_libraries
+            (settings_id, org_id, library_id, display_name, targeting_mode)
+          VALUES (${settings.id}, ${fx.orgA.id}, 'race-library-a', 'Race A', 'everyone')
+        `;
+        inserted.resolve();
+        await releaseInsert.promise;
+      });
+      await inserted.promise;
+      moverWork = captureSqlState(() => mover.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`
+          SELECT pg_catalog.pg_backend_pid() AS pid
+        `;
+        if (!backend) throw new Error('missing OneDrive settings mover backend');
+        moverEntered.resolve(backend.pid);
+        await tx`
+          UPDATE public.config_policy_onedrive_settings
+          SET feature_link_id = ${fx.featureLinkB.id}, org_id = ${fx.orgB.id}, updated_at = now()
+          WHERE id = ${settings.id}
+        `;
+      }));
+      await waitForBackendLockWait(await moverEntered.promise);
+      releaseInsert.resolve();
+      await holderWork;
+      expect(await moverWork).toBe('23503');
+      const [persisted] = await getTestDb().select({ orgId: configPolicyOnedriveSettings.orgId })
+        .from(configPolicyOnedriveSettings)
+        .where(eq(configPolicyOnedriveSettings.id, settings.id));
+      expect(persisted?.orgId).toBe(fx.orgA.id);
+    } finally {
+      releaseInsert.resolve();
+      await Promise.allSettled([holderWork, moverWork].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 1 });
+      await mover.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  runDb('makes a library insert wait for and reject a committed settings owner move', async () => {
+    const fx = await seedFixture();
+    const [settings] = await getTestDb().insert(configPolicyOnedriveSettings).values({
+      featureLinkId: fx.featureLinkA.id,
+      orgId: fx.orgA.id,
+    }).returning({ id: configPolicyOnedriveSettings.id });
+    if (!settings) throw new Error('missing opposite OneDrive settings race row');
+    const moved = deferred<void>();
+    const releaseMove = deferred<void>();
+    const inserterEntered = deferred<number>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let holderWork: Promise<void> | undefined;
+    let inserterWork: Promise<string | undefined> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        await tx`
+          UPDATE public.config_policy_onedrive_settings
+          SET feature_link_id = ${fx.featureLinkB.id}, org_id = ${fx.orgB.id}, updated_at = now()
+          WHERE id = ${settings.id}
+        `;
+        moved.resolve();
+        await releaseMove.promise;
+      });
+      await moved.promise;
+      inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`
+          SELECT pg_catalog.pg_backend_pid() AS pid
+        `;
+        if (!backend) throw new Error('missing OneDrive library inserter backend');
+        inserterEntered.resolve(backend.pid);
+        await tx`
+          INSERT INTO public.config_policy_onedrive_libraries
+            (settings_id, org_id, library_id, display_name, targeting_mode)
+          VALUES (${settings.id}, ${fx.orgA.id}, 'race-library-b', 'Race B', 'everyone')
+        `;
+      }));
+      await waitForBackendLockWait(await inserterEntered.promise);
+      releaseMove.resolve();
+      await holderWork;
+      expect(await inserterWork).toBe('23503');
+    } finally {
+      releaseMove.resolve();
+      await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 1 });
+      await inserter.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  runDb('serializes a settings delete after a concurrent library insert', async () => {
+    const fx = await seedFixture();
+    const [settings] = await getTestDb().insert(configPolicyOnedriveSettings).values({
+      featureLinkId: fx.featureLinkA.id,
+      orgId: fx.orgA.id,
+    }).returning({ id: configPolicyOnedriveSettings.id });
+    if (!settings) throw new Error('missing settings row for library/delete race');
+    const inserted = deferred<void>();
+    const releaseInsert = deferred<void>();
+    const deleterEntered = deferred<number>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const deleter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let holderWork: Promise<void> | undefined;
+    let deleterWork: Promise<string | undefined> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        await tx`
+          INSERT INTO public.config_policy_onedrive_libraries
+            (settings_id, org_id, library_id, display_name, targeting_mode)
+          VALUES (${settings.id}, ${fx.orgA.id}, 'delete-race-a', 'Delete Race A', 'everyone')
+        `;
+        inserted.resolve();
+        await releaseInsert.promise;
+      });
+      await inserted.promise;
+
+      deleterWork = captureSqlState(() => deleter.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`
+          SELECT pg_catalog.pg_backend_pid() AS pid
+        `;
+        if (!backend) throw new Error('missing OneDrive settings deleter backend');
+        deleterEntered.resolve(backend.pid);
+        await tx`
+          DELETE FROM public.config_policy_onedrive_settings
+          WHERE id = ${settings.id}
+        `;
+      }));
+      await waitForBackendLockWait(await deleterEntered.promise);
+      releaseInsert.resolve();
+      await holderWork;
+
+      expect(await deleterWork).toBeUndefined();
+      expect(await getTestDb().select({ id: configPolicyOnedriveSettings.id })
+        .from(configPolicyOnedriveSettings)
+        .where(eq(configPolicyOnedriveSettings.id, settings.id))).toHaveLength(0);
+      expect(await getTestDb().select({ id: configPolicyOnedriveLibraries.id })
+        .from(configPolicyOnedriveLibraries)
+        .where(eq(configPolicyOnedriveLibraries.settingsId, settings.id))).toHaveLength(0);
+    } finally {
+      releaseInsert.resolve();
+      await Promise.allSettled([holderWork, deleterWork].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 1 });
+      await deleter.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  runDb('makes a library insert reject after a concurrent settings delete commits', async () => {
+    const fx = await seedFixture();
+    const [settings] = await getTestDb().insert(configPolicyOnedriveSettings).values({
+      featureLinkId: fx.featureLinkA.id,
+      orgId: fx.orgA.id,
+    }).returning({ id: configPolicyOnedriveSettings.id });
+    if (!settings) throw new Error('missing settings row for delete/library race');
+    const deleted = deferred<void>();
+    const releaseDelete = deferred<void>();
+    const inserterEntered = deferred<number>();
+    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    let holderWork: Promise<void> | undefined;
+    let inserterWork: Promise<string | undefined> | undefined;
+    try {
+      holderWork = holder.begin(async (tx) => {
+        await tx`
+          DELETE FROM public.config_policy_onedrive_settings
+          WHERE id = ${settings.id}
+        `;
+        deleted.resolve();
+        await releaseDelete.promise;
+      });
+      await deleted.promise;
+
+      inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+        const [backend] = await tx<{ pid: number }[]>`
+          SELECT pg_catalog.pg_backend_pid() AS pid
+        `;
+        if (!backend) throw new Error('missing post-delete OneDrive library inserter backend');
+        inserterEntered.resolve(backend.pid);
+        await tx`
+          INSERT INTO public.config_policy_onedrive_libraries
+            (settings_id, org_id, library_id, display_name, targeting_mode)
+          VALUES (${settings.id}, ${fx.orgA.id}, 'delete-race-b', 'Delete Race B', 'everyone')
+        `;
+      }));
+      await waitForBackendLockWait(await inserterEntered.promise);
+      releaseDelete.resolve();
+      await holderWork;
+
+      expect(await inserterWork).toBe('23503');
+    } finally {
+      releaseDelete.resolve();
+      await Promise.allSettled([holderWork, inserterWork].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 1 });
+      await inserter.end({ timeout: 1 });
+    }
+  }, 20_000);
+
+  runDb('rolls back an invalid bulk library owner move atomically', async () => {
+    const fx = await seedFixture();
+    const [settings] = await getTestDb().insert(configPolicyOnedriveSettings).values({
+      featureLinkId: fx.featureLinkA.id,
+      orgId: fx.orgA.id,
+    }).returning({ id: configPolicyOnedriveSettings.id });
+    if (!settings) throw new Error('missing bulk OneDrive settings row');
+    const libraries = await getTestDb().insert(configPolicyOnedriveLibraries).values([
+      {
+        settingsId: settings.id,
+        orgId: fx.orgA.id,
+        libraryId: 'bulk-library-a',
+        displayName: 'Bulk A',
+        targetingMode: 'everyone',
+      },
+      {
+        settingsId: settings.id,
+        orgId: fx.orgA.id,
+        libraryId: 'bulk-library-b',
+        displayName: 'Bulk B',
+        targetingMode: 'everyone',
+      },
+    ]).returning({ id: configPolicyOnedriveLibraries.id });
+
+    await expect(getTestDb().execute(sql`
+      UPDATE public.config_policy_onedrive_libraries
+      SET org_id = ${fx.orgB.id}
+      WHERE id = ANY(ARRAY[${libraries[1]!.id}::uuid, ${libraries[0]!.id}::uuid])
+    `)).rejects.toMatchObject({ cause: { code: '23503' } });
+    const owners = await getTestDb().select({ orgId: configPolicyOnedriveLibraries.orgId })
+      .from(configPolicyOnedriveLibraries)
+      .where(eq(configPolicyOnedriveLibraries.settingsId, settings.id));
+    expect(owners).toHaveLength(2);
+    expect(owners.every((owner) => owner.orgId === fx.orgA.id)).toBe(true);
+  });
+
+  runDb('allows feature-link delete to cascade through settings and libraries', async () => {
+    const fx = await seedFixture();
+    const [settings] = await getTestDb().insert(configPolicyOnedriveSettings).values({
+      featureLinkId: fx.featureLinkA.id,
+      orgId: fx.orgA.id,
+    }).returning({ id: configPolicyOnedriveSettings.id });
+    if (!settings) throw new Error('missing cascade OneDrive settings row');
+    await getTestDb().insert(configPolicyOnedriveLibraries).values({
+      settingsId: settings.id,
+      orgId: fx.orgA.id,
+      libraryId: 'cascade-library',
+      displayName: 'Cascade',
+      targetingMode: 'everyone',
+    });
+
+    await expect(getTestDb().delete(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, fx.featureLinkA.id))).resolves.toBeDefined();
+    expect(await getTestDb().select().from(configPolicyOnedriveSettings)
+      .where(eq(configPolicyOnedriveSettings.id, settings.id))).toHaveLength(0);
+    expect(await getTestDb().select().from(configPolicyOnedriveLibraries)
+      .where(eq(configPolicyOnedriveLibraries.settingsId, settings.id))).toHaveLength(0);
+  });
+
+  runDb('migration is idempotent and installs private ordered statement triggers', async () => {
+    const admin = getTestDb();
+    const migration = readFileSync(ONEDRIVE_SERIALIZATION_MIGRATION_FILE, 'utf8');
+    await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
+    await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
+
+    const [catalog] = await admin.execute<{
+      triggerCount: number;
+      rowTriggerCount: number;
+      missingTransitionCount: number;
+      legacyCount: number;
+    }>(sql`
+      SELECT
+        count(*) FILTER (WHERE trigger.tgname LIKE 'a_onedrive_%')::integer AS "triggerCount",
+        count(*) FILTER (
+          WHERE trigger.tgname LIKE 'a_onedrive_%' AND (trigger.tgtype & 1) = 1
+        )::integer AS "rowTriggerCount",
+        count(*) FILTER (
+          WHERE trigger.tgname LIKE 'a_onedrive_%'
+            AND trigger.tgoldtable IS NULL AND trigger.tgnewtable IS NULL
+        )::integer AS "missingTransitionCount",
+        count(*) FILTER (WHERE trigger.tgname IN (
+          'config_policy_onedrive_settings_tenant_integrity',
+          'config_policy_onedrive_libraries_tenant_integrity',
+          'config_policy_onedrive_settings_link_reference_update',
+          'config_policy_onedrive_settings_policy_owner_update',
+          'config_policy_onedrive_libraries_settings_owner_update'
+        ))::integer AS "legacyCount"
+      FROM pg_catalog.pg_trigger trigger
+      WHERE NOT trigger.tgisinternal
+    `);
+    expect(catalog).toEqual({
+      triggerCount: 10,
+      rowTriggerCount: 0,
+      missingTransitionCount: 0,
+      legacyCount: 0,
+    });
+
+    const helpers = await admin.execute<{
+      name: string;
+      securityDefiner: boolean;
+      fixedContext: boolean;
+      namespaceCount: number;
+      publicExecute: boolean;
+      appExecute: boolean;
+    }>(sql`
+      SELECT proc.proname AS name,
+        proc.prosecdef AS "securityDefiner",
+        proc.proconfig @> ARRAY[
+          'search_path=pg_catalog, public',
+          'breeze.scope=system',
+          'breeze.accessible_org_ids=',
+          'breeze.accessible_partner_ids='
+        ]::text[] AS "fixedContext",
+        (length(pg_catalog.pg_get_functiondef(proc.oid))
+          - length(replace(pg_catalog.pg_get_functiondef(proc.oid),
+            'pg_advisory_xact_lock(1000302', '')))::integer
+          / length('pg_advisory_xact_lock(1000302') AS "namespaceCount",
+        EXISTS (
+          SELECT 1 FROM pg_catalog.aclexplode(
+            COALESCE(proc.proacl, pg_catalog.acldefault('f', proc.proowner))
+          ) privilege
+          WHERE privilege.grantee = 0 AND privilege.privilege_type = 'EXECUTE'
+        ) AS "publicExecute",
+        pg_catalog.has_function_privilege('breeze_app', proc.oid, 'EXECUTE') AS "appExecute"
+      FROM pg_catalog.pg_proc proc
+      WHERE proc.proname IN (
+        'breeze_enforce_onedrive_settings_statements',
+        'breeze_enforce_onedrive_library_statements',
+        'breeze_revalidate_onedrive_parent_statements'
+      )
+      ORDER BY proc.proname
+    `);
+    expect(helpers).toHaveLength(3);
+    expect(helpers).toEqual(helpers.map((helper) => ({
+      ...helper,
+      securityDefiner: true,
+      fixedContext: true,
+      namespaceCount: 1,
+      publicExecute: false,
+      appExecute: false,
+    })));
+
+    const order = await admin.execute<{ name: string }>(sql`
+      SELECT trigger.tgname AS name
+      FROM pg_catalog.pg_trigger trigger
+      WHERE NOT trigger.tgisinternal
+        AND trigger.tgrelid = 'public.configuration_policies'::regclass
+        AND trigger.tgname IN (
+          'a_onedrive_reference_policy_update',
+          'aa_config_policy_feature_reference_policy_update',
+          'ab_config_policy_assignment_policy_owner_update',
+          'breeze_partner_export_configuration_update'
+        )
+      ORDER BY trigger.tgname
+    `);
+    expect(order.map((row) => row.name)).toEqual([
+      'a_onedrive_reference_policy_update',
+      'aa_config_policy_feature_reference_policy_update',
+      'ab_config_policy_assignment_policy_owner_update',
+      'breeze_partner_export_configuration_update',
+    ]);
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------
