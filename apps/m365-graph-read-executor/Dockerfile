@@ -24,9 +24,9 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV M365_GRAPH_READ_EXECUTOR_AUTOSTART=1
 
-RUN apk upgrade --no-cache libcrypto3 libssl3 && \
-    apk add --no-cache wget && \
-    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+# The runtime needs only Node. Removing bundled package managers avoids carrying
+# their unused dependency trees without resolving mutable Alpine packages.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --from=build --chown=node:node /deployed/node_modules ./node_modules
 COPY --from=build --chown=node:node /deployed/dist ./dist
@@ -34,5 +34,5 @@ COPY --from=build --chown=node:node /deployed/package.json ./package.json
 
 USER node
 EXPOSE 3003
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD wget --no-verbose --tries=1 --spider "http://${M365_GRAPH_READ_EXECUTOR_BIND_HOST}:${M365_GRAPH_READ_EXECUTOR_PORT}/healthz" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD ["node", "-e", "fetch(`http://${process.env.M365_GRAPH_READ_EXECUTOR_BIND_HOST}:${process.env.M365_GRAPH_READ_EXECUTOR_PORT}/healthz`).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 CMD ["node", "dist/index.cjs"]

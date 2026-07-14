@@ -203,9 +203,6 @@ services:
       - redis_password
       - source: m365_graph_read_executor_signing_private_jwk
         target: m365_graph_read_executor_signing_private_jwk
-        uid: "1001"
-        gid: "1001"
-        mode: 0400
     depends_on:
       binaries-init:
         condition: service_completed_successfully
@@ -388,7 +385,8 @@ volumes:
 secrets:
   redis_password:
     environment: REDIS_PASSWORD
-  # /dev/null keeps existing dark deployments optional. When onboarding is
-  # enabled, point this at a mode-0600 Ed25519 private JWK on the Docker host.
+  # Standalone Compose bind-mounts file-backed secrets and ignores uid/gid/mode
+  # target attributes. /dev/null keeps dark deployments optional; when enabled,
+  # the source JWK must already have numeric owner 1001:1001 and mode 0400.
   m365_graph_read_executor_signing_private_jwk:
     file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}

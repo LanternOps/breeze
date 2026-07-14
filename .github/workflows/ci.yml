@@ -469,6 +469,9 @@ jobs:
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
 
+      - name: Run M365 signing secret runtime smoke
+        run: bash scripts/security/check-m365-graph-read-runtime.sh
+
       - name: Run relay/edge hardening guard
         run: bash scripts/security/check-relay-edge-hardening.sh
 
