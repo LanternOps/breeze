@@ -225,6 +225,29 @@ func fakeSuspendedHelper() *suspendedHelper {
 	}
 }
 
+func TestWindowsHelperSpawnerRetainsMainBinaryFallback(t *testing.T) {
+	job := &fakeHelperJob{}
+	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
+		createSuspended: func(HelperKey) (*suspendedHelper, error) {
+			pending := fakeSuspendedHelper()
+			pending.binaryPath = `C:\Program Files\Breeze\breeze-agent.exe`
+			pending.mainBinaryFallback = true
+			return pending, nil
+		},
+		resumeThread: func(windows.Handle) (uint32, error) { return 1, nil },
+		closeHandle:  func(windows.Handle) error { return nil },
+	})
+
+	process, err := spawner.Spawn(HelperKey{WindowsSessionID: 7, Role: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := process.(*SpawnedHelper)
+	if !helper.MainBinaryFallback {
+		t.Fatal("SpawnedHelper.MainBinaryFallback = false, want true")
+	}
+}
+
 func TestWindowsHelperSpawnerAssignFailureTerminatesSuspendedProcess(t *testing.T) {
 	assignErr := errors.New("assign failed")
 	job := &fakeHelperJob{assignErr: assignErr}

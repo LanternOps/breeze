@@ -14,8 +14,9 @@ import "fmt"
 // from the console-subsystem agent fallback in their telemetry. Always
 // empty on non-Windows builds since the stub never spawns.
 type SpawnedHelper struct {
-	PID        uint32
-	BinaryPath string
+	PID                uint32
+	BinaryPath         string
+	MainBinaryFallback bool
 }
 
 // Close is a no-op on non-Windows platforms.

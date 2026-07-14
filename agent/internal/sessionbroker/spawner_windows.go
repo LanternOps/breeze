@@ -21,13 +21,14 @@ import (
 // the console-subsystem agent fallback when logging spawn outcomes — useful
 // when chasing reports of the logon console flash regression.
 type SpawnedHelper struct {
-	PID             uint32
-	Handle          windows.Handle
-	BinaryPath      string
-	mu              sync.Mutex
-	terminated      bool
-	standaloneOwner *windowsHelperSpawner
-	ops             *spawnedHelperOps
+	PID                uint32
+	Handle             windows.Handle
+	BinaryPath         string
+	MainBinaryFallback bool
+	mu                 sync.Mutex
+	terminated         bool
+	standaloneOwner    *windowsHelperSpawner
+	ops                *spawnedHelperOps
 }
 
 type spawnedHelperOps struct {
@@ -175,11 +176,12 @@ type helperJobOwner interface {
 }
 
 type suspendedHelper struct {
-	process     windows.Handle
-	thread      windows.Handle
-	pid         uint32
-	binaryPath  string
-	tokenSource string
+	process            windows.Handle
+	thread             windows.Handle
+	pid                uint32
+	binaryPath         string
+	mainBinaryFallback bool
+	tokenSource        string
 }
 
 type windowsSpawnOps struct {
@@ -194,10 +196,11 @@ type windowsSpawnOps struct {
 // mutex covers the complete create-suspended -> assign -> resume transaction
 // and Job close, so no helper can escape during lifecycle shutdown.
 type windowsHelperSpawner struct {
-	mu      sync.Mutex
-	job     helperJobOwner
-	closing bool
-	ops     windowsSpawnOps
+	mu              sync.Mutex
+	job             helperJobOwner
+	closing         bool
+	ops             windowsSpawnOps
+	fallbackWarning helperFallbackWarningOwner
 }
 
 func newWindowsHelperSpawner() (*windowsHelperSpawner, error) {
@@ -246,6 +249,10 @@ func (s *windowsHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 			_ = s.ops.closeHandle(pending.process)
 		}
 	}()
+	s.fallbackWarning.WarnIfFallback(ResolvedHelperExecutable{
+		Path:               pending.binaryPath,
+		MainBinaryFallback: pending.mainBinaryFallback,
+	})
 	if err := s.job.Assign(pending.process); err != nil {
 		return nil, fmt.Errorf("assign helper to job: %w", err)
 	}
@@ -260,12 +267,14 @@ func (s *windowsHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 		"role", key.Role,
 		"pid", pending.pid,
 		"exe", pending.binaryPath,
+		"mainBinaryFallback", pending.mainBinaryFallback,
 		"tokenSource", pending.tokenSource,
 	)
 	return &SpawnedHelper{
-		PID:        pending.pid,
-		Handle:     pending.process,
-		BinaryPath: pending.binaryPath,
+		PID:                pending.pid,
+		Handle:             pending.process,
+		BinaryPath:         pending.binaryPath,
+		MainBinaryFallback: pending.mainBinaryFallback,
 	}, nil
 }
 
@@ -331,11 +340,11 @@ func createSystemHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
 		return nil, fmt.Errorf("SetTokenInformation(TokenSessionId=%d): %w", sessionID, err)
 	}
 
-	exePath, err := userHelperExePath()
+	resolvedExe, err := userHelperExePath()
 	if err != nil {
 		return nil, fmt.Errorf("userHelperExePath: %w", err)
 	}
-	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(exePath, "system"))
+	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(resolvedExe.Path, "system"))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
@@ -365,11 +374,12 @@ func createSystemHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
 		return nil, fmt.Errorf("CreateProcessAsUser(session=%d): %w", sessionID, err)
 	}
 	return &suspendedHelper{
-		process:     pi.Process,
-		thread:      pi.Thread,
-		pid:         pi.ProcessId,
-		binaryPath:  exePath,
-		tokenSource: "system",
+		process:            pi.Process,
+		thread:             pi.Thread,
+		pid:                pi.ProcessId,
+		binaryPath:         resolvedExe.Path,
+		mainBinaryFallback: resolvedExe.MainBinaryFallback,
+		tokenSource:        "system",
 	}, nil
 }
 
@@ -386,11 +396,11 @@ func createUserHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
 		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
 
-	exePath, err := userHelperExePath()
+	resolvedExe, err := userHelperExePath()
 	if err != nil {
 		return nil, fmt.Errorf("userHelperExePath: %w", err)
 	}
-	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(exePath, "user"))
+	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(resolvedExe.Path, "user"))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
@@ -420,11 +430,12 @@ func createUserHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
 		return nil, fmt.Errorf("CreateProcessAsUser(session=%d, role=user): %w", sessionID, err)
 	}
 	return &suspendedHelper{
-		process:     pi.Process,
-		thread:      pi.Thread,
-		pid:         pi.ProcessId,
-		binaryPath:  exePath,
-		tokenSource: method,
+		process:            pi.Process,
+		thread:             pi.Thread,
+		pid:                pi.ProcessId,
+		binaryPath:         resolvedExe.Path,
+		mainBinaryFallback: resolvedExe.MainBinaryFallback,
+		tokenSource:        method,
 	}, nil
 }
 
