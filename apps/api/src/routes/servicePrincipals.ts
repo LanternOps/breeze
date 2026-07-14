@@ -21,6 +21,8 @@ import {
 
 export const servicePrincipalRoutes = new Hono();
 
+const PRINCIPAL_NAME_UNIQUE_CONSTRAINT = 'service_principals_partner_name_unique';
+
 const partnerIdSchema = z.string().guid().optional();
 const listSchema = z.object({ partnerId: partnerIdSchema });
 const idSchema = z.object({ id: z.string().guid() });
@@ -98,6 +100,25 @@ function keyError(c: any, error: unknown): Response {
     return c.json({ error: error.message, code: error.code }, error.status as 400 | 404 | 409);
   }
   throw error;
+}
+
+function isPrincipalNameUniqueViolation(error: unknown): boolean {
+  let candidate: unknown = error;
+  for (let depth = 0; candidate && depth < 5; depth += 1) {
+    if (typeof candidate !== 'object') break;
+    const pg = candidate as {
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    const constraint = pg.constraint_name ?? pg.constraint;
+    if (pg.code === '23505' && constraint === PRINCIPAL_NAME_UNIQUE_CONSTRAINT) return true;
+    if (typeof pg.message === 'string' && pg.message.includes(PRINCIPAL_NAME_UNIQUE_CONSTRAINT)) return true;
+    candidate = pg.cause;
+  }
+  return false;
 }
 
 servicePrincipalRoutes.use('*', authMiddleware);
@@ -183,17 +204,23 @@ servicePrincipalRoutes.post(
       .limit(1);
     if (duplicate) return c.json({ error: 'A service principal with this name already exists' }, 409);
 
-    const [created] = await db.insert(servicePrincipals).values({
-      partnerId: resolved.partnerId,
-      name: input.name,
-      description: input.description ?? null,
-      scopes: validated.scopes!,
-      expiresAt: validated.expiresAt ?? null,
-      sourceCidrs: input.sourceCidrs,
-      createdBy: auth.user.id,
-      updatedBy: auth.user.id,
-    }).returning();
-    if (!created) return c.json({ error: 'Failed to create service principal' }, 500);
+    // Avoid raising 23505 inside authMiddleware's ambient transaction: a
+    // statement-level error aborts that transaction even if caught by the
+    // handler. Zero returned rows is the race-safe duplicate signal.
+    const [created] = await db.insert(servicePrincipals)
+      .values({
+        partnerId: resolved.partnerId,
+        name: input.name,
+        description: input.description ?? null,
+        scopes: validated.scopes!,
+        expiresAt: validated.expiresAt ?? null,
+        sourceCidrs: input.sourceCidrs,
+        createdBy: auth.user.id,
+        updatedBy: auth.user.id,
+      })
+      .onConflictDoNothing({ target: [servicePrincipals.partnerId, servicePrincipals.name] })
+      .returning();
+    if (!created) return c.json({ error: 'A service principal with this name already exists' }, 409);
 
     writeRouteAudit(c as any, {
       orgId: null,
@@ -242,9 +269,24 @@ servicePrincipalRoutes.patch(
     if (validated.expiresAt !== undefined) values.expiresAt = validated.expiresAt;
     if (input.sourceCidrs !== undefined) values.sourceCidrs = input.sourceCidrs;
 
-    const [updated] = await db.update(servicePrincipals).set(values).where(and(
-      eq(servicePrincipals.id, id), eq(servicePrincipals.partnerId, resolved.partnerId),
-    )).returning();
+    let updated: typeof servicePrincipals.$inferSelect | undefined;
+    try {
+      // Under the ambient request transaction this nested transaction is a
+      // savepoint. A concurrent rename collision can therefore roll back the
+      // failed statement before we translate it, leaving the outer request
+      // transaction usable for the 409 response.
+      updated = await db.transaction(async (tx) => {
+        const [row] = await tx.update(servicePrincipals).set(values).where(and(
+          eq(servicePrincipals.id, id), eq(servicePrincipals.partnerId, resolved.partnerId),
+        )).returning();
+        return row;
+      });
+    } catch (error) {
+      if (isPrincipalNameUniqueViolation(error)) {
+        return c.json({ error: 'A service principal with this name already exists' }, 409);
+      }
+      throw error;
+    }
     if (!updated) return c.json({ error: 'Service principal not found' }, 404);
     writeRouteAudit(c as any, {
       orgId: null, action: 'service_principal.update', resourceType: 'service_principal',

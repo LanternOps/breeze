@@ -182,10 +182,14 @@ export default function ServicePrincipalsPage() {
     }
   };
 
-  if (loading) return <p className="py-10 text-center text-muted-foreground">{t('servicePrincipals.loading')}</p>;
-  if (loadError) return <div className="py-10 text-center"><p>{t('servicePrincipals.loadFailed')}</p><button className="mt-3 rounded border px-3 py-2" onClick={() => void load()}>{t('servicePrincipals.retry')}</button></div>;
+  // Keep the one-time secret outside list-state branches. A slow or failed
+  // refresh must never unmount the reveal before the user explicitly closes it.
+  const keyReveal = newKey && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-6 shadow-lg"><h2 className="font-semibold">{t('servicePrincipals.copyNow')}</h2><p className="text-sm text-muted-foreground">{t('servicePrincipals.oneTimeWarning')}</p><pre className="overflow-x-auto rounded bg-muted p-3 text-sm">{newKey}</pre><div className="text-right"><button data-testid="close-key-reveal" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={closeReveal}>{t('servicePrincipals.done')}</button></div></div></div>;
 
-  return <div className="space-y-6" data-testid="service-principals-page">
+  if (loading) return <><p className="py-10 text-center text-muted-foreground">{t('servicePrincipals.loading')}</p>{keyReveal}</>;
+  if (loadError) return <><div className="py-10 text-center"><p>{t('servicePrincipals.loadFailed')}</p><button className="mt-3 rounded border px-3 py-2" onClick={() => void load()}>{t('servicePrincipals.retry')}</button></div>{keyReveal}</>;
+
+  return <><div className="space-y-6" data-testid="service-principals-page">
     <div className="flex items-start justify-between gap-4">
       <div><h1 className="text-xl font-semibold">{t('servicePrincipals.title')}</h1><p className="text-sm text-muted-foreground">{t('servicePrincipals.description')}</p></div>
       <button className="rounded bg-primary px-4 py-2 text-sm text-primary-foreground" onClick={openCreate}>{t('servicePrincipals.create')}</button>
@@ -218,6 +222,5 @@ export default function ServicePrincipalsPage() {
 
     {issueTarget && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-md space-y-4 rounded-lg border bg-card p-6 shadow-lg"><h2 className="font-semibold">{t('servicePrincipals.issueKey')}</h2><label className="block text-sm">{t('servicePrincipals.keyName')}<input aria-label={t('servicePrincipals.keyName')} className="mt-1 w-full rounded border bg-background p-2" value={keyName} onChange={(event) => setKeyName(event.target.value)} /></label><div className="flex justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => { setIssueTarget(null); setKeyName(''); }}>{t('servicePrincipals.cancel')}</button><button data-testid="confirm-issue-key" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={() => void issueKey()}>{t('servicePrincipals.issue')}</button></div></div></div>}
 
-    {newKey && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-6 shadow-lg"><h2 className="font-semibold">{t('servicePrincipals.copyNow')}</h2><p className="text-sm text-muted-foreground">{t('servicePrincipals.oneTimeWarning')}</p><pre className="overflow-x-auto rounded bg-muted p-3 text-sm">{newKey}</pre><div className="text-right"><button data-testid="close-key-reveal" className="rounded bg-primary px-3 py-2 text-primary-foreground" onClick={closeReveal}>{t('servicePrincipals.done')}</button></div></div></div>}
-  </div>;
+  </div>{keyReveal}</>;
 }

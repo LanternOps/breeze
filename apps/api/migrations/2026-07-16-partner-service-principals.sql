@@ -45,8 +45,23 @@ CREATE TABLE IF NOT EXISTS service_principals (
   updated_by uuid NOT NULL REFERENCES users(id),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT service_principals_id_partner_unique UNIQUE (id, partner_id)
+  CONSTRAINT service_principals_id_partner_unique UNIQUE (id, partner_id),
+  CONSTRAINT service_principals_partner_name_unique UNIQUE (partner_id, name)
 );
+
+-- CREATE TABLE IF NOT EXISTS does not add constraints to a pre-existing table.
+-- Keep re-application capable of converging a partially applied development DB.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'service_principals_partner_name_unique'
+      AND conrelid = 'service_principals'::regclass
+  ) THEN
+    ALTER TABLE service_principals
+      ADD CONSTRAINT service_principals_partner_name_unique
+      UNIQUE (partner_id, name);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS service_principals_partner_idx
   ON service_principals(partner_id);

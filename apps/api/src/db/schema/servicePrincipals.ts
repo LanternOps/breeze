@@ -39,6 +39,8 @@ export const servicePrincipals = pgTable('service_principals', {
 }, (table) => ({
   idPartnerUnique: unique('service_principals_id_partner_unique')
     .on(table.id, table.partnerId),
+  partnerNameUnique: unique('service_principals_partner_name_unique')
+    .on(table.partnerId, table.name),
   statusCheck: check(
     'service_principals_status_check',
     sql`${table.status} IN ('active', 'disabled')`,

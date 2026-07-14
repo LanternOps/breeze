@@ -2,14 +2,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const mocks = vi.hoisted(() => ({
+  gateOrder: [] as string[],
   authMiddleware: vi.fn(),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+  requireScope: vi.fn((...scopes: string[]) => async (_c: any, next: any) => {
+    mocks.gateOrder.push(`scope:${scopes.join(',')}`);
+    return next();
+  }),
   permissionAllowed: { value: true },
   mfaAllowed: { value: true },
-  requirePermission: vi.fn(() => async (c: any, next: any) =>
-    mocks.permissionAllowed.value ? next() : c.json({ error: 'Insufficient permissions' }, 403)),
-  requireMfa: vi.fn(() => async (c: any, next: any) =>
-    mocks.mfaAllowed.value ? next() : c.json({ error: 'MFA required' }, 403)),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    mocks.gateOrder.push(`permission:${resource}:${action}`);
+    return mocks.permissionAllowed.value ? next() : c.json({ error: 'Insufficient permissions' }, 403);
+  }),
+  requireMfa: vi.fn(() => async (c: any, next: any) => {
+    mocks.gateOrder.push('mfa');
+    return mocks.mfaAllowed.value ? next() : c.json({ error: 'MFA required' }, 403);
+  }),
   issue: vi.fn(),
   rotate: vi.fn(),
   audit: vi.fn(),
@@ -67,6 +75,7 @@ const USER_ID = '44444444-4444-4444-8444-444444444444';
 
 function auth(partnerId: string | null = PARTNER_ID, scope = 'partner') {
   mocks.authMiddleware.mockImplementation((c: any, next: any) => {
+    mocks.gateOrder.push('auth');
     c.set('auth', { scope, partnerId, user: { id: USER_ID, email: 'admin@example.com' }, token: { mfa: true } });
     c.set('permissions', { permissions: [{ resource: '*', action: '*' }] });
     return next();
@@ -93,6 +102,7 @@ describe('service principal management routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.gateOrder.length = 0;
     mocks.permissionAllowed.value = true;
     mocks.mfaAllowed.value = true;
     auth();
@@ -126,6 +136,46 @@ describe('service principal management routes', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Weavestream', scopes: ['devices:read'], sourceCidrs: [] }),
     });
+    expect(res.status).toBe(409);
+  });
+
+  it('maps a create race suppressed by the database unique constraint to 409', async () => {
+    selectRows([]);
+    const returning = vi.fn().mockResolvedValue([]);
+    const onConflictDoNothing = vi.fn(() => ({ returning }));
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn(() => ({ onConflictDoNothing })),
+    } as any);
+
+    const res = await app.request('/service-principals', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Concurrent', scopes: ['devices:read'], sourceCidrs: [] }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(onConflictDoNothing).toHaveBeenCalledOnce();
+  });
+
+  it('maps a wrapped name unique violation during rename to 409', async () => {
+    selectRows([]);
+    const pgError = Object.assign(new Error('duplicate'), {
+      code: '23505',
+      constraint_name: 'service_principals_partner_name_unique',
+    });
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn(() => ({
+        where: vi.fn(() => ({ returning: vi.fn().mockRejectedValue({ cause: pgError }) })),
+      })),
+    } as any);
+    vi.mocked(db.transaction).mockImplementation(async (callback: any) => callback({ update: db.update }));
+
+    const res = await app.request(`/service-principals/${PRINCIPAL_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Concurrent rename' }),
+    });
+
     expect(res.status).toBe(409);
   });
 
@@ -189,5 +239,26 @@ describe('service principal management routes', () => {
     });
     expect(res.status).toBe(403);
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['POST principal', '', { method: 'POST', body: JSON.stringify({ name: 'Stack', scopes: ['devices:read'] }) }],
+    ['PATCH principal', `/${PRINCIPAL_ID}`, { method: 'PATCH', body: JSON.stringify({ status: 'disabled' }) }],
+    ['POST key', `/${PRINCIPAL_ID}/keys`, { method: 'POST', body: JSON.stringify({ name: 'Stack key' }) }],
+    ['POST rotation', `/${PRINCIPAL_ID}/keys/${KEY_ID}/rotate`, { method: 'POST' }],
+    ['DELETE key', `/${PRINCIPAL_ID}/keys/${KEY_ID}`, { method: 'DELETE' }],
+  ])('runs auth, partner/system scope, write permission, and MFA in order for %s', async (_label, path, init) => {
+    mocks.mfaAllowed.value = false;
+    const res = await app.request(`/service-principals${path}`, {
+      ...init,
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.status).toBe(403);
+    expect(mocks.gateOrder).toEqual([
+      'auth',
+      'scope:partner,system',
+      'permission:organizations:write',
+      'mfa',
+    ]);
   });
 });

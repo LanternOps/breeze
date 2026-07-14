@@ -134,6 +134,18 @@ describe('service-principal database contract', () => {
     await expect(adminDb.execute(sql.raw(migration))).resolves.toBeDefined();
   });
 
+  runDb('enforces unique principal names within a partner', async () => {
+    const { partnerA, userA } = await seedTwoPartners();
+    await insertPrincipal({ partnerId: partnerA.id, userId: userA.id, name: 'unique-name' });
+    const cause = await captureCause(() => insertPrincipal({
+      partnerId: partnerA.id,
+      userId: userA.id,
+      name: 'unique-name',
+    }));
+    expect(cause?.code).toBe('23505');
+    expect(cause?.constraint_name).toBe('service_principals_partner_name_unique');
+  });
+
   runDb.each([
     { label: 'empty', scopes: [] },
     { label: 'duplicate', scopes: ['devices:read', 'devices:read'] },

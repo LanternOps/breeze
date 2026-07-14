@@ -130,4 +130,39 @@ describe('service principal key lifecycle', () => {
     })).rejects.toMatchObject({ code: 'not_found' });
     expect(inserted).toHaveLength(0);
   });
+
+  it('leaves no active successor when a concurrent revoke wins the conditional update', async () => {
+    const committed: Record<string, unknown>[] = [];
+    const attempted: Record<string, unknown>[] = [];
+    const transaction = async <T>(callback: (tx: any) => Promise<T>): Promise<T> => {
+      const staged: Record<string, unknown>[] = [];
+      const selectRows = [
+        [{ id: PRINCIPAL_ID, status: 'active', expiresAt: null }],
+        [{ id: KEY_ID, name: 'Production', status: 'active', expiresAt: null, rateLimit: 600 }],
+      ];
+      const tx = {
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => selectRows.shift() ?? []) })) })) })),
+        insert: vi.fn(() => ({ values: vi.fn((value: Record<string, unknown>) => ({
+          returning: vi.fn(async () => { attempted.push(value); staged.push(value); return [{ id: 'successor-id' }]; }),
+        })) })),
+        update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => []) })) })) })),
+      };
+      try {
+        const result = await callback(tx);
+        committed.push(...staged);
+        return result;
+      } catch (error) {
+        throw error;
+      }
+    };
+
+    await expect(transaction((tx) => rotateServicePrincipalKey(tx, {
+      servicePrincipalId: PRINCIPAL_ID,
+      keyId: KEY_ID,
+      partnerId: PARTNER_ID,
+      actorId: USER_ID,
+    }))).rejects.toMatchObject({ code: 'conflict' });
+    expect(attempted).toHaveLength(1);
+    expect(committed).toEqual([]);
+  });
 });
