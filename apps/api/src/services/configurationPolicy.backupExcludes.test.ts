@@ -95,7 +95,7 @@ function mockBackupTx(selectResults: unknown[][] = [[POLICY_ROW]]) {
                     id: 'link-1',
                     configPolicyId: 'policy-1',
                     featureType: 'backup',
-                    featurePolicyId: null,
+                    featurePolicyId: v.featurePolicyId ?? null,
                     inlineSettings: v.inlineSettings,
                   },
                 ]),
@@ -210,5 +210,29 @@ describe('backup exclusion globs — AI/MCP backstop (#2473)', () => {
       }),
     ).resolves.toBeDefined();
     expect(captured.values?.targets).toEqual({});
+  });
+
+  it('materializes a profile-linked backup even when inline settings are omitted', async () => {
+    const profileId = '00000000-0000-4000-8000-0000000000a1';
+    const captured = mockBackupTx([
+      [{ ...POLICY_ROW, featurePolicyId: profileId }],
+      [{ id: profileId }],
+    ]);
+
+    await expect(addFeatureLink('policy-1', 'backup', profileId)).resolves.toBeDefined();
+    expect(captured.values).toMatchObject({ backupProfileId: profileId });
+  });
+
+  it('rebuilds normalized backup settings when only featurePolicyId changes', async () => {
+    const profileId = '00000000-0000-4000-8000-0000000000b2';
+    const captured = mockBackupTx([
+      [{ ...EXISTING_BACKUP_LINK, inlineSettings: VALID_SETTINGS }],
+      [{ ...POLICY_ROW, featurePolicyId: profileId }],
+      [{ id: profileId }],
+    ]);
+
+    await expect(updateFeatureLink('link-1', { featurePolicyId: profileId })).resolves.toBeDefined();
+    expect(captured.values?.backupProfileId).toBe(profileId);
+    expect(captured.values?.paths).toEqual(VALID_SETTINGS.paths);
   });
 });

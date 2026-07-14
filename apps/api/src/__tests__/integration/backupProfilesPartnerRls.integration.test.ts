@@ -17,9 +17,12 @@
  * org's default destination).
  */
 import './setup';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { ensureAppRole } from '../../db/ensureAppRole';
 import {
   backupProfiles,
   backupConfigs,
@@ -32,7 +35,14 @@ import {
   sites,
 } from '../../db/schema';
 import { resolveAllBackupAssignedDevices } from '../../services/featureConfigResolver';
+import { updateFeatureLink } from '../../services/configurationPolicy';
 import { createOrganization, createPartner } from './db-utils';
+import { getTestDb } from './setup';
+
+const BACKUP_PARITY_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-27-c-backup-feature-settings-parity.sql',
+);
 
 const createdProfiles: string[] = [];
 const createdConfigs: string[] = [];
@@ -203,7 +213,12 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         .insert(configPolicyFeatureLinks)
         .values({ configPolicyId: policy!.id, featureType: 'backup', featurePolicyId: profileId })
         .returning();
-      return { policy: policy!, link: link! };
+      const [settings] = await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: link!.id, orgId: null, partnerId,
+        schedule: { frequency: 'daily', time: '03:00' },
+        retention: { preset: 'standard' }, backupProfileId: profileId,
+      }).returning();
+      return { policy: policy!, link: link!, settings: settings! };
     });
   }
 
@@ -268,11 +283,16 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
       name: 'Partner A update isolation', orgId: orgA.id, partnerId: null, status: 'active',
     }).returning());
     createdPolicies.push(policyA!.id);
-    const [validLink] = await withDbAccessContext(partnerContext(partnerA.id, [orgA.id]), () =>
-      db.insert(configPolicyFeatureLinks).values({
+    const [validLink] = await withDbAccessContext(partnerContext(partnerA.id, [orgA.id]), async () => {
+      const links = await db.insert(configPolicyFeatureLinks).values({
         configPolicyId: policyA!.id, featureType: 'backup', featurePolicyId: profileA!.id,
-      }).returning(),
-    );
+      }).returning();
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: links[0]!.id, orgId: orgA.id, partnerId: null,
+        schedule: {}, retention: {}, backupProfileId: profileA!.id,
+      });
+      return links;
+    });
     const beforeUpdate = await configurationClock(orgA.id);
 
     await expect(withDbAccessContext(partnerContext(partnerA.id, [orgA.id]), () =>
@@ -326,17 +346,24 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         name: `Partner reference ${featurePolicyId}`, orgId: null, partnerId: partner.id, status: 'active',
       }).returning());
       createdPolicies.push(policy!.id);
-      const operation = withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
-        db.insert(configPolicyFeatureLinks).values({
+      const operation = withDbAccessContext(partnerContext(partner.id, [org.id]), async () => {
+        const links = await db.insert(configPolicyFeatureLinks).values({
           configPolicyId: policy!.id, featureType: 'backup', featurePolicyId,
-        }).returning(),
-      );
+        }).returning();
+        if (accepted) {
+          await db.insert(configPolicyBackupSettings).values({
+            featureLinkId: links[0]!.id, orgId: null, partnerId: partner.id,
+            schedule: {}, retention: {}, backupProfileId: featurePolicyId,
+          });
+        }
+        return links;
+      });
       if (accepted) await expect(operation).resolves.toHaveLength(1);
       else await expect(operation).rejects.toMatchObject({ cause: { code: '23503' } });
     }
   });
 
-  it('reverse-validates referenced backup owners even when no normalized settings row exists', async () => {
+  it('reverse-validates referenced backup owners for profile parity and legacy fallback links', async () => {
     const partnerA = await createPartner();
     const orgA = await createOrganization({ partnerId: partnerA.id });
     const partnerB = await createPartner();
@@ -351,9 +378,15 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     createdConfigs.push(destination!.id);
 
     const profileLink = await seedOrgPolicyWithLink(orgA.id);
-    await withDbAccessContext(SYSTEM_CTX, () => db.update(configPolicyFeatureLinks)
-      .set({ featurePolicyId: profile!.id })
-      .where(eq(configPolicyFeatureLinks.id, profileLink.link.id)));
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await db.update(configPolicyFeatureLinks)
+        .set({ featurePolicyId: profile!.id })
+        .where(eq(configPolicyFeatureLinks.id, profileLink.link.id));
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: profileLink.link.id, orgId: orgA.id, partnerId: null,
+        schedule: {}, retention: {}, backupProfileId: profile!.id,
+      });
+    });
     const destinationLink = await seedOrgPolicyWithLink(orgA.id);
     await withDbAccessContext(SYSTEM_CTX, () => db.update(configPolicyFeatureLinks)
       .set({ featurePolicyId: destination!.id })
@@ -468,11 +501,16 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     }).returning());
     if (!policyB) throw new Error('Org B reverse-validation policy insert failed');
     createdPolicies.push(policyB.id);
-    await withDbAccessContext(SYSTEM_CTX, () => db.insert(configPolicyBackupSettings).values({
-      featureLinkId: linkA.id, orgId: orgA.id, partnerId: null,
-      schedule: {}, retention: {}, backupProfileId: profile!.id,
-      destinationConfigId: destination!.id,
-    }));
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await db.update(configPolicyFeatureLinks)
+        .set({ featurePolicyId: profile!.id })
+        .where(eq(configPolicyFeatureLinks.id, linkA.id));
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: linkA.id, orgId: orgA.id, partnerId: null,
+        schedule: {}, retention: {}, backupProfileId: profile!.id,
+        destinationConfigId: destination!.id,
+      });
+    });
     const before = await configurationClock(orgA.id);
 
     await expect(withDbAccessContext(SYSTEM_CTX, () => db.update(configPolicyFeatureLinks)
@@ -498,28 +536,14 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     const partnerA = await createPartner();
     const partnerB = await createPartner();
     const profileId = await seedPartnerProfile(partnerA.id);
-    const { link } = await seedPartnerPolicyWithLink(partnerA.id, profileId);
-
-    const [settings] = await withDbAccessContext(SYSTEM_CTX, () =>
-      db
-        .insert(configPolicyBackupSettings)
-        .values({
-          featureLinkId: link.id,
-          orgId: null,
-          partnerId: partnerA.id,
-          schedule: { frequency: 'daily', time: '03:00' },
-          retention: { preset: 'standard' },
-          backupProfileId: profileId,
-        })
-        .returning(),
-    );
+    const { link, settings } = await seedPartnerPolicyWithLink(partnerA.id, profileId);
     expect(settings).toBeTruthy();
 
     const visibleToA = await withDbAccessContext(partnerContext(partnerA.id, []), () =>
       db
         .select({ id: configPolicyBackupSettings.id })
         .from(configPolicyBackupSettings)
-        .where(eq(configPolicyBackupSettings.id, settings!.id)),
+        .where(eq(configPolicyBackupSettings.id, settings.id)),
     );
     expect(visibleToA).toHaveLength(1);
 
@@ -527,7 +551,7 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
       db
         .select({ id: configPolicyBackupSettings.id })
         .from(configPolicyBackupSettings)
-        .where(eq(configPolicyBackupSettings.id, settings!.id)),
+        .where(eq(configPolicyBackupSettings.id, settings.id)),
     );
     expect(visibleToB).toEqual([]);
 
@@ -553,7 +577,7 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const profileId = await seedPartnerProfile(partner.id);
-    const { policy, link } = await seedPartnerPolicyWithLink(partner.id, profileId);
+    const { policy } = await seedPartnerPolicyWithLink(partner.id, profileId);
 
     await withDbAccessContext(SYSTEM_CTX, async () => {
       // Org default destination
@@ -569,16 +593,6 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         })
         .returning();
       createdConfigs.push(config!.id);
-
-      // Settings row mirroring the partner axis, no explicit destination
-      await db.insert(configPolicyBackupSettings).values({
-        featureLinkId: link.id,
-        orgId: null,
-        partnerId: partner.id,
-        schedule: { frequency: 'daily', time: '03:00' },
-        retention: { preset: 'standard' },
-        backupProfileId: profileId,
-      });
 
       // Partner-level assignment + a device in the org
       await db.insert(configPolicyAssignments).values({
@@ -633,7 +647,7 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const profileId = await seedPartnerProfile(partner.id);
-    const { policy, link } = await seedPartnerPolicyWithLink(partner.id, profileId);
+    const { policy } = await seedPartnerPolicyWithLink(partner.id, profileId);
 
     const { deviceId, configId } = await withDbAccessContext(SYSTEM_CTX, async () => {
       const [config] = await db
@@ -649,14 +663,6 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         .returning();
       createdConfigs.push(config!.id);
 
-      await db.insert(configPolicyBackupSettings).values({
-        featureLinkId: link.id,
-        orgId: null,
-        partnerId: partner.id,
-        schedule: { frequency: 'daily', time: '03:00' },
-        retention: { preset: 'standard' },
-        backupProfileId: profileId,
-      });
       await db.insert(configPolicyAssignments).values({
         configPolicyId: policy.id,
         level: 'partner',
@@ -710,7 +716,7 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     const orgA = await createOrganization({ partnerId: partner.id });
     const orgB = await createOrganization({ partnerId: partner.id });
     const profileId = await seedPartnerProfile(partner.id);
-    const { policy, link } = await seedPartnerPolicyWithLink(partner.id, profileId);
+    const { policy } = await seedPartnerPolicyWithLink(partner.id, profileId);
 
     const { deviceB } = await withDbAccessContext(SYSTEM_CTX, async () => {
       // Org A has a default destination — the bucket org B's data would land in.
@@ -726,15 +732,6 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
         })
         .returning();
       createdConfigs.push(configA!.id);
-
-      await db.insert(configPolicyBackupSettings).values({
-        featureLinkId: link.id,
-        orgId: null,
-        partnerId: partner.id,
-        schedule: { frequency: 'daily', time: '03:00' },
-        retention: { preset: 'standard' },
-        backupProfileId: profileId,
-      });
 
       // The partner-wide policy is assigned at ORGANIZATION level to org B only.
       await db.insert(configPolicyAssignments).values({
@@ -780,5 +777,157 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     // Positive control: the same assignment DOES cover org B's own device, so
     // the guard blocks the cross-org bleed without breaking the real fan-out.
     expect(entriesForB.find((e) => e.deviceId === deviceB)).toBeTruthy();
+  });
+});
+
+describe('backup feature-link / normalized-settings parity', () => {
+  async function seedOrgBackupTargets() {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [policy] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(configurationPolicies).values({
+        name: 'Backup parity policy', orgId: org.id, partnerId: null, status: 'active',
+      }).returning());
+    const profiles = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(backupProfiles).values([
+        { name: 'Backup parity profile A', orgId: org.id, partnerId: null, selections: SERVER_SELECTIONS },
+        { name: 'Backup parity profile B', orgId: org.id, partnerId: null, selections: SERVER_SELECTIONS },
+      ]).returning());
+    const destinations = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(backupConfigs).values([
+        { orgId: org.id, name: 'Backup parity destination A', type: 'file', provider: 's3', providerConfig: {} },
+        { orgId: org.id, name: 'Backup parity destination B', type: 'file', provider: 's3', providerConfig: {} },
+      ]).returning());
+    if (!policy || profiles.length !== 2 || destinations.length !== 2) {
+      throw new Error('backup parity fixture insert failed');
+    }
+    createdPolicies.push(policy.id);
+    createdProfiles.push(...profiles.map((row) => row.id));
+    createdConfigs.push(...destinations.map((row) => row.id));
+    return { org, policy, profiles, destinations };
+  }
+
+  it('requires a profile link and normalized settings to name the same profile at transaction end', async () => {
+    const { org, policy, profiles } = await seedOrgBackupTargets();
+
+    await expect(withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy.id, featureType: 'backup', featurePolicyId: profiles[0]!.id,
+    }))).rejects.toMatchObject({ code: '23514' });
+
+    const linkId = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [link] = await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy.id, featureType: 'backup', featurePolicyId: profiles[0]!.id,
+      }).returning();
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: link!.id, orgId: org.id, partnerId: null,
+        backupProfileId: profiles[0]!.id, schedule: {}, retention: {},
+      });
+      return link!.id;
+    });
+
+    await expect(withDbAccessContext(SYSTEM_CTX, () =>
+      db.update(configPolicyBackupSettings)
+        .set({ backupProfileId: profiles[1]!.id })
+        .where(eq(configPolicyBackupSettings.featureLinkId, linkId))))
+      .rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('reverse-validates link changes while allowing normalized settings delete/reinsert in one transaction', async () => {
+    const { org, policy, profiles } = await seedOrgBackupTargets();
+    const linkId = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [link] = await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy.id, featureType: 'backup', featurePolicyId: profiles[0]!.id,
+      }).returning();
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: link!.id, orgId: org.id, partnerId: null,
+        backupProfileId: profiles[0]!.id, schedule: {}, retention: {},
+      });
+      return link!.id;
+    });
+
+    await expect(withDbAccessContext(SYSTEM_CTX, () =>
+      db.update(configPolicyFeatureLinks)
+        .set({ featurePolicyId: profiles[1]!.id })
+        .where(eq(configPolicyFeatureLinks.id, linkId))))
+      .rejects.toMatchObject({ code: '23514' });
+
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      updateFeatureLink(linkId, { featurePolicyId: profiles[1]!.id }));
+    const [normalized] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ backupProfileId: configPolicyBackupSettings.backupProfileId })
+        .from(configPolicyBackupSettings)
+        .where(eq(configPolicyBackupSettings.featureLinkId, linkId)));
+    expect(normalized?.backupProfileId).toBe(profiles[1]!.id);
+
+    await expect(withDbAccessContext(SYSTEM_CTX, async () => {
+      await db.delete(configPolicyBackupSettings)
+        .where(eq(configPolicyBackupSettings.featureLinkId, linkId));
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: linkId, orgId: org.id, partnerId: null,
+        backupProfileId: profiles[1]!.id, schedule: {}, retention: {},
+      });
+    })).resolves.toBeUndefined();
+  });
+
+  it('allows NULL and legacy-destination links without settings, and enforces legacy settings parity when present', async () => {
+    const { org, policy, destinations } = await seedOrgBackupTargets();
+    await expect(withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy.id, featureType: 'backup', featurePolicyId: null,
+      }))).resolves.toBeDefined();
+
+    const [legacyPolicy] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(configurationPolicies).values({
+        name: 'Backup legacy parity policy', orgId: org.id, partnerId: null, status: 'active',
+      }).returning());
+    createdPolicies.push(legacyPolicy!.id);
+    const [legacyLink] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: legacyPolicy!.id, featureType: 'backup', featurePolicyId: destinations[0]!.id,
+      }).returning());
+    expect(legacyLink).toBeTruthy();
+
+    await expect(withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(configPolicyBackupSettings).values({
+        featureLinkId: legacyLink!.id, orgId: org.id, partnerId: null,
+        backupProfileId: null, destinationConfigId: destinations[1]!.id,
+        schedule: {}, retention: {},
+      }))).rejects.toMatchObject({ code: '23514' });
+
+    await expect(withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(configPolicyBackupSettings).values({
+        featureLinkId: legacyLink!.id, orgId: org.id, partnerId: null,
+        backupProfileId: null, destinationConfigId: destinations[0]!.id,
+        schedule: {}, retention: {},
+      }))).resolves.toBeDefined();
+  });
+
+  it('migration is idempotent and keeps deferred parity helpers private', async () => {
+    const migration = readFileSync(BACKUP_PARITY_MIGRATION_FILE, 'utf8');
+    const adminDb = getTestDb();
+    await expect(adminDb.execute(sql.raw(migration))).resolves.toBeDefined();
+    await expect(adminDb.execute(sql.raw(migration))).resolves.toBeDefined();
+    await ensureAppRole();
+    const [result] = await adminDb.execute<{
+      validate: boolean; enforce: boolean; deferredLink: boolean; deferredSettings: boolean;
+    }>(sql`
+      SELECT
+        has_function_privilege('breeze_app', 'public.breeze_backup_feature_settings_parity_is_valid(uuid)', 'EXECUTE') AS validate,
+        has_function_privilege('breeze_app', 'public.breeze_enforce_backup_feature_settings_parity()', 'EXECUTE') AS enforce,
+        EXISTS (
+          SELECT 1 FROM pg_catalog.pg_trigger
+          WHERE tgname = 'config_policy_feature_links_backup_settings_parity'
+            AND tgdeferrable AND tginitdeferred
+        ) AS "deferredLink",
+        EXISTS (
+          SELECT 1 FROM pg_catalog.pg_trigger
+          WHERE tgname = 'config_policy_backup_settings_feature_parity'
+            AND tgdeferrable AND tginitdeferred
+        ) AS "deferredSettings"
+    `);
+    expect(result).toEqual({
+      validate: false, enforce: false, deferredLink: true, deferredSettings: true,
+    });
   });
 });

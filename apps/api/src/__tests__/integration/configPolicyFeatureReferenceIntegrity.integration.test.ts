@@ -3,7 +3,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { configurationPolicies, configPolicyFeatureLinks } from '../../db/schema';
+import {
+  configurationPolicies,
+  configPolicyBackupSettings,
+  configPolicyFeatureLinks,
+} from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -59,6 +63,31 @@ async function seedPartnerPolicy(partnerId: string): Promise<string> {
   }).returning());
   createdPolicies.push(policy!.id);
   return policy!.id;
+}
+
+async function insertValidFeatureReference(
+  ctx: DbAccessContext,
+  configPolicyId: string,
+  featureType: keyof typeof referenceTables,
+  featurePolicyId: string,
+  owner: { orgId: string | null; partnerId: string },
+) {
+  return withDbAccessContext(ctx, async () => {
+    const rows = await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId, featureType, featurePolicyId,
+    }).returning();
+    if (featureType === 'backup') {
+      await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: rows[0]!.id,
+        orgId: owner.orgId,
+        partnerId: owner.orgId ? null : owner.partnerId,
+        backupProfileId: featurePolicyId,
+        schedule: {},
+        retention: {},
+      });
+    }
+    return rows;
+  });
 }
 
 async function seedActualReference(
@@ -140,9 +169,9 @@ describe('config_policy_feature_links feature_policy_id tenant integrity', () =>
     const forgedPolicy = await seedPolicy(orgA.id);
     const ctx = partnerContext(partnerA.id, [orgA.id]);
 
-    await expect(withDbAccessContext(ctx, () => db.insert(configPolicyFeatureLinks).values({
-      configPolicyId: validPolicy, featureType, featurePolicyId: referenceA,
-    }).returning())).resolves.toHaveLength(1);
+    await expect(insertValidFeatureReference(
+      ctx, validPolicy, featureType, referenceA, { orgId: orgA.id, partnerId: partnerA.id },
+    )).resolves.toHaveLength(1);
     await expect(withDbAccessContext(ctx, () => db.insert(configPolicyFeatureLinks).values({
       configPolicyId: forgedPolicy, featureType, featurePolicyId: referenceB,
     }).returning())).rejects.toMatchObject({ cause: { code: '23503' } });
@@ -181,10 +210,12 @@ describe('config_policy_feature_links feature_policy_id tenant integrity', () =>
       }
       const parent = await seedPartnerPolicy(partner.id);
 
-      await expect(withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
-        db.insert(configPolicyFeatureLinks).values({
-          configPolicyId: parent, featureType, featurePolicyId: reference,
-        }).returning(),
+      await expect(insertValidFeatureReference(
+        partnerContext(partner.id, [org.id]),
+        parent,
+        featureType,
+        reference,
+        { orgId: null, partnerId: partner.id },
       )).resolves.toHaveLength(1);
     },
   );
@@ -206,10 +237,13 @@ describe('config_policy_feature_links feature_policy_id tenant integrity', () =>
     const orgB = await createOrganization({ partnerId: partnerB.id });
     const reference = await seedActualReference(featureType, { orgId: orgA.id, partnerId: partnerA.id });
     const policy = await seedPolicy(orgA.id);
-    await withDbAccessContext(partnerContext(partnerA.id, [orgA.id]), () =>
-      db.insert(configPolicyFeatureLinks).values({
-        configPolicyId: policy, featureType, featurePolicyId: reference,
-      }));
+    await insertValidFeatureReference(
+      partnerContext(partnerA.id, [orgA.id]),
+      policy,
+      featureType,
+      reference,
+      { orgId: orgA.id, partnerId: partnerA.id },
+    );
 
     const mutation = featureType === 'patch'
       ? sql.raw(`UPDATE public.${table} SET partner_id = '${partnerB.id}'::uuid WHERE id = '${reference}'::uuid`)
