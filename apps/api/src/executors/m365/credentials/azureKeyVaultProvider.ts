@@ -21,10 +21,34 @@ export interface SecretClientPort {
 interface ParsedReference {
   host: string;
   name: string;
+  domain: M365CredentialDomain;
   version: string;
 }
 
 const CONNECTION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Azure-generated secret versions are 32 hexadecimal characters. `version-1`
+// remains valid for the provider port contract used by the foundation plan.
+// This is syntax validation for a pinned reference, not an authorization check.
+const KEY_VAULT_VERSION_RE = /^(?:[0-9a-f]{32}|version-1)$/i;
+
+function isCredentialDomain(value: unknown): value is M365CredentialDomain {
+  return typeof value === 'string'
+    && M365_CREDENTIAL_DOMAINS.includes(value as M365CredentialDomain);
+}
+
+function assertCredentialDomain(value: unknown): asserts value is M365CredentialDomain {
+  if (!isCredentialDomain(value)) throw new Error('Unsupported M365 credential domain');
+}
+
+function parseCredentialName(name: string): M365CredentialDomain | undefined {
+  for (const domain of M365_CREDENTIAL_DOMAINS) {
+    const prefix = `m365-${domain}-`;
+    if (name.startsWith(prefix) && CONNECTION_ID_RE.test(name.slice(prefix.length))) {
+      return domain;
+    }
+  }
+  return undefined;
+}
 
 function hasExactKeys(value: object, expected: readonly string[]): boolean {
   const keys = Object.keys(value);
@@ -55,7 +79,10 @@ function materialMatchesDomain(
 function parseReference(reference: string): ParsedReference {
   try {
     const url = new URL(reference);
-    const [name, version, extra] = url.pathname.split('/').filter(Boolean);
+    const pathSegments = url.pathname.split('/');
+    const name = pathSegments[1];
+    const version = pathSegments[2];
+    const domain = name ? parseCredentialName(name) : undefined;
     if (
       url.protocol !== 'akv:'
       || !url.hostname
@@ -63,13 +90,16 @@ function parseReference(reference: string): ParsedReference {
       || url.password
       || url.search
       || url.hash
+      || pathSegments.length !== 3
       || !name
       || !version
-      || extra
+      || !domain
+      || !KEY_VAULT_VERSION_RE.test(version)
+      || reference !== `akv://${url.host}/${name}/${version}`
     ) {
       throw new Error('invalid');
     }
-    return { host: url.host, name, version };
+    return { host: url.host, name, domain, version };
   } catch {
     throw new Error('Invalid Azure Key Vault credential reference');
   }
@@ -130,26 +160,40 @@ export class AzureKeyVaultCredentialProvider implements CredentialProvider {
     domain: M365CredentialDomain;
     material: M365CredentialMaterial;
   }): Promise<StoredCredentialReference> {
+    assertCredentialDomain(input.domain);
     if (!CONNECTION_ID_RE.test(input.connectionId)) throw new Error('Connection id must be a UUID');
     if (!materialMatchesDomain(input.domain, input.material)) {
       throw new Error('Credential material does not match credential domain');
     }
     const name = `m365-${input.domain}-${input.connectionId}`;
     const envelope: CredentialEnvelope = { schemaVersion: 1, domain: input.domain, material: input.material };
-    const stored = await this.client.setSecret(name, JSON.stringify(envelope), {
-      contentType: 'application/vnd.breeze.m365-credential+json',
-      tags: { domain: input.domain, connectionId: input.connectionId },
-    });
+    let stored: Awaited<ReturnType<SecretClientPort['setSecret']>>;
+    try {
+      stored = await this.client.setSecret(name, JSON.stringify(envelope), {
+        contentType: 'application/vnd.breeze.m365-credential+json',
+        tags: { domain: input.domain, connectionId: input.connectionId },
+      });
+    } catch {
+      throw new Error('Azure Key Vault credential write failed');
+    }
     const version = stored.properties.version;
-    if (!version) throw new Error('Azure Key Vault did not return a secret version');
+    if (!version || !KEY_VAULT_VERSION_RE.test(version)) {
+      throw new Error('Azure Key Vault did not return a valid secret version');
+    }
     return { reference: `akv://${this.vaultHost}/${name}/${version}`, version };
   }
 
   async get(reference: string, expectedDomain: M365CredentialDomain): Promise<M365CredentialMaterial> {
+    assertCredentialDomain(expectedDomain);
     const parsed = parseReference(reference);
     if (parsed.host !== this.vaultHost) throw new Error('Credential reference vault mismatch');
-    if (!parsed.name.startsWith(`m365-${expectedDomain}-`)) throw new Error('Credential domain mismatch');
-    const secret = await this.client.getSecret(parsed.name, { version: parsed.version });
+    if (parsed.domain !== expectedDomain) throw new Error('Credential domain mismatch');
+    let secret: Awaited<ReturnType<SecretClientPort['getSecret']>>;
+    try {
+      secret = await this.client.getSecret(parsed.name, { version: parsed.version });
+    } catch {
+      throw new Error('Azure Key Vault credential read failed');
+    }
     const envelope = parseEnvelope(secret.value);
     if (envelope.domain !== expectedDomain) throw new Error('Credential domain mismatch');
     if (!materialMatchesDomain(expectedDomain, envelope.material)) {
@@ -159,10 +203,18 @@ export class AzureKeyVaultCredentialProvider implements CredentialProvider {
   }
 
   async delete(reference: string, expectedDomain: M365CredentialDomain): Promise<void> {
+    assertCredentialDomain(expectedDomain);
     const parsed = parseReference(reference);
     if (parsed.host !== this.vaultHost) throw new Error('Credential reference vault mismatch');
-    if (!parsed.name.startsWith(`m365-${expectedDomain}-`)) throw new Error('Credential domain mismatch');
-    const poller = await this.client.beginDeleteSecret(parsed.name);
-    await poller.pollUntilDone();
+    if (parsed.domain !== expectedDomain) throw new Error('Credential domain mismatch');
+    try {
+      // Azure deletion is name-scoped and intentionally deletes the named secret
+      // with all of its versions. Canonical host/domain/name/version validation
+      // above must succeed before beginning that all-version operation.
+      const poller = await this.client.beginDeleteSecret(parsed.name);
+      await poller.pollUntilDone();
+    } catch {
+      throw new Error('Azure Key Vault credential delete failed');
+    }
   }
 }
