@@ -3,11 +3,12 @@ import { AzureKeyVaultCredentialProvider, type SecretClientPort } from './azureK
 
 const CONNECTION_ID = '11111111-1111-1111-1111-111111111111';
 const SECRET_NAME = `m365-customer-graph-read-${CONNECTION_ID}`;
-const REFERENCE = `akv://vault.example/${SECRET_NAME}/version-1`;
+const SECRET_VERSION = '0123456789abcdef0123456789abcdef';
+const REFERENCE = `akv://vault.example/${SECRET_NAME}/${SECRET_VERSION}`;
 
 function client(): SecretClientPort {
   return {
-    setSecret: vi.fn(async () => ({ properties: { version: 'version-1' } })),
+    setSecret: vi.fn(async () => ({ properties: { version: SECRET_VERSION } })),
     getSecret: vi.fn(async () => ({
       value: JSON.stringify({
         schemaVersion: 1,
@@ -34,8 +35,8 @@ describe('AzureKeyVaultCredentialProvider', () => {
       material: { kind: 'certificate', certificatePem: 'CERT', privateKeyPem: 'PRIVATE', thumbprint: 'THUMB' },
     });
     expect(stored).toEqual({
-      reference: 'akv://vault.example/m365-customer-graph-read-11111111-1111-1111-1111-111111111111/version-1',
-      version: 'version-1',
+      reference: REFERENCE,
+      version: SECRET_VERSION,
     });
     expect(JSON.stringify(stored)).not.toContain('PRIVATE');
   });
@@ -47,7 +48,7 @@ describe('AzureKeyVaultCredentialProvider', () => {
     expect(material.kind).toBe('certificate');
     expect(port.getSecret).toHaveBeenCalledWith(
       SECRET_NAME,
-      { version: 'version-1' },
+      { version: SECRET_VERSION },
     );
     await expect(provider.get(REFERENCE, 'customer-graph-actions')).rejects.toThrow('Credential domain mismatch');
   });
@@ -55,15 +56,15 @@ describe('AzureKeyVaultCredentialProvider', () => {
   it('rejects references for a different vault host', async () => {
     const provider = new AzureKeyVaultCredentialProvider('https://vault.example', client());
     await expect(provider.get(
-      `akv://other-vault.example/${SECRET_NAME}/version-1`,
+      `akv://other-vault.example/${SECRET_NAME}/${SECRET_VERSION}`,
       'customer-graph-read',
     )).rejects.toThrow('Credential reference vault mismatch');
   });
 
   it.each([
-    `https://vault.example/${SECRET_NAME}/version-1`,
+    `https://vault.example/${SECRET_NAME}/${SECRET_VERSION}`,
     `akv://vault.example/${SECRET_NAME}`,
-    `akv://vault.example/${SECRET_NAME}/version-1/extra`,
+    `akv://vault.example/${SECRET_NAME}/${SECRET_VERSION}/extra`,
   ])('rejects malformed credential reference %s', async (reference) => {
     const provider = new AzureKeyVaultCredentialProvider('https://vault.example', client());
     await expect(provider.get(reference, 'customer-graph-read')).rejects.toThrow(
@@ -131,7 +132,7 @@ describe('AzureKeyVaultCredentialProvider', () => {
     }));
     const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
     await expect(provider.get(
-      `akv://vault.example/m365-communications-delegated-${CONNECTION_ID}/version-1`,
+      `akv://vault.example/m365-communications-delegated-${CONNECTION_ID}/${SECRET_VERSION}`,
       'communications-delegated',
     )).rejects.toThrow('Credential material does not match credential domain');
   });
@@ -204,9 +205,9 @@ describe('AzureKeyVaultCredentialProvider', () => {
   });
 
   it.each([
-    `akv://vault.example/m365-customer-graph-read-arbitrary/version-1`,
+    `akv://vault.example/m365-customer-graph-read-arbitrary/${SECRET_VERSION}`,
     `akv://vault.example/${SECRET_NAME}/anything`,
-    `akv://vault.example/m365-customer-graph-read-extra-${CONNECTION_ID}/version-1`,
+    `akv://vault.example/m365-customer-graph-read-extra-${CONNECTION_ID}/${SECRET_VERSION}`,
   ])('rejects noncanonical delete reference %s before deleting any secret versions', async (reference) => {
     const port = client();
     const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
@@ -220,11 +221,20 @@ describe('AzureKeyVaultCredentialProvider', () => {
   it('accepts an Azure-generated 32-hex-character secret version', async () => {
     const port = client();
     const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
-    const version = '0123456789abcdef0123456789abcdef';
 
-    await provider.get(`akv://vault.example/${SECRET_NAME}/${version}`, 'customer-graph-read');
+    await provider.get(REFERENCE, 'customer-graph-read');
 
-    expect(port.getSecret).toHaveBeenCalledWith(SECRET_NAME, { version });
+    expect(port.getSecret).toHaveBeenCalledWith(SECRET_NAME, { version: SECRET_VERSION });
+  });
+
+  it('rejects the former test-only version literal before accessing Key Vault', async () => {
+    const port = client();
+    const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
+    await expect(provider.get(
+      `akv://vault.example/${SECRET_NAME}/version-1`,
+      'customer-graph-read',
+    )).rejects.toThrow('Invalid Azure Key Vault credential reference');
+    expect(port.getSecret).not.toHaveBeenCalled();
   });
 
   it('does not emit a provider reference for a noncanonical returned version', async () => {

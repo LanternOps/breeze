@@ -5,15 +5,69 @@ import {
   getM365PermissionProfile,
 } from './profiles';
 
+const PROFILE_CONTRACTS = [
+  {
+    id: 'communications-delegated',
+    version: 1,
+    ownerAxis: 'user',
+    authMode: 'delegated',
+    credentialDomain: 'communications-delegated',
+    executor: 'communications',
+    grantClass: 'delegated',
+  },
+  {
+    id: 'customer-graph-read',
+    version: 1,
+    ownerAxis: 'organization',
+    authMode: 'application-certificate',
+    credentialDomain: 'customer-graph-read',
+    executor: 'graph-read',
+    grantClass: 'application',
+  },
+  {
+    id: 'customer-graph-actions',
+    version: 1,
+    ownerAxis: 'organization',
+    authMode: 'application-certificate',
+    credentialDomain: 'customer-graph-actions',
+    executor: 'graph-actions',
+    grantClass: 'application',
+  },
+  {
+    id: 'customer-exchange-powershell',
+    version: 1,
+    ownerAxis: 'organization',
+    authMode: 'application-certificate',
+    credentialDomain: 'customer-exchange-powershell',
+    executor: 'exchange-powershell',
+    grantClass: 'application',
+  },
+] as const;
+
 describe('M365 permission profiles', () => {
-  it('defines the four production profiles with isolated credential domains', () => {
-    expect(Object.keys(M365_PERMISSION_PROFILES).sort()).toEqual([
-      'communications-delegated',
-      'customer-exchange-powershell',
-      'customer-graph-actions',
-      'customer-graph-read',
-    ]);
-    expect(new Set(Object.values(M365_PERMISSION_PROFILES).map((p) => p.credentialDomain)).size).toBe(4);
+  it('defines only the four production profiles', () => {
+    expect(Object.keys(M365_PERMISSION_PROFILES).sort()).toEqual(
+      PROFILE_CONTRACTS.map(({ id }) => id).sort(),
+    );
+  });
+
+  it.each(PROFILE_CONTRACTS)('defines the exact contract for $id', (expected) => {
+    const profile = M365_PERMISSION_PROFILES[expected.id];
+
+    expect({
+      ...profile,
+      delegatedPermissionsEmpty: profile.delegatedPermissions.length === 0,
+      applicationPermissionsEmpty: profile.applicationPermissions.length === 0,
+    }).toMatchObject({
+      id: expected.id,
+      version: expected.version,
+      ownerAxis: expected.ownerAxis,
+      authMode: expected.authMode,
+      credentialDomain: expected.credentialDomain,
+      executor: expected.executor,
+      delegatedPermissionsEmpty: expected.grantClass === 'application',
+      applicationPermissionsEmpty: expected.grantClass === 'delegated',
+    });
   });
 
   it('keeps read and mutation Graph grants separate', () => {

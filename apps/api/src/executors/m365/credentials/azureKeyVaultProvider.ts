@@ -26,10 +26,7 @@ interface ParsedReference {
 }
 
 const CONNECTION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// Azure-generated secret versions are 32 hexadecimal characters. `version-1`
-// remains valid for the provider port contract used by the foundation plan.
-// This is syntax validation for a pinned reference, not an authorization check.
-const KEY_VAULT_VERSION_RE = /^(?:[0-9a-f]{32}|version-1)$/i;
+const KEY_VAULT_VERSION_RE = /^[0-9a-f]{32}$/i;
 
 function isCredentialDomain(value: unknown): value is M365CredentialDomain {
   return typeof value === 'string'
