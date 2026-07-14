@@ -30,6 +30,20 @@ const sponsorsQuery = `
 `;
 
 const defaultReadmePath = fileURLToPath(new URL('../../README.md', import.meta.url));
+const githubRequestTimeoutMs = 30_000;
+
+function parseHttpsUrl(value, label) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${label} must be a valid HTTPS URL`);
+  }
+  if (url.protocol !== 'https:') {
+    throw new Error(`${label} must be a valid HTTPS URL`);
+  }
+  return url;
+}
 
 export function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (character) => ({
@@ -52,7 +66,8 @@ export function renderGallery(accounts, emptyMarkdown) {
 
   return accounts.map((account) => {
     const displayName = account.name || account.login;
-    const avatarUrl = new URL(account.avatarUrl);
+    parseHttpsUrl(account.url, 'Profile URL');
+    const avatarUrl = parseHttpsUrl(account.avatarUrl, 'Avatar URL');
     avatarUrl.searchParams.set('s', '128');
 
     return '<a href="' + escapeHtml(account.url) + '">'
@@ -79,6 +94,7 @@ export function replaceMarkedBlock(markdown, name, content) {
 
 export async function fetchSponsors(fetchImpl, token) {
   const sponsorsByLogin = new Map();
+  const seenCursors = new Set();
   let cursor = null;
 
   do {
@@ -92,6 +108,7 @@ export async function fetchSponsors(fetchImpl, token) {
         query: sponsorsQuery,
         variables: { login: 'LanternOps', cursor },
       }),
+      signal: AbortSignal.timeout(githubRequestTimeoutMs),
     });
     if (!response.ok) {
       throw new Error(`GitHub GraphQL request failed (${response.status})`);
@@ -119,6 +136,10 @@ export async function fetchSponsors(fetchImpl, token) {
     if (connection.pageInfo.hasNextPage && !connection.pageInfo.endCursor) {
       throw new Error('GitHub GraphQL response contains a malformed sponsorship connection');
     }
+    if (connection.pageInfo.hasNextPage
+        && seenCursors.has(connection.pageInfo.endCursor)) {
+      throw new Error('GitHub GraphQL response contains a repeated pagination cursor');
+    }
 
     for (const node of connection.nodes) {
       const sponsor = node?.sponsorEntity;
@@ -138,9 +159,12 @@ export async function fetchSponsors(fetchImpl, token) {
       }
     }
 
-    cursor = connection.pageInfo.hasNextPage
-      ? connection.pageInfo.endCursor
-      : null;
+    if (connection.pageInfo.hasNextPage) {
+      seenCursors.add(connection.pageInfo.endCursor);
+      cursor = connection.pageInfo.endCursor;
+    } else {
+      cursor = null;
+    }
   } while (cursor !== null);
 
   return [...sponsorsByLogin.values()].sort((left, right) => (
@@ -159,6 +183,7 @@ export async function fetchContributors(fetchImpl, token) {
     const response = await fetchImpl(url, {
       method: 'GET',
       headers: githubHeaders(token),
+      signal: AbortSignal.timeout(githubRequestTimeoutMs),
     });
     if (!response.ok) {
       throw new Error(`GitHub contributors request failed (${response.status})`);

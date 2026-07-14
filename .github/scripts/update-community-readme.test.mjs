@@ -88,6 +88,27 @@ test('renders the supplied empty state when the account list is empty', () => {
   assert.equal(renderGallery([], '_Be the first sponsor._'), '_Be the first sponsor._');
 });
 
+test('rejects profile and avatar URLs that are invalid or not HTTPS', () => {
+  const account = {
+    login: 'ada',
+    avatarUrl: 'https://avatars.githubusercontent.com/u/1',
+    url: 'https://github.com/ada',
+  };
+
+  for (const [field, value] of [
+    ['avatarUrl', 'http://avatars.githubusercontent.com/u/1'],
+    ['avatarUrl', 'not a URL'],
+    ['url', 'http://github.com/ada'],
+    ['url', 'not a URL'],
+  ]) {
+    assert.throws(
+      () => renderGallery([{ ...account, [field]: value }], 'empty'),
+      /valid HTTPS URL/,
+      `${field}=${value}`,
+    );
+  }
+});
+
 test('replaces exactly one marker pair', () => {
   const source = 'before\n<!-- sponsors:start -->\nold\n<!-- sponsors:end -->\nafter\n';
   assert.equal(
@@ -220,6 +241,8 @@ test('fetches all active public sponsors, removes nulls and duplicates, and sort
     assert.equal(headers.get('Accept'), 'application/vnd.github+json');
     assert.equal(headers.get('Content-Type'), 'application/json');
     assert.equal(headers.get('X-GitHub-Api-Version'), '2022-11-28');
+    assert.ok(request.init.signal instanceof AbortSignal);
+    assert.equal(request.init.signal.aborted, false);
 
     const body = JSON.parse(request.init.body);
     assert.equal(body.variables.login, 'LanternOps');
@@ -228,6 +251,31 @@ test('fetches all active public sponsors, removes nulls and duplicates, and sort
     assert.match(body.query, /includePrivate:\s*false/);
     assert.doesNotMatch(body.query, /privacyLevel|amount|tier/i);
   }
+});
+
+test('rejects a repeated sponsor pagination cursor', async () => {
+  let requestCount = 0;
+
+  await assert.rejects(
+    fetchSponsors(async () => {
+      requestCount += 1;
+      if (requestCount > 2) {
+        throw new Error('unexpected third request');
+      }
+      return jsonResponse({
+        data: {
+          organization: {
+            sponsorshipsAsMaintainer: {
+              pageInfo: { hasNextPage: true, endCursor: 'same-cursor' },
+              nodes: [],
+            },
+          },
+        },
+      });
+    }, 'secret-token'),
+    /repeated.*cursor/i,
+  );
+  assert.equal(requestCount, 2);
 });
 
 test('rejects failed and malformed sponsor API responses', async (t) => {
@@ -326,6 +374,8 @@ test('fetches contributor pages through the final short page and filters bots', 
     assert.equal(headers.get('Authorization'), 'Bearer secret-token');
     assert.equal(headers.get('Accept'), 'application/vnd.github+json');
     assert.equal(headers.get('X-GitHub-Api-Version'), '2022-11-28');
+    assert.ok(init.signal instanceof AbortSignal);
+    assert.equal(init.signal.aborted, false);
   }
   assert.equal(contributors.length, 99);
   assert.deepEqual(contributors.slice(0, 2), [
@@ -517,16 +567,35 @@ test('repository README contains exactly one ordered community marker pair', asy
   }
 });
 
-test('repository workflow updates the README on schedule or by dispatch', async () => {
+test('repository workflows gate and safely update the community README', async () => {
   const workflow = await readFile(
     new URL('../workflows/update-community-readme.yml', import.meta.url),
     'utf8',
   );
+  const ciWorkflow = await readFile(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
+  const packageJson = JSON.parse(
+    await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+  );
 
+  assert.equal(
+    packageJson.scripts['test:community-readme'],
+    'node --test .github/scripts/update-community-readme.test.mjs',
+  );
+  assert.match(ciWorkflow, /run: pnpm test:community-readme/);
   assert.match(workflow, /^\s*schedule:\s*$/m);
   assert.match(workflow, /^\s*- cron: ['"]17 5 \* \* \*['"]\s*$/m);
   assert.match(workflow, /^\s*workflow_dispatch:\s*$/m);
   assert.match(workflow, /^permissions:\n  contents: write$/m);
-  assert.match(workflow, /node \.github\/scripts\/update-community-readme\.mjs/);
+  assert.match(workflow, /^concurrency:\n  group: update-community-readme\n  cancel-in-progress: false$/m);
+  assert.match(workflow, /^    timeout-minutes: 10$/m);
+  const testCommand = 'node --test .github/scripts/update-community-readme.test.mjs';
+  const updateCommand = 'node .github/scripts/update-community-readme.mjs';
+  assert.ok(workflow.includes(testCommand));
+  assert.ok(workflow.indexOf(testCommand) < workflow.indexOf(updateCommand));
   assert.doesNotMatch(workflow, /^\s*pull_request:\s*$/m);
+  assert.doesNotMatch(workflow, /^\s*push:\s*$/m);
+  assert.match(workflow, /git diff --quiet -- README\.md/);
+  assert.match(workflow, /git add README\.md/);
+  assert.match(workflow, /git commit --only .* -- README\.md/);
+  assert.doesNotMatch(workflow, /git add (?:--all|-A|\.)/);
 });
