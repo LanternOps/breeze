@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -79,7 +79,7 @@ describe('DeviceChangeHistoryTab', () => {
     await waitFor(() => expect(lastUrl()).toContain('changeType=software'));
   });
 
-  it('(f) "Load more" issues a request containing cursor=abc', async () => {
+  it('(f) "Load more" issues a request containing cursor=abc and appends (keeps page 1)', async () => {
     // First page advertises another page via nextCursor='abc'.
     fetchWithAuthMock.mockResolvedValueOnce(page([change()], true, 'abc'));
     render(<DeviceChangeHistoryTab deviceId="dev-1" />);
@@ -89,5 +89,59 @@ describe('DeviceChangeHistoryTab', () => {
     await userEvent.click(screen.getByTestId('change-history-load-more'));
     await waitFor(() => expect(lastUrl()).toContain('cursor=abc'));
     expect(await screen.findByText('Firefox')).toBeInTheDocument();
+    // Append must NOT replace the first page — a regression to replace-on-load-more fails here.
+    expect(screen.getByText('Google Chrome')).toBeInTheDocument();
+  });
+
+  it('(g) a failed "Load more" surfaces an inline error and keeps loaded rows', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(page([change()], true, 'abc'));
+    render(<DeviceChangeHistoryTab deviceId="dev-1" />);
+    await screen.findByText('Google Chrome');
+
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({}, false));
+    await userEvent.click(screen.getByTestId('change-history-load-more'));
+
+    // Inline, non-destructive error near the button; the full-screen error card
+    // must NOT appear and the already-loaded row stays visible.
+    expect(await screen.findByTestId('change-history-load-more-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('change-history-error')).toBeNull();
+    expect(screen.getByText('Google Chrome')).toBeInTheDocument();
+  });
+
+  it('(h) a late "Load more" response after a filter change is dropped, not appended', async () => {
+    // The append (cursor=abc) resolves only when we release it, AFTER a filter
+    // change has superseded it with a fresh page 1.
+    let releaseAppend!: (r: Response) => void;
+    const appendPromise = new Promise<Response>((resolve) => {
+      releaseAppend = resolve;
+    });
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (String(url).includes('cursor=abc')) return appendPromise;
+      if (String(url).includes('changeType=network')) {
+        return Promise.resolve(
+          page([change({ id: 'c9', subject: 'Edge', changeType: 'network' })]),
+        );
+      }
+      return Promise.resolve(page([change()], true, 'abc'));
+    });
+
+    render(<DeviceChangeHistoryTab deviceId="dev-1" />);
+    await screen.findByText('Google Chrome');
+
+    // Kick off the append (still in flight), then change the filter.
+    await userEvent.click(screen.getByTestId('change-history-load-more'));
+    await userEvent.selectOptions(
+      screen.getByTestId('change-history-type-filter'),
+      'network',
+    );
+    expect(await screen.findByText('Edge')).toBeInTheDocument();
+
+    // Release the stale append; the generation guard must drop it.
+    await act(async () => {
+      releaseAppend(page([change({ id: 'c-stale', subject: 'StaleApp' })]));
+    });
+    expect(screen.queryByText('StaleApp')).toBeNull();
+    expect(screen.getByText('Edge')).toBeInTheDocument();
+    expect(screen.queryByText('Google Chrome')).toBeNull();
   });
 });

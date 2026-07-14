@@ -4,6 +4,7 @@
     "loading": "Carregando histórico de alterações…",
     "retry": "Tentar novamente",
     "loadError": "Falha ao carregar o histórico de alterações (HTTP {{status}})",
+    "loadMoreError": "Falha ao carregar mais alterações (HTTP {{status}})",
     "empty": "Nenhuma alteração registrada ainda.",
     "emptyFiltered": "Nenhuma alteração corresponde aos filtros.",
     "loadMore": "Carregar mais",

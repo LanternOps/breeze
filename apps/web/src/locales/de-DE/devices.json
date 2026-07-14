@@ -4,6 +4,7 @@
     "loading": "Änderungsverlauf wird geladen…",
     "retry": "Erneut versuchen",
     "loadError": "Änderungsverlauf konnte nicht geladen werden (HTTP {{status}})",
+    "loadMoreError": "Weitere Änderungen konnten nicht geladen werden (HTTP {{status}})",
     "empty": "Noch keine Änderungen aufgezeichnet.",
     "emptyFiltered": "Keine Änderungen entsprechen den Filtern.",
     "loadMore": "Mehr laden",

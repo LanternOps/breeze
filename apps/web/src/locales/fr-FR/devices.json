@@ -4,6 +4,7 @@
     "loading": "Chargement de l'historique des modifications…",
     "retry": "Réessayer",
     "loadError": "Échec du chargement de l'historique des modifications (HTTP {{status}})",
+    "loadMoreError": "Échec du chargement d'autres modifications (HTTP {{status}})",
     "empty": "Aucune modification enregistrée pour le moment.",
     "emptyFiltered": "Aucune modification ne correspond aux filtres.",
     "loadMore": "Charger plus",

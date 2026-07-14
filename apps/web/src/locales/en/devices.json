@@ -4,6 +4,7 @@
     "loading": "Loading change history…",
     "retry": "Retry",
     "loadError": "Failed to load change history (HTTP {{status}})",
+    "loadMoreError": "Failed to load more changes (HTTP {{status}})",
     "empty": "No changes recorded yet.",
     "emptyFiltered": "No changes match your filters.",
     "loadMore": "Load more",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowRight, History } from "lucide-react";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { fetchWithAuth } from "../../stores/auth";
@@ -180,19 +180,35 @@ export default function DeviceChangeHistoryTab({
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string>();
+  const [loadMoreError, setLoadMoreError] = useState<string>();
   const [hasMore, setHasMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
 
   const [typeFilter, setTypeFilter] = useState("");
   const [actionFilter, setActionFilter] = useState("");
 
+  // Monotonic request id. Every fetch captures the current value; a fresh
+  // page-1 load (filter change / retry) bumps it so a late append response —
+  // e.g. the user clicked "Load more" then changed a filter — can detect it is
+  // stale and bail before clobbering the new filter's rows/cursor.
+  const requestIdRef = useRef(0);
+
   // Keyset pagination: `append` distinguishes a "Load more" (keep existing rows,
   // add the next page) from a fresh page-1 load (replace rows). A filter change
   // reruns the effect below via the fetchPage identity and always loads page 1.
   const fetchPage = useCallback(
     async (cursor: string | null, append: boolean) => {
+      // A page-1 load supersedes any in-flight append; bump the generation so
+      // the older append recognizes itself as stale below. An append keeps the
+      // current generation (it must not invalidate itself).
+      if (!append) {
+        requestIdRef.current += 1;
+      }
+      const requestId = requestIdRef.current;
+
       if (append) {
         setLoadingMore(true);
+        setLoadMoreError(undefined);
       } else {
         setLoading(true);
         setError(undefined);
@@ -207,27 +223,48 @@ export default function DeviceChangeHistoryTab({
         if (cursor) params.set("cursor", cursor);
 
         const response = await fetchWithAuth(`/changes?${params.toString()}`);
+        // Drop a response that a newer page-1 load has superseded.
+        if (requestId !== requestIdRef.current) return;
         if (!response.ok) {
-          setError(
-            t("deviceChangeHistoryTab.loadError", { status: response.status }),
-          );
+          // A failed "Load more" must not wipe already-loaded rows: surface an
+          // inline, non-destructive message instead of the full error card.
+          if (append) {
+            setLoadMoreError(
+              t("deviceChangeHistoryTab.loadMoreError", {
+                status: response.status,
+              }),
+            );
+          } else {
+            setError(
+              t("deviceChangeHistoryTab.loadError", { status: response.status }),
+            );
+          }
           return;
         }
         const json = (await response.json()) as ChangesResponse;
+        if (requestId !== requestIdRef.current) return;
         const changes = Array.isArray(json.changes) ? json.changes : [];
         setItems((prev) => (append ? [...prev, ...changes] : changes));
         setHasMore(Boolean(json.hasMore));
         setNextCursor(json.nextCursor ?? null);
       } catch (err) {
-        setError(
+        if (requestId !== requestIdRef.current) return;
+        const message =
           err instanceof Error
             ? err.message
-            : t("deviceChangeHistoryTab.loadError", { status: 0 }),
-        );
+            : t("deviceChangeHistoryTab.loadError", { status: 0 });
+        if (append) {
+          setLoadMoreError(message);
+        } else {
+          setError(message);
+        }
       } finally {
+        // Always clear the append spinner (harmless; the button is re-derived
+        // from hasMore). Only clear the page-1 spinner if this load is still
+        // current, so a superseded page-1 can't unhide a newer one's spinner.
         if (append) {
           setLoadingMore(false);
-        } else {
+        } else if (requestId === requestIdRef.current) {
           setLoading(false);
         }
       }
@@ -295,6 +332,7 @@ export default function DeviceChangeHistoryTab({
         <div className="flex flex-wrap items-center gap-3">
           <select
             data-testid="change-history-type-filter"
+            aria-label={t("deviceChangeHistoryTab.filterType")}
             value={typeFilter}
             onChange={(event) => setTypeFilter(event.target.value)}
             className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
@@ -309,6 +347,7 @@ export default function DeviceChangeHistoryTab({
 
           <select
             data-testid="change-history-action-filter"
+            aria-label={t("deviceChangeHistoryTab.filterAction")}
             value={actionFilter}
             onChange={(event) => setActionFilter(event.target.value)}
             className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
@@ -398,7 +437,15 @@ export default function DeviceChangeHistoryTab({
       </div>
 
       {hasMore && (
-        <div className="mt-4 flex justify-center">
+        <div className="mt-4 flex flex-col items-center gap-2">
+          {loadMoreError && (
+            <p
+              data-testid="change-history-load-more-error"
+              className="text-sm text-destructive"
+            >
+              {loadMoreError}
+            </p>
+          )}
           <button
             type="button"
             data-testid="change-history-load-more"
