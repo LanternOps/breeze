@@ -1,4 +1,5 @@
 import { ManagedIdentityCredential, WorkloadIdentityCredential } from '@azure/identity';
+import { isIP } from 'node:net';
 import { z } from 'zod';
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -44,6 +45,27 @@ export interface M365GraphReadExecutorConfig {
   internalAuthIssuer: typeof INTERNAL_AUTH_ISSUER;
   internalAuthAudience: typeof INTERNAL_AUTH_AUDIENCE;
   azureCredentialMode: AzureCredentialMode;
+  bindHost: string;
+  port: number;
+}
+
+function privateBindAddress(value: string): boolean {
+  const version = isIP(value);
+  if (version === 4) {
+    const [first, second = -1] = value.split('.').map(Number);
+    return first === 10
+      || first === 127
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168);
+  }
+  if (version === 6) {
+    const normalized = value.toLowerCase();
+    return normalized === '::1'
+      || normalized.startsWith('fc')
+      || normalized.startsWith('fd')
+      || /^fe[89ab]/.test(normalized);
+  }
+  return false;
 }
 
 function required(source: Environment, name: string): string {
@@ -188,6 +210,16 @@ export function loadExecutorConfig(
     );
   }
 
+  const bindHost = required(source, 'M365_GRAPH_READ_EXECUTOR_BIND_HOST');
+  if (!privateBindAddress(bindHost)) {
+    throw new Error('M365_GRAPH_READ_EXECUTOR_BIND_HOST must be a private IP interface');
+  }
+  const rawPort = required(source, 'M365_GRAPH_READ_EXECUTOR_PORT');
+  const port = Number(rawPort);
+  if (!/^[1-9][0-9]{0,4}$/.test(rawPort) || !Number.isSafeInteger(port) || port > 65_535) {
+    throw new Error('M365_GRAPH_READ_EXECUTOR_PORT must be an integer from 1 through 65535');
+  }
+
   return {
     clientId,
     callbackUrl,
@@ -199,5 +231,7 @@ export function loadExecutorConfig(
     internalAuthIssuer,
     internalAuthAudience,
     azureCredentialMode,
+    bindHost,
+    port,
   };
 }

@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/config.ts",
+    "dev": "M365_GRAPH_READ_EXECUTOR_AUTOSTART=1 tsx watch src/index.ts",
     "build": "tsup",
-    "start": "node dist/config.cjs",
+    "start": "M365_GRAPH_READ_EXECUTOR_AUTOSTART=1 node dist/index.cjs",
     "test": "vitest",
     "test:run": "vitest run",
     "lint": "eslint src"

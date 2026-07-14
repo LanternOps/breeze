@@ -29,6 +29,8 @@ function validEnv(overrides: Record<string, string | undefined> = {}) {
     M365_GRAPH_READ_EXECUTOR_ISSUER: 'breeze-api',
     M365_GRAPH_READ_EXECUTOR_AUDIENCE: 'm365-graph-read-executor',
     M365_GRAPH_READ_EXECUTOR_AZURE_CREDENTIAL_MODE: 'managed-identity',
+    M365_GRAPH_READ_EXECUTOR_BIND_HOST: '10.20.30.40',
+    M365_GRAPH_READ_EXECUTOR_PORT: '8788',
     ...overrides,
   };
 }
@@ -46,6 +48,8 @@ describe('M365 Graph-read executor config', () => {
       internalAuthIssuer: 'breeze-api',
       internalAuthAudience: 'm365-graph-read-executor',
       azureCredentialMode: 'managed-identity',
+      bindHost: '10.20.30.40',
+      port: 8788,
     });
   });
 
@@ -60,6 +64,8 @@ describe('M365 Graph-read executor config', () => {
     'M365_GRAPH_READ_EXECUTOR_ISSUER',
     'M365_GRAPH_READ_EXECUTOR_AUDIENCE',
     'M365_GRAPH_READ_EXECUTOR_AZURE_CREDENTIAL_MODE',
+    'M365_GRAPH_READ_EXECUTOR_BIND_HOST',
+    'M365_GRAPH_READ_EXECUTOR_PORT',
   ])('requires %s', (name) => {
     expect(() => loadExecutorConfig(validEnv({ [name]: undefined }))).toThrow(name);
   });
@@ -80,6 +86,17 @@ describe('M365 Graph-read executor config', () => {
     ['default Azure fallback mode', { M365_GRAPH_READ_EXECUTOR_AZURE_CREDENTIAL_MODE: 'default' }, /AZURE_CREDENTIAL_MODE/],
   ])('rejects %s', (_label, overrides, error) => {
     expect(() => loadExecutorConfig(validEnv(overrides))).toThrow(error);
+  });
+
+  it.each([
+    ['the wildcard IPv4 interface', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '0.0.0.0' }],
+    ['the wildcard IPv6 interface', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '::' }],
+    ['a public interface', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: '203.0.113.10' }],
+    ['a hostname requiring resolution', { M365_GRAPH_READ_EXECUTOR_BIND_HOST: 'executor.internal' }],
+    ['port zero', { M365_GRAPH_READ_EXECUTOR_PORT: '0' }],
+    ['an out-of-range port', { M365_GRAPH_READ_EXECUTOR_PORT: '65536' }],
+  ])('rejects %s', (_label, overrides) => {
+    expect(() => loadExecutorConfig(validEnv(overrides))).toThrow(/BIND_HOST|PORT/);
   });
 
   it.each([
