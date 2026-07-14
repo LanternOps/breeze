@@ -3,6 +3,7 @@ import {
   type CanonicalAppRoleAssignment,
   type M365ApplicationGrant,
 } from '@breeze/shared/m365';
+import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
@@ -12,7 +13,6 @@ import {
   requirePermission,
   type AuthContext,
 } from '../middleware/auth';
-import { writeRouteAudit } from '../services/auditEvents';
 import {
   deriveGrantHealth,
   disconnectCustomerGraphReadConnection,
@@ -29,6 +29,11 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
 import { PERMISSIONS } from '../services/permissions';
+import {
+  M365_CUSTOMER_GRAPH_READ_OUTCOMES,
+  recordM365CustomerGraphReadEvent,
+  type M365CustomerGraphReadOutcome,
+} from '../services/m365ControlPlane/metrics';
 
 const PROFILE_ID = 'customer-graph-read' as const;
 const PROFILE_DISPLAY_NAME = 'Customer Graph Read';
@@ -43,6 +48,22 @@ const requireOrgsWrite = requirePermission(
 );
 const idParam = z.object({ id: z.string().uuid() });
 const CANONICAL_ORG_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SAFE_OUTCOMES = new Set<string>(M365_CUSTOMER_GRAPH_READ_OUTCOMES);
+const GRANT_DRIFT_OUTCOMES = new Set<M365CustomerGraphReadOutcome>([
+  'grant_missing', 'grant_unexpected', 'manifest_stale',
+]);
+
+function connectionOutcome(
+  value: CustomerGraphReadConnectionSnapshot,
+): M365CustomerGraphReadOutcome {
+  if (value.status === 'active') return 'active';
+  if (value.status === 'revoked') return 'revoked';
+  if (value.lastErrorCode && SAFE_OUTCOMES.has(value.lastErrorCode)) {
+    return value.lastErrorCode as M365CustomerGraphReadOutcome;
+  }
+  if (value.status === 'degraded') return 'degraded';
+  return 'executor_unavailable';
+}
 
 export interface CustomerGraphReadConnectionDto {
   id: string;
@@ -191,10 +212,12 @@ m365CustomerGraphReadRoutes.post(
   async (c) => {
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
+    if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
     if (!isM365CustomerGraphReadOnboardingEnabledForOrg(resolved.orgId)) {
       return c.json({ error: 'Customer Graph Read onboarding is not enabled' }, 404);
     }
     try {
+      const correlationId = randomUUID();
       const initiated = await initiateCustomerGraphReadConsent({
         orgId: resolved.orgId,
         actorId: c.get('auth').user.id,
@@ -206,15 +229,18 @@ m365CustomerGraphReadRoutes.post(
         consentAttemptId: initiated.connection.consentAttemptId,
         tenantHint: null,
       }), { append: true });
-      writeRouteAudit(c, {
+      const auth = c.get('auth');
+      recordM365CustomerGraphReadEvent(c, {
+        event: 'm365.customer_graph_read.consent_initiated',
         orgId: resolved.orgId,
-        action: 'm365.customer_graph_read.consent_initiated',
-        resourceType: 'm365_connection',
-        resourceId: initiated.connection.id,
-        details: {
-          profile: PROFILE_ID,
-          consentAttemptId: initiated.connection.consentAttemptId,
-        },
+        connectionId: initiated.connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: initiated.connection.consentAttemptId,
+        manifestVersion: profileManifest.version,
+        outcome: 'initiated',
+        correlationId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
       });
       return c.json({ adminConsentUrl: initiated.consentUrl });
     } catch (error) {
@@ -231,20 +257,39 @@ m365CustomerGraphReadRoutes.post(
   async (c) => {
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
+    if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
     const { id } = c.req.valid('param');
     try {
+      const correlationId = randomUUID();
       const connection = await retestCustomerGraphReadConnection({
         id,
         orgId: resolved.orgId,
         auth: c.get('auth'),
+        correlationId,
       });
-      writeRouteAudit(c, {
+      const auth = c.get('auth');
+      const outcome = connectionOutcome(connection);
+      const eventInput = {
         orgId: resolved.orgId,
-        action: 'm365.customer_graph_read.retested',
-        resourceType: 'm365_connection',
-        resourceId: connection.id,
-        details: { profile: PROFILE_ID, status: connection.status },
+        connectionId: connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: connection.consentAttemptId,
+        manifestVersion: connection.permissionManifestVersion,
+        outcome,
+        correlationId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+      } as const;
+      recordM365CustomerGraphReadEvent(c, {
+        ...eventInput,
+        event: 'm365.customer_graph_read.retested',
       });
+      if (GRANT_DRIFT_OUTCOMES.has(outcome)) {
+        recordM365CustomerGraphReadEvent(c, {
+          ...eventInput,
+          event: 'm365.customer_graph_read.grant_drift_detected',
+        });
+      }
       return c.json({ connection: toConnectionDto(connection) });
     } catch (error) {
       return lifecycleFailure(c, error);
@@ -260,6 +305,7 @@ m365CustomerGraphReadRoutes.post(
   async (c) => {
     const resolved = mutationOrg(c);
     if (resolved instanceof Response) return resolved;
+    if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
     const { id } = c.req.valid('param');
     try {
       const connection = await disconnectCustomerGraphReadConnection({
@@ -267,12 +313,18 @@ m365CustomerGraphReadRoutes.post(
         orgId: resolved.orgId,
         actorId: c.get('auth').user.id,
       });
-      writeRouteAudit(c, {
+      const auth = c.get('auth');
+      recordM365CustomerGraphReadEvent(c, {
+        event: 'm365.customer_graph_read.disconnected',
         orgId: resolved.orgId,
-        action: 'm365.customer_graph_read.disconnected',
-        resourceType: 'm365_connection',
-        resourceId: connection.id,
-        details: { profile: PROFILE_ID, status: connection.status },
+        connectionId: connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: connection.consentAttemptId,
+        manifestVersion: connection.permissionManifestVersion,
+        outcome: 'revoked',
+        correlationId: randomUUID(),
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
       });
       return c.json({ connection: toConnectionDto(connection) });
     } catch (error) {

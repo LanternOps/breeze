@@ -98,6 +98,7 @@ describe('M365 consent callback route', () => {
       connection: { status: 'verifying' },
       identity: { rawState: 'identity-state', codeChallenge: 'pkce-challenge' },
     });
+    const audit = vi.fn();
     const buildBindingCookie = vi.fn(() => 'new-binding=identity; Path=/api/v1/m365/consent/callback');
     const routes = createM365ConsentCallbackRoutes({
       verifyBindingCookie: vi.fn(() => adminBinding),
@@ -116,7 +117,7 @@ describe('M365 consent callback route', () => {
         clientId: '22222222-2222-2222-2222-222222222222',
         callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
       })),
-      audit: vi.fn(),
+      audit,
     });
     const app = new Hono().route('/api/v1/m365', routes);
 
@@ -148,6 +149,15 @@ describe('M365 consent callback route', () => {
       tenantHint: TENANT_ID,
     }));
     expect(response.headers.get('set-cookie')).toContain('new-binding=identity');
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.admin_consent_returned',
+      orgId: ORG_ID,
+      connectionId: CONNECTION_ID,
+      profile: 'customer-graph-read',
+      consentAttemptId: ATTEMPT_ID,
+      outcome: 'identity_verification_started',
+    }));
   });
 
   it.each(['config', 'prepare', 'cookie', 'url'] as const)(
@@ -307,6 +317,17 @@ describe('M365 consent callback route', () => {
     }));
     expect(JSON.stringify(audit.mock.calls)).not.toContain('secret-authorization-code');
     expect(JSON.stringify(audit.mock.calls)).not.toContain('identity-nonce');
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.tenant_binding_verified',
+      orgId: ORG_ID,
+      connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID,
+      manifestVersion: 2,
+      outcome: 'active',
+      correlationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      verifiedTenantId: TENANT_ID,
+    }));
   });
 
   it('rejects a tenant-hint hash mismatch after consumption without executor or mutation', async () => {
@@ -373,7 +394,7 @@ describe('M365 consent callback route', () => {
   it('maps a cryptographically valid expired binding to consent_expired before state lookup', async () => {
     const loadAttempt = vi.fn();
     const routes = createM365ConsentCallbackRoutes({
-      verifyBindingCookie: vi.fn(() => 'expired'),
+      verifyBindingCookie: vi.fn(() => 'expired' as const),
       clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
       loadAttempt,
     });
@@ -473,7 +494,68 @@ describe('M365 consent callback route', () => {
     expect(response.headers.get('location')).toBe('/integrations#m365/customer-graph-read/consent_cancelled');
     expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
     expect(markAttemptFailed).toHaveBeenCalledWith(attempt('pending-consent'), 'consent_cancelled');
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.verification_failed',
+      outcome: 'consent_cancelled',
+    }));
     expect(JSON.stringify({ location: response.headers.get('location'), audit: audit.mock.calls }))
       .not.toContain('provider-secret-description');
+  });
+
+  it('emits verified binding and grant drift once each after signed proof', async () => {
+    const identityBinding = {
+      phase: 'identity_verification' as const,
+      rawState: 'identity-state',
+      connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID,
+      tenantHint: TENANT_ID,
+    };
+    const audit = vi.fn();
+    const result = {
+      success: true as const,
+      tenantId: TENANT_ID,
+      administratorObjectId: 'must-not-audit-admin',
+      applicationId: '22222222-2222-2222-2222-222222222222',
+      organizationDisplayName: 'Contoso',
+      manifestVersion: 2,
+      verifiedAt: '2026-07-14T12:00:00.000Z',
+      grantReconciliation: 'complete' as const,
+      observedGrants: [], missingGrants: [], unexpectedGrants: [],
+      grantsVerifiedAt: '2026-07-14T12:00:00.000Z',
+    };
+    const routes = createM365ConsentCallbackRoutes({
+      verifyBindingCookie: vi.fn(() => identityBinding),
+      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
+      loadAttempt: vi.fn().mockResolvedValue(attempt('verifying')),
+      consumeSession: vi.fn().mockResolvedValue({
+        userId: USER_ID, tenantHintHash: tenantHintHash(TENANT_ID),
+        nonce: 'must-not-audit-nonce', codeVerifier: 'must-not-audit-verifier',
+      }),
+      completeIdentity: vi.fn().mockResolvedValue(result),
+      applyIdentityResult: vi.fn().mockResolvedValue({
+        ...attempt('verifying'), tenantId: TENANT_ID, permissionManifestVersion: 2,
+        status: 'degraded', lastErrorCode: 'grant_missing',
+      }),
+      loadConfig: vi.fn(() => ({
+        clientId: result.applicationId,
+        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
+      })),
+      correlationId: vi.fn(() => 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+      audit,
+    });
+    const response = await new Hono().route('/api/v1/m365', routes).request(
+      '/api/v1/m365/consent/callback?state=identity-state&code=must-not-audit-code',
+    );
+
+    expect(response.headers.get('location')).toContain('/degraded');
+    expect(audit.mock.calls.map((call) => call[1].event)).toEqual([
+      'm365.customer_graph_read.tenant_binding_verified',
+      'm365.customer_graph_read.grant_drift_detected',
+    ]);
+    expect(audit.mock.calls[1]?.[1]).toMatchObject({ outcome: 'grant_missing' });
+    expect(JSON.stringify(audit.mock.calls)).not.toMatch(
+      /must-not-audit-admin|must-not-audit-nonce|must-not-audit-verifier|must-not-audit-code/,
+    );
   });
 });

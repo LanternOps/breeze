@@ -1,10 +1,13 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import type { CompleteConsentRequest, CompleteConsentResult } from '@breeze/shared/m365';
+import {
+  M365_PERMISSION_PROFILES,
+  type CompleteConsentRequest,
+  type CompleteConsentResult,
+} from '@breeze/shared/m365';
 import { and, eq } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { m365Connections } from '../db/schema';
-import { writeAuditEvent } from '../services/auditEvents';
 import {
   buildClearM365ConsentBindingCookie,
   buildM365ConsentBindingCookie,
@@ -32,6 +35,12 @@ import {
   loadM365CustomerGraphReadRuntimeConfig,
   type M365CustomerGraphReadRuntimeConfig,
 } from '../services/m365ControlPlane/runtimeConfig';
+import {
+  recordM365CustomerGraphReadEvent,
+  recordM365CustomerGraphReadMetric,
+  type M365CustomerGraphReadAuditInput,
+  type M365CustomerGraphReadEvent,
+} from '../services/m365ControlPlane/metrics';
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -42,7 +51,7 @@ export type ParsedM365ConsentCallback =
 
 function single(params: URLSearchParams, name: string): string | null {
   const values = params.getAll(name);
-  return values.length === 1 ? values[0] : null;
+  return values.length === 1 ? values[0]! : null;
 }
 
 function validOpaque(value: string | null, maxLength: number): value is string {
@@ -114,8 +123,6 @@ const PUBLIC_OUTCOMES = new Set<PublicOutcome>([
   'application_token_invalid', 'grant_reconciliation_unavailable', 'grant_missing',
   'grant_unexpected', 'manifest_stale', 'organization_probe_failed', 'executor_unavailable',
 ]);
-type SafeAuditOutcome = PublicOutcome | 'identity_verification_started';
-
 interface CallbackRuntimeConfig {
   clientId: string;
   callbackUrl: string;
@@ -135,7 +142,8 @@ interface CallbackDependencies {
   applyIdentityResult(input: ConsentAttemptSnapshot, result: CompleteConsentResult): Promise<CustomerGraphReadConnectionSnapshot>;
   loadConfig(): CallbackRuntimeConfig;
   correlationId(): string;
-  audit(c: Context, attempt: ConsentAttemptSnapshot, phase: M365ConsentBindingPhase, outcome: SafeAuditOutcome): void;
+  audit(c: Context, input: M365CustomerGraphReadAuditInput): void;
+  metric(event: M365CustomerGraphReadEvent, outcome: PublicOutcome): void;
 }
 
 async function loadAttemptFromBinding(
@@ -187,21 +195,8 @@ const defaultDependencies: CallbackDependencies = {
   applyIdentityResult: applyIdentityVerificationResult,
   loadConfig: loadM365CustomerGraphReadRuntimeConfig,
   correlationId: randomUUID,
-  audit(c, attempt, phase, outcome) {
-    writeAuditEvent(c, {
-      orgId: attempt.orgId,
-      actorType: 'system',
-      action: 'm365.customer_graph_read.consent_callback',
-      resourceType: 'm365_connection',
-      resourceId: attempt.id,
-      details: { consentAttemptId: attempt.consentAttemptId, phase, outcome },
-      result: outcome === 'active'
-        || outcome === 'degraded'
-        || outcome === 'identity_verification_started'
-        ? 'success'
-        : 'failure',
-    });
-  },
+  audit: recordM365CustomerGraphReadEvent,
+  metric: recordM365CustomerGraphReadMetric,
 };
 
 function constantTimeTextEqual(left: string, right: string): boolean {
@@ -234,25 +229,41 @@ export function createM365ConsentCallbackRoutes(
   const routes = new Hono();
 
   routes.get('/consent/callback', async (c) => {
-    const terminal = (
+    const correlationId = dependencies.correlationId();
+    const terminalRedirect = (outcome: PublicOutcome) => {
+      c.header('Set-Cookie', dependencies.clearBindingCookie(), { append: true });
+      return c.redirect(`/integrations#m365/customer-graph-read/${outcome}`);
+    };
+    const terminalFailure = (
       outcome: PublicOutcome,
       attempt?: ConsentAttemptSnapshot,
-      phase?: M365ConsentBindingPhase,
     ) => {
-      c.header('Set-Cookie', dependencies.clearBindingCookie(), { append: true });
-      if (attempt && phase) dependencies.audit(c, attempt, phase, outcome);
-      return c.redirect(`/integrations#m365/customer-graph-read/${outcome}`);
+      if (attempt) {
+        dependencies.audit(c, {
+          event: 'm365.customer_graph_read.verification_failed',
+          orgId: attempt.orgId,
+          connectionId: attempt.id,
+          profile: attempt.profile,
+          consentAttemptId: attempt.consentAttemptId,
+          manifestVersion: M365_PERMISSION_PROFILES['customer-graph-read'].version,
+          outcome,
+          correlationId,
+        });
+      } else {
+        dependencies.metric('m365.customer_graph_read.verification_failed', outcome);
+      }
+      return terminalRedirect(outcome);
     };
 
     const binding = dependencies.verifyBindingCookie(c.req.header('cookie'));
-    if (binding === 'expired') return terminal('consent_expired');
-    if (!binding) return terminal('consent_state_mismatch');
+    if (binding === 'expired') return terminalFailure('consent_expired');
+    if (!binding) return terminalFailure('consent_state_mismatch');
     const parsed = parseM365ConsentCallbackQuery(
       binding.phase,
       new URL(c.req.url).searchParams,
     );
     if (!parsed || !constantTimeTextEqual(parsed.state, binding.rawState)) {
-      return terminal('consent_state_mismatch');
+      return terminalFailure('consent_state_mismatch');
     }
 
     if (binding.phase === 'admin_consent' && parsed.kind === 'admin_success') {
@@ -278,12 +289,13 @@ export function createM365ConsentCallbackRoutes(
           codeChallenge: prepared.codeChallenge,
         });
       } catch {
+        dependencies.metric('m365.customer_graph_read.verification_failed', 'executor_unavailable');
         return c.json({ error: 'M365 consent callback temporarily unavailable' }, 503);
       }
 
       const attempt = await dependencies.loadAttempt(binding);
       if (!attempt || attempt.status !== 'pending-consent') {
-        return terminal('consent_state_mismatch');
+        return terminalFailure('consent_state_mismatch');
       }
       try {
         await dependencies.transitionAdminPhase({
@@ -293,20 +305,30 @@ export function createM365ConsentCallbackRoutes(
         });
       } catch (error) {
         if (errorOutcome(error) === 'consent_state_mismatch') {
-          return terminal('consent_state_mismatch', attempt, binding.phase);
+          return terminalFailure('consent_state_mismatch', attempt);
         }
+        dependencies.metric('m365.customer_graph_read.verification_failed', 'executor_unavailable');
         return c.json({ error: 'M365 consent callback temporarily unavailable' }, 503);
       }
 
       c.header('Set-Cookie', preparedCookie, { append: true });
-      dependencies.audit(c, attempt, binding.phase, 'identity_verification_started');
+      dependencies.audit(c, {
+        event: 'm365.customer_graph_read.admin_consent_returned',
+        orgId: attempt.orgId,
+        connectionId: attempt.id,
+        profile: attempt.profile,
+        consentAttemptId: attempt.consentAttemptId,
+        manifestVersion: M365_PERMISSION_PROFILES['customer-graph-read'].version,
+        outcome: 'identity_verification_started',
+        correlationId,
+      });
       return c.redirect(authorizationUrl);
     }
 
     const attempt = await dependencies.loadAttempt(binding);
     const expectedStatus = binding.phase === 'admin_consent' ? 'pending-consent' : 'verifying';
     if (!attempt || attempt.status !== expectedStatus) {
-      return terminal('consent_state_mismatch');
+      return terminalFailure('consent_state_mismatch');
     }
 
     const session = await dependencies.consumeSession({
@@ -316,15 +338,15 @@ export function createM365ConsentCallbackRoutes(
       orgId: attempt.orgId,
       consentAttemptId: binding.consentAttemptId,
     });
-    if (!session) return terminal('consent_state_mismatch', attempt, binding.phase);
+    if (!session) return terminalFailure('consent_state_mismatch', attempt);
 
     if (parsed.kind === 'provider_error') {
       try {
         await dependencies.markAttemptFailed(attempt, 'consent_cancelled');
       } catch {
-        return terminal('consent_state_mismatch', attempt, binding.phase);
+        return terminalFailure('consent_state_mismatch', attempt);
       }
-      return terminal('consent_cancelled', attempt, binding.phase);
+      return terminalFailure('consent_cancelled', attempt);
     }
 
     if (
@@ -334,17 +356,17 @@ export function createM365ConsentCallbackRoutes(
       || !session.tenantHintHash
       || !session.nonce
       || !session.codeVerifier
-    ) return terminal('consent_state_mismatch', attempt, binding.phase);
+    ) return terminalFailure('consent_state_mismatch', attempt);
 
     const actualTenantHash = hashTenantHint(binding.tenantHint);
     if (!constantTimeTextEqual(actualTenantHash, session.tenantHintHash)) {
-      return terminal('tenant_mismatch', attempt, binding.phase);
+      return terminalFailure('tenant_mismatch', attempt);
     }
 
     let result: CompleteConsentResult;
     try {
       result = await dependencies.completeIdentity({
-        correlationId: dependencies.correlationId(),
+        correlationId,
         consentAttemptId: attempt.consentAttemptId,
         tenantHint: binding.tenantHint,
         authorizationCode: parsed.code,
@@ -356,16 +378,46 @@ export function createM365ConsentCallbackRoutes(
       try {
         await dependencies.markAttemptFailed(attempt, 'executor_unavailable');
       } catch {
-        return terminal('consent_state_mismatch', attempt, binding.phase);
+        return terminalFailure('consent_state_mismatch', attempt);
       }
-      return terminal('executor_unavailable', attempt, binding.phase);
+      return terminalFailure('executor_unavailable', attempt);
     }
 
     try {
       const applied = await dependencies.applyIdentityResult(attempt, result);
-      return terminal(outcomeFromConnection(applied), attempt, binding.phase);
+      const outcome = outcomeFromConnection(applied);
+      if (result.success && (applied.status === 'active' || applied.status === 'degraded')) {
+        const driftOutcome = applied.lastErrorCode === 'grant_missing'
+          || applied.lastErrorCode === 'grant_unexpected'
+          || applied.lastErrorCode === 'manifest_stale'
+          ? applied.lastErrorCode
+          : null;
+        const event = {
+          orgId: attempt.orgId,
+          connectionId: attempt.id,
+          profile: attempt.profile,
+          consentAttemptId: attempt.consentAttemptId,
+          manifestVersion: result.manifestVersion,
+          correlationId,
+          verifiedTenantId: result.tenantId,
+        } as const;
+        dependencies.audit(c, {
+          ...event,
+          event: 'm365.customer_graph_read.tenant_binding_verified',
+          outcome,
+        });
+        if (driftOutcome) {
+          dependencies.audit(c, {
+            ...event,
+            event: 'm365.customer_graph_read.grant_drift_detected',
+            outcome: driftOutcome,
+          });
+        }
+        return terminalRedirect(outcome);
+      }
+      return terminalFailure(outcome, attempt);
     } catch (error) {
-      return terminal(errorOutcome(error), attempt, binding.phase);
+      return terminalFailure(errorOutcome(error), attempt);
     }
   });
 

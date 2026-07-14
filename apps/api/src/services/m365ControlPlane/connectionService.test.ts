@@ -409,6 +409,31 @@ describe('customer Graph-read connection lifecycle', () => {
     expect(JSON.stringify(dbMocks.updateWheres[0])).toContain(TENANT_ID);
   });
 
+  it('returns a bounded lifecycle snapshot for observability without executor-only proof fields', async () => {
+    dbMocks.updateResults.push((set) => [row({ tenantId: null, status: 'verifying', ...set })]);
+    const applied = await applyIdentityVerificationResult(attempt(), {
+      ...completeResult(),
+      administratorObjectId: 'must-not-reach-control-plane-observability',
+      accessToken: 'must-not-reach-control-plane-observability',
+      idToken: 'must-not-reach-control-plane-observability',
+      providerDescription: 'must-not-reach-control-plane-observability',
+    } as never);
+
+    const serialized = JSON.stringify(applied);
+    expect(applied).toMatchObject({
+      orgId: ORG_ID,
+      id: CONNECTION_ID,
+      profile: 'customer-graph-read',
+      consentAttemptId: ATTEMPT_ID,
+      tenantId: TENANT_ID,
+      permissionManifestVersion: 2,
+      status: 'active',
+      lastErrorCode: null,
+    });
+    expect(serialized).not.toContain('must-not-reach-control-plane-observability');
+    expect(serialized).not.toMatch(/administratorObjectId|accessToken|idToken|providerDescription/);
+  });
+
   it('refuses binding when executor application proof differs from the fixed profile application', async () => {
     dbMocks.updateResults.push((set) => [row({ tenantId: null, status: 'verifying', ...set })]);
     await expect(applyIdentityVerificationResult(attempt(), completeResult({

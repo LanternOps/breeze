@@ -83,7 +83,13 @@ vi.mock('../services/m365ControlPlane/browserBinding', () => ({
   buildM365ConsentBindingCookie: mocks.buildBindingCookie,
 }));
 
-vi.mock('../services/auditEvents', () => ({ writeRouteAudit: mocks.audit }));
+vi.mock('../services/m365ControlPlane/metrics', () => ({
+  M365_CUSTOMER_GRAPH_READ_OUTCOMES: [
+    'initiated', 'identity_verification_started', 'active', 'degraded', 'revoked',
+    'grant_missing', 'grant_unexpected', 'manifest_stale', 'executor_unavailable',
+  ],
+  recordM365CustomerGraphReadEvent: mocks.audit,
+}));
 
 import { m365CustomerGraphReadRoutes } from './m365CustomerGraphRead';
 
@@ -274,9 +280,13 @@ describe('POST /m365/connections/customer-graph-read/consent', () => {
     });
     expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       orgId: ORG_ID,
-      action: 'm365.customer_graph_read.consent_initiated',
-      resourceId: CONNECTION_ID,
-      details: { profile: 'customer-graph-read', consentAttemptId: ATTEMPT_ID },
+      event: 'm365.customer_graph_read.consent_initiated',
+      connectionId: CONNECTION_ID,
+      profile: 'customer-graph-read',
+      consentAttemptId: ATTEMPT_ID,
+      manifestVersion: 2,
+      outcome: 'initiated',
+      actorId: USER_ID,
     }));
     expect(JSON.stringify(mocks.audit.mock.calls)).not.toContain('one-time-state');
   });
@@ -298,6 +308,45 @@ describe('scoped connection mutations', () => {
       id: CONNECTION_ID, orgId: ORG_ID, auth: expect.objectContaining({ scope: 'organization' }),
     }));
     expect((await response.json()).connection.id).toBe(CONNECTION_ID);
+    expect(mocks.audit).toHaveBeenCalledTimes(1);
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.retested', connectionId: CONNECTION_ID,
+      outcome: 'active', consentAttemptId: ATTEMPT_ID, manifestVersion: 2,
+    }));
+  });
+
+  it('records grant drift once alongside the retest outcome without unsafe connection fields', async () => {
+    mocks.retest.mockResolvedValueOnce(connection({
+      status: 'degraded', lastErrorCode: 'grant_unexpected',
+      vaultRef: 'akv://must-not-audit', administratorObjectId: 'must-not-audit',
+    }));
+
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/retest?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.audit.mock.calls.map((call) => call[1].event)).toEqual([
+      'm365.customer_graph_read.retested',
+      'm365.customer_graph_read.grant_drift_detected',
+    ]);
+    expect(mocks.audit.mock.calls[1]?.[1]).toMatchObject({ outcome: 'grant_unexpected' });
+    expect(JSON.stringify(mocks.audit.mock.calls)).not.toContain('must-not-audit');
+  });
+
+  it('records disconnect exactly once with the acting user and revoked outcome', async () => {
+    const response = await app().request(
+      `/m365/connections/${CONNECTION_ID}/disconnect?orgId=${ORG_ID}`,
+      { method: 'POST' },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.audit).toHaveBeenCalledTimes(1);
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.disconnected', outcome: 'revoked',
+      connectionId: CONNECTION_ID, actorId: USER_ID,
+    }));
   });
 
   it('maps both scope misses and ownership conflicts to the same non-oracular response', async () => {
