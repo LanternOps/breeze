@@ -1,21 +1,36 @@
 import {
   chmodSync,
+  constants,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isM365CustomerGraphReadOnboardingEnabledForOrg,
   loadM365CustomerGraphReadRuntimeConfig,
 } from './runtimeConfig';
 
+vi.mock('node:fs', { spy: true });
+
 const ORG_ID = 'a1111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = 'b2222222-2222-4222-8222-222222222222';
 const CLIENT_ID = 'c3333333-3333-4333-8333-333333333333';
 const CREDENTIAL_VERSION = '0123456789abcdef0123456789abcdef';
+const REQUIRED_ENABLED_SETTINGS = [
+  'M365_CUSTOMER_GRAPH_READ_CLIENT_ID',
+  'M365_CUSTOMER_GRAPH_READ_VAULT_REF',
+  'M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION',
+  'M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS',
+  'M365_GRAPH_READ_EXECUTOR_URL',
+  'M365_GRAPH_READ_EXECUTOR_AUDIENCE',
+  'M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE',
+  'M365_GRAPH_READ_EXECUTOR_SIGNING_KID',
+] as const;
 
 let tempDir: string;
 let signingJwkFile: string;
@@ -61,6 +76,7 @@ describe('M365 customer Graph-read runtime config', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'breeze-m365-runtime-'));
     signingJwkFile = join(tempDir, 'executor-signing.jwk');
     writeSigningJwk();
+    vi.clearAllMocks();
   });
 
   afterEach(() => {
@@ -83,6 +99,20 @@ describe('M365 customer Graph-read runtime config', () => {
     expect(config.executorSigningPrivateJwk).toEqual(validPrivateJwk());
     expect(config).not.toHaveProperty('certificate');
     expect(config).not.toHaveProperty('vaultCredential');
+  });
+
+  it('opens without following symlinks and validates, reads, and closes the same file descriptor', () => {
+    loadM365CustomerGraphReadRuntimeConfig(validEnv());
+
+    expect(fs.openSync).toHaveBeenCalledWith(
+      signingJwkFile,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    const fd = vi.mocked(fs.openSync).mock.results[0]?.value;
+    expect(fd).toEqual(expect.any(Number));
+    expect(fs.fstatSync).toHaveBeenCalledWith(fd);
+    expect(fs.readFileSync).toHaveBeenCalledWith(fd, 'utf8');
+    expect(fs.closeSync).toHaveBeenCalledWith(fd);
   });
 
   it.each([
@@ -111,6 +141,15 @@ describe('M365 customer Graph-read runtime config', () => {
     expect(config.callbackUrl).toBe('http://localhost:3001/api/v1/m365/consent/callback');
   });
 
+  it.each(REQUIRED_ENABLED_SETTINGS)(
+    'requires %s when onboarding is enabled',
+    (name) => {
+      expect(() => loadM365CustomerGraphReadRuntimeConfig(validEnv({
+        [name]: undefined,
+      }))).toThrow(name);
+    },
+  );
+
   it.each([
     ['uppercase client UUID', { M365_CUSTOMER_GRAPH_READ_CLIENT_ID: CLIENT_ID.toUpperCase() }, /CLIENT_ID/],
     ['non-canonical client UUID', { M365_CUSTOMER_GRAPH_READ_CLIENT_ID: CLIENT_ID.replaceAll('-', '') }, /CLIENT_ID/],
@@ -135,6 +174,33 @@ describe('M365 customer Graph-read runtime config', () => {
 
     expect(() => loadM365CustomerGraphReadRuntimeConfig(validEnv())).toThrow(
       /SIGNING_PRIVATE_JWK_FILE.*permissions|permissions.*SIGNING_PRIVATE_JWK_FILE/,
+    );
+    const fd = vi.mocked(fs.openSync).mock.results[0]?.value;
+    expect(fs.closeSync).toHaveBeenCalledWith(fd);
+  });
+
+  it('rejects a symlink without following it', () => {
+    const symlink = join(tempDir, 'signing-link.jwk');
+    symlinkSync(signingJwkFile, symlink);
+
+    expect(() => loadM365CustomerGraphReadRuntimeConfig(validEnv({
+      M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: symlink,
+    }))).toThrow(/SIGNING_PRIVATE_JWK_FILE/);
+    expect(fs.fstatSync).not.toHaveBeenCalled();
+    expect(fs.readFileSync).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-regular signing JWK file', () => {
+    expect(() => loadM365CustomerGraphReadRuntimeConfig(validEnv({
+      M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: tempDir,
+    }))).toThrow(/SIGNING_PRIVATE_JWK_FILE.*regular file/);
+  });
+
+  it('rejects malformed signing JWK JSON', () => {
+    writeFileSync(signingJwkFile, '{not-json', { mode: 0o600 });
+
+    expect(() => loadM365CustomerGraphReadRuntimeConfig(validEnv())).toThrow(
+      /SIGNING_PRIVATE_JWK_FILE.*valid JWK JSON/,
     );
   });
 

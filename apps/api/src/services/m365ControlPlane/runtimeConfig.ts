@@ -1,4 +1,10 @@
-import { lstatSync, readFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+} from 'node:fs';
 import { isAbsolute } from 'node:path';
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -94,18 +100,22 @@ function parseSigningPrivateJwk(source: Environment, expectedKid: string): M365E
   }
 
   let raw: string;
+  let fd: number | undefined;
   try {
-    const metadata = lstatSync(file);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile()) {
       throw new Error('not a regular file');
     }
     if ((metadata.mode & 0o077) !== 0) {
       throw new Error('permissions must deny group and other access (use mode 0600 or stricter)');
     }
-    raw = readFileSync(file, 'utf8');
+    raw = readFileSync(fd, 'utf8');
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'cannot read file';
     throw new Error(`M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE ${detail}`);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 
   let parsed: unknown;
