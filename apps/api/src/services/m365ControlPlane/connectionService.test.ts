@@ -549,6 +549,7 @@ describe('customer Graph-read connection lifecycle', () => {
     expect(dbMocks.updateSets[0]).toMatchObject({
       tenantId: null, clientId: '', displayName: null, observedGrants: [],
       grantsVerifiedAt: null, lastVerifiedAt: null, status: 'revoked', lastErrorCode: null,
+      permissionManifestVersion: 2,
     });
     expect(disconnected.status).toBe('revoked');
     expect(disconnected.consentAttemptId).not.toBe(ATTEMPT_ID);

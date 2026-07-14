@@ -633,7 +633,7 @@ export async function disconnectCustomerGraphReadConnection(input: {
       tenantId: null,
       clientId: '',
       displayName: null,
-      permissionManifestVersion: 0,
+      permissionManifestVersion: current.permissionManifestVersion,
       observedGrants: [],
       grantsVerifiedAt: null,
       lastVerifiedAt: null,
