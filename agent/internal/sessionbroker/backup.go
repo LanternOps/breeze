@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -19,6 +20,19 @@ const (
 
 // backupHelperScopes defines allowed IPC scopes for the backup helper.
 var backupHelperScopes = []string{"backup"}
+
+// backupBinaryName returns the on-disk filename of the breeze-backup helper as
+// installed alongside the agent. Unlike the Windows-only breeze-user-helper,
+// the backup helper is built for every supported OS (see agent/Makefile), so
+// the executable suffix must be applied conditionally: breeze-backup.exe on
+// Windows, breeze-backup elsewhere. Taking goos as a parameter keeps this
+// testable on every platform the agent builds on.
+func backupBinaryName(goos string) string {
+	if goos == "windows" {
+		return "breeze-backup.exe"
+	}
+	return "breeze-backup"
+}
 
 // backupHelper tracks the backup helper process and session.
 type backupHelper struct {
@@ -77,7 +91,7 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (*Session, error) {
 			return nil, fmt.Errorf("failed to find self path: %w", err)
 		}
 		dir := filepath.Dir(self)
-		path = filepath.Join(dir, "breeze-backup")
+		path = filepath.Join(dir, backupBinaryName(runtime.GOOS))
 	}
 
 	if _, err := os.Stat(path); err != nil {
