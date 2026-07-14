@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -15,6 +17,7 @@ const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
 
 const mocks = vi.hoisted(() => ({
   select: vi.fn(), execute: vi.fn(), accessibleOrgIds: [] as string[],
+  projections: [] as Array<Record<string, unknown>>,
 }));
 vi.mock('../../db', () => ({
   db: { select: mocks.select, execute: mocks.execute }, hasDbAccessContext: () => true,
@@ -61,8 +64,11 @@ function inventoryRow(id = DEVICE_A) {
     },
     disks: [{ id: '71111111-1111-4111-8111-111111111111', mountPoint: 'C:', device: 'Disk 0', fsType: 'NTFS', totalGb: 1000, usedGb: 900 }],
     diskCount: 1,
-    interfaces: [{ id: '72222222-2222-4222-8222-222222222222', name: 'Ethernet', macAddress: '00:11:22:33:44:55', primary: true }],
-    interfaceCount: 1,
+    interfaces: [
+      { id: '72222222-2222-4222-8222-222222222222', name: 'Ethernet', macAddress: '00:11:22:33:44:55', primary: true },
+      { id: '72222222-2222-4222-8222-222222222223', name: 'Wi-Fi', macAddress: '00:11:22:33:44:66', primary: false },
+    ],
+    interfaceCount: 2,
     addresses: [
       { id: '73333333-3333-4333-8333-333333333333', interfaceName: 'Ethernet', address: '10.0.0.10', family: 'ipv4', assignment: 'static', subnetMask: '255.255.255.0', gateway: '10.0.0.1', dnsServers: ['10.0.0.2'], active: true, firstSeenAt: '2026-01-01T00:00:00.000Z', deactivatedAt: null },
       { id: '74444444-4444-4444-8444-444444444444', interfaceName: 'Wi-Fi', address: '10.0.0.55', family: 'ipv4', assignment: 'dhcp', subnetMask: '255.255.255.0', gateway: '10.0.0.1', dnsServers: ['10.0.0.2'], active: true, firstSeenAt: '2026-01-02T00:00:00.000Z', deactivatedAt: null },
@@ -101,8 +107,11 @@ function request(path: string, scope = 'inventory:read', apiKey = 'test-key') {
 
 describe('partner reconstruction inventory exports', () => {
   beforeEach(() => {
-    vi.clearAllMocks(); results = []; mocks.accessibleOrgIds = [ORG_ID];
-    mocks.select.mockImplementation(() => query(results.shift() ?? []));
+    vi.clearAllMocks(); results = []; mocks.accessibleOrgIds = [ORG_ID]; mocks.projections.length = 0;
+    mocks.select.mockImplementation((projection: Record<string, unknown>) => {
+      mocks.projections.push(projection);
+      return query(results.shift() ?? []);
+    });
     mocks.execute.mockResolvedValue([{ snapshotAt: new Date('2026-07-14T12:00:00.000Z') }]);
     app = new Hono().route('/partner-api', partnerApiRoutes);
   });
@@ -137,7 +146,6 @@ describe('partner reconstruction inventory exports', () => {
       subjectType: 'device', deviceId: DEVICE_A, orgId: ORG_ID, siteId: SITE_ID,
       hardware: { processor: { model: 'Xeon Gold', cores: 16, threads: 32 }, memory: { totalMb: 65536 }, firmware: { biosVersion: '1.4.2' } },
       disks: [{ mountPoint: 'C:', totalGb: 1000 }],
-      interfaces: [{ name: 'Ethernet', macAddress: '00:11:22:33:44:55' }],
       addresses: [
         expect.objectContaining({ address: '10.0.0.10', assignment: 'static', reservationEligible: true }),
         expect.objectContaining({ address: '10.0.0.55', assignment: 'dhcp', reservationEligible: false }),
@@ -145,6 +153,9 @@ describe('partner reconstruction inventory exports', () => {
       warranty: { status: 'active', endsOn: '2028-01-01' },
       virtualMachines: [{ externalId: 'vm-guid', name: 'APP01', memoryMb: 8192 }],
     });
+    expect(body.data[0].interfaces).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Ethernet', macAddress: '00:11:22:33:44:55' }),
+    ]));
     const serialized = JSON.stringify(body).toLowerCase();
     for (const forbidden of ['providertoken', 'usedgb', 'lastsyncerror', 'state', 'checkpoints', 'openports', 'secret']) {
       expect(serialized).not.toContain(forbidden);
@@ -161,6 +172,53 @@ describe('partner reconstruction inventory exports', () => {
       networkSegments: [{ id: '79999999-9999-4999-8999-999999999999', cidr: '10.0.0.0/24' }],
     })]);
     expect(JSON.stringify(body)).not.toMatch(/openPorts|secret/i);
+  });
+
+  it('exports approved printers as durable reconstruction equipment', async () => {
+    const printer = {
+      id: '76666666-6666-4666-8666-666666666667', type: 'printer', name: 'front-office-printer',
+      address: '10.0.0.25', macAddress: '00:aa:bb:cc:dd:ef', manufacturer: 'HP', model: 'LaserJet',
+    };
+    results.push([]);
+    results.push([{ ...siteInventoryRow(), networkEquipment: [printer], networkEquipmentCount: 1 }]);
+    const response = await request('/partner-api/device-inventory');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0].networkEquipment).toEqual([printer]);
+  });
+
+  it('omits IP history whose current interface endpoint is missing', async () => {
+    const source = inventoryRow();
+    results.push([{
+      ...source,
+      addresses: [{
+        ...source.addresses[0],
+        id: '73333333-3333-4333-8333-333333333334',
+        interfaceId: '70000000-0000-4000-8000-000000000000',
+        interfaceName: 'Removed adapter',
+      }],
+      addressCount: 0,
+    }]);
+    results.push([]);
+    const response = await request('/partner-api/device-inventory');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0].addresses).toEqual([]);
+  });
+
+  it('builds RFC-normalized interface, address, and VM identities in SQL', async () => {
+    results.push([], []);
+    expect((await request('/partner-api/device-inventory')).status).toBe(200);
+    const projection = mocks.projections[0]!;
+    const dialect = new PgDialect();
+    for (const [field, namespace] of [
+      ['interfaces', 'interface'],
+      ['addresses', 'address'],
+      ['virtualMachines', 'hyperv-vm'],
+    ] as const) {
+      const query = dialect.sqlToQuery(projection[field] as SQL);
+      expect(query.sql).toContain('breeze_partner_export_stable_uuid');
+      expect(query.sql).not.toContain('md5(');
+      expect(query.params).toContain(namespace);
+    }
   });
 
   it('exports a bounded complete software snapshot without raw uninstall/hash/location fields', async () => {

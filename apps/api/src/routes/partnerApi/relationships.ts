@@ -26,7 +26,10 @@ import {
   type ExportQueryInput,
 } from './organizations';
 import { deviceRelationshipsExportEnvelopeSchema } from './schemas';
-import { stablePartnerExportUuid } from './identity';
+import {
+  PARTNER_EXPORT_DERIVED_ID_NAMESPACE,
+  stablePartnerExportUuid,
+} from './identity';
 
 export const PARTNER_RELATIONSHIP_EDGE_LIMIT = 500;
 
@@ -110,7 +113,9 @@ function projectDeviceRelationships(input: unknown) {
       { interfaceName: typeof source.interfaceName === 'string' ? source.interfaceName.slice(0, 1000) : null },
     ));
   }
+  const interfaceIds = new Set(records(row.interfaceEdges).map((source) => String(source.interfaceId)));
   for (const source of records(row.addressEdges)) {
+    if (!interfaceIds.has(String(source.interfaceId))) continue;
     const assignment = typeof source.assignment === 'string' ? source.assignment : 'unknown';
     edges.push(edge(
       'interface_address', { type: 'interface', id: source.interfaceId }, { type: 'address', id: source.addressId },
@@ -176,37 +181,67 @@ async function selectDeviceRows(orgIds: string[], query: ExportQueryInput) {
     createdAt: devices.createdAt, updatedAt, linkGroupId: devices.linkGroupId, linkGroupRole: devices.linkGroupRole,
     interfaceEdges: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'interfaceId') FROM (
       SELECT jsonb_build_object(
-        'interfaceId', md5('interface:' || n.device_id::text || ':' || n.interface_name || ':' || COALESCE(n.mac_address, ''))::uuid,
+        'interfaceId', public.breeze_partner_export_stable_uuid(
+          ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.interface},
+          n.device_id::text || ':' || n.interface_name || ':' || COALESCE(n.mac_address, '')
+        ),
         'interfaceName', n.interface_name
       ) item FROM ${deviceNetwork} n WHERE n.device_id = ${devices.id} AND n.org_id = ${devices.orgId}
       ORDER BY n.interface_name, n.mac_address NULLS LAST LIMIT ${PARTNER_RELATIONSHIP_EDGE_LIMIT}
     ) bounded), '[]'::jsonb)`,
     addressEdges: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'addressId') FROM (
       SELECT jsonb_build_object(
-        'addressId', md5('address:' || a.device_id::text || ':' || a.interface_name || ':' || a.ip_address || ':' || a.ip_type)::uuid,
-        'interfaceId', md5('interface:' || a.device_id::text || ':' || a.interface_name || ':' || COALESCE(a.mac_address, ''))::uuid,
+        'addressId', public.breeze_partner_export_stable_uuid(
+          ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.address},
+          a.device_id::text || ':' || a.interface_name || ':' || a.ip_address || ':' || a.ip_type
+        ),
+        'interfaceId', public.breeze_partner_export_stable_uuid(
+          ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.interface},
+          a.device_id::text || ':' || a.interface_name || ':' || COALESCE(a.mac_address, '')
+        ),
         'assignment', a.assignment_type
       ) item FROM ${deviceIpHistory} a WHERE a.device_id = ${devices.id} AND a.org_id = ${devices.orgId}
+        AND EXISTS (
+          SELECT 1 FROM ${deviceNetwork} current_interface
+          WHERE current_interface.device_id = a.device_id AND current_interface.org_id = a.org_id
+            AND current_interface.interface_name = a.interface_name
+            AND current_interface.mac_address IS NOT DISTINCT FROM a.mac_address
+        )
       ORDER BY a.interface_name, a.ip_address, a.ip_type LIMIT ${PARTNER_RELATIONSHIP_EDGE_LIMIT}
     ) bounded), '[]'::jsonb)`,
     vmEdges: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'vmId') FROM (
-      SELECT jsonb_build_object('vmId', md5('hyperv-vm:' || v.device_id::text || ':' || v.vm_id)::uuid) item
+      SELECT jsonb_build_object(
+        'vmId', public.breeze_partner_export_stable_uuid(
+          ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.virtualMachine},
+          v.device_id::text || ':' || v.vm_id
+        )
+      ) item
       FROM ${hypervVms} v WHERE v.device_id = ${devices.id} AND v.org_id = ${devices.orgId}
       ORDER BY v.vm_id LIMIT ${PARTNER_RELATIONSHIP_EDGE_LIMIT}
     ) bounded), '[]'::jsonb)`,
     peerEdges: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'deviceId') FROM (
       SELECT jsonb_build_object('deviceId', p.id, 'role', p.link_group_role) item
-      FROM ${devices} p WHERE p.link_group_id = ${devices.linkGroupId} AND p.org_id = ${devices.orgId} AND p.id <> ${devices.id}
+      FROM ${devices} p WHERE p.link_group_id = ${devices.linkGroupId}
+        AND p.org_id = ${devices.orgId} AND p.site_id = ${devices.siteId} AND p.id <> ${devices.id}
       ORDER BY p.id LIMIT ${PARTNER_RELATIONSHIP_EDGE_LIMIT}
     ) bounded), '[]'::jsonb)`,
     edgeCount: sql<number>`(
       1
       + (SELECT COUNT(*) FROM ${deviceNetwork} n WHERE n.device_id = ${devices.id} AND n.org_id = ${devices.orgId})
-      + (SELECT COUNT(*) FROM ${deviceIpHistory} a WHERE a.device_id = ${devices.id} AND a.org_id = ${devices.orgId})
+      + (SELECT COUNT(*) FROM ${deviceIpHistory} a
+          WHERE a.device_id = ${devices.id} AND a.org_id = ${devices.orgId}
+            AND EXISTS (
+              SELECT 1 FROM ${deviceNetwork} current_interface
+              WHERE current_interface.device_id = a.device_id AND current_interface.org_id = a.org_id
+                AND current_interface.interface_name = a.interface_name
+                AND current_interface.mac_address IS NOT DISTINCT FROM a.mac_address
+            ))
       + (SELECT COUNT(*) FROM ${hypervVms} v WHERE v.device_id = ${devices.id} AND v.org_id = ${devices.orgId})
-      + (SELECT COUNT(*) FROM ${devices} p WHERE p.link_group_id = ${devices.linkGroupId} AND p.org_id = ${devices.orgId} AND p.id <> ${devices.id})
+      + (SELECT COUNT(*) FROM ${devices} p WHERE p.link_group_id = ${devices.linkGroupId}
+          AND p.org_id = ${devices.orgId} AND p.site_id = ${devices.siteId} AND p.id <> ${devices.id})
     )::integer`,
   }).from(devices)
+    .innerJoin(sites, and(eq(sites.id, devices.siteId), eq(sites.orgId, devices.orgId)))
     .leftJoin(partnerExportDeviceMaterialState, and(
       eq(partnerExportDeviceMaterialState.deviceId, devices.id), eq(partnerExportDeviceMaterialState.orgId, devices.orgId),
     ))
@@ -233,17 +268,27 @@ async function selectSiteRows(orgIds: string[], query: ExportQueryInput) {
       ) item FROM ${networkTopology} t
       WHERE t.site_id = ${sites.id} AND t.org_id = ${sites.orgId}
         AND t.source_type IN ('device', 'discovered_asset') AND t.target_type IN ('device', 'discovered_asset')
-        AND (t.source_type = 'device' OR EXISTS (
-          SELECT 1 FROM public.discovered_assets source_asset
-          WHERE source_asset.id = t.source_id AND source_asset.org_id = t.org_id
-            AND source_asset.approval_status = 'approved'
-            AND source_asset.asset_type IN ('router', 'switch', 'firewall', 'access_point', 'nas')
+        AND (t.source_type <> 'device' OR EXISTS (
+          SELECT 1 FROM public.devices endpoint_device
+          WHERE endpoint_device.id = t.source_id AND endpoint_device.org_id = t.org_id
+            AND endpoint_device.site_id = t.site_id
         ))
-        AND (t.target_type = 'device' OR EXISTS (
-          SELECT 1 FROM public.discovered_assets target_asset
-          WHERE target_asset.id = t.target_id AND target_asset.org_id = t.org_id
-            AND target_asset.approval_status = 'approved'
-            AND target_asset.asset_type IN ('router', 'switch', 'firewall', 'access_point', 'nas')
+        AND (t.source_type <> 'discovered_asset' OR EXISTS (
+          SELECT 1 FROM public.discovered_assets endpoint_asset
+          WHERE endpoint_asset.id = t.source_id AND endpoint_asset.org_id = t.org_id
+            AND endpoint_asset.site_id = t.site_id AND endpoint_asset.approval_status = 'approved'
+            AND endpoint_asset.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')
+        ))
+        AND (t.target_type <> 'device' OR EXISTS (
+          SELECT 1 FROM public.devices endpoint_device
+          WHERE endpoint_device.id = t.target_id AND endpoint_device.org_id = t.org_id
+            AND endpoint_device.site_id = t.site_id
+        ))
+        AND (t.target_type <> 'discovered_asset' OR EXISTS (
+          SELECT 1 FROM public.discovered_assets endpoint_asset
+          WHERE endpoint_asset.id = t.target_id AND endpoint_asset.org_id = t.org_id
+            AND endpoint_asset.site_id = t.site_id AND endpoint_asset.approval_status = 'approved'
+            AND endpoint_asset.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')
         ))
       ORDER BY t.id LIMIT ${topologyLimit}
     ) bounded), '[]'::jsonb)`,
@@ -251,17 +296,27 @@ async function selectSiteRows(orgIds: string[], query: ExportQueryInput) {
       SELECT COUNT(*) FROM ${networkTopology} t
       WHERE t.site_id = ${sites.id} AND t.org_id = ${sites.orgId}
         AND t.source_type IN ('device', 'discovered_asset') AND t.target_type IN ('device', 'discovered_asset')
-        AND (t.source_type = 'device' OR EXISTS (
-          SELECT 1 FROM public.discovered_assets source_asset
-          WHERE source_asset.id = t.source_id AND source_asset.org_id = t.org_id
-            AND source_asset.approval_status = 'approved'
-            AND source_asset.asset_type IN ('router', 'switch', 'firewall', 'access_point', 'nas')
+        AND (t.source_type <> 'device' OR EXISTS (
+          SELECT 1 FROM public.devices endpoint_device
+          WHERE endpoint_device.id = t.source_id AND endpoint_device.org_id = t.org_id
+            AND endpoint_device.site_id = t.site_id
         ))
-        AND (t.target_type = 'device' OR EXISTS (
-          SELECT 1 FROM public.discovered_assets target_asset
-          WHERE target_asset.id = t.target_id AND target_asset.org_id = t.org_id
-            AND target_asset.approval_status = 'approved'
-            AND target_asset.asset_type IN ('router', 'switch', 'firewall', 'access_point', 'nas')
+        AND (t.source_type <> 'discovered_asset' OR EXISTS (
+          SELECT 1 FROM public.discovered_assets endpoint_asset
+          WHERE endpoint_asset.id = t.source_id AND endpoint_asset.org_id = t.org_id
+            AND endpoint_asset.site_id = t.site_id AND endpoint_asset.approval_status = 'approved'
+            AND endpoint_asset.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')
+        ))
+        AND (t.target_type <> 'device' OR EXISTS (
+          SELECT 1 FROM public.devices endpoint_device
+          WHERE endpoint_device.id = t.target_id AND endpoint_device.org_id = t.org_id
+            AND endpoint_device.site_id = t.site_id
+        ))
+        AND (t.target_type <> 'discovered_asset' OR EXISTS (
+          SELECT 1 FROM public.discovered_assets endpoint_asset
+          WHERE endpoint_asset.id = t.target_id AND endpoint_asset.org_id = t.org_id
+            AND endpoint_asset.site_id = t.site_id AND endpoint_asset.approval_status = 'approved'
+            AND endpoint_asset.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')
         ))
     ))::integer`,
   }).from(sites)

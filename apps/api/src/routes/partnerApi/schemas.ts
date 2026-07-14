@@ -245,7 +245,7 @@ export const partnerDeviceInventoryExportRecordSchema = strictPartnerExportRecor
 });
 
 const partnerNetworkEquipmentSchema = z.object({
-  id: z.string().uuid(), type: z.enum(['router', 'switch', 'firewall', 'access_point', 'nas']),
+  id: z.string().uuid(), type: z.enum(['printer', 'router', 'switch', 'firewall', 'access_point', 'nas']),
   name: z.string().max(255).nullable(), address: z.string().min(1).max(45), macAddress: z.string().max(17).nullable(),
   manufacturer: z.string().max(255).nullable(), model: z.string().max(255).nullable(),
 }).strict();

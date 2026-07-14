@@ -34,7 +34,10 @@ import {
   deviceInventoryExportEnvelopeSchema,
   deviceSoftwareExportEnvelopeSchema,
 } from './schemas';
-import { stablePartnerExportUuid } from './identity';
+import {
+  PARTNER_EXPORT_DERIVED_ID_NAMESPACE,
+  stablePartnerExportInterfaceUuid,
+} from './identity';
 
 export const PARTNER_INVENTORY_CHILD_LIMIT = 500;
 export const PARTNER_SOFTWARE_CHILD_LIMIT = 1000;
@@ -129,13 +132,18 @@ function projectDeviceInventory(input: unknown) {
     macAddress: nullableString(networkInterface.macAddress, 17), primary: boolean(networkInterface.primary ?? networkInterface.isPrimary),
   }));
   const interfaceByName = new Map(interfaces.map((entry) => [entry.name, entry.id]));
+  const interfaceIds = new Set(interfaces.map((entry) => String(entry.id)));
   const addresses = array(row.addresses, PARTNER_INVENTORY_CHILD_LIMIT).map((address) => {
     const assignment = String(address.assignment ?? address.assignmentType ?? 'unknown');
     const interfaceName = String(address.interfaceName ?? '').slice(0, 1000);
     return {
       id: address.id,
       interfaceId: address.interfaceId ?? interfaceByName.get(interfaceName)
-        ?? stablePartnerExportUuid('interface', `${String(row.subjectId)}:${interfaceName}:${String(address.macAddress ?? '')}`),
+        ?? stablePartnerExportInterfaceUuid(
+          String(row.subjectId),
+          interfaceName,
+          typeof address.macAddress === 'string' ? address.macAddress : null,
+        ),
       interfaceName,
       address: String(address.address ?? address.ipAddress ?? '').slice(0, 45),
       family: address.family ?? address.ipType ?? 'ipv4', assignment,
@@ -147,7 +155,7 @@ function projectDeviceInventory(input: unknown) {
       active: boolean(address.active ?? address.isActive), firstSeenAt: timestamp(address.firstSeenAt ?? address.firstSeen),
       deactivatedAt: address.deactivatedAt ? timestamp(address.deactivatedAt) : null,
     };
-  });
+  }).filter((address) => interfaceIds.has(String(address.interfaceId)));
   const virtualMachines = array(row.virtualMachines, PARTNER_INVENTORY_CHILD_LIMIT).map((vm) => ({
     id: vm.id, externalId: String(vm.externalId ?? vm.vmId ?? '').slice(0, 64),
     name: String(vm.name ?? vm.vmName ?? '').slice(0, 256), generation: nonnegativeInteger(vm.generation),
@@ -183,7 +191,7 @@ function projectDeviceInventory(input: unknown) {
   };
 }
 
-const DURABLE_EQUIPMENT_TYPES = new Set(['router', 'switch', 'firewall', 'access_point', 'nas']);
+const DURABLE_EQUIPMENT_TYPES = new Set(['printer', 'router', 'switch', 'firewall', 'access_point', 'nas']);
 
 function projectSiteInventory(input: unknown) {
   const row = object(input);
@@ -244,7 +252,10 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
     diskCount: sql<number>`(SELECT COUNT(*)::integer FROM ${deviceDisks} d WHERE d.device_id = ${devices.id} AND d.org_id = ${devices.orgId})`,
     interfaces: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'id') FROM (
       SELECT jsonb_build_object(
-        'id', md5('interface:' || n.device_id::text || ':' || n.interface_name || ':' || COALESCE(n.mac_address, ''))::uuid,
+        'id', public.breeze_partner_export_stable_uuid(
+          ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.interface},
+          n.device_id::text || ':' || n.interface_name || ':' || COALESCE(n.mac_address, '')
+        ),
         'name', n.interface_name, 'macAddress', n.mac_address, 'primary', n.is_primary
       ) item FROM ${deviceNetwork} n WHERE n.device_id = ${devices.id} AND n.org_id = ${devices.orgId}
       ORDER BY n.interface_name, n.mac_address NULLS LAST LIMIT ${PARTNER_INVENTORY_CHILD_LIMIT}
@@ -252,23 +263,47 @@ async function selectDeviceInventoryRows(orgIds: string[], query: ExportQueryInp
     interfaceCount: sql<number>`(SELECT COUNT(*)::integer FROM ${deviceNetwork} n WHERE n.device_id = ${devices.id} AND n.org_id = ${devices.orgId})`,
     addresses: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'id') FROM (
       SELECT jsonb_build_object(
-        'id', md5('address:' || a.device_id::text || ':' || a.interface_name || ':' || a.ip_address || ':' || a.ip_type)::uuid,
-        'interfaceId', md5('interface:' || a.device_id::text || ':' || a.interface_name || ':' || COALESCE(a.mac_address, ''))::uuid,
+        'id', public.breeze_partner_export_stable_uuid(
+          ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.address},
+          a.device_id::text || ':' || a.interface_name || ':' || a.ip_address || ':' || a.ip_type
+        ),
+        'interfaceId', public.breeze_partner_export_stable_uuid(
+          ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.interface},
+          a.device_id::text || ':' || a.interface_name || ':' || COALESCE(a.mac_address, '')
+        ),
         'interfaceName', a.interface_name, 'address', a.ip_address, 'family', a.ip_type,
         'assignment', a.assignment_type, 'subnetMask', a.subnet_mask, 'gateway', a.gateway,
         'dnsServers', COALESCE(a.dns_servers, ARRAY[]::text[]), 'active', a.is_active,
         'firstSeenAt', a.first_seen, 'deactivatedAt', a.deactivated_at
       ) item FROM ${deviceIpHistory} a WHERE a.device_id = ${devices.id} AND a.org_id = ${devices.orgId}
+        AND EXISTS (
+          SELECT 1 FROM ${deviceNetwork} current_interface
+          WHERE current_interface.device_id = a.device_id AND current_interface.org_id = a.org_id
+            AND current_interface.interface_name = a.interface_name
+            AND current_interface.mac_address IS NOT DISTINCT FROM a.mac_address
+        )
       ORDER BY a.interface_name, a.ip_address, a.ip_type LIMIT ${PARTNER_INVENTORY_CHILD_LIMIT}
     ) bounded), '[]'::jsonb)`,
-    addressCount: sql<number>`(SELECT COUNT(*)::integer FROM ${deviceIpHistory} a WHERE a.device_id = ${devices.id} AND a.org_id = ${devices.orgId})`,
+    addressCount: sql<number>`(
+      SELECT COUNT(*)::integer FROM ${deviceIpHistory} a
+      WHERE a.device_id = ${devices.id} AND a.org_id = ${devices.orgId}
+        AND EXISTS (
+          SELECT 1 FROM ${deviceNetwork} current_interface
+          WHERE current_interface.device_id = a.device_id AND current_interface.org_id = a.org_id
+            AND current_interface.interface_name = a.interface_name
+            AND current_interface.mac_address IS NOT DISTINCT FROM a.mac_address
+        )
+    )`,
     warranty: sql<unknown>`(
       SELECT jsonb_build_object('status', w.status, 'startsOn', w.warranty_start_date, 'endsOn', w.warranty_end_date, 'subscription', w.is_subscription)
       FROM ${deviceWarranty} w WHERE w.device_id = ${devices.id} AND w.org_id = ${devices.orgId} LIMIT 1
     )`,
     virtualMachines: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'id') FROM (
       SELECT jsonb_build_object(
-        'id', md5('hyperv-vm:' || v.device_id::text || ':' || v.vm_id)::uuid,
+        'id', public.breeze_partner_export_stable_uuid(
+          ${PARTNER_EXPORT_DERIVED_ID_NAMESPACE.virtualMachine},
+          v.device_id::text || ':' || v.vm_id
+        ),
         'externalId', v.vm_id, 'name', v.vm_name, 'generation', v.generation,
         'memoryMb', v.memory_mb, 'processorCount', v.processor_count,
         'rctEnabled', COALESCE(v.rct_enabled, false), 'passthroughDisks', COALESCE(v.has_passthrough_disks, false)
@@ -300,13 +335,13 @@ async function selectSiteInventoryRows(orgIds: string[], query: ExportQueryInput
         'macAddress', a.mac_address, 'manufacturer', a.manufacturer, 'model', a.model
       ) item FROM ${discoveredAssets} a
       WHERE a.site_id = ${sites.id} AND a.org_id = ${sites.orgId} AND a.approval_status = 'approved'
-        AND a.asset_type IN ('router', 'switch', 'firewall', 'access_point', 'nas')
+        AND a.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')
       ORDER BY a.id LIMIT ${PARTNER_INVENTORY_CHILD_LIMIT}
     ) bounded), '[]'::jsonb)`,
     networkEquipmentCount: sql<number>`(
       SELECT COUNT(*)::integer FROM ${discoveredAssets} a
       WHERE a.site_id = ${sites.id} AND a.org_id = ${sites.orgId} AND a.approval_status = 'approved'
-        AND a.asset_type IN ('router', 'switch', 'firewall', 'access_point', 'nas')
+        AND a.asset_type IN ('printer', 'router', 'switch', 'firewall', 'access_point', 'nas')
     )`,
     networkSegments: sql<unknown[]>`COALESCE((SELECT jsonb_agg(item ORDER BY item->>'id') FROM (
       SELECT jsonb_build_object('id', b.id, 'cidr', b.subnet) item

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -13,7 +15,10 @@ const SITE_BATCH = '93333333-3333-4333-8333-333333333333';
 const CREATED_AT = new Date('2026-07-10T12:00:00.000Z');
 const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
 
-const mocks = vi.hoisted(() => ({ select: vi.fn(), execute: vi.fn(), accessibleOrgIds: [] as string[] }));
+const mocks = vi.hoisted(() => ({
+  select: vi.fn(), execute: vi.fn(), accessibleOrgIds: [] as string[],
+  projections: [] as Array<Record<string, unknown>>,
+}));
 vi.mock('../../db', () => ({ db: { select: mocks.select, execute: mocks.execute }, hasDbAccessContext: () => true }));
 vi.mock('../../config/env', () => ({
   PARTNER_API_CURSOR_SIGNING_KEY: Buffer.from('0123456789abcdef0123456789abcdef', 'utf8'),
@@ -71,8 +76,11 @@ function request(path: string, scope = 'inventory:read', apiKey = 'test-key') {
 
 describe('partner durable relationship export', () => {
   beforeEach(() => {
-    vi.clearAllMocks(); results = []; mocks.accessibleOrgIds = [ORG_ID];
-    mocks.select.mockImplementation(() => query(results.shift() ?? []));
+    vi.clearAllMocks(); results = []; mocks.accessibleOrgIds = [ORG_ID]; mocks.projections.length = 0;
+    mocks.select.mockImplementation((projection: Record<string, unknown>) => {
+      mocks.projections.push(projection);
+      return query(results.shift() ?? []);
+    });
     mocks.execute.mockResolvedValue([{ snapshotAt: new Date('2026-07-14T12:00:00.000Z') }]);
     app = new Hono().route('/partner-api', partnerApiRoutes);
   });
@@ -140,6 +148,69 @@ describe('partner durable relationship export', () => {
     results.push([siteRow()]);
     const second = await (await request('/partner-api/device-relationships')).json();
     expect(second.data).toEqual(first.data);
+  });
+
+  it('omits an address edge whose current interface endpoint is missing', async () => {
+    const source = row();
+    results.push([{
+      ...source,
+      addressEdges: [
+        ...source.addressEdges,
+        {
+          addressId: '73333333-3333-4333-8333-333333333334',
+          interfaceId: '70000000-0000-4000-8000-000000000000',
+          assignment: 'static',
+        },
+      ],
+      edgeCount: 6,
+    }]);
+    results.push([]);
+    const response = await request('/partner-api/device-relationships');
+    expect(response.status).toBe(200);
+    const edges = (await response.json()).data[0].edges;
+    expect(edges).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'interface_address',
+        from: { type: 'interface', id: '70000000-0000-4000-8000-000000000000' },
+      }),
+    ]));
+  });
+
+  it('resolves topology and link endpoints in the same organization and site', async () => {
+    results.push([], []);
+    expect((await request('/partner-api/device-relationships')).status).toBe(200);
+    const dialect = new PgDialect();
+    const deviceProjection = mocks.projections[0]!;
+    const siteProjection = mocks.projections[1]!;
+
+    const peerQuery = dialect.sqlToQuery(deviceProjection.peerEdges as SQL);
+    expect(peerQuery.sql).toContain('p.org_id = "devices"."org_id"');
+    expect(peerQuery.sql).toContain('p.site_id = "devices"."site_id"');
+
+    const topologyQuery = dialect.sqlToQuery(siteProjection.topologyEdges as SQL);
+    expect(topologyQuery.sql.match(/exists/gi)).toHaveLength(4);
+    expect(topologyQuery.sql).toContain('endpoint_device.org_id = t.org_id');
+    expect(topologyQuery.sql).toContain('endpoint_device.site_id = t.site_id');
+    expect(topologyQuery.sql).toContain('endpoint_asset.org_id = t.org_id');
+    expect(topologyQuery.sql).toContain('endpoint_asset.site_id = t.site_id');
+    expect(topologyQuery.sql).toContain("'printer'");
+  });
+
+  it('builds relationship child IDs with the RFC-normalizing SQL helper', async () => {
+    results.push([], []);
+    expect((await request('/partner-api/device-relationships')).status).toBe(200);
+    const projection = mocks.projections[0]!;
+    const dialect = new PgDialect();
+    for (const [field, namespace] of [
+      ['interfaceEdges', 'interface'],
+      ['addressEdges', 'address'],
+      ['vmEdges', 'hyperv-vm'],
+    ] as const) {
+      const query = dialect.sqlToQuery(projection[field] as SQL);
+      expect(query.sql).toContain('breeze_partner_export_stable_uuid');
+      expect(query.sql).not.toContain('md5(');
+      expect(query.params).toContain(namespace);
+    }
   });
 
   it('marks relation batches incomplete when their bounded source cardinality overflows', async () => {
