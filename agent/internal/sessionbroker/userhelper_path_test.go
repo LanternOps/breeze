@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -67,17 +68,30 @@ func TestHelperFallbackWarningOwnerWarnsOncePerOwner(t *testing.T) {
 		MainBinaryFallback: true,
 	}
 
-	var lifecycleOwner helperFallbackWarningOwner
-	lifecycleOwner.WarnIfFallback(resolved)
-	lifecycleOwner.WarnIfFallback(resolved)
-
-	var standaloneOwner helperFallbackWarningOwner
-	standaloneOwner.WarnIfFallback(resolved)
-	standaloneOwner.WarnIfFallback(resolved)
+	owners := []*helperFallbackWarningOwner{{}, {}}
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var calls sync.WaitGroup
+	const callsPerOwner = 32
+	ready.Add(len(owners) * callsPerOwner)
+	calls.Add(len(owners) * callsPerOwner)
+	for _, owner := range owners {
+		for range callsPerOwner {
+			go func(owner *helperFallbackWarningOwner) {
+				defer calls.Done()
+				ready.Done()
+				<-start
+				owner.WarnIfFallback(resolved)
+			}(owner)
+		}
+	}
+	ready.Wait()
+	close(start)
+	calls.Wait()
 
 	const warning = "breeze-user-helper.exe missing"
 	if got := strings.Count(buf.String(), warning); got != 2 {
-		t.Fatalf("warning count = %d, want one for each of two owners; logs: %s", got, buf.String())
+		t.Fatalf("warning count = %d, want one for each of two concurrent owners; logs: %s", got, buf.String())
 	}
 }
 

@@ -185,11 +185,12 @@ type suspendedHelper struct {
 }
 
 type windowsSpawnOps struct {
-	createSuspended  func(HelperKey) (*suspendedHelper, error)
-	resumeThread     func(windows.Handle) (uint32, error)
-	terminateProcess func(windows.Handle, uint32) error
-	closeHandle      func(windows.Handle) error
-	closeStarting    func()
+	resolveExecutable func() (ResolvedHelperExecutable, error)
+	createSuspended   func(HelperKey, ResolvedHelperExecutable) (*suspendedHelper, error)
+	resumeThread      func(windows.Handle) (uint32, error)
+	terminateProcess  func(windows.Handle, uint32) error
+	closeHandle       func(windows.Handle) error
+	closeStarting     func()
 }
 
 // windowsHelperSpawner is the single owner of the helper Job Object. Its
@@ -212,6 +213,9 @@ func newWindowsHelperSpawner() (*windowsHelperSpawner, error) {
 }
 
 func newWindowsHelperSpawnerWithJob(job helperJobOwner, ops windowsSpawnOps) *windowsHelperSpawner {
+	if ops.resolveExecutable == nil {
+		ops.resolveExecutable = userHelperExePath
+	}
 	if ops.createSuspended == nil {
 		ops.createSuspended = createHelperSuspended
 	}
@@ -237,7 +241,13 @@ func (s *windowsHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 		return nil, fmt.Errorf("Windows helper spawner is closed")
 	}
 
-	pending, err := s.ops.createSuspended(key)
+	resolvedExe, err := s.ops.resolveExecutable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve helper executable: %w", err)
+	}
+	s.fallbackWarning.WarnIfFallback(resolvedExe)
+
+	pending, err := s.ops.createSuspended(key, resolvedExe)
 	if err != nil {
 		return nil, err
 	}
@@ -249,10 +259,6 @@ func (s *windowsHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 			_ = s.ops.closeHandle(pending.process)
 		}
 	}()
-	s.fallbackWarning.WarnIfFallback(ResolvedHelperExecutable{
-		Path:               pending.binaryPath,
-		MainBinaryFallback: pending.mainBinaryFallback,
-	})
 	if err := s.job.Assign(pending.process); err != nil {
 		return nil, fmt.Errorf("assign helper to job: %w", err)
 	}
@@ -297,17 +303,17 @@ func (s *windowsHelperSpawner) Close() error {
 	return s.job.Close()
 }
 
-func createHelperSuspended(key HelperKey) (*suspendedHelper, error) {
+func createHelperSuspended(key HelperKey, resolvedExe ResolvedHelperExecutable) (*suspendedHelper, error) {
 	if key.Role == "user" {
-		return createUserHelperSuspended(key.WindowsSessionID)
+		return createUserHelperSuspended(key.WindowsSessionID, resolvedExe)
 	}
-	return createSystemHelperSuspended(key.WindowsSessionID)
+	return createSystemHelperSuspended(key.WindowsSessionID, resolvedExe)
 }
 
 // createSystemHelperSuspended creates the SYSTEM-token helper without allowing
 // its primary thread to run. The caller must assign it to the Job Object before
 // resuming it.
-func createSystemHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
+func createSystemHelperSuspended(sessionID uint32, resolvedExe ResolvedHelperExecutable) (*suspendedHelper, error) {
 	var processToken windows.Token
 	proc, err := windows.GetCurrentProcess()
 	if err != nil {
@@ -340,10 +346,6 @@ func createSystemHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
 		return nil, fmt.Errorf("SetTokenInformation(TokenSessionId=%d): %w", sessionID, err)
 	}
 
-	resolvedExe, err := userHelperExePath()
-	if err != nil {
-		return nil, fmt.Errorf("userHelperExePath: %w", err)
-	}
 	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(resolvedExe.Path, "system"))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
@@ -386,7 +388,7 @@ func createSystemHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
 // createUserHelperSuspended creates the interactive-user helper without
 // allowing its primary thread to run. The caller assigns it to the Job Object
 // before resume.
-func createUserHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
+func createUserHelperSuspended(sessionID uint32, resolvedExe ResolvedHelperExecutable) (*suspendedHelper, error) {
 	dupToken, envBlock, method, err := acquireUserToken(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("acquire user token(session=%d): %w", sessionID, err)
@@ -396,10 +398,6 @@ func createUserHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
 		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
 
-	resolvedExe, err := userHelperExePath()
-	if err != nil {
-		return nil, fmt.Errorf("userHelperExePath: %w", err)
-	}
 	cmdLine, err := windows.UTF16PtrFromString(buildUserHelperCmdLine(resolvedExe.Path, "user"))
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)

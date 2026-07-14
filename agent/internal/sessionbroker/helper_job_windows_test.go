@@ -225,13 +225,20 @@ func fakeSuspendedHelper() *suspendedHelper {
 	}
 }
 
+func fakeResolvedHelperExecutable() (ResolvedHelperExecutable, error) {
+	return ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-user-helper.exe`}, nil
+}
+
 func TestWindowsHelperSpawnerRetainsMainBinaryFallback(t *testing.T) {
 	job := &fakeHelperJob{}
 	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
-		createSuspended: func(HelperKey) (*suspendedHelper, error) {
+		resolveExecutable: func() (ResolvedHelperExecutable, error) {
+			return ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-agent.exe`, MainBinaryFallback: true}, nil
+		},
+		createSuspended: func(_ HelperKey, resolved ResolvedHelperExecutable) (*suspendedHelper, error) {
 			pending := fakeSuspendedHelper()
-			pending.binaryPath = `C:\Program Files\Breeze\breeze-agent.exe`
-			pending.mainBinaryFallback = true
+			pending.binaryPath = resolved.Path
+			pending.mainBinaryFallback = resolved.MainBinaryFallback
 			return pending, nil
 		},
 		resumeThread: func(windows.Handle) (uint32, error) { return 1, nil },
@@ -248,6 +255,76 @@ func TestWindowsHelperSpawnerRetainsMainBinaryFallback(t *testing.T) {
 	}
 }
 
+func TestWindowsHelperSpawnerWarnsBeforeRepeatedCreateFailures(t *testing.T) {
+	createErr := errors.New("CreateProcessAsUser failed")
+	tests := []struct {
+		name         string
+		role         string
+		resolved     ResolvedHelperExecutable
+		wantWarnings int
+	}{
+		{
+			name:         "system fallback",
+			role:         "system",
+			resolved:     ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-agent.exe`, MainBinaryFallback: true},
+			wantWarnings: 1,
+		},
+		{
+			name:         "user fallback",
+			role:         "user",
+			resolved:     ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-agent.exe`, MainBinaryFallback: true},
+			wantWarnings: 1,
+		},
+		{
+			name:     "system companion",
+			role:     "system",
+			resolved: ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-user-helper.exe`},
+		},
+		{
+			name:     "user companion",
+			role:     "user",
+			resolved: ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-user-helper.exe`},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := captureLogs(t)
+			job := &fakeHelperJob{}
+			resolveCalls := 0
+			createCalls := 0
+			spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
+				resolveExecutable: func() (ResolvedHelperExecutable, error) {
+					resolveCalls++
+					return tt.resolved, nil
+				},
+				createSuspended: func(key HelperKey, resolved ResolvedHelperExecutable) (*suspendedHelper, error) {
+					createCalls++
+					if key.Role != tt.role {
+						t.Fatalf("create role = %q, want %q", key.Role, tt.role)
+					}
+					if resolved != tt.resolved {
+						t.Fatalf("create resolved executable = %#v, want %#v", resolved, tt.resolved)
+					}
+					return nil, createErr
+				},
+			})
+
+			for attempt := 0; attempt < 3; attempt++ {
+				process, err := spawner.Spawn(HelperKey{WindowsSessionID: 7, Role: tt.role})
+				if process != nil || !errors.Is(err, createErr) {
+					t.Fatalf("Spawn attempt %d = (%#v, %v), want nil and create error", attempt, process, err)
+				}
+			}
+			if resolveCalls != 3 || createCalls != 3 {
+				t.Fatalf("calls resolve=%d create=%d, want 3 each", resolveCalls, createCalls)
+			}
+			if got := strings.Count(buf.String(), "breeze-user-helper.exe missing"); got != tt.wantWarnings {
+				t.Fatalf("warning count = %d, want %d; logs: %s", got, tt.wantWarnings, buf.String())
+			}
+		})
+	}
+}
+
 func TestWindowsHelperSpawnerAssignFailureTerminatesSuspendedProcess(t *testing.T) {
 	assignErr := errors.New("assign failed")
 	job := &fakeHelperJob{assignErr: assignErr}
@@ -256,7 +333,8 @@ func TestWindowsHelperSpawnerAssignFailureTerminatesSuspendedProcess(t *testing.
 	var terminated []windows.Handle
 	var closed []windows.Handle
 	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
-		createSuspended: func(HelperKey) (*suspendedHelper, error) {
+		resolveExecutable: fakeResolvedHelperExecutable,
+		createSuspended: func(HelperKey, ResolvedHelperExecutable) (*suspendedHelper, error) {
 			return fakeSuspendedHelper(), nil
 		},
 		resumeThread: func(handle windows.Handle) (uint32, error) {
@@ -306,7 +384,8 @@ func TestWindowsHelperSpawnerResumeFailureTerminatesSuspendedProcess(t *testing.
 	var terminated []windows.Handle
 	var closed []windows.Handle
 	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
-		createSuspended: func(HelperKey) (*suspendedHelper, error) {
+		resolveExecutable: fakeResolvedHelperExecutable,
+		createSuspended: func(HelperKey, ResolvedHelperExecutable) (*suspendedHelper, error) {
 			return fakeSuspendedHelper(), nil
 		},
 		resumeThread: func(windows.Handle) (uint32, error) {
@@ -352,7 +431,8 @@ func TestWindowsHelperSpawnerSerializesSpawnThroughResumeAgainstClose(t *testing
 	allowResume := make(chan struct{})
 	closeStarted := make(chan struct{})
 	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
-		createSuspended: func(HelperKey) (*suspendedHelper, error) {
+		resolveExecutable: fakeResolvedHelperExecutable,
+		createSuspended: func(HelperKey, ResolvedHelperExecutable) (*suspendedHelper, error) {
 			return fakeSuspendedHelper(), nil
 		},
 		resumeThread: func(windows.Handle) (uint32, error) {
@@ -575,7 +655,8 @@ func TestWindowsHelperSpawnerClosePreventsLaterSpawn(t *testing.T) {
 	job := &fakeHelperJob{}
 	createCalls := 0
 	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
-		createSuspended: func(HelperKey) (*suspendedHelper, error) {
+		resolveExecutable: fakeResolvedHelperExecutable,
+		createSuspended: func(HelperKey, ResolvedHelperExecutable) (*suspendedHelper, error) {
 			createCalls++
 			return fakeSuspendedHelper(), nil
 		},

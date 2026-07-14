@@ -19,6 +19,8 @@ func TestClassifyProcess(t *testing.T) {
 		{"fallback user", "user-helper", "user", "breeze-agent.exe", false, "user-helper", true},
 		{"renamed fallback user", "user-helper", "user", "breeze-agent-0.70.exe", false, "user-helper", true},
 		{"companion system", "user-helper", "system", "breeze-user-helper.exe", false, "system-helper", false},
+		{"empty helper role", "user-helper", "", "breeze-agent.exe", false, "other", false},
+		{"invalid helper role", "user-helper", "invalid", "breeze-agent.exe", false, "other", false},
 		{"status", "status", "", "breeze-agent.exe", false, "other", false},
 	}
 	for _, tt := range tests {
