@@ -559,3 +559,33 @@ git commit -m "test(api): bound vitest worker parallelism"
 ### Task 15: Final consecutive green verification
 
 Run the expanded focused set, API lint, direct TypeScript compilation, and two consecutive normal `pnpm test --filter=@breeze/api` commands with no CLI worker override. Both full runs must pass. Record worker count and durations, confirm timeouts remain unchanged, inspect branch scope, and then perform the final whole-branch review.
+
+### Task 16: Remove the final two timed cold paths
+
+**Files:**
+- Modify: `apps/api/src/db/migrationOrdering.test.ts`
+- Modify: `apps/api/src/routes/partner_multi_org_orgid.test.ts`
+
+**Requirements:**
+
+- In `migrationOrdering.test.ts`, import `readdir` and `readFile` from `node:fs/promises`, make the assertion async, read the sorted migration list with `Promise.all`, and then process the returned `{ file, sql }` array sequentially in the same sorted order. Preserve every filter, regex, exclusion, same-file ordering rule, and violation assertion. Keep all work inside the timed test.
+- In `partner_multi_org_orgid.test.ts`, statically import `orgRoutes` once and use one Hono app instead of four per-test dynamic imports.
+- Add the missing minimal `sites` schema mock and a resettable DB select delegate that models the allowed `/sites` query chain.
+- Strengthen successful precedence cases to assert HTTP 200 (and the relevant scoped-query condition/body where available) instead of merely asserting “not 403,” which previously allowed a 500 to pass.
+- Preserve the 403 denial cases, hoisted auth state, and real organizationId precedence logic. Do not add timeouts or production changes.
+
+**Verification and commit:**
+
+```bash
+pnpm --filter @breeze/api exec vitest run \
+  src/db/migrationOrdering.test.ts \
+  src/routes/partner_multi_org_orgid.test.ts \
+  --maxWorkers=4 --cache=false --reporter=verbose
+pnpm --filter @breeze/api exec tsc --noEmit
+git add apps/api/src/db/migrationOrdering.test.ts apps/api/src/routes/partner_multi_org_orgid.test.ts
+git commit -m "test(api): stabilize final cold-path harnesses"
+```
+
+### Task 17: Final handoff gate
+
+Run the expanded focused set, lint, direct TypeScript compilation, and two consecutive normal API-suite runs with the committed worker cap and no CLI overrides. Both runs must pass. Then complete final whole-branch review and address all Critical/Important findings plus any recorded stale-comment/mock-export cleanup.
