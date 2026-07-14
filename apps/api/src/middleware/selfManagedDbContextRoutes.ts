@@ -52,6 +52,19 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // 30s readyTimeout). testSftpConnection wraps each DB op in its own short
   // withDbAccessContext, so the socket is never held across an open transaction.
   { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex-sftp\/test\/?$/ },
+  // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
+  // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
+  // against a TENANT-CONTROLLED issuer host). Held inside the request
+  // transaction, a tenant admin pointing `issuer` at a blackholed host pins a
+  // pooled connection idle-in-transaction for 10s per call, on unrate-limited
+  // routes, against a 25-connection prod pool — tenant-triggerable pool
+  // starvation for every tenant (#1105 class). The handlers wrap each DB op in
+  // its own short `withDbAccessContext(dbAccessContextFromAuth(auth), …)` block
+  // (see `withProviderDbContext` in routes/sso.ts) and run discovery between
+  // them, holding no connection across the network call.
+  { method: 'POST', pattern: /^\/api\/v1\/sso\/providers\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/sso\/providers\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/sso\/providers\/[^/]+\/test\/?$/ },
 ];
 
 /**

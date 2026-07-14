@@ -788,6 +788,168 @@ describe('sso routes', () => {
     });
   });
 
+  // ── I2: OIDC discovery failure must FAIL LOUDLY, never persist ────────────
+  //
+  // Both write routes used to catch a rejected discovery, console.warn, and then
+  // return success: POST persisted a provider with all four endpoint columns NULL
+  // and returned 201; PATCH NULLed the four endpoints of a WORKING provider,
+  // bumped configVersion (killing every in-flight session), and returned 200 with
+  // the updated row. Nothing in the response said discovery had failed, so a typo
+  // in an issuer took a tenant's SSO offline behind a success toast — the exact
+  // silent-mutation class the repo's runAction convention exists to prevent.
+  // Both now 400 and persist NOTHING.
+  describe('OIDC discovery failure on provider writes (I2)', () => {
+    const existingProviderRow = {
+      id: PROVIDER_UUID,
+      orgId: ORG_UUID,
+      partnerId: null,
+      issuer: 'https://old-issuer.example.com',
+      type: 'oidc',
+    };
+
+    const selectExisting = () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([existingProviderRow])
+          })
+        })
+      } as any);
+    };
+
+    it('POST → 400 and creates NOTHING when discovery is rejected', async () => {
+      vi.mocked(discoverOIDCConfig).mockRejectedValue(
+        new Error('OIDC discovery blocked: no DNS records for typo.example.com')
+      );
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Okta',
+          type: 'oidc',
+          issuer: 'https://typo.example.com',
+          clientId: 'client-id',
+          clientSecret: 'client-secret'
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe('oidc_discovery_failed');
+      // The operator gets the real reason, not a generic failure.
+      expect(body.error).toContain('no DNS records for typo.example.com');
+      // The whole point: no half-broken provider row (endpoints NULL, unusable,
+      // unrepairable — discovery is the only writer of those four columns).
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('PATCH → re-discovers and re-writes all four endpoints when the issuer changes', async () => {
+      selectExisting();
+      vi.mocked(discoverOIDCConfig).mockResolvedValue({
+        issuer: 'https://new-issuer.example.com',
+        authorization_endpoint: 'https://new-issuer.example.com/auth',
+        token_endpoint: 'https://new-issuer.example.com/token',
+        userinfo_endpoint: 'https://new-issuer.example.com/userinfo',
+        jwks_uri: 'https://new-issuer.example.com/jwks'
+      } as any);
+
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Okta', orgId: ORG_UUID }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issuer: 'https://new-issuer.example.com' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(discoverOIDCConfig).toHaveBeenCalledWith('https://new-issuer.example.com', {
+        allowPrivateNetwork: false
+      });
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+        issuer: 'https://new-issuer.example.com',
+        authorizationUrl: 'https://new-issuer.example.com/auth',
+        tokenUrl: 'https://new-issuer.example.com/token',
+        userInfoUrl: 'https://new-issuer.example.com/userinfo',
+        jwksUrl: 'https://new-issuer.example.com/jwks',
+      }));
+    });
+
+    it('PATCH → 400, and NOTHING is written, when re-discovery of a changed issuer fails', async () => {
+      selectExisting();
+      vi.mocked(discoverOIDCConfig).mockRejectedValue(new Error('OIDC discovery failed: 404'));
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        // The scenario: an admin fixing a typo in a working Entra issuer typos it
+        // again (missing the `.0`). Old behavior: 200 + SSO offline for the org.
+        body: JSON.stringify({ issuer: 'https://login.microsoftonline.com/tenant/v2' })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe('oidc_discovery_failed');
+      expect(body.error).toContain('OIDC discovery failed: 404');
+      expect(body.error).toContain('No changes were saved');
+      // No endpoint NULLing, no issuer repoint, and — critically — no
+      // configVersion bump, which would have killed every in-flight session.
+      expect(db.update).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'sso.provider.update.rejected',
+        details: expect.objectContaining({ reason: 'oidc_discovery_failed' }),
+      }));
+    });
+
+    it('PATCH → does NOT re-discover when the issuer is unchanged', async () => {
+      selectExisting();
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Renamed', orgId: ORG_UUID }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed', issuer: existingProviderRow.issuer })
+      });
+
+      expect(res.status).toBe(200);
+      expect(discoverOIDCConfig).not.toHaveBeenCalled();
+    });
+
+    // SR2-10 invariant that was asserted only in a comment: an unrelated edit
+    // (rename, secret rotation) must never clobber default_role_configured_by to
+    // null — that would brick JIT with `default_role_configurer_unknown`.
+    it('PATCH without defaultRoleId leaves defaultRoleConfiguredBy untouched', async () => {
+      selectExisting();
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Renamed', orgId: ORG_UUID }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      const updates = setMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(updates).not.toHaveProperty('defaultRoleConfiguredBy');
+    });
+  });
+
   it('deletes a provider and related records', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({

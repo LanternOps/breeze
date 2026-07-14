@@ -49,10 +49,15 @@ vi.mock('../../services/sso', async (importOriginal) => {
     exchangeCodeForTokens: vi.fn(),
     getUserInfo: vi.fn(),
     verifyIdTokenSignature: vi.fn(),
+    // I1/I2: the provider-write routes' outbound discovery call. Stubbed so the
+    // suite never touches the network — the stub also records the ambient DB
+    // context at call time, which is what proves the #1105 conn-hold is gone.
+    discoverOIDCConfig: vi.fn(),
   };
 });
 
-import { exchangeCodeForTokens, getUserInfo, verifyIdTokenSignature } from '../../services/sso';
+import { exchangeCodeForTokens, getUserInfo, verifyIdTokenSignature, discoverOIDCConfig } from '../../services/sso';
+import { getCurrentDbAccessContext } from '../../db';
 import { ssoRoutes } from '../../routes/sso';
 
 const ISSUER = 'https://idp.example.test';
@@ -625,5 +630,164 @@ describe('SSO hardening — real-DB (SR2-10 … SR2-12)', () => {
       // still only the one identity from the successful staff link
       expect(await identityCountFor(provider.id)).toBe(1);
     }
+  });
+
+  // ── I1 + I2: PATCH /providers/:id issuer re-discovery ──────────────────────
+  //
+  // I1 (#1105 class): discovery is a 10s-bounded fetch of a TENANT-CONTROLLED
+  // host. Held inside authMiddleware's request transaction it pins a pooled
+  // breeze_app connection idle-in-transaction for the duration — 25 concurrent
+  // PATCHes against an unrate-limited route stall the whole API for every
+  // tenant. The route is now in SELF_MANAGED_DB_CONTEXT_ROUTES, so the
+  // middleware opens NO ambient transaction and the handler wraps each DB op in
+  // its own short withDbAccessContext block.
+  //
+  // I2: a rejected re-discovery used to NULL all four endpoint columns, bump
+  // configVersion (killing every in-flight session) and return 200 — silently
+  // taking the org's SSO offline behind a success toast. It now 400s and writes
+  // nothing.
+  //
+  // Real DB, real authMiddleware, real RLS pool. Only the outbound fetch is
+  // stubbed; the stub records the ambient DB context at call time.
+  describe('#9 PATCH provider issuer re-discovery (I1 conn-hold + I2 silent-failure)', () => {
+    async function seedSsoAdminToken(partnerId: string, orgId: string) {
+      const role = await createRole({ scope: 'organization', orgId });
+      await grantRolePermissions(role.id, [{ resource: 'sso', action: 'admin' }]);
+      const admin = await seedPasswordlessUser({ partnerId, orgId, email: `ssoadmin-${randomUUID()}@${EMAIL_DOMAIN}` });
+      await assignUserToOrganization(admin.id, orgId, role.id);
+      clearPermissionCache();
+      return createAccessToken({
+        sub: admin.id,
+        email: admin.email,
+        roleId: role.id,
+        orgId,
+        partnerId: null,
+        scope: 'organization',
+        mfa: true,
+        aep: 1,
+        mep: 1,
+        sid: randomUUID(),
+      });
+    }
+
+    /** Mount under the REAL API prefix so authMiddleware's self-managed-route match applies. */
+    function apiApp() {
+      const a = new Hono();
+      a.route('/api/v1/sso', ssoRoutes);
+      return a;
+    }
+
+    function patchIssuer(a: Hono, providerId: string, token: string, issuer: string, prefix = '/api/v1/sso') {
+      return a.request(`${prefix}/providers/${providerId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issuer }),
+      });
+    }
+
+    function providerRow(id: string) {
+      return getTestDb()
+        .select({
+          issuer: ssoProviders.issuer,
+          authorizationUrl: ssoProviders.authorizationUrl,
+          tokenUrl: ssoProviders.tokenUrl,
+          userInfoUrl: ssoProviders.userInfoUrl,
+          jwksUrl: ssoProviders.jwksUrl,
+          configVersion: ssoProviders.configVersion,
+        })
+        .from(ssoProviders)
+        .where(eq(ssoProviders.id, id))
+        .then((rows) => rows[0]!);
+    }
+
+    it('succeeds with NO ambient DB transaction held across the discovery call, and re-writes all four endpoints', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const provider = await seedOrgProvider(org.id);
+      const token = await seedSsoAdminToken(partner.id, org.id);
+
+      // The whole I1 assertion: what the ambient DB context is AT THE MOMENT the
+      // outbound fetch would run. Before the SELF_MANAGED_DB_CONTEXT_ROUTES entry
+      // this was the request's held transaction (safeFetch's
+      // assertOutsideHeldDbContext tripwire fired here, warn-only).
+      let contextDuringDiscovery: unknown = 'not-called';
+      const newIssuer = 'https://new-idp.example.test';
+      vi.mocked(discoverOIDCConfig).mockReset().mockImplementation(async () => {
+        contextDuringDiscovery = getCurrentDbAccessContext();
+        return {
+          issuer: newIssuer,
+          authorization_endpoint: `${newIssuer}/authorize`,
+          token_endpoint: `${newIssuer}/token`,
+          userinfo_endpoint: `${newIssuer}/userinfo`,
+          jwks_uri: `${newIssuer}/jwks`,
+        } as any;
+      });
+
+      const res = await patchIssuer(apiApp(), provider.id, token, newIssuer);
+      expect(res.status).toBe(200);
+      expect(contextDuringDiscovery).toBeUndefined();
+
+      // …and the DB work still happened, under the caller's own RLS context.
+      const after = await providerRow(provider.id);
+      expect(after.issuer).toBe(newIssuer);
+      expect(after.authorizationUrl).toBe(`${newIssuer}/authorize`);
+      expect(after.tokenUrl).toBe(`${newIssuer}/token`);
+      expect(after.userInfoUrl).toBe(`${newIssuer}/userinfo`);
+      expect(after.jwksUrl).toBe(`${newIssuer}/jwks`);
+      expect(after.configVersion).toBe(provider.configVersion + 1);
+    });
+
+    it('control: the SAME handler mounted off the /api/v1 prefix DOES hold a transaction (proves the assertion above is not vacuous)', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const provider = await seedOrgProvider(org.id);
+      const token = await seedSsoAdminToken(partner.id, org.id);
+
+      let contextDuringDiscovery: unknown = 'not-called';
+      const newIssuer = 'https://control-idp.example.test';
+      vi.mocked(discoverOIDCConfig).mockReset().mockImplementation(async () => {
+        contextDuringDiscovery = getCurrentDbAccessContext();
+        return {
+          issuer: newIssuer,
+          authorization_endpoint: `${newIssuer}/authorize`,
+          token_endpoint: `${newIssuer}/token`,
+          userinfo_endpoint: `${newIssuer}/userinfo`,
+          jwks_uri: `${newIssuer}/jwks`,
+        } as any;
+      });
+
+      // Mounted at bare '/sso' → isSelfManagedDbContextRoute does not match →
+      // authMiddleware opens the ambient request transaction, exactly as it did
+      // for the /api/v1 path before this fix.
+      const bare = new Hono();
+      bare.route('/sso', ssoRoutes);
+      const res = await patchIssuer(bare, provider.id, token, newIssuer, '/sso');
+      expect(res.status).toBe(200);
+      expect(contextDuringDiscovery).toMatchObject({ scope: 'organization', orgId: org.id });
+    });
+
+    it('rejected re-discovery → 400, and the provider row is COMPLETELY unchanged (no endpoint NULLing, no configVersion bump)', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const provider = await seedOrgProvider(org.id);
+      const token = await seedSsoAdminToken(partner.id, org.id);
+      const before = await providerRow(provider.id);
+
+      vi.mocked(discoverOIDCConfig).mockReset().mockRejectedValue(
+        new Error('OIDC discovery failed: 404'),
+      );
+
+      // The scenario from the review: an admin fixing a typo in a WORKING
+      // provider's issuer typos it again. Old behavior: 200 OK + org-wide SSO
+      // outage. New: nothing moves.
+      const res = await patchIssuer(apiApp(), provider.id, token, 'https://typo-idp.example.test');
+      expect(res.status).toBe(400);
+      const body = await res.json() as { code?: string; error?: string };
+      expect(body.code).toBe('oidc_discovery_failed');
+      expect(body.error).toContain('OIDC discovery failed: 404');
+
+      const after = await providerRow(provider.id);
+      expect(after).toEqual(before);
+    });
   });
 });

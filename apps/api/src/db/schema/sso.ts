@@ -68,7 +68,12 @@ export const ssoProviders = pgTable('sso_providers', {
   // when the previous configurer is offboarded. NOT createdBy: that names the
   // original creator (who may never have touched defaultRoleId), and no route
   // ever rewrites it.
-  defaultRoleConfiguredBy: uuid('default_role_configured_by').references(() => users.id),
+  //
+  // ON DELETE SET NULL (2026-07-17): a hard-deleted configurer must REVOKE the
+  // standing delegation, not preserve it. NULL here makes JIT fail closed
+  // (`default_role_configurer_unknown` in revalidateSsoDefaultRole); the repair
+  // is a current admin re-saving the default role, which re-stamps this column.
+  defaultRoleConfiguredBy: uuid('default_role_configured_by').references(() => users.id, { onDelete: 'set null' }),
 
   // Metadata
   createdBy: uuid('created_by').references(() => users.id),

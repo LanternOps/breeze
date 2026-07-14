@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { eq, and, gt, ne, isNull, inArray, sql } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
-import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
 import {
   ssoProviders,
   ssoSessions,
@@ -17,7 +17,7 @@ import {
   roles
 } from '../db/schema';
 import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor, isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../services/ssoDomainVerification';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, dbAccessContextFromAuth, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
   generateState,
   generateNonce,
@@ -179,10 +179,78 @@ const createProviderSchema = z.object({
   trustsIdpMfa: z.boolean().optional()
 });
 
-const updateProviderSchema = createProviderSchema.omit({ orgId: true, ownerScope: true }).partial();
+// `preset` is NOT a column on sso_providers — it is a create-time convenience
+// that POST /providers expands into scopes + attributeMapping. PATCH spreads
+// `...body` straight into db.update().set(), so leaving `preset` in the update
+// schema means `PATCH { preset: 'okta' }` reaches Drizzle's mapUpdateSet with a
+// key that has no column and throws at runtime. PATCH never applied a preset
+// anyway — omit it. (Same class as the ownerScope omit above.)
+const updateProviderSchema = createProviderSchema
+  .omit({ orgId: true, ownerScope: true, preset: true })
+  .partial();
 const tokenExchangeSchema = z.object({
   code: z.string().min(1)
 });
+
+/**
+ * Run one short DB access context in the CALLER's exact tenant scope.
+ *
+ * The three provider routes that perform OIDC discovery (POST /providers,
+ * PATCH /providers/:id, POST /providers/:id/test) are registered in
+ * SELF_MANAGED_DB_CONTEXT_ROUTES, so `authMiddleware` does NOT open the ambient
+ * request transaction for them: `discoverOIDCConfig` → `safeFetch` is a
+ * 10-second-timeout call to a TENANT-CONTROLLED issuer host, and holding a
+ * pooled `breeze_app` connection idle-in-transaction across it is
+ * tenant-triggerable pool starvation (#1105 class — 25 connections in prod, and
+ * these routes have no rate limit). `safeFetch`'s `assertOutsideHeldDbContext`
+ * tripwire exists precisely to catch this.
+ *
+ * `runOutsideDbContext` alone does NOT fix it — it only swaps the ALS `db`
+ * reference; the middleware's outer `baseDb.transaction` stays held. The route
+ * must not open that transaction at all, which is what the allowlist buys.
+ *
+ * Consequence: these handlers run with NO ambient context, so EVERY db op needs
+ * an explicit short context or it hits the bare pool (RLS-denied → silent 0-row
+ * read / contextless-write guard). `dbAccessContextFromAuth` rebuilds the exact
+ * context authMiddleware would have opened, so RLS is byte-identical to every
+ * other route; the discovery call happens BETWEEN these blocks, holding nothing.
+ * The `runOutsideDbContext` wrap is a defensive no-op here (there is no ambient
+ * context to exit) that keeps this correct if the route is ever removed from the
+ * allowlist. Pattern: services/accounting/quickbooksCustomerImport.ts.
+ */
+function withProviderDbContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
+}
+
+/**
+ * Operator-facing reason a discovery attempt failed. discoverOIDCConfig already
+ * shapes these for human eyes ("OIDC discovery blocked: no DNS records for …",
+ * "OIDC discovery failed: 404", "OIDC discovery returned an endpoint that is not
+ * HTTPS …"), and POST /providers/:id/test has always relayed them verbatim to
+ * the UI — the caller supplied the issuer, so this leaks nothing they don't know.
+ */
+function discoveryErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The mailbox domain of an address, or null when it has none.
+ *
+ * `email.split('@')[1]` is UNSOUND for a multi-`@` address: for
+ * `victim@corp.example@evil.com` it yields `corp.example` — a domain the org may
+ * well have DNS-verified — while the real mailbox domain is `evil.com`. Both the
+ * allowedDomains gate and the SR2-12 absent-claim domain proof key off this, so
+ * take the LAST `@` (RFC 5321: only the final one separates local-part from
+ * domain) and treat "no domain at all" as null, which every caller must fail
+ * closed on.
+ */
+function emailDomainOf(email: string): string | null {
+  const at = email.lastIndexOf('@');
+  if (at <= 0 || at === email.length - 1) {
+    return null;
+  }
+  return email.slice(at + 1).toLowerCase();
+}
 
 // ============================================
 // Helper Functions
@@ -428,16 +496,22 @@ async function validateProviderDefaultRole(
  * rather than open — but it would brick every SSO login, so the wrap is
  * mandatory, not cosmetic.
  *
- * INVARIANT (SR2-10 Fix 2): the line above is a doc comment, not an
+ * INVARIANT (SR2-10 Fix 2): the paragraph above is a doc comment, not an
  * enforcement mechanism — a future refactor could drop the wrap and no unit
  * test would catch it (the db mock makes `withSystemDbAccessContext` a
- * pass-through, so a missing wrap is invisible there). `role_permissions` is
- * FORCE-RLS: a read OUTSIDE a system context 0-rows under `breeze_app`, and
- * `applyCeiling` (services/roleAssignment) treats an empty effective-
- * permission set as "no permissions to exceed" → assignable. So a silently
- * dropped wrap doesn't error, it fails OPEN — greenlighting ANY role. Assert
- * the ambient context is really `'system'` at entry and throw otherwise, so
- * the failure is loud and immediate instead of a silent privilege escalation.
+ * pass-through, so a missing wrap is invisible there). What a dropped wrap
+ * actually does today: `getProviderAxisRole` runs FIRST, `roles` is FORCE-RLS,
+ * so it 0-rows under `breeze_app` with no system context and we return
+ * `default_role_not_on_provider_axis` — i.e. it currently fails CLOSED, and it
+ * bricks EVERY SSO sign-in on the provider rather than escalating privilege.
+ * That is a lucky ordering, not a guarantee: the ceiling itself is the
+ * fail-open shape (`applyCeiling` in services/roleAssignment treats an empty
+ * effective-permission set as "no permissions to exceed" → assignable), so if
+ * the role read is ever reordered, cached, or moved behind a system-context
+ * helper, an un-wrapped `role_permissions` read would 0-row and greenlight ANY
+ * role. Assert the ambient context is really `'system'` at entry and throw
+ * otherwise, so neither failure (the brick or the escalation) can arrive
+ * silently.
  */
 async function revalidateSsoDefaultRole(params: {
   roleId: string;
@@ -876,9 +950,9 @@ ssoRoutes.post(
     // SR2-10: existence + scope + tenant (as before) AND the permission-subset
     // ceiling against the configuring admin.
     if (body.defaultRoleId) {
-      const roleError = await validateProviderDefaultRole(
-        c, auth, body.defaultRoleId, { scope: 'partner', partnerId: auth.partnerId },
-      );
+      const roleError = await withProviderDbContext(auth, () => validateProviderDefaultRole(
+        c, auth, body.defaultRoleId!, { scope: 'partner', partnerId: auth.partnerId! },
+      ));
       if (roleError) {
         return c.json({ error: roleError }, 400);
       }
@@ -893,9 +967,9 @@ ssoRoutes.post(
     // JIT-provisions, so an org admin could delegate a role broader than their
     // own authority to every future SSO sign-in.
     if (body.defaultRoleId) {
-      const roleError = await validateProviderDefaultRole(
-        c, auth, body.defaultRoleId, { scope: 'organization', orgId: orgResult.orgId },
-      );
+      const roleError = await withProviderDbContext(auth, () => validateProviderDefaultRole(
+        c, auth, body.defaultRoleId!, { scope: 'organization', orgId: orgResult.orgId },
+      ));
       if (roleError) {
         return c.json({ error: roleError }, 400);
       }
@@ -915,7 +989,9 @@ ssoRoutes.post(
     }
   }
 
-  // If issuer provided, try to discover endpoints
+  // If issuer provided, discover endpoints. NOTE: this outbound call runs with
+  // NO ambient DB context (see withProviderDbContext) — do not add a db op to
+  // this block or move it inside one.
   if (body.issuer && body.type === 'oidc') {
     try {
       // Self-hosted deployments (IS_HOSTED affirmatively false) may point at an
@@ -929,14 +1005,26 @@ ssoRoutes.post(
       config.jwksUrl = discovery.jwks_uri;
     } catch (error) {
       // Discovery failed OR returned endpoints that failed SSRF/HTTPS validation
-      // (SR2-14). Either way we persist NO endpoints — an unusable provider is
-      // strictly better than one pointing at an attacker-controlled endpoint.
+      // (SR2-14). FAIL LOUDLY — do not create the provider.
+      //
+      // This used to console.warn and then persist the row with all four
+      // endpoint columns NULL, returning 201. That provider can never complete a
+      // login (getOIDCConfig's runtime assertSafeOidcEndpoint throws on the
+      // NULLs / on the `${issuer}/authorize` fallbacks) and there is no API field
+      // to repair the endpoints — they are only ever written by discovery. So a
+      // 201 announced success for a provider that was dead on arrival, with the
+      // reason available nowhere but the API logs. Refusing the write is both
+      // honest and strictly safer: nothing is persisted, nothing to clean up.
       console.warn('OIDC discovery failed or was rejected:', error);
       captureException(error instanceof Error ? error : new Error(String(error)));
+      return c.json({
+        error: `OIDC discovery failed for issuer "${body.issuer}": ${discoveryErrorMessage(error)}`,
+        code: 'oidc_discovery_failed',
+      }, 400);
     }
   }
 
-  const [provider] = await db
+  const [provider] = await withProviderDbContext(auth, () => db
     .insert(ssoProviders)
     .values({
       ...ownerColumns,
@@ -963,7 +1051,7 @@ ssoRoutes.post(
       createdBy: auth.user.id,
       status: 'inactive'
     })
-    .returning();
+    .returning());
 
   if (!provider) {
     return c.json({ error: 'Failed to create provider' }, 500);
@@ -997,17 +1085,20 @@ ssoRoutes.patch(
   const { id: providerId } = c.req.valid('param');
   const body = c.req.valid('json');
 
-  const [existing] = await db
-    .select({
-      id: ssoProviders.id,
-      orgId: ssoProviders.orgId,
-      partnerId: ssoProviders.partnerId,
-      issuer: ssoProviders.issuer,
-      type: ssoProviders.type
-    })
-    .from(ssoProviders)
-    .where(eq(ssoProviders.id, providerId))
-    .limit(1);
+  const existing = await withProviderDbContext(auth, async () => {
+    const [row] = await db
+      .select({
+        id: ssoProviders.id,
+        orgId: ssoProviders.orgId,
+        partnerId: ssoProviders.partnerId,
+        issuer: ssoProviders.issuer,
+        type: ssoProviders.type
+      })
+      .from(ssoProviders)
+      .where(eq(ssoProviders.id, providerId))
+      .limit(1);
+    return row;
+  });
 
   if (!existing) {
     return c.json({ error: 'Provider not found' }, 404);
@@ -1025,17 +1116,32 @@ ssoRoutes.patch(
     if (!scopeContext) {
       return c.json({ error: 'Provider has no owning organization or partner' }, 400);
     }
-    const roleError = await validateProviderDefaultRole(c, auth, body.defaultRoleId, scopeContext);
+    const roleError = await withProviderDbContext(auth, () =>
+      validateProviderDefaultRole(c, auth, body.defaultRoleId!, scopeContext));
     if (roleError) {
       return c.json({ error: roleError }, 400);
     }
   }
 
   // SR2-14: repointing the issuer WITHOUT re-discovery leaves tokenUrl/jwksUrl
-  // aimed at the OLD IdP (or, with a crafted discovery doc, an attacker's).
-  // Re-discover; if that fails or is rejected, CLEAR the endpoints (fail closed)
-  // rather than keep stale ones. The provider is unusable until it is fixed —
-  // which is the correct outcome for a half-repointed IdP.
+  // aimed at the OLD IdP (or, with a crafted discovery doc, an attacker's). So
+  // an issuer change REQUIRES a successful re-discovery.
+  //
+  // This block used to swallow the failure, NULL all four endpoint columns, bump
+  // configVersion (killing every in-flight session) and return 200 with the
+  // updated row. An admin fixing a typo in a WORKING provider's issuer — and
+  // typo'ing it again — would take the org's SSO offline, see a success toast,
+  // and get no signal anywhere as to why nobody can sign in. The endpoints are
+  // only ever written by discovery, so there was no API path back either.
+  //
+  // Fail LOUDLY instead: 400, and persist NOTHING. The old (working) endpoints,
+  // the old issuer and the old configVersion all survive untouched, so a failed
+  // re-discovery is a no-op rather than an outage. Fail-closed is preserved —
+  // the endpoints never end up pointing at an IdP the issuer no longer names,
+  // because the issuer never changes without them.
+  //
+  // NOTE: the discovery call below runs with NO ambient DB context (see
+  // withProviderDbContext) — do not add a db op to this block.
   const issuerChanged = body.issuer !== undefined && body.issuer !== existing.issuer;
   const rediscovered: Partial<typeof ssoProviders.$inferInsert> = {};
   if (issuerChanged && (body.type ?? existing.type) === 'oidc') {
@@ -1050,17 +1156,30 @@ ssoRoutes.patch(
     } catch (error) {
       console.warn(`[sso] re-discovery failed for provider ${providerId} after issuer change:`, error);
       captureException(error instanceof Error ? error : new Error(String(error)));
-      rediscovered.authorizationUrl = null;
-      rediscovered.tokenUrl = null;
-      rediscovered.userInfoUrl = null;
-      rediscovered.jwksUrl = null;
+      writeRouteAudit(c, {
+        orgId: existing.orgId,
+        action: 'sso.provider.update.rejected',
+        resourceType: 'sso_provider',
+        resourceId: existing.id,
+        details: {
+          reason: 'oidc_discovery_failed',
+          attemptedIssuer: body.issuer,
+          partnerId: existing.partnerId,
+        }
+      });
+      return c.json({
+        error: `OIDC discovery failed for issuer "${body.issuer}": ${discoveryErrorMessage(error)}. `
+          + 'No changes were saved — the provider still uses its previous issuer and endpoints.',
+        code: 'oidc_discovery_failed',
+      }, 400);
     }
   }
 
   const updates: Partial<typeof ssoProviders.$inferInsert> = {
     ...body,
-    // SR2-14 (Task 7): must come AFTER ...body so re-discovered endpoints (or
-    // the fail-closed nulls) override any stale endpoint columns in the body.
+    // SR2-14 (Task 7): must come AFTER ...body. `body` cannot carry endpoint
+    // columns (they are not in createProviderSchema), so this is belt-and-braces
+    // against a future schema addition, not a live override.
     ...rediscovered,
     updatedAt: new Date(),
     // SR2-10: re-stamp the JIT principal whenever the delegation is (re-)set.
@@ -1081,11 +1200,11 @@ ssoRoutes.patch(
     updates.clientSecret = encryptSecret(body.clientSecret);
   }
 
-  const [updated] = await db
+  const [updated] = await withProviderDbContext(auth, () => db
     .update(ssoProviders)
     .set(updates)
     .where(eq(ssoProviders.id, providerId))
-    .returning();
+    .returning());
 
   if (!updated) {
     return c.json({ error: 'Provider not found' }, 404);
@@ -1251,11 +1370,17 @@ ssoRoutes.post(
   const auth = c.get('auth') as AuthContext;
   const { id: providerId } = c.req.valid('param');
 
-  const [provider] = await db
-    .select()
-    .from(ssoProviders)
-    .where(eq(ssoProviders.id, providerId))
-    .limit(1);
+  // Short, explicit DB context — this route is in SELF_MANAGED_DB_CONTEXT_ROUTES
+  // (the discovery call below is tenant-controlled and 10s-bounded), so there is
+  // no ambient request transaction to read under.
+  const provider = await withProviderDbContext(auth, async () => {
+    const [row] = await db
+      .select()
+      .from(ssoProviders)
+      .where(eq(ssoProviders.id, providerId))
+      .limit(1);
+    return row;
+  });
 
   if (!provider) {
     return c.json({ error: 'Provider not found' }, 404);
@@ -1274,7 +1399,8 @@ ssoRoutes.post(
   }
 
   try {
-    // Test discovery
+    // Test discovery. Runs with NO ambient DB context (see above) — the only DB
+    // work left in this handler is writeRouteAudit, which opens its own.
     if (provider.issuer) {
       // Self-hosted deployments (IS_HOSTED affirmatively false) may point at an
       // internal IdP on an RFC1918 address; hosted SaaS stays strict.
@@ -2144,11 +2270,13 @@ ssoRoutes.get('/callback', async (c) => {
         : c.redirect('/login?error=sso_email_unverified');
     }
 
-    // Check allowed domains
+    // Check allowed domains. An address whose mailbox domain cannot be parsed is
+    // REJECTED, not waved through: the old `if (emailDomain && …)` skipped the
+    // whole gate for such an address, which is exactly backwards for an allowlist.
     if (provider.allowedDomains) {
       const domains = provider.allowedDomains.split(',').map(d => d.trim().toLowerCase());
-      const emailDomain = attrs.email.split('@')[1]?.toLowerCase();
-      if (emailDomain && !domains.includes(emailDomain)) {
+      const emailDomain = emailDomainOf(attrs.email);
+      if (!emailDomain || !domains.includes(emailDomain)) {
         clearStateCookie();
         return c.redirect('/login?error=domain_not_allowed');
       }
@@ -2281,7 +2409,7 @@ ssoRoutes.get('/callback', async (c) => {
     // restricted to the partner's own staff pool (partnerId + orgId IS NULL)
     // below, so it doesn't consult verified org domains.
     if (!user && provider.orgId) {
-      const assertedEmailDomain = attrs.email.split('@')[1]?.toLowerCase() ?? null;
+      const assertedEmailDomain = emailDomainOf(attrs.email);
 
       // SR2-12: an ABSENT `email_verified` claim is acceptable ONLY when Breeze
       // itself has proven the domain (DNS TXT, sso_verified_domains). This is
@@ -2334,6 +2462,23 @@ ssoRoutes.get('/callback', async (c) => {
         console.warn(
           `[sso/callback] domain verification blocked link/provision: org=${provider.orgId} provider=${provider.id} emailDomain=${assertedEmailDomain ?? 'none'}`
         );
+        // Same structured audit event as every sibling callback rejection
+        // (SR2-11 / SR2-12) — a console line is not an audit trail.
+        writeRouteAudit(c, {
+          orgId: provider.orgId,
+          action: 'sso.callback.rejected',
+          resourceType: 'sso_provider',
+          resourceId: provider.id,
+          resourceName: provider.name,
+          result: 'denied',
+          details: {
+            mode: callbackMode,
+            phase: 'domain_verification',
+            reason: 'sso_domain_unverified',
+            emailDomain: assertedEmailDomain,
+            partnerId: provider.partnerId,
+          },
+        });
         clearStateCookie();
         return c.redirect('/login?error=sso_domain_unverified');
       }
