@@ -85,6 +85,8 @@ describe('recursive export safety', () => {
     ['database URI userinfo', { content: 'DATABASE_URL=postgres://admin:hunter2@db.example/app' }],
     ['recovery key assignment', { content: 'RECOVERY_KEY=ABC-123' }],
     ['authorization assignment', { content: 'Authorization = Basic dXNlcjpwYXNz' }],
+    ['credential value suffix assignment', { content: 'PASSWORD_VALUE=hunter2' }],
+    ['token backup suffix assignment', { content: 'TOKEN_BACKUP=hunter2' }],
   ])('rejects low-entropy credential assignment syntax: %s', (_name, definition) => {
     expect(inspectDefinitionForSecrets(definition)).toMatchObject({
       safe: false,
@@ -98,7 +100,7 @@ describe('recursive export safety', () => {
     'setx INSTALL_MODE production',
     'ConvertTo-SecureString $encryptedBlob',
     'DATABASE_URL=postgres://db.example/app',
-    '{"passwordPolicy":"rotate_every_90_days"}',
+    '{"rotationPolicy":"rotate_every_90_days"}',
   ])('allows nearby benign script content: %s', (content) => {
     expect(inspectDefinitionForSecrets({ content })).toEqual({ safe: true });
   });
@@ -122,6 +124,18 @@ describe('recursive export safety', () => {
     const result = inspectCredentialSyntax(content);
     expect(result.secretLike).toBe(false);
     expect(result.operations).toBeLessThanOrEqual(content.length * 3 + 10);
+  });
+
+  it('fails closed when the tokenizer budget is exhausted before a credential assignment', () => {
+    const content = `${'='.repeat(10_001)}PASSWORD=hunter2`;
+    expect(content.length).toBeLessThanOrEqual(PARTNER_EXPORT_MAX_INSPECTABLE_STRING_LENGTH);
+    const result = inspectCredentialSyntax(content);
+    expect(result.secretLike).toBe(true);
+    expect(result.operations).toBeLessThanOrEqual(content.length * 3 + 10);
+    expect(inspectDefinitionForSecrets({ content })).toMatchObject({
+      safe: false,
+      reason: 'secret_detected',
+    });
   });
 
   it('trusts only the derived revision field instead of exempting arbitrary hashes', () => {

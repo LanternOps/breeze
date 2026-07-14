@@ -120,7 +120,7 @@ interface ScriptToken {
   quoted: boolean;
 }
 
-function tokenizeCredentialSyntax(value: string): { tokens: ScriptToken[]; operations: number } {
+function tokenizeCredentialSyntax(value: string): { tokens: ScriptToken[]; operations: number; complete: boolean } {
   const tokens: ScriptToken[] = [];
   let operations = 0;
   let index = 0;
@@ -163,16 +163,7 @@ function tokenizeCredentialSyntax(value: string): { tokens: ScriptToken[]; opera
     if (index > start) tokens.push({ value: value.slice(start, index), quoted: false });
     else index += 1;
   }
-  return { tokens, operations };
-}
-
-function isCredentialIdentifier(value: string): boolean {
-  if (!/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u.test(value)) return false;
-  const parts = splitFieldName(value);
-  const compact = parts.at(-1) ?? '';
-  const words = parts.slice(0, -1);
-  return FORBIDDEN_FIELD_TOKENS.has(compact)
-    || FORBIDDEN_FIELD_TOKENS.has(words.at(-1) ?? '');
+  return { tokens, operations, complete: index >= value.length };
 }
 
 function isSecretSemanticIdentifier(value: string): boolean {
@@ -189,6 +180,7 @@ export function inspectCredentialSyntax(value: string): { secretLike: boolean; o
   const tokenized = tokenizeCredentialSyntax(value);
   const { tokens } = tokenized;
   let operations = tokenized.operations;
+  if (!tokenized.complete) return { secretLike: true, operations };
   for (let index = 0; index < tokens.length; index += 1) {
     operations += 1;
     const current = tokens[index]!.value;
@@ -205,7 +197,7 @@ export function inspectCredentialSyntax(value: string): { secretLike: boolean; o
         operations += 1;
         identifierIndex += 1;
       }
-      if (isCredentialIdentifier(tokens[identifierIndex]?.value ?? '')
+      if (isSecretSemanticIdentifier(tokens[identifierIndex]?.value ?? '')
         && hasFollowingValue(tokens, identifierIndex + 1)) {
         return { secretLike: true, operations };
       }
@@ -215,7 +207,7 @@ export function inspectCredentialSyntax(value: string): { secretLike: boolean; o
     if (current === '$') identifierIndex += 1;
     if ((tokens[identifierIndex]?.value ?? '').toLowerCase() === 'env'
       && tokens[identifierIndex + 1]?.value === ':') identifierIndex += 2;
-    if (isCredentialIdentifier(tokens[identifierIndex]?.value ?? '')
+    if (isSecretSemanticIdentifier(tokens[identifierIndex]?.value ?? '')
       && ['=', ':'].includes(tokens[identifierIndex + 1]?.value ?? '')
       && hasFollowingValue(tokens, identifierIndex + 2)) return { secretLike: true, operations };
 

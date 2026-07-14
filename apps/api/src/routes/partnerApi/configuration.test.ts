@@ -170,6 +170,8 @@ describe('partner desired-configuration exports', () => {
     "ConvertTo-SecureString -AsPlainText -Force -String 'Summer2026!'",
     'DATABASE_URL=postgres://admin:hunter2@db.example/app',
     'RECOVERY_KEY=ABC-123',
+    'PASSWORD_VALUE=hunter2',
+    'TOKEN_BACKUP=hunter2',
   ])('blocks the whole script for low-entropy credential syntax without leaking derived metadata: %s', async (content) => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'organization', name: 'Unsafe rebuild', description: null, category: 'build',
@@ -185,6 +187,21 @@ describe('partner desired-configuration exports', () => {
     expect(serialized).not.toContain(content);
     expect(serialized).not.toContain('hunter2');
     expect(serialized).not.toContain('Summer2026');
+  });
+
+  it('fails closed when script tokenization reaches its bounded inspection budget', async () => {
+    const content = `${'='.repeat(10_001)}PASSWORD=hunter2`;
+    mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+      sourceScope: 'organization', name: 'Unsafe rebuild', description: null, category: 'build',
+      osTypes: ['windows'], language: 'powershell', content, parameters: null,
+      timeoutSeconds: 300, runAs: 'system', version: 1, exitCodeSeverityMapping: null,
+    })]);
+    const body = await (await request('/scripts', 'scripts:read')).json();
+    expect(body.data).toEqual([]);
+    expect(body.blocked).toEqual([expect.objectContaining({
+      resource: 'scripts', id: SOURCE_A, orgId: ORG_A, reason: 'secret_detected',
+    })]);
+    expect(JSON.stringify(body)).not.toContain('hunter2');
   });
 
   it('exports automation steps and stable script dependencies without run state', async () => {
