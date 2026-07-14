@@ -61,6 +61,10 @@ const SERIALIZATION_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-29-serialize-config-policy-assignment-integrity.sql',
 );
+const BULK_SERIALIZATION_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-30-serialize-bulk-config-assignment-target-moves.sql',
+);
 const ALL_SCOPES = [
   'organizations:read',
   'sites:read',
@@ -493,8 +497,170 @@ describe('partner reconstruction export RLS traversal', () => {
       releaseOwnerMove.resolve();
       await policyMover;
       expect(await ownerAssignment).toBe('23503');
+
+      const bulkSourceSite = await createSite({
+        orgId: source.orgs[0]!.id,
+        name: 'Concurrent bulk source site',
+      });
+      const bulkOtherSite = await createSite({
+        orgId: target.orgs[0]!.id,
+        name: 'Concurrent bulk other site',
+      });
+      const [bulkPolicy] = await admin.insert(configurationPolicies).values({
+        orgId: source.orgs[0]!.id,
+        name: 'Concurrent bulk policy',
+      }).returning();
+      if (!bulkPolicy) throw new Error('concurrent bulk policy seed failed');
+      const bulkMove = deferred<void>();
+      const releaseBulkMove = deferred<void>();
+      const bulkMover = admin.transaction(async (tx) => {
+        await tx.update(sites).set({
+          orgId: sql`CASE WHEN ${sites.id} = ${bulkSourceSite.id}::uuid
+            THEN ${source.orgs[1]!.id}::uuid ELSE ${target.orgs[1]!.id}::uuid END`,
+        }).where(inArray(sites.id, [bulkSourceSite.id, bulkOtherSite.id]));
+        bulkMove.resolve();
+        await releaseBulkMove.promise;
+      });
+      await bulkMove.promise;
+      const bulkAssignment = captureSqlState(() => withDbAccessContext(context, () =>
+        db.insert(configPolicyAssignments).values({
+          configPolicyId: bulkPolicy.id,
+          level: 'site',
+          targetId: bulkSourceSite.id,
+        }),
+      ));
+      await waitForPartnerExportWaiter();
+      releaseBulkMove.resolve();
+      await bulkMover;
+      expect(await bulkAssignment).toBe('23503');
     }
   }, 30_000);
+
+  runDb('serializes complete bulk owner sets across partners and descending organizations', async () => {
+    const admin = getTestDb();
+    const first = await seedPartner('A');
+    const second = await seedPartner('B');
+    const orderedPartners = [first, second].sort((left, right) =>
+      left.partner.id.localeCompare(right.partner.id));
+
+    for (const seeds of [orderedPartners, [...orderedPartners].reverse()]) {
+      const movingSites = [];
+      for (const seed of seeds) {
+        movingSites.push(await createSite({
+          orgId: seed.orgs[0]!.id,
+          name: `Bulk site ${crypto.randomUUID()}`,
+        }));
+      }
+      await expect(admin.update(sites).set({
+        orgId: sql`CASE
+          WHEN ${sites.id} = ${movingSites[0]!.id}::uuid THEN ${seeds[0]!.orgs[1]!.id}::uuid
+          ELSE ${seeds[1]!.orgs[1]!.id}::uuid
+        END`,
+      }).where(inArray(sites.id, movingSites.map((site) => site.id)))).resolves.toBeDefined();
+      await expect(admin.delete(sites)
+        .where(inArray(sites.id, movingSites.map((site) => site.id)))).resolves.toBeDefined();
+    }
+
+    const samePartnerOrgs = [
+      ...first.orgs,
+      await createOrganization({ partnerId: first.partner.id, name: 'Bulk third org' }),
+    ].sort((left, right) => left.id.localeCompare(right.id));
+    const descendingSites = [
+      await createSite({ orgId: samePartnerOrgs[2]!.id, name: 'Descending high site' }),
+      await createSite({ orgId: samePartnerOrgs[1]!.id, name: 'Descending middle site' }),
+    ];
+    await expect(admin.update(sites).set({
+      orgId: sql`CASE
+        WHEN ${sites.id} = ${descendingSites[0]!.id}::uuid THEN ${samePartnerOrgs[1]!.id}::uuid
+        ELSE ${samePartnerOrgs[0]!.id}::uuid
+      END`,
+    }).where(inArray(sites.id, descendingSites.map((site) => site.id)))).resolves.toBeDefined();
+
+    const [policyA, policyB] = await admin.insert(configurationPolicies).values([
+      { partnerId: first.partner.id, name: 'Bulk partner policy A' },
+      { partnerId: second.partner.id, name: 'Bulk partner policy B' },
+    ]).returning();
+    if (!policyA || !policyB) throw new Error('bulk policy seed failed');
+    await expect(admin.update(configurationPolicies).set({
+      partnerId: sql`CASE
+        WHEN ${configurationPolicies.id} = ${policyA.id}::uuid THEN ${second.partner.id}::uuid
+        ELSE ${first.partner.id}::uuid
+      END`,
+    }).where(inArray(configurationPolicies.id, [policyA.id, policyB.id]))).resolves.toBeDefined();
+    await expect(admin.delete(configurationPolicies)
+      .where(inArray(configurationPolicies.id, [policyA.id, policyB.id]))).resolves.toBeDefined();
+
+    const emptyOrgs = [
+      await createOrganization({ partnerId: first.partner.id, name: 'Bulk empty org A' }),
+      await createOrganization({ partnerId: second.partner.id, name: 'Bulk empty org B' }),
+    ];
+    await expect(admin.update(organizations).set({
+      partnerId: sql`CASE
+        WHEN ${organizations.id} = ${emptyOrgs[0]!.id}::uuid THEN ${second.partner.id}::uuid
+        ELSE ${first.partner.id}::uuid
+      END`,
+    }).where(inArray(organizations.id, emptyOrgs.map((org) => org.id)))).resolves.toBeDefined();
+    await expect(admin.delete(organizations)
+      .where(inArray(organizations.id, emptyOrgs.map((org) => org.id)))).resolves.toBeDefined();
+
+    const [groupA, groupB] = await admin.insert(deviceGroups).values([
+      { orgId: first.orgs[0]!.id, siteId: first.sites[0]!.id, name: 'Bulk group A' },
+      { orgId: second.orgs[0]!.id, siteId: second.sites[0]!.id, name: 'Bulk group B' },
+    ]).returning();
+    if (!groupA || !groupB) throw new Error('bulk group seed failed');
+    await expect(admin.update(deviceGroups).set({
+      orgId: sql`CASE
+        WHEN ${deviceGroups.id} = ${groupA.id}::uuid THEN ${first.orgs[1]!.id}::uuid
+        ELSE ${second.orgs[1]!.id}::uuid
+      END`,
+      siteId: sql`CASE
+        WHEN ${deviceGroups.id} = ${groupA.id}::uuid THEN ${first.sites[1]!.id}::uuid
+        ELSE ${second.sites[1]!.id}::uuid
+      END`,
+    }).where(inArray(deviceGroups.id, [groupA.id, groupB.id]))).resolves.toBeDefined();
+    await expect(admin.delete(deviceGroups)
+      .where(inArray(deviceGroups.id, [groupA.id, groupB.id]))).resolves.toBeDefined();
+
+    const movingDevices = [first, second].map((seed, index) => ({
+      id: seed.devices[0]!.id,
+      index,
+    }));
+    await expect(admin.update(devices).set({
+      hostname: sql`CASE WHEN ${devices.id} = ${movingDevices[0]!.id}::uuid
+        THEN 'Bulk device A' ELSE 'Bulk device B' END`,
+    }).where(inArray(devices.id, movingDevices.map((device) => device.id)))).resolves.toBeDefined();
+  }, 30_000);
+
+  runDb('composes ordinary export locks with valid and invalid assignment writes', async () => {
+    const admin = getTestDb();
+    const partnerA = await seedPartner('A');
+    const partnerB = await seedPartner('B');
+    const [policy] = await admin.insert(configurationPolicies).values({
+      orgId: partnerA.orgs[0]!.id,
+      name: 'Export-lock composition policy',
+    }).returning();
+    if (!policy) throw new Error('composition policy seed failed');
+
+    await expect(admin.transaction(async (tx) => {
+      await tx.update(sites).set({ name: 'Valid export-lock mutation' })
+        .where(eq(sites.id, partnerA.sites[0]!.id));
+      await tx.insert(configPolicyAssignments).values({
+        configPolicyId: policy.id,
+        level: 'site',
+        targetId: partnerA.sites[0]!.id,
+      });
+    })).resolves.toBeUndefined();
+
+    expect(await captureSqlState(() => admin.transaction(async (tx) => {
+      await tx.update(sites).set({ name: 'Invalid export-lock mutation' })
+        .where(eq(sites.id, partnerA.sites[1]!.id));
+      await tx.insert(configPolicyAssignments).values({
+        configPolicyId: policy.id,
+        level: 'site',
+        targetId: partnerB.sites[0]!.id,
+      });
+    }))).toBe('23503');
+  }, 20_000);
 
   runDb('resolves FORCE-RLS owners under fixed system GUCs for a non-bypass definer', async () => {
     const admin = getTestDb();
@@ -510,19 +676,16 @@ describe('partner reconstruction export RLS traversal', () => {
         GRANT USAGE ON SCHEMA public TO ${ownerRole};
         GRANT SELECT ON public.config_policy_assignments, public.configuration_policies,
           public.organizations, public.sites, public.device_groups, public.devices TO ${ownerRole};
-        GRANT UPDATE ON public.configuration_policies TO ${ownerRole};
+        GRANT UPDATE ON public.configuration_policies, public.organizations,
+          public.sites, public.device_groups, public.devices TO ${ownerRole};
         GRANT EXECUTE ON FUNCTION public.breeze_partner_export_lock_partners_exclusive(uuid[]),
           public.breeze_partner_export_lock_orgs_under_exclusive_partners(uuid[], uuid[])
           TO ${ownerRole};
-        ALTER FUNCTION public.breeze_lock_config_policy_assignment_rows(jsonb[], uuid[], uuid[]) OWNER TO ${ownerRole};
         ALTER FUNCTION public.breeze_validate_config_policy_assignment_target(uuid, text, uuid) OWNER TO ${ownerRole};
         ALTER FUNCTION public.breeze_validate_config_policy_assignment_new_rows(jsonb[]) OWNER TO ${ownerRole};
-        ALTER FUNCTION public.breeze_enforce_config_policy_assignment_insert() OWNER TO ${ownerRole};
-        ALTER FUNCTION public.breeze_enforce_config_policy_assignment_update() OWNER TO ${ownerRole};
-        ALTER FUNCTION public.breeze_enforce_config_policy_assignment_delete() OWNER TO ${ownerRole};
-        ALTER FUNCTION public.breeze_serialize_config_policy_assignment_owner_change() OWNER TO ${ownerRole};
-        ALTER FUNCTION public.breeze_enforce_config_policy_assignment_target() OWNER TO ${ownerRole};
-        ALTER FUNCTION public.breeze_revalidate_config_policy_assignment_targets() OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_enforce_config_policy_assignment_integrity() OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_serialize_config_policy_assignment_owner_updates() OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_serialize_config_policy_assignment_owner_deletes() OWNER TO ${ownerRole};
       `));
 
       const [roleFlags] = await admin.execute<{ superuser: boolean; bypass: boolean }>(sql.raw(`
@@ -534,13 +697,14 @@ describe('partner reconstruction export RLS traversal', () => {
         SELECT proname AS name, proconfig AS config
         FROM pg_catalog.pg_proc
         WHERE proname IN (
-          'breeze_lock_config_policy_assignment_rows',
           'breeze_validate_config_policy_assignment_target',
-          'breeze_enforce_config_policy_assignment_target',
-          'breeze_revalidate_config_policy_assignment_targets'
+          'breeze_validate_config_policy_assignment_new_rows',
+          'breeze_enforce_config_policy_assignment_integrity',
+          'breeze_serialize_config_policy_assignment_owner_updates',
+          'breeze_serialize_config_policy_assignment_owner_deletes'
         )
       `);
-      expect(configured).toHaveLength(4);
+      expect(configured).toHaveLength(5);
       expect(configured.every((fn) =>
         fn.config.includes('breeze.scope=system')
         && fn.config.includes('search_path=pg_catalog, public'),
@@ -587,25 +751,24 @@ describe('partner reconstruction export RLS traversal', () => {
     const admin = getTestDb();
     const migration = readFileSync(MIGRATION_FILE, 'utf8');
     const serializationMigration = readFileSync(SERIALIZATION_MIGRATION_FILE, 'utf8');
+    const bulkSerializationMigration = readFileSync(BULK_SERIALIZATION_MIGRATION_FILE, 'utf8');
     await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(admin.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
+    await expect(admin.execute(sql.raw(bulkSerializationMigration))).resolves.toBeDefined();
     await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(admin.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
+    await expect(admin.execute(sql.raw(bulkSerializationMigration))).resolves.toBeDefined();
     await ensureAppRole();
 
     const [privileges] = await admin.execute<{ helpersPrivate: boolean }>(sql`
       SELECT bool_and(NOT has_function_privilege('breeze_app', signature, 'EXECUTE'))
         AS "helpersPrivate"
       FROM unnest(ARRAY[
-        'public.breeze_lock_config_policy_assignment_rows(jsonb[],uuid[],uuid[])',
         'public.breeze_validate_config_policy_assignment_target(uuid,text,uuid)',
         'public.breeze_validate_config_policy_assignment_new_rows(jsonb[])',
-        'public.breeze_enforce_config_policy_assignment_insert()',
-        'public.breeze_enforce_config_policy_assignment_update()',
-        'public.breeze_enforce_config_policy_assignment_delete()',
-        'public.breeze_serialize_config_policy_assignment_owner_change()',
-        'public.breeze_enforce_config_policy_assignment_target()',
-        'public.breeze_revalidate_config_policy_assignment_targets()'
+        'public.breeze_enforce_config_policy_assignment_integrity()',
+        'public.breeze_serialize_config_policy_assignment_owner_updates()',
+        'public.breeze_serialize_config_policy_assignment_owner_deletes()'
       ]::text[]) signature
     `);
     expect(privileges).toEqual({ helpersPrivate: true });
@@ -835,13 +998,15 @@ async function waitForPartnerExportWaiter(): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const rows = await getTestDb().execute(sql`
       SELECT 1 FROM pg_catalog.pg_locks
-      WHERE locktype = 'advisory' AND classid = 1000202 AND NOT granted
+      WHERE NOT granted
+        AND (locktype IN ('transactionid', 'tuple')
+          OR (locktype = 'advisory' AND classid IN (1000202, 1000301)))
       LIMIT 1
     `);
     if (rows.length > 0) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error('assignment writer never waited on the partner export advisory lock');
+  throw new Error('assignment writer never waited on its integrity lock');
 }
 
 async function captureSqlState(work: () => Promise<unknown>): Promise<string | undefined> {
