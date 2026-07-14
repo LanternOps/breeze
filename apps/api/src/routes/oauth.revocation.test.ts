@@ -8,10 +8,12 @@ const configState = vi.hoisted(() => ({
   privateJwks: '',
 }));
 
+type CallableDelegate = (...args: any[]) => any;
+
 const mocks = vi.hoisted(() => ({
   getProvider: vi.fn(),
-  revokeJti: vi.fn(),
-  revokeGrant: vi.fn(),
+  revokeJti: vi.fn<CallableDelegate>(),
+  revokeGrant: vi.fn<CallableDelegate>(),
   isJtiRevoked: vi.fn(),
   isGrantRevoked: vi.fn(),
   getRedis: vi.fn(),
@@ -59,8 +61,8 @@ interface Harness {
   app: Hono;
   privateJwk: JWK;
   kid: string;
-  revokeJti: ReturnType<typeof vi.fn>;
-  revokeGrant: ReturnType<typeof vi.fn>;
+  revokeJti: typeof mocks.revokeJti;
+  revokeGrant: typeof mocks.revokeGrant;
   providerCalled: () => number;
 }
 
@@ -73,8 +75,8 @@ app.route('/oauth', oauthRoutes);
 
 const getHarness = (
   cacheBehavior: {
-    revokeJti?: ReturnType<typeof vi.fn>;
-    revokeGrant?: ReturnType<typeof vi.fn>;
+    revokeJti?: CallableDelegate;
+    revokeGrant?: CallableDelegate;
   } = {}
 ): Promise<Harness> => {
   if (cacheBehavior.revokeJti) mocks.revokeJti.mockImplementation(cacheBehavior.revokeJti);

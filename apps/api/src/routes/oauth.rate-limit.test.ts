@@ -6,10 +6,12 @@ const configState = vi.hoisted(() => ({
   dcrEnabled: true,
 }));
 
+type CallableDelegate = (...args: any[]) => any;
+
 const mocks = vi.hoisted(() => ({
   getProvider: vi.fn(),
   getRedis: vi.fn(),
-  rateLimiter: vi.fn(),
+  rateLimiter: vi.fn<CallableDelegate>(),
 }));
 
 vi.mock('../config/env', () => Object.defineProperty({
@@ -49,7 +51,7 @@ const tokenClientKey = (clientId: string) =>
   `oauth:token:client:${createHash('sha256').update(clientId).digest('hex').slice(0, 32)}`;
 
 const loadApp = (
-  rateLimiter: ReturnType<typeof vi.fn> = vi.fn(async () => ({ allowed: true, remaining: 1, resetAt })),
+  rateLimiter: CallableDelegate = vi.fn(async () => ({ allowed: true, remaining: 1, resetAt })),
 ) => {
   mocks.rateLimiter.mockImplementation(rateLimiter);
   const app = new Hono();
