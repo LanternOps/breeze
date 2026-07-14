@@ -482,7 +482,7 @@ export default function M365CustomerGraphReadCard({
   const errorCopy = useMemo(() => {
     if (!connection?.lastErrorCode) return null;
     return isStableErrorCode(connection.lastErrorCode)
-      ? t(`m365CustomerGraphRead.errors.${connection.lastErrorCode}`)
+      ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${connection.lastErrorCode}`)
       : t("m365CustomerGraphRead.errors.unknown");
   }, [connection, t]);
   const callbackCopy = callbackResult === "active"
@@ -490,7 +490,7 @@ export default function M365CustomerGraphReadCard({
     : callbackResult === "degraded"
       ? t("m365CustomerGraphRead.callback.degraded")
       : callbackResult
-        ? t(`m365CustomerGraphRead.errors.${callbackResult}`)
+        ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${callbackResult}`)
         : null;
 
   return (
@@ -508,7 +508,7 @@ export default function M365CustomerGraphReadCard({
         {connection && (
           <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${statusClass(connection.status)}`}>
             <StatusIcon aria-hidden="true" className="h-3.5 w-3.5" />
-            {t(`m365CustomerGraphRead.status.${connection.status}`)}
+            {t(/* i18n-dynamic */ `m365CustomerGraphRead.status.${connection.status}`)}
           </span>
         )}
       </div>
