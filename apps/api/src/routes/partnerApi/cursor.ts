@@ -2,7 +2,15 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { PARTNER_API_CURSOR_SIGNING_KEY } from '../../config/env';
 import { canonicalJsonStringify } from './exportSafety';
-import { partnerExportResourceSchema, type PartnerExportResource } from './schemas';
+import {
+  PARTNER_EXPORT_CURSOR_MAX_LENGTH,
+  partnerExportCursorTokenSchema,
+  partnerExportResourceSchema,
+  partnerExportTimestampSchema,
+  type PartnerExportResource,
+} from './schemas';
+
+export { PARTNER_EXPORT_CURSOR_MAX_LENGTH } from './schemas';
 
 export const PARTNER_EXPORT_CURSOR_HMAC_DOMAIN = 'breeze-partner-export-cursor-v1';
 const CURSOR_ERROR_MESSAGE = 'The partner export cursor is invalid or expired.';
@@ -19,17 +27,16 @@ export interface PartnerExportCursor {
   expiresAt: string;
 }
 
-const timestampSchema = z.string().datetime({ offset: true });
 const partnerExportCursorSchema = z.object({
   v: z.literal(1),
   resource: partnerExportResourceSchema,
   partnerId: z.string().uuid(),
-  snapshotAt: timestampSchema,
-  updatedSince: timestampSchema.nullable(),
-  lastUpdatedAt: timestampSchema.nullable(),
+  snapshotAt: partnerExportTimestampSchema,
+  updatedSince: partnerExportTimestampSchema.nullable(),
+  lastUpdatedAt: partnerExportTimestampSchema.nullable(),
   lastId: z.string().uuid(),
   lastOrgId: z.string().uuid().nullable(),
-  expiresAt: timestampSchema,
+  expiresAt: partnerExportTimestampSchema,
 }).strict().superRefine((value, ctx) => {
   if ((value.updatedSince === null) !== (value.lastUpdatedAt === null)) {
     ctx.addIssue({
@@ -89,7 +96,9 @@ export function encodePartnerExportCursor(
   const parsed = partnerExportCursorSchema.safeParse(cursor);
   if (!parsed.success) throw new PartnerExportCursorError();
   const encodedPayload = Buffer.from(canonicalJsonStringify(parsed.data), 'utf8').toString('base64url');
-  return `${encodedPayload}.${signPayload(encodedPayload, signingKey).toString('base64url')}`;
+  const token = `${encodedPayload}.${signPayload(encodedPayload, signingKey).toString('base64url')}`;
+  if (!partnerExportCursorTokenSchema.safeParse(token).success) throw new PartnerExportCursorError();
+  return token;
 }
 
 export interface PartnerExportCursorBinding {
@@ -106,7 +115,7 @@ export function decodePartnerExportCursor(
 ): PartnerExportCursor {
   assertSigningKey(signingKey);
   try {
-    if (token.length > 8192) throw new PartnerExportCursorError();
+    if (!partnerExportCursorTokenSchema.safeParse(token).success) throw new PartnerExportCursorError();
     const parts = token.split('.');
     if (parts.length !== 2) throw new PartnerExportCursorError();
     const [encodedPayload, encodedSignature] = parts as [string, string];

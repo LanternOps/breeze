@@ -34,6 +34,8 @@ describe('canonical partner export revisions', () => {
 });
 
 describe('recursive export safety', () => {
+  const embeddedCredential = 'QWxhZGRpbjpvcGVuIHNlc2FtZQ9xY7vK2mN4pR8sT6uV0wX3zA5bC7dE';
+
   it.each([
     ['password', { nested: { password: 'ordinary-looking-value' } }],
     ['providerConfig', { steps: [{ options: { providerConfig: {} } }] }],
@@ -95,6 +97,60 @@ describe('recursive export safety', () => {
     expect(inspectDefinitionForSecrets(definition)).toEqual({ safe: true });
     expect(safelyExportDefinition({ resource: 'configuration-policies', id: ID, orgId: ORG_ID }, definition))
       .toEqual({ safe: true, definition });
+  });
+
+  it('finds high-entropy credentials embedded in bounded script windows', () => {
+    expect(inspectDefinitionForSecrets({
+      command: `printf 'starting backup'; curl -H 'X-Credential: ${embeddedCredential}' https://backup.example.test`,
+    })).toMatchObject({ safe: false, reason: 'secret_detected' });
+
+    expect(inspectDefinitionForSecrets({
+      command: `${'# documentation padding\n'.repeat(300)}export CREDENTIAL=${embeddedCredential}`,
+    })).toMatchObject({ safe: false, reason: 'secret_detected' });
+  });
+
+  it('does not classify ordinary script text as high-entropy credentials', () => {
+    expect(inspectDefinitionForSecrets({
+      command: [
+        '# install and enable the ordinary monitoring package',
+        'curl --fail --location https://packages.example.test/downloads/monitoring-agent.tar.gz',
+        'tar -xzf monitoring-agent.tar.gz -C /opt/example-agent',
+        'systemctl enable --now example-agent.service',
+      ].join('\n'),
+    })).toEqual({ safe: true });
+  });
+
+  it('stops immediately after a depth or visited-value limit violation', () => {
+    let deep: Record<string, unknown> = { leaf: true };
+    for (let depth = 0; depth < 34; depth += 1) deep = { next: deep };
+    let lateGetterRead = false;
+    const deepDefinition: Record<string, unknown> = { deep };
+    Object.defineProperty(deepDefinition, 'mustNotRead', {
+      enumerable: true,
+      get() {
+        lateGetterRead = true;
+        throw new Error('traversal continued after the depth cap');
+      },
+    });
+
+    expect(() => inspectDefinitionForSecrets(deepDefinition)).not.toThrow();
+    expect(inspectDefinitionForSecrets(deepDefinition)).toMatchObject({ safe: false });
+    expect(lateGetterRead).toBe(false);
+
+    const sparse = new Array<unknown>(1_000_000);
+    let indexedReads = 0;
+    const guardedSparse = new Proxy(sparse, {
+      get(target, property, receiver) {
+        if (typeof property === 'string' && /^[0-9]+$/u.test(property)) {
+          indexedReads += 1;
+          if (indexedReads > 10_010) throw new Error('traversal continued after the visited-value cap');
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    expect(() => inspectDefinitionForSecrets(guardedSparse)).not.toThrow();
+    expect(indexedReads).toBeLessThanOrEqual(10_001);
   });
 
   it('rejects the whole definition and emits only safe bounded blocked metadata', () => {

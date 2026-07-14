@@ -734,6 +734,14 @@ const envSchema = z
             'PARTNER_API_CURSOR_SIGNING_KEY must decode to at least 32 bytes of random key material from canonical base64 in production.',
         });
       }
+      if (cursorSigningKey?.equals(Buffer.from(data.JWT_SECRET, 'utf8'))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['PARTNER_API_CURSOR_SIGNING_KEY'],
+          message:
+            'PARTNER_API_CURSOR_SIGNING_KEY must not reuse UTF-8 JWT_SECRET key material. Generate a dedicated random key.',
+        });
+      }
 
       // E2E_MODE must never be enabled in production
       if (data.E2E_MODE === '1' || data.E2E_MODE === 'true') {

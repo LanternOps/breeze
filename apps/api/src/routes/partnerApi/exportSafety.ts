@@ -9,6 +9,7 @@ const MAX_FIELD_PATHS = 20;
 const MAX_FIELD_PATH_LENGTH = 256;
 const MAX_DEPTH = 32;
 const MAX_VISITED_VALUES = 10_000;
+const STRING_SCAN_WINDOW = 4096;
 
 const FORBIDDEN_FIELD_TOKENS = new Set([
   'authorization',
@@ -95,16 +96,28 @@ function shannonEntropy(value: string): number {
   return entropy;
 }
 
-function resemblesHighEntropySecret(value: string): boolean {
-  if (value.length < 32 || UUID_PATTERN.test(value)) return false;
-  const boundedSample = value.slice(0, 4096);
-  if (!/^[A-Za-z0-9+/_=-]+$/u.test(boundedSample)) return false;
-  return shannonEntropy(boundedSample) >= 3.2;
+function boundedWindows(value: string, windowSize: number): string[] {
+  if (value.length <= windowSize) return [value];
+  const offsets = [0, Math.floor((value.length - windowSize) / 2), value.length - windowSize];
+  return [...new Set(offsets)].map((offset) => value.slice(offset, offset + windowSize));
+}
+
+function candidateLooksHighEntropy(candidate: string): boolean {
+  if (candidate.length < 32 || UUID_PATTERN.test(candidate)) return false;
+  const sampleSize = Math.min(64, candidate.length);
+  return boundedWindows(candidate, sampleSize).some((sample) => shannonEntropy(sample) >= 3.2);
+}
+
+function windowContainsHighEntropyToken(window: string): boolean {
+  const candidates = window.match(/[A-Za-z0-9+/_=-]{32,}/gu) ?? [];
+  return candidates.some(candidateLooksHighEntropy);
 }
 
 function isSecretLikeValue(value: string): boolean {
-  return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))
-    || resemblesHighEntropySecret(value);
+  return boundedWindows(value, STRING_SCAN_WINDOW).some((window) => (
+    SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(window))
+    || windowContainsHighEntropyToken(window)
+  ));
 }
 
 function safePathComponent(component: string): string {
@@ -130,6 +143,7 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
   const seenPaths = new Set<string>();
   const ancestors = new Set<object>();
   let visited = 0;
+  let traversalStopped = false;
 
   const addPath = (path: string) => {
     const bounded = (path || '_').slice(0, MAX_FIELD_PATH_LENGTH);
@@ -140,9 +154,11 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
   };
 
   const visit = (value: unknown, path: string, depth: number, trustedRevision = false): void => {
+    if (traversalStopped) return;
     visited += 1;
     if (depth > MAX_DEPTH || visited > MAX_VISITED_VALUES) {
       addPath(path);
+      traversalStopped = true;
       return;
     }
     if (typeof value === 'string') {
@@ -152,19 +168,25 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
     if (!value || typeof value !== 'object') return;
     if (ancestors.has(value)) {
       addPath(path);
+      traversalStopped = true;
       return;
     }
     ancestors.add(value);
     try {
       if (Array.isArray(value)) {
         for (let index = 0; index < value.length; index += 1) {
+          if (traversalStopped) break;
           visit(value[index], appendArrayPath(path, index), depth + 1);
         }
         return;
       }
-      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const record = value as Record<string, unknown>;
+      for (const key in record) {
+        if (traversalStopped) break;
+        if (!Object.hasOwn(record, key)) continue;
         const childPath = appendObjectPath(path, key);
         if (isForbiddenFieldName(key)) addPath(childPath);
+        const child = record[key];
         visit(child, childPath, depth + 1, childPath === 'revision');
       }
     } finally {

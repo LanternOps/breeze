@@ -1,4 +1,5 @@
 import type { PartnerExportCursor } from './cursor';
+import { partnerExportTimestampSchema } from './schemas';
 
 export const PARTNER_EXPORT_DEFAULT_LIMIT = 100;
 export const PARTNER_EXPORT_MAX_LIMIT = 500;
@@ -43,9 +44,11 @@ export interface PartnerExportTraversal {
 }
 
 function timestamp(value: string, field: string): number {
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) throw paginationError(`Partner export ${field} must be an ISO timestamp.`);
-  return parsed;
+  const validated = partnerExportTimestampSchema.safeParse(value);
+  if (!validated.success) {
+    throw paginationError(`Partner export ${field} must be a strict offset ISO timestamp.`);
+  }
+  return Date.parse(validated.data);
 }
 
 export function createPartnerExportTraversal(input: {
@@ -71,6 +74,10 @@ export function createPartnerExportTraversal(input: {
   }
   if (input.cursor.updatedSince !== input.updatedSince) {
     throw paginationError('Partner export cursor filter does not match updatedSince.');
+  }
+  timestamp(input.cursor.snapshotAt, 'cursor snapshotAt');
+  if (input.cursor.lastUpdatedAt !== null) {
+    timestamp(input.cursor.lastUpdatedAt, 'cursor lastUpdatedAt');
   }
   return {
     mode: input.updatedSince === null ? 'full' : 'incremental',
@@ -122,15 +129,16 @@ function keyForRow(row: PartnerExportPageRow, mode: PartnerExportTraversal['mode
 
 function assertRowInSnapshot(row: PartnerExportPageRow, traversal: PartnerExportTraversal): void {
   const snapshot = timestamp(traversal.snapshotAt, 'snapshotAt');
+  const createdAt = timestamp(row.createdAt, 'row createdAt');
+  const updatedAt = timestamp(row.updatedAt, 'row updatedAt');
   if (traversal.mode === 'incremental') {
-    const updatedAt = timestamp(row.updatedAt, 'row updatedAt');
     const updatedSince = timestamp(traversal.updatedSince!, 'updatedSince');
     if (updatedAt <= updatedSince || updatedAt > snapshot) {
       throw paginationError('Partner export row falls outside the incremental snapshot window.');
     }
     return;
   }
-  if (timestamp(row.createdAt, 'row createdAt') > snapshot) {
+  if (createdAt > snapshot) {
     throw paginationError('Partner export row falls outside the full snapshot window.');
   }
 }

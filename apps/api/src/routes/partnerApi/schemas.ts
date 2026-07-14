@@ -18,14 +18,16 @@ export const PARTNER_EXPORT_RESOURCES = [
 export const partnerExportResourceSchema = z.enum(PARTNER_EXPORT_RESOURCES);
 export type PartnerExportResource = z.infer<typeof partnerExportResourceSchema>;
 
-const boundedIsoTimestampSchema = z.string().datetime({ offset: true });
+export const PARTNER_EXPORT_CURSOR_MAX_LENGTH = 4096;
+export const partnerExportTimestampSchema = z.string().datetime({ offset: true });
+export const partnerExportCursorTokenSchema = z.string().min(1).max(PARTNER_EXPORT_CURSOR_MAX_LENGTH);
 const sha256RevisionSchema = z.string().regex(/^[a-f0-9]{64}$/u, 'revision must be a SHA-256 hex digest');
 
 export const partnerExportRecordBaseSchema = z.object({
   id: z.string().uuid(),
   orgId: z.string().uuid(),
   siteId: z.string().uuid().nullable(),
-  sourceUpdatedAt: boundedIsoTimestampSchema,
+  sourceUpdatedAt: partnerExportTimestampSchema,
   revision: sha256RevisionSchema,
 }).strict();
 
@@ -37,10 +39,27 @@ export interface PartnerExportRecordBase {
   revision: string;
 }
 
-/** Build an explicit, strict DTO allowlist for one public export resource. */
-export function createPartnerExportRecordSchema<T extends z.ZodRawShape>(shape: T) {
+type PartnerExportReservedKey = keyof PartnerExportRecordBase;
+type WithoutPartnerExportReservedKeys<T extends z.ZodRawShape> =
+  Extract<keyof T, PartnerExportReservedKey> extends never ? T : never;
+
+const PARTNER_EXPORT_RESERVED_KEYS = new Set<PartnerExportReservedKey>(
+  Object.keys(partnerExportRecordBaseSchema.shape) as PartnerExportReservedKey[],
+);
+
+/** Build an explicit, strict DTO allowlist without permitting base-contract replacement. */
+export function strictPartnerExportRecordSchema<const T extends z.ZodRawShape>(
+  shape: WithoutPartnerExportReservedKeys<T>,
+) {
+  for (const key of Object.keys(shape)) {
+    if (PARTNER_EXPORT_RESERVED_KEYS.has(key as PartnerExportReservedKey)) {
+      throw new TypeError(`Partner export resource schema cannot override reserved base field: ${key}`);
+    }
+  }
   return partnerExportRecordBaseSchema.extend(shape).strict();
 }
+
+export const createPartnerExportRecordSchema = strictPartnerExportRecordSchema;
 
 export const partnerExportBlockedRecordSchema = z.object({
   resource: partnerExportResourceSchema,
@@ -57,9 +76,9 @@ export type PartnerExportBlockedRecord = z.infer<typeof partnerExportBlockedReco
 export function createPartnerExportEnvelopeSchema<T extends z.ZodType>(recordSchema: T) {
   return z.object({
     schemaVersion: z.literal('1'),
-    snapshotAt: boundedIsoTimestampSchema,
+    snapshotAt: partnerExportTimestampSchema,
     data: z.array(recordSchema).max(500),
-    nextCursor: z.string().min(1).max(4096).nullable(),
+    nextCursor: partnerExportCursorTokenSchema.nullable(),
     hasMore: z.boolean(),
     blocked: z.array(partnerExportBlockedRecordSchema).max(500).optional(),
   }).strict().superRefine((value, ctx) => {

@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
+  PARTNER_EXPORT_CURSOR_MAX_LENGTH,
   PARTNER_EXPORT_RESOURCES,
   createPartnerExportEnvelopeSchema,
   createPartnerExportRecordSchema,
   partnerExportBlockedRecordSchema,
+  partnerExportCursorTokenSchema,
   partnerExportRecordBaseSchema,
   partnerExportResourceSchema,
+  partnerExportTimestampSchema,
+  strictPartnerExportRecordSchema,
 } from './schemas';
 
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -60,7 +64,7 @@ describe('partner export schemas', () => {
   });
 
   it('builds strict resource DTO allowlists instead of accepting ORM row fields', () => {
-    const schema = createPartnerExportRecordSchema({
+    const schema = strictPartnerExportRecordSchema({
       name: z.string().min(1).max(200),
       enabled: z.boolean(),
     });
@@ -77,6 +81,41 @@ describe('partner export schemas', () => {
       password: 'unreviewed-column',
     }).success).toBe(false);
     expect(schema.safeParse({ ...baseRecord, name: 'x'.repeat(201), enabled: true }).success).toBe(false);
+  });
+
+  it('forbids overriding every reserved base field at runtime and the type surface', () => {
+    for (const reserved of ['id', 'orgId', 'siteId', 'sourceUpdatedAt', 'revision'] as const) {
+      expect(() => createPartnerExportRecordSchema({
+        [reserved]: z.string(),
+      } as z.ZodRawShape)).toThrow(/reserved base field/i);
+    }
+
+    if (false) {
+      // @ts-expect-error id is owned by the base contract
+      strictPartnerExportRecordSchema({ id: z.string() });
+      // @ts-expect-error orgId is owned by the base contract
+      strictPartnerExportRecordSchema({ orgId: z.string() });
+      // @ts-expect-error siteId is owned by the base contract
+      strictPartnerExportRecordSchema({ siteId: z.string() });
+      // @ts-expect-error sourceUpdatedAt is owned by the base contract
+      strictPartnerExportRecordSchema({ sourceUpdatedAt: z.string() });
+      // @ts-expect-error revision is owned by the base contract
+      strictPartnerExportRecordSchema({ revision: z.string() });
+    }
+  });
+
+  it('exports one strict offset datetime contract for schemas, cursors, and pagination', () => {
+    for (const valid of ['2026-07-13T18:00:00.000Z', '2026-07-13T12:00:00-06:00']) {
+      expect(partnerExportTimestampSchema.parse(valid)).toBe(valid);
+    }
+    for (const invalid of [
+      '2026-07-13',
+      '2026-07-13T18:00:00',
+      'Sun, 13 Jul 2026 18:00:00 GMT',
+      'July 13, 2026 18:00:00 UTC',
+    ]) {
+      expect(partnerExportTimestampSchema.safeParse(invalid).success).toBe(false);
+    }
   });
 
   it('validates the exact version-one envelope and page bounds', () => {
@@ -98,6 +137,19 @@ describe('partner export schemas', () => {
     }).success).toBe(false);
     expect(envelopeSchema.safeParse({ ...envelope, hasMore: true, nextCursor: null }).success).toBe(false);
     expect(envelopeSchema.safeParse({ ...envelope, hasMore: false, nextCursor: 'cursor' }).success).toBe(false);
+    expect(PARTNER_EXPORT_CURSOR_MAX_LENGTH).toBe(4096);
+    expect(partnerExportCursorTokenSchema.safeParse('a'.repeat(4096)).success).toBe(true);
+    expect(partnerExportCursorTokenSchema.safeParse('a'.repeat(4097)).success).toBe(false);
+    expect(envelopeSchema.safeParse({
+      ...envelope,
+      hasMore: true,
+      nextCursor: 'a'.repeat(4096),
+    }).success).toBe(true);
+    expect(envelopeSchema.safeParse({
+      ...envelope,
+      hasMore: true,
+      nextCursor: 'a'.repeat(4097),
+    }).success).toBe(false);
   });
 
   it('limits blocked records to safe bounded metadata', () => {

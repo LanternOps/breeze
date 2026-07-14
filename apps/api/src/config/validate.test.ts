@@ -123,6 +123,21 @@ describe('validateConfig', () => {
     });
   });
 
+  it('rejects cursor bytes that equal UTF-8 JWT_SECRET despite different encodings', () => {
+    const jwtSecret = '0123456789abcdef0123456789ABCDEF';
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      JWT_SECRET: jwtSecret,
+      PARTNER_API_CURSOR_SIGNING_KEY: Buffer.from(jwtSecret, 'utf8').toString('base64'),
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
+      expect(() => validateConfig()).toThrow('JWT_SECRET key material');
+    });
+  });
+
   it('accepts explicit production bootstrap admin credentials', () => {
     withEnv({
       ...validEnv,

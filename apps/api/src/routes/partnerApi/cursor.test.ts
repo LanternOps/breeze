@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  PARTNER_EXPORT_CURSOR_MAX_LENGTH,
   PARTNER_EXPORT_CURSOR_HMAC_DOMAIN,
   PartnerExportCursorError,
   decodePartnerExportCursor,
@@ -63,6 +64,8 @@ function signRawPayload(payload: unknown): string {
 describe('partner export cursor', () => {
   it('round-trips a canonical payload and binds every traversal dimension', () => {
     const token = encodePartnerExportCursor(cursor, KEY);
+    expect(PARTNER_EXPORT_CURSOR_MAX_LENGTH).toBe(4096);
+    expect(token.length).toBeLessThanOrEqual(PARTNER_EXPORT_CURSOR_MAX_LENGTH);
     expect(token).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     expect(decodePartnerExportCursor(token, expected, KEY, new Date('2026-07-13T19:00:00.000Z')))
       .toEqual(cursor);
@@ -137,6 +140,7 @@ describe('partner export cursor', () => {
       signRawPayload({ ...cursor, resource: 'alerts' }),
       signRawPayload({ ...cursor, lastUpdatedAt: null }),
       signRawPayload({ ...cursor, extra: true }),
+      'a'.repeat(PARTNER_EXPORT_CURSOR_MAX_LENGTH + 1),
     ]) {
       expectStructuredCursor400(() => decodePartnerExportCursor(
         invalid,
@@ -144,6 +148,20 @@ describe('partner export cursor', () => {
         KEY,
         new Date('2026-07-13T19:00:00.000Z'),
       ));
+    }
+  });
+
+  it('rejects non-offset timestamps before cursor generation', () => {
+    for (const [field, value] of [
+      ['snapshotAt', '2026-07-13'],
+      ['updatedSince', '2026-07-12T18:00:00'],
+      ['lastUpdatedAt', 'Sun, 13 Jul 2026 17:00:00 GMT'],
+      ['expiresAt', 'July 14, 2026 18:00:00 UTC'],
+    ] as const) {
+      expectStructuredCursor400(() => encodePartnerExportCursor({
+        ...cursor,
+        [field]: value,
+      }, KEY));
     }
   });
 });
@@ -224,6 +242,38 @@ describe('partner export snapshot and keyset pagination', () => {
         { ...rows[0]!, updatedAt },
       ], { traversal, limit: 2 })).toThrow(/snapshot/i);
     }
+  });
+
+  it('rejects implementation-specific parseable timestamps before traversal', () => {
+    for (const updatedSince of [
+      '2026-07-12',
+      '2026-07-12T18:00:00',
+      'Sun, 12 Jul 2026 18:00:00 GMT',
+    ]) {
+      expect(() => createPartnerExportTraversal({
+        updatedSince,
+        cursor: null,
+        now: new Date('2026-07-13T18:00:00.000Z'),
+      })).toThrow(/timestamp|updatedSince/i);
+    }
+
+    const traversal = createPartnerExportTraversal({
+      updatedSince: null,
+      cursor: null,
+      now: new Date('2026-07-13T18:00:00.000Z'),
+    });
+    expect(() => paginatePartnerExportRows([{
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: ORG_A,
+      createdAt: 'July 12, 2026 18:00:00 UTC',
+      updatedAt: '2026-07-12T18:00:00.000Z',
+    }], { traversal, limit: 10 })).toThrow(/timestamp|createdAt/i);
+    expect(() => paginatePartnerExportRows([{
+      id: '11111111-1111-4111-8111-111111111111',
+      orgId: ORG_A,
+      createdAt: '2026-07-12T18:00:00.000Z',
+      updatedAt: '2026-07-12',
+    }], { traversal, limit: 10 })).toThrow(/timestamp|updatedAt/i);
   });
 
   it('retains a cursor snapshot and rejects non-advancing or over-fetched pages', () => {
