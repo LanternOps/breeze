@@ -257,7 +257,7 @@ export default function Pax8OrderBuilder({
           </p>
         </div>
         <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusClasses(order.status)}`}>
-          {t(PAX8_ORDER_STATUS_I18N_KEYS[order.status])}
+          {t(/* i18n-dynamic */ PAX8_ORDER_STATUS_I18N_KEYS[order.status])}
         </span>
       </div>
 
@@ -281,7 +281,7 @@ export default function Pax8OrderBuilder({
             <label className="space-y-1 text-sm">
               <span className="font-medium">{t('pax8.order.billingTerm')}</span>
               <select value={billingTerm} onChange={(event) => setBillingTerm(event.target.value as typeof billingTerm)} className="h-10 w-full rounded-md border bg-background px-3">
-                {PAX8_BILLING_TERMS.map((term) => <option key={term} value={term}>{t(PAX8_BILLING_TERM_I18N_KEYS[term])}</option>)}
+                {PAX8_BILLING_TERMS.map((term) => <option key={term} value={term}>{t(/* i18n-dynamic */ PAX8_BILLING_TERM_I18N_KEYS[term])}</option>)}
               </select>
             </label>
             <label className="space-y-1 text-sm">
@@ -329,9 +329,9 @@ export default function Pax8OrderBuilder({
               return (
                 <tr key={line.id} data-testid={`pax8-order-line-${line.id}`}>
                   <td className="px-3 py-3 font-medium">{lineLabel(line, products, t('pax8.order.unknownItem'))}{messages.map((message) => <p key={message} className="mt-1 text-xs font-normal text-destructive" data-testid={`pax8-line-error-${line.id}`}>{message}</p>)}{line.error && <p className="mt-1 text-xs font-normal text-destructive">{line.error}</p>}</td>
-                  <td className="px-3 py-3">{t(PAX8_ORDER_ACTION_I18N_KEYS[line.action])}</td>
+                  <td className="px-3 py-3">{t(/* i18n-dynamic */ PAX8_ORDER_ACTION_I18N_KEYS[line.action])}</td>
                   <td className="px-3 py-3 tabular-nums">{displayQuantity(line.quantity)}</td>
-                  <td className="px-3 py-3"><span className={`rounded-full border px-2 py-0.5 text-xs ${statusClasses(line.submitState)}`}>{t(PAX8_SUBMIT_STATE_I18N_KEYS[line.submitState])}</span></td>
+                  <td className="px-3 py-3"><span className={`rounded-full border px-2 py-0.5 text-xs ${statusClasses(line.submitState)}`}>{t(/* i18n-dynamic */ PAX8_SUBMIT_STATE_I18N_KEYS[line.submitState])}</span></td>
                   <td className="px-3 py-3"><div className="flex justify-end gap-1">
                     {mutable && line.action === 'new_subscription' && <button type="button" onClick={() => void beginEdit(line)} disabled={busy !== null} className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50">{t('pax8.order.editDetails')}</button>}
                     {directMutable && <button type="button" aria-label={t('pax8.order.remove')} onClick={() => void removeLine(line.id)} disabled={busy !== null} className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive disabled:opacity-50"><Trash2 className="h-4 w-4" /></button>}
