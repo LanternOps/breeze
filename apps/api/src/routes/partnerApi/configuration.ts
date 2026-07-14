@@ -6,6 +6,10 @@ import { requirePartnerApiScope, type PartnerApiPrincipalContext } from '../../m
 import { acquirePartnerExportReadLocks } from './consistency';
 import { getPartnerExportFetchLimit } from './pagination';
 import {
+  normalizePatchInlineSettings,
+  tryNormalizePatchInlineSettings,
+} from '../../services/configPolicyPatching';
+import {
   bindPartnerExportSnapshot,
   buildEnvelope,
   clientError,
@@ -32,6 +36,45 @@ interface DesiredConfigurationRow extends Record<string, unknown> {
   createdAt: Date | string;
   updatedAt: Date | string;
   definition: Record<string, unknown>;
+}
+
+const PATCH_INLINE_MIRROR_MATERIAL = '__breezePatchInlineMirror';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Convert the database's internal patch material into the same canonical
+ * settings used by Breeze's policy read path. The raw mirror is deliberately
+ * removed here, before secret inspection, revision hashing, or DTO parsing.
+ */
+function canonicalizePolicyPatchSettings(
+  definition: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!Array.isArray(definition.features)) return definition;
+  return {
+    ...definition,
+    features: definition.features.map((feature) => {
+      if (!isRecord(feature) || feature.type !== 'patch' || !isRecord(feature.settings)) {
+        return feature;
+      }
+      if (!Object.prototype.hasOwnProperty.call(feature.settings, PATCH_INLINE_MIRROR_MATERIAL)) {
+        return feature;
+      }
+
+      const materialized = { ...feature.settings };
+      const rawMirror = materialized[PATCH_INLINE_MIRROR_MATERIAL];
+      delete materialized[PATCH_INLINE_MIRROR_MATERIAL];
+      const canonicalMirror = tryNormalizePatchInlineSettings(rawMirror).settings;
+      const settings = normalizePatchInlineSettings({
+        ...materialized,
+        autoApproveDeferralDays: canonicalMirror.autoApproveDeferralDays,
+        apps: canonicalMirror.apps,
+      });
+      return { ...feature, settings };
+    }),
+  };
 }
 
 const CONFIGURATION_FAILURE = {
@@ -378,10 +421,18 @@ async function exportResource(c: Context, resource: keyof typeof CONFIGURATION_F
     const rows = orgIds.length === 0
       ? []
       : await db.execute<DesiredConfigurationRow>(pageQuery(sourceQuery(resource, principal, parsed), parsed));
+    const normalizedRows = rows.map((row) => {
+      const normalized = normalizeSourceRow<DesiredConfigurationRow>(row);
+      if (resource !== 'configuration-policies') return normalized;
+      return {
+        ...normalized,
+        definition: canonicalizePolicyPatchSettings(row.definition),
+      };
+    });
     const envelope = buildEnvelope({
       resource,
       partnerId: principal.partnerId,
-      rows: rows.map((row) => normalizeSourceRow<DesiredConfigurationRow>(row)),
+      rows: normalizedRows,
       query: parsed,
       makeRecord: (row) => ({
         id: row.id,

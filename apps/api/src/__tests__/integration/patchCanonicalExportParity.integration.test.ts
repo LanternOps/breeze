@@ -1,10 +1,14 @@
 import './setup';
 import { sql } from 'drizzle-orm';
 import { expect, it } from 'vitest';
+import { Hono } from 'hono';
+import { db as appDb, withDbAccessContext } from '../../db';
 import {
+  configPolicyAssignments,
   configPolicyFeatureLinks,
   configurationPolicies,
 } from '../../db/schema';
+import { partnerConfigurationRoutes } from '../../routes/partnerApi/configuration';
 import { tryNormalizePatchInlineSettings } from '../../services/configPolicyPatching';
 import { createOrganization, createPartner } from './db-utils';
 import { getTestDb } from './setup';
@@ -228,9 +232,73 @@ const parityCases: Array<{ name: string; mirror: unknown; serializedMirror?: str
       ],
     },
   },
+  {
+    name: 'packageId counts UTF-16 code units at the inclusive boundary',
+    mirror: { ...meaningfulMirror, apps: [{ ...appRule, packageId: '😀'.repeat(128) }] },
+  },
+  {
+    name: 'packageId rejects 258 UTF-16 code units even when PostgreSQL sees 129 characters',
+    mirror: { ...meaningfulMirror, apps: [{ ...appRule, packageId: '😀'.repeat(129) }] },
+  },
+  {
+    name: 'displayName counts UTF-16 code units at the inclusive boundary',
+    mirror: { ...meaningfulMirror, apps: [{ ...appRule, displayName: `${'😀'.repeat(127)}a` }] },
+  },
+  {
+    name: 'displayName rejects 256 UTF-16 code units even when PostgreSQL sees 128 characters',
+    mirror: { ...meaningfulMirror, apps: [{ ...appRule, displayName: '😀'.repeat(128) }] },
+  },
+  {
+    name: 'pinnedVersion counts UTF-16 code units at the inclusive boundary',
+    mirror: {
+      ...meaningfulMirror,
+      apps: [{ ...appRule, action: 'pin', pinnedVersion: '😀'.repeat(32) }],
+    },
+  },
+  {
+    name: 'pinnedVersion rejects 66 UTF-16 code units even when PostgreSQL sees 33 characters',
+    mirror: {
+      ...meaningfulMirror,
+      apps: [{ ...appRule, action: 'pin', pinnedVersion: '😀'.repeat(33) }],
+    },
+  },
+  {
+    name: 'JavaScript lowercasing keeps Turkish dotted capital I distinct from ASCII i',
+    mirror: {
+      ...meaningfulMirror,
+      apps: [
+        { ...appRule, packageId: 'İ' },
+        { ...appRule, source: 'custom', packageId: 'i' },
+      ],
+    },
+  },
+  {
+    name: 'raw JSON underflow follows JavaScript IEEE-754 semantics',
+    mirror: { ...meaningfulMirror, autoApproveDeferralDays: 0 },
+    serializedMirror: JSON.stringify(meaningfulMirror).replace(
+      '"autoApproveDeferralDays":7',
+      '"autoApproveDeferralDays":1e-400',
+    ),
+  },
+  {
+    name: 'raw JSON precision rounds before integer validation like JavaScript',
+    mirror: { ...meaningfulMirror, autoApproveDeferralDays: 1 },
+    serializedMirror: JSON.stringify(meaningfulMirror).replace(
+      '"autoApproveDeferralDays":7',
+      '"autoApproveDeferralDays":1.0000000000000001',
+    ),
+  },
+  {
+    name: 'unknown forbidden keys are stripped before the final DTO',
+    mirror: { ...meaningfulMirror, password: 'hunter2' },
+  },
+  {
+    name: 'forbidden keys in an invalid document disappear with whole-document fallback',
+    mirror: { ...meaningfulMirror, apps: [{ action: 'block' }], apiKey: 'sk-live-never-export' },
+  },
 ];
 
-runDb('partner export patch projection matches tryNormalizePatchInlineSettings', async () => {
+runDb('final partner HTTP export matches tryNormalizePatchInlineSettings without leaking the raw mirror', async () => {
   const db = getTestDb();
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
@@ -246,30 +314,74 @@ runDb('partner export patch projection matches tryNormalizePatchInlineSettings',
     inlineSettings: {},
   }).returning();
   if (!link) throw new Error('patch parity link insert failed');
+  await db.insert(configPolicyAssignments).values({
+    configPolicyId: policy.id,
+    level: 'organization',
+    targetId: org.id,
+  });
   await db.execute(sql`
     INSERT INTO public.config_policy_patch_settings (feature_link_id)
     VALUES (${link.id}::uuid)
   `);
 
+  const app = configurationExportApp(partner.id, org.id);
+
   for (const testCase of parityCases) {
     const serialized = testCase.serializedMirror ?? JSON.stringify(testCase.mirror);
-    const [row] = await db.execute<{ settings: Record<string, unknown> }>(sql`
-      SELECT public.breeze_partner_export_effective_policy_settings(
-        ${link.id}::uuid,
-        'patch',
-        ${serialized}::jsonb
-      ) AS settings
+    await db.execute(sql`
+      UPDATE public.config_policy_feature_links
+      SET inline_settings = ${serialized}::jsonb
+      WHERE id = ${link.id}::uuid
     `);
-    const expected = tryNormalizePatchInlineSettings(testCase.mirror).settings;
+    const response = await app.request('/configuration-policies');
+    expect(response.status, `${testCase.name}: ${await response.clone().text()}`).toBe(200);
+    const body = await response.json() as {
+      data: Array<{ features: Array<{ type: string; settings: Record<string, unknown> }> }>;
+    };
+    const actual = body.data[0]?.features.find((feature) => feature.type === 'patch')?.settings;
+    const expected = tryNormalizePatchInlineSettings(JSON.parse(serialized)).settings;
     expect.soft(
       {
-        autoApproveDeferralDays: row?.settings.autoApproveDeferralDays,
-        apps: row?.settings.apps,
+        autoApproveDeferralDays: actual?.autoApproveDeferralDays,
+        apps: actual?.apps,
       },
       testCase.name,
     ).toEqual({
       autoApproveDeferralDays: expected.autoApproveDeferralDays,
       apps: expected.apps,
     });
+    const dto = JSON.stringify(body);
+    expect.soft(dto, `${testCase.name}: raw mirror key`).not.toContain('__breezePatchInlineMirror');
+    expect.soft(dto, `${testCase.name}: raw forbidden values`).not.toMatch(/hunter2|sk-live-never-export/u);
   }
 });
+
+function configurationExportApp(partnerId: string, orgId: string): Hono {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('partnerApiPrincipal', {
+      servicePrincipalId: crypto.randomUUID(),
+      keyId: crypto.randomUUID(),
+      partnerId,
+      name: 'Patch export parity integration test',
+      scopes: ['configuration:read'],
+      accessibleOrgIds: [orgId],
+      rateLimit: 600,
+    });
+    await withDbAccessContext({
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [orgId],
+      accessiblePartnerIds: [partnerId],
+      currentPartnerId: partnerId,
+      userId: null,
+    }, async () => {
+      await appDb.execute(sql`
+        SELECT public.breeze_partner_export_lock_partners_shared(ARRAY[${partnerId}::uuid])
+      `);
+      await next();
+    });
+  });
+  app.route('/', partnerConfigurationRoutes);
+  return app;
+}

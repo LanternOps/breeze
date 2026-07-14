@@ -55,6 +55,10 @@ const PATCH_EXPORT_PARITY_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-27-d-patch-export-validation-parity.sql',
 );
+const PATCH_EXPORT_TYPESCRIPT_VALIDATION_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-27-e-patch-export-typescript-validation.sql',
+);
 
 describe('partner desired-configuration material watermarks', () => {
   runDb('migration is idempotent and creates forced org-axis RLS', async () => {
@@ -77,6 +81,10 @@ describe('partner desired-configuration material watermarks', () => {
     const featureReferenceMigration = readFileSync(FEATURE_REFERENCE_MIGRATION_FILE, 'utf8');
     const onedriveReferenceMigration = readFileSync(ONEDRIVE_REFERENCE_MIGRATION_FILE, 'utf8');
     const patchExportParityMigration = readFileSync(PATCH_EXPORT_PARITY_MIGRATION_FILE, 'utf8');
+    const patchExportTypescriptValidationMigration = readFileSync(
+      PATCH_EXPORT_TYPESCRIPT_VALIDATION_MIGRATION_FILE,
+      'utf8',
+    );
     await expect(db.execute(sql.raw(integrityMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(integrityMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(parityMigration))).resolves.toBeDefined();
@@ -90,6 +98,8 @@ describe('partner desired-configuration material watermarks', () => {
     // itself remain idempotent.
     await expect(db.execute(sql.raw(patchExportParityMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(patchExportParityMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(patchExportTypescriptValidationMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(patchExportTypescriptValidationMigration))).resolves.toBeDefined();
 
     const catalog = await db.execute<{ relname: string; enabled: boolean; forced: boolean; commands: string[] }>(sql`
       SELECT c.relname, c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced,
@@ -116,6 +126,7 @@ describe('partner desired-configuration material watermarks', () => {
       onedriveSettings: boolean; onedriveLibrary: boolean; onedriveRevalidate: boolean;
       patchProjectionPublic: boolean; patchProjectionApp: boolean;
       patchExportPublic: boolean; patchExportApp: boolean;
+      patchPreMaterializerPublic: boolean; patchPreMaterializerApp: boolean;
     }>(sql`
       SELECT
         has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_backup_settings(uuid,uuid,uuid,uuid,uuid)', 'EXECUTE') AS validate,
@@ -148,7 +159,18 @@ describe('partner desired-configuration material watermarks', () => {
             AND privilege.grantee = 0
             AND privilege.privilege_type = 'EXECUTE'
         ) AS "patchExportPublic",
-        has_function_privilege('breeze_app', 'public.breeze_partner_export_effective_policy_settings(uuid,text,jsonb)', 'EXECUTE') AS "patchExportApp"
+        has_function_privilege('breeze_app', 'public.breeze_partner_export_effective_policy_settings(uuid,text,jsonb)', 'EXECUTE') AS "patchExportApp",
+        EXISTS (
+          SELECT 1
+          FROM pg_catalog.pg_proc p
+          CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
+          ) privilege
+          WHERE p.oid = 'public.breeze_partner_export_policy_settings_pre_patch(uuid,text,jsonb)'::regprocedure
+            AND privilege.grantee = 0
+            AND privilege.privilege_type = 'EXECUTE'
+        ) AS "patchPreMaterializerPublic",
+        has_function_privilege('breeze_app', 'public.breeze_partner_export_policy_settings_pre_patch(uuid,text,jsonb)', 'EXECUTE') AS "patchPreMaterializerApp"
     `);
     expect(privileges).toEqual({
       validate: false, enforce: false, revalidate: false,
@@ -156,6 +178,7 @@ describe('partner desired-configuration material watermarks', () => {
       onedriveSettings: false, onedriveLibrary: false, onedriveRevalidate: false,
       patchProjectionPublic: false, patchProjectionApp: true,
       patchExportPublic: false, patchExportApp: true,
+      patchPreMaterializerPublic: false, patchPreMaterializerApp: true,
     });
   });
 

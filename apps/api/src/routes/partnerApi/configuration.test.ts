@@ -136,6 +136,78 @@ describe('partner desired-configuration exports', () => {
     });
   });
 
+  it('canonicalizes the internal patch mirror before safety inspection or DTO assembly', async () => {
+    const normalizedPatchFacts = {
+      sources: ['os'],
+      autoApprove: false,
+      autoApproveSeverities: [],
+      scheduleFrequency: 'weekly',
+      scheduleTime: '02:00',
+      scheduleDayOfWeek: 'sun',
+      scheduleDayOfMonth: 1,
+      rebootPolicy: 'if_required',
+      exclusiveWindowsUpdate: false,
+    };
+    mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+      sourceScope: 'organization',
+      name: 'Canonical patch policy',
+      description: null,
+      status: 'active',
+      features: [{
+        id: SOURCE_B,
+        type: 'patch',
+        policyId: null,
+        settings: {
+          ...normalizedPatchFacts,
+          __breezePatchInlineMirror: {
+            autoApproveDeferralDays: 7,
+            apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
+            password: 'hunter2',
+          },
+        },
+      }],
+    })]);
+
+    const response = await request('/configuration-policies', 'configuration:read');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.blocked).toBeUndefined();
+    expect(body.data[0].features[0].settings).toEqual({
+      ...normalizedPatchFacts,
+      autoApproveDeferralDays: 7,
+      apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
+    });
+    expect(JSON.stringify(body)).not.toMatch(/__breezePatchInlineMirror|hunter2/u);
+
+    mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+      sourceScope: 'organization',
+      name: 'Canonical patch policy',
+      description: null,
+      status: 'active',
+      features: [{
+        id: SOURCE_B,
+        type: 'patch',
+        policyId: null,
+        settings: {
+          ...normalizedPatchFacts,
+          __breezePatchInlineMirror: {
+            autoApproveDeferralDays: 7,
+            apps: [{ action: 'block' }],
+            apiKey: 'sk-live-never-export',
+          },
+        },
+      }],
+    })]);
+    const invalidBody = await (await request('/configuration-policies', 'configuration:read')).json();
+    expect(invalidBody.blocked).toBeUndefined();
+    expect(invalidBody.data[0].features[0].settings).toEqual({
+      ...normalizedPatchFacts,
+      autoApproveDeferralDays: 0,
+      apps: [],
+    });
+    expect(JSON.stringify(invalidBody)).not.toMatch(/__breezePatchInlineMirror|sk-live-never-export/u);
+  });
+
   it('exports a complete rebuild-safe script with parameters or blocks the whole script', async () => {
     const definition = {
       sourceScope: 'partner', name: 'Install database', description: 'Rebuild procedure', category: 'build',
