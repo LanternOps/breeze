@@ -48,6 +48,9 @@ type Session struct {
 	// from the helper in response to a broker-initiated keepalive ping.
 	// Read/written atomically so the keepalive goroutine doesn't need s.mu.
 	lastPongAt atomic.Int64
+
+	broker      *Broker
+	peerProcess *ownedPeerProcessRef
 }
 
 // NewSession creates a new session for a verified user helper connection.
@@ -261,6 +264,22 @@ func (s *Session) HasScope(scope string) bool {
 
 // Close closes the underlying connection and cancels all pending commands.
 func (s *Session) Close() error {
+	if s.broker != nil {
+		return s.broker.closeSession(s)
+	}
+	return s.closeTransportAndPeer()
+}
+
+func (s *Session) closeTransportAndPeer() error {
+	transportErr := s.closeTransport()
+	peerErr := s.peerProcess.close()
+	if transportErr != nil {
+		return transportErr
+	}
+	return peerErr
+}
+
+func (s *Session) closeTransport() error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -277,6 +296,9 @@ func (s *Session) Close() error {
 		close(done)
 	}
 
+	if s.conn == nil {
+		return nil
+	}
 	return s.conn.Close()
 }
 

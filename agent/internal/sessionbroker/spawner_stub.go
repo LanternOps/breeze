@@ -19,7 +19,12 @@ type SpawnedHelper struct {
 }
 
 // Close is a no-op on non-Windows platforms.
-func (s *SpawnedHelper) Close() {}
+func (s *SpawnedHelper) Close() error { return nil }
+
+func (s *SpawnedHelper) ProcessID() uint32      { return s.PID }
+func (s *SpawnedHelper) ExecutablePath() string { return s.BinaryPath }
+func (s *SpawnedHelper) Alive() bool            { return false }
+func (s *SpawnedHelper) Terminate() error       { return nil }
 
 // Wait is a no-op on non-Windows platforms. Returns (exitCode=-1, nil).
 func (s *SpawnedHelper) Wait() (int, error) { return -1, nil }

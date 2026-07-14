@@ -26,7 +26,9 @@ func (b *Broker) setupSocket() error {
 		return fmt.Errorf("listen pipe %s: %w", b.socketPath, err)
 	}
 
+	b.listenerMu.Lock()
 	b.listener = listener
+	b.listenerMu.Unlock()
 	log.Info("named pipe listener created", "pipe", b.socketPath)
 	return nil
 }

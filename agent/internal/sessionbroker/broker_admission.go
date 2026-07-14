@@ -230,6 +230,7 @@ func (b *Broker) registerNonLifecycleSession(identityKey, helperRole string, ses
 		b.mu.Unlock()
 		return errMaxConnectionsPerIdentity
 	}
+	session.broker = b
 	b.sessions[session.SessionID] = session
 	b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
 	if helperRole == backupipc.HelperRoleBackup {
@@ -240,6 +241,7 @@ func (b *Broker) registerNonLifecycleSession(identityKey, helperRole string, ses
 	}
 	b.publishSnapshotLocked()
 	onClosed := b.onSessionClosed
+	callbacks := b.lifecycleClosedCallbacksLocked()
 	b.mu.Unlock()
 
 	if victim != nil {
@@ -251,6 +253,9 @@ func (b *Broker) registerNonLifecycleSession(identityKey, helperRole string, ses
 		}
 		if onClosed != nil {
 			onClosed(victim)
+		}
+		for _, callback := range callbacks {
+			callback(victim)
 		}
 	}
 	return nil
@@ -337,12 +342,14 @@ func (b *Broker) commitWindowsHelper(reservation *helperAuthReservation, session
 		b.removeSessionMapsLocked(victim)
 	}
 	b.releaseWindowsHelperLocked(reservation)
+	session.broker = b
 	b.sessions[session.SessionID] = session
 	b.byIdentity[reservation.identityKey] = append(b.byIdentity[reservation.identityKey], session)
 	b.helperByAuthKey[reservation.authKey] = session
 	b.helperByKey[reservation.authKey.HelperKey] = session
 	b.publishSnapshotLocked()
 	onClosed := b.onSessionClosed
+	callbacks := b.lifecycleClosedCallbacksLocked()
 	b.mu.Unlock()
 
 	if victim != nil {
@@ -354,6 +361,9 @@ func (b *Broker) commitWindowsHelper(reservation *helperAuthReservation, session
 		}
 		if onClosed != nil {
 			onClosed(victim)
+		}
+		for _, callback := range callbacks {
+			callback(victim)
 		}
 	}
 	return nil

@@ -1,6 +1,7 @@
 package sessionbroker
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -249,6 +250,7 @@ type Broker struct {
 	listener    net.Listener
 	rateLimiter *ipc.RateLimiter
 	startTime   time.Time // broker creation time, used for watchdog uptime
+	listenerMu  sync.Mutex
 
 	mu                      timedRWMutex
 	sessions                map[string]*Session   // sessionID -> Session
@@ -263,9 +265,16 @@ type Broker struct {
 	identityReservations    map[string]int
 	helperReservedVictims   map[*Session]uint64
 	nextHelperReservationID uint64
+	lifecycleObservers      map[uint64]sessionLifecycleObserver
+	nextLifecycleObserverID uint64
 	consoleUser             string        // macOS: current console user ("loginwindow" at login screen)
 	backup                  *backupHelper // backup helper process and session
 	closed                  bool
+
+	acceptMu        sync.Mutex
+	acceptStopped   bool
+	preAuthConns    map[net.Conn]bool // true once verified auth is being published
+	preAuthHandlers sync.WaitGroup
 
 	// snap is an atomically updated snapshot of sessions/byIdentity/consoleUser.
 	// Updated under b.mu.Lock() on every mutation. Read-only hot paths use
@@ -314,6 +323,8 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		helperAuthReservations: make(map[AuthenticatedHelperKey]uint64),
 		identityReservations:   make(map[string]int),
 		helperReservedVictims:  make(map[*Session]uint64),
+		lifecycleObservers:     make(map[uint64]sessionLifecycleObserver),
+		preAuthConns:           make(map[net.Conn]bool),
 		onMessage:              onMessage,
 		consoleSessionIDFn:     GetConsoleSessionID,
 		goos:                   runtime.GOOS,
@@ -321,6 +332,47 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 	b.selfHashes = b.computeAllowedHashes()
 	b.publishSnapshotLocked() // initialise with empty maps
 	return b
+}
+
+type sessionLifecycleObserver struct {
+	authenticated func(*Session)
+	closed        func(*Session)
+}
+
+func (b *Broker) AddSessionLifecycleObserver(authenticated, closed func(*Session)) (remove func()) {
+	b.mu.Lock()
+	b.nextLifecycleObserverID++
+	id := b.nextLifecycleObserverID
+	b.lifecycleObservers[id] = sessionLifecycleObserver{authenticated: authenticated, closed: closed}
+	b.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			b.mu.Lock()
+			delete(b.lifecycleObservers, id)
+			b.mu.Unlock()
+		})
+	}
+}
+
+func (b *Broker) lifecycleAuthenticatedCallbacksLocked() []func(*Session) {
+	callbacks := make([]func(*Session), 0, len(b.lifecycleObservers))
+	for _, observer := range b.lifecycleObservers {
+		if observer.authenticated != nil {
+			callbacks = append(callbacks, observer.authenticated)
+		}
+	}
+	return callbacks
+}
+
+func (b *Broker) lifecycleClosedCallbacksLocked() []func(*Session) {
+	callbacks := make([]func(*Session), 0, len(b.lifecycleObservers))
+	for _, observer := range b.lifecycleObservers {
+		if observer.closed != nil {
+			callbacks = append(callbacks, observer.closed)
+		}
+	}
+	return callbacks
 }
 
 // snapshotSessions returns the sessions map and consoleUser via the atomic
@@ -387,9 +439,13 @@ func (b *Broker) SetSessionAuthenticatedHandler(handler SessionAuthenticatedHand
 func (b *Broker) fireSessionAuthenticated(session *Session) {
 	b.mu.RLock()
 	handler := b.onSessionAuthed
+	callbacks := b.lifecycleAuthenticatedCallbacksLocked()
 	b.mu.RUnlock()
 	if handler != nil {
 		handler(session)
+	}
+	for _, callback := range callbacks {
+		callback(session)
 	}
 }
 
@@ -418,20 +474,18 @@ func (b *Broker) Listen(stopChan <-chan struct{}) error {
 	go b.idleReaper(stopChan)
 
 	// Accept loop
+	listener := b.currentListener()
 	go func() {
 		for {
-			conn, err := b.listener.Accept()
+			conn, err := listener.Accept()
 			if err != nil {
-				b.mu.RLock()
-				closed := b.closed
-				b.mu.RUnlock()
-				if closed {
+				if b.acceptingStopped() {
 					return
 				}
 				log.Warn("accept error", "error", err.Error())
 				continue
 			}
-			go b.handleConnection(conn)
+			b.startAcceptedConnection(conn)
 		}
 	}()
 
@@ -442,6 +496,10 @@ func (b *Broker) Listen(stopChan <-chan struct{}) error {
 
 // Close shuts down the broker and all sessions.
 func (b *Broker) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), HandshakeTimeout)
+	_ = b.StopAcceptingAndWait(ctx)
+	cancel()
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -458,16 +516,102 @@ func (b *Broker) Close() {
 		s.Close()
 	}
 
-	if b.listener != nil {
-		b.listener.Close()
-	}
-
 	// Clean up socket file on Unix
 	if runtime.GOOS != "windows" {
 		os.Remove(b.socketPath)
 	}
 
 	log.Info("session broker closed")
+}
+
+func (b *Broker) LifecycleHelperKeys() []HelperKey {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	keys := make([]HelperKey, 0, len(b.helperByKey))
+	for key := range b.helperByKey {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (b *Broker) currentListener() net.Listener {
+	b.listenerMu.Lock()
+	defer b.listenerMu.Unlock()
+	return b.listener
+}
+
+func (b *Broker) acceptingStopped() bool {
+	b.acceptMu.Lock()
+	defer b.acceptMu.Unlock()
+	return b.acceptStopped
+}
+
+func (b *Broker) startAcceptedConnection(conn net.Conn) bool {
+	b.acceptMu.Lock()
+	if b.acceptStopped {
+		b.acceptMu.Unlock()
+		_ = conn.Close()
+		return false
+	}
+	b.preAuthConns[conn] = false
+	b.preAuthHandlers.Add(1)
+	b.acceptMu.Unlock()
+	go func() {
+		defer b.finishPreAuth(conn)
+		b.handleConnection(conn)
+	}()
+	return true
+}
+
+func (b *Broker) beginConnectionPublication(conn net.Conn) bool {
+	b.acceptMu.Lock()
+	defer b.acceptMu.Unlock()
+	if b.acceptStopped {
+		return false
+	}
+	if _, tracked := b.preAuthConns[conn]; !tracked {
+		return false
+	}
+	b.preAuthConns[conn] = true
+	return true
+}
+
+func (b *Broker) finishPreAuth(conn net.Conn) {
+	b.acceptMu.Lock()
+	if _, tracked := b.preAuthConns[conn]; tracked {
+		delete(b.preAuthConns, conn)
+		b.preAuthHandlers.Done()
+	}
+	b.acceptMu.Unlock()
+}
+
+func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
+	b.acceptMu.Lock()
+	b.acceptStopped = true
+	connections := make([]net.Conn, 0, len(b.preAuthConns))
+	for conn, publishing := range b.preAuthConns {
+		if !publishing {
+			connections = append(connections, conn)
+		}
+	}
+	b.acceptMu.Unlock()
+	if listener := b.currentListener(); listener != nil {
+		_ = listener.Close()
+	}
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
+	done := make(chan struct{})
+	go func() {
+		b.preAuthHandlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // SessionForUser returns the first active session for the given username.
@@ -1267,6 +1411,7 @@ func (b *Broker) admitOrEvict(identityKey string) bool {
 		b.publishSnapshotLocked()
 	}
 	onClosed := b.onSessionClosed
+	callbacks := b.lifecycleClosedCallbacksLocked()
 	b.mu.Unlock()
 
 	if victim != nil {
@@ -1278,6 +1423,9 @@ func (b *Broker) admitOrEvict(identityKey string) bool {
 		}
 		if onClosed != nil {
 			onClosed(victim)
+		}
+		for _, callback := range callbacks {
+			callback(victim)
 		}
 	}
 	return admitted
@@ -1568,6 +1716,24 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	scopes := b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
+	ownedProcess, err := openOwnedPeerProcess(uint32(creds.PID))
+	if err != nil {
+		log.Warn("failed to retain authenticated peer process handle", "pid", creds.PID, "error", err.Error())
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "peer process handle unavailable",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+	peerProcessRef := newOwnedPeerProcessRef(ownedProcess)
+	peerProcessPublished := false
+	defer func() {
+		if !peerProcessPublished {
+			_ = peerProcessRef.close()
+		}
+	}()
 
 	var helperReservation *helperAuthReservation
 	if isWindowsLifecycleRole(b.goos, helperRole) {
@@ -1606,6 +1772,10 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		conn.Close()
 		return
 	}
+	if !b.beginConnectionPublication(rawConn) {
+		conn.Close()
+		return
+	}
 
 	// Set session key for HMAC validation
 	conn.SetSessionKey(sessionKey)
@@ -1622,6 +1792,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.BinaryKind = ipc.HelperBinaryUserHelper
 	}
 	session.DesktopContext = authReq.DesktopContext
+	session.peerProcess = peerProcessRef
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
 	// PID) instead of trusting the self-reported value, preventing
@@ -1662,6 +1833,8 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			return
 		}
 	}
+	peerProcessPublished = true
+	b.finishPreAuth(rawConn)
 
 	log.Info("user helper connected",
 		"identity", identityKey,
@@ -1743,16 +1916,60 @@ func (b *Broker) removeSessionMapsLocked(session *Session) bool {
 }
 
 func (b *Broker) removeSession(session *Session) {
+	_ = b.closeSession(session)
+}
+
+func (b *Broker) closeSession(session *Session) error {
 	b.mu.Lock()
 	removed := b.removeSessionMapsLocked(session)
 	if removed {
 		b.publishSnapshotLocked()
 	}
 	onSessionClosed := b.onSessionClosed
+	callbacks := b.lifecycleClosedCallbacksLocked()
 	b.mu.Unlock()
 
-	if removed && onSessionClosed != nil {
-		onSessionClosed(session)
+	closeErr := session.closeTransportAndPeer()
+	if removed {
+		if onSessionClosed != nil {
+			onSessionClosed(session)
+		}
+		for _, callback := range callbacks {
+			callback(session)
+		}
+	}
+	return closeErr
+}
+
+func (b *Broker) TerminateHelperKey(key HelperKey) {
+	b.mu.Lock()
+	session := b.helperByKey[key]
+	if session == nil {
+		b.mu.Unlock()
+		return
+	}
+	claim := session.peerProcess.claimTermination()
+	removed := b.removeSessionMapsLocked(session)
+	if removed {
+		b.publishSnapshotLocked()
+	}
+	onSessionClosed := b.onSessionClosed
+	callbacks := b.lifecycleClosedCallbacksLocked()
+	b.mu.Unlock()
+
+	if claim != nil {
+		if err := claim.terminateAndClose(); err != nil {
+			log.Debug("failed to terminate helper process", "helperKey", key.String(), "pid", session.PID, "error", err.Error())
+		}
+	}
+	_ = session.closeTransportAndPeer()
+	if removed {
+		if onSessionClosed != nil {
+			onSessionClosed(session)
+		}
+		for _, callback := range callbacks {
+			callback(session)
+		}
 	}
 }
 

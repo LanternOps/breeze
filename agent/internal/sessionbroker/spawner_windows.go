@@ -4,6 +4,7 @@ package sessionbroker
 
 import (
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -22,15 +23,57 @@ type SpawnedHelper struct {
 	PID        uint32
 	Handle     windows.Handle
 	BinaryPath string
+	mu         sync.Mutex
 }
 
 // Close releases the duplicated process handle. Safe to call more than once.
-func (s *SpawnedHelper) Close() {
-	if s == nil || s.Handle == 0 {
-		return
+func (s *SpawnedHelper) Close() error {
+	if s == nil {
+		return nil
 	}
-	_ = windows.CloseHandle(s.Handle)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Handle == 0 {
+		return nil
+	}
+	err := windows.CloseHandle(s.Handle)
 	s.Handle = 0
+	return err
+}
+
+func (s *SpawnedHelper) ProcessID() uint32      { return s.PID }
+func (s *SpawnedHelper) ExecutablePath() string { return s.BinaryPath }
+
+func (s *SpawnedHelper) Alive() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Handle == 0 {
+		return false
+	}
+	var exitCode uint32
+	return windows.GetExitCodeProcess(s.Handle, &exitCode) == nil && exitCode == windowsProcessStillActive
+}
+
+func (s *SpawnedHelper) Terminate() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Handle == 0 {
+		return nil
+	}
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(s.Handle, &exitCode); err != nil {
+		return err
+	}
+	if exitCode != windowsProcessStillActive {
+		return nil
+	}
+	return windows.TerminateProcess(s.Handle, 1)
 }
 
 // Wait blocks until the spawned helper process exits and returns its exit
@@ -38,11 +81,16 @@ func (s *SpawnedHelper) Close() {
 // automatically after Wait returns so callers do not need to call Close
 // in the normal path.
 func (s *SpawnedHelper) Wait() (int, error) {
-	if s == nil || s.Handle == 0 {
+	if s == nil {
 		return -1, fmt.Errorf("SpawnedHelper: no handle")
 	}
-	defer s.Close()
-	event, err := windows.WaitForSingleObject(s.Handle, windows.INFINITE)
+	s.mu.Lock()
+	handle := s.Handle
+	s.mu.Unlock()
+	if handle == 0 {
+		return -1, fmt.Errorf("SpawnedHelper: no handle")
+	}
+	event, err := windows.WaitForSingleObject(handle, windows.INFINITE)
 	if err != nil {
 		return -1, fmt.Errorf("WaitForSingleObject: %w", err)
 	}
@@ -50,7 +98,7 @@ func (s *SpawnedHelper) Wait() (int, error) {
 		return -1, fmt.Errorf("WaitForSingleObject: unexpected event %d", event)
 	}
 	var exitCode uint32
-	if err := windows.GetExitCodeProcess(s.Handle, &exitCode); err != nil {
+	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
 		return -1, fmt.Errorf("GetExitCodeProcess: %w", err)
 	}
 	return int(exitCode), nil

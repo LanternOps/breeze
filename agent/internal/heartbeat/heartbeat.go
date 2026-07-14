@@ -189,12 +189,20 @@ type Heartbeat struct {
 	helperToken      string // retained copy of the helper-scoped token for connect-time pushes
 	helperTokenMu    sync.RWMutex
 	sessionBroker    *sessionbroker.Broker
+	helperLifecycle  *sessionbroker.HelperLifecycleManager
+	lifecycleCancel  context.CancelFunc
 	isService        bool
 	isHeadless       bool
 	scmSessionCh     chan sessionbroker.SCMSessionEvent // fed by SCM handler
 	helperFinder     func(targetSession string) *sessionbroker.Session
 	spawnHelper      func(targetSession string) error
 	killStaleHelpers func(staleKey string)
+
+	// Shutdown seams keep lifecycle ordering directly testable without opening
+	// sockets or spawning Windows processes. Production leaves these nil.
+	stopBrokerAcceptingAndWait func(context.Context) error
+	stopHelperLifecycleAndWait func(context.Context) error
+	closeSessionBroker         func()
 	// pamFindSession / pamRequestDialog default to the real broker methods in
 	// RunPamFlow when nil; overridden in pam_flow_test.go.
 	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
@@ -853,8 +861,11 @@ func (h *Heartbeat) Start() {
 	// and early-boot edge cases.
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
-		go func() { <-h.stopChan; cancel() }()
 		lm := sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
+		h.mu.Lock()
+		h.helperLifecycle = lm
+		h.lifecycleCancel = cancel
+		h.mu.Unlock()
 		go lm.Start(ctx)
 	}
 
@@ -1091,12 +1102,64 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
-		if h.rebootMgr != nil {
-			h.rebootMgr.Stop()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if h.stopBrokerAcceptingAndWait != nil {
+			if err := h.stopBrokerAcceptingAndWait(ctx); err != nil {
+				log.Warn("session broker pre-auth drain timed out", "error", err.Error())
+			}
+		} else if h.sessionBroker != nil {
+			if err := h.sessionBroker.StopAcceptingAndWait(ctx); err != nil {
+				log.Warn("session broker pre-auth drain timed out", "error", err.Error())
+			}
 		}
-		// Stop backup helper if running
+
+		if h.stopHelperLifecycleAndWait != nil {
+			if err := h.stopHelperLifecycleAndWait(ctx); err != nil {
+				log.Warn("helper lifecycle shutdown timed out", "error", err.Error())
+			}
+		} else {
+			h.mu.Lock()
+			lifecycle := h.helperLifecycle
+			lifecycleCancel := h.lifecycleCancel
+			h.mu.Unlock()
+			if lifecycleCancel != nil {
+				lifecycleCancel()
+			}
+			if lifecycle != nil {
+				lifecycleStopped := make(chan struct{})
+				go func() {
+					lifecycle.Stop()
+					close(lifecycleStopped)
+				}()
+				select {
+				case <-lifecycleStopped:
+				case <-ctx.Done():
+					log.Warn("helper lifecycle process cleanup timed out")
+				}
+				select {
+				case <-lifecycle.Done():
+				case <-ctx.Done():
+					log.Warn("helper lifecycle reconcile loop did not stop before deadline")
+				}
+			}
+		}
+
 		if h.sessionBroker != nil {
 			h.sessionBroker.StopBackupHelper()
+		}
+		if h.closeSessionBroker != nil {
+			h.closeSessionBroker()
+		} else if h.sessionBroker != nil {
+			h.sessionBroker.Close()
+		}
+
+		if h.stopChan != nil {
+			close(h.stopChan)
+		}
+		if h.rebootMgr != nil {
+			h.rebootMgr.Stop()
 		}
 		if h.monitor != nil {
 			h.monitor.Stop()
@@ -1111,9 +1174,6 @@ func (h *Heartbeat) Stop() {
 		if h.tunnelMgr != nil {
 			h.tunnelMgr.Stop()
 		}
-		// Close stopChan first — this signals broker.Listen() to call broker.Close()
-		// internally. The broker's Close() is idempotent via its closed flag.
-		close(h.stopChan)
 	})
 }
 
