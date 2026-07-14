@@ -398,9 +398,15 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   }
   // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
   // requires a fresh existing-factor proof (no-op for initial enrollment).
-  // Gate BEFORE the consuming verifier (M10) so an unprotected-grant request
-  // 403s without burning the setup time-step — matches /mfa/enable's ordering.
-  const stepUpError = await enforceExistingFactorStepUp(c, auth, c.req.valid('json').stepUpGrantId, { consume: true });
+  //
+  // Two-phase, same idiom as passkeys register/options + register/verify:
+  //   validate (non-consuming) HERE, so a missing/bogus/stale grant 403s
+  //   before the consuming TOTP verifier burns the setup time-step (M10);
+  //   consume BELOW, only once the code itself has proven valid, so a
+  //   fat-fingered 6-digit code does not destroy the user's single-use grant
+  //   and force them back through /auth/mfa/step-up. (PR3 carry-forward.)
+  const stepUpGrantId = c.req.valid('json').stepUpGrantId;
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
   if (stepUpError) return stepUpError;
 
   // Consuming verifier: record the accepted time step so it cannot be replayed
@@ -421,6 +427,14 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     });
     return c.json({ error: 'Invalid MFA code' }, 401);
   }
+
+  // Terminal factor write: NOW consume the grant (single-use). Re-checks the
+  // binding against the LIVE epochs, so a factor change or session switch
+  // between validate and consume invalidates it. A loss here (concurrent
+  // consume of the same grant) fails CLOSED with the same 403 — the factor is
+  // not written.
+  const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpConsumeError) return stepUpConsumeError;
 
   // SR2-07/SR2-19: fold the factor write into the atomic epoch-bump +
   // refresh-family-revoke transaction, then best-effort post-commit cleanup +
@@ -604,7 +618,14 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
 
   // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
   // requires a fresh existing-factor proof (no-op for initial enrollment).
-  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  //
+  // Two-phase, same idiom as passkeys register/options + register/verify:
+  //   validate (non-consuming) HERE, so a missing/bogus/stale grant 403s
+  //   before the consuming TOTP verifier burns the setup time-step;
+  //   consume BELOW, only once the code itself has proven valid, so a
+  //   fat-fingered 6-digit code does not destroy the user's single-use grant
+  //   and force them back through /auth/mfa/step-up. (PR3 carry-forward.)
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
   if (stepUpError) return stepUpError;
 
   const redis = getRedis();
@@ -652,6 +673,14 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithPa
     const message = 'Invalid MFA code';
     return c.json({ error: message, message }, 401);
   }
+
+  // Terminal factor write: NOW consume the grant (single-use). Re-checks the
+  // binding against the LIVE epochs, so a factor change or session switch
+  // between validate and consume invalidates it. A loss here (concurrent
+  // consume of the same grant) fails CLOSED with the same 403 — the factor is
+  // not written.
+  const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpConsumeError) return stepUpConsumeError;
 
   const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-enable', async (tx) => {
     await tx

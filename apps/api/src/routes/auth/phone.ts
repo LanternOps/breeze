@@ -114,7 +114,13 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
   // otherwise a stolen access token + phished password could swap in the
   // attacker's number (which then satisfies the SMS step-up). No-op for initial
   // enrollment (no factor yet → password-only, per enforceExistingFactorStepUp).
-  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  //
+  // Two-phase, same idiom as passkeys register/options + register/verify:
+  // validate (non-consuming) HERE so a missing/bogus/stale grant 403s before
+  // the SMS code is even checked; consume BELOW, only once the code has proven
+  // valid, so a fat-fingered code (or a 429/502 on the Twilio check) does not
+  // destroy the user's single-use grant. (PR3 carry-forward.)
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
   if (stepUpError) return stepUpError;
 
   const twilio = getTwilioService();
@@ -157,6 +163,14 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     });
     return c.json({ error: 'Invalid verification code' }, 401);
   }
+
+  // Terminal phone write: NOW consume the grant (single-use). Re-checks the
+  // binding against the LIVE epochs, so a factor change or session switch
+  // between validate and consume invalidates it. A loss here (concurrent
+  // consume of the same grant) fails CLOSED with the same 403 — the phone
+  // number is not written.
+  const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpConsumeError) return stepUpConsumeError;
 
   // Replacement-only invalidation: initial SMS phone verification (before
   // /mfa/sms/enable has ever run) must NOT sign the user out mid-flow — they
@@ -221,7 +235,13 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
 
   // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
   // requires a fresh existing-factor proof (no-op for initial enrollment).
-  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  //
+  // Two-phase (PR3 carry-forward): validate (non-consuming) HERE so a
+  // missing/bogus/stale grant 403s before anything else runs; consume BELOW,
+  // immediately before the terminal factor write, so a benign 400/403
+  // (unverified phone, MFA already enabled, policy disallows SMS) does not
+  // burn the user's single-use grant.
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
   if (stepUpError) return stepUpError;
 
   const [user] = await db
@@ -259,6 +279,14 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
   if (!policy.allowedMethods.sms) {
     return c.json({ error: 'Your organization does not allow SMS MFA' }, 403);
   }
+
+  // Terminal factor write: NOW consume the grant (single-use). Re-checks the
+  // binding against the LIVE epochs, so a factor change or session switch
+  // between validate and consume invalidates it. A loss here (concurrent
+  // consume of the same grant) fails CLOSED with the same 403 — the factor is
+  // not written.
+  const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpConsumeError) return stepUpConsumeError;
 
   // Generate recovery codes
   const recoveryCodes = generateRecoveryCodes();

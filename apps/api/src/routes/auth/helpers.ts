@@ -242,10 +242,16 @@ export async function userIsMfaProtected(userId: string): Promise<boolean> {
  * mint time) so a factor change since the grant was minted (which bumps
  * `mfa_epoch` + revokes refresh families) invalidates it.
  *
- * `opts.consume: false` = non-consuming validate (register/options, which is
- * followed by a separate /verify that consumes the SAME grant).
- * `opts.consume: true` = single-use consume (every terminal factor write:
- * /mfa/enable, setup-confirm, /mfa/sms/enable, /passkeys/register/verify).
+ * Every factor-addition route calls this TWICE, in two phases:
+ *
+ * `opts.consume: false` = non-consuming validate, at the gate. Runs before the
+ * factor proof (TOTP/SMS code, WebAuthn assertion) so a missing/bogus/stale
+ * grant 403s without burning the consuming TOTP verifier's time-step.
+ * `opts.consume: true` = single-use consume, immediately before the terminal
+ * write, once the factor proof has validated. A wrong code therefore leaves the
+ * grant intact for a retry, while a successful add burns it exactly once (the
+ * consume re-checks the binding against the LIVE epochs and fails CLOSED, so
+ * one grant can never write two factors).
  *
  * Returns a 403/503 Response to short-circuit the caller, or null to proceed.
  */

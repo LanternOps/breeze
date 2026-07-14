@@ -303,6 +303,18 @@ function stubTx(epochRow: { authEpoch: number; mfaEpoch: number; emailEpoch: num
   return capturedUpdates;
 }
 
+// PR3 carry-forward (step-up grant consumed only AFTER the factor proof
+// validates): a STATEFUL fake for the Redis-backed grant store, so the tests
+// can assert the real single-use semantics rather than a call count alone.
+// `validateStepUpGrant` is non-destructive; `consumeStepUpGrant` is getdel —
+// `Set.delete` returns false on a second call, exactly like the real GETDEL.
+function useGrantStore(grantIds: string[]): Set<string> {
+  const store = new Set(grantIds);
+  vi.mocked(validateStepUpGrant).mockImplementation(async (id: string) => store.has(id));
+  vi.mocked(consumeStepUpGrant).mockImplementation(async (id: string) => store.delete(id));
+  return store;
+}
+
 // login.ts unconditionally resolves the effective MFA policy (both on the
 // MFA-required early-return branch and the enrollment-check branch below it).
 // For a partner/org scope that reaches the DB, getEffectiveMfaPolicy's
@@ -1549,6 +1561,9 @@ describe('auth routes', () => {
           })
         })
       } as any);
+      // Two-phase: non-consuming validate at the gate, single-use consume at
+      // the terminal factor write.
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(true);
       vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
 
       const res = await app.request('/auth/mfa/verify', {
@@ -1559,6 +1574,79 @@ describe('auth routes', () => {
 
       expect(res.status).toBe(200);
       expect(consumeStepUpGrant).toHaveBeenCalledWith('grant-1', expect.objectContaining({ userId: 'user-123' }));
+    });
+
+    // PR3 carry-forward: the grant is VALIDATED (non-consuming) at the gate and
+    // CONSUMED only once the TOTP code itself has proven valid.
+    function mockAlreadyProtected() {
+      mockPendingSetup();
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
+          })
+        })
+      } as any);
+    }
+
+    function confirmSetup(body: Record<string, unknown>) {
+      return app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    }
+
+    it('a WRONG mfa code does not burn the step-up grant (the same grant still works on retry)', async () => {
+      mockAlreadyProtected();
+      const grants = useGrantStore(['grant-1']);
+
+      vi.mocked(consumeMFAToken).mockResolvedValueOnce(false);
+      const bad = await confirmSetup({ code: '000000', stepUpGrantId: 'grant-1' });
+
+      expect(bad.status).toBe(401);
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(validateStepUpGrant).toHaveBeenCalledWith('grant-1', expect.objectContaining({ userId: 'user-123' }));
+      expect(grants.has('grant-1')).toBe(true);
+      expect(db.transaction).not.toHaveBeenCalled();
+
+      // The SAME grant now works with the correct code.
+      vi.mocked(consumeMFAToken).mockResolvedValueOnce(true);
+      const good = await confirmSetup({ code: '123456', stepUpGrantId: 'grant-1' });
+
+      expect(good.status).toBe(200);
+      expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
+      expect(grants.has('grant-1')).toBe(false);
+    });
+
+    it('a CORRECT mfa code burns the grant EXACTLY once — the same grant cannot be replayed', async () => {
+      mockAlreadyProtected();
+      const grants = useGrantStore(['grant-1']);
+      vi.mocked(consumeMFAToken).mockResolvedValue(true);
+
+      const first = await confirmSetup({ code: '123456', stepUpGrantId: 'grant-1' });
+      expect(first.status).toBe(200);
+      expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
+      expect(grants.has('grant-1')).toBe(false);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+
+      const replay = await confirmSetup({ code: '123456', stepUpGrantId: 'grant-1' });
+      expect(replay.status).toBe(403);
+      expect(await replay.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      // No second factor write, and the grant was never consumable twice.
+      expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('an INVALID grant still 403s BEFORE the consuming TOTP verifier runs (no burned time-step)', async () => {
+      mockAlreadyProtected();
+      useGrantStore([]); // no such grant
+
+      const res = await confirmSetup({ code: '123456', stepUpGrantId: 'bogus' });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(consumeMFAToken).not.toHaveBeenCalled();
     });
   });
 
@@ -2460,12 +2548,25 @@ describe('auth routes', () => {
       vi.mocked(getRedis).mockReturnValue(mockRedis as any);
       vi.mocked(consumeMFAToken).mockResolvedValue(true);
       vi.mocked(verifyPassword).mockResolvedValue(true);
+      // Two-phase: non-consuming validate at the gate, single-use consume at
+      // the terminal factor write.
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(true);
       vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
       vi.mocked(db.select)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
               limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+            })
+          })
+        } as any)
+        // userIsMfaProtected runs TWICE now (non-consuming validate at the
+        // gate, then the single-use consume at the terminal factor write), so
+        // the ordered queue carries two protected rows before falling back.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true, passkeyCount: 0 }])
             })
           })
         } as any)
@@ -2501,6 +2602,102 @@ describe('auth routes', () => {
       const body = await res.json();
       expect(body.success).toBe(true);
       expect(consumeStepUpGrant).toHaveBeenCalledWith('grant-1', expect.objectContaining({ userId: 'user-123' }));
+    });
+
+    // PR3 carry-forward: on /mfa/enable the grant is VALIDATED (non-consuming)
+    // at the gate and CONSUMED only once the TOTP code has proven valid.
+    // One combined row satisfies both selects on this path: the password
+    // reprompt reads `passwordHash`, userIsMfaProtected reads `mfaEnabled` /
+    // `passkeyCount` — and userIsMfaProtected now runs TWICE (validate, then
+    // consume), so the chain must be re-servable, not a one-shot queue.
+    function mockProtectedUserWithPendingSetup() {
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue(JSON.stringify({
+          secret: 'MFASECRET123',
+          recoveryCodes: ['CODE-0001', 'CODE-0002']
+        })),
+        setex: vi.fn(),
+        del: vi.fn().mockResolvedValue(1)
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { passwordHash: '$argon2id$hash', mfaEnabled: true, passkeyCount: 0 }
+            ])
+          })
+        })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-1' }])
+          }))
+        })
+      } as any);
+    }
+
+    function postMfaEnable(body: Record<string, unknown>) {
+      return app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123', ...body })
+      });
+    }
+
+    it('POST /auth/mfa/enable — a WRONG mfa code does not burn the step-up grant (grant survives for a retry)', async () => {
+      mockProtectedUserWithPendingSetup();
+      const grants = useGrantStore(['grant-1']);
+
+      vi.mocked(consumeMFAToken).mockResolvedValueOnce(false);
+      const bad = await postMfaEnable({ code: '000000', stepUpGrantId: 'grant-1' });
+
+      expect(bad.status).toBe(401);
+      // The grant must NOT have been consumed by the failed attempt.
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(validateStepUpGrant).toHaveBeenCalledWith('grant-1', expect.objectContaining({ userId: 'user-123' }));
+      expect(grants.has('grant-1')).toBe(true);
+      expect(db.transaction).not.toHaveBeenCalled();
+
+      // The SAME grant now works with the correct code.
+      vi.mocked(consumeMFAToken).mockResolvedValueOnce(true);
+      const good = await postMfaEnable({ code: '123456', stepUpGrantId: 'grant-1' });
+
+      expect(good.status).toBe(200);
+      expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
+      expect(grants.has('grant-1')).toBe(false);
+    });
+
+    it('POST /auth/mfa/enable — a CORRECT mfa code burns the grant EXACTLY once (no replay: one grant cannot add two factors)', async () => {
+      mockProtectedUserWithPendingSetup();
+      const grants = useGrantStore(['grant-1']);
+      vi.mocked(consumeMFAToken).mockResolvedValue(true);
+
+      const first = await postMfaEnable({ code: '123456', stepUpGrantId: 'grant-1' });
+      expect(first.status).toBe(200);
+      expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
+      expect(grants.has('grant-1')).toBe(false);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+
+      const replay = await postMfaEnable({ code: '123456', stepUpGrantId: 'grant-1' });
+      expect(replay.status).toBe(403);
+      expect(await replay.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
+      // No second factor write from the replayed grant.
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('POST /auth/mfa/enable — an INVALID grant still 403s BEFORE the consuming TOTP verifier runs (no burned time-step)', async () => {
+      mockProtectedUserWithPendingSetup();
+      useGrantStore([]); // no such grant
+
+      const res = await postMfaEnable({ code: '123456', stepUpGrantId: 'bogus' });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+      expect(consumeMFAToken).not.toHaveBeenCalled();
     });
 
     it('POST /auth/mfa/enable should reject missing currentPassword (G1)', async () => {

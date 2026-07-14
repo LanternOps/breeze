@@ -242,12 +242,72 @@ describe('phone routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
-      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+      // PR3 carry-forward: two-phase. Non-consuming validate at the gate, then
+      // the single-use consume immediately before the terminal factor write.
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(2);
+      expect(enforceExistingFactorStepUp).toHaveBeenNthCalledWith(
+        1,
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(enforceExistingFactorStepUp).toHaveBeenNthCalledWith(
+        2,
         expect.anything(),
         expect.anything(),
         'grant-1',
         { consume: true }
       );
+    });
+
+    // PR3 carry-forward: a benign 400 (phone never verified) must NOT burn the
+    // user's single-use grant — the consume only happens at the factor write.
+    it('does NOT consume the step-up grant when the request fails a precondition (unverified phone)', async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ phoneNumber: null, phoneVerified: false, mfaEnabled: false }]) as any
+      );
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: 'grant-1' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('does NOT consume the step-up grant when the effective policy disallows SMS', async () => {
+      mockVerifiedUnenrolledUser();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: false, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+      });
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: 'grant-1' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 
@@ -361,15 +421,18 @@ describe('phone routes', () => {
       });
 
       expect(res.status).toBe(403);
-      // The gate must run BEFORE the code check and BEFORE any write.
+      // The gate must run BEFORE the code check and BEFORE any write. It is
+      // non-consuming here (PR3 carry-forward) — a denied request has no grant
+      // to burn anyway, and the consume happens only at the factor write.
       expect(checkVerificationCode).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
       expect(db.transaction).not.toHaveBeenCalled();
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
       expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
         expect.anything(),
         expect.anything(),
         undefined,
-        { consume: true }
+        { consume: false }
       );
     });
 
@@ -390,12 +453,54 @@ describe('phone routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+      // Two-phase: validate at the gate, consume at the terminal phone write.
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(2);
+      expect(enforceExistingFactorStepUp).toHaveBeenNthCalledWith(
+        1,
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(enforceExistingFactorStepUp).toHaveBeenNthCalledWith(
+        2,
         expect.anything(),
         expect.anything(),
         'grant-1',
         { consume: true }
       );
+    });
+
+    // PR3 carry-forward: a fat-fingered SMS code must not burn the grant.
+    it('does NOT consume the step-up grant when the SMS code is wrong (grant survives for a retry)', async () => {
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn(),
+        checkVerificationCode: vi.fn().mockResolvedValue({ valid: false, serviceError: false }),
+      } as any);
+
+      const res = await app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+15555550100',
+          code: '000000',
+          currentPassword: 'correct-password',
+          stepUpGrantId: 'grant-1',
+        }),
+      });
+
+      expect(res.status).toBe(401);
+      // Only the non-consuming validate ran — the grant is still spendable.
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
     });
   });
 });
