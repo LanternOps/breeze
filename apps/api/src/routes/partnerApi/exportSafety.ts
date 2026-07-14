@@ -171,15 +171,33 @@ function isSecretSemanticIdentifier(value: string): boolean {
     && splitFieldName(value).some((part) => FORBIDDEN_FIELD_TOKENS.has(part));
 }
 
+function inspectScriptCredentialIdentifiers(value: string): { secretLike: boolean; operations: number } {
+  // Script content is deliberately conservative: once quotes and CLI prefixes
+  // are treated as boundaries, any credential-semantic identifier blocks the
+  // complete record even when the surrounding command grammar is unfamiliar.
+  const identifiers = value.match(/[A-Za-z][A-Za-z0-9_.-]*/gu) ?? [];
+  return {
+    secretLike: identifiers.some(isSecretSemanticIdentifier),
+    operations: value.length,
+  };
+}
+
 function hasFollowingValue(tokens: ScriptToken[], index: number): boolean {
   const value = tokens[index];
   return value !== undefined && value.value.length > 0 && !['=', ':', '$'].includes(value.value);
 }
 
-export function inspectCredentialSyntax(value: string): { secretLike: boolean; operations: number } {
+export function inspectCredentialSyntax(
+  value: string,
+  conservativeIdentifiers = true,
+): { secretLike: boolean; operations: number } {
+  const identifierInspection = conservativeIdentifiers
+    ? inspectScriptCredentialIdentifiers(value)
+    : { secretLike: false, operations: 0 };
+  if (identifierInspection.secretLike) return identifierInspection;
   const tokenized = tokenizeCredentialSyntax(value);
   const { tokens } = tokenized;
-  let operations = tokenized.operations;
+  let operations = identifierInspection.operations + tokenized.operations;
   if (!tokenized.complete) return { secretLike: true, operations };
   for (let index = 0; index < tokens.length; index += 1) {
     operations += 1;
@@ -232,13 +250,13 @@ export function inspectCredentialSyntax(value: string): { secretLike: boolean; o
   return { secretLike: false, operations };
 }
 
-function containsCredentialAssignment(value: string): boolean {
-  return inspectCredentialSyntax(value).secretLike;
+function containsCredentialAssignment(value: string, conservativeIdentifiers: boolean): boolean {
+  return inspectCredentialSyntax(value, conservativeIdentifiers).secretLike;
 }
 
-function isSecretLikeValue(value: string): boolean {
+function isSecretLikeValue(value: string, inspectScriptIdentifiers: boolean): boolean {
   return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))
-    || containsCredentialAssignment(value)
+    || containsCredentialAssignment(value, inspectScriptIdentifiers)
     || windowContainsHighEntropyToken(value);
 }
 
@@ -304,7 +322,7 @@ export function inspectDefinitionForSecrets(definition: unknown): DefinitionInsp
         return;
       }
       if (!(trustedRevision && SHA256_PATTERN.test(value)) && (
-        isSecretLikeValue(value)
+        isSecretLikeValue(value, path.split('.').at(-1)?.toLowerCase() === 'content')
         || (isSemanticIdentifierPath(path) && isSecretSemanticIdentifier(value))
       )) addPath(path);
       return;

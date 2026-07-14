@@ -87,6 +87,11 @@ describe('recursive export safety', () => {
     ['authorization assignment', { content: 'Authorization = Basic dXNlcjpwYXNz' }],
     ['credential value suffix assignment', { content: 'PASSWORD_VALUE=hunter2' }],
     ['token backup suffix assignment', { content: 'TOKEN_BACKUP=hunter2' }],
+    ['quoted credential token', { content: 'echo "PASSWORD=hunter2"' }],
+    ['CLI credential assignment', { content: 'mysql --password=hunter2' }],
+    ['CLI credential argument', { content: 'tool --password hunter2' }],
+    ['compound CLI credential argument', { content: 'tool --api-key hunter2' }],
+    ['PowerShell credential argument', { content: 'pwsh -Password hunter2' }],
   ])('rejects low-entropy credential assignment syntax: %s', (_name, definition) => {
     expect(inspectDefinitionForSecrets(definition)).toMatchObject({
       safe: false,
@@ -95,8 +100,8 @@ describe('recursive export safety', () => {
   });
 
   it.each([
-    'echo password rotation policy',
-    'PASSWORD',
+    'echo rotate the local account every 90 days',
+    'ACCOUNT_NAME',
     'setx INSTALL_MODE production',
     'ConvertTo-SecureString $encryptedBlob',
     'DATABASE_URL=postgres://db.example/app',

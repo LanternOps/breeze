@@ -172,6 +172,11 @@ describe('partner desired-configuration exports', () => {
     'RECOVERY_KEY=ABC-123',
     'PASSWORD_VALUE=hunter2',
     'TOKEN_BACKUP=hunter2',
+    'echo "PASSWORD=hunter2"',
+    'mysql --password=hunter2',
+    'tool --password hunter2',
+    'tool --api-key hunter2',
+    'pwsh -Password hunter2',
   ])('blocks the whole script for low-entropy credential syntax without leaking derived metadata: %s', async (content) => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'organization', name: 'Unsafe rebuild', description: null, category: 'build',
