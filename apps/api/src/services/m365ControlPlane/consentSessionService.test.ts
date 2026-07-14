@@ -165,6 +165,12 @@ describe('M365 consent sessions', () => {
     );
   });
 
+  it('does not purge unrelated sessions while creating a session', async () => {
+    await createAdminConsentSession(owner);
+
+    expect(dbMocks.deleteWhere).not.toHaveBeenCalled();
+  });
+
   it('creates an identity session with a normalized tenant hash, 32-byte nonce, and S256 PKCE', async () => {
     const result = await createIdentityVerificationSession({
       ...owner,

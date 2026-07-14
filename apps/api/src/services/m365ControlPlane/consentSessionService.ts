@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { and, eq, gt, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   m365ConsentSessions,
@@ -56,10 +56,6 @@ async function insertConsentSessionInTransaction(
   >,
 ): Promise<CreatedConsentSession> {
   const expiresAt = new Date(Date.now() + CONSENT_SESSION_TTL_MS);
-
-  await db.delete(m365ConsentSessions).where(
-    lte(m365ConsentSessions.expiresAt, sql`now()`),
-  );
 
   while (true) {
     const rawState = generateRandomValue();
