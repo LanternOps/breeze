@@ -523,6 +523,140 @@ describe('sso routes', () => {
     expect(body.data.name).toBe('Okta Updated');
   });
 
+  // Bug repro: the web edit form always resubmits every field, so a blank
+  // <select>/<input> for an optional-but-nullable column (issuer, url();
+  // defaultRoleId, guid()) is posted as `''`. Before the fix `z.string().url()`
+  // / `.guid()` rejected `''` outright -> 400, silently failing the save (the
+  // form never omits the key). The fix normalizes '' -> explicit NULL at the
+  // schema boundary so blank always means "clear this value", distinct from
+  // the key being absent entirely ("leave unchanged" — covered below).
+  describe('blank vs omitted optional fields on /sso/providers (issuer, defaultRoleId)', () => {
+    it('creates a provider when issuer and defaultRoleId are posted as blank strings (does not 400)', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Okta' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await app.request('/sso/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Okta',
+          type: 'oidc',
+          issuer: '',
+          defaultRoleId: ''
+        })
+      });
+
+      expect(res.status).toBe(201);
+      expect(discoverOIDCConfig).not.toHaveBeenCalled();
+      // Persisted as NULL, not the literal empty string — an empty string in
+      // a `varchar` column is a real (wrong) value, not "no value".
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        issuer: null,
+        defaultRoleId: null
+      }));
+    });
+
+    it('clears a previously-set default role on PATCH when defaultRoleId is blanked (persists NULL)', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }])
+          })
+        })
+      } as any);
+
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Okta', defaultRoleId: null }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        // Exactly what the web form sends when the admin resets the "Default
+        // role for new users" <select> to its blank "Select a role" option.
+        body: JSON.stringify({ defaultRoleId: '' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ defaultRoleId: null }));
+    });
+
+    it('clears a partner-owned provider default role without re-running the partner-role permission check', async () => {
+      // existing.partnerId is truthy — the update route's role-ceiling check
+      // only fires `if (existing.partnerId && body.defaultRoleId)`. Clearing
+      // must resolve body.defaultRoleId to a falsy `null`, so the check is
+      // skipped (nothing to validate — there's no role being granted) and no
+      // extra db.select is consumed for it.
+      setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [],
+        partnerOrgAccess: 'all'
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: null, partnerId: PARTNER_UUID }])
+          })
+        })
+      } as any);
+
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Partner Okta', partnerId: PARTNER_UUID, defaultRoleId: null }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ defaultRoleId: '' })
+      });
+
+      expect(res.status).toBe(200);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ defaultRoleId: null }));
+    });
+
+    it('leaves defaultRoleId untouched on PATCH when the field is omitted entirely from the body', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null }])
+          })
+        })
+      } as any);
+
+      const setMock = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Renamed' }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' })
+      });
+
+      expect(res.status).toBe(200);
+      // No `defaultRoleId` key at all in the update — distinct from an
+      // explicit `null` (clear). A previously-set role must survive a save
+      // that never touched the field.
+      const setArg = setMock.mock.calls[0]?.[0];
+      expect(setArg).not.toHaveProperty('defaultRoleId');
+      expect(setArg).not.toHaveProperty('issuer');
+    });
+  });
+
   it('deletes a provider and related records', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
