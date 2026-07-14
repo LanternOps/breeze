@@ -252,7 +252,7 @@ Eligible admin alias / role:
 Ineligible admin alias / role:
 Operator / reviewer:
 
-Scenario #: 
+Scenario #:
 Preconditions:
 Action summary (no callback URL or secret values):
 Expected status / error / event:
