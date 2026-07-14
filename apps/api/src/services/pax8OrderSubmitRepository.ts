@@ -1,5 +1,5 @@
 import type { Pax8OrderStatus, Pax8SubmitState } from '@breeze/shared';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, inArray, sql } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
@@ -53,9 +53,11 @@ function withOrderDbContext<T>(bundle: SubmitBundle, fn: () => Promise<T>): Prom
   ));
 }
 
-async function findOrder(partnerId: string, orderId: string): Promise<Pax8OrderRow> {
+type VersionedOrder = Pax8OrderRow & { rowVersion: string };
+
+async function findOrder(partnerId: string, orderId: string): Promise<VersionedOrder> {
   const [order] = await db
-    .select()
+    .select({ ...getTableColumns(pax8Orders), rowVersion: sql<string>`xmin::text` })
     .from(pax8Orders)
     .where(and(eq(pax8Orders.partnerId, partnerId), eq(pax8Orders.id, orderId)))
     .limit(1);
@@ -83,7 +85,8 @@ async function resolveCompany(order: Pax8OrderRow): Promise<string> {
       eq(pax8CompanyMappings.partnerId, order.partnerId),
       eq(pax8CompanyMappings.orgId, order.orgId),
       eq(pax8CompanyMappings.ignored, false),
-    ));
+    ))
+    .for('share');
   if (mappings.length === 0) {
     throw new Pax8OrderError('Map this organization to a Pax8 company before ordering.', 422);
   }
@@ -93,8 +96,7 @@ async function resolveCompany(order: Pax8OrderRow): Promise<string> {
   return mappings[0]!.pax8CompanyId;
 }
 
-async function persistResolvedCompany(order: Pax8OrderRow, pax8CompanyId: string): Promise<Pax8OrderRow> {
-  if (order.pax8CompanyId === pax8CompanyId) return order;
+async function persistResolvedCompany(order: VersionedOrder, pax8CompanyId: string): Promise<Pax8OrderRow> {
   const [updated] = await db
     .update(pax8Orders)
     .set({ pax8CompanyId, updatedAt: new Date() })
@@ -103,6 +105,8 @@ async function persistResolvedCompany(order: Pax8OrderRow, pax8CompanyId: string
       eq(pax8Orders.partnerId, order.partnerId),
       eq(pax8Orders.orgId, order.orgId),
       eq(pax8Orders.integrationId, order.integrationId),
+      eq(pax8Orders.status, order.status),
+      sql`${pax8Orders}.xmin::text = ${order.rowVersion}`,
     ))
     .returning();
   if (!updated) throw new Pax8OrderError('The Pax8 company mapping changed while loading the order.', 409);
@@ -134,6 +138,9 @@ function resultFromRows(orderId: string, status: Pax8OrderStatus, lines: Pax8Ord
 }
 
 async function lockExecutingOrder(bundle: SubmitBundle): Promise<Pax8OrderRow> {
+  if (!bundle.order.pax8CompanyId || !bundle.order.submittedAt) {
+    throw new Pax8OrderError('The Pax8 order is missing its immutable submission snapshot.', 409);
+  }
   const [order] = await db
     .select()
     .from(pax8Orders)
@@ -143,6 +150,8 @@ async function lockExecutingOrder(bundle: SubmitBundle): Promise<Pax8OrderRow> {
       eq(pax8Orders.orgId, bundle.order.orgId),
       eq(pax8Orders.integrationId, bundle.order.integrationId),
       eq(pax8Orders.status, 'submitting'),
+      eq(pax8Orders.pax8CompanyId, bundle.order.pax8CompanyId),
+      eq(pax8Orders.submittedAt, bundle.order.submittedAt),
     ))
     .for('update')
     .limit(1);
@@ -194,9 +203,9 @@ async function persistLineOutcomes(
   for (const outcome of outcomes) {
     const line = lineById.get(outcome.lineId);
     if (!line) throw new Pax8OrderError('A Pax8 line result does not belong to this order.', 409);
-    const stateCondition = Array.isArray(expectedState)
-      ? inArray(pax8OrderLines.submitState, [...expectedState])
-      : eq(pax8OrderLines.submitState, expectedState);
+    const stateCondition = typeof expectedState === 'string'
+      ? eq(pax8OrderLines.submitState, expectedState)
+      : inArray(pax8OrderLines.submitState, [...expectedState]);
     const updated = await db
       .update(pax8OrderLines)
       .set({
@@ -234,10 +243,10 @@ async function reloadLines(bundle: SubmitBundle): Promise<Pax8OrderLineRow[]> {
 export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
   loadResolvedOrder(input) {
     return withPartnerDbContext(input.partnerId, async () => {
-      let order = await findOrder(input.partnerId, input.orderId);
-      assertSubmittable(order);
-      const companyId = await resolveCompany(order);
-      order = await persistResolvedCompany(order, companyId);
+      const existing = await findOrder(input.partnerId, input.orderId);
+      assertSubmittable(existing);
+      const companyId = await resolveCompany(existing);
+      const order = await persistResolvedCompany(existing, companyId);
       return { order, lines: await findOrderLines(order) };
     });
   },
@@ -245,6 +254,7 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
   claimOrder(input) {
     return withPartnerDbContext(input.partnerId, async () => {
       const existing = await findOrder(input.partnerId, input.orderId);
+      assertSubmittable(existing);
       const companyId = await resolveCompany(existing);
       const now = new Date();
       const [claimed] = await db
@@ -262,7 +272,8 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
           eq(pax8Orders.partnerId, input.partnerId),
           eq(pax8Orders.orgId, existing.orgId),
           eq(pax8Orders.integrationId, existing.integrationId),
-          inArray(pax8Orders.status, [...SUBMITTABLE_STATUSES]),
+          eq(pax8Orders.status, existing.status),
+          sql`${pax8Orders}.xmin::text = ${existing.rowVersion}`,
           sql`NOT EXISTS (
             SELECT 1 FROM pax8_order_lines pol
             WHERE pol.order_id = ${pax8Orders.id}
@@ -279,6 +290,12 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
       if (lines.length === 0) throw new Pax8OrderError('Add at least one line before submitting the Pax8 order.', 422);
       if (lines.some((line) => line.submitState !== 'pending')) {
         throw new Pax8OrderError('An earlier Pax8 line write requires reconciliation.', 409);
+      }
+      const targets = lines
+        .filter((line) => line.action !== 'new_subscription')
+        .map((line) => line.targetSubscriptionId);
+      if (targets.some((target, index) => target !== null && targets.indexOf(target) !== index)) {
+        throw new Pax8OrderError('Only one change or cancellation may target a Pax8 subscription per order.', 422);
       }
       return { order: claimed, lines };
     });
@@ -319,11 +336,8 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
   persistPreflightFailure(bundle, errorBody) {
     return withOrderDbContext(bundle, async () => {
       await lockExecutingOrder(bundle);
-      const newIds = bundle.lines
-        .filter((line) => line.action === 'new_subscription')
-        .map((line) => line.id);
-      if (newIds.length > 0) {
-        await db
+      const lineIds = bundle.lines.map((line) => line.id);
+      const updatedLines = await db
           .update(pax8OrderLines)
           .set({ submitState: 'failed', error: errorBody, updatedAt: new Date() })
           .where(and(
@@ -331,8 +345,11 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
             eq(pax8OrderLines.partnerId, bundle.order.partnerId),
             eq(pax8OrderLines.orgId, bundle.order.orgId),
             eq(pax8OrderLines.submitState, 'pending'),
-            inArray(pax8OrderLines.id, newIds),
-          ));
+            inArray(pax8OrderLines.id, lineIds),
+          ))
+          .returning({ id: pax8OrderLines.id });
+      if (updatedLines.length !== lineIds.length) {
+        throw new Pax8OrderError('The Pax8 preflight failure could not terminally classify every line.', 409);
       }
       await db
         .update(pax8Orders)
@@ -378,9 +395,7 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
 
   loadReconcileOrder(input) {
     return withPartnerDbContext(input.partnerId, async () => {
-      let order = await findOrder(input.partnerId, input.orderId);
-      const companyId = await resolveCompany(order);
-      order = await persistResolvedCompany(order, companyId);
+      const order = await findOrder(input.partnerId, input.orderId);
       return { order, lines: await findOrderLines(order) };
     });
   },
@@ -416,7 +431,7 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
     });
   },
 
-  persistReconcileResults(bundle, outcomes) {
+  persistReconcileResults(bundle, outcomes, pax8OrderId) {
     return withOrderDbContext(bundle, async () => {
       const [locked] = await db
         .select()
@@ -426,6 +441,8 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
           eq(pax8Orders.partnerId, bundle.order.partnerId),
           eq(pax8Orders.orgId, bundle.order.orgId),
           eq(pax8Orders.integrationId, bundle.order.integrationId),
+          eq(pax8Orders.pax8CompanyId, bundle.order.pax8CompanyId!),
+          eq(pax8Orders.submittedAt, bundle.order.submittedAt!),
         ))
         .for('update')
         .limit(1);
@@ -436,11 +453,18 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
       const errors = lines.flatMap((line) => line.error ? [line.error] : []);
       await db
         .update(pax8Orders)
-        .set({ status, error: errors.length > 0 ? errors.join('\n').slice(0, 4000) : null, updatedAt: new Date() })
+        .set({
+          status,
+          ...(pax8OrderId ? { pax8OrderId } : {}),
+          error: errors.length > 0 ? errors.join('\n').slice(0, 4000) : null,
+          updatedAt: new Date(),
+        })
         .where(and(
           eq(pax8Orders.id, bundle.order.id),
           eq(pax8Orders.partnerId, bundle.order.partnerId),
           eq(pax8Orders.orgId, bundle.order.orgId),
+          eq(pax8Orders.pax8CompanyId, bundle.order.pax8CompanyId!),
+          eq(pax8Orders.submittedAt, bundle.order.submittedAt!),
         ));
       return {
         resolved: outcomes.filter((outcome) => outcome.submitState !== 'needs_reconcile').length,

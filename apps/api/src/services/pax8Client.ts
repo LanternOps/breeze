@@ -25,6 +25,7 @@ export interface Pax8SubscriptionRecord {
   status: string | null;
   billingTerm: string | null;
   quantity: string;
+  quantityKnown: boolean;
   unitPrice: string | null;
   unitCost: string | null;
   currencyCode: string | null;
@@ -87,6 +88,7 @@ export interface Pax8OrderRecord {
     lineItemNumber: number | null;
     productId: string | null;
     quantity: string;
+    quantityKnown: boolean;
     subscriptionId: string | null;
   }>;
   raw: JsonRecord;
@@ -185,9 +187,12 @@ function normalizeMoney(value: unknown): string | null {
   return numberValue.toFixed(2);
 }
 
-function normalizeQuantity(value: unknown): string {
+function normalizeQuantityEvidence(value: unknown): { quantity: string; quantityKnown: boolean } {
   const normalized = normalizeMoney(value);
-  return normalized ?? '0.00';
+  return {
+    quantity: normalized ?? '0.00',
+    quantityKnown: normalized !== null,
+  };
 }
 
 function normalizeIsoDate(value: unknown): string | null {
@@ -245,6 +250,7 @@ function normalizeSubscription(value: unknown): Pax8SubscriptionRecord | null {
   const pricing = nestedRecord(record, 'pricing') ?? nestedRecord(record, 'price');
   const cost = nestedRecord(record, 'cost');
 
+  const quantity = normalizeQuantityEvidence(record.quantity ?? record.seats ?? record.licenses ?? record.licenseCount);
   return {
     pax8SubscriptionId: id,
     pax8CompanyId: companyId,
@@ -254,7 +260,7 @@ function normalizeSubscription(value: unknown): Pax8SubscriptionRecord | null {
     vendorSkuId: firstString(record, ['vendorSkuId', 'vendor_sku_id', 'sku', 'skuId']) ?? (product ? firstString(product, ['vendorSkuId', 'sku', 'skuId']) : null),
     status: firstString(record, ['status', 'state']),
     billingTerm: firstString(record, ['billingTerm', 'billing_term', 'term']),
-    quantity: normalizeQuantity(record.quantity ?? record.seats ?? record.licenses ?? record.licenseCount),
+    ...quantity,
     unitPrice: pricing ? normalizeMoney(pricing.unitPrice ?? pricing.price ?? pricing.amount) : normalizeMoney(record.unitPrice),
     unitCost: cost ? normalizeMoney(cost.unitCost ?? cost.cost ?? cost.amount) : normalizeMoney(record.unitCost),
     currencyCode: firstString(record, ['currencyCode', 'currency']) ?? (pricing ? firstString(pricing, ['currencyCode', 'currency']) : null),
@@ -280,7 +286,7 @@ function normalizeOrder(value: unknown): Pax8OrderRecord | null {
     return {
       lineItemNumber: firstNumber(line, ['lineItemNumber', 'line_item_number']),
       productId: firstString(line, ['productId', 'product_id']),
-      quantity: normalizeQuantity(line.quantity),
+      ...normalizeQuantityEvidence(line.quantity),
       subscriptionId: firstString(line, ['subscriptionId', 'subscription_id']),
     };
   }).filter((line): line is Pax8OrderRecord['lineItems'][number] => line !== null);

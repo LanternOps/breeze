@@ -91,6 +91,7 @@ describe('Pax8Client', () => {
       vendorName: 'Microsoft',
       vendorSkuId: 'sku-1',
       quantity: '12.00',
+      quantityKnown: true,
       unitPrice: '22.00',
       unitCost: '18.50',
       currencyCode: 'USD',
@@ -376,10 +377,30 @@ describe('Pax8Client reconciliation reads', () => {
         lineItemNumber: 3,
         productId: 'product-1',
         quantity: '7.00',
+        quantityKnown: true,
         subscriptionId: 'subscription-1',
       }],
       raw: expect.any(Object),
     }]);
+  });
+
+  it('marks omitted quantities unknown instead of presenting synthesized zero as evidence', async () => {
+    const doFetch = vi.fn(async (url: string) => {
+      if (url.includes('/subscriptions')) {
+        return jsonResponse({ content: [{ id: 'sub-1', companyId: 'company-1', productId: 'product-1' }], last: true });
+      }
+      return jsonResponse({ content: [{
+        id: 'order-1', companyId: 'company-1', createdDate: '2026-07-20',
+        lineItems: [{ lineItemNumber: 1, productId: 'product-1', subscriptionId: 'sub-1' }],
+      }], last: true });
+    });
+    const client = clientWith(doFetch);
+
+    const subscriptions = await client.listSubscriptions({ companyId: 'company-1' });
+    const orders = await client.listOrders({ companyId: 'company-1' });
+
+    expect(subscriptions[0]).toMatchObject({ quantity: '0.00', quantityKnown: false });
+    expect(orders[0]!.lineItems[0]).toMatchObject({ quantity: '0.00', quantityKnown: false });
   });
 });
 

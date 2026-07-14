@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { RunOutsideDbContextFn } from '../db';
 import { Pax8ApiError } from './pax8Client';
 import {
   createPax8OrderSubmitService,
@@ -38,6 +39,21 @@ const changeLine = {
   sortOrder: 1,
 } as const;
 
+const duplicateNewLine = {
+  ...newLine,
+  id: 'line-new-2',
+  sortOrder: 1,
+} as const;
+
+const cancelLine = {
+  ...changeLine,
+  id: 'line-cancel',
+  action: 'cancel',
+  quantity: null,
+  cancelDate: '2026-09-01',
+  sortOrder: 2,
+} as const;
+
 function bundle(lines: readonly unknown[] = [newLine]): SubmitBundle {
   return {
     order: {
@@ -48,6 +64,7 @@ function bundle(lines: readonly unknown[] = [newLine]): SubmitBundle {
       pax8CompanyId: 'company-1',
       status: 'submitting',
       createdAt: new Date('2026-07-14T01:00:00Z'),
+      submittedAt: new Date('2026-07-20T01:00:00Z'),
     } as SubmitBundle['order'],
     lines: lines as SubmitBundle['lines'],
   };
@@ -80,8 +97,8 @@ function setup(lines: readonly unknown[] = [newLine]) {
     persistPreflightFailure: vi.fn().mockImplementation(async (_bundle, errorBody) =>
       resultFor(claimed.lines.map((line) => ({
         lineId: line.id,
-        submitState: line.action === 'new_subscription' ? 'failed' : 'pending',
-        error: line.action === 'new_subscription' ? errorBody : null,
+        submitState: 'failed',
+        error: errorBody,
       })) as never)),
     persistSubmitResults: vi.fn().mockImplementation(async (_bundle, outcomes) =>
       resultFor(outcomes.map((outcome: any) => ({
@@ -93,7 +110,7 @@ function setup(lines: readonly unknown[] = [newLine]) {
     resetUnsentOrder: vi.fn().mockResolvedValue({ resolved: 0, stillUnknown: 0 }),
     persistReconcileResults: vi.fn().mockResolvedValue({ resolved: 0, stillUnknown: 0 }),
   };
-  const outside = vi.fn(<T>(fn: () => T): T => fn());
+  const outside = vi.fn((fn: () => unknown): unknown => fn()) as unknown as RunOutsideDbContextFn;
   return {
     client,
     repository,
@@ -119,10 +136,11 @@ describe('preflightOrder', () => {
   });
 
   it('skips Pax8 when there are no new subscriptions', async () => {
-    const { service, client } = setup([changeLine]);
+    const { service, client, repository } = setup([changeLine]);
     await expect(service.preflightOrder({ partnerId: 'p1', orderId: 'ord-1' }))
       .resolves.toEqual({ ok: true });
     expect(client.createOrder).not.toHaveBeenCalled();
+    expect(repository.createClient).not.toHaveBeenCalled();
   });
 });
 
@@ -140,6 +158,18 @@ describe('submitOrder', () => {
     expect(repository.persistPreflightFailure).toHaveBeenCalledWith(expect.anything(), raw);
     expect(res.status).toBe('failed');
     expect(res.lines[0]!.error).toContain('msDomain is required');
+  });
+
+  it('terminally fails every mixed-action line when isMock rejects before any real write', async () => {
+    const { service, client } = setup([newLine, changeLine, cancelLine]);
+    client.createOrder.mockRejectedValueOnce(new Pax8ApiError('Pax8 API returned 422', 422, 'invalid provisioning'));
+
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+
+    expect(res.status).toBe('failed');
+    expect(res.lines.every((line) => line.submitState === 'failed')).toBe(true);
+    expect(client.updateSubscriptionQuantity).not.toHaveBeenCalled();
+    expect(client.cancelSubscription).not.toHaveBeenCalled();
   });
 
   it('claims every line in a committed DB phase before the one real write', async () => {
@@ -206,6 +236,88 @@ describe('submitOrder', () => {
       .rejects.toMatchObject({ status: 409 });
     expect(client.createOrder).toHaveBeenCalledTimes(1); // isMock only
   });
+
+  it('globally consumes create response items for duplicate products', async () => {
+    const { service, client, repository } = setup([newLine, duplicateNewLine]);
+    client.createOrder
+      .mockResolvedValueOnce({ pax8OrderId: null, lineItems: [] })
+      .mockResolvedValueOnce({ pax8OrderId: 'pax-order-1', lineItems: [
+        { lineItemNumber: 1, productId: 'prod-1', subscriptionId: 'sub-1' },
+        { lineItemNumber: 2, productId: 'prod-1', subscriptionId: 'sub-2' },
+      ] });
+
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+
+    expect(res.lines.every((line) => line.submitState === 'succeeded')).toBe(true);
+    expect(repository.persistSubmitResults).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({ lineId: 'line-new', resultSubscriptionId: 'sub-1' }),
+        expect.objectContaining({ lineId: 'line-new-2', resultSubscriptionId: 'sub-2' }),
+      ]),
+      'pax-order-1',
+    );
+  });
+
+  it.each([
+    {
+      name: 'partial response',
+      lineItems: [{ lineItemNumber: 1, productId: 'prod-1', subscriptionId: 'sub-1' }],
+    },
+    {
+      name: 'mismatched line number and product',
+      lineItems: [
+        { lineItemNumber: 1, productId: 'other-product', subscriptionId: 'sub-1' },
+        { lineItemNumber: 2, productId: 'prod-1', subscriptionId: 'sub-2' },
+      ],
+    },
+  ])('marks every new line unknown after external success with $name', async ({ lineItems }) => {
+    const { service, client } = setup([newLine, duplicateNewLine]);
+    client.createOrder
+      .mockResolvedValueOnce({ pax8OrderId: null, lineItems: [] })
+      .mockResolvedValueOnce({ pax8OrderId: 'pax-order-1', lineItems });
+
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+
+    expect(res.lines.every((line) => line.submitState === 'needs_reconcile')).toBe(true);
+  });
+
+  it('keeps new lines unknown when the successful response omits the parent order id', async () => {
+    const { service, client } = setup([newLine]);
+    client.createOrder
+      .mockResolvedValueOnce({ pax8OrderId: null, lineItems: [] })
+      .mockResolvedValueOnce({
+        pax8OrderId: null,
+        lineItems: [{ lineItemNumber: 1, productId: 'prod-1', subscriptionId: 'sub-1' }],
+      });
+
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+
+    expect(res.lines[0]!.submitState).toBe('needs_reconcile');
+  });
+
+  it.each([
+    ['PUT timeout', changeLine, 'updateSubscriptionQuantity', Object.assign(new Error('timeout'), { name: 'AbortError' })],
+    ['DELETE 503', cancelLine, 'cancelSubscription', new Pax8ApiError('Pax8 API returned 503', 503, 'unavailable')],
+  ] as const)('does not retry a %s', async (_name, line, method, error) => {
+    const { service, client } = setup([line]);
+    client[method].mockRejectedValueOnce(error);
+
+    const res = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' });
+
+    expect(client[method]).toHaveBeenCalledTimes(1);
+    expect(res.lines[0]!.submitState).toBe('needs_reconcile');
+  });
+
+  it('rejects duplicate subscription targets before external writes', async () => {
+    const secondChange = { ...changeLine, id: 'line-change-2', quantity: '6.00' };
+    const { service, repository, client } = setup([changeLine, secondChange]);
+    (repository.claimOrder as any).mockRejectedValueOnce(Object.assign(new Error('duplicate target'), { status: 422 }));
+
+    await expect(service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1' }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(client.updateSubscriptionQuantity).not.toHaveBeenCalled();
+  });
 });
 
 describe('reconcileOrder', () => {
@@ -223,7 +335,9 @@ describe('reconcileOrder', () => {
     const crashedLine = { ...changeLine, submitState: 'in_flight' };
     const { service, client, repository } = setup([crashedLine]);
     client.listOrders.mockResolvedValueOnce([]);
-    client.listSubscriptions.mockResolvedValueOnce([{ pax8SubscriptionId: 'sub-existing', quantity: '5.00' }]);
+    client.listSubscriptions.mockResolvedValueOnce([{
+      pax8SubscriptionId: 'sub-existing', quantity: '5.00', quantityKnown: true,
+    }]);
     (repository.persistReconcileResults as any).mockResolvedValueOnce({ resolved: 1, stillUnknown: 0 });
 
     await expect(service.reconcileOrder({ partnerId: 'p1', orderId: 'ord-1' }))
@@ -231,6 +345,7 @@ describe('reconcileOrder', () => {
     expect(repository.persistReconcileResults).toHaveBeenCalledWith(
       expect.anything(),
       [expect.objectContaining({ lineId: 'line-change', submitState: 'succeeded' })],
+      null,
     );
   });
 
@@ -238,8 +353,8 @@ describe('reconcileOrder', () => {
     const unknownLine = { ...newLine, submitState: 'needs_reconcile' };
     const { service, client, repository } = setup([unknownLine]);
     client.listOrders.mockResolvedValueOnce([
-      { pax8OrderId: 'a', pax8CompanyId: 'company-1', createdDate: '2026-07-14', lineItems: [{ productId: 'prod-1', quantity: '7.00', subscriptionId: 's1' }] },
-      { pax8OrderId: 'b', pax8CompanyId: 'company-1', createdDate: '2026-07-14', lineItems: [{ productId: 'prod-1', quantity: '7.00', subscriptionId: 's2' }] },
+      { pax8OrderId: 'a', pax8CompanyId: 'company-1', createdDate: '2026-07-20', lineItems: [{ lineItemNumber: 1, productId: 'prod-1', quantity: '7.00', quantityKnown: true, subscriptionId: 's1' }] },
+      { pax8OrderId: 'b', pax8CompanyId: 'company-1', createdDate: '2026-07-20', lineItems: [{ lineItemNumber: 1, productId: 'prod-1', quantity: '7.00', quantityKnown: true, subscriptionId: 's2' }] },
     ]);
     client.listSubscriptions.mockResolvedValueOnce([]);
     (repository.persistReconcileResults as any).mockResolvedValueOnce({ resolved: 0, stillUnknown: 1 });
@@ -255,6 +370,110 @@ describe('reconcileOrder', () => {
     expect(repository.persistReconcileResults).toHaveBeenCalledWith(
       expect.anything(),
       [expect.objectContaining({ lineId: 'line-new', submitState: 'needs_reconcile' })],
+      null,
+    );
+  });
+
+  it('matches the whole new-subscription batch to one order on submittedAt date', async () => {
+    const lines = [
+      { ...newLine, submitState: 'needs_reconcile' },
+      { ...duplicateNewLine, submitState: 'needs_reconcile' },
+    ];
+    const { service, client, repository } = setup(lines);
+    client.listOrders.mockResolvedValueOnce([{
+      pax8OrderId: 'matched-parent',
+      pax8CompanyId: 'company-1',
+      createdDate: '2026-07-20',
+      lineItems: [
+        { lineItemNumber: 1, productId: 'prod-1', quantity: '7.00', quantityKnown: true, subscriptionId: 's1' },
+        { lineItemNumber: 2, productId: 'prod-1', quantity: '7.00', quantityKnown: true, subscriptionId: 's2' },
+      ],
+    }]);
+    client.listSubscriptions.mockResolvedValueOnce([]);
+    (repository.persistReconcileResults as any).mockResolvedValueOnce({ resolved: 2, stillUnknown: 0 });
+
+    await service.reconcileOrder({ partnerId: 'p1', orderId: 'ord-1' });
+
+    expect(repository.persistReconcileResults).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({ lineId: 'line-new', submitState: 'succeeded', resultSubscriptionId: 's1' }),
+        expect.objectContaining({ lineId: 'line-new-2', submitState: 'succeeded', resultSubscriptionId: 's2' }),
+      ]),
+      'matched-parent',
+    );
+  });
+
+  it('never assembles one batch match from line items belonging to different parent orders', async () => {
+    const lines = [
+      { ...newLine, submitState: 'needs_reconcile' },
+      { ...duplicateNewLine, submitState: 'needs_reconcile' },
+    ];
+    const { service, client, repository } = setup(lines);
+    client.listOrders.mockResolvedValueOnce([
+      { pax8OrderId: 'parent-a', pax8CompanyId: 'company-1', createdDate: '2026-07-20', lineItems: [{ lineItemNumber: 1, productId: 'prod-1', quantity: '7.00', quantityKnown: true, subscriptionId: 's1' }] },
+      { pax8OrderId: 'parent-b', pax8CompanyId: 'company-1', createdDate: '2026-07-20', lineItems: [{ lineItemNumber: 2, productId: 'prod-1', quantity: '7.00', quantityKnown: true, subscriptionId: 's2' }] },
+    ]);
+    client.listSubscriptions.mockResolvedValueOnce([]);
+
+    await service.reconcileOrder({ partnerId: 'p1', orderId: 'ord-1' });
+
+    expect(repository.persistReconcileResults).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining([
+        expect.objectContaining({ lineId: 'line-new', submitState: 'needs_reconcile' }),
+        expect.objectContaining({ lineId: 'line-new-2', submitState: 'needs_reconcile' }),
+      ]),
+      null,
+    );
+  });
+
+  it('uses the captured company snapshot even after the org mapping changes', async () => {
+    const unknownLine = { ...changeLine, submitState: 'needs_reconcile' };
+    const { service, client } = setup([unknownLine]);
+    client.listOrders.mockResolvedValueOnce([]);
+    client.listSubscriptions.mockResolvedValueOnce([]);
+
+    await service.reconcileOrder({ partnerId: 'p1', orderId: 'ord-1' });
+
+    expect(client.listOrders).toHaveBeenCalledWith({ companyId: 'company-1' });
+    expect(client.listSubscriptions).toHaveBeenCalledWith({ companyId: 'company-1' });
+  });
+
+  it('recognizes a still-present future-dated cancellation only from matching end-date evidence', async () => {
+    const unknownLine = { ...cancelLine, submitState: 'needs_reconcile' };
+    const { service, client, repository } = setup([unknownLine]);
+    client.listOrders.mockResolvedValueOnce([]);
+    client.listSubscriptions.mockResolvedValueOnce([{
+      pax8SubscriptionId: 'sub-existing', quantity: '0.00', quantityKnown: false,
+      status: 'ACTIVE', endDate: '2026-09-01',
+    }]);
+
+    await service.reconcileOrder({ partnerId: 'p1', orderId: 'ord-1' });
+
+    expect(repository.persistReconcileResults).toHaveBeenCalledWith(
+      expect.anything(),
+      [expect.objectContaining({ submitState: 'succeeded' })],
+      null,
+    );
+  });
+
+  it.each([
+    ['missing target cancellation', { ...cancelLine, submitState: 'needs_reconcile' }, []],
+    ['unknown zero quantity', { ...changeLine, quantity: '0.00', submitState: 'needs_reconcile' }, [{
+      pax8SubscriptionId: 'sub-existing', quantity: '0.00', quantityKnown: false,
+    }]],
+  ] as const)('leaves %s unresolved without conclusive evidence', async (_name, line, subscriptions) => {
+    const { service, client, repository } = setup([line]);
+    client.listOrders.mockResolvedValueOnce([]);
+    client.listSubscriptions.mockResolvedValueOnce(subscriptions);
+
+    await service.reconcileOrder({ partnerId: 'p1', orderId: 'ord-1' });
+
+    expect(repository.persistReconcileResults).toHaveBeenCalledWith(
+      expect.anything(),
+      [expect.objectContaining({ submitState: 'needs_reconcile' })],
+      null,
     );
   });
 });

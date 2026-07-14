@@ -46,6 +46,7 @@ export interface Pax8OrderSubmitRepository {
   persistReconcileResults(
     bundle: SubmitBundle,
     outcomes: SubmitLineOutcome[],
+    pax8OrderId: string | null,
   ): Promise<{ resolved: number; stillUnknown: number }>;
 }
 
@@ -78,14 +79,18 @@ function buildCreateOrderInput(bundle: SubmitBundle): Pax8CreateOrderInput | nul
       if (!line.pax8ProductId || !line.billingTerm || line.quantity === null) {
         throw new Pax8OrderError('A new Pax8 subscription line is incomplete.', 422);
       }
+      if (!Array.isArray(line.provisioningDetails)) {
+        throw new Pax8OrderError('A new Pax8 subscription line has invalid provisioning details.', 422);
+      }
+      const provisioningDetails = line.provisioningDetails as Array<{ key: string; values: string[] }>;
       return {
         lineItemNumber: line.sortOrder + 1,
         productId: line.pax8ProductId,
         quantity: numberQuantity(line.quantity),
         billingTerm: line.billingTerm,
         ...(line.commitmentTermId ? { commitmentTermId: line.commitmentTermId } : {}),
-        ...(line.provisioningDetails.length > 0
-          ? { provisioningDetails: line.provisioningDetails as Array<{ key: string; values: string[] }> }
+        ...(provisioningDetails.length > 0
+          ? { provisioningDetails }
           : {}),
       };
     }),
@@ -98,21 +103,52 @@ function errorText(error: unknown): string {
 }
 
 function classifyWriteError(error: unknown): Pick<SubmitLineOutcome, 'submitState' | 'error'> {
-  if (error instanceof Pax8ApiError && error.status !== undefined
-    && error.status >= 400 && error.status < 500) {
+  if ((error instanceof Pax8ApiError && error.status !== undefined
+      && error.status >= 400 && error.status < 500)
+    || error instanceof Pax8OrderError) {
     return { submitState: 'failed', error: errorText(error) };
   }
   return { submitState: 'needs_reconcile', error: errorText(error) };
 }
 
-function matchingSubscriptionId(
-  line: Pax8OrderLineRow,
-  result: Pax8OrderResult,
-): string | null {
-  const numbered = result.lineItems.filter((item) => item.lineItemNumber === line.sortOrder + 1);
-  if (numbered.length === 1) return numbered[0]!.subscriptionId;
-  const productMatches = result.lineItems.filter((item) => item.productId === line.pax8ProductId);
-  return productMatches.length === 1 ? productMatches[0]!.subscriptionId : null;
+function uniqueBijection<TLocal, TRemote>(
+  local: TLocal[],
+  remote: TRemote[],
+  compatible: (local: TLocal, remote: TRemote) => boolean,
+): number[] | null {
+  if (local.length !== remote.length) return null;
+  const assignments: number[][] = [];
+  const used = new Set<number>();
+  const current: number[] = [];
+  const visit = (index: number): void => {
+    if (assignments.length > 1) return;
+    if (index === local.length) {
+      assignments.push([...current]);
+      return;
+    }
+    for (let remoteIndex = 0; remoteIndex < remote.length; remoteIndex += 1) {
+      if (used.has(remoteIndex) || !compatible(local[index]!, remote[remoteIndex]!)) continue;
+      used.add(remoteIndex);
+      current.push(remoteIndex);
+      visit(index + 1);
+      current.pop();
+      used.delete(remoteIndex);
+    }
+  };
+  visit(0);
+  return assignments.length === 1 ? assignments[0]! : null;
+}
+
+function createResponseAssignment(lines: Pax8OrderLineRow[], result: Pax8OrderResult): number[] | null {
+  return uniqueBijection(lines, result.lineItems, (line, item) => {
+    if (!item.subscriptionId) return false;
+    const numberEvidence = item.lineItemNumber !== null;
+    const productEvidence = item.productId !== null;
+    if (!numberEvidence && !productEvidence) return false;
+    if (numberEvidence && item.lineItemNumber !== line.sortOrder + 1) return false;
+    if (productEvidence && item.productId !== line.pax8ProductId) return false;
+    return true;
+  });
 }
 
 async function preflightBundle(
@@ -143,13 +179,25 @@ async function executeWrites(
     try {
       const result = await client.createOrder(createInput);
       pax8OrderId = result.pax8OrderId;
-      for (const line of newLines) {
-        outcomes.push({
-          lineId: line.id,
-          submitState: 'succeeded',
-          error: null,
-          resultSubscriptionId: matchingSubscriptionId(line, result),
-        });
+      const assignment = createResponseAssignment(newLines, result);
+      if (!assignment || !result.pax8OrderId) {
+        for (const line of newLines) {
+          outcomes.push({
+            lineId: line.id,
+            submitState: 'needs_reconcile',
+            error: 'Pax8 created the order, but its returned line mapping was missing or ambiguous.',
+            resultSubscriptionId: null,
+          });
+        }
+      } else {
+        for (let index = 0; index < newLines.length; index += 1) {
+          outcomes.push({
+            lineId: newLines[index]!.id,
+            submitState: 'succeeded',
+            error: null,
+            resultSubscriptionId: result.lineItems[assignment[index]!]!.subscriptionId,
+          });
+        }
       }
     } catch (error) {
       const classified = classifyWriteError(error);
@@ -196,37 +244,57 @@ function sameQuantity(left: string | null, right: string): boolean {
   return left !== null && Number(left) === Number(right);
 }
 
-function reconcileNewLine(
+function reconcileNewBatch(
   bundle: SubmitBundle,
-  line: Pax8OrderLineRow,
+  unknownNewLines: Pax8OrderLineRow[],
   orders: Pax8OrderRecord[],
-): SubmitLineOutcome {
-  const createdDate = bundle.order.createdAt.toISOString().slice(0, 10);
-  const sameDayItems = orders
-    .filter((order) => order.createdDate === createdDate)
-    .flatMap((order) => order.lineItems);
-  const exactNumber = sameDayItems.filter((item) =>
-    item.lineItemNumber === line.sortOrder + 1
-    && item.productId === line.pax8ProductId
-    && sameQuantity(line.quantity, item.quantity));
-  const productQuantity = sameDayItems.filter((item) =>
-    item.productId === line.pax8ProductId && sameQuantity(line.quantity, item.quantity));
-  const candidates = exactNumber.length > 0 ? exactNumber : productQuantity;
-  if (candidates.length === 1) {
-    return {
-      lineId: line.id,
-      submitState: 'succeeded',
-      error: null,
-      resultSubscriptionId: candidates[0]!.subscriptionId,
-    };
+): { outcomes: SubmitLineOutcome[]; pax8OrderId: string | null } {
+  if (unknownNewLines.length === 0) return { outcomes: [], pax8OrderId: null };
+  const allNewLines = newSubscriptionLines(bundle);
+  const submittedDate = bundle.order.submittedAt?.toISOString().slice(0, 10) ?? null;
+  const candidates: Array<{ order: Pax8OrderRecord; assignment: number[] }> = [];
+  if (submittedDate) {
+    for (const order of orders) {
+      if (order.pax8CompanyId !== bundle.order.pax8CompanyId || order.createdDate !== submittedDate) continue;
+      const assignment = uniqueBijection(allNewLines, order.lineItems, (line, item) => {
+        if (!item.quantityKnown || !sameQuantity(line.quantity, item.quantity)) return false;
+        const numberEvidence = item.lineItemNumber !== null;
+        const productEvidence = item.productId !== null;
+        if (!numberEvidence && !productEvidence) return false;
+        if (numberEvidence && item.lineItemNumber !== line.sortOrder + 1) return false;
+        if (productEvidence && item.productId !== line.pax8ProductId) return false;
+        return true;
+      });
+      if (assignment) candidates.push({ order, assignment });
+    }
   }
-  if (candidates.length === 0) {
-    return { lineId: line.id, submitState: 'failed', error: 'No matching Pax8 order was found.', resultSubscriptionId: null };
+  if (candidates.length === 1) {
+    const candidate = candidates[0]!;
+    const localIndex = new Map(allNewLines.map((line, index) => [line.id, index]));
+    return {
+      outcomes: unknownNewLines.map((line) => {
+        const index = localIndex.get(line.id)!;
+        const item = candidate.order.lineItems[candidate.assignment[index]!]!;
+        return { lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: item.subscriptionId };
+      }),
+      pax8OrderId: candidate.order.pax8OrderId,
+    };
   }
   // Pax8 Order.createdDate is only a date, not a timestamp. Multiple matching
   // same-day orders cannot be safely disambiguated, so human reconcile leaves
   // the line unknown rather than guessing which billable write landed.
-  return { lineId: line.id, submitState: 'needs_reconcile', error: 'Multiple matching same-day Pax8 orders were found.', resultSubscriptionId: null };
+  const error = candidates.length === 0
+    ? 'No complete, conclusive Pax8 order match was found.'
+    : 'Multiple matching same-day Pax8 orders were found.';
+  return {
+    outcomes: unknownNewLines.map((line) => ({
+      lineId: line.id,
+      submitState: 'needs_reconcile',
+      error,
+      resultSubscriptionId: null,
+    })),
+    pax8OrderId: null,
+  };
 }
 
 function reconcileSubscriptionLine(
@@ -238,30 +306,28 @@ function reconcileSubscriptionLine(
     return { lineId: line.id, submitState: 'needs_reconcile', error: 'Pax8 returned duplicate target subscriptions.', resultSubscriptionId: null };
   }
   if (line.action === 'cancel') {
-    return target.length === 0
+    const subscription = target[0];
+    const terminal = subscription?.status
+      ? ['cancelled', 'canceled', 'terminated'].includes(subscription.status.toLowerCase())
+      : false;
+    const scheduled = !!line.cancelDate && subscription?.endDate === line.cancelDate;
+    return terminal || scheduled
       ? { lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: line.targetSubscriptionId }
-      : { lineId: line.id, submitState: 'failed', error: 'The Pax8 subscription is still present.', resultSubscriptionId: null };
+      : { lineId: line.id, submitState: 'needs_reconcile', error: 'Pax8 cancellation evidence is not conclusive.', resultSubscriptionId: null };
   }
   if (target.length === 1) {
-    return sameQuantity(line.quantity, target[0]!.quantity)
+    return target[0]!.quantityKnown && sameQuantity(line.quantity, target[0]!.quantity)
       ? { lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: target[0]!.pax8SubscriptionId }
-      : { lineId: line.id, submitState: 'failed', error: 'The Pax8 subscription quantity does not match.', resultSubscriptionId: null };
+      : { lineId: line.id, submitState: 'needs_reconcile', error: 'Pax8 quantity evidence is not conclusive.', resultSubscriptionId: null };
   }
-  const fallback = subscriptions.filter((row) =>
-    line.pax8ProductId !== null
-    && row.productId === line.pax8ProductId
-    && sameQuantity(line.quantity, row.quantity));
-  return fallback.length === 1
-    ? { lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: fallback[0]!.pax8SubscriptionId }
-    : fallback.length === 0
-      ? { lineId: line.id, submitState: 'failed', error: 'No matching Pax8 subscription was found.', resultSubscriptionId: null }
-      : { lineId: line.id, submitState: 'needs_reconcile', error: 'Multiple matching Pax8 subscriptions were found.', resultSubscriptionId: null };
+  return { lineId: line.id, submitState: 'needs_reconcile', error: 'The target Pax8 subscription was not conclusively found.', resultSubscriptionId: null };
 }
 
 export function createPax8OrderSubmitService(deps: ServiceDeps) {
   return {
     async preflightOrder(input: { partnerId: string; orderId: string }) {
       const bundle = await deps.repository.loadResolvedOrder(input);
+      if (newSubscriptionLines(bundle).length === 0) return { ok: true } as const;
       const client = await deps.repository.createClient(bundle);
       return preflightBundle(bundle, client, deps.runOutsideDbContext);
     },
@@ -306,10 +372,14 @@ export function createPax8OrderSubmitService(deps: ServiceDeps) {
         client.listOrders({ companyId: bundle.order.pax8CompanyId! }),
         client.listSubscriptions({ companyId: bundle.order.pax8CompanyId! }),
       ]));
-      const outcomes = unknown.map((line) => line.action === 'new_subscription'
-        ? reconcileNewLine(bundle, line, orders)
-        : reconcileSubscriptionLine(line, subscriptions));
-      return deps.repository.persistReconcileResults(bundle, outcomes);
+      const unknownNew = unknown.filter((line) => line.action === 'new_subscription');
+      const newBatch = reconcileNewBatch(bundle, unknownNew, orders);
+      const outcomes = [
+        ...newBatch.outcomes,
+        ...unknown.filter((line) => line.action !== 'new_subscription')
+          .map((line) => reconcileSubscriptionLine(line, subscriptions)),
+      ];
+      return deps.repository.persistReconcileResults(bundle, outcomes, newBatch.pax8OrderId);
     },
   };
 }
