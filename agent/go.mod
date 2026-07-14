@@ -14,7 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.22.31
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.0
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/getsentry/sentry-go v0.47.0
+	github.com/getsentry/sentry-go v0.48.0
 	github.com/go-ole/go-ole v1.2.6
 	github.com/google/gopacket v1.1.19
 	github.com/gorilla/websocket v1.5.3
