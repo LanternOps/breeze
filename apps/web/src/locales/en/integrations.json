@@ -34,8 +34,12 @@
       "observed": "Observed permissions",
       "lastKnownObserved": "Last-known observed permissions",
       "lastKnownHelp": "Microsoft could not complete permission reconciliation. The observed list is the last known result.",
+      "unknownHelp": "Microsoft could not complete permission reconciliation. No verified permission result is available yet.",
       "missing": "Missing permissions",
+      "lastKnownMissing": "Last-known missing permissions",
       "unexpectedAlert": "Unexpected permissions detected",
+      "lastKnownUnexpectedAlert": "Last-known unexpected permissions detected",
+      "unknownPermission": "Unknown permission (role {{appRoleId}})",
       "grantsVerifiedAt": "Permissions verified"
     },
     "actions": {

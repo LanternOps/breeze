@@ -34,8 +34,12 @@
       "observed": "Permissões observadas",
       "lastKnownObserved": "Últimas permissões observadas conhecidas",
       "lastKnownHelp": "A Microsoft não conseguiu concluir a reconciliação de permissões. A lista observada é o último resultado conhecido.",
+      "unknownHelp": "A Microsoft não conseguiu concluir a reconciliação de permissões. Ainda não há um resultado de permissão verificado disponível.",
       "missing": "Permissões ausentes",
+      "lastKnownMissing": "Últimas permissões ausentes conhecidas",
       "unexpectedAlert": "Permissões inesperadas detectadas",
+      "lastKnownUnexpectedAlert": "Últimas permissões inesperadas conhecidas detectadas",
+      "unknownPermission": "Permissão desconhecida (função {{appRoleId}})",
       "grantsVerifiedAt": "Permissões verificadas"
     },
     "actions": {

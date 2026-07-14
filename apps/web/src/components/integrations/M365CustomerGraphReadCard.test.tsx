@@ -292,13 +292,13 @@ describe("M365CustomerGraphReadCard", () => {
   });
 
   it.each([
-    ["pending-consent", "Pending consent"],
-    ["verifying", "Verifying"],
-    ["active", "Active"],
-    ["degraded", "Degraded"],
-    ["suspended", "Suspended"],
-    ["revoked", "Revoked"],
-  ])("strictly accepts %s and renders its text status", async (status, label) => {
+    ["pending-consent", "Pending consent", false],
+    ["verifying", "Verifying", false],
+    ["active", "Active", true],
+    ["degraded", "Degraded", true],
+    ["suspended", "Suspended", false],
+    ["revoked", "Revoked", false],
+  ])("strictly accepts %s and renders only API-valid actions", async (status, label, canRetest) => {
     fetchWithAuthMock.mockResolvedValue(
       makeResponse(envelope({ connection: connection({ status }) })),
     );
@@ -306,6 +306,35 @@ describe("M365CustomerGraphReadCard", () => {
     render(<M365CustomerGraphReadCard />);
 
     expect(await screen.findByText(label)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-consent" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Disconnect from Breeze" })).toBeEnabled();
+    if (canRetest) {
+      expect(screen.getByRole("button", { name: "Retest" })).toBeEnabled();
+    } else {
+      expect(screen.queryByRole("button", { name: "Retest" })).not.toBeInTheDocument();
+    }
+  });
+
+  it("accepts the server-shaped revoked DTO and keeps reconnection available", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        tenantId: null,
+        clientId: null,
+        displayName: null,
+        status: "revoked",
+        observedGrants: [],
+        missingGrants: [],
+        unexpectedGrants: [],
+        grantsVerifiedAt: null,
+        lastVerifiedAt: null,
+      }) })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByText("Revoked")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-consent" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Retest" })).not.toBeInTheDocument();
   });
 
   it.each([
@@ -381,10 +410,61 @@ describe("M365CustomerGraphReadCard", () => {
     expect(screen.getByText("formatted 2026-07-14T18:00:00.000Z")).toBeInTheDocument();
   });
 
-  it("labels retained observations as last known when grant reconciliation was unavailable", async () => {
+  it("keeps an unexpected grant visible when Microsoft returns no display value", async () => {
+    const unknownRole = {
+      resourceApplicationId: GRAPH_APP_ID,
+      appRoleId: "99999999-9999-4999-8999-999999999999",
+      value: null,
+    };
     fetchWithAuthMock.mockResolvedValue(
       makeResponse(envelope({ connection: connection({
         status: "degraded",
+        observedGrants: REQUIRED_GRANTS.concat(unknownRole),
+        unexpectedGrants: [unknownRole],
+      }) })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    const warning = await screen.findByRole("alert", { name: "Unexpected permissions detected" });
+    expect(warning).toHaveTextContent(
+      "Unknown permission (role 99999999-9999-4999-8999-999999999999)",
+    );
+  });
+
+  it("shows first-time unavailable reconciliation as unknown without definitive drift", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "degraded",
+        observedGrants: [],
+        missingGrants: [],
+        unexpectedGrants: [],
+        grantsVerifiedAt: null,
+        lastErrorCode: "grant_reconciliation_unavailable",
+      }) })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByRole("heading", { name: "Observed permissions" })).toBeInTheDocument();
+    expect(screen.getByText(
+      "Microsoft could not complete permission reconciliation. No verified permission result is available yet.",
+    )).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /missing permissions/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/last-known observed permissions/i)).not.toBeInTheDocument();
+  });
+
+  it("labels retained observations and derived drift as last known when reconciliation was unavailable", async () => {
+    const unexpected = {
+      resourceApplicationId: GRAPH_APP_ID,
+      appRoleId: "66666666-6666-4666-8666-666666666666",
+      value: "Directory.Read.All",
+    };
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "degraded",
+        missingGrants: [REQUIRED_GRANTS[0]],
+        unexpectedGrants: [unexpected],
         lastErrorCode: "grant_reconciliation_unavailable",
       }) })),
     );
@@ -393,6 +473,8 @@ describe("M365CustomerGraphReadCard", () => {
 
     expect(await screen.findByRole("heading", { name: "Last-known observed permissions" })).toBeInTheDocument();
     expect(screen.getByText("Microsoft could not complete permission reconciliation. The observed list is the last known result.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Last-known missing permissions" })).toBeInTheDocument();
+    expect(screen.getByRole("alert", { name: "Last-known unexpected permissions detected" })).toHaveTextContent("Directory.Read.All");
     expect(screen.queryByText("grant_reconciliation_unavailable")).not.toBeInTheDocument();
   });
 

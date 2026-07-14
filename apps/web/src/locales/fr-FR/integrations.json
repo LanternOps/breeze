@@ -34,8 +34,12 @@
       "observed": "Autorisations observées",
       "lastKnownObserved": "Dernières autorisations observées connues",
       "lastKnownHelp": "Microsoft n’a pas pu terminer le rapprochement des autorisations. La liste observée correspond au dernier résultat connu.",
+      "unknownHelp": "Microsoft n’a pas pu terminer le rapprochement des autorisations. Aucun résultat d’autorisation vérifié n’est encore disponible.",
       "missing": "Autorisations manquantes",
+      "lastKnownMissing": "Dernières autorisations manquantes connues",
       "unexpectedAlert": "Autorisations inattendues détectées",
+      "lastKnownUnexpectedAlert": "Dernières autorisations inattendues connues détectées",
+      "unknownPermission": "Autorisation inconnue (rôle {{appRoleId}})",
       "grantsVerifiedAt": "Autorisations vérifiées"
     },
     "actions": {

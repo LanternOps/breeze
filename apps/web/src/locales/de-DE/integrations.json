@@ -34,8 +34,12 @@
       "observed": "Ermittelte Berechtigungen",
       "lastKnownObserved": "Zuletzt bekannte Berechtigungen",
       "lastKnownHelp": "Microsoft konnte den Berechtigungsabgleich nicht abschließen. Die angezeigte Liste ist der zuletzt bekannte Stand.",
+      "unknownHelp": "Microsoft konnte den Berechtigungsabgleich nicht abschließen. Es ist noch kein verifiziertes Berechtigungsergebnis verfügbar.",
       "missing": "Fehlende Berechtigungen",
+      "lastKnownMissing": "Zuletzt bekannte fehlende Berechtigungen",
       "unexpectedAlert": "Unerwartete Berechtigungen erkannt",
+      "lastKnownUnexpectedAlert": "Zuletzt bekannte unerwartete Berechtigungen erkannt",
+      "unknownPermission": "Unbekannte Berechtigung (Rolle {{appRoleId}})",
       "grantsVerifiedAt": "Berechtigungen geprüft"
     },
     "actions": {

@@ -34,8 +34,12 @@
       "observed": "Permisos observados",
       "lastKnownObserved": "Últimos permisos observados conocidos",
       "lastKnownHelp": "Microsoft no pudo completar la conciliación de permisos. La lista observada corresponde al último resultado conocido.",
+      "unknownHelp": "Microsoft no pudo completar la conciliación de permisos. Aún no hay un resultado de permisos verificado disponible.",
       "missing": "Permisos faltantes",
+      "lastKnownMissing": "Últimos permisos faltantes conocidos",
       "unexpectedAlert": "Se detectaron permisos inesperados",
+      "lastKnownUnexpectedAlert": "Se detectaron permisos inesperados en el último resultado conocido",
+      "unknownPermission": "Permiso desconocido (rol {{appRoleId}})",
       "grantsVerifiedAt": "Permisos verificados"
     },
     "actions": {

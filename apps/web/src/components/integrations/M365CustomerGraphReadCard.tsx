@@ -65,13 +65,13 @@ interface M365CustomerGraphReadCardProps {
 type Grant = {
   resourceApplicationId: string;
   appRoleId: string;
-  value: string;
+  value: string | null;
 };
 
 type Connection = {
   id: string;
   tenantId: string | null;
-  clientId: string;
+  clientId: string | null;
   displayName: string | null;
   status: ConnectionStatus;
   manifestVersion: number;
@@ -127,9 +127,11 @@ function parseGrant(value: unknown): Grant | null {
     || !GUID.test(value.resourceApplicationId)
     || typeof value.appRoleId !== "string"
     || !GUID.test(value.appRoleId)
-    || typeof value.value !== "string"
-    || value.value.length < 1
-    || value.value.length > 160
+    || (value.value !== null && (
+      typeof value.value !== "string"
+      || value.value.length < 1
+      || value.value.length > 160
+    ))
   ) return null;
   return {
     resourceApplicationId: value.resourceApplicationId,
@@ -184,7 +186,7 @@ function parseConnection(value: unknown): Connection | null | undefined {
   if (
     typeof value.id !== "string" || !GUID.test(value.id)
     || (value.tenantId !== null && (typeof value.tenantId !== "string" || !GUID.test(value.tenantId)))
-    || typeof value.clientId !== "string" || !GUID.test(value.clientId)
+    || (value.clientId !== null && (typeof value.clientId !== "string" || !GUID.test(value.clientId)))
     || (value.displayName !== null && typeof value.displayName !== "string")
     || typeof value.status !== "string" || !(STATUSES as readonly string[]).includes(value.status)
     || typeof value.manifestVersion !== "number" || !Number.isSafeInteger(value.manifestVersion) || value.manifestVersion < 1
@@ -195,7 +197,7 @@ function parseConnection(value: unknown): Connection | null | undefined {
   return {
     id: value.id,
     tenantId: value.tenantId as string | null,
-    clientId: value.clientId,
+    clientId: value.clientId as string | null,
     displayName: value.displayName as string | null,
     status: value.status as ConnectionStatus,
     manifestVersion: value.manifestVersion,
@@ -271,7 +273,9 @@ function GrantList({ grants, testId }: { grants: Grant[]; testId?: string }) {
       {grants.map((grant) => (
         <li key={`${grant.resourceApplicationId}:${grant.appRoleId}`} data-testid={testId} className="flex min-w-0 items-start gap-2">
           <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="break-words font-medium text-foreground">{grant.value}</span>
+          <span className="break-words font-medium text-foreground">
+            {grant.value ?? t("m365CustomerGraphRead.grants.unknownPermission", { appRoleId: grant.appRoleId })}
+          </span>
         </li>
       ))}
     </ul>
@@ -422,7 +426,12 @@ export default function M365CustomerGraphReadCard({
   }, [canWrite, data, isCurrent, orgId, perform, scope, scopedRequest, t]);
 
   const retest = useCallback(() => {
-    if (!orgId || !data?.connection || !canWrite) return;
+    if (
+      !orgId
+      || !data?.connection
+      || !canWrite
+      || !(["active", "degraded"] as ConnectionStatus[]).includes(data.connection.status)
+    ) return;
     const target = scope;
     const connectionId = data.connection.id;
     void perform(target, "retest", async () => {
@@ -475,9 +484,21 @@ export default function M365CustomerGraphReadCard({
   }, [canWrite, data, isCurrent, load, orgId, perform, scope, scopedRequest, t]);
 
   const connection = data?.connection ?? null;
-  const observedHeading = connection?.lastErrorCode === "grant_reconciliation_unavailable"
+  const reconciliationUnavailable = connection?.lastErrorCode === "grant_reconciliation_unavailable";
+  const hasLastKnownGrantHealth = reconciliationUnavailable && connection.grantsVerifiedAt !== null;
+  const grantHealthUnknown = reconciliationUnavailable && connection.grantsVerifiedAt === null;
+  const displayedMissingGrants = grantHealthUnknown ? [] : (connection?.missingGrants ?? []);
+  const displayedUnexpectedGrants = grantHealthUnknown ? [] : (connection?.unexpectedGrants ?? []);
+  const observedHeading = hasLastKnownGrantHealth
     ? t("m365CustomerGraphRead.grants.lastKnownObserved")
     : t("m365CustomerGraphRead.grants.observed");
+  const missingHeading = hasLastKnownGrantHealth
+    ? t("m365CustomerGraphRead.grants.lastKnownMissing")
+    : t("m365CustomerGraphRead.grants.missing");
+  const unexpectedAlert = hasLastKnownGrantHealth
+    ? t("m365CustomerGraphRead.grants.lastKnownUnexpectedAlert")
+    : t("m365CustomerGraphRead.grants.unexpectedAlert");
+  const canRetestConnection = connection?.status === "active" || connection?.status === "degraded";
   const StatusIcon = connection ? statusIcon(connection.status) : Unplug;
   const errorCopy = useMemo(() => {
     if (!connection?.lastErrorCode) return null;
@@ -573,24 +594,27 @@ export default function M365CustomerGraphReadCard({
             {connection && (
               <div>
                 <h3 className="mb-3 text-sm font-semibold text-foreground">{observedHeading}</h3>
-                {connection.lastErrorCode === "grant_reconciliation_unavailable" && (
+                {hasLastKnownGrantHealth && (
                   <p className="mb-3 text-sm text-muted-foreground">{t("m365CustomerGraphRead.grants.lastKnownHelp")}</p>
+                )}
+                {grantHealthUnknown && (
+                  <p className="mb-3 text-sm text-muted-foreground">{t("m365CustomerGraphRead.grants.unknownHelp")}</p>
                 )}
                 <GrantList grants={connection.observedGrants} />
               </div>
             )}
           </div>
 
-          {connection && (connection.missingGrants.length > 0 || connection.unexpectedGrants.length > 0) && (
+          {connection && (displayedMissingGrants.length > 0 || displayedUnexpectedGrants.length > 0) && (
             <div className="grid gap-6 border-t pt-5 lg:grid-cols-2">
               <div>
-                <h3 className="mb-3 text-sm font-semibold text-foreground">{t("m365CustomerGraphRead.grants.missing")}</h3>
-                <GrantList grants={connection.missingGrants} />
+                <h3 className="mb-3 text-sm font-semibold text-foreground">{missingHeading}</h3>
+                <GrantList grants={displayedMissingGrants} />
               </div>
-              {connection.unexpectedGrants.length > 0 && (
-                <div role="alert" aria-label={t("m365CustomerGraphRead.grants.unexpectedAlert")} className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-destructive">
-                  <div className="mb-3 flex items-center gap-2 font-semibold"><AlertTriangle aria-hidden="true" className="h-4 w-4" />{t("m365CustomerGraphRead.grants.unexpectedAlert")}</div>
-                  <GrantList grants={connection.unexpectedGrants} />
+              {displayedUnexpectedGrants.length > 0 && (
+                <div role="alert" aria-label={unexpectedAlert} className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-destructive">
+                  <div className="mb-3 flex items-center gap-2 font-semibold"><AlertTriangle aria-hidden="true" className="h-4 w-4" />{unexpectedAlert}</div>
+                  <GrantList grants={displayedUnexpectedGrants} />
                 </div>
               )}
             </div>
@@ -603,9 +627,11 @@ export default function M365CustomerGraphReadCard({
             </button>
             {connection && (
               <>
-                <button type="button" onClick={retest} disabled={!canWrite || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
-                  <RefreshCw aria-hidden="true" className={`h-4 w-4 ${action === "retest" ? "animate-spin" : ""}`} />{t("m365CustomerGraphRead.actions.retest")}
-                </button>
+                {canRetestConnection && (
+                  <button type="button" onClick={retest} disabled={!canWrite || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50">
+                    <RefreshCw aria-hidden="true" className={`h-4 w-4 ${action === "retest" ? "animate-spin" : ""}`} />{t("m365CustomerGraphRead.actions.retest")}
+                  </button>
+                )}
                 <button type="button" onClick={disconnect} disabled={!canWrite || action !== null} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-destructive disabled:cursor-not-allowed disabled:opacity-50">
                   <Unplug aria-hidden="true" className="h-4 w-4" />{t("m365CustomerGraphRead.actions.disconnect")}
                 </button>
