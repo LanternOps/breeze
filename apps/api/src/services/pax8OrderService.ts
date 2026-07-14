@@ -13,8 +13,10 @@ import {
   pax8OrderLines,
   pax8Orders,
   pax8ProductMappings,
+  pax8ContractLineLinks,
   pax8SubscriptionSnapshots,
   catalogItems,
+  contractLines,
 } from '../db/schema';
 import { createPax8ClientForIntegration } from './pax8SyncService';
 import { pax8CompanyOrderReadiness } from './pax8CompanyReadiness';
@@ -59,11 +61,11 @@ const MUTABLE_STATUSES = new Set(['draft', 'awaiting_details']);
 const BILLING_TERMS = new Set<string>(PAX8_BILLING_TERMS);
 const MUTABLE_DIRECT_ORDER_UNIQUE_INDEX = 'pax8_orders_one_mutable_direct_per_org_uq';
 
-function partnerDbContext(partnerId: string): DbAccessContext {
+function partnerDbContext(partnerId: string, orgId?: string): DbAccessContext {
   return {
     scope: 'partner',
-    orgId: null,
-    accessibleOrgIds: null,
+    orgId: orgId ?? null,
+    accessibleOrgIds: orgId ? [orgId] : null,
     accessiblePartnerIds: [partnerId],
     userId: null,
     currentPartnerId: partnerId,
@@ -75,13 +77,40 @@ function partnerDbContext(partnerId: string): DbAccessContext {
  * transaction. Exit defensively before opening each short partner context so
  * an accidental ambient caller still cannot make these phases reuse its tx.
  */
-function withPartnerDbContext<T>(partnerId: string, fn: () => Promise<T>): Promise<T> {
-  return runOutsideDbContext(() => withDbAccessContext(partnerDbContext(partnerId), fn));
+function withPartnerDbContext<T>(partnerId: string, fn: () => Promise<T>, orgId?: string): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(partnerDbContext(partnerId, orgId), fn));
 }
 
 function requireMutableOrder(order: Pax8OrderRow): void {
   if (!MUTABLE_STATUSES.has(order.status)) {
     throw new Pax8OrderError('Only draft or awaiting-details Pax8 orders can be modified.', 409);
+  }
+}
+
+function requirePubliclyMutableOrder(order: Pax8OrderRow): void {
+  requireMutableOrder(order);
+  if (order.source === 'quote') {
+    throw new Pax8OrderError(
+      'quote-staged Pax8 order lines are immutable; only provisioning details may be updated.',
+      409,
+    );
+  }
+}
+
+function utcDateString(now = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+export function requireImmediateCancelDate(cancelDate: string | null | undefined, now = new Date()): void {
+  if (!cancelDate) return;
+  const parsed = new Date(`${cancelDate}T00:00:00.000Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cancelDate)
+    || Number.isNaN(parsed.getTime())
+    || parsed.toISOString().slice(0, 10) !== cancelDate) {
+    throw new Pax8OrderError('Cancellation date must be a valid UTC calendar date.', 422);
+  }
+  if (cancelDate > utcDateString(now)) {
+    throw new Pax8OrderError('future-dated Pax8 cancellations are not supported.', 422);
   }
 }
 
@@ -276,6 +305,9 @@ function validateActionPayload(input: AddOrderLineInput): void {
       if (input.targetSubscriptionId) {
         throw new Pax8OrderError('A new subscription must not target an existing subscription.', 422);
       }
+      if (input.contractLineId) {
+        throw new Pax8OrderError('A direct new subscription cannot supply a contract line.', 422);
+      }
       return;
     }
     case 'change_quantity': {
@@ -295,10 +327,137 @@ function validateActionPayload(input: AddOrderLineInput): void {
       if (input.quantity !== undefined) {
         throw new Pax8OrderError('A cancellation must not include a quantity.', 422);
       }
+      requireImmediateCancelDate(input.cancelDate);
       return;
     default:
       throw new Pax8OrderError('Unsupported Pax8 order action.', 422);
   }
+}
+
+type IntegrityReader = Pick<typeof db, 'select'>;
+
+interface DirectProductMapping {
+  pax8ProductId: string;
+  catalogItemId: string;
+}
+
+async function currentDirectProductMapping(
+  reader: IntegrityReader,
+  order: Pax8OrderRow,
+  input: { pax8ProductId: string; catalogItemId: string },
+  lock: boolean,
+): Promise<DirectProductMapping> {
+  const query = reader
+    .select({
+      pax8ProductId: pax8ProductMappings.pax8ProductId,
+      catalogItemId: pax8ProductMappings.catalogItemId,
+    })
+    .from(pax8ProductMappings)
+    .innerJoin(pax8Integrations, and(
+      eq(pax8ProductMappings.integrationId, pax8Integrations.id),
+      eq(pax8ProductMappings.partnerId, pax8Integrations.partnerId),
+    ))
+    .innerJoin(catalogItems, and(
+      eq(pax8ProductMappings.catalogItemId, catalogItems.id),
+      eq(pax8ProductMappings.partnerId, catalogItems.partnerId),
+    ))
+    .where(and(
+      eq(pax8ProductMappings.integrationId, order.integrationId),
+      eq(pax8ProductMappings.partnerId, order.partnerId),
+      eq(pax8ProductMappings.pax8ProductId, input.pax8ProductId),
+      eq(pax8ProductMappings.catalogItemId, input.catalogItemId),
+      eq(pax8Integrations.isActive, true),
+      eq(catalogItems.isActive, true),
+    ));
+  const rows = lock ? await query.for('share') : await query;
+  if (rows.length !== 1 || !rows[0]!.catalogItemId) {
+    throw new Pax8OrderError(
+      'Select an active Pax8 product that is mapped to the supplied active catalog item.',
+      422,
+    );
+  }
+  return rows[0] as DirectProductMapping;
+}
+
+interface LinkedManualContractLine {
+  contractLineId: string;
+  manualQuantity: string;
+}
+
+async function currentLinkedManualContractLine(
+  reader: IntegrityReader,
+  order: Pax8OrderRow,
+  targetSubscriptionId: string,
+  lock: boolean,
+): Promise<LinkedManualContractLine> {
+  const query = reader
+    .select({
+      contractLineId: pax8ContractLineLinks.contractLineId,
+      manualQuantity: contractLines.manualQuantity,
+    })
+    .from(pax8ContractLineLinks)
+    .innerJoin(pax8SubscriptionSnapshots, and(
+      eq(pax8ContractLineLinks.subscriptionSnapshotId, pax8SubscriptionSnapshots.id),
+      eq(pax8ContractLineLinks.integrationId, pax8SubscriptionSnapshots.integrationId),
+      eq(pax8ContractLineLinks.partnerId, pax8SubscriptionSnapshots.partnerId),
+      eq(pax8ContractLineLinks.orgId, pax8SubscriptionSnapshots.orgId),
+    ))
+    .innerJoin(contractLines, and(
+      eq(pax8ContractLineLinks.contractLineId, contractLines.id),
+      eq(pax8ContractLineLinks.orgId, contractLines.orgId),
+    ))
+    .where(and(
+      eq(pax8ContractLineLinks.integrationId, order.integrationId),
+      eq(pax8ContractLineLinks.partnerId, order.partnerId),
+      eq(pax8ContractLineLinks.orgId, order.orgId),
+      eq(pax8SubscriptionSnapshots.pax8SubscriptionId, targetSubscriptionId),
+      eq(contractLines.lineType, 'manual' as never),
+    ));
+  const rows = lock ? await query.for('share') : await query;
+  if (rows.length !== 1 || rows[0]!.manualQuantity === null) {
+    throw new Pax8OrderError(
+      'The target Pax8 subscription must have exactly one linked Breeze manual contract quantity.',
+      422,
+    );
+  }
+  return rows[0] as LinkedManualContractLine;
+}
+
+export async function validateDirectOrderLinesForSubmit(
+  order: Pax8OrderRow,
+  lines: Pax8OrderLineRow[],
+): Promise<Pax8OrderLineRow[]> {
+  const validated: Pax8OrderLineRow[] = [];
+  for (const line of lines) {
+    if (line.action === 'new_subscription') {
+      if (order.source === 'quote') {
+        validated.push(line);
+        continue;
+      }
+      if (!line.pax8ProductId || !line.catalogItemId) {
+        throw new Pax8OrderError('A direct subscription requires a mapped catalog item.', 422);
+      }
+      await currentDirectProductMapping(db, order, {
+        pax8ProductId: line.pax8ProductId,
+        catalogItemId: line.catalogItemId,
+      }, true);
+      if (line.contractLineId) {
+        throw new Pax8OrderError('A direct new subscription cannot carry a contract line.', 422);
+      }
+      validated.push(line);
+      continue;
+    }
+    if (!line.targetSubscriptionId) {
+      throw new Pax8OrderError('A subscription action has no target subscription.', 422);
+    }
+    requireImmediateCancelDate(line.action === 'cancel' ? line.cancelDate : null);
+    const linked = await currentLinkedManualContractLine(db, order, line.targetSubscriptionId, true);
+    if (line.contractLineId !== linked.contractLineId) {
+      throw new Pax8OrderError('The staged contract line no longer matches the target Pax8 subscription.', 409);
+    }
+    validated.push({ ...line, contractLineId: linked.contractLineId });
+  }
+  return validated;
 }
 
 function requireCompanyOrderReady(mapping: {
@@ -415,13 +574,23 @@ export async function getOrCreateDraftOrder(input: {
 export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderLineRow> {
   const order = await withPartnerDbContext(input.partnerId, () =>
     loadOrder(input.partnerId, input.orderId));
-  requireMutableOrder(order);
+  requirePubliclyMutableOrder(order);
   if (order.source === 'direct') {
     await withPartnerDbContext(input.partnerId, () => requireCurrentCompanyOrderReady(order));
   }
   validateActionPayload(input);
 
-  if (input.action === 'change_quantity' || input.action === 'cancel') {
+  let derivedContractLine: LinkedManualContractLine | null = null;
+  let authoringBaseline: string | null = null;
+  if (input.action === 'new_subscription') {
+    if (!input.catalogItemId) {
+      throw new Pax8OrderError('A mapped catalog item is required for a direct subscription.', 422);
+    }
+    await withPartnerDbContext(input.partnerId, () => currentDirectProductMapping(db, order, {
+      pax8ProductId: input.pax8ProductId!,
+      catalogItemId: input.catalogItemId!,
+    }, false));
+  } else {
     const [snapshot] = await withPartnerDbContext(input.partnerId, () => db
         .select()
         .from(pax8SubscriptionSnapshots)
@@ -438,6 +607,12 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
     if (!snapshot.productId) {
       throw new Pax8OrderError('The target subscription has no Pax8 product identifier.', 422);
     }
+    derivedContractLine = await withPartnerDbContext(input.partnerId, () =>
+      currentLinkedManualContractLine(db, order, input.targetSubscriptionId!, false), order.orgId);
+    authoringBaseline = derivedContractLine.manualQuantity;
+    if (input.contractLineId && input.contractLineId !== derivedContractLine.contractLineId) {
+      throw new Pax8OrderError('The supplied contract line does not match the target Pax8 subscription.', 422);
+    }
 
     const { client } = await withPartnerDbContext(input.partnerId, () =>
       createPax8ClientForIntegration(order.integrationId));
@@ -446,7 +621,7 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
     );
 
     if (input.action === 'change_quantity') {
-      const currentQuantity = Number(snapshot.quantity);
+      const currentQuantity = Number(authoringBaseline);
       const requestedQuantity = Number(input.quantity);
       if (requestedQuantity < currentQuantity) {
         if (!activeCommitment(snapshot.raw, dependencies.commitments).allowForQuantityDecrease) {
@@ -473,9 +648,48 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
       .for('update')
       .limit(1);
     if (!lockedOrder) throw new Pax8OrderError('Pax8 order not found.', 404);
-    requireMutableOrder(lockedOrder);
+    requirePubliclyMutableOrder(lockedOrder);
     if (lockedOrder.source === 'direct') {
       await requireCurrentCompanyOrderReady(lockedOrder, { lock: true });
+    }
+
+    let finalContractLineId: string | undefined;
+    if (input.action === 'new_subscription') {
+      await currentDirectProductMapping(db, lockedOrder, {
+        pax8ProductId: input.pax8ProductId!,
+        catalogItemId: input.catalogItemId!,
+      }, true);
+    } else {
+      const linked = await currentLinkedManualContractLine(
+        db,
+        lockedOrder,
+        input.targetSubscriptionId!,
+        true,
+      );
+      if (linked.contractLineId !== derivedContractLine?.contractLineId) {
+        throw new Pax8OrderError(
+          'The Pax8 subscription contract linkage changed while validating this action; stage it again.',
+          409,
+        );
+      }
+      finalContractLineId = linked.contractLineId;
+      if (input.action === 'change_quantity') {
+        const initialBaseline = Number(authoringBaseline);
+        const finalBaseline = Number(linked.manualQuantity);
+        if (!Number.isFinite(initialBaseline) || !Number.isFinite(finalBaseline)) {
+          throw new Pax8OrderError('The linked Breeze manual contract quantity is invalid.', 422);
+        }
+        // The vendor dependency decision was made against the initial Breeze
+        // baseline. A concurrent billing edit can change direction, so fail
+        // closed and let the technician author against the fresh value.
+        const requested = Number(input.quantity);
+        if (Math.sign(requested - initialBaseline) !== Math.sign(requested - finalBaseline)) {
+          throw new Pax8OrderError(
+            'The Breeze contract quantity changed while validating this action; stage it again.',
+            409,
+          );
+        }
+      }
     }
 
     const [position] = await db
@@ -507,12 +721,12 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
         provisioningDetails: input.provisioningDetails ?? [],
         targetSubscriptionId: input.targetSubscriptionId,
         cancelDate: input.cancelDate,
-        contractLineId: input.contractLineId,
+        contractLineId: finalContractLineId,
         sourceQuoteLineId: input.sourceQuoteLineId,
         sortOrder,
       })
       .returning();
-  });
+  }, order.orgId);
   if (!created) throw new Pax8OrderError('The Pax8 order line could not be created.', 409);
   return created;
 }
@@ -530,7 +744,7 @@ export async function removeOrderLine(input: {
       .for('update')
       .limit(1);
     if (!order) throw new Pax8OrderError('Pax8 order not found.', 404);
-    requireMutableOrder(order);
+    requirePubliclyMutableOrder(order);
 
     const removed = await db
       .delete(pax8OrderLines)

@@ -91,7 +91,6 @@ const addLineSchema = z.object({
   provisioningDetails: z.array(provisioningDetailSchema).max(200).optional(),
   targetSubscriptionId: z.string().trim().min(1).max(64).optional(),
   cancelDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  contractLineId: z.string().guid().optional(),
 }).strict();
 
 const updateLineSchema = z.object({

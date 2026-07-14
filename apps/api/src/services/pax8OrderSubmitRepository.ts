@@ -12,7 +12,13 @@ import {
   pax8OrderLines,
   pax8Orders,
 } from '../db/schema';
-import { Pax8OrderError, type Pax8OrderLineRow, type Pax8OrderRow } from './pax8OrderService';
+import {
+  Pax8OrderError,
+  requireImmediateCancelDate,
+  validateDirectOrderLinesForSubmit,
+  type Pax8OrderLineRow,
+  type Pax8OrderRow,
+} from './pax8OrderService';
 import type {
   Pax8OrderSubmitRepository,
   SubmitBundle,
@@ -52,6 +58,14 @@ function withOrderDbContext<T>(bundle: SubmitBundle, fn: () => Promise<T>): Prom
     orderDbContext(bundle.order.partnerId, bundle.order.orgId),
     fn,
   ));
+}
+
+function withOrderScopeDbContext<T>(
+  partnerId: string,
+  orgId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(orderDbContext(partnerId, orgId), fn));
 }
 
 type VersionedOrder = Pax8OrderRow & { rowVersion: string };
@@ -263,11 +277,25 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
     });
   },
 
-  claimOrder(input) {
-    return withPartnerDbContext(input.partnerId, async () => {
+  async claimOrder(input) {
+    // The parent is partner-axis, so discover its org in one bounded read.
+    // Re-open the final CAS transaction with that single org authorized so
+    // forced RLS permits the exact contract-line integrity join.
+    const discovered = await withPartnerDbContext(input.partnerId, () =>
+      findOrder(input.partnerId, input.orderId));
+    return withOrderScopeDbContext(input.partnerId, discovered.orgId, async () => {
       const existing = await findOrder(input.partnerId, input.orderId);
+      if (existing.orgId !== discovered.orgId) {
+        throw new Pax8OrderError('The Pax8 order organization changed while claiming it.', 409);
+      }
       assertSubmittable(existing);
       const companyId = await resolveCompany(existing);
+      let lines = await findOrderLines(existing);
+      if (lines.length === 0) throw new Pax8OrderError('Add at least one line before submitting the Pax8 order.', 422);
+      for (const line of lines) {
+        if (line.action === 'cancel') requireImmediateCancelDate(line.cancelDate);
+      }
+      lines = await validateDirectOrderLinesForSubmit(existing, lines);
       const now = new Date();
       const [claimed] = await db
         .update(pax8Orders)
@@ -298,8 +326,6 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
       if (!claimed) {
         throw new Pax8OrderError('Another submit won the order claim, or an earlier write requires reconciliation.', 409);
       }
-      const lines = await findOrderLines(claimed);
-      if (lines.length === 0) throw new Pax8OrderError('Add at least one line before submitting the Pax8 order.', 422);
       if (lines.some((line) => line.submitState !== 'pending')) {
         throw new Pax8OrderError('An earlier Pax8 line write requires reconciliation.', 409);
       }

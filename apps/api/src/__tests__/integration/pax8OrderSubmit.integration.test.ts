@@ -6,10 +6,14 @@ import { db, withSystemDbAccessContext } from '../../db';
 import {
   contractLines,
   contracts,
+  catalogItems,
   pax8CompanyMappings,
+  pax8ContractLineLinks,
   pax8Integrations,
   pax8OrderLines,
   pax8Orders,
+  pax8ProductMappings,
+  pax8SubscriptionSnapshots,
 } from '../../db/schema';
 import { Pax8ApiError } from '../../services/pax8Client';
 import { createPax8OrderSubmitService } from '../../services/pax8OrderSubmit';
@@ -43,6 +47,23 @@ async function seedOrder(options: {
       tokenUrl: 'https://api.pax8.com/v1/token',
     }).returning();
     if (!integration) throw new Error('failed to seed integration');
+    const [catalogItem] = await db.insert(catalogItems).values({
+      partnerId: partner.id,
+      itemType: 'software',
+      name: 'Pax8 submit product',
+      billingType: 'recurring',
+      billingFrequency: 'monthly',
+      unitPrice: '10.00',
+      taxable: false,
+    }).returning();
+    if (!catalogItem) throw new Error('failed to seed catalog item');
+    await db.insert(pax8ProductMappings).values({
+      integrationId: integration.id,
+      partnerId: partner.id,
+      pax8ProductId: 'product-1',
+      productName: 'Pax8 submit product',
+      catalogItemId: catalogItem.id,
+    });
     await db.insert(pax8CompanyMappings).values({
       integrationId: integration.id,
       partnerId: partner.id,
@@ -66,7 +87,7 @@ async function seedOrder(options: {
       lineType: 'manual',
       description: 'Pax8 seats',
       unitPrice: '10.00',
-      manualQuantity: null,
+      manualQuantity: options.action === 'cancel' ? '7.00' : null,
     }).returning();
     if (!contractLine) throw new Error('failed to seed contract line');
     const [order] = await db.insert(pax8Orders).values({
@@ -87,13 +108,34 @@ async function seedOrder(options: {
       orgId: org.id,
       action,
       pax8ProductId: action === 'new_subscription' ? 'product-1' : null,
+      catalogItemId: action === 'new_subscription' ? catalogItem.id : null,
       billingTerm: action === 'new_subscription' ? 'Monthly' : null,
       quantity: action === 'new_subscription' ? '7.00' : null,
       targetSubscriptionId: action === 'cancel' ? 'subscription-cancel' : null,
       contractLineId: contractLine.id,
     }).returning();
     if (!line) throw new Error('failed to seed order line');
-    return { partner, org, user, order, line, contractLine };
+    if (action === 'cancel') {
+      const [snapshot] = await db.insert(pax8SubscriptionSnapshots).values({
+        integrationId: integration.id,
+        partnerId: partner.id,
+        pax8CompanyId: 'company-1',
+        pax8SubscriptionId: 'subscription-cancel',
+        orgId: org.id,
+        productId: 'product-1',
+        quantity: '99.00',
+        quantityKnown: false,
+      }).returning();
+      if (!snapshot) throw new Error('failed to seed subscription snapshot');
+      await db.insert(pax8ContractLineLinks).values({
+        integrationId: integration.id,
+        partnerId: partner.id,
+        orgId: org.id,
+        subscriptionSnapshotId: snapshot.id,
+        contractLineId: contractLine.id,
+      });
+    }
+    return { partner, org, user, order, line, contractLine, integration, catalogItem };
   });
 }
 
@@ -158,6 +200,78 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
     }
   });
 
+  runDb('rejects a staged future cancellation before any vendor or billing write', async () => {
+    const fixture = await seedOrder({ action: 'cancel' });
+    await withSystemDbAccessContext(() => db.update(pax8OrderLines)
+      .set({ cancelDate: '2999-01-01' })
+      .where(eq(pax8OrderLines.id, fixture.line.id)));
+    const client = successfulClient();
+    const { service, createClient } = serviceHarness(client);
+
+    await expect(service.submitOrder({
+      partnerId: fixture.partner.id,
+      orderId: fixture.order.id,
+      actorUserId: fixture.user.id,
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('future') });
+
+    expect(createClient).not.toHaveBeenCalled();
+    expect(client.cancelSubscription).not.toHaveBeenCalled();
+    const state = await withSystemDbAccessContext(async () => {
+      const [order] = await db.select().from(pax8Orders).where(eq(pax8Orders.id, fixture.order.id));
+      const [line] = await db.select().from(pax8OrderLines).where(eq(pax8OrderLines.id, fixture.line.id));
+      const [billing] = await db.select().from(contractLines).where(eq(contractLines.id, fixture.contractLine.id));
+      return { order, line, billing };
+    });
+    expect(state.order?.status).toBe('ready');
+    expect(state.line?.submitState).toBe('pending');
+    expect(state.billing?.manualQuantity).toBe('7.00');
+  });
+
+  runDb('rejects a same-org unrelated staged contract line before vendor execution', async () => {
+    const fixture = await seedOrder({ action: 'cancel' });
+    const [contract] = await withSystemDbAccessContext(() => db.select()
+      .from(contracts).where(eq(contracts.orgId, fixture.org.id)));
+    const [unrelated] = await withSystemDbAccessContext(() => db.insert(contractLines).values({
+      contractId: contract!.id,
+      orgId: fixture.org.id,
+      lineType: 'manual',
+      description: 'Unrelated same-org line',
+      unitPrice: '1.00',
+      manualQuantity: '33.00',
+    }).returning());
+    await withSystemDbAccessContext(() => db.update(pax8OrderLines)
+      .set({ contractLineId: unrelated!.id })
+      .where(eq(pax8OrderLines.id, fixture.line.id)));
+    const client = successfulClient();
+
+    await expect(serviceWithClient(client).submitOrder({
+      partnerId: fixture.partner.id,
+      orderId: fixture.order.id,
+      actorUserId: fixture.user.id,
+    })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('no longer matches') });
+
+    expect(client.cancelSubscription).not.toHaveBeenCalled();
+    const [unrelatedAfter] = await withSystemDbAccessContext(() => db.select()
+      .from(contractLines).where(eq(contractLines.id, unrelated!.id)));
+    expect(unrelatedAfter?.manualQuantity).toBe('33.00');
+  });
+
+  runDb('rechecks an active direct product mapping at submit time', async () => {
+    const fixture = await seedOrder({ source: 'direct' });
+    await withSystemDbAccessContext(() => db.update(catalogItems)
+      .set({ isActive: false })
+      .where(eq(catalogItems.id, fixture.catalogItem.id)));
+    const client = successfulClient();
+
+    await expect(serviceWithClient(client).submitOrder({
+      partnerId: fixture.partner.id,
+      orderId: fixture.order.id,
+      actorUserId: fixture.user.id,
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('active') });
+
+    expect(client.createOrder).not.toHaveBeenCalled();
+  });
+
   runDb('atomically claims one submit, persists billing success, and keeps rejected billing untouched', async () => {
     const fixture = await seedOrder();
     const client = successfulClient();
@@ -188,15 +302,6 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
     rejectedClient.createOrder.mockReset()
       .mockRejectedValueOnce(new Pax8ApiError('Pax8 API returned 422', 422, raw));
     const rejectedService = serviceWithClient(rejectedClient);
-    await withSystemDbAccessContext(() => db.insert(pax8OrderLines).values({
-      orderId: rejectedFixture.order.id,
-      partnerId: rejectedFixture.partner.id,
-      orgId: rejectedFixture.org.id,
-      action: 'change_quantity',
-      targetSubscriptionId: 'mixed-subscription',
-      quantity: '3.00',
-    }));
-
     const result = await rejectedService.submitOrder({
       partnerId: rejectedFixture.partner.id,
       orderId: rejectedFixture.order.id,
@@ -206,7 +311,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
     const [contractLine] = await withSystemDbAccessContext(() =>
       db.select().from(contractLines).where(eq(contractLines.id, rejectedFixture.contractLine.id)));
     expect(result.status).toBe('failed');
-    expect(result.lines).toHaveLength(2);
+    expect(result.lines).toHaveLength(1);
     expect(result.lines.every((line) => line.submitState === 'failed' && line.error === raw)).toBe(true);
     expect(contractLine?.manualQuantity).toBeNull();
     expect(rejectedClient.createOrder).toHaveBeenCalledTimes(1);
@@ -368,6 +473,7 @@ describe('Pax8 submit pipeline (real Postgres)', () => {
       action: 'change_quantity',
       targetSubscriptionId: 'subscription-cancel',
       quantity: '2.00',
+      contractLineId: duplicateFixture.contractLine.id,
     }));
     const duplicateClient = successfulClient();
     await expect(serviceWithClient(duplicateClient).submitOrder({

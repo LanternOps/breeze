@@ -396,6 +396,19 @@ describe('Pax8 order route handlers', () => {
     }));
   });
 
+  it('rejects caller-controlled contract linkage at the public add-line boundary', async () => {
+    const res = await request(`/orders/${ORDER_ID}/lines`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'cancel', targetSubscriptionId: 'sub-1', contractLineId: LINE_ID,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(mocks.addOrderLine).not.toHaveBeenCalled();
+    expect(mocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
   it('updates only mutable staged-line provisioning fields and audits the change', async () => {
     const res = await request(`/orders/${ORDER_ID}/lines/${LINE_ID}`, {
       method: 'PATCH', headers: { 'content-type': 'application/json' },

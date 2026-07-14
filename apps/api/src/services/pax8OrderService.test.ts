@@ -46,9 +46,25 @@ vi.mock('../db/schema', () => new Proxy({
     ignored: 'pax8_company_mappings.ignored',
   },
   pax8SubscriptionSnapshots: {
+    id: 'pax8_subscription_snapshots.id',
     integrationId: 'pax8_subscription_snapshots.integration_id',
     partnerId: 'pax8_subscription_snapshots.partner_id',
+    orgId: 'pax8_subscription_snapshots.org_id',
     pax8SubscriptionId: 'pax8_subscription_snapshots.pax8_subscription_id',
+    productId: 'pax8_subscription_snapshots.product_id',
+  },
+  pax8ContractLineLinks: {
+    integrationId: 'pax8_contract_line_links.integration_id',
+    partnerId: 'pax8_contract_line_links.partner_id',
+    orgId: 'pax8_contract_line_links.org_id',
+    subscriptionSnapshotId: 'pax8_contract_line_links.subscription_snapshot_id',
+    contractLineId: 'pax8_contract_line_links.contract_line_id',
+  },
+  contractLines: {
+    id: 'contract_lines.id',
+    orgId: 'contract_lines.org_id',
+    lineType: 'contract_lines.line_type',
+    manualQuantity: 'contract_lines.manual_quantity',
   },
   pax8Integrations: {
     id: 'pax8_integrations.id',
@@ -123,6 +139,7 @@ function queryChain(rows: unknown[]) {
   const chain: Record<string, unknown> = {};
   chain.from = vi.fn(() => chain);
   chain.where = vi.fn(() => chain);
+  chain.innerJoin = vi.fn(() => chain);
   chain.for = vi.fn(() => chain);
   chain.orderBy = vi.fn(() => chain);
   chain.limit = vi.fn(async () => rows);
@@ -217,6 +234,7 @@ function mockOrder(overrides: Record<string, unknown> = {}) {
 
 function mockSubscriptionSnapshot(overrides: Record<string, unknown> = {}) {
   selectRowsOnce([{ ...baseSnapshot, ...overrides }]);
+  selectRowsOnce([{ contractLineId: 'contract-line-1', manualQuantity: '10.00' }]);
 }
 
 function mockDependencies(dependencies: Record<string, unknown>) {
@@ -248,6 +266,7 @@ function deleteReturningOnce(rows: unknown[]) {
 }
 
 beforeEach(() => {
+  vi.useRealTimers();
   mocks.db.select.mockReset();
   mocks.db.insert.mockReset();
   mocks.db.delete.mockReset();
@@ -397,6 +416,49 @@ describe('getOrCreateDraftOrder', () => {
 });
 
 describe('addOrderLine', () => {
+  it('rejects public line additions to quote-staged orders even while mutable', async () => {
+    mockOrder({ source: 'quote', status: 'awaiting_details' });
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
+      pax8ProductId: 'prod-1', catalogItemId: 'catalog-1', billingTerm: 'Monthly', quantity: '1.00',
+    })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('quote') });
+
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects a future cancellation date at authoring time', async () => {
+    vi.setSystemTime(new Date('2026-07-14T23:59:59Z'));
+    mockOrder();
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'cancel',
+      targetSubscriptionId: 'sub-1', cancelDate: '2026-07-15',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('future') });
+
+    expect(mocks.createPax8ClientForIntegration).not.toHaveBeenCalled();
+  });
+
+  it('rejects a normalized-but-invalid UTC cancellation date', async () => {
+    mockOrder();
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'cancel',
+      targetSubscriptionId: 'sub-1', cancelDate: '2026-02-30',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('valid UTC') });
+
+    expect(mocks.createPax8ClientForIntegration).not.toHaveBeenCalled();
+  });
+
+  it('rejects caller-supplied contract linkage for a direct new subscription', async () => {
+    mockOrder();
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
+      pax8ProductId: 'prod-1', catalogItemId: 'catalog-1', billingTerm: 'Monthly', quantity: '1.00',
+      contractLineId: 'untrusted-line',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('contract line') });
+  });
   it('fails closed before staging a direct line when company contact evidence is absent', async () => {
     mocks.db.select.mockImplementation((selection?: Record<string, unknown>) => {
       let rows: unknown[] = [];
@@ -428,6 +490,7 @@ describe('addOrderLine', () => {
   it('rechecks direct-order readiness under a share lock in the final line transaction', async () => {
     mockOrder({ source: 'direct' });
     mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
+    selectRowsOnce([{ pax8ProductId: 'prod-1', catalogItemId: 'catalog-1' }]);
     mockOrder({ source: 'direct' });
     const finalMapping = mockCompanyMappingLookup({
       pax8CompanyId: 'co-1', integrationId: 'i1', metadata: null,
@@ -436,7 +499,7 @@ describe('addOrderLine', () => {
 
     await expect(addOrderLine({
       partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
-      pax8ProductId: 'prod-1', billingTerm: 'Monthly', quantity: '1.00',
+      pax8ProductId: 'prod-1', catalogItemId: 'catalog-1', billingTerm: 'Monthly', quantity: '1.00',
     })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('ready') });
 
     expect(finalMapping.for).toHaveBeenCalledWith('share');
@@ -445,7 +508,7 @@ describe('addOrderLine', () => {
 
   it('rejects a change_quantity whose commitment forbids a decrease', async () => {
     mockOrder();
-    mockSubscriptionSnapshot();
+    mockSubscriptionSnapshot({ quantity: '0.00', quantityKnown: false });
     mockDependencies({
       commitments: [{
         id: 'c1',
@@ -488,7 +551,7 @@ describe('addOrderLine', () => {
 
   it('rejects a change_quantity whose commitment forbids an increase', async () => {
     mockOrder();
-    mockSubscriptionSnapshot();
+    mockSubscriptionSnapshot({ quantity: '100.00' });
     mockDependencies({
       commitments: [{
         id: 'c1',
@@ -638,6 +701,62 @@ describe('addOrderLine', () => {
     })).rejects.toMatchObject({ status: 404 });
   });
 
+  it('fails closed when the exact linked manual contract line has no Breeze quantity', async () => {
+    mockOrder();
+    selectRowsOnce([{ ...baseSnapshot, quantity: '0.00', quantityKnown: false }]);
+    selectRowsOnce([{ contractLineId: 'contract-line-1', manualQuantity: null }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'change_quantity',
+      targetSubscriptionId: 'sub-1', quantity: '5.00',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('manual contract quantity') });
+
+    expect(mocks.createPax8ClientForIntegration).not.toHaveBeenCalled();
+  });
+
+  it('rejects a same-org but unrelated caller contract line and never stages it', async () => {
+    mockOrder();
+    mockSubscriptionSnapshot();
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'cancel', targetSubscriptionId: 'sub-1',
+      contractLineId: 'same-org-unrelated-line',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('does not match') });
+
+    expect(mocks.createPax8ClientForIntegration).not.toHaveBeenCalled();
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unmapped or mismatched direct product/catalog tuple', async () => {
+    mockOrder();
+    selectRowsOnce([]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
+      pax8ProductId: 'prod-1', catalogItemId: 'unrelated-catalog', billingTerm: 'Monthly', quantity: '1.00',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('mapped') });
+
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the exact subscription link changes before the final insert', async () => {
+    mockOrder();
+    mockSubscriptionSnapshot();
+    mockDependencies({ commitments: [{
+      id: 'c1', allowForQuantityDecrease: true, allowForQuantityIncrease: true, allowForEarlyCancellation: true,
+    }] });
+    mockOrder();
+    selectRowsOnce([{ contractLineId: 'replacement-line', manualQuantity: '10.00' }]);
+    insertReturningOnce([{ id: 'wrong-line' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'change_quantity',
+      targetSubscriptionId: 'sub-1', quantity: '11.00',
+    })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('linkage changed') });
+
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
   it('rejects an early cancellation forbidden by the commitment', async () => {
     mockOrder();
     mockSubscriptionSnapshot();
@@ -696,8 +815,9 @@ describe('addOrderLine', () => {
     });
     mockOrder({ source: 'direct' });
     const finalMapping = mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
+    selectRowsOnce([{ contractLineId: 'contract-line-1', manualQuantity: '10.00' }]);
     selectRowsOnce([{ maxSortOrder: null }]);
-    insertReturningOnce([{ id: 'line-1', orderId: 'ord-1', partnerId: 'p1', orgId: 'o1', action: 'change_quantity' }]);
+    const insert = insertReturningOnce([{ id: 'line-1', orderId: 'ord-1', partnerId: 'p1', orgId: 'o1', action: 'change_quantity' }]);
 
     const pending = addOrderLine({
       partnerId: 'p1', orderId: 'ord-1', action: 'change_quantity',
@@ -713,10 +833,13 @@ describe('addOrderLine', () => {
 
     expect(clientLookupDepth).toBe(1);
     expect(httpDepth).toBe(0);
-    expect(contextExitsAtHttp).toBe(4);
+    expect(contextExitsAtHttp).toBe(5);
     expect(insertStartedBeforeHttpResolved).toBe(false);
     expect(mocks.contextDepth).toBe(0);
-    expect(mocks.contextExits).toBe(5);
+    expect(mocks.contextExits).toBe(6);
+    expect(insert.values).toHaveBeenCalledWith(expect.objectContaining({
+      contractLineId: 'contract-line-1',
+    }));
     expect(finalMapping.for).toHaveBeenCalledWith('share');
     for (const [context] of mocks.withDbAccessContext.mock.calls) {
       expect(context).toMatchObject({
@@ -805,7 +928,9 @@ describe('addOrderLine', () => {
 
   it('inserts a valid new subscription line with order tenancy fields', async () => {
     mockOrder({ status: 'awaiting_details' });
+    selectRowsOnce([{ pax8ProductId: 'prod-1', catalogItemId: 'catalog-1' }]);
     mockOrder({ status: 'awaiting_details' });
+    selectRowsOnce([{ pax8ProductId: 'prod-1', catalogItemId: 'catalog-1' }]);
     selectRowsOnce([{ maxSortOrder: null }]);
     const insert = insertReturningOnce([{
       id: 'line-1',
@@ -820,6 +945,7 @@ describe('addOrderLine', () => {
       orderId: 'ord-1',
       action: 'new_subscription',
       pax8ProductId: 'prod-1',
+      catalogItemId: 'catalog-1',
       billingTerm: 'Annual',
       quantity: '2.00',
       provisioningDetails: [{ key: 'domain', values: ['example.com'] }],
@@ -837,26 +963,26 @@ describe('addOrderLine', () => {
   });
 
   it('allocates distinct deterministic positions for consecutive direct lines', async () => {
-    const orders = [
-      [{ ...baseOrder }], [{ ...baseOrder }],
-      [{ ...baseOrder }], [{ ...baseOrder }],
-    ];
-    const positions = [[{ maxSortOrder: null }], [{ maxSortOrder: 0 }]];
-    mocks.db.select.mockImplementation((selection?: Record<string, unknown>) => queryChain(
-      Object.prototype.hasOwnProperty.call(selection ?? {}, 'maxSortOrder')
-        ? positions.shift() ?? []
-        : orders.shift() ?? [],
-    ));
+    mockOrder();
+    selectRowsOnce([{ pax8ProductId: 'prod-1', catalogItemId: 'catalog-1' }]);
+    mockOrder();
+    selectRowsOnce([{ pax8ProductId: 'prod-1', catalogItemId: 'catalog-1' }]);
+    selectRowsOnce([{ maxSortOrder: null }]);
+    mockOrder();
+    selectRowsOnce([{ pax8ProductId: 'prod-2', catalogItemId: 'catalog-2' }]);
+    mockOrder();
+    selectRowsOnce([{ pax8ProductId: 'prod-2', catalogItemId: 'catalog-2' }]);
+    selectRowsOnce([{ maxSortOrder: 0 }]);
     const firstInsert = insertReturningOnce([{ id: 'line-1' }]);
     const secondInsert = insertReturningOnce([{ id: 'line-2' }]);
 
     await addOrderLine({
       partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
-      pax8ProductId: 'prod-1', billingTerm: 'Monthly', quantity: '1.00',
+      pax8ProductId: 'prod-1', catalogItemId: 'catalog-1', billingTerm: 'Monthly', quantity: '1.00',
     });
     await addOrderLine({
       partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
-      pax8ProductId: 'prod-2', billingTerm: 'Monthly', quantity: '2.00',
+      pax8ProductId: 'prod-2', catalogItemId: 'catalog-2', billingTerm: 'Monthly', quantity: '2.00',
     });
 
     expect(firstInsert.values).toHaveBeenCalledWith(expect.objectContaining({ sortOrder: 0 }));
@@ -865,6 +991,7 @@ describe('addOrderLine', () => {
 
   it('rejects when the order becomes immutable before the final insert', async () => {
     mockOrder({ status: 'draft' });
+    selectRowsOnce([{ pax8ProductId: 'prod-1', catalogItemId: 'catalog-1' }]);
     const finalOrderQuery = mockOrder({ status: 'submitting' });
     insertReturningOnce([{ id: 'wrongly-inserted-line' }]);
 
@@ -873,6 +1000,7 @@ describe('addOrderLine', () => {
       orderId: 'ord-1',
       action: 'new_subscription',
       pax8ProductId: 'prod-1',
+      catalogItemId: 'catalog-1',
       billingTerm: 'Monthly',
       quantity: '1.00',
     })).rejects.toMatchObject({ status: 409 });
@@ -883,6 +1011,13 @@ describe('addOrderLine', () => {
 });
 
 describe('removeOrderLine', () => {
+  it('rejects removal from a quote-staged order even while mutable', async () => {
+    mockOrder({ source: 'quote', status: 'awaiting_details' });
+
+    await expect(removeOrderLine({ partnerId: 'p1', orderId: 'ord-1', lineId: 'line-1' }))
+      .rejects.toMatchObject({ status: 409, message: expect.stringContaining('quote') });
+    expect(mocks.db.delete).not.toHaveBeenCalled();
+  });
   it('refuses to remove a line from an immutable order', async () => {
     mockOrder({ status: 'ready' });
 
