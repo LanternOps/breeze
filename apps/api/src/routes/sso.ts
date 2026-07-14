@@ -39,6 +39,7 @@ import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiT
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { captureException } from '../services/sentry';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS, getUserPermissions } from '../services/permissions';
@@ -2669,7 +2670,27 @@ ssoRoutes.get('/callback', async (c) => {
     // IdP. Fail-safe: any provider that hasn't opted in, or an assertion
     // without the `mfa` amr, yields mfa:false. This claim never satisfies the
     // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
-    const ssoMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
+    //
+    // BUT: trusting an IdP's MFA assertion is NOT the same as the user holding
+    // a factor under OUR policy (the adjudicated rule the CF-Access mint sites
+    // already follow). An UNENROLLED user whose effective policy REQUIRES MFA
+    // must not get mfa:true, however loudly the IdP asserts `amr:mfa` — that
+    // would walk them straight past authMiddleware's forced-enrollment gate and
+    // every hasSatisfiedMfa() route, permanently, through refresh rotation.
+    // `trustsIdpMfa` still satisfies MFA for a user who actually HAS a factor,
+    // and still does so for an unenrolled user under a policy that does not
+    // require one. The callback is unauthenticated (no ambient DB context), so
+    // getEffectiveMfaPolicy's own runOutsideDbContext+withSystemDbAccessContext
+    // read is correct here: `user` is COMMITTED (linked, matched, or provisioned
+    // in its own committed tx above), so this resolves against real rows.
+    const idpMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
+    const ssoPolicy = await getEffectiveMfaPolicy({
+      scope: provider.partnerId ? 'partner' : 'organization',
+      userId: user.id,
+      orgId: provider.partnerId ? null : provider.orgId,
+      partnerId: provider.partnerId ?? null,
+    });
+    const ssoMfa = idpMfa && (user.mfaEnabled === true || !ssoPolicy.required);
 
     // Membership resolution + token payload, keyed on the provider's axis.
     let tokenPayload: Parameters<typeof createTokenPair>[0];

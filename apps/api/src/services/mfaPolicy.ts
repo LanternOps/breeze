@@ -50,10 +50,11 @@ export interface EffectiveMfaPolicy {
   source: { roleForceMfa: boolean; settingsRequireMfa: boolean; killSwitchOff: boolean };
 }
 
-interface SecuritySettings {
+export interface MfaSecuritySettings {
   requireMfa?: boolean;
   allowedMethods?: { totp?: boolean; sms?: boolean };
 }
+type SecuritySettings = MfaSecuritySettings;
 
 function methodsFromSettings(security: SecuritySettings | undefined): MfaAllowedMethods {
   const am = security?.allowedMethods;
@@ -61,6 +62,46 @@ function methodsFromSettings(security: SecuritySettings | undefined): MfaAllowed
     totp: am?.totp !== false,
     sms: am?.sms !== false,
     passkey: true, // always allowed — phishing-resistant
+  };
+}
+
+/**
+ * The POLICY RULE itself, decoupled from how the facts were read.
+ *
+ * `getEffectiveMfaPolicy` (below) reads the facts on a fresh system-context
+ * connection, which is right for every caller whose subject rows are already
+ * COMMITTED. `/register-partner` is the one caller where they are not: it
+ * creates the partner, role and membership inside an open transaction and
+ * mints the auto-login token before that transaction commits, so a second
+ * pooled connection under READ COMMITTED sees NONE of those rows (it reads
+ * roleForceMfa=false and no partner row — a silent empty read that looks
+ * exactly like "no policy"). That site therefore reads the facts itself,
+ * INSIDE its own transaction, and applies the rule here — so strictest-wins
+ * and the kill-switch semantics stay single-sourced.
+ *
+ * `settingsUnavailable` + `failClosed` reproduce the same disposition
+ * getEffectiveMfaPolicy applies to a settings-read error (see opts.failClosed).
+ */
+export function combineMfaPolicyFacts(facts: {
+  roleForceMfa: boolean;
+  security: MfaSecuritySettings | undefined;
+  settingsUnavailable?: boolean;
+  failClosed?: boolean;
+}): EffectiveMfaPolicy {
+  const killSwitchOff = !mfaForcePartnerAdmin();
+  const settingsRequireMfa = facts.security?.requireMfa === true;
+  // Kill switch suppresses ONLY the role-force component; settings-driven
+  // requireMfa is enforced regardless (overseer hardening decision).
+  const roleForceApplies = facts.roleForceMfa && !killSwitchOff;
+  const required =
+    roleForceApplies
+    || settingsRequireMfa
+    || (facts.settingsUnavailable === true && facts.failClosed === true);
+
+  return {
+    required,
+    allowedMethods: methodsFromSettings(facts.security),
+    source: { roleForceMfa: facts.roleForceMfa, settingsRequireMfa, killSwitchOff },
   };
 }
 
@@ -78,13 +119,11 @@ export async function getEffectiveMfaPolicy(
   input: MfaPolicyInput,
   opts?: { failClosed?: boolean },
 ): Promise<EffectiveMfaPolicy> {
-  const killSwitchOff = !mfaForcePartnerAdmin();
-
   if (input.scope === 'system') {
     return {
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: !mfaForcePartnerAdmin() },
     };
   }
 
@@ -134,21 +173,15 @@ export async function getEffectiveMfaPolicy(
         settingsReadFailed = true;
       }
 
-      const settingsRequireMfa = security?.requireMfa === true;
-      // Kill switch suppresses ONLY the role-force component; settings-driven
-      // requireMfa is enforced regardless (overseer hardening decision).
-      const roleForceApplies = roleForceMfa && !killSwitchOff;
       // Control gates (opts.failClosed) treat an unreadable settings row as
       // "still required" so a transient blip can't strip org/partner-mandated
       // MFA; login/enrollment gates leave failClosed unset and fail open.
-      const required =
-        roleForceApplies || settingsRequireMfa || (settingsReadFailed && opts?.failClosed === true);
-
-      return {
-        required,
-        allowedMethods: methodsFromSettings(security),
-        source: { roleForceMfa, settingsRequireMfa, killSwitchOff },
-      };
+      return combineMfaPolicyFacts({
+        roleForceMfa,
+        security,
+        settingsUnavailable: settingsReadFailed,
+        failClosed: opts?.failClosed === true,
+      });
     }),
   );
 }

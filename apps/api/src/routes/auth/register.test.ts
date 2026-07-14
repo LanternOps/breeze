@@ -11,6 +11,7 @@ vi.mock('../../db/schema', () => ({
   users: { id: 'users.id', email: 'users.email', name: 'users.name', mfaEnabled: 'users.mfaEnabled', setupCompletedAt: 'users.setupCompletedAt' },
   partners: { id: 'partners.id', name: 'partners.name', slug: 'partners.slug', plan: 'partners.plan', status: 'partners.status', settings: 'partners.settings' },
   partnerUsers: { userId: 'partnerUsers.userId' },
+  roles: { id: 'roles.id', forceMfa: 'roles.forceMfa' },
 }));
 
 vi.mock('../../services', () => ({
@@ -95,18 +96,34 @@ vi.mock('./schemas', async () => {
   };
 });
 
-// Effective MFA policy (PR2's resolver). /register-partner auto-logs the new
-// partner admin in, so it is a token-mint site and must not hand out a vacuous
-// mfa=true when policy requires a factor the brand-new user does not have.
-const policyState = vi.hoisted(() => ({ required: false }));
-
+// Effective MFA policy. /register-partner auto-logs the new partner admin in,
+// so it is a token-mint site and must not hand out a vacuous mfa=true when
+// policy requires a factor the brand-new user does not have.
+//
+// The route no longer calls the async resolver here (it would read the
+// still-uncommitted signup rows on a SECOND pooled connection and always come
+// back "not required" — see the comment in register.ts). It reads the two
+// facts inside its own transaction and applies the shared rule. Mirror the
+// rule faithfully in this mock so the drizzle rows below — the role's
+// force_mfa and the partner's security settings — are what actually drive the
+// outcome. The rule's real composition is covered by mfaPolicy.test.ts, and
+// the read-the-right-rows half (which no mock can prove) is covered by
+// src/__tests__/integration/registerPartnerMfaPolicy.integration.test.ts.
 vi.mock('../../services/mfaPolicy', () => ({
-  getEffectiveMfaPolicy: vi.fn(async () => ({
-    required: policyState.required,
+  combineMfaPolicyFacts: vi.fn((facts: {
+    roleForceMfa: boolean;
+    security?: { requireMfa?: boolean };
+    settingsUnavailable?: boolean;
+    failClosed?: boolean;
+  }) => ({
+    required:
+      facts.roleForceMfa === true
+      || facts.security?.requireMfa === true
+      || (facts.settingsUnavailable === true && facts.failClosed === true),
     allowedMethods: { totp: true, sms: true, passkey: true },
     source: {
-      roleForceMfa: policyState.required,
-      settingsRequireMfa: false,
+      roleForceMfa: facts.roleForceMfa === true,
+      settingsRequireMfa: facts.security?.requireMfa === true,
       killSwitchOff: false,
     },
   })),
@@ -171,26 +188,28 @@ describe('/register-partner partner status by deployment mode', () => {
 
   function setupDbSelectsForSuccess(isHostedMode: boolean) {
     if (isHostedMode) {
-      // gate skipped; user-existence check + post-create partner + post-create user
+      // gate skipped; user-existence check + post-create partner + user + admin role
       vi.mocked(db.select)
         .mockReturnValueOnce(selectChain([]) as any)
         .mockReturnValueOnce(selectChain([{
-          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending',
+          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending', settings: {},
         }]) as any)
         .mockReturnValueOnce(selectChain([{
           id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-        }]) as any);
+        }]) as any)
+        .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as any);
     } else {
-      // setup-admin check returns admin, user-existence empty, partner+user rows
+      // setup-admin check returns admin, user-existence empty, partner+user+role rows
       vi.mocked(db.select)
         .mockReturnValueOnce(selectChain([{ setupCompletedAt: new Date() }]) as any)
         .mockReturnValueOnce(selectChain([]) as any)
         .mockReturnValueOnce(selectChain([{
-          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'active',
+          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'active', settings: {},
         }]) as any)
         .mockReturnValueOnce(selectChain([{
           id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-        }]) as any);
+        }]) as any)
+        .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as any);
     }
   }
 
@@ -276,11 +295,12 @@ describe('POST /register-partner setup-admin gate', () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectChain([]) as any)
       .mockReturnValueOnce(selectChain([{
-        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active', settings: {},
       }]) as any)
       .mockReturnValueOnce(selectChain([{
         id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-      }]) as any);
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as any);
 
     const res = await postRegisterPartner(validBody);
     expect(res.status).toBe(200);
@@ -293,11 +313,12 @@ describe('POST /register-partner setup-admin gate', () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectChain([]) as any)
       .mockReturnValueOnce(selectChain([{
-        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active', settings: {},
       }]) as any)
       .mockReturnValueOnce(selectChain([{
         id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-      }]) as any);
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as any);
 
     await postRegisterPartner(validBody);
     expect(createAuditLog).toHaveBeenCalledTimes(1);
@@ -331,11 +352,12 @@ describe('POST /register-partner setup-admin gate', () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(selectChain([]) as any)
       .mockReturnValueOnce(selectChain([{
-        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active', settings: {},
       }]) as any)
       .mockReturnValueOnce(selectChain([{
         id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-      }]) as any);
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as any);
 
     const res = await postRegisterPartner(validBody);
     expect(res.status).toBe(200);
@@ -368,11 +390,12 @@ describe('POST /register-partner setup-admin gate', () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(selectChain([]) as any)
         .mockReturnValueOnce(selectChain([{
-          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
+          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active', settings: {},
         }]) as any)
         .mockReturnValueOnce(selectChain([{
           id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-        }]) as any);
+        }]) as any)
+        .mockReturnValueOnce(selectChain([{ forceMfa: false }]) as any);
     }
     const res = await postRegisterPartner(validBody);
     expect(res.status).toBe(expectedStatus);
@@ -388,11 +411,30 @@ describe('POST /register-partner setup-admin gate', () => {
 // hasSatisfiedMfa() gate without a second factor ever existing. Resolve the
 // effective policy instead, exactly like /login and the CF-Access mint sites.
 describe('POST /register-partner — MFA assurance (no vacuous mfa=true)', () => {
+  // Prime the SELECT queue the route walks after createPartner:
+  //   1. dup-user check (gate skipped — IS_HOSTED=true)
+  //   2. partner row (carries the `security` settings half of the policy)
+  //   3. user row
+  //   4. admin-role row (carries the `force_mfa` half of the policy)
+  // The route reads BOTH policy facts from these in-transaction rows, so the
+  // fixture — not a stubbed resolver — is what makes the policy "required".
+  function primeSelects(opts: { roleForceMfa?: boolean; requireMfa?: boolean } = {}) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending',
+        settings: opts.requireMfa ? { security: { requireMfa: true } } : {},
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{ forceMfa: opts.roleForceMfa === true }]) as any);
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.IS_HOSTED = 'true';
     schemaState.enable2fa = true;
-    policyState.required = false;
 
     vi.mocked(createPartner).mockResolvedValue({
       partnerId: 'p-1',
@@ -402,25 +444,15 @@ describe('POST /register-partner — MFA assurance (no vacuous mfa=true)', () =>
       siteId: 's-1',
       mcpOrigin: false,
     });
-
-    vi.mocked(db.select)
-      .mockReturnValueOnce(selectChain([]) as any)
-      .mockReturnValueOnce(selectChain([{
-        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending',
-      }]) as any)
-      .mockReturnValueOnce(selectChain([{
-        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-      }]) as any);
   });
 
   afterEach(() => {
     schemaState.enable2fa = false;
-    policyState.required = false;
     delete process.env.IS_HOSTED;
   });
 
-  it('mints mfa=false and flags enrollment when the new admin is under a required policy', async () => {
-    policyState.required = true;
+  it('mints mfa=false and flags enrollment when the new admin role forces MFA', async () => {
+    primeSelects({ roleForceMfa: true });
 
     const res = await postRegisterPartner(validBody);
 
@@ -434,8 +466,22 @@ describe('POST /register-partner — MFA assurance (no vacuous mfa=true)', () =>
     expect(body.enrollUrl).toBe('/auth/mfa/setup');
   });
 
+  it('mints mfa=false and flags enrollment when partner settings require MFA', async () => {
+    primeSelects({ requireMfa: true });
+
+    const res = await postRegisterPartner(validBody);
+
+    expect(res.status).toBeLessThan(400);
+    expect(vi.mocked(createTokenPair)).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: 'u-1', mfa: false }),
+      expect.anything(),
+    );
+    const body = await res.json();
+    expect(body.mfaEnrollmentRequired).toBe(true);
+  });
+
   it('mints mfa=true when no policy requires MFA', async () => {
-    policyState.required = false;
+    primeSelects();
 
     const res = await postRegisterPartner(validBody);
 
@@ -446,5 +492,22 @@ describe('POST /register-partner — MFA assurance (no vacuous mfa=true)', () =>
     );
     const body = await res.json();
     expect(body.mfaEnrollmentRequired).toBe(false);
+  });
+
+  it('500s without minting a token when the admin-role row is unreadable (fail closed)', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending', settings: {},
+      }]) as any)
+      .mockReturnValueOnce(selectChain([{
+        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
+      }]) as any)
+      .mockReturnValueOnce(selectChain([]) as any); // role row missing
+
+    const res = await postRegisterPartner(validBody);
+
+    expect(res.status).toBe(500);
+    expect(vi.mocked(createTokenPair)).not.toHaveBeenCalled();
   });
 });

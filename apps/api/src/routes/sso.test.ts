@@ -281,6 +281,20 @@ vi.mock('../services/ssoDomainVerification', () => ({
   isDomainVerifiedForOrg: vi.fn().mockResolvedValue(true),
 }));
 
+// Effective MFA policy at the SSO mint. An IdP's MFA assertion is NOT a factor
+// under OUR policy: an unenrolled user whose policy REQUIRES MFA must not get
+// mfa:true no matter what `amr` says. Default: policy does not require MFA, so
+// the historical trustsIdpMfa×amr matrix below is unaffected.
+const mfaPolicyState = vi.hoisted(() => ({ required: false }));
+
+vi.mock('../services/mfaPolicy', () => ({
+  getEffectiveMfaPolicy: vi.fn(async () => ({
+    required: mfaPolicyState.required,
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    source: { roleForceMfa: mfaPolicyState.required, settingsRequireMfa: false, killSwitchOff: false },
+  })),
+}));
+
 // Partial-mock auth/helpers: keep the real cookie helpers the callback uses,
 // but stub auditLogin so partner-axis login tests can assert the audit call
 // (method: 'sso-partner') without invoking the real async audit-log writer.
@@ -1845,13 +1859,22 @@ describe('sso routes', () => {
     // ── security review #2 (H-1): IdP-asserted MFA signal
     // Wire a returning linked user (identity-first happy path) for a provider
     // whose trustsIdpMfa is set as given, with the verified id_token amr set.
-    const wireLinkedLogin = (opts: { trustsIdpMfa: boolean; amr?: string[] }) => {
+    const wireLinkedLogin = (opts: {
+      trustsIdpMfa: boolean;
+      amr?: string[];
+      policyRequiresMfa?: boolean;
+      userMfaEnabled?: boolean;
+    }) => {
       primeCallback();
+      mfaPolicyState.required = opts.policyRequiresMfa === true;
       vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce', amr: opts.amr } as any);
       vi.mocked(db.select)
         .mockReturnValueOnce(sel([{ ...PROVIDER_ROW[0], trustsIdpMfa: opts.trustsIdpMfa }]))
         .mockReturnValueOnce(sel([{ userId: USER_UUID }])) // identity link
-        .mockReturnValueOnce(sel([{ id: USER_UUID, email: 'test@example.com', name: 'Linked' }]))
+        .mockReturnValueOnce(sel([{
+          id: USER_UUID, email: 'test@example.com', name: 'Linked',
+          mfaEnabled: opts.userMfaEnabled === true,
+        }]))
         .mockReturnValueOnce(selJoin([{ orgId: ORG_UUID, roleId: 'role-1', roleName: 'Member', roleScope: 'organization' }]))
         .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
     };
@@ -1875,6 +1898,25 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+
+    // Adjudicated rule (same one the CF-Access mint sites follow): trusting an
+    // IdP's MFA assertion is NOT the same as the user holding a factor under
+    // OUR policy. An UNENROLLED user under a REQUIRED policy gets mfa:false
+    // even from an amr-asserting, trusted IdP — otherwise the IdP could walk
+    // them past forced enrollment and every hasSatisfiedMfa() gate forever.
+    it('mints mfa:false for an UNENROLLED user under a required policy, even with a trusted amr:mfa assertion', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], policyRequiresMfa: true, userMfaEnabled: false });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: false }), expect.any(Object));
+    });
+
+    it('still mints mfa:true under a required policy when the user DOES hold a factor', async () => {
+      wireLinkedLogin({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], policyRequiresMfa: true, userMfaEnabled: true });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ mfa: true }), expect.any(Object));
     });
 
     // ── security review #2 (H-2): SSO domain-verification gate wiring
@@ -3028,13 +3070,19 @@ describe('sso routes', () => {
       expect(createTokenPair).not.toHaveBeenCalled();
     });
 
-    const wireMfa = (opts: { trustsIdpMfa: boolean; amr?: string[] }) => {
+    const wireMfa = (opts: {
+      trustsIdpMfa: boolean;
+      amr?: string[];
+      policyRequiresMfa?: boolean;
+      userMfaEnabled?: boolean;
+    }) => {
       prime();
+      mfaPolicyState.required = opts.policyRequiresMfa === true;
       vi.mocked(verifyIdTokenSignature).mockResolvedValue({ sub: 'external-user-1', nonce: 'nonce', amr: opts.amr } as any);
       vi.mocked(db.select)
         .mockReturnValueOnce(sel([{ ...PARTNER_PROVIDER, trustsIdpMfa: opts.trustsIdpMfa }]))
         .mockReturnValueOnce(sel([{ userId: USER_UUID }]))
-        .mockReturnValueOnce(sel([STAFF]))
+        .mockReturnValueOnce(sel([{ ...STAFF, mfaEnabled: opts.userMfaEnabled === true }]))
         .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]))
         .mockReturnValueOnce(sel([{ id: 'identity-1' }]));
     };
@@ -3051,6 +3099,18 @@ describe('sso routes', () => {
 
     it('sets mfa false when trustsIdpMfa is set but amr does not attest mfa', async () => {
       wireMfa({ trustsIdpMfa: true, amr: ['pwd'] });
+      const res = await doCallback();
+      expect(res.status).toBe(302);
+      expect(createTokenPair).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'partner', mfa: false }),
+        expect.any(Object)
+      );
+    });
+
+    // Partner axis of the adjudicated rule: an IdP assertion never substitutes
+    // for a factor the user does not have when policy REQUIRES one.
+    it('sets mfa false for an UNENROLLED tech under a required policy despite a trusted amr:mfa assertion', async () => {
+      wireMfa({ trustsIdpMfa: true, amr: ['pwd', 'mfa'], policyRequiresMfa: true, userMfaEnabled: false });
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(createTokenPair).toHaveBeenCalledWith(

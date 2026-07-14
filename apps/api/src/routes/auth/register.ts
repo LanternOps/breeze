@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users, partners, partnerUsers } from '../../db/schema';
+import { users, partners, partnerUsers, roles } from '../../db/schema';
 import {
   hashPassword,
   isPasswordStrong,
@@ -22,7 +22,7 @@ import { writeAuditEvent, ANONYMOUS_ACTOR_ID } from '../../services/auditEvents'
 import { createAuditLog } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
 import { generateVerificationToken } from '../../services/emailVerification';
-import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { combineMfaPolicyFacts, type MfaSecuritySettings } from '../../services/mfaPolicy';
 import { getEmailService } from '../../services/email';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
@@ -207,8 +207,10 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       phase = 'post-create-fetch';
 
       // Fetch the partner + user rows we need downstream (slug, plan, status,
-      // billingEmail, mfa state). Kept outside the service so the service's
-      // return contract stays minimal / stable across callers.
+      // billingEmail, mfa state) plus the two facts the MFA-policy decision
+      // below is made of (partner `security` settings + the new admin role's
+      // force_mfa). Kept outside the service so the service's return contract
+      // stays minimal / stable across callers.
       const [newPartner] = await db
         .select({
           id: partners.id,
@@ -216,6 +218,7 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
           slug: partners.slug,
           plan: partners.plan,
           status: partners.status,
+          settings: partners.settings,
         })
         .from(partners)
         .where(eq(partners.id, result.partnerId))
@@ -232,34 +235,55 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
         .where(eq(users.id, result.adminUserId))
         .limit(1);
 
-      if (!newPartner || !newUser) {
-        throw new Error('Partner or user row missing after createPartner');
+      const [newAdminRole] = await db
+        .select({ forceMfa: roles.forceMfa })
+        .from(roles)
+        .where(eq(roles.id, result.adminRoleId))
+        .limit(1);
+
+      if (!newPartner || !newUser || !newAdminRole) {
+        throw new Error('Partner, user or admin-role row missing after createPartner');
       }
 
       phase = 'token-creation';
 
-      // Token creation outside tx (doesn't need rollback).
-      //
       // This is a token-MINT site: /register-partner auto-logs the new admin
       // in. The old `!(ENABLE_2FA && newUser.mfaEnabled)` was a constant `true`
       // here — a just-created user never has a factor — so it handed the
       // session VACUOUS MFA assurance. If the new admin's role carries
-      // force_mfa (the seeded "Partner Admin" posture) or the partner is
-      // created under a requireMfa policy, that claim satisfies every
-      // hasSatisfiedMfa() gate without a second factor ever existing, and it
-      // survives indefinitely through refresh rotation. Resolve the effective
-      // policy instead — same contract as /login and the CF-Access mint sites.
+      // force_mfa (the "Partner Admin" posture the 2026-05-25-f migration
+      // intends) or the partner is created under a requireMfa policy, that
+      // claim satisfies every hasSatisfiedMfa() gate without a second factor
+      // ever existing, and it survives indefinitely through refresh rotation.
+      // Resolve the effective policy instead — same contract as /login and the
+      // CF-Access mint sites.
       //
-      // Fail-closed on an unresolvable policy: getEffectiveMfaPolicy reads
-      // under runOutsideDbContext+withSystemDbAccessContext (never a silent
-      // 0-row RLS read that could be mistaken for "no policy"), and a
-      // role/membership-join failure THROWS — caught by this handler's
-      // try/catch, which 500s without returning tokens. No token, no claim.
-      const policy = await getEffectiveMfaPolicy({
-        scope: 'partner',
-        userId: newUser.id,
-        orgId: null,
-        partnerId: newPartner.id,
+      // The policy is resolved from facts read INSIDE this request's
+      // transaction — deliberately NOT via getEffectiveMfaPolicy(). That
+      // resolver would be INERT here and would fail OPEN: this whole handler
+      // runs inside runWithSystemDbAccess (an open `baseDb.transaction`), and
+      // createPartner writes the partner/role/user/partner_users rows into
+      // that same still-UNCOMMITTED transaction. getEffectiveMfaPolicy exits
+      // the ALS context (runOutsideDbContext) and opens a NEW transaction on a
+      // SECOND pooled connection, which under READ COMMITTED cannot see any of
+      // those rows: the role join returns nothing (roleForceMfa=false), the
+      // partner row reads as absent (settingsRequireMfa=false), nothing throws
+      // — so `required` was ALWAYS false and `mfa: true` was still a constant.
+      // A silent empty read, not an exception, so `failClosed` would not have
+      // rescued it either. Read the two facts here, in-tx, and apply the SAME
+      // rule (combineMfaPolicyFacts is the shared single source of truth for
+      // strictest-wins + the MFA_FORCE_FOR_PARTNER_ADMIN kill switch).
+      //
+      // Fail-closed: both facts come from rows this handler MUST have been able
+      // to read. If either SELECT errors, or either row is absent (the throw
+      // above), control leaves via this handler's try/catch → 500, before any
+      // token is minted. There is no path on which an unread fact degrades to
+      // "no policy → allow", which is exactly how the previous version failed.
+      const partnerSettings = (newPartner.settings ?? {}) as Record<string, unknown>;
+      const policy = combineMfaPolicyFacts({
+        roleForceMfa: newAdminRole.forceMfa === true,
+        security: partnerSettings.security as MfaSecuritySettings | undefined,
+        failClosed: true,
       });
       const mfaEnrollmentRequired = ENABLE_2FA && !newUser.mfaEnabled && policy.required;
       const mfaSatisfied = !ENABLE_2FA || (!newUser.mfaEnabled && !policy.required);
