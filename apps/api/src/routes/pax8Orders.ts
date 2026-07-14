@@ -370,6 +370,7 @@ pax8OrderRoutes.post(
       auditOrderAction(c, {
         action: 'pax8.order.submit', partnerId: partner.partnerId,
         orgId: bundle.order.orgId, orderId: id,
+        result: result.status === 'completed' ? 'success' : 'failure',
         details: { status: result.status },
       });
       return c.json(result);
@@ -398,6 +399,7 @@ pax8OrderRoutes.post(
       auditOrderAction(c, {
         action: 'pax8.order.reconcile', partnerId: partner.partnerId,
         orgId: bundle.order.orgId, orderId: id,
+        result: result.stillUnknown === 0 ? 'success' : 'failure',
         details: { resolved: result.resolved, stillUnknown: result.stillUnknown },
       });
       return c.json(result);

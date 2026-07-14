@@ -322,6 +322,22 @@ describe('Pax8 order route handlers', () => {
     expect((await request(`/orders/${ORDER_ID}/reconcile`, { method: 'POST' })).status).toBe(200);
     expect(mocks.reconcileOrder).toHaveBeenCalledWith({ partnerId: PARTNER_A, orderId: ORDER_ID });
     expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(2);
+    expect(mocks.writeRouteAudit).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({
+      action: 'pax8.order.submit', result: 'success',
+    }));
+    expect(mocks.writeRouteAudit).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({
+      action: 'pax8.order.reconcile', result: 'success',
+    }));
+  });
+
+  it('audits a terminally failed submit outcome as failure', async () => {
+    mocks.submitOrder.mockResolvedValueOnce({ orderId: ORDER_ID, status: 'failed', lines: [] });
+    const res = await request(`/orders/${ORDER_ID}/submit`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'pax8.order.submit', result: 'failure',
+      details: expect.objectContaining({ status: 'failed' }),
+    }));
   });
 
   it('validates UUID params and line bodies before service calls', async () => {
