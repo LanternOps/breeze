@@ -149,6 +149,19 @@ describe('partner organization and site exports', () => {
     expect(second.data.map((row: any) => row.id)).toEqual([SITE_B]);
   });
 
+  it('rejects a signed cursor when the organization filter is switched', async () => {
+    results.push([site(SITE_A, 'HQ'), site(SITE_B, 'Branch')]);
+    const first = await (await request(`/partner-api/sites?orgId=${ORG_ID}&limit=1`, 'sites:read')).json();
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    const switched = await request(
+      `/partner-api/sites?limit=1&cursor=${encodeURIComponent(first.nextCursor)}`,
+      'sites:read',
+    );
+    expect(switched.status).toBe(400);
+    expect(mocks.select).toHaveBeenCalledTimes(1);
+  });
+
   it('walks organization pages with the same stable snapshotAt', async () => {
     results.push([org(ORG_ID), org(OTHER_ORG_ID)]);
     const first = await (await request('/partner-api/organizations?limit=1', 'organizations:read')).json();

@@ -161,6 +161,22 @@ export const partnerDeviceExportRecordSchema = strictPartnerExportRecordSchema({
   }).strict(),
   tags: z.array(z.string().min(1).max(255)).max(200),
   groupIds: z.array(z.string().uuid()).max(500),
+  groupMembership: z.object({
+    total: z.number().int().nonnegative(),
+    included: z.number().int().min(0).max(500),
+    complete: z.boolean(),
+    reason: z.literal('membership_limit_exceeded').nullable(),
+  }).strict().superRefine((value, ctx) => {
+    if (value.included > value.total) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['included'], message: 'included cannot exceed total' });
+    }
+    if (value.complete !== (value.included === value.total)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['complete'], message: 'complete must reflect membership bounds' });
+    }
+    if ((value.reason === null) !== value.complete) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: 'overflow reason must reflect completeness' });
+    }
+  }),
   linkGroupId: z.string().uuid().nullable(),
   linkGroupRole: z.string().max(16).nullable(),
 });

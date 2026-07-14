@@ -21,11 +21,22 @@ export interface PartnerExportCursor {
   partnerId: string;
   snapshotAt: string;
   updatedSince: string | null;
+  filters: PartnerExportCursorFilters;
   lastUpdatedAt: string | null;
   lastId: string;
   lastOrgId: string | null;
   expiresAt: string;
 }
+
+export interface PartnerExportCursorFilters {
+  orgId: string | null;
+  siteId: string | null;
+}
+
+const partnerExportCursorFiltersSchema = z.object({
+  orgId: z.string().uuid().nullable(),
+  siteId: z.string().uuid().nullable(),
+}).strict();
 
 const partnerExportCursorSchema = z.object({
   v: z.literal(1),
@@ -33,6 +44,7 @@ const partnerExportCursorSchema = z.object({
   partnerId: z.string().uuid(),
   snapshotAt: partnerExportTimestampSchema,
   updatedSince: partnerExportTimestampSchema.nullable(),
+  filters: partnerExportCursorFiltersSchema,
   lastUpdatedAt: partnerExportTimestampSchema.nullable(),
   lastId: z.string().uuid(),
   lastOrgId: z.string().uuid().nullable(),
@@ -105,6 +117,7 @@ export interface PartnerExportCursorBinding {
   partnerId: string;
   resource: PartnerExportResource;
   updatedSince: string | null;
+  filters: PartnerExportCursorFilters;
 }
 
 export function decodePartnerExportCursor(
@@ -139,6 +152,7 @@ export function decodePartnerExportCursor(
       cursor.partnerId !== expected.partnerId
       || cursor.resource !== expected.resource
       || cursor.updatedSince !== expected.updatedSince
+      || canonicalJsonStringify(cursor.filters) !== canonicalJsonStringify(expected.filters)
       || Date.parse(cursor.expiresAt) <= now.getTime()
     ) {
       throw new PartnerExportCursorError();

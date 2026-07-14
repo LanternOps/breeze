@@ -1,10 +1,8 @@
 import { Hono } from 'hono';
 import { and, inArray, eq, sql } from 'drizzle-orm';
-import { z } from 'zod';
 import { db } from '../../db';
 import {
   deviceGroupMemberships,
-  deviceGroups,
   deviceHardware,
   devices,
 } from '../../db/schema';
@@ -19,7 +17,7 @@ import {
   parseExportQuery,
 } from './organizations';
 
-const deviceFilterSchema = z.string().uuid();
+export const PARTNER_DEVICE_GROUP_ID_LIMIT = 500;
 
 export const partnerDeviceRoutes = new Hono();
 
@@ -27,12 +25,6 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
   const principal = c.get('partnerApiPrincipal');
   const parsed = parseExportQuery(c, 'devices', principal);
   if (parsed instanceof Response) return parsed;
-
-  const siteIdRaw = new URL(c.req.url).searchParams.get('siteId');
-  const siteIdResult = siteIdRaw === null ? { success: true as const, data: null } : deviceFilterSchema.safeParse(siteIdRaw);
-  if (!siteIdResult.success) {
-    return c.json({ error: 'Invalid partner export query.', code: 'invalid_partner_export_query' }, 400);
-  }
 
   try {
     const orgIds = parsed.orgId ? [parsed.orgId] : principal.accessibleOrgIds;
@@ -45,11 +37,17 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
     const effectiveUpdatedAt = sql<Date>`GREATEST(
       ${devices.updatedAt},
       COALESCE(${deviceHardware.updatedAt}, ${devices.updatedAt})
-    )`;
+    )`.mapWith(devices.updatedAt);
     const conditions = [
       inArray(devices.orgId, orgIds),
-      ...(siteIdResult.data ? [eq(devices.siteId, siteIdResult.data)] : []),
-      ...paginationConditions({ id: devices.id, orgId: devices.orgId, createdAt: devices.createdAt, updatedAt: effectiveUpdatedAt }, parsed.traversal),
+      ...(parsed.siteId ? [eq(devices.siteId, parsed.siteId)] : []),
+      ...paginationConditions({
+        id: devices.id,
+        orgId: devices.orgId,
+        createdAt: devices.createdAt,
+        updatedAt: effectiveUpdatedAt,
+        updatedAtParam: devices.updatedAt,
+      }, parsed.traversal),
     ];
     const rows = await db.select({
       id: devices.id,
@@ -72,6 +70,23 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
       serialNumber: deviceHardware.serialNumber,
       manufacturer: deviceHardware.manufacturer,
       model: deviceHardware.model,
+      groupIds: sql<string[]>`COALESCE((
+        SELECT jsonb_agg(m.group_id ORDER BY m.group_id)
+        FROM (
+          SELECT ${deviceGroupMemberships.groupId} AS group_id
+          FROM ${deviceGroupMemberships}
+          WHERE ${deviceGroupMemberships.deviceId} = ${devices.id}
+            AND ${deviceGroupMemberships.orgId} = ${devices.orgId}
+          ORDER BY ${deviceGroupMemberships.groupId}
+          LIMIT ${PARTNER_DEVICE_GROUP_ID_LIMIT}
+        ) AS m
+      ), '[]'::jsonb)`,
+      groupCount: sql<number>`(
+        SELECT COUNT(*)::integer
+        FROM ${deviceGroupMemberships}
+        WHERE ${deviceGroupMemberships.deviceId} = ${devices.id}
+          AND ${deviceGroupMemberships.orgId} = ${devices.orgId}
+      )`,
       createdAt: devices.createdAt,
       updatedAt: effectiveUpdatedAt,
     }).from(devices)
@@ -81,28 +96,6 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
       .limit(getPartnerExportFetchLimit(parsed.limit));
 
     const normalized = rows.map(normalizeSourceRow);
-    const exportedRows = normalized.slice(0, parsed.limit);
-    const ids = exportedRows.map((row) => row.id);
-    const memberships = ids.length === 0 ? [] : await db.select({
-      deviceId: deviceGroupMemberships.deviceId,
-      groupId: deviceGroupMemberships.groupId,
-    }).from(deviceGroupMemberships)
-      .innerJoin(deviceGroups, and(
-        eq(deviceGroups.id, deviceGroupMemberships.groupId),
-        eq(deviceGroups.orgId, deviceGroupMemberships.orgId),
-      ))
-      .where(and(
-        inArray(deviceGroupMemberships.deviceId, ids),
-        inArray(deviceGroupMemberships.orgId, orgIds),
-      ));
-    const groupIds = new Map<string, string[]>();
-    for (const membership of memberships) {
-      const list = groupIds.get(membership.deviceId) ?? [];
-      if (!list.includes(membership.groupId)) list.push(membership.groupId);
-      groupIds.set(membership.deviceId, list);
-    }
-    for (const list of groupIds.values()) list.sort();
-
     const envelope = buildEnvelope({
       resource: 'devices', partnerId: principal.partnerId, rows: normalized, query: parsed,
       makeRecord: (row) => ({
@@ -123,7 +116,8 @@ partnerDeviceRoutes.get('/devices', requirePartnerApiScope('devices:read'), asyn
           externalId: stringCustomIdentifier(row.customFields, ['externalId', 'external_id']),
         },
         tags: Array.isArray(row.tags) ? row.tags : [],
-        groupIds: groupIds.get(row.id) ?? [],
+        groupIds: normalizedGroupIds(row.groupIds),
+        groupMembership: groupMembershipSummary(row.groupIds, row.groupCount),
         linkGroupId: row.linkGroupId,
         linkGroupRole: row.linkGroupRole,
       }),
@@ -141,4 +135,26 @@ function stringCustomIdentifier(value: unknown, keys: string[]): string | null {
     if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().slice(0, 255);
   }
   return null;
+}
+
+function normalizedGroupIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((entry): entry is string => typeof entry === 'string'))]
+    .sort()
+    .slice(0, PARTNER_DEVICE_GROUP_ID_LIMIT);
+}
+
+function groupMembershipSummary(groupIds: unknown, count: unknown) {
+  const included = normalizedGroupIds(groupIds).length;
+  if (!Number.isSafeInteger(count) || (count as number) < included || (count as number) < 0) {
+    throw new TypeError('Invalid device group membership count.');
+  }
+  const total = count as number;
+  const complete = total === included;
+  return {
+    total,
+    included,
+    complete,
+    reason: complete ? null : 'membership_limit_exceeded' as const,
+  };
 }

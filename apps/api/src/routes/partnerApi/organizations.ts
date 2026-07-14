@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import { Hono } from 'hono';
-import { and, asc, eq, gt, inArray, lte, or, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, lte, or, param, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
 import { organizations, sites } from '../../db/schema';
@@ -10,6 +10,7 @@ import {
   encodePartnerExportCursor,
   PartnerExportCursorError,
   type PartnerExportCursor,
+  type PartnerExportCursorFilters,
 } from './cursor';
 import {
   computePartnerExportRevision,
@@ -45,12 +46,14 @@ const querySchema = z.object({
 
 export interface ExportQueryInput {
   orgId: string | null;
+  siteId: string | null;
+  filters: PartnerExportCursorFilters;
   updatedSince: string | null;
   limit: number;
   traversal: PartnerExportTraversal;
 }
 
-type ExportSourceRow = PartnerExportPageRow & Record<string, unknown>;
+type ExportSourceRow = PartnerExportPageRow;
 
 function iso(value: Date | string): string {
   const date = value instanceof Date ? value : new Date(value);
@@ -91,11 +94,19 @@ export function parseExportQuery(
 
   try {
     const updatedSince = parsed.data.updatedSince ?? null;
+    const filters = {
+      orgId: parsed.data.orgId ?? null,
+      siteId: resource === 'devices' ? parsed.data.siteId ?? null : null,
+    };
     const cursor = parsed.data.cursor
-      ? decodePartnerExportCursor(parsed.data.cursor, { partnerId: principal.partnerId, resource, updatedSince })
+      ? decodePartnerExportCursor(parsed.data.cursor, {
+        partnerId: principal.partnerId, resource, updatedSince, filters,
+      })
       : null;
     return {
       orgId: parsed.data.orgId ?? null,
+      siteId: filters.siteId,
+      filters,
       updatedSince,
       limit: normalizePartnerExportLimit(parsed.data.limit),
       traversal: createPartnerExportTraversal({ updatedSince, cursor }),
@@ -107,12 +118,16 @@ export function parseExportQuery(
 }
 
 export function paginationConditions(
-  columns: { id: any; orgId: any; createdAt: any; updatedAt: any },
+  columns: { id: any; orgId: any; createdAt: any; updatedAt: any; updatedAtParam?: any },
   traversal: PartnerExportTraversal,
 ): SQL[] {
   const snapshot = new Date(traversal.snapshotAt);
+  const encodeUpdatedAt = columns.updatedAtParam ?? columns.updatedAt;
   const conditions: SQL[] = traversal.mode === 'incremental'
-    ? [gt(columns.updatedAt, new Date(traversal.updatedSince!)), lte(columns.updatedAt, snapshot)]
+    ? [
+      gt(columns.updatedAt, param(new Date(traversal.updatedSince!), encodeUpdatedAt)),
+      lte(columns.updatedAt, param(snapshot, encodeUpdatedAt)),
+    ]
     : [lte(columns.createdAt, snapshot)];
   if (!traversal.after) return conditions;
 
@@ -120,9 +135,9 @@ export function paginationConditions(
   if (traversal.mode === 'incremental') {
     const lastUpdatedAt = new Date(after.lastUpdatedAt!);
     conditions.push(or(
-      gt(columns.updatedAt, lastUpdatedAt),
+      gt(columns.updatedAt, param(lastUpdatedAt, encodeUpdatedAt)),
       and(
-        eq(columns.updatedAt, lastUpdatedAt),
+        eq(columns.updatedAt, param(lastUpdatedAt, encodeUpdatedAt)),
         or(
           gt(columns.id, after.lastId),
           and(eq(columns.id, after.lastId), gt(columns.orgId, after.lastOrgId!)),
@@ -176,6 +191,7 @@ export function buildEnvelope<T extends ExportSourceRow>(input: {
       partnerId: input.partnerId,
       snapshotAt: input.query.traversal.snapshotAt,
       updatedSince: input.query.updatedSince,
+      filters: input.query.filters,
       lastUpdatedAt: page.lastKey.lastUpdatedAt,
       lastId: page.lastKey.lastId,
       lastOrgId: page.lastKey.lastOrgId,

@@ -27,6 +27,7 @@ const cursor: PartnerExportCursor = {
   partnerId: PARTNER_ID,
   snapshotAt: '2026-07-13T18:00:00.000Z',
   updatedSince: '2026-07-12T18:00:00.000Z',
+  filters: { orgId: ORG_A, siteId: null },
   lastUpdatedAt: '2026-07-13T17:00:00.000Z',
   lastId: '55555555-5555-4555-8555-555555555555',
   lastOrgId: ORG_A,
@@ -37,6 +38,7 @@ const expected = {
   partnerId: PARTNER_ID,
   resource: 'devices' as const,
   updatedSince: '2026-07-12T18:00:00.000Z',
+  filters: { orgId: ORG_A, siteId: null },
 };
 
 function expectStructuredCursor400(fn: () => unknown) {
@@ -76,6 +78,7 @@ describe('partner export cursor', () => {
       lastId: cursor.lastId,
       lastUpdatedAt: cursor.lastUpdatedAt,
       updatedSince: cursor.updatedSince,
+      filters: cursor.filters,
       snapshotAt: cursor.snapshotAt,
       partnerId: cursor.partnerId,
       resource: cursor.resource,
@@ -111,6 +114,8 @@ describe('partner export cursor', () => {
       { ...expected, resource: 'sites' as const },
       { ...expected, updatedSince: '2026-07-11T18:00:00.000Z' },
       { ...expected, updatedSince: null },
+      { ...expected, filters: { orgId: null, siteId: null } },
+      { ...expected, filters: { orgId: ORG_A, siteId: '55555555-5555-4555-8555-555555555555' } },
     ]) {
       expectStructuredCursor400(() => decodePartnerExportCursor(
         token,
@@ -139,6 +144,8 @@ describe('partner export cursor', () => {
       signRawPayload({ ...cursor, v: 2 }),
       signRawPayload({ ...cursor, resource: 'alerts' }),
       signRawPayload({ ...cursor, lastUpdatedAt: null }),
+      signRawPayload({ ...cursor, filters: { orgId: ORG_A } }),
+      signRawPayload({ ...cursor, filters: { orgId: ORG_A, siteId: null, extra: true } }),
       signRawPayload({ ...cursor, extra: true }),
       'a'.repeat(PARTNER_EXPORT_CURSOR_MAX_LENGTH + 1),
     ]) {

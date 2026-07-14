@@ -59,6 +59,7 @@ function device(id = DEVICE_A) {
     tags: ['production'], customFields: { assetTag: 'ASSET-001', password: 'drop-me' },
     serialNumber: 'SER-001', manufacturer: 'Dell', model: 'PowerEdge',
     createdAt: CREATED_AT, updatedAt: UPDATED_AT,
+    groupIds: [GROUP_ID], groupCount: 1,
     status: 'online', lastSeenAt: new Date(), agentTokenHash: 'never-export',
     managementPosture: { health: 'healthy' }, desktopAccess: { token: 'never' },
   };
@@ -98,7 +99,7 @@ describe('partner foundational device export', () => {
   });
 
   it('exports a strict reconstruction DTO and group identifiers', async () => {
-    results.push([device()], [{ deviceId: DEVICE_A, groupId: GROUP_ID }]);
+    results.push([device()]);
     const body = await (await request('/partner-api/devices')).json();
     const record = deviceExportEnvelopeSchema.parse(body).data[0];
     expect(record).toMatchObject({
@@ -108,11 +109,12 @@ describe('partner foundational device export', () => {
       hardwareIdentity: { serialNumber: 'SER-001', manufacturer: 'Dell', model: 'PowerEdge' },
       stableIdentifiers: { assetTag: 'ASSET-001', inventoryId: null, externalId: null },
       tags: ['production'], groupIds: [GROUP_ID],
+      groupMembership: { total: 1, included: 1, complete: true, reason: null },
     });
   });
 
   it('projects no monitoring, secret, patch, alert, command, vulnerability, or remote fields', async () => {
-    results.push([device()], []);
+    results.push([device()]);
     const body = await (await request('/partner-api/devices')).json();
     const serialized = JSON.stringify(body.data[0]).toLowerCase();
     for (const forbidden of [
@@ -128,7 +130,7 @@ describe('partner foundational device export', () => {
   });
 
   it('fails closed when an allowlisted stable identifier contains secret-like material', async () => {
-    results.push([{ ...device(), customFields: { assetTag: `sk-live-${'A1b2C3d4'.repeat(6)}` } }], []);
+    results.push([{ ...device(), customFields: { assetTag: `sk-live-${'A1b2C3d4'.repeat(6)}` } }]);
     const body = await (await request('/partner-api/devices')).json();
     expect(body.data).toEqual([]);
     expect(body.blocked).toEqual([expect.objectContaining({
@@ -138,21 +140,50 @@ describe('partner foundational device export', () => {
   });
 
   it('walks multiple pages with one snapshot', async () => {
-    results.push([device(DEVICE_A), device(DEVICE_B)], [{ deviceId: DEVICE_A, groupId: GROUP_ID }]);
+    results.push([device(DEVICE_A), device(DEVICE_B)]);
     const first = await (await request('/partner-api/devices?limit=1')).json();
     expect(first).toMatchObject({ hasMore: true });
-    results.push([device(DEVICE_B)], []);
+    results.push([device(DEVICE_B)]);
     const second = await (await request(`/partner-api/devices?limit=1&cursor=${encodeURIComponent(first.nextCursor)}`)).json();
     expect(second).toMatchObject({ hasMore: false, snapshotAt: first.snapshotAt });
     expect(second.data[0].id).toBe(DEVICE_B);
   });
 
+  it('rejects a signed cursor when orgId or siteId is switched', async () => {
+    results.push([device(DEVICE_A), device(DEVICE_B)]);
+    const first = await (await request(
+      `/partner-api/devices?orgId=${ORG_ID}&siteId=${SITE_ID}&limit=1`,
+    )).json();
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    expect((await request(
+      `/partner-api/devices?orgId=${ORG_ID}&limit=1&cursor=${encodeURIComponent(first.nextCursor)}`,
+    )).status).toBe(400);
+    expect((await request(
+      `/partner-api/devices?siteId=${SITE_ID}&limit=1&cursor=${encodeURIComponent(first.nextCursor)}`,
+    )).status).toBe(400);
+    expect(mocks.select).toHaveBeenCalledTimes(1);
+  });
+
   it('supports updatedSince and site/org filters for accessible data', async () => {
-    results.push([device()], []);
+    results.push([device()]);
     const queryString = new URLSearchParams({ orgId: ORG_ID, siteId: SITE_ID, updatedSince: '2026-07-11T12:00:00.000Z' });
     const res = await request(`/partner-api/devices?${queryString}`);
     expect(res.status).toBe(200);
     expect(deviceExportEnvelopeSchema.parse(await res.json()).data).toHaveLength(1);
+  });
+
+  it('bounds high-cardinality memberships with deterministic completeness metadata', async () => {
+    const groupIds = Array.from({ length: 500 }, (_, index) =>
+      `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`,
+    );
+    results.push([{ ...device(), groupIds, groupCount: 501 }]);
+    const body = await (await request('/partner-api/devices')).json();
+    const record = deviceExportEnvelopeSchema.parse(body).data[0];
+    expect(record.groupIds).toEqual(groupIds);
+    expect(record.groupMembership).toEqual({
+      total: 501, included: 500, complete: false, reason: 'membership_limit_exceeded',
+    });
   });
 
   it.each([OTHER_ORG_ID, '88888888-8888-4888-8888-888888888888'])('fails closed for inaccessible/nonexistent org filter %s', async (orgId) => {
@@ -165,13 +196,6 @@ describe('partner foundational device export', () => {
     const res = await request('/partner-api/devices');
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain('secret database internals');
-  });
-
-  it('returns the same bounded failure when the page membership query fails', async () => {
-    results.push([device()], new Error('private membership details'));
-    const res = await request('/partner-api/devices');
-    expect(res.status).toBe(500);
-    expect(await res.text()).not.toContain('private membership details');
   });
 
   it('rejects an implementation response that violates its strict schema', () => {
