@@ -216,6 +216,9 @@ describe('recordPax8SubscriptionObservations gate (breeze_app, real SQL)', () =>
     const { partnerA, orgA, integrationA, snapshotA } = await seed();
 
     const result = await withSystemDbAccessContext(async () => {
+      await db.update(pax8SubscriptionSnapshots)
+        .set({ quantityKnown: true })
+        .where(eq(pax8SubscriptionSnapshots.id, snapshotA.id));
       const [contract] = await db.insert(contracts).values({
         partnerId: partnerA.id, orgId: orgA.id, name: 'C', intervalMonths: 1, startDate: '2026-01-01',
       }).returning({ id: contracts.id });
@@ -229,7 +232,23 @@ describe('recordPax8SubscriptionObservations gate (breeze_app, real SQL)', () =>
         subscriptionSnapshotId: snapshotA.id, contractLineId: manualLine!.id, syncEnabled: true,
       });
 
-      // (2) NON-manual line → must be skipped even when linked + enabled
+      // (2) a synthetic zero with no Pax8 evidence must preserve the last
+      // genuine observation instead of replacing it with 0.00.
+      const [unknownLine] = await db.insert(contractLines).values({
+        contractId: contract!.id, orgId: orgA.id, lineType: 'manual', description: 'unknown', unitPrice: '0.00', manualQuantity: '6.00',
+      }).returning({ id: contractLines.id });
+      const [unknownSnapshot] = await db.insert(pax8SubscriptionSnapshots).values({
+        integrationId: integrationA.id, partnerId: partnerA.id, pax8CompanyId: 'pax8-co-a',
+        pax8SubscriptionId: 'pax8-sub-unknown', orgId: orgA.id, quantity: '0.00', quantityKnown: false,
+      }).returning({ id: pax8SubscriptionSnapshots.id });
+      const previousObservedAt = new Date('2026-01-02T03:04:05.000Z');
+      const [unknownLink] = await db.insert(pax8ContractLineLinks).values({
+        integrationId: integrationA.id, partnerId: partnerA.id, orgId: orgA.id,
+        subscriptionSnapshotId: unknownSnapshot!.id, contractLineId: unknownLine!.id, syncEnabled: true,
+        lastObservedQuantity: '6.00', lastObservedAt: previousObservedAt,
+      }).returning({ id: pax8ContractLineLinks.id });
+
+      // (3) NON-manual line → must be skipped even when linked + enabled
       const [flatLine] = await db.insert(contractLines).values({
         contractId: contract!.id, orgId: orgA.id, lineType: 'flat', description: 'flat', unitPrice: '5.00', manualQuantity: null,
       }).returning({ id: contractLines.id });
@@ -242,7 +261,7 @@ describe('recordPax8SubscriptionObservations gate (breeze_app, real SQL)', () =>
         subscriptionSnapshotId: flatSnapshot!.id, contractLineId: flatLine!.id, syncEnabled: true,
       });
 
-      // (3) manual line linked to an UNMAPPED snapshot (org_id null) → skipped
+      // (4) manual line linked to an UNMAPPED snapshot (org_id null) → skipped
       const [unmappedLine] = await db.insert(contractLines).values({
         contractId: contract!.id, orgId: orgA.id, lineType: 'manual', description: 'unmapped', unitPrice: '0.00', manualQuantity: '3.00',
       }).returning({ id: contractLines.id });
@@ -259,19 +278,29 @@ describe('recordPax8SubscriptionObservations gate (breeze_app, real SQL)', () =>
 
       const rows = await db.select({ id: contractLines.id, qty: contractLines.manualQuantity, type: contractLines.lineType })
         .from(contractLines).where(eq(contractLines.contractId, contract!.id));
+      const [preservedUnknownLink] = await db.select({
+        quantity: pax8ContractLineLinks.lastObservedQuantity,
+        at: pax8ContractLineLinks.lastObservedAt,
+      }).from(pax8ContractLineLinks).where(eq(pax8ContractLineLinks.id, unknownLink!.id));
       const byId = new Map(rows.map((r) => [r.id, r]));
       return {
         observationResult,
         manualQty: byId.get(manualLine!.id)?.qty,
         flatQty: byId.get(flatLine!.id)?.qty,
         unmappedQty: byId.get(unmappedLine!.id)?.qty,
+        preservedUnknownLink,
+        previousObservedAt,
       };
     });
 
-    expect(result.observationResult).toEqual({ observed: 1, skipped: 2 });
+    expect(result.observationResult).toEqual({ observed: 1, skipped: 3 });
     expect(result.manualQty).toBe('0.00'); // billing ledger remains authoritative
     expect(result.flatQty).toBeNull(); // non-manual untouched
     expect(result.unmappedQty).toBe('3.00'); // unmapped-snapshot link skipped
+    expect(result.preservedUnknownLink).toEqual({
+      quantity: '6.00',
+      at: result.previousObservedAt,
+    });
   });
 
   runDb('linking a second subscription to an already-linked line throws a clear error', async () => {
@@ -342,6 +371,13 @@ describe('detectPax8Drift (breeze_app, real SQL)', () => {
     const input = { partnerId: partnerA.id, integrationId: integrationA.id };
     const partnerAOrgCtx = { ...partnerCtx(partnerA.id), accessibleOrgIds: [orgA.id] };
     const partnerBOrgCtx = { ...partnerCtx(partnerB.id), accessibleOrgIds: [orgB.id] };
+    // The pre-column/default row is legacy evidence: its synthetic-looking
+    // quantity is unknown until a fresh sync explicitly marks it known.
+    await expect(withDbAccessContext(partnerAOrgCtx, () => detectPax8Drift(input)))
+      .resolves.toEqual([]);
+    await withSystemDbAccessContext(() => db.update(pax8SubscriptionSnapshots)
+      .set({ quantityKnown: true })
+      .where(eq(pax8SubscriptionSnapshots.id, snapshotA.id)));
     await expect(withDbAccessContext(partnerAOrgCtx, () => detectPax8Drift(input)))
       .resolves.toEqual([expect.objectContaining({
         contractLineId: lineId,

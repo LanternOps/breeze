@@ -84,6 +84,7 @@ vi.mock('../db/schema', () => ({
     status: 'pax8_subscription_snapshots.status',
     billingTerm: 'pax8_subscription_snapshots.billing_term',
     quantity: 'pax8_subscription_snapshots.quantity',
+    quantityKnown: 'pax8_subscription_snapshots.quantity_known',
     unitPrice: 'pax8_subscription_snapshots.unit_price',
     unitCost: 'pax8_subscription_snapshots.unit_cost',
     currencyCode: 'pax8_subscription_snapshots.currency_code',
@@ -470,6 +471,10 @@ describe('pax8 routes', () => {
     expect(orgConditionSpy).toHaveReturnedWith(`pax8_subscription_snapshots.org_id IN (${ORG_A})`);
     const body = await res.json();
     expect(body).toHaveProperty('integrationId', integration.id);
+    expect(vi.mocked(db.select).mock.calls[1]?.[0]).toMatchObject({
+      quantity: 'pax8_subscription_snapshots.quantity',
+      quantityKnown: 'pax8_subscription_snapshots.quantity_known',
+    });
   });
 
   it('GET /subscriptions with inaccessible orgId returns 403', async () => {

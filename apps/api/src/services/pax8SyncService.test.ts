@@ -204,6 +204,7 @@ describe('pax8SyncService', () => {
           contractLineId: 'line-1',
           linkOrgId: 'org-1',
           quantity: '12.00',
+          quantityKnown: true,
           lineType: 'manual',
           lineOrgId: 'org-1',
           subscriptionOrgId: 'org-1',
@@ -213,6 +214,17 @@ describe('pax8SyncService', () => {
           contractLineId: 'line-2',
           linkOrgId: 'org-2',
           quantity: '5.00',
+          quantityKnown: true,
+          lineType: 'manual',
+          lineOrgId: 'org-1',
+          subscriptionOrgId: 'org-1',
+        },
+        {
+          linkId: 'link-3',
+          contractLineId: 'line-3',
+          linkOrgId: 'org-1',
+          quantity: '0.00',
+          quantityKnown: false,
           lineType: 'manual',
           lineOrgId: 'org-1',
           subscriptionOrgId: 'org-1',
@@ -224,8 +236,9 @@ describe('pax8SyncService', () => {
     } as any);
     const linkUpdate = updateNoReturnOnce();
 
-    await expect(recordPax8SubscriptionObservations('integration-1')).resolves.toEqual({ observed: 1, skipped: 1 });
+    await expect(recordPax8SubscriptionObservations('integration-1')).resolves.toEqual({ observed: 1, skipped: 2 });
     expect(db.update).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'contract_lines.id' }));
+    expect(db.update).toHaveBeenCalledTimes(1);
     expect(linkUpdate.set).toHaveBeenCalledWith(expect.objectContaining({ lastObservedQuantity: '12.00' }));
   });
 });

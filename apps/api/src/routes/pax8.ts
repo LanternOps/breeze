@@ -380,6 +380,7 @@ pax8Routes.get('/subscriptions', partnerScopes, readPerm, zValidator('query', su
       status: pax8SubscriptionSnapshots.status,
       billingTerm: pax8SubscriptionSnapshots.billingTerm,
       quantity: pax8SubscriptionSnapshots.quantity,
+      quantityKnown: pax8SubscriptionSnapshots.quantityKnown,
       unitPrice: pax8SubscriptionSnapshots.unitPrice,
       unitCost: pax8SubscriptionSnapshots.unitCost,
       currencyCode: pax8SubscriptionSnapshots.currencyCode,

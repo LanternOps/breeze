@@ -252,6 +252,7 @@ export async function recordPax8SubscriptionObservations(integrationId: string):
       contractLineId: pax8ContractLineLinks.contractLineId,
       linkOrgId: pax8ContractLineLinks.orgId,
       quantity: pax8SubscriptionSnapshots.quantity,
+      quantityKnown: pax8SubscriptionSnapshots.quantityKnown,
       lineType: contractLines.lineType,
       lineOrgId: contractLines.orgId,
       subscriptionOrgId: pax8SubscriptionSnapshots.orgId,
@@ -264,7 +265,7 @@ export async function recordPax8SubscriptionObservations(integrationId: string):
   let observed = 0;
   let skipped = 0;
   for (const row of rows) {
-    if (row.lineType !== 'manual' || !row.subscriptionOrgId || row.subscriptionOrgId !== row.lineOrgId || row.linkOrgId !== row.lineOrgId) {
+    if (!row.quantityKnown || row.lineType !== 'manual' || !row.subscriptionOrgId || row.subscriptionOrgId !== row.lineOrgId || row.linkOrgId !== row.lineOrgId) {
       skipped++;
       continue;
     }
@@ -491,8 +492,9 @@ export async function linkPax8SubscriptionToContractLine(input: {
 /**
  * Remove a Pax8 subscription ↔ contract-line link. Idempotent — deleting an
  * already-absent link returns { unlinked: false }. Intentionally does NOT reset
- * the contract line's manual_quantity: unlinking stops future quantity sync but
- * leaves the last-synced quantity in place so the bill doesn't change underfoot.
+ * the contract line's manual_quantity: unlinking stops future observations but
+ * never changes Breeze's ledger quantity. Link-local observation history is
+ * removed with the link row.
  */
 export async function unlinkPax8Subscription(input: {
   integrationId: string;
