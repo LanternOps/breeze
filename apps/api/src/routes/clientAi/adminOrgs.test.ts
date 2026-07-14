@@ -174,6 +174,13 @@ describe('GET /client-ai/admin/orgs', () => {
     expect(res.status).toBe(200);
     expect(eq).toHaveBeenCalledWith(m365Connections.profile, 'legacy-direct');
   });
+
+  it('ignores a legacy-direct row whose tenant id is null', async () => {
+    setupOrgListDb({ 2: [], 4: [], 6: [{ orgId: ORG_ID, tenantId: null }] });
+    const res = await buildApp().request('/client-ai/admin/orgs', { headers: AUTHED });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0].suggestedEntraTenantId).toBeNull();
+  });
 });
 
 describe('GET /client-ai/admin/orgs/:orgId/consent-url', () => {

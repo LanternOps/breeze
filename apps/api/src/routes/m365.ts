@@ -37,8 +37,9 @@ const legacyDirectForOrg = (orgId: string) =>
 // no auth context and reject every request with 401.
 m365Routes.use('*', authMiddleware);
 
-// Whole group is dark unless the feature flag is on.
-m365Routes.use('*', async (c, next) => {
+// Only the singular legacy-direct surface is dark unless its feature flag is
+// on. The customer-graph-read routes have their own onboarding gate.
+m365Routes.use('/connection', async (c, next) => {
   if (!M365_ENABLED) return c.json({ error: 'Microsoft 365 integration is not enabled' }, 404);
   await next();
 });

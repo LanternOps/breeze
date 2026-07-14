@@ -76,6 +76,10 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // decrypts the active integration in one short partner context, then closes
   // it before making the outbound request.
   { method: 'GET', pattern: /^\/api\/v1\/pax8\/products\/[^/]+\/(?:provision-details|dependencies)\/?$/ },
+  // M365 consent callback and retest own short DB contexts around outbound
+  // Microsoft/executor HTTP and must never inherit an ambient request tx.
+  { method: 'GET', pattern: /^\/api\/v1\/m365\/consent\/callback\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/m365\/connections\/[^/]+\/retest\/?$/ },
 ];
 
 /**

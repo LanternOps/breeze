@@ -150,7 +150,7 @@ clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
     }
   }
   for (const row of m365) {
-    if (row.orgId && ENTRA_TENANT_GUID_REGEX.test(row.tenantId)) {
+    if (row.orgId && row.tenantId && ENTRA_TENANT_GUID_REGEX.test(row.tenantId)) {
       suggestedByOrg.set(row.orgId, row.tenantId.toLowerCase());
     }
   }
