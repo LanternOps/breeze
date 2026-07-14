@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -497,4 +498,35 @@ test('removes the temporary sibling when atomic replacement fails', async () => 
   );
   assert.deepEqual(operations, ['write', 'rename', 'rm']);
   assert.equal(temporary, undefined);
+});
+
+test('repository funding points GitHub Sponsors at LanternOps', async () => {
+  const funding = await readFile(new URL('../FUNDING.yml', import.meta.url), 'utf8');
+  assert.equal(funding, 'github: LanternOps\n');
+});
+
+test('repository README contains exactly one ordered community marker pair', async () => {
+  const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
+
+  for (const name of ['sponsors', 'contributors']) {
+    const start = `<!-- ${name}:start -->`;
+    const end = `<!-- ${name}:end -->`;
+    assert.equal(readme.split(start).length - 1, 1, `${name} start marker count`);
+    assert.equal(readme.split(end).length - 1, 1, `${name} end marker count`);
+    assert.ok(readme.indexOf(start) < readme.indexOf(end), `${name} markers are ordered`);
+  }
+});
+
+test('repository workflow updates the README on schedule or by dispatch', async () => {
+  const workflow = await readFile(
+    new URL('../workflows/update-community-readme.yml', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(workflow, /^\s*schedule:\s*$/m);
+  assert.match(workflow, /^\s*- cron: ['"]17 5 \* \* \*['"]\s*$/m);
+  assert.match(workflow, /^\s*workflow_dispatch:\s*$/m);
+  assert.match(workflow, /^permissions:\n  contents: write$/m);
+  assert.match(workflow, /node \.github\/scripts\/update-community-readme\.mjs/);
+  assert.doesNotMatch(workflow, /^\s*pull_request:\s*$/m);
 });
