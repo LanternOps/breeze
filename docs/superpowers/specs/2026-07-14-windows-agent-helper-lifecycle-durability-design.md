@@ -1,7 +1,7 @@
 # Windows agent and helper lifecycle durability
 
 **Date:** 2026-07-14
-**Status:** Design approved, awaiting spec review
+**Status:** Approved
 **Scope:** Windows session helpers, RDS support, main-agent exclusivity, watchdog recovery, and diagnostics
 **Branch:** `ToddHebebrand/helper-sessions-in-remote-desktop`
 
@@ -235,7 +235,9 @@ and a process creation time predating the current agent owner.
 
 Only the full Windows `run` path acquires an exclusive, no-sharing file handle
 before config, IPC, heartbeat, or collector initialization. The lock file lives
-in Breeze's hardened machine-wide ProgramData directory. Helper,
+in a private SYSTEM/Administrators-owned `run` child of Breeze's hardened
+machine-wide ProgramData directory. Directory and file ownership are verified
+in addition to the protected DACL. Helper,
 service-management, enrollment, and diagnostic subcommands do not acquire it.
 
 The protected parent directory is the security boundary: an unprivileged local
@@ -277,8 +279,10 @@ Forced attempt:
    the agent state-file PID for destructive action.
 2. Verify that the PID is the SCM-owned BreezeAgent process and that its image
    path matches the configured service binary.
-3. Terminate it, wait for process exit, and wait for SCM state `Stopped`.
-4. Start the service and verify `Running` with a new live PID.
+3. Terminate it, wait for process exit, and observe SCM. If SCM reaches
+   `Stopped`, start explicitly. If configured SCM failure recovery has already
+   entered `StartPending` or `Running`, do not issue a competing start.
+4. In either branch, verify `Running` with a new live PID and matching image.
 
 `RecoveryManager.Attempt` will accept a richer recovery result so journal
 entries identify the phase, old/new PID, service states, elapsed time, and
@@ -338,8 +342,9 @@ rate-limited. Support collection can then distinguish:
   a startup marker; it does not continue without exclusivity.
 - Watchdog stop timeout leaves the service untouched in its observed state and
   advances to the separately verified forced attempt after cooldown.
-- PID validation failure blocks forced termination and enters failover rather
-  than risking termination of an unrelated process.
+- PID validation failure blocks forced termination, returns a terminal recovery
+  disposition, and enters failover rather than retrying attempt 2 or risking
+  termination of an unrelated process.
 
 ## Compatibility and rollout
 
