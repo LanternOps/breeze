@@ -325,14 +325,36 @@ export default function M365CustomerGraphReadCard() {
     request: () => Promise<Response>,
     stalePayload: unknown,
   ): Promise<Response> => {
-    const response = await request();
-    if (isCurrent(target)) return response;
-    return {
-      ok: true,
+    const silentResponse = () => new Response(JSON.stringify(stalePayload), {
       status: 200,
       statusText: "OK",
-      json: async () => stalePayload,
-    } as Response;
+      headers: { "content-type": "application/json" },
+    });
+    let response: Response;
+    try {
+      response = await request();
+    } catch (error) {
+      if (!isCurrent(target)) return silentResponse();
+      throw error;
+    }
+
+    let body: string;
+    try {
+      body = await response.text();
+    } catch (error) {
+      if (!isCurrent(target)) return silentResponse();
+      throw error;
+    }
+    if (!isCurrent(target)) return silentResponse();
+
+    const bodylessStatus = response.status === 204
+      || response.status === 205
+      || response.status === 304;
+    return new Response(bodylessStatus ? null : body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: new Headers(response.headers),
+    });
   }, [isCurrent]);
 
   const perform = useCallback(async (

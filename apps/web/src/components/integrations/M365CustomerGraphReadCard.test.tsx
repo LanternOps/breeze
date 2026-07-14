@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   jwtOrgId: null as string | null,
   canWrite: true,
   successMessages: [] as string[],
+  errorMessages: [] as string[],
 }));
 
 vi.mock("../../stores/auth", () => ({
@@ -48,11 +49,27 @@ vi.mock("../../lib/runAction", () => ({
     request: () => Promise<Response>;
     parseSuccess?: (value: unknown) => unknown;
     successMessage?: string | ((value: unknown) => string);
+    errorFallback: string;
   }) => {
-    const response = await options.request();
-    const value = await response.json();
-    if (!response.ok) throw new Error("request failed");
-    const result = options.parseSuccess ? options.parseSuccess(value) : value;
+    let response: Response;
+    try {
+      response = await options.request();
+    } catch (error) {
+      state.errorMessages.push(options.errorFallback);
+      throw error;
+    }
+    const value = await response.json().catch(() => null);
+    if (!response.ok) {
+      state.errorMessages.push(options.errorFallback);
+      throw new Error("request failed");
+    }
+    let result: unknown;
+    try {
+      result = options.parseSuccess ? options.parseSuccess(value) : value;
+    } catch (error) {
+      state.errorMessages.push(options.errorFallback);
+      throw error;
+    }
     if (options.successMessage) {
       const message = typeof options.successMessage === "function"
         ? options.successMessage(result)
@@ -128,20 +145,25 @@ function connection(overrides: Record<string, unknown> = {}) {
 }
 
 function makeResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
+  const body = JSON.stringify(payload);
   return {
     ok,
     status,
     statusText: ok ? "OK" : "Error",
     json: vi.fn().mockResolvedValue(payload),
+    text: vi.fn().mockResolvedValue(body),
+    headers: new Headers({ "content-type": "application/json" }),
   } as unknown as Response;
 }
 
 function deferredResponse() {
   let resolve!: (response: Response) => void;
-  const promise = new Promise<Response>((done) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<Response>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 describe("M365CustomerGraphReadCard", () => {
@@ -152,6 +174,7 @@ describe("M365CustomerGraphReadCard", () => {
     state.jwtOrgId = null;
     state.canWrite = true;
     state.successMessages = [];
+    state.errorMessages = [];
   });
 
   it("renders the exact nine fixed permissions and no credential inputs for an empty envelope", async () => {
@@ -514,6 +537,116 @@ describe("M365CustomerGraphReadCard", () => {
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
     expect(screen.getByText("Contoso B")).toBeInTheDocument();
     expect(screen.queryByText("Northwind Tenant")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["consent", "Connect"],
+    ["retest", "Retest"],
+    ["disconnect", "Disconnect from Breeze"],
+  ])("silences a stale %s network rejection after switching to Org B", async (operation, buttonName) => {
+    const confirm = operation === "disconnect"
+      ? vi.spyOn(window, "confirm").mockReturnValue(true)
+      : null;
+    const pendingAction = deferredResponse();
+    const hasConnection = operation !== "consent";
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({
+        connection: hasConnection ? connection() : null,
+      })))
+      .mockReturnValueOnce(pendingAction.promise)
+      .mockResolvedValueOnce(makeResponse(envelope({
+        connection: hasConnection
+          ? connection({
+              id: "88888888-8888-4888-8888-888888888888",
+              tenantId: "99999999-9999-4999-8999-999999999999",
+              displayName: "Contoso B",
+            })
+          : null,
+      })));
+    const view = render(<M365CustomerGraphReadCard />);
+    fireEvent.click(await screen.findByRole("button", { name: buttonName }));
+
+    state.currentOrgId = ORG_B;
+    view.rerender(<M365CustomerGraphReadCard />);
+    const orgBAction = await screen.findByRole("button", { name: buttonName });
+    expect(orgBAction).toBeEnabled();
+
+    pendingAction.reject(new Error("stale network failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+    expect(state.errorMessages).toEqual([]);
+    expect(state.successMessages).toEqual([]);
+    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(orgBAction).toBeEnabled();
+    confirm?.mockRestore();
+  });
+
+  it.each([
+    ["consent", "Connect", "complete"],
+    ["consent", "Connect", "reject"],
+    ["retest", "Retest", "complete"],
+    ["retest", "Retest", "reject"],
+    ["disconnect", "Disconnect from Breeze", "complete"],
+    ["disconnect", "Disconnect from Breeze", "reject"],
+  ])("silences a stale %s response body %s after switching to Org B", async (operation, buttonName, outcome) => {
+    const confirm = operation === "disconnect"
+      ? vi.spyOn(window, "confirm").mockReturnValue(true)
+      : null;
+    let resolveBody!: (body: string) => void;
+    let rejectBody!: (error: unknown) => void;
+    const body = new Promise<string>((resolve, reject) => {
+      resolveBody = resolve;
+      rejectBody = reject;
+    });
+    const textMock = vi.fn(() => body);
+    const jsonMock = vi.fn(() => body);
+    const actionResponse = {
+      ok: false,
+      status: 500,
+      statusText: "Error",
+      headers: new Headers({ "content-type": "application/json" }),
+      text: textMock,
+      json: jsonMock,
+    } as unknown as Response;
+    const hasConnection = operation !== "consent";
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeResponse(envelope({
+        connection: hasConnection ? connection() : null,
+      })))
+      .mockResolvedValueOnce(actionResponse)
+      .mockResolvedValueOnce(makeResponse(envelope({
+        connection: hasConnection
+          ? connection({
+              id: "88888888-8888-4888-8888-888888888888",
+              tenantId: "99999999-9999-4999-8999-999999999999",
+              displayName: "Contoso B",
+            })
+          : null,
+      })));
+    const view = render(<M365CustomerGraphReadCard />);
+    fireEvent.click(await screen.findByRole("button", { name: buttonName }));
+    await waitFor(() =>
+      expect(textMock.mock.calls.length + jsonMock.mock.calls.length).toBe(1),
+    );
+
+    state.currentOrgId = ORG_B;
+    view.rerender(<M365CustomerGraphReadCard />);
+    const orgBAction = await screen.findByRole("button", { name: buttonName });
+    expect(orgBAction).toBeEnabled();
+
+    if (outcome === "complete") resolveBody('{"error":"stale provider detail"}');
+    else rejectBody(new Error("stale body failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+    expect(state.errorMessages).toEqual([]);
+    expect(state.successMessages).toEqual([]);
+    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(orgBAction).toBeEnabled();
+    confirm?.mockRestore();
   });
 
   it("uses at least 44px touch targets for every action", async () => {
