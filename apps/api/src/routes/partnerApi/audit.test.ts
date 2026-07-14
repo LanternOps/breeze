@@ -12,6 +12,7 @@ vi.mock('../../services/auditEvents', () => ({
 }));
 
 import {
+  __testOnly,
   partnerExportAuditMiddleware,
   type PartnerExportAuditPrincipal,
 } from './audit';
@@ -63,6 +64,16 @@ describe('partner export audit middleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.writeAuditEventAsync.mockResolvedValue(undefined);
+  });
+
+  it.each([
+    '/api/v1/partner-api/foo/partner-api/sites',
+    '/api/v1/partner-api//sites',
+    '/api/v1/partner-api/%2Fsites',
+    '/api/v1/partner-api/%2e/sites',
+    '/partner-api/sites',
+  ])('does not classify a spoofed raw pathname as canonical: %s', (path) => {
+    expect(__testOnly.routeResource(path)).toBeNull();
   });
 
   it.each(PARTNER_EXPORT_RESOURCES)('audits one bounded success event for %s', async (resource) => {

@@ -11,7 +11,7 @@ import {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const MAX_AUDIT_DURATION_MS = 24 * 60 * 60 * 1000;
-const RESOURCE_SET = new Set<string>(PARTNER_EXPORT_RESOURCES);
+const PARTNER_EXPORT_ROUTE_PREFIX = '/api/v1/partner-api/';
 
 export interface PartnerExportAuditPrincipal {
   servicePrincipalId: string;
@@ -34,12 +34,9 @@ type PublicError = {
 };
 
 function routeResource(path: string): PartnerExportResource | null {
-  if (path.endsWith('/')) return null;
-  const segments = path.split('/').filter(Boolean);
-  const candidate = segments.at(-1);
-  return segments.at(-2) === 'partner-api' && candidate && RESOURCE_SET.has(candidate)
-    ? candidate as PartnerExportResource
-    : null;
+  return PARTNER_EXPORT_RESOURCES.find(
+    (resource) => path === `${PARTNER_EXPORT_ROUTE_PREFIX}${resource}`,
+  ) ?? null;
 }
 
 function isAuditPrincipal(value: unknown): value is PartnerExportAuditPrincipal {

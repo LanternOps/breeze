@@ -496,6 +496,10 @@ describe('partnerApiAuthMiddleware', () => {
     ['unsupported GET', 'GET', '/api/v1/partner-api/not-a-resource?cursor=must-not-enter-audit'],
     ['unsupported method', 'POST', '/api/v1/partner-api/organizations?cursor=must-not-enter-audit'],
     ['trailing path', 'GET', '/api/v1/partner-api/organizations/?cursor=must-not-enter-audit'],
+    ['nested repeated prefix', 'GET', '/api/v1/partner-api/foo/partner-api/sites?cursor=must-not-enter-audit'],
+    ['double slash', 'GET', '/api/v1/partner-api//sites?cursor=must-not-enter-audit'],
+    ['encoded slash', 'GET', '/api/v1/partner-api/%2Fsites?cursor=must-not-enter-audit'],
+    ['alternate prefix', 'GET', '/partner-api/sites?cursor=must-not-enter-audit'],
   ] as const)('preserves exactly one bounded legacy audit for an authenticated %s', async (_label, method, path) => {
     mockBootstrap();
     const app = new Hono();
