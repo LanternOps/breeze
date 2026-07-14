@@ -29,6 +29,7 @@ import {
   ShieldCheck,
   Link2,
   Cloud,
+  History,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
@@ -53,6 +54,7 @@ import DeviceFilesystemTab from "./DeviceFilesystemTab";
 import DeviceManagementTab from "./DeviceManagementTab";
 import DeviceEffectiveConfigTab from "./DeviceEffectiveConfigTab";
 import DeviceIpHistoryTab from "./DeviceIpHistoryTab";
+import DeviceChangeHistoryTab from "./DeviceChangeHistoryTab";
 import DeviceBootPerformanceTab from "./DeviceBootPerformanceTab";
 import DevicePlaybookHistory from "./DevicePlaybookHistory";
 import DevicePeripheralsTab from "./DevicePeripheralsTab";
@@ -93,6 +95,7 @@ type Tab =
   | "connections"
   | "filesystem"
   | "ip-history"
+  | "change-history"
   | "boot-performance"
   | "playbooks"
   | "peripherals"
@@ -169,6 +172,7 @@ const VALID_TABS: Tab[] = [
   "connections",
   "filesystem",
   "ip-history",
+  "change-history",
   "boot-performance",
   "playbooks",
   "peripherals",
@@ -393,6 +397,12 @@ export default function DeviceDetails({
       label: t("deviceDetails.ipHistory"),
       icon: <Network className="h-4 w-4" />,
       title: t("deviceDetails.historicalPublicAndPrivateIpAddresses"),
+    },
+    {
+      id: "change-history",
+      label: t("deviceDetails.changeHistory"),
+      icon: <History className="h-4 w-4" />,
+      title: t("deviceDetails.changeHistoryTitle"),
     },
     {
       id: "filesystem",
@@ -713,6 +723,10 @@ export default function DeviceDetails({
 
       {activeTab === "ip-history" && (
         <DeviceIpHistoryTab deviceId={device.id} />
+      )}
+
+      {activeTab === "change-history" && (
+        <DeviceChangeHistoryTab deviceId={device.id} />
       )}
 
       {activeTab === "playbooks" && (
