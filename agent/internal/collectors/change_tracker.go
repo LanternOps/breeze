@@ -176,6 +176,8 @@ func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
 	changes = append(changes, c.diffNetworkAdapters(currentSnapshot)...)
 	changes = append(changes, c.diffScheduledTasks(currentSnapshot)...)
 	changes = append(changes, c.diffUserAccounts(currentSnapshot)...)
+	changes = append(changes, c.diffHardware(currentSnapshot)...)
+	changes = append(changes, c.diffOS(currentSnapshot)...)
 	changes = c.filterNoise(changes)
 
 	c.lastSnapshot = currentSnapshot
@@ -187,6 +189,11 @@ func (c *ChangeTrackerCollector) CollectChanges() ([]ChangeRecord, error) {
 
 // initialInventory generates "added" records for every item in the baseline
 // snapshot so the API has full visibility into the device's initial state.
+//
+// Hardware and OS are intentionally excluded here: they are singletons diffed
+// only against a prior snapshot (see diffHardware/diffOS), and the first
+// observed state becomes the silent baseline — we don't want a baseline
+// "added" record for the device's current specs.
 func (c *ChangeTrackerCollector) initialInventory(snap *Snapshot) []ChangeRecord {
 	now := c.now()
 	records := make([]ChangeRecord, 0, len(snap.Services)+len(snap.Software)+len(snap.StartupItems)+len(snap.NetworkAdapters)+len(snap.ScheduledTasks)+len(snap.UserAccounts))
@@ -970,6 +977,76 @@ func (c *ChangeTrackerCollector) diffUserAccounts(current *Snapshot) []ChangeRec
 	}
 
 	return changes
+}
+
+// diffHardware compares the current hardware state against the previous
+// snapshot. Hardware is a singleton (not a map), so there is no add/remove —
+// only field-level "modified"/"updated" events. Returns no records when
+// either snapshot's Hardware is nil (first-run seeding or collection
+// unavailable): we never want to emit "changed from nothing".
+func (c *ChangeTrackerCollector) diffHardware(current *Snapshot) []ChangeRecord {
+	now := c.now()
+	changes := make([]ChangeRecord, 0)
+	prev := c.lastSnapshot.Hardware
+	cur := current.Hardware
+	if prev == nil || cur == nil {
+		return changes // first-run seed or unavailable: no events
+	}
+
+	emit := func(subject string, before, after any) {
+		changes = append(changes, ChangeRecord{
+			Timestamp: now, ChangeType: ChangeTypeHardware, ChangeAction: ChangeActionModified,
+			Subject:     subject,
+			BeforeValue: map[string]any{"value": before},
+			AfterValue:  map[string]any{"value": after},
+		})
+	}
+
+	if prev.RAMTotalMB != cur.RAMTotalMB {
+		emit("Memory", prev.RAMTotalMB, cur.RAMTotalMB)
+	}
+	if prev.CPUModel != cur.CPUModel || prev.CPUCores != cur.CPUCores {
+		changes = append(changes, ChangeRecord{
+			Timestamp: now, ChangeType: ChangeTypeHardware, ChangeAction: ChangeActionModified, Subject: "Processor",
+			BeforeValue: map[string]any{"model": prev.CPUModel, "cores": prev.CPUCores},
+			AfterValue:  map[string]any{"model": cur.CPUModel, "cores": cur.CPUCores},
+		})
+	}
+	if prev.DiskTotalGB != cur.DiskTotalGB {
+		emit("Storage", prev.DiskTotalGB, cur.DiskTotalGB)
+	}
+	if prev.BIOSVersion != cur.BIOSVersion {
+		changes = append(changes, ChangeRecord{
+			Timestamp: now, ChangeType: ChangeTypeHardware, ChangeAction: ChangeActionUpdated, Subject: "BIOS",
+			BeforeValue: map[string]any{"value": prev.BIOSVersion}, AfterValue: map[string]any{"value": cur.BIOSVersion},
+		})
+	}
+	if prev.SerialNumber != cur.SerialNumber {
+		emit("System Serial", prev.SerialNumber, cur.SerialNumber)
+	}
+	if prev.Motherboard != cur.Motherboard {
+		emit("Motherboard", prev.Motherboard, cur.Motherboard)
+	}
+
+	return changes
+}
+
+// diffOS compares the current OS identity against the previous snapshot.
+// Returns no records when either snapshot's System is nil (first-run seeding
+// or collection unavailable), or when the OS version is unchanged.
+func (c *ChangeTrackerCollector) diffOS(current *Snapshot) []ChangeRecord {
+	now := c.now()
+	prev := c.lastSnapshot.System
+	cur := current.System
+	if prev == nil || cur == nil || prev.OSVersion == cur.OSVersion {
+		return nil
+	}
+
+	return []ChangeRecord{{
+		Timestamp: now, ChangeType: ChangeTypeOS, ChangeAction: ChangeActionUpdated, Subject: "Operating System",
+		BeforeValue: map[string]any{"version": prev.OSVersion, "build": prev.OSBuild},
+		AfterValue:  map[string]any{"version": cur.OSVersion, "build": cur.OSBuild},
+	}}
 }
 
 func (c *ChangeTrackerCollector) filterNoise(changes []ChangeRecord) []ChangeRecord {
