@@ -340,8 +340,8 @@ Each subscription row offers these actions:
 |--------|-------------|:------------:|
 | **Link for observation** | Connect the subscription to an existing contract line, or create a new manual line on the spot, so Pax8-reported quantities can be compared with Breeze billing | Yes |
 | **Change** | Re-point the subscription to a different contract line | Yes |
-| **Pause observations** | Stop recording new Pax8 quantity observations while keeping the link intact | No |
-| **Resume observations** | Resume recording Pax8 quantity observations and surfacing drift | No |
+| **Pause observations** | Stop recording new Pax8 quantity observations while keeping the link intact | Yes |
+| **Resume observations** | Resume recording Pax8 quantity observations and surfacing drift | Yes |
 | **Unlink** | Remove the connection between the subscription and the contract line | Yes |
 
 When **Track Pax8 reported quantity for drift** is enabled on a link, each Pax8 sync records the latest known quantity as an observation and surfaces any difference from the linked manual contract-line quantity. Breeze's order ledger and linked manual quantity remain authoritative for billing; observation sync never overwrites that billing quantity. Pausing stops new observations and drift updates while leaving the link and billing quantity intact.
