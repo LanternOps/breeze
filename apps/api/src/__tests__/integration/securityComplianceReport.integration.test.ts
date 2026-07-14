@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { devices, deviceVulnerabilities, vulnerabilities } from '../../db/schema';
 import { generateSecurityCompliancePostureReport } from '../../services/securityComplianceReport';
+import { loadOpenVulnerabilityCounts } from '../../services/securityComplianceReportVulnerabilities';
 import { setupTestEnvironment } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -92,20 +93,26 @@ describe('security compliance report vulnerability isolation', () => {
         },
       ]);
 
-      return { deviceA: deviceA!.id };
+      return { deviceA: deviceA!.id, deviceB: deviceB!.id };
     });
 
-    const result = await withDbAccessContext(
+    const { result, vulnerabilityCounts } = await withDbAccessContext(
       {
         scope: 'organization',
         orgId: envA.organization.id,
         accessibleOrgIds: [envA.organization.id],
         userId: envA.user.id,
       },
-      () =>
-        generateSecurityCompliancePostureReport(envA.organization.id, {
+      async () => {
+        const result = await generateSecurityCompliancePostureReport(envA.organization.id, {
           includeCis: false,
-        }),
+        });
+        const vulnerabilityCounts = await loadOpenVulnerabilityCounts([
+          seeded.deviceA,
+          seeded.deviceB,
+        ]);
+        return { result, vulnerabilityCounts };
+      },
     );
 
     expect(result.rows).toEqual(
@@ -120,6 +127,7 @@ describe('security compliance report vulnerability isolation', () => {
     expect(result.rows).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ hostname: 'posture-b' })]),
     );
-    expect(seeded.deviceA).toBeTruthy();
+    expect(vulnerabilityCounts.get(seeded.deviceA)).toEqual({ high: 1, critical: 0 });
+    expect(vulnerabilityCounts.has(seeded.deviceB)).toBe(false);
   });
 });

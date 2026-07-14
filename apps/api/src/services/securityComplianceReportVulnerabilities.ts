@@ -8,6 +8,8 @@ export type DeviceVulnerabilityCounts = { critical: number; high: number };
 type FindingRow = { deviceId: string; vulnerabilityId: string };
 type CatalogRow = { id: string; severity: string | null };
 
+const VULNERABILITY_CATALOG_BATCH_SIZE = 10_000;
+
 export function aggregateVulnerabilityCounts(
   findings: FindingRow[],
   catalogRows: CatalogRow[],
@@ -63,12 +65,25 @@ export async function loadOpenVulnerabilityCounts(
   if (vulnerabilityIds.length === 0) return new Map();
 
   const catalogRows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
-        .select({ id: vulnerabilities.id, severity: vulnerabilities.severity })
-        .from(vulnerabilities)
-        .where(inArray(vulnerabilities.id, vulnerabilityIds)),
-    ),
+    withSystemDbAccessContext(async () => {
+      const rows: CatalogRow[] = [];
+      for (
+        let offset = 0;
+        offset < vulnerabilityIds.length;
+        offset += VULNERABILITY_CATALOG_BATCH_SIZE
+      ) {
+        const batch = vulnerabilityIds.slice(
+          offset,
+          offset + VULNERABILITY_CATALOG_BATCH_SIZE,
+        );
+        const batchRows = await db
+          .select({ id: vulnerabilities.id, severity: vulnerabilities.severity })
+          .from(vulnerabilities)
+          .where(inArray(vulnerabilities.id, batch));
+        rows.push(...batchRows);
+      }
+      return rows;
+    }),
   );
 
   return aggregateVulnerabilityCounts(findings, catalogRows);
