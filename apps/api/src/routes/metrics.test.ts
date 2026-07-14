@@ -35,6 +35,29 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { authMiddleware } from '../middleware/auth';
+import {
+  metricsMiddleware,
+  metricsRoutes,
+  recordAgentHeartbeat,
+  recordBackupCommandTimeout,
+  recordBackupDispatchFailure,
+  recordBackupVerificationResult,
+  recordBackupVerificationSkip,
+  recordHttpRequest,
+  recordRestoreTimeout,
+  recordScriptExecution,
+  recordSensitiveDataFinding,
+  recordSensitiveDataRemediationDecision,
+  recordSensitiveDataScanQueued,
+  resetMetricsForTesting,
+  setLowReadinessDevices,
+  updateBusinessMetrics,
+} from './metrics';
+import {
+  recordAgentEnrollment,
+  recordCommandDispatch,
+  recordFailedLogin,
+} from '../services/anomalyMetrics';
 
 function mockRollupTrendRows(selectMock: ReturnType<typeof vi.fn>, rows: unknown[]) {
   selectMock.mockReturnValueOnce({
@@ -71,47 +94,19 @@ function getMetricLine(metrics: string, name: string, labels?: Record<string, st
 
 describe('metrics routes', () => {
   let app: Hono;
-  let metricsRoutes: typeof import('./metrics').metricsRoutes;
-  let recordHttpRequest: typeof import('./metrics').recordHttpRequest;
-  let recordAgentHeartbeat: typeof import('./metrics').recordAgentHeartbeat;
-  let recordScriptExecution: typeof import('./metrics').recordScriptExecution;
-  let recordSensitiveDataFinding: typeof import('./metrics').recordSensitiveDataFinding;
-  let recordSensitiveDataRemediationDecision: typeof import('./metrics').recordSensitiveDataRemediationDecision;
-  let recordSensitiveDataScanQueued: typeof import('./metrics').recordSensitiveDataScanQueued;
-  let recordBackupDispatchFailure: typeof import('./metrics').recordBackupDispatchFailure;
-  let recordBackupCommandTimeout: typeof import('./metrics').recordBackupCommandTimeout;
-  let recordBackupVerificationResult: typeof import('./metrics').recordBackupVerificationResult;
-  let recordBackupVerificationSkip: typeof import('./metrics').recordBackupVerificationSkip;
-  let recordRestoreTimeout: typeof import('./metrics').recordRestoreTimeout;
-  let setLowReadinessDevices: typeof import('./metrics').setLowReadinessDevices;
-  let updateBusinessMetrics: typeof import('./metrics').updateBusinessMetrics;
-  let metricsMiddleware: typeof import('./metrics').metricsMiddleware;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.clearAllMocks();
+    selectMock.mockReset();
     selectMock.mockReturnValue({
       from: () => ({
         where: () => Promise.resolve([{ count: 0 }]),
       }),
     });
-    vi.resetModules();
+    process.env.NODE_ENV = 'test';
     process.env.METRICS_SCRAPE_TOKEN = 'test-scrape-token';
-    const metricsModule = await import('./metrics');
-    metricsRoutes = metricsModule.metricsRoutes;
-    recordHttpRequest = metricsModule.recordHttpRequest;
-    recordAgentHeartbeat = metricsModule.recordAgentHeartbeat;
-    recordScriptExecution = metricsModule.recordScriptExecution;
-    recordSensitiveDataFinding = metricsModule.recordSensitiveDataFinding;
-    recordSensitiveDataRemediationDecision = metricsModule.recordSensitiveDataRemediationDecision;
-    recordSensitiveDataScanQueued = metricsModule.recordSensitiveDataScanQueued;
-    recordBackupDispatchFailure = metricsModule.recordBackupDispatchFailure;
-    recordBackupCommandTimeout = metricsModule.recordBackupCommandTimeout;
-    recordBackupVerificationResult = metricsModule.recordBackupVerificationResult;
-    recordBackupVerificationSkip = metricsModule.recordBackupVerificationSkip;
-    recordRestoreTimeout = metricsModule.recordRestoreTimeout;
-    setLowReadinessDevices = metricsModule.setLowReadinessDevices;
-    updateBusinessMetrics = metricsModule.updateBusinessMetrics;
-    metricsMiddleware = metricsModule.metricsMiddleware;
+    delete process.env.METRICS_INCLUDE_ORG_ID;
+    resetMetricsForTesting();
     app = new Hono();
     app.route('/', metricsRoutes);
   });
@@ -188,13 +183,9 @@ describe('metrics routes', () => {
 
   it('returns 503 for /scrape when token is not configured', async () => {
     delete process.env.METRICS_SCRAPE_TOKEN;
-    vi.resetModules();
+    resetMetricsForTesting();
 
-    const metricsModule = await import('./metrics');
-    const appNoToken = new Hono();
-    appNoToken.route('/', metricsModule.metricsRoutes);
-
-    const res = await appNoToken.request('/scrape', {
+    const res = await app.request('/scrape', {
       headers: { Authorization: 'Bearer test-scrape-token' }
     });
     expect(res.status).toBe(503);
@@ -355,17 +346,13 @@ describe('metrics routes', () => {
   });
 
   it('records anomaly counters with tenant attribution (non-production)', async () => {
-    // metricsRoutes is already imported in beforeEach, which registers the
-    // anomaly recorder; importing anomalyMetrics after that resolves to the
-    // same module instance under the current resetModules state.
-    const anomaly = await import('../services/anomalyMetrics');
-    anomaly.recordFailedLogin('invalid_password', 'org-1');
-    anomaly.recordFailedLogin('invalid_password', 'org-1');
-    anomaly.recordFailedLogin('rate_limited_ip');
-    anomaly.recordAgentEnrollment('success', 'partner-1');
-    anomaly.recordAgentEnrollment('denied');
-    anomaly.recordCommandDispatch('reboot', 'user', 'org-1');
-    anomaly.recordCommandDispatch('script', 'system');
+    recordFailedLogin('invalid_password', 'org-1');
+    recordFailedLogin('invalid_password', 'org-1');
+    recordFailedLogin('rate_limited_ip');
+    recordAgentEnrollment('success', 'partner-1');
+    recordAgentEnrollment('denied');
+    recordCommandDispatch('reboot', 'user', 'org-1');
+    recordCommandDispatch('script', 'system');
 
     const res = await app.request('/metrics', {
       headers: { Authorization: 'Bearer token' }
@@ -397,16 +384,14 @@ describe('metrics routes', () => {
     const prevNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     process.env.METRICS_SCRAPE_TOKEN = 'test-scrape-token';
-    vi.resetModules();
+    resetMetricsForTesting();
     try {
-      const metricsModule = await import('./metrics');
-      const anomaly = await import('../services/anomalyMetrics');
-      anomaly.recordFailedLogin('invalid_password', 'org-secret');
-      anomaly.recordAgentEnrollment('success', 'partner-secret');
-      anomaly.recordCommandDispatch('reboot', 'user', 'org-secret');
+      recordFailedLogin('invalid_password', 'org-secret');
+      recordAgentEnrollment('success', 'partner-secret');
+      recordCommandDispatch('reboot', 'user', 'org-secret');
 
       const prodApp = new Hono();
-      prodApp.route('/', metricsModule.metricsRoutes);
+      prodApp.route('/', metricsRoutes);
       const res = await prodApp.request('/scrape', {
         headers: { Authorization: 'Bearer test-scrape-token' }
       });
@@ -426,7 +411,7 @@ describe('metrics routes', () => {
       ).toBe(true);
     } finally {
       process.env.NODE_ENV = prevNodeEnv;
-      vi.resetModules();
+      resetMetricsForTesting();
     }
   });
 });
