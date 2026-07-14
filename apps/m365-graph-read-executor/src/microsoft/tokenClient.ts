@@ -63,6 +63,19 @@ function required(value: string): string {
 }
 
 async function readBoundedBody(response: Response, maxBytes: number): Promise<string> {
+  const declaredLength = response.headers.get('content-length');
+  if (declaredLength !== null && /^(?:0|[1-9][0-9]*)$/.test(declaredLength)) {
+    let declaredBytes: bigint | undefined;
+    try {
+      declaredBytes = BigInt(declaredLength);
+    } catch {
+      declaredBytes = undefined;
+    }
+    if (declaredBytes !== undefined && declaredBytes > BigInt(maxBytes)) {
+      throw failure('token_response_too_large');
+    }
+  }
+
   if (!response.body) return '';
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];

@@ -129,8 +129,66 @@ describe('Microsoft token client', () => {
     });
   });
 
-  it('rejects a response body over the configured bound', async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () => new Response('x'.repeat(33), { status: 200 }));
+  it('rejects a declared Content-Length over the bound before reading the body', async () => {
+    let bodyRead = false;
+    const response = {
+      ok: true,
+      headers: new Headers({ 'content-length': '33' }),
+      body: {
+        getReader() {
+          bodyRead = true;
+          throw new Error('oversized provider body must not be read');
+        },
+      },
+    } as unknown as Response;
+    const fetchImpl = vi.fn<typeof fetch>(async () => response);
+
+    await expect(client(fetchImpl, { maxResponseBytes: 32 }).acquireGraphAppToken({
+      tenantId: TENANT_ID,
+    })).rejects.toMatchObject({
+      code: 'token_response_too_large',
+      message: 'token_response_too_large',
+    });
+    expect(bodyRead).toBe(false);
+  });
+
+  it('rejects cumulative multi-chunk overflow without a Content-Length header', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('x'.repeat(20)));
+        controller.enqueue(new TextEncoder().encode('x'.repeat(13)));
+        controller.close();
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(body, { status: 200 }));
+
+    await expect(client(fetchImpl, { maxResponseBytes: 32 }).acquireGraphAppToken({
+      tenantId: TENANT_ID,
+    })).rejects.toMatchObject({
+      code: 'token_response_too_large',
+      message: 'token_response_too_large',
+    });
+  });
+
+  it('does not trust a smaller declared Content-Length over actual streamed bytes', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response('x'.repeat(33), {
+      status: 200,
+      headers: { 'content-length': '8' },
+    }));
+
+    await expect(client(fetchImpl, { maxResponseBytes: 32 }).acquireGraphAppToken({
+      tenantId: TENANT_ID,
+    })).rejects.toMatchObject({
+      code: 'token_response_too_large',
+      message: 'token_response_too_large',
+    });
+  });
+
+  it.each(['not-a-number', '-1', '1.5'])('does not let malformed Content-Length %s weaken the stream bound', async (contentLength) => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response('x'.repeat(33), {
+      status: 200,
+      headers: { 'content-length': contentLength },
+    }));
 
     await expect(client(fetchImpl, { maxResponseBytes: 32 }).acquireGraphAppToken({
       tenantId: TENANT_ID,
