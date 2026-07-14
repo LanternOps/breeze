@@ -4,6 +4,7 @@ package sessionbroker
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -20,19 +21,31 @@ const (
 	wtsSessionTerminate  = 0xb
 )
 
-type directHelperSpawner struct{}
-
-func (directHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
-	if key.Role == "user" {
-		return SpawnUserHelperInSession(key.WindowsSessionID)
+func NewHelperLifecycleManager(broker *Broker, scmCh <-chan SCMSessionEvent) *HelperLifecycleManager {
+	manager, err := buildWindowsHelperLifecycleManager(broker, scmCh, newWindowsHelperSpawner)
+	if err != nil {
+		// Keep heartbeat startup operational, but disable proactive spawning.
+		// Reconciliation will retry on the next agent/service restart, when a
+		// fresh Job Object can be created before any helper process exists.
+		log.Error("lifecycle: failed to initialize helper Job Object", "error", err.Error())
+		return newHelperLifecycleManager(broker, NewSessionDetector(), scmCh, nil)
 	}
-	return SpawnHelperInSession(key.WindowsSessionID)
+	return manager
 }
 
-func (directHelperSpawner) Close() error { return nil }
-
-func NewHelperLifecycleManager(broker *Broker, scmCh <-chan SCMSessionEvent) *HelperLifecycleManager {
-	return newHelperLifecycleManager(broker, NewSessionDetector(), scmCh, directHelperSpawner{})
+func buildWindowsHelperLifecycleManager(
+	broker *Broker,
+	scmCh <-chan SCMSessionEvent,
+	newSpawner func() (*windowsHelperSpawner, error),
+) (*HelperLifecycleManager, error) {
+	spawner, err := newSpawner()
+	if err != nil {
+		return nil, fmt.Errorf("initialize Windows helper spawner: %w", err)
+	}
+	if spawner == nil {
+		return nil, fmt.Errorf("initialize Windows helper spawner: nil spawner")
+	}
+	return newHelperLifecycleManager(broker, NewSessionDetector(), scmCh, spawner), nil
 }
 
 func (m *HelperLifecycleManager) Start(ctx context.Context) {

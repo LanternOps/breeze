@@ -20,25 +20,57 @@ import (
 // the console-subsystem agent fallback when logging spawn outcomes — useful
 // when chasing reports of the logon console flash regression.
 type SpawnedHelper struct {
-	PID        uint32
-	Handle     windows.Handle
-	BinaryPath string
-	mu         sync.Mutex
+	PID             uint32
+	Handle          windows.Handle
+	BinaryPath      string
+	mu              sync.Mutex
+	terminated      bool
+	standaloneOwner *windowsHelperSpawner
+	ops             *spawnedHelperOps
 }
 
-// Close releases the duplicated process handle. Safe to call more than once.
+type spawnedHelperOps struct {
+	duplicateProcessHandle func(windows.Handle) (windows.Handle, error)
+	waitForSingleObject    func(windows.Handle, uint32) (uint32, error)
+	getExitCodeProcess     func(windows.Handle, *uint32) error
+	closeHandle            func(windows.Handle) error
+}
+
+func defaultSpawnedHelperOps() *spawnedHelperOps {
+	return &spawnedHelperOps{
+		duplicateProcessHandle: duplicateProcessHandle,
+		waitForSingleObject:    windows.WaitForSingleObject,
+		getExitCodeProcess:     windows.GetExitCodeProcess,
+		closeHandle:            windows.CloseHandle,
+	}
+}
+
+func (s *SpawnedHelper) processOps() *spawnedHelperOps {
+	if s.ops != nil {
+		return s.ops
+	}
+	return defaultSpawnedHelperOps()
+}
+
+// Close releases the process handle. Safe to call more than once. It never
+// terminates the process: the lifecycle spawner owns the shared Job Object,
+// while legacy standalone helpers have a private reaper that closes their Job
+// only after observing process exit.
 func (s *SpawnedHelper) Close() error {
 	if s == nil {
 		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.Handle == 0 {
+	handle := s.Handle
+	s.Handle = 0
+	s.standaloneOwner = nil
+	ops := s.processOps()
+	s.mu.Unlock()
+
+	if handle == 0 {
 		return nil
 	}
-	err := windows.CloseHandle(s.Handle)
-	s.Handle = 0
-	return err
+	return ops.closeHandle(handle)
 }
 
 func (s *SpawnedHelper) ProcessID() uint32      { return s.PID }
@@ -63,7 +95,7 @@ func (s *SpawnedHelper) Terminate() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.Handle == 0 {
+	if s.Handle == 0 || s.terminated {
 		return nil
 	}
 	var exitCode uint32
@@ -71,9 +103,14 @@ func (s *SpawnedHelper) Terminate() error {
 		return err
 	}
 	if exitCode != windowsProcessStillActive {
+		s.terminated = true
 		return nil
 	}
-	return windows.TerminateProcess(s.Handle, 1)
+	if err := windows.TerminateProcess(s.Handle, 1); err != nil {
+		return err
+	}
+	s.terminated = true
+	return nil
 }
 
 // Wait blocks until the spawned helper process exits and returns its exit
@@ -84,12 +121,18 @@ func (s *SpawnedHelper) Wait() (int, error) {
 		return -1, fmt.Errorf("SpawnedHelper: no handle")
 	}
 	s.mu.Lock()
-	handle := s.Handle
-	s.mu.Unlock()
-	if handle == 0 {
+	if s.Handle == 0 {
+		s.mu.Unlock()
 		return -1, fmt.Errorf("SpawnedHelper: no handle")
 	}
-	event, err := windows.WaitForSingleObject(handle, windows.INFINITE)
+	ops := s.processOps()
+	waitHandle, err := ops.duplicateProcessHandle(s.Handle)
+	s.mu.Unlock()
+	if err != nil {
+		return -1, fmt.Errorf("duplicate process handle for wait: %w", err)
+	}
+	defer ops.closeHandle(waitHandle)
+	event, err := ops.waitForSingleObject(waitHandle, windows.INFINITE)
 	if err != nil {
 		return -1, fmt.Errorf("WaitForSingleObject: %w", err)
 	}
@@ -97,62 +140,194 @@ func (s *SpawnedHelper) Wait() (int, error) {
 		return -1, fmt.Errorf("WaitForSingleObject: unexpected event %d", event)
 	}
 	var exitCode uint32
-	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
+	if err := ops.getExitCodeProcess(waitHandle, &exitCode); err != nil {
 		return -1, fmt.Errorf("GetExitCodeProcess: %w", err)
 	}
 	return int(exitCode), nil
 }
 
-// SpawnHelperInSession launches a user-helper process as SYSTEM in the
-// specified Windows session. Returns a SpawnedHelper describing the child
-// process, or nil + an error on failure. The caller is responsible for
-// closing the returned handle.
-func SpawnHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
-	// 1. Open our own process token (SYSTEM).
+func duplicateProcessHandle(handle windows.Handle) (windows.Handle, error) {
+	currentProcess, err := windows.GetCurrentProcess()
+	if err != nil {
+		return 0, fmt.Errorf("GetCurrentProcess: %w", err)
+	}
+	var duplicate windows.Handle
+	if err := windows.DuplicateHandle(
+		currentProcess,
+		handle,
+		currentProcess,
+		&duplicate,
+		0,
+		false,
+		windows.DUPLICATE_SAME_ACCESS,
+	); err != nil {
+		return 0, fmt.Errorf("DuplicateHandle: %w", err)
+	}
+	return duplicate, nil
+}
+
+type helperJobOwner interface {
+	Assign(windows.Handle) error
+	Close() error
+}
+
+type suspendedHelper struct {
+	process     windows.Handle
+	thread      windows.Handle
+	pid         uint32
+	binaryPath  string
+	tokenSource string
+}
+
+type windowsSpawnOps struct {
+	createSuspended  func(HelperKey) (*suspendedHelper, error)
+	resumeThread     func(windows.Handle) (uint32, error)
+	terminateProcess func(windows.Handle, uint32) error
+	closeHandle      func(windows.Handle) error
+	closeStarting    func()
+}
+
+// windowsHelperSpawner is the single owner of the helper Job Object. Its
+// mutex covers the complete create-suspended -> assign -> resume transaction
+// and Job close, so no helper can escape during lifecycle shutdown.
+type windowsHelperSpawner struct {
+	mu      sync.Mutex
+	job     helperJobOwner
+	closing bool
+	ops     windowsSpawnOps
+}
+
+func newWindowsHelperSpawner() (*windowsHelperSpawner, error) {
+	job, err := newHelperJob()
+	if err != nil {
+		return nil, err
+	}
+	return newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{}), nil
+}
+
+func newWindowsHelperSpawnerWithJob(job helperJobOwner, ops windowsSpawnOps) *windowsHelperSpawner {
+	if ops.createSuspended == nil {
+		ops.createSuspended = createHelperSuspended
+	}
+	if ops.resumeThread == nil {
+		ops.resumeThread = windows.ResumeThread
+	}
+	if ops.terminateProcess == nil {
+		ops.terminateProcess = windows.TerminateProcess
+	}
+	if ops.closeHandle == nil {
+		ops.closeHandle = windows.CloseHandle
+	}
+	return &windowsHelperSpawner{job: job, ops: ops}
+}
+
+func (s *windowsHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
+	if s == nil {
+		return nil, fmt.Errorf("Windows helper spawner is closed")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing || s.job == nil {
+		return nil, fmt.Errorf("Windows helper spawner is closed")
+	}
+
+	pending, err := s.ops.createSuspended(key)
+	if err != nil {
+		return nil, err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = s.ops.terminateProcess(pending.process, 1)
+			_ = s.ops.closeHandle(pending.thread)
+			_ = s.ops.closeHandle(pending.process)
+		}
+	}()
+	if err := s.job.Assign(pending.process); err != nil {
+		return nil, fmt.Errorf("assign helper to job: %w", err)
+	}
+	if _, err := s.ops.resumeThread(pending.thread); err != nil {
+		return nil, fmt.Errorf("resume helper: %w", err)
+	}
+	_ = s.ops.closeHandle(pending.thread)
+	cleanup = false
+
+	log.Info("spawned user helper in session",
+		"sessionId", key.WindowsSessionID,
+		"role", key.Role,
+		"pid", pending.pid,
+		"exe", pending.binaryPath,
+		"tokenSource", pending.tokenSource,
+	)
+	return &SpawnedHelper{
+		PID:        pending.pid,
+		Handle:     pending.process,
+		BinaryPath: pending.binaryPath,
+	}, nil
+}
+
+func (s *windowsHelperSpawner) Close() error {
+	if s == nil {
+		return nil
+	}
+	if s.ops.closeStarting != nil {
+		s.ops.closeStarting()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return nil
+	}
+	s.closing = true
+	if s.job == nil {
+		return nil
+	}
+	return s.job.Close()
+}
+
+func createHelperSuspended(key HelperKey) (*suspendedHelper, error) {
+	if key.Role == "user" {
+		return createUserHelperSuspended(key.WindowsSessionID)
+	}
+	return createSystemHelperSuspended(key.WindowsSessionID)
+}
+
+// createSystemHelperSuspended creates the SYSTEM-token helper without allowing
+// its primary thread to run. The caller must assign it to the Job Object before
+// resuming it.
+func createSystemHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
 	var processToken windows.Token
 	proc, err := windows.GetCurrentProcess()
 	if err != nil {
 		return nil, fmt.Errorf("GetCurrentProcess: %w", err)
 	}
-	err = windows.OpenProcessToken(proc, windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY, &processToken)
-	if err != nil {
+	if err := windows.OpenProcessToken(proc, windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY, &processToken); err != nil {
 		return nil, fmt.Errorf("OpenProcessToken: %w", err)
 	}
 	defer processToken.Close()
 
-	// 2. Duplicate as a primary token we can modify.
-	// SecurityImpersonation is sufficient for local DXGI desktop capture;
-	// SecurityDelegation is only needed for credential delegation to remote
-	// machines, which the helper never performs.
 	var dupToken windows.Token
-	err = windows.DuplicateTokenEx(
+	if err := windows.DuplicateTokenEx(
 		processToken,
 		windows.MAXIMUM_ALLOWED,
-		nil, // default security attributes
+		nil,
 		windows.SecurityImpersonation,
 		windows.TokenPrimary,
 		&dupToken,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, fmt.Errorf("DuplicateTokenEx: %w", err)
 	}
 	defer dupToken.Close()
 
-	// 3. Set the session ID on the duplicate token.
-	err = windows.SetTokenInformation(
+	if err := windows.SetTokenInformation(
 		dupToken,
 		windows.TokenSessionId,
 		(*byte)(unsafe.Pointer(&sessionID)),
 		uint32(unsafe.Sizeof(sessionID)),
-	)
-	if err != nil {
+	); err != nil {
 		return nil, fmt.Errorf("SetTokenInformation(TokenSessionId=%d): %w", sessionID, err)
 	}
 
-	// 4. Build the command line. We launch the GUI-subsystem sibling binary
-	// (breeze-user-helper.exe) so the kernel does not allocate a console
-	// window in the user session. Falls back to the agent exe if the sibling
-	// is missing — see userHelperExePath documentation.
 	exePath, err := userHelperExePath()
 	if err != nil {
 		return nil, fmt.Errorf("userHelperExePath: %w", err)
@@ -161,60 +336,44 @@ func SpawnHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
-
-	// 5. Target the interactive window station + default desktop.
 	desktop, err := windows.UTF16PtrFromString(`winsta0\Default`)
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString desktop: %w", err)
 	}
-
 	si := windows.StartupInfo{
 		Cb:      uint32(unsafe.Sizeof(windows.StartupInfo{})),
 		Desktop: desktop,
 	}
 	var pi windows.ProcessInformation
-
-	// 6. Create the process.
-	err = windows.CreateProcessAsUser(
+	creationFlags := uint32(windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW | windows.CREATE_UNICODE_ENVIRONMENT)
+	if err := windows.CreateProcessAsUser(
 		dupToken,
-		nil,     // lpApplicationName (use cmdLine)
-		cmdLine, // lpCommandLine
-		nil,     // lpProcessAttributes
-		nil,     // lpThreadAttributes
-		false,   // bInheritHandles
-		windows.CREATE_NO_WINDOW|windows.CREATE_UNICODE_ENVIRONMENT,
-		nil, // lpEnvironment (inherit)
-		nil, // lpCurrentDirectory (inherit)
+		nil,
+		cmdLine,
+		nil,
+		nil,
+		false,
+		creationFlags,
+		nil,
+		nil,
 		&si,
 		&pi,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, fmt.Errorf("CreateProcessAsUser(session=%d): %w", sessionID, err)
 	}
-
-	// Release the thread handle (we don't need it). Keep the process handle
-	// so the lifecycle manager can wait on it and read the exit code.
-	windows.CloseHandle(pi.Thread)
-
-	log.Info("spawned user helper in session",
-		"sessionId", sessionID,
-		"role", "system",
-		"pid", pi.ProcessId,
-		"exe", exePath,
-	)
-	return &SpawnedHelper{PID: pi.ProcessId, Handle: pi.Process, BinaryPath: exePath}, nil
+	return &suspendedHelper{
+		process:     pi.Process,
+		thread:      pi.Thread,
+		pid:         pi.ProcessId,
+		binaryPath:  exePath,
+		tokenSource: "system",
+	}, nil
 }
 
-// SpawnUserHelperInSession launches a user-helper process using the logged-in
-// user's token in the specified Windows session. Tries WTSQueryUserToken first,
-// falls back to explorer.exe token theft for Azure AD sessions.
-// This helper runs as the interactive user, enabling run_as_user script
-// execution and launching the Breeze Helper Tauri app.
-//
-// Returns a SpawnedHelper describing the child process; the caller is
-// responsible for closing the returned handle.
-func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
-	// Try WTSQueryUserToken first, fall back to explorer.exe token.
+// createUserHelperSuspended creates the interactive-user helper without
+// allowing its primary thread to run. The caller assigns it to the Job Object
+// before resume.
+func createUserHelperSuspended(sessionID uint32) (*suspendedHelper, error) {
 	dupToken, envBlock, method, err := acquireUserToken(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("acquire user token(session=%d): %w", sessionID, err)
@@ -224,8 +383,6 @@ func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 		defer windows.DestroyEnvironmentBlock(envBlock)
 	}
 
-	// Build command line with --role user flag. Use the GUI-subsystem sibling
-	// binary so no console window flashes in the user session.
 	exePath, err := userHelperExePath()
 	if err != nil {
 		return nil, fmt.Errorf("userHelperExePath: %w", err)
@@ -234,18 +391,16 @@ func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString: %w", err)
 	}
-
 	desktop, err := windows.UTF16PtrFromString(`winsta0\Default`)
 	if err != nil {
 		return nil, fmt.Errorf("UTF16PtrFromString desktop: %w", err)
 	}
-
 	si := windows.StartupInfo{
 		Cb:      uint32(unsafe.Sizeof(windows.StartupInfo{})),
 		Desktop: desktop,
 	}
 	var pi windows.ProcessInformation
-
+	creationFlags := uint32(windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW | windows.CREATE_UNICODE_ENVIRONMENT)
 	if err := windows.CreateProcessAsUser(
 		dupToken,
 		nil,
@@ -253,7 +408,7 @@ func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 		nil,
 		nil,
 		false,
-		windows.CREATE_NO_WINDOW|windows.CREATE_UNICODE_ENVIRONMENT,
+		creationFlags,
 		envBlock,
 		nil,
 		&si,
@@ -261,15 +416,57 @@ func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
 	); err != nil {
 		return nil, fmt.Errorf("CreateProcessAsUser(session=%d, role=user): %w", sessionID, err)
 	}
+	return &suspendedHelper{
+		process:     pi.Process,
+		thread:      pi.Thread,
+		pid:         pi.ProcessId,
+		binaryPath:  exePath,
+		tokenSource: method,
+	}, nil
+}
 
-	windows.CloseHandle(pi.Thread)
+// SpawnHelperInSession is retained for compatibility with older callers. It
+// creates a private one-process Job Object and transfers that spawner to the
+// returned helper so Close releases the Job after the process exits.
+func SpawnHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
+	return spawnStandaloneHelper(HelperKey{WindowsSessionID: sessionID, Role: "system"})
+}
 
-	log.Info("spawned user-token helper in session",
-		"sessionId", sessionID,
-		"role", "user",
-		"pid", pi.ProcessId,
-		"exe", exePath,
-		"tokenSource", method,
-	)
-	return &SpawnedHelper{PID: pi.ProcessId, Handle: pi.Process, BinaryPath: exePath}, nil
+// SpawnUserHelperInSession is the user-token counterpart to
+// SpawnHelperInSession.
+func SpawnUserHelperInSession(sessionID uint32) (*SpawnedHelper, error) {
+	return spawnStandaloneHelper(HelperKey{WindowsSessionID: sessionID, Role: "user"})
+}
+
+func spawnStandaloneHelper(key HelperKey) (*SpawnedHelper, error) {
+	spawner, err := newWindowsHelperSpawner()
+	if err != nil {
+		return nil, err
+	}
+	process, err := spawner.Spawn(key)
+	if err != nil {
+		_ = spawner.Close()
+		return nil, err
+	}
+	helper := process.(*SpawnedHelper)
+	waitHandle, err := duplicateProcessHandle(helper.Handle)
+	if err != nil {
+		_ = helper.Terminate()
+		_ = helper.Close()
+		_ = spawner.Close()
+		return nil, fmt.Errorf("retain standalone helper Job ownership: %w", err)
+	}
+	helper.standaloneOwner = spawner
+	go reapStandaloneHelper(waitHandle, spawner)
+	return helper, nil
+}
+
+func reapStandaloneHelper(waitHandle windows.Handle, spawner *windowsHelperSpawner) {
+	reapStandaloneHelperWithOps(waitHandle, spawner, defaultSpawnedHelperOps())
+}
+
+func reapStandaloneHelperWithOps(waitHandle windows.Handle, spawner *windowsHelperSpawner, ops *spawnedHelperOps) {
+	_, _ = ops.waitForSingleObject(waitHandle, windows.INFINITE)
+	_ = ops.closeHandle(waitHandle)
+	_ = spawner.Close()
 }
