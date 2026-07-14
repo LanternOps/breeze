@@ -230,8 +230,6 @@ for compose in docker-compose.yml deploy/docker-compose.prod.yml; do
     in_api && /^  [[:alnum:]_-]+:/ && $0 !~ /^  api:/ { exit }
     in_api { print }
   ' "$compose" > "$api_block"
-  require_grep '^[[:space:]]+read_only:[[:space:]]+true' "$api_block" \
-    "$compose API service must use a read-only root filesystem"
   require_grep '^[[:space:]]+-[[:space:]]+no-new-privileges:true' "$api_block" \
     "$compose API service must set no-new-privileges"
   require_grep '^[[:space:]]+-[[:space:]]+ALL' "$api_block" \

@@ -69,7 +69,8 @@ services:
     platform: linux/amd64
     container_name: breeze-api
     restart: unless-stopped
-    read_only: true
+    # Keep the root filesystem writable while redis_password is environment-backed;
+    # standalone Compose supports only file-backed secrets for read-only services.
     security_opt:
       - no-new-privileges:true
     cap_drop:

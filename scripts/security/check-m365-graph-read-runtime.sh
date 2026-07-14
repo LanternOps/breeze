@@ -59,8 +59,8 @@ services:
     volumes:
       - \${M365_GRAPH_READ_RUNTIME_PROBE_FILE:?Set runtime probe file}:/runtime-probe.cjs:ro
 secrets:
-  # The smoke does not exercise Redis. Replace its environment-backed secret,
-  # which standalone Compose cannot materialize for a read-only one-shot.
+  # The smoke does not exercise Redis. Replace its environment-backed secret
+  # with an inert file-backed mount for this isolated one-shot.
   redis_password: !override
     file: /dev/null
 networks:
