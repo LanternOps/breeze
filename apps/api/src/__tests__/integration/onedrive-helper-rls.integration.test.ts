@@ -51,6 +51,7 @@ interface Fixture {
   orgB: { id: string };
   featureLinkA: { id: string };
   featureLinkB: { id: string };
+  configPolicyA: { id: string };
   /** breeze_app context scoped to org A (mirrors authMiddleware org scope). */
   orgAContext: DbAccessContext;
 }
@@ -60,13 +61,14 @@ interface Fixture {
 // each test, so any cached rows would already be deleted by the time an
 // assertion runs — which would silently make every cross-tenant case vacuous.
 async function seedFixture(): Promise<Fixture> {
-  return withSystemDbAccessContext(async () => {
-    const partnerA = await createPartner();
-    const orgA = await createOrganization({ partnerId: partnerA.id });
-    const partnerB = await createPartner();
-    const orgB = await createOrganization({ partnerId: partnerB.id });
+  const partnerA = await createPartner();
+  const orgA = await createOrganization({ partnerId: partnerA.id });
+  const partnerB = await createPartner();
+  const orgB = await createOrganization({ partnerId: partnerB.id });
 
-    // Seed a configuration policy + feature link for org A.
+  // Keep unrelated policy owners in separate transactions so export-clock
+  // advisory locks follow the production single-owner ordering.
+  const { configPolicyA, featureLinkA } = await withSystemDbAccessContext(async () => {
     const [configPolicyA] = await db
       .insert(configurationPolicies)
       .values({ orgId: orgA.id, name: 'OD Policy A' })
@@ -78,8 +80,10 @@ async function seedFixture(): Promise<Fixture> {
       .values({ configPolicyId: configPolicyA.id, featureType: 'onedrive_helper' })
       .returning({ id: configPolicyFeatureLinks.id });
     if (!featureLinkA) throw new Error('failed to seed feature link A');
+    return { configPolicyA, featureLinkA };
+  });
 
-    // Seed a configuration policy + feature link for org B.
+  const { featureLinkB } = await withSystemDbAccessContext(async () => {
     const [configPolicyB] = await db
       .insert(configurationPolicies)
       .values({ orgId: orgB.id, name: 'OD Policy B' })
@@ -91,26 +95,27 @@ async function seedFixture(): Promise<Fixture> {
       .values({ configPolicyId: configPolicyB.id, featureType: 'onedrive_helper' })
       .returning({ id: configPolicyFeatureLinks.id });
     if (!featureLinkB) throw new Error('failed to seed feature link B');
-
-    // Org-scoped breeze_app context for org A.
-    const orgAContext: DbAccessContext = {
-      scope: 'organization',
-      orgId: orgA.id,
-      accessibleOrgIds: [orgA.id],
-      accessiblePartnerIds: [partnerA.id],
-      userId: null,
-    };
-
-    return {
-      partnerA: { id: partnerA.id },
-      orgA: { id: orgA.id },
-      partnerB: { id: partnerB.id },
-      orgB: { id: orgB.id },
-      featureLinkA: { id: featureLinkA.id },
-      featureLinkB: { id: featureLinkB.id },
-      orgAContext,
-    };
+    return { featureLinkB };
   });
+
+  const orgAContext: DbAccessContext = {
+    scope: 'organization',
+    orgId: orgA.id,
+    accessibleOrgIds: [orgA.id],
+    accessiblePartnerIds: [partnerA.id],
+    userId: null,
+  };
+
+  return {
+    partnerA: { id: partnerA.id },
+    orgA: { id: orgA.id },
+    partnerB: { id: partnerB.id },
+    orgB: { id: orgB.id },
+    featureLinkA: { id: featureLinkA.id },
+    featureLinkB: { id: featureLinkB.id },
+    configPolicyA: { id: configPolicyA.id },
+    orgAContext,
+  };
 }
 
 describe('config_policy_onedrive_settings RLS isolation (breeze_app)', () => {
@@ -213,7 +218,7 @@ describe('config_policy_onedrive_settings RLS isolation (breeze_app)', () => {
 
   // (d) Cross-org UPDATE WITH CHECK denied: org A owns a settings row and tries
   // to reassign its org_id to org B → 42501 (covers the UPDATE WITH CHECK policy).
-  runDb('blocks org A re-homing its own settings row to org B (42501)', async () => {
+  runDb('blocks org A re-homing its own settings row to org B', async () => {
     const fx = await seedFixture();
 
     const settingsId = await withSystemDbAccessContext(async () => {
@@ -231,7 +236,35 @@ describe('config_policy_onedrive_settings RLS isolation (breeze_app)', () => {
           .set({ orgId: fx.orgB.id })
           .where(eq(configPolicyOnedriveSettings.id, settingsId))
       )
-    ).rejects.toMatchObject({ cause: { code: '42501' } });
+    ).rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
+  runDb('blocks same-org settings from referencing another org feature link', async () => {
+    const fx = await seedFixture();
+
+    await expect(withDbAccessContext(fx.orgAContext, () =>
+      db.insert(configPolicyOnedriveSettings).values({
+        featureLinkId: fx.featureLinkB.id,
+        orgId: fx.orgA.id,
+      })))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
+  runDb('reverse-validates OneDrive link and policy owner changes', async () => {
+    const fx = await seedFixture();
+    await withSystemDbAccessContext(() => db.insert(configPolicyOnedriveSettings).values({
+      featureLinkId: fx.featureLinkA.id,
+      orgId: fx.orgA.id,
+    }));
+
+    await expect(withSystemDbAccessContext(() => db.update(configPolicyFeatureLinks)
+      .set({ featureType: 'patch' })
+      .where(eq(configPolicyFeatureLinks.id, fx.featureLinkA.id))))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
+    await expect(withSystemDbAccessContext(() => db.update(configurationPolicies)
+      .set({ orgId: fx.orgB.id })
+      .where(eq(configurationPolicies.id, fx.configPolicyA.id))))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
   });
 
   // (e) Cross-org DELETE hidden (USING): org A cannot delete org B's settings
@@ -346,7 +379,7 @@ describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
 
   // (c) Cross-org UPDATE WITH CHECK denied: org A owns a library row and tries
   // to reassign its org_id to org B → 42501 (covers the UPDATE WITH CHECK policy).
-  runDb('blocks org A re-homing its own library row to org B (42501)', async () => {
+  runDb('blocks org A re-homing its own library row to org B', async () => {
     const fx = await seedFixture();
 
     const libraryId = await withSystemDbAccessContext(async () => {
@@ -374,7 +407,51 @@ describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
           .set({ orgId: fx.orgB.id })
           .where(eq(configPolicyOnedriveLibraries.id, libraryId))
       )
-    ).rejects.toMatchObject({ cause: { code: '42501' } });
+    ).rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
+  runDb('blocks same-org library from referencing another org settings row', async () => {
+    const fx = await seedFixture();
+    const orgBSettingsId = await withSystemDbAccessContext(async () => {
+      const [settings] = await db.insert(configPolicyOnedriveSettings).values({
+        featureLinkId: fx.featureLinkB.id,
+        orgId: fx.orgB.id,
+      }).returning({ id: configPolicyOnedriveSettings.id });
+      return settings!.id;
+    });
+
+    await expect(withDbAccessContext(fx.orgAContext, () =>
+      db.insert(configPolicyOnedriveLibraries).values({
+        settingsId: orgBSettingsId,
+        orgId: fx.orgA.id,
+        libraryId: 'lib-owner-forge',
+        displayName: 'Owner forge',
+        targetingMode: 'everyone',
+      })))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
+  runDb('reverse-validates library ownership when settings move to another valid policy', async () => {
+    const fx = await seedFixture();
+    const settingsId = await withSystemDbAccessContext(async () => {
+      const [settings] = await db.insert(configPolicyOnedriveSettings).values({
+        featureLinkId: fx.featureLinkA.id,
+        orgId: fx.orgA.id,
+      }).returning({ id: configPolicyOnedriveSettings.id });
+      await db.insert(configPolicyOnedriveLibraries).values({
+        settingsId: settings!.id,
+        orgId: fx.orgA.id,
+        libraryId: 'lib-reverse-owner',
+        displayName: 'Reverse owner',
+        targetingMode: 'everyone',
+      });
+      return settings!.id;
+    });
+
+    await expect(withSystemDbAccessContext(() => db.update(configPolicyOnedriveSettings)
+      .set({ featureLinkId: fx.featureLinkB.id, orgId: fx.orgB.id })
+      .where(eq(configPolicyOnedriveSettings.id, settingsId))))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
   });
 
   // (d) Cross-org DELETE hidden (USING): org A cannot delete org B's library row

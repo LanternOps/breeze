@@ -9,6 +9,7 @@ import { ensureAppRole } from '../../db/ensureAppRole';
 import {
   automations,
   backupConfigs,
+  backupProfiles,
   configPolicyAssignments,
   configPolicyBackupSettings,
   configPolicyFeatureLinks,
@@ -42,6 +43,14 @@ const CANONICAL_PARITY_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-26-b-partner-export-canonical-parity.sql',
 );
+const FEATURE_REFERENCE_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-27-a-feature-policy-reference-ownership.sql',
+);
+const ONEDRIVE_REFERENCE_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-07-27-b-onedrive-reference-ownership.sql',
+);
 
 describe('partner desired-configuration material watermarks', () => {
   runDb('migration is idempotent and creates forced org-axis RLS', async () => {
@@ -61,10 +70,16 @@ describe('partner desired-configuration material watermarks', () => {
     const db = getTestDb();
     const integrityMigration = readFileSync(TENANT_INTEGRITY_MIGRATION_FILE, 'utf8');
     const parityMigration = readFileSync(CANONICAL_PARITY_MIGRATION_FILE, 'utf8');
+    const featureReferenceMigration = readFileSync(FEATURE_REFERENCE_MIGRATION_FILE, 'utf8');
+    const onedriveReferenceMigration = readFileSync(ONEDRIVE_REFERENCE_MIGRATION_FILE, 'utf8');
     await expect(db.execute(sql.raw(integrityMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(integrityMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(parityMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(parityMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(featureReferenceMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(featureReferenceMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(onedriveReferenceMigration))).resolves.toBeDefined();
+    await expect(db.execute(sql.raw(onedriveReferenceMigration))).resolves.toBeDefined();
 
     const catalog = await db.execute<{ relname: string; enabled: boolean; forced: boolean; commands: string[] }>(sql`
       SELECT c.relname, c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced,
@@ -85,13 +100,121 @@ describe('partner desired-configuration material watermarks', () => {
     expect(catalog.every((row) => row.commands.join(',') === 'a,d,r,w')).toBe(true);
 
     await ensureAppRole();
-    const [privileges] = await db.execute<{ validate: boolean; enforce: boolean; revalidate: boolean }>(sql`
+    const [privileges] = await db.execute<{
+      validate: boolean; enforce: boolean; revalidate: boolean;
+      featureValidate: boolean; featureEnforce: boolean; featureRevalidate: boolean;
+      onedriveSettings: boolean; onedriveLibrary: boolean; onedriveRevalidate: boolean;
+    }>(sql`
       SELECT
         has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_backup_settings(uuid,uuid,uuid,uuid,uuid)', 'EXECUTE') AS validate,
         has_function_privilege('breeze_app', 'public.breeze_enforce_config_policy_backup_settings()', 'EXECUTE') AS enforce,
-        has_function_privilege('breeze_app', 'public.breeze_revalidate_config_policy_backup_settings_reference()', 'EXECUTE') AS revalidate
+        has_function_privilege('breeze_app', 'public.breeze_revalidate_config_policy_backup_settings_reference()', 'EXECUTE') AS revalidate,
+        has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_feature_reference(uuid,public.config_feature_type,uuid)', 'EXECUTE') AS "featureValidate",
+        has_function_privilege('breeze_app', 'public.breeze_enforce_config_policy_feature_reference()', 'EXECUTE') AS "featureEnforce",
+        has_function_privilege('breeze_app', 'public.breeze_revalidate_config_policy_feature_references()', 'EXECUTE') AS "featureRevalidate",
+        has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_onedrive_settings(uuid,uuid)', 'EXECUTE') AS "onedriveSettings",
+        has_function_privilege('breeze_app', 'public.breeze_validate_config_policy_onedrive_library(uuid,uuid)', 'EXECUTE') AS "onedriveLibrary",
+        has_function_privilege('breeze_app', 'public.breeze_revalidate_config_policy_onedrive_reference()', 'EXECUTE') AS "onedriveRevalidate"
     `);
-    expect(privileges).toEqual({ validate: false, enforce: false, revalidate: false });
+    expect(privileges).toEqual({
+      validate: false, enforce: false, revalidate: false,
+      featureValidate: false, featureEnforce: false, featureRevalidate: false,
+      onedriveSettings: false, onedriveLibrary: false, onedriveRevalidate: false,
+    });
+  });
+
+  runDb('backup ownership preflight sees forged rows as breeze_app with no prior system context', async () => {
+    const db = getTestDb();
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const partnerB = await createPartner();
+    const [profileB] = await db.insert(backupProfiles).values({
+      partnerId: partnerB.id,
+      name: 'Feature-reference preflight foreign profile',
+      selections: {},
+    }).returning();
+    if (!profileB) throw new Error('feature-reference preflight profile insert failed');
+    const [policyA] = await db.insert(configurationPolicies).values({
+      orgId: orgA.id,
+      name: 'Feature-reference preflight local policy',
+      status: 'active',
+    }).returning();
+    if (!policyA) throw new Error('feature-reference preflight policy insert failed');
+
+    const [linkA] = await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policyA.id,
+      featureType: 'backup',
+    }).returning();
+    if (!linkA) throw new Error('backup ownership preflight link insert failed');
+
+    let forgedId: string | undefined;
+    await db.execute(sql`ALTER TABLE public.config_policy_backup_settings DISABLE TRIGGER USER`);
+    try {
+      const [forged] = await db.execute<{ id: string }>(sql`
+        INSERT INTO public.config_policy_backup_settings
+          (feature_link_id, org_id, partner_id, backup_profile_id)
+        VALUES (${linkA.id}::uuid, ${orgA.id}::uuid, NULL, ${profileB.id}::uuid)
+        RETURNING id
+      `);
+      forgedId = forged?.id;
+    } finally {
+      await db.execute(sql`ALTER TABLE public.config_policy_backup_settings ENABLE TRIGGER USER`);
+    }
+    if (!forgedId) throw new Error('backup ownership preflight forged row insert failed');
+
+    const [scopeBefore] = await appDb.execute<{ scope: string | null }>(sql`
+      SELECT NULLIF(current_setting('breeze.scope', true), '') AS scope
+    `);
+    expect(scopeBefore?.scope).toBeNull();
+    const migration = readFileSync(FEATURE_REFERENCE_MIGRATION_FILE, 'utf8');
+    try {
+      await expect(appDb.execute(sql.raw(migration)))
+        .rejects.toMatchObject({ cause: { code: '23514' } });
+    } finally {
+      await db.execute(sql`DELETE FROM public.config_policy_backup_settings WHERE id = ${forgedId}::uuid`);
+    }
+  });
+
+  runDb('OneDrive preflight aborts on forged rows as breeze_app with no prior system context', async () => {
+    const db = getTestDb();
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const [policyB] = await db.insert(configurationPolicies).values({
+      orgId: orgB.id, name: 'OneDrive preflight foreign policy', status: 'active',
+    }).returning();
+    if (!policyB) throw new Error('OneDrive preflight policy insert failed');
+    const [linkB] = await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policyB.id, featureType: 'onedrive_helper',
+    }).returning();
+    if (!linkB) throw new Error('OneDrive preflight link insert failed');
+
+    let forgedId: string | undefined;
+    await db.execute(sql`ALTER TABLE public.config_policy_onedrive_settings DISABLE TRIGGER USER`);
+    try {
+      const [forged] = await db.execute<{ id: string }>(sql`
+        INSERT INTO public.config_policy_onedrive_settings (feature_link_id, org_id)
+        VALUES (${linkB.id}::uuid, ${orgA.id}::uuid)
+        RETURNING id
+      `);
+      forgedId = forged?.id;
+    } finally {
+      await db.execute(sql`ALTER TABLE public.config_policy_onedrive_settings ENABLE TRIGGER USER`);
+    }
+    if (!forgedId) throw new Error('OneDrive preflight forged row insert failed');
+
+    const [scopeBefore] = await appDb.execute<{ scope: string | null }>(sql`
+      SELECT NULLIF(current_setting('breeze.scope', true), '') AS scope
+    `);
+    expect(scopeBefore?.scope).toBeNull();
+    const migration = readFileSync(ONEDRIVE_REFERENCE_MIGRATION_FILE, 'utf8');
+    try {
+      await expect(appDb.execute(sql.raw(migration)))
+        .rejects.toMatchObject({ cause: { code: '23514' } });
+    } finally {
+      await db.execute(sql`DELETE FROM public.config_policy_onedrive_settings WHERE id = ${forgedId}::uuid`);
+    }
   });
 
   runDb('policy feature and assignment changes advance the affected configuration clocks', async () => {

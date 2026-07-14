@@ -231,6 +231,153 @@ describe('config_policy_backup_settings RLS — dual-axis mirror of the parent p
     return rows[0].updatedAt;
   }
 
+  it('rejects an org policy feature link to another partner\'s backup profile or destination without advancing its clock', async () => {
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const [profileB] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values({
+      name: 'Partner B profile', orgId: null, partnerId: partnerB.id, selections: SERVER_SELECTIONS,
+    }).returning());
+    createdProfiles.push(profileB!.id);
+    const [destinationB] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
+      orgId: orgB.id, name: 'Partner B destination', type: 'file', provider: 's3', providerConfig: {},
+    }).returning());
+    createdConfigs.push(destinationB!.id);
+
+    for (const featurePolicyId of [profileB!.id, destinationB!.id]) {
+      const [policyA] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(configurationPolicies).values({
+        name: 'Partner A reference isolation', orgId: orgA.id, partnerId: null, status: 'active',
+      }).returning());
+      createdPolicies.push(policyA!.id);
+      const before = await configurationClock(orgA.id);
+
+      await expect(withDbAccessContext(partnerContext(partnerA.id, [orgA.id]), () =>
+        db.insert(configPolicyFeatureLinks).values({
+          configPolicyId: policyA!.id, featureType: 'backup', featurePolicyId,
+        }).returning(),
+      )).rejects.toMatchObject({ cause: { code: '23503' } });
+      expect(await configurationClock(orgA.id)).toEqual(before);
+    }
+
+    const [profileA] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values({
+      name: 'Partner A profile', orgId: orgA.id, partnerId: null, selections: SERVER_SELECTIONS,
+    }).returning());
+    createdProfiles.push(profileA!.id);
+    const [policyA] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(configurationPolicies).values({
+      name: 'Partner A update isolation', orgId: orgA.id, partnerId: null, status: 'active',
+    }).returning());
+    createdPolicies.push(policyA!.id);
+    const [validLink] = await withDbAccessContext(partnerContext(partnerA.id, [orgA.id]), () =>
+      db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policyA!.id, featureType: 'backup', featurePolicyId: profileA!.id,
+      }).returning(),
+    );
+    const beforeUpdate = await configurationClock(orgA.id);
+
+    await expect(withDbAccessContext(partnerContext(partnerA.id, [orgA.id]), () =>
+      db.update(configPolicyFeatureLinks)
+        .set({ featurePolicyId: profileB!.id })
+        .where(eq(configPolicyFeatureLinks.id, validLink!.id))
+        .returning(),
+    )).rejects.toMatchObject({ cause: { code: '23503' } });
+    expect(await configurationClock(orgA.id)).toEqual(beforeUpdate);
+  });
+
+  it('rejects a same-partner cross-org backup profile reference on an org policy', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const [profileB] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values({
+      name: 'Org B profile link target', orgId: orgB.id, partnerId: null, selections: SERVER_SELECTIONS,
+    }).returning());
+    createdProfiles.push(profileB!.id);
+    const [policyA] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(configurationPolicies).values({
+      name: 'Org A profile isolation', orgId: orgA.id, partnerId: null, status: 'active',
+    }).returning());
+    createdPolicies.push(policyA!.id);
+
+    await expect(withDbAccessContext(partnerContext(partner.id, [orgA.id, orgB.id]), () =>
+      db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policyA!.id, featureType: 'backup', featurePolicyId: profileB!.id,
+      }).returning(),
+    )).rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
+  it('allows only the same-partner profile reference on a partner policy', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const profileId = await seedPartnerProfile(partner.id);
+    const [orgProfile] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values({
+      name: 'Org-only profile', orgId: org.id, partnerId: null, selections: SERVER_SELECTIONS,
+    }).returning());
+    createdProfiles.push(orgProfile!.id);
+    const [destination] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
+      orgId: org.id, name: 'Org-only destination', type: 'file', provider: 's3', providerConfig: {},
+    }).returning());
+    createdConfigs.push(destination!.id);
+
+    for (const [featurePolicyId, accepted] of [
+      [profileId, true],
+      [orgProfile!.id, false],
+      [destination!.id, false],
+    ] as const) {
+      const [policy] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(configurationPolicies).values({
+        name: `Partner reference ${featurePolicyId}`, orgId: null, partnerId: partner.id, status: 'active',
+      }).returning());
+      createdPolicies.push(policy!.id);
+      const operation = withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
+        db.insert(configPolicyFeatureLinks).values({
+          configPolicyId: policy!.id, featureType: 'backup', featurePolicyId,
+        }).returning(),
+      );
+      if (accepted) await expect(operation).resolves.toHaveLength(1);
+      else await expect(operation).rejects.toMatchObject({ cause: { code: '23503' } });
+    }
+  });
+
+  it('reverse-validates referenced backup owners even when no normalized settings row exists', async () => {
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const [profile] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values({
+      name: 'Reverse link profile', orgId: orgA.id, partnerId: null, selections: SERVER_SELECTIONS,
+    }).returning());
+    createdProfiles.push(profile!.id);
+    const [destination] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
+      orgId: orgA.id, name: 'Reverse link destination', type: 'file', provider: 's3', providerConfig: {},
+    }).returning());
+    createdConfigs.push(destination!.id);
+
+    const profileLink = await seedOrgPolicyWithLink(orgA.id);
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(configPolicyFeatureLinks)
+      .set({ featurePolicyId: profile!.id })
+      .where(eq(configPolicyFeatureLinks.id, profileLink.link.id)));
+    const destinationLink = await seedOrgPolicyWithLink(orgA.id);
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(configPolicyFeatureLinks)
+      .set({ featurePolicyId: destination!.id })
+      .where(eq(configPolicyFeatureLinks.id, destinationLink.link.id)));
+
+    await expect(withDbAccessContext(SYSTEM_CTX, () => db.update(backupProfiles)
+      .set({ orgId: orgB.id })
+      .where(eq(backupProfiles.id, profile!.id))))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
+    await expect(withDbAccessContext(SYSTEM_CTX, () => db.update(backupConfigs)
+      .set({ orgId: orgB.id })
+      .where(eq(backupConfigs.id, destination!.id))))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
+
+    const [policyB] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(configurationPolicies).values({
+      name: 'Reverse link org B policy', orgId: orgB.id, partnerId: null, status: 'active',
+    }).returning());
+    createdPolicies.push(policyB!.id);
+    await expect(withDbAccessContext(SYSTEM_CTX, () => db.update(configPolicyFeatureLinks)
+      .set({ configPolicyId: policyB!.id })
+      .where(eq(configPolicyFeatureLinks.id, profileLink.link.id))))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
+  });
+
   it('rejects a Partner B settings insert against Partner A feature link without advancing A clock', async () => {
     const partnerA = await createPartner();
     const orgA = await createOrganization({ partnerId: partnerA.id });

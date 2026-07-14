@@ -13,6 +13,7 @@ import {
   uniqueIndex,
   primaryKey,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alertSeverityEnum } from './alerts';
@@ -105,6 +106,9 @@ export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
 }, (table) => ({
   configPolicyIdIdx: index('config_feature_links_policy_id_idx').on(table.configPolicyId),
   featureTypeIdx: index('config_feature_links_feature_type_idx').on(table.featureType),
+  featurePolicyIdIdx: index('config_feature_links_feature_policy_id_idx')
+    .on(table.featurePolicyId)
+    .where(sql`${table.featurePolicyId} IS NOT NULL`),
   uniqueFeaturePerPolicy: uniqueIndex('config_feature_links_unique').on(table.configPolicyId, table.featureType),
 }));
 
