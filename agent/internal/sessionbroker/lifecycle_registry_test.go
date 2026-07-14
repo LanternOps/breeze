@@ -7,6 +7,39 @@ import (
 	"time"
 )
 
+func TestSessionAuthenticatedMarksOnlyCurrentBrokerOwnerConnected(t *testing.T) {
+	b := New("current-owner-"+t.Name(), nil)
+	m := newHelperLifecycleManager(b, fakeLifecycleDetector{}, nil, &fakeHelperSpawner{})
+	key := HelperKey{WindowsSessionID: 7, Role: "system"}
+	proc := newFakeHelperProcess(4090)
+	m.registry.attach(key, proc, "helper", "system-helper")
+	session := &Session{PID: int(proc.pid), WinSessionID: "7", HelperRole: "system"}
+	t.Cleanup(func() {
+		proc.markExited(0)
+		m.Stop()
+		b.Close()
+	})
+
+	m.sessionAuthenticated(session)
+	m.registry.mu.Lock()
+	stateWithoutOwner := m.registry.current[key].state
+	m.registry.mu.Unlock()
+	if stateWithoutOwner == helperConnected {
+		t.Fatal("non-owning authenticated callback marked registry connected")
+	}
+
+	b.mu.Lock()
+	b.helperByKey[key] = session
+	b.mu.Unlock()
+	m.sessionAuthenticated(session)
+	m.registry.mu.Lock()
+	stateWithOwner := m.registry.current[key].state
+	m.registry.mu.Unlock()
+	if stateWithOwner != helperConnected {
+		t.Fatalf("current owner state = %q, want connected", stateWithOwner)
+	}
+}
+
 type fakeLifecycleDetector struct {
 	sessions []DetectedSession
 }
@@ -31,14 +64,16 @@ type fakeHelperProcess struct {
 	waitCount      int
 	terminateCount int
 	closeCount     int
+	terminateExits bool
 }
 
 func newFakeHelperProcess(pid uint32) *fakeHelperProcess {
 	return &fakeHelperProcess{
-		pid:    pid,
-		path:   "breeze-user-helper.exe",
-		alive:  true,
-		exited: make(chan struct{}),
+		pid:            pid,
+		path:           "breeze-user-helper.exe",
+		alive:          true,
+		exited:         make(chan struct{}),
+		terminateExits: true,
 	}
 }
 
@@ -54,9 +89,41 @@ func (p *fakeHelperProcess) Alive() bool {
 func (p *fakeHelperProcess) Terminate() error {
 	p.mu.Lock()
 	p.terminateCount++
+	exits := p.terminateExits
 	p.mu.Unlock()
-	p.markExited(1)
+	if exits {
+		p.markExited(1)
+	}
 	return nil
+}
+
+func TestTimedOutStopRetainsLiveGenerationAndSuppressesReplacement(t *testing.T) {
+	key := HelperKey{WindowsSessionID: 7, Role: "system"}
+	proc := newFakeHelperProcess(4075)
+	proc.terminateExits = false
+	spawner := &fakeHelperSpawner{byKey: map[HelperKey]helperProcess{key: proc}}
+	m := newLifecycleHarness(t, []DetectedSession{{Session: "7", State: "active", Type: "rdp"}}, spawner)
+	m.gracePeriod = time.Millisecond
+	m.finalWait = time.Millisecond
+	m.reconcile()
+	m.registry.mu.Lock()
+	m.registry.current[key].lastFailure = time.Now().Add(-time.Minute)
+	m.registry.mu.Unlock()
+
+	started := time.Now()
+	m.stopKey(key)
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("bounded stop took %v", elapsed)
+	}
+	if got := m.registry.processID(key); got != proc.pid {
+		t.Fatalf("live stopping generation PID = %d, want %d", got, proc.pid)
+	}
+	m.spawnKey(key)
+	if got := spawner.SpawnCount(key); got != 1 {
+		t.Fatalf("spawn count with live stopping generation = %d, want 1", got)
+	}
+
+	proc.markExited(1)
 }
 
 func (p *fakeHelperProcess) Wait() (int, error) {
@@ -95,6 +162,7 @@ func (p *fakeHelperProcess) counts() (wait, terminate, close int) {
 type fakeHelperSpawner struct {
 	mu        sync.Mutex
 	processes []helperProcess
+	byKey     map[HelperKey]helperProcess
 	spawned   map[HelperKey]int
 	closed    int
 }
@@ -106,12 +174,60 @@ func (s *fakeHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 		s.spawned = make(map[HelperKey]int)
 	}
 	s.spawned[key]++
+	if proc := s.byKey[key]; proc != nil {
+		delete(s.byKey, key)
+		return proc, nil
+	}
 	if len(s.processes) == 0 {
 		return newFakeHelperProcess(uint32(5000 + s.spawned[key])), nil
 	}
 	proc := s.processes[0]
 	s.processes = s.processes[1:]
 	return proc, nil
+}
+
+func TestLifecycleBootstrapPublishesDesiredKeysBeforeSpawning(t *testing.T) {
+	b := New("bootstrap-"+t.Name(), nil)
+	spawner := &fakeHelperSpawner{}
+	m := newHelperLifecycleManager(b, fakeLifecycleDetector{sessions: []DetectedSession{{Session: "7", State: "active", Type: "rdp"}}}, nil, spawner)
+	t.Cleanup(func() {
+		m.Stop()
+		b.Close()
+	})
+
+	if err := m.Bootstrap(); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	for _, role := range []string{"system", "user"} {
+		key := HelperKey{WindowsSessionID: 7, Role: role}
+		if !b.helperKeyDesired(key) {
+			t.Fatalf("%s key was not published by bootstrap", role)
+		}
+		if got := spawner.SpawnCount(key); got != 0 {
+			t.Fatalf("%s spawn count during bootstrap = %d, want 0", role, got)
+		}
+	}
+}
+
+func TestReconcileDoesNotSpawnWhenScheduledHelperOwnsLogicalKey(t *testing.T) {
+	b := New("scheduled-owner-"+t.Name(), nil)
+	key := HelperKey{WindowsSessionID: 7, Role: "system"}
+	proc := newFakeOwnedPeerProcess(4050)
+	newOwnedSession(t, b, key, proc)
+	spawner := &fakeHelperSpawner{}
+	m := newHelperLifecycleManager(b, fakeLifecycleDetector{sessions: []DetectedSession{{Session: "7", State: "active", Type: "rdp"}}}, nil, spawner)
+	m.gracePeriod = 0
+	m.finalWait = 0
+	t.Cleanup(func() {
+		m.Stop()
+		b.Close()
+	})
+
+	m.reconcile()
+
+	if got := spawner.SpawnCount(key); got != 0 {
+		t.Fatalf("scheduled owner duplicate spawn count = %d, want 0", got)
+	}
 }
 
 func (s *fakeHelperSpawner) Close() error {
@@ -182,9 +298,9 @@ func TestStopSessionTerminatesBothRoles(t *testing.T) {
 
 func TestConcurrentReconcileStopAndExitOwnsHandleOnce(t *testing.T) {
 	proc := newFakeHelperProcess(4300)
-	spawner := &fakeHelperSpawner{processes: []helperProcess{proc}}
-	m := newLifecycleHarness(t, []DetectedSession{{Session: "7", State: "active", Type: "rdp"}}, spawner)
 	key := HelperKey{WindowsSessionID: 7, Role: "system"}
+	spawner := &fakeHelperSpawner{byKey: map[HelperKey]helperProcess{key: proc}}
+	m := newLifecycleHarness(t, []DetectedSession{{Session: "7", State: "active", Type: "rdp"}}, spawner)
 
 	var reconcileWG sync.WaitGroup
 	for range 16 {

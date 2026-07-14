@@ -26,9 +26,9 @@ func (b *Broker) setupSocket() error {
 		return fmt.Errorf("listen pipe %s: %w", b.socketPath, err)
 	}
 
-	b.listenerMu.Lock()
-	b.listener = listener
-	b.listenerMu.Unlock()
+	if !b.publishListener(listener) {
+		return fmt.Errorf("broker acceptance already stopped")
+	}
 	log.Info("named pipe listener created", "pipe", b.socketPath)
 	return nil
 }

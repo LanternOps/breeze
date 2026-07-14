@@ -3,12 +3,31 @@ package sessionbroker
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
+
+func TestBrokerLifecycleCleanupNeverReopensRecordedPID(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source, err := os.ReadFile(filepath.Join(filepath.Dir(testFile), "broker.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), "os.FindProcess") {
+		t.Fatal("broker lifecycle cleanup reopens a later process by recorded PID")
+	}
+}
 
 type fakeOwnedPeerProcess struct {
 	pid uint32
@@ -19,6 +38,59 @@ type fakeOwnedPeerProcess struct {
 	closed     int
 	claimed    chan struct{}
 	release    chan struct{}
+}
+
+type closeTrackingListener struct {
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newCloseTrackingListener() *closeTrackingListener {
+	return &closeTrackingListener{closed: make(chan struct{})}
+}
+
+func (l *closeTrackingListener) Accept() (net.Conn, error) {
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *closeTrackingListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *closeTrackingListener) Addr() net.Addr { return &net.UnixAddr{Name: "test", Net: "unix"} }
+
+func TestListenerCreatedDuringStopIsRefusedAndClosed(t *testing.T) {
+	b := New("listener-race-"+t.Name(), nil)
+	listener := newCloseTrackingListener()
+	created := make(chan struct{})
+	releasePublication := make(chan struct{})
+	published := make(chan bool, 1)
+	go func() {
+		close(created)
+		<-releasePublication
+		published <- b.publishListener(listener)
+	}()
+	<-created
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := b.StopAcceptingAndWait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	close(releasePublication)
+	if <-published {
+		t.Fatal("listener was published after acceptance stopped")
+	}
+	select {
+	case <-listener.closed:
+	default:
+		t.Fatal("listener created after stop was not closed")
+	}
+	if got := b.currentListener(); got != nil {
+		t.Fatalf("current listener = %T, want nil", got)
+	}
 }
 
 func newFakeOwnedPeerProcess(pid uint32) *fakeOwnedPeerProcess {
@@ -99,6 +171,35 @@ func TestLifecycleObserversAreAdditiveAndRunAfterUnlock(t *testing.T) {
 	}
 }
 
+func TestImmediateDisconnectCannotNotifyLifecycleCloseBeforeAuthenticated(t *testing.T) {
+	b := New("observer-order-"+t.Name(), nil)
+	proc := newFakeOwnedPeerProcess(5090)
+	key := HelperKey{WindowsSessionID: 7, Role: "system"}
+	session := newOwnedSession(t, b, key, proc)
+	var mu sync.Mutex
+	var order []string
+	b.AddSessionLifecycleObserver(func(*Session) {
+		mu.Lock()
+		order = append(order, "authenticated")
+		mu.Unlock()
+	}, func(*Session) {
+		mu.Lock()
+		order = append(order, "closed")
+		mu.Unlock()
+	})
+
+	b.fireLifecycleSessionAuthenticated(session)
+	b.removeSession(session) // models RecvLoop returning immediately after publication
+
+	mu.Lock()
+	got := append([]string(nil), order...)
+	mu.Unlock()
+	want := []string{"authenticated", "closed"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lifecycle observer order = %v, want %v", got, want)
+	}
+}
+
 func TestSessionCloseReleasesOwnedPeerProcessOnce(t *testing.T) {
 	b := New("peer-close-"+t.Name(), nil)
 	proc := newFakeOwnedPeerProcess(5100)
@@ -159,15 +260,30 @@ func TestConcurrentTerminateAndSessionCloseTerminatesAndConsumesPeerHandleOnce(t
 
 func TestBrokerStopAcceptingAndWaitUnblocksStalledPreAuthConnection(t *testing.T) {
 	b := New("preauth-"+t.Name(), nil)
+	authBlocked := make(chan struct{})
+	releaseAuth := make(chan struct{})
+	b.beforePreAuthRead = func() {
+		close(authBlocked)
+		<-releaseAuth
+	}
 	server, client := net.Pipe()
 	defer client.Close()
 	if !b.startAcceptedConnection(server) {
 		t.Fatal("failed to register accepted connection")
 	}
+	<-authBlocked
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := b.StopAcceptingAndWait(ctx); err != nil {
+	stopped := make(chan error, 1)
+	go func() { stopped <- b.StopAcceptingAndWait(ctx) }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("StopAcceptingAndWait returned while auth handler was blocked: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseAuth)
+	if err := <-stopped; err != nil {
 		t.Fatalf("StopAcceptingAndWait: %v", err)
 	}
 }

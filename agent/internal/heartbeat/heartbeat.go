@@ -143,6 +143,11 @@ type Command struct {
 	Payload map[string]any `json:"payload"`
 }
 
+type helperLifecycleController interface {
+	Stop()
+	Done() <-chan struct{}
+}
+
 type Heartbeat struct {
 	config                *config.Config
 	secureToken           *secmem.SecureString
@@ -186,17 +191,17 @@ type Heartbeat struct {
 	lastPatchUpdate       time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
 
 	// User session helper (IPC)
-	helperToken      string // retained copy of the helper-scoped token for connect-time pushes
-	helperTokenMu    sync.RWMutex
-	sessionBroker    *sessionbroker.Broker
-	helperLifecycle  *sessionbroker.HelperLifecycleManager
-	lifecycleCancel  context.CancelFunc
-	isService        bool
-	isHeadless       bool
-	scmSessionCh     chan sessionbroker.SCMSessionEvent // fed by SCM handler
-	helperFinder     func(targetSession string) *sessionbroker.Session
-	spawnHelper      func(targetSession string) error
-	killStaleHelpers func(staleKey string)
+	helperToken     string // retained copy of the helper-scoped token for connect-time pushes
+	helperTokenMu   sync.RWMutex
+	sessionBroker   *sessionbroker.Broker
+	helperLifecycle helperLifecycleController
+	lifecycleCancel context.CancelFunc
+	shutdownTimeout time.Duration
+	isService       bool
+	isHeadless      bool
+	scmSessionCh    chan sessionbroker.SCMSessionEvent // fed by SCM handler
+	helperFinder    func(targetSession string) *sessionbroker.Session
+	spawnHelper     func(targetSession string) error
 
 	// Shutdown seams keep lifecycle ordering directly testable without opening
 	// sockets or spawning Windows processes. Production leaves these nil.
@@ -843,30 +848,47 @@ func checkUpdateMarker() bool {
 	return true
 }
 
-func (h *Heartbeat) Start() {
-	// Start session broker for user helpers
-	if h.sessionBroker != nil {
-		go h.sessionBroker.Listen(h.stopChan)
-		h.startDarwinDesktopWatcher()
+func bootstrapThenListen(bootstrap func() error, listen func()) error {
+	if bootstrap != nil {
+		if err := bootstrap(); err != nil {
+			return err
+		}
 	}
-	if h.sessionCol != nil {
-		h.sessionCol.Start(h.stopChan)
+	if listen != nil {
+		listen()
 	}
+	return nil
+}
 
+func (h *Heartbeat) Start() {
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
 	// channel (created in constructor) is fed by the service handler
 	// (service_windows.go) for instant notification; the lifecycle manager
 	// also runs a slow reconcile tick as a safety net for helper crashes
 	// and early-boot edge cases.
+	var lifecycle *sessionbroker.HelperLifecycleManager
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
-		lm := sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
+		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
 		h.mu.Lock()
-		h.helperLifecycle = lm
+		h.helperLifecycle = lifecycle
 		h.lifecycleCancel = cancel
 		h.mu.Unlock()
-		go lm.Start(ctx)
+		if err := bootstrapThenListen(lifecycle.Bootstrap, func() {
+			go h.sessionBroker.Listen(h.stopChan)
+		}); err != nil {
+			log.Error("helper lifecycle bootstrap failed; refusing broker listener without desired state", "error", err.Error())
+		}
+		go lifecycle.Start(ctx)
+	} else if h.sessionBroker != nil {
+		go h.sessionBroker.Listen(h.stopChan)
+	}
+	if h.sessionBroker != nil {
+		h.startDarwinDesktopWatcher()
+	}
+	if h.sessionCol != nil {
+		h.sessionCol.Start(h.stopChan)
 	}
 
 	// Jitter: random delay before first heartbeat to avoid thundering herd
@@ -1102,7 +1124,11 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownTimeout := h.shutdownTimeout
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = 5 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 
 		if h.stopBrokerAcceptingAndWait != nil {
@@ -1128,16 +1154,9 @@ func (h *Heartbeat) Stop() {
 				lifecycleCancel()
 			}
 			if lifecycle != nil {
-				lifecycleStopped := make(chan struct{})
-				go func() {
-					lifecycle.Stop()
-					close(lifecycleStopped)
-				}()
-				select {
-				case <-lifecycleStopped:
-				case <-ctx.Done():
-					log.Warn("helper lifecycle process cleanup timed out")
-				}
+				// Stop bounds its own cleanup work. Keep this synchronous so broker
+				// close cannot overlap a still-running lifecycle cleanup goroutine.
+				lifecycle.Stop()
 				select {
 				case <-lifecycle.Done():
 				case <-ctx.Done():

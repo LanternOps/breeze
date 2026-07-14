@@ -2,6 +2,10 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +14,20 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
+
+func TestWindowsDesktopDemandNeverSpawnsOutsideLifecycleRegistry(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source, err := os.ReadFile(filepath.Join(filepath.Dir(testFile), "handlers_desktop_helper.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), "sessionbroker.SpawnHelperInSession") {
+		t.Fatal("desktop demand directly spawns a helper without lifecycle ownership")
+	}
+}
 
 func TestStartDesktopViaHelperPreservesTargetSessionOnRetry(t *testing.T) {
 	serverConn1, clientConn1 := createTestSocketPair(t)
@@ -208,21 +226,6 @@ func TestStartDesktopViaHelperDoesNotReuseWrongTargetSessionHelper(t *testing.T)
 	case <-seen:
 		t.Fatal("start_desktop should not reuse helper from the wrong target session")
 	default:
-	}
-}
-
-func TestKillDesktopStaleHelpersUsesRoleScopedKey(t *testing.T) {
-	var seen string
-	h := &Heartbeat{
-		killStaleHelpers: func(staleKey string) {
-			seen = staleKey
-		},
-	}
-
-	h.killDesktopStaleHelpers("42")
-
-	if seen != "42-system" {
-		t.Fatalf("stale helper key = %q, want 42-system", seen)
 	}
 }
 

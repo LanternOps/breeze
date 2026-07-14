@@ -163,7 +163,7 @@ func (r *helperRegistry) detach(key HelperKey, generation uint64) bool {
 	if entry == nil || entry.generation != generation {
 		return false
 	}
-	if entry.state != helperStopping && entry.process != nil && entry.process.Alive() {
+	if entry.process != nil && entry.process.Alive() {
 		return false
 	}
 	delete(r.current, key)

@@ -11,7 +11,6 @@ func TestSetClearBackupSession(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	s := &Session{SessionID: "backup-test"}
@@ -41,7 +40,6 @@ func TestStopBackupHelper_NilBroker(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 	// Should not panic when backup is nil
 	b.StopBackupHelper()
@@ -51,7 +49,6 @@ func TestForwardBackupCommand_NotConnected(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 	_, err := b.ForwardBackupCommand("cmd-1", "backup_run", nil, 5e9)
 	if err == nil {
@@ -75,7 +72,6 @@ func TestGetOrSpawnBackupHelper_ExistingSession(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	// Pre-set a backup session

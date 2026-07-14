@@ -70,7 +70,6 @@ func TestPreferredRunAsUserSessionIgnoresRDPHelper(t *testing.T) {
 			rdpUser.SessionID:     rdpUser,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -103,7 +102,6 @@ func TestPreferredRunAsUserSessionFiltersByConsoleSession(t *testing.T) {
 			otherUser.SessionID:   otherUser,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -140,7 +138,6 @@ func TestPreferredRunAsUserSessionNoConsoleHelper(t *testing.T) {
 			otherUser.SessionID: otherUser,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -177,7 +174,6 @@ func TestPreferredRunAsUserSessionWarnsWhenConsoleBindingSuppressesDelivery(t *t
 			otherUser.SessionID: otherUser,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -226,7 +222,6 @@ func TestPreferredRunAsUserSessionWarnCountsAllExcludedHelpers(t *testing.T) {
 			c.SessionID:     c,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -259,7 +254,6 @@ func TestPreferredRunAsUserSessionWarnsWhenConsoleLookupFailed(t *testing.T) {
 			helper.SessionID: helper,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 		// "0" is the WTSGetActiveConsoleSessionId failure / Session-0 sentinel,
 		// normalized to "" by ConsoleSessionID().
 		consoleSessionIDFn: func() string { return "0" },
@@ -288,7 +282,6 @@ func TestPreferredRunAsUserSessionNoWarnWhenNoUserHelper(t *testing.T) {
 	b := &Broker{
 		sessions:           map[string]*Session{},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -325,7 +318,6 @@ func TestPreferredRunAsUserSessionNoWarnOnConsoleMatch(t *testing.T) {
 			otherUser.SessionID:   otherUser,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 

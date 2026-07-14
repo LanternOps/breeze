@@ -34,9 +34,9 @@ func (b *Broker) setupSocket() error {
 		return fmt.Errorf("chmod %s: %w", b.socketPath, err)
 	}
 
-	b.listenerMu.Lock()
-	b.listener = listener
-	b.listenerMu.Unlock()
+	if !b.publishListener(listener) {
+		return fmt.Errorf("broker acceptance already stopped")
+	}
 	return nil
 }
 

@@ -55,20 +55,6 @@ func (h *Heartbeat) spawnDesktopHelper(targetSession string) error {
 	return h.spawnHelperForDesktop(targetSession)
 }
 
-func (h *Heartbeat) killDesktopStaleHelpers(targetSession string) {
-	if targetSession == "" {
-		return
-	}
-	staleKey := targetSession + "-" + ipc.HelperRoleSystem
-	if h.killStaleHelpers != nil {
-		h.killStaleHelpers(staleKey)
-		return
-	}
-	if h.sessionBroker != nil {
-		h.sessionBroker.KillStaleHelpers(staleKey)
-	}
-}
-
 func (h *Heartbeat) rememberDesktopOwner(desktopSessionID, helperSessionID string) {
 	if desktopSessionID == "" || helperSessionID == "" {
 		return
@@ -574,26 +560,11 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 		}
 	}
 
-	sessionNum, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(targetSession)
+	_, err := sessionbroker.ParseWindowsSessionIDForHeartbeat(targetSession)
 	if err != nil {
 		return fmt.Errorf("invalid session ID %q: %w", targetSession, err)
 	}
-
-	// Kill any stale helpers from previous sessions in this Windows session
-	// to release DXGI Desktop Duplication locks before spawning a new one.
-	h.killDesktopStaleHelpers(targetSession)
-
-	// The heartbeat path spawns a one-off helper; we don't track its exit
-	// code here. Release the handle immediately — the lifecycle manager,
-	// which does respect exit codes, owns the canonical spawn path.
-	helper, err := sessionbroker.SpawnHelperInSession(sessionNum)
-	if err != nil {
-		return err
-	}
-	if helper != nil {
-		helper.Close()
-	}
-	return nil
+	return fmt.Errorf("no lifecycle-owned helper is connected for Windows session %s; waiting for lifecycle reconciliation", targetSession)
 }
 
 // findGUIUserUIDs returns the UIDs of users with a loginwindow process (macOS).

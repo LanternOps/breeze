@@ -250,12 +250,10 @@ type Broker struct {
 	listener    net.Listener
 	rateLimiter *ipc.RateLimiter
 	startTime   time.Time // broker creation time, used for watchdog uptime
-	listenerMu  sync.Mutex
 
 	mu                      timedRWMutex
 	sessions                map[string]*Session   // sessionID -> Session
 	byIdentity              map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
-	staleHelpers            map[string][]int      // winSessionID -> PIDs of disconnected helpers
 	desiredHelperKeys       map[HelperKey]struct{}
 	helperByKey             map[HelperKey]*Session
 	helperByAuthKey         map[AuthenticatedHelperKey]*Session
@@ -271,10 +269,11 @@ type Broker struct {
 	backup                  *backupHelper // backup helper process and session
 	closed                  bool
 
-	acceptMu        sync.Mutex
-	acceptStopped   bool
-	preAuthConns    map[net.Conn]bool // true once verified auth is being published
-	preAuthHandlers sync.WaitGroup
+	acceptMu          sync.Mutex
+	acceptStopped     bool
+	preAuthConns      map[net.Conn]bool // true once verified auth is being published
+	preAuthHandlers   sync.WaitGroup
+	beforePreAuthRead func() // test barrier; set before Listen/startAcceptedConnection
 
 	// snap is an atomically updated snapshot of sessions/byIdentity/consoleUser.
 	// Updated under b.mu.Lock() on every mutation. Read-only hot paths use
@@ -314,7 +313,6 @@ func New(socketPath string, onMessage MessageHandler) *Broker {
 		startTime:              time.Now(),
 		sessions:               make(map[string]*Session),
 		byIdentity:             make(map[string][]*Session),
-		staleHelpers:           make(map[string][]int),
 		desiredHelperKeys:      make(map[HelperKey]struct{}),
 		helperByKey:            make(map[HelperKey]*Session),
 		helperByAuthKey:        make(map[AuthenticatedHelperKey]*Session),
@@ -437,13 +435,23 @@ func (b *Broker) SetSessionAuthenticatedHandler(handler SessionAuthenticatedHand
 
 // fireSessionAuthenticated invokes the on-authenticated handler if set.
 func (b *Broker) fireSessionAuthenticated(session *Session) {
+	b.firePrimarySessionAuthenticated(session)
+	b.fireLifecycleSessionAuthenticated(session)
+}
+
+func (b *Broker) firePrimarySessionAuthenticated(session *Session) {
 	b.mu.RLock()
 	handler := b.onSessionAuthed
-	callbacks := b.lifecycleAuthenticatedCallbacksLocked()
 	b.mu.RUnlock()
 	if handler != nil {
 		handler(session)
 	}
+}
+
+func (b *Broker) fireLifecycleSessionAuthenticated(session *Session) {
+	b.mu.RLock()
+	callbacks := b.lifecycleAuthenticatedCallbacksLocked()
+	b.mu.RUnlock()
 	for _, callback := range callbacks {
 		callback(session)
 	}
@@ -534,10 +542,44 @@ func (b *Broker) LifecycleHelperKeys() []HelperKey {
 	return keys
 }
 
+// HasHelperKeyOwner reports whether an authenticated helper currently owns the
+// logical Windows session/role key. Scheduled helpers may own a key without a
+// proactive lifecycle registry entry.
+func (b *Broker) HasHelperKeyOwner(key HelperKey) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.helperByKey[key] != nil
+}
+
+func (b *Broker) whileHelperKeyOwnedBy(key HelperKey, session *Session, fn func()) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if session == nil || b.helperByKey[key] != session {
+		return false
+	}
+	fn()
+	return true
+}
+
 func (b *Broker) currentListener() net.Listener {
-	b.listenerMu.Lock()
-	defer b.listenerMu.Unlock()
+	b.acceptMu.Lock()
+	defer b.acceptMu.Unlock()
 	return b.listener
+}
+
+func (b *Broker) publishListener(listener net.Listener) bool {
+	if listener == nil {
+		return false
+	}
+	b.acceptMu.Lock()
+	if b.acceptStopped {
+		b.acceptMu.Unlock()
+		_ = listener.Close()
+		return false
+	}
+	b.listener = listener
+	b.acceptMu.Unlock()
+	return true
 }
 
 func (b *Broker) acceptingStopped() bool {
@@ -588,6 +630,8 @@ func (b *Broker) finishPreAuth(conn net.Conn) {
 func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 	b.acceptMu.Lock()
 	b.acceptStopped = true
+	listener := b.listener
+	b.listener = nil
 	connections := make([]net.Conn, 0, len(b.preAuthConns))
 	for conn, publishing := range b.preAuthConns {
 		if !publishing {
@@ -595,7 +639,7 @@ func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 		}
 	}
 	b.acceptMu.Unlock()
-	if listener := b.currentListener(); listener != nil {
+	if listener != nil {
 		_ = listener.Close()
 	}
 	for _, conn := range connections {
@@ -1432,6 +1476,9 @@ func (b *Broker) admitOrEvict(identityKey string) bool {
 }
 
 func (b *Broker) handleConnection(rawConn net.Conn) {
+	if b.beforePreAuthRead != nil {
+		b.beforePreAuthRead()
+	}
 	// Set handshake deadline
 	rawConn.SetDeadline(time.Now().Add(HandshakeTimeout))
 
@@ -1847,11 +1894,11 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		"desktopContext", session.DesktopContext,
 	)
 
-	// Notify the on-authenticated handler now that the session is fully
-	// registered (admitted, appended, scopes assigned). Fired outside the
-	// broker mutex and in a goroutine so a slow handler (e.g. one that pushes
-	// the helper token over IPC) can't block the accept loop or hold b.mu.
-	go b.fireSessionAuthenticated(session)
+	// Lifecycle ownership must be published synchronously before RecvLoop can
+	// fail and emit the corresponding close callback. The primary application
+	// handler remains asynchronous because it may perform slow IPC work.
+	b.fireLifecycleSessionAuthenticated(session)
+	go b.firePrimarySessionAuthenticated(session)
 
 	// Keepalive: send periodic pings and close the session if pongs stop
 	// arriving. Without this, a wedged helper (e.g. a capture process killed
@@ -1871,10 +1918,9 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	log.Info("user helper disconnected", "uid", session.UID, "sessionId", session.SessionID)
 }
 
-// removeSessionMapsLocked removes session from b.sessions and b.byIdentity
-// and records the PID as stale. Caller must hold b.mu.Lock(). Does NOT
-// Close() the session, publish a snapshot, or fire onSessionClosed; the
-// caller is responsible for those.
+// removeSessionMapsLocked removes session from b.sessions and b.byIdentity.
+// Caller must hold b.mu.Lock(). Does NOT Close() the session, publish a
+// snapshot, or fire onSessionClosed; the caller is responsible for those.
 func (b *Broker) removeSessionMapsLocked(session *Session) bool {
 	if b.sessions[session.SessionID] != session {
 		return false
@@ -1901,16 +1947,6 @@ func (b *Broker) removeSessionMapsLocked(session *Session) bool {
 		if owner == session {
 			delete(b.helperByAuthKey, authKey)
 		}
-	}
-
-	// Track the PID so it can be killed before spawning a replacement
-	// (Windows only — see trackStaleHelper; elsewhere this is a deliberate
-	// no-op). Don't kill here — the process may still be serving an active
-	// desktop session. Key includes role so SYSTEM and user helper stale
-	// PIDs are tracked separately.
-	if session.PID > 0 {
-		staleKey := session.WinSessionID + "-" + session.HelperRole
-		b.trackStaleHelper(staleKey, session.PID)
 	}
 	return true
 }
@@ -1969,49 +2005,6 @@ func (b *Broker) TerminateHelperKey(key HelperKey) {
 		}
 		for _, callback := range callbacks {
 			callback(session)
-		}
-	}
-}
-
-// trackStaleHelper records a disconnected helper PID for later cleanup.
-// Called under b.mu lock.
-//
-// Windows-only: the sole drain path is KillStaleHelpers, whose callers are all
-// Windows-gated (it exists to release DXGI Desktop Duplication locks before
-// respawning a helper). On macOS/Linux nothing ever drains this map, so
-// tracking there grows unbounded for the life of the daemon (issue #2387).
-// macOS handles helper teardown differently: live sessions are closed at
-// logout via CloseSessionsByDesktopContext, and launchd `kickstart -k` kills
-// any lingering instance on respawn.
-func (b *Broker) trackStaleHelper(winSessionID string, pid int) {
-	if runtime.GOOS != "windows" {
-		return
-	}
-	b.staleHelpers[winSessionID] = append(b.staleHelpers[winSessionID], pid)
-}
-
-// KillStaleHelpers kills any disconnected helper processes for the given
-// Windows session. Call this before spawning a new helper to release DXGI
-// Desktop Duplication locks held by orphaned processes.
-//
-// Windows-only contract: trackStaleHelper only records PIDs on Windows, so on
-// any other platform this is always a no-op against an empty map — do not add
-// non-Windows callers expecting it to find anything.
-func (b *Broker) KillStaleHelpers(winSessionID string) {
-	b.mu.Lock()
-	pids := b.staleHelpers[winSessionID]
-	delete(b.staleHelpers, winSessionID)
-	b.mu.Unlock()
-
-	for _, pid := range pids {
-		if proc, err := os.FindProcess(pid); err == nil {
-			if err := proc.Kill(); err != nil {
-				log.Debug("failed to kill stale userhelper (may have already exited)",
-					"pid", pid, "error", err.Error())
-			} else {
-				log.Info("killed stale userhelper before respawn",
-					"pid", pid, "winSessionID", winSessionID)
-			}
 		}
 	}
 }

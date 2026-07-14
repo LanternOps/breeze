@@ -67,7 +67,6 @@ func TestKeepaliveReapsStrandedSession(t *testing.T) {
 	b := &Broker{
 		sessions:     map[string]*Session{session.SessionID: session},
 		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
-		staleHelpers: make(map[string][]int),
 	}
 
 	done := make(chan struct{})
@@ -124,7 +123,6 @@ func TestKeepaliveKeepsHealthySessionAlive(t *testing.T) {
 	b := &Broker{
 		sessions:     map[string]*Session{session.SessionID: session},
 		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
-		staleHelpers: make(map[string][]int),
 	}
 
 	keepaliveDone := make(chan struct{})
@@ -190,7 +188,6 @@ func TestMaybeStartKeepalive_WatchdogSessionStaysAlive(t *testing.T) {
 	b := &Broker{
 		sessions:     map[string]*Session{session.SessionID: session},
 		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
-		staleHelpers: make(map[string][]int),
 	}
 
 	b.maybeStartKeepalive(session, ipc.HelperRoleWatchdog)
@@ -228,7 +225,6 @@ func TestMaybeStartKeepalive_SystemSessionIsReaped(t *testing.T) {
 	b := &Broker{
 		sessions:     map[string]*Session{session.SessionID: session},
 		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
-		staleHelpers: make(map[string][]int),
 	}
 
 	b.maybeStartKeepalive(session, ipc.HelperRoleSystem)
@@ -264,7 +260,6 @@ func TestAdmitOrEvictEvictsIdleSession(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   map[string][]*Session{identity: sessions},
-		staleHelpers: make(map[string][]int),
 	}
 	for _, s := range sessions {
 		b.sessions[s.SessionID] = s
@@ -301,7 +296,6 @@ func TestAdmitOrEvictRejectsWhenAllRecent(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   map[string][]*Session{identity: sessions},
-		staleHelpers: make(map[string][]int),
 	}
 	for _, s := range sessions {
 		b.sessions[s.SessionID] = s
@@ -334,7 +328,6 @@ func TestKeepaliveClosesAfterRepeatedSendFailures(t *testing.T) {
 	b := &Broker{
 		sessions:     map[string]*Session{session.SessionID: session},
 		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
-		staleHelpers: make(map[string][]int),
 	}
 
 	done := make(chan struct{})
@@ -373,7 +366,6 @@ func TestRecvLoopDispatchesPongToNotePong(t *testing.T) {
 	b := &Broker{
 		sessions:     map[string]*Session{session.SessionID: session},
 		byIdentity:   map[string][]*Session{session.IdentityKey: {session}},
-		staleHelpers: make(map[string][]int),
 	}
 
 	recvDone := make(chan struct{})
@@ -417,7 +409,6 @@ func TestAdmitOrEvictUnderCapAdmits(t *testing.T) {
 	b := &Broker{
 		sessions:     map[string]*Session{s.SessionID: s},
 		byIdentity:   map[string][]*Session{identity: {s}},
-		staleHelpers: make(map[string][]int),
 	}
 
 	if !b.admitOrEvict(identity) {

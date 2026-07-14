@@ -156,14 +156,13 @@ func (m *HelperLifecycleManager) finishStart() {
 	m.doneOnce.Do(func() { close(m.done) })
 }
 
-func (m *HelperLifecycleManager) reconcile() {
-	if m.detector == nil || m.broker == nil || m.spawner == nil {
-		return
+func (m *HelperLifecycleManager) detectedDesired() (map[HelperKey]bool, error) {
+	if m.detector == nil {
+		return map[HelperKey]bool{}, nil
 	}
 	sessions, err := m.detector.ListSessions()
 	if err != nil {
-		log.Warn("lifecycle: failed to list sessions", "error", err.Error())
-		return
+		return nil, err
 	}
 	desired := make(map[HelperKey]bool, len(sessions)*2)
 	for _, session := range sessions {
@@ -173,6 +172,39 @@ func (m *HelperLifecycleManager) reconcile() {
 		if key, ok := helperKeyFromDetected(session, "user"); ok {
 			desired[key] = true
 		}
+	}
+	return desired, nil
+}
+
+// Bootstrap publishes one detector snapshot without spawning. Heartbeat calls
+// this before the broker starts accepting helpers so scheduled helpers can
+// authenticate against authoritative desired state during startup.
+func (m *HelperLifecycleManager) Bootstrap() error {
+	if m.broker == nil {
+		return nil
+	}
+	desired, err := m.detectedDesired()
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopping {
+		return nil
+	}
+	m.desired = cloneDesired(desired)
+	m.publishDesired(desired)
+	return nil
+}
+
+func (m *HelperLifecycleManager) reconcile() {
+	if m.detector == nil || m.broker == nil || m.spawner == nil {
+		return
+	}
+	desired, err := m.detectedDesired()
+	if err != nil {
+		log.Warn("lifecycle: failed to list sessions", "error", err.Error())
+		return
 	}
 
 	m.mu.Lock()
@@ -224,6 +256,10 @@ func (m *HelperLifecycleManager) publishDesired(desired map[HelperKey]bool) {
 func (m *HelperLifecycleManager) spawnKey(key HelperKey) {
 	m.mu.Lock()
 	if m.stopping || !m.desired[key] {
+		m.mu.Unlock()
+		return
+	}
+	if m.broker != nil && m.broker.HasHelperKeyOwner(key) {
 		m.mu.Unlock()
 		return
 	}
@@ -301,8 +337,9 @@ func (m *HelperLifecycleManager) stopKey(key HelperKey) {
 		m.registry.detach(key, entry.generation)
 		return
 	}
-	m.registry.detach(key, entry.generation)
-	log.Warn("lifecycle: helper process did not reap before shutdown deadline", "helperKey", key.String(), "pid", processID(entry.process))
+	if !m.registry.detach(key, entry.generation) {
+		log.Warn("lifecycle: helper process did not reap before shutdown deadline; retaining live stopping generation", "helperKey", key.String(), "pid", processID(entry.process))
+	}
 }
 
 func processID(process helperProcess) uint32 {
@@ -377,7 +414,12 @@ func (m *HelperLifecycleManager) sessionAuthenticated(session *Session) {
 	if !ok {
 		return
 	}
-	m.registry.markConnected(key, uint32(session.PID), session)
+	if m.broker == nil {
+		return
+	}
+	m.broker.whileHelperKeyOwnedBy(key, session, func() {
+		m.registry.markConnected(key, uint32(session.PID), session)
+	})
 }
 
 func (m *HelperLifecycleManager) sessionClosed(session *Session) {

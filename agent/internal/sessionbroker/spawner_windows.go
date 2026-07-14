@@ -77,9 +77,8 @@ func (s *SpawnedHelper) Terminate() error {
 }
 
 // Wait blocks until the spawned helper process exits and returns its exit
-// code. Returns -1 + error on failure. The process handle is released
-// automatically after Wait returns so callers do not need to call Close
-// in the normal path.
+// code. Returns -1 + error on failure. Wait does not release the process
+// handle; the lifecycle watcher calls Close after Wait returns.
 func (s *SpawnedHelper) Wait() (int, error) {
 	if s == nil {
 		return -1, fmt.Errorf("SpawnedHelper: no handle")

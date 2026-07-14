@@ -89,7 +89,6 @@ func TestSessionForUserPrefersMostRecentUserSession(t *testing.T) {
 			userSessionNew.SessionID: userSessionNew,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	got := b.SessionForUser("alice")
@@ -114,7 +113,6 @@ func TestSessionForUserSelectsRDPHelper(t *testing.T) {
 			rdpSession.SessionID:     rdpSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	if got := b.SessionForUser("alice"); got != rdpSession {
@@ -141,7 +139,6 @@ func TestLaunchProcessViaUserHelperBroadcastsToAllUserSessions(t *testing.T) {
 			newerSession.SessionID: newerSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	seen := make(chan string, 2)
@@ -208,7 +205,6 @@ func TestLaunchProcessViaUserHelperForSessionTargetsMatchingHelper(t *testing.T)
 			sessionB.SessionID: sessionB,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	seen := make(chan string, 1)
@@ -265,7 +261,6 @@ func TestLaunchProcessViaUserHelperForSessionTargetsMatchingRDPHelper(t *testing
 			rdpSession.SessionID:     rdpSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	seen := make(chan string, 1)
@@ -316,7 +311,6 @@ func TestReapIdleSessionsReapsStrandedCaptureSessions(t *testing.T) {
 			session.SessionID: session,
 		},
 		byIdentity:   map[string][]*Session{session.IdentityKey: []*Session{session}},
-		staleHelpers: make(map[string][]int),
 	}
 
 	b.reapIdleSessions()
@@ -430,7 +424,6 @@ func TestPreferredSessionWithScopePrefersNewestUserHelper(t *testing.T) {
 			newerUser.SessionID:     newerUser,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	got := b.PreferredSessionWithScope("run_as_user")
@@ -467,7 +460,6 @@ func TestPreferredDesktopSession_LoginWindowConsole_PrefersLoginWindowHelper(t *
 			loginSession.SessionID: loginSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	// Without console user set, user_session wins (existing behavior).
@@ -512,7 +504,6 @@ func TestPreferredDesktopSession_LoggedInConsole_PrefersUserSession(t *testing.T
 			loginSession.SessionID: loginSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	// With a real user logged in, user_session should still win.
@@ -542,7 +533,6 @@ func TestPreferredDesktopSession_LoginWindowConsole_OnlyLoginHelpers(t *testing.
 			userSession.SessionID: userSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	b.SetConsoleUser("loginwindow")
@@ -585,7 +575,6 @@ func TestPreferredDesktopSession_LoginWindow_DeterministicRegardlessOfOrder(t *t
 				loginSession.SessionID: loginSession,
 			},
 			byIdentity:   make(map[string][]*Session),
-			staleHelpers: make(map[string][]int),
 		}
 		b.SetConsoleUser("loginwindow")
 
@@ -627,7 +616,6 @@ func TestCloseSessionsByDesktopContext(t *testing.T) {
 			notifySession.SessionID: notifySession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	closed := b.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession)
@@ -689,7 +677,6 @@ func TestCloseSessionsByDesktopContext_MultipleMatches(t *testing.T) {
 			loginSess.SessionID: loginSess,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	closed := b.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession)
