@@ -28,6 +28,10 @@ vi.mock('../../config/env', () => ({
 }));
 
 vi.mock('../../db', () => ({ db: { select: dbSelectMock } }));
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return { ...actual, eq: vi.fn(actual.eq) };
+});
 
 import {
   clientAiAdminOrgRoutes,
@@ -37,6 +41,8 @@ import {
   currentMonthKey,
 } from './adminOrgs';
 import { authMiddleware } from '../../middleware/auth';
+import { eq } from 'drizzle-orm';
+import { m365Connections } from '../../db/schema/m365';
 
 const ORG_ID = '0c0c0c0c-1111-4222-8333-444455556666';
 const OTHER_ORG_ID = '9d9d9d9d-1111-4222-8333-444455556666';
@@ -160,6 +166,13 @@ describe('GET /client-ai/admin/orgs', () => {
     });
     const res = await buildApp().request('/client-ai/admin/orgs', { headers: AUTHED });
     expect((await res.json()).data[0].suggestedEntraTenantId).toBe(TID);
+  });
+
+  it('uses only legacy-direct rows for the transitional M365 tenant suggestion', async () => {
+    setupOrgListDb();
+    const res = await buildApp().request('/client-ai/admin/orgs', { headers: AUTHED });
+    expect(res.status).toBe(200);
+    expect(eq).toHaveBeenCalledWith(m365Connections.profile, 'legacy-direct');
   });
 });
 

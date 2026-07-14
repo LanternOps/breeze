@@ -19,7 +19,7 @@
  */
 
 import { randomBytes } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { m365Connections } from '../db/schema/m365';
 import { decryptForColumn } from './secretCrypto';
@@ -45,7 +45,10 @@ export async function hasDirectM365Connection(orgId: string): Promise<boolean> {
   const [row] = await db
     .select({ id: m365Connections.id })
     .from(m365Connections)
-    .where(eq(m365Connections.orgId, orgId))
+    .where(and(
+      eq(m365Connections.orgId, orgId),
+      eq(m365Connections.profile, 'legacy-direct'),
+    ))
     .limit(1);
   return !!row;
 }
@@ -103,10 +106,17 @@ export async function getToken(orgId: string): Promise<{ token: string } | Direc
   const [row] = await db
     .select()
     .from(m365Connections)
-    .where(eq(m365Connections.orgId, orgId))
+    .where(and(
+      eq(m365Connections.orgId, orgId),
+      eq(m365Connections.profile, 'legacy-direct'),
+      eq(m365Connections.status, 'active'),
+    ))
     .limit(1);
   if (!row) {
-    return { kind: 'error', code: 'no_connection', message: 'No Microsoft 365 connection for this organization.' };
+    return { kind: 'error', code: 'no_connection', message: 'No legacy Microsoft 365 connection for this organization.' };
+  }
+  if (!row.clientSecret) {
+    return { kind: 'error', code: 'connection_key_error', message: 'Legacy Microsoft 365 connection has no stored client secret.' };
   }
 
   const cacheKey = `${orgId}:${row.clientId}`;

@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 let selectRows: unknown[] = [];
 let insertRows: unknown[] = [];
 let deleteRows: unknown[] = [];
+let insertedValues: unknown;
 let tokenResult: { accessToken: string; expiresIn: number };
 let graphResult: { ok: boolean; orgDisplayName?: string; error?: string };
 let tokenThrows = false;
@@ -24,7 +25,13 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => (_c: any, next: any) => next()),
 }));
-vi.mock('../db/schema/m365', () => ({ m365Connections: { orgId: 'org_id' } }));
+vi.mock('../db/schema/m365', () => ({
+  m365Connections: {
+    orgId: 'org_id',
+    profile: 'profile',
+    status: 'status',
+  },
+}));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/secretCrypto', () => ({ encryptSecret: vi.fn(() => 'ENCRYPTED-SECRET') }));
@@ -40,7 +47,12 @@ vi.mock('../services/c2cM365', () => ({
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => selectRows) })) })) })),
-    insert: vi.fn(() => ({ values: vi.fn(() => ({ onConflictDoUpdate: vi.fn(() => ({ returning: vi.fn(async () => insertRows) })) })) })),
+    insert: vi.fn(() => ({
+      values: vi.fn((values: unknown) => {
+        insertedValues = values;
+        return { onConflictDoUpdate: vi.fn(() => ({ returning: vi.fn(async () => insertRows) })) };
+      }),
+    })),
     delete: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => deleteRows) })) })),
   },
 }));
@@ -60,6 +72,8 @@ function app() {
 const storedRow = {
   id: 'conn-1', orgId: 'org-1', tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1',
   clientSecret: 'ENCRYPTED-SECRET', displayName: 'Contoso', status: 'active',
+  profile: 'legacy-direct', authMode: 'client-secret-legacy', credentialDomain: 'legacy-direct',
+  vaultRef: null, permissionManifestVersion: 0, observedGrants: [],
   lastVerifiedAt: new Date('2026-06-01T00:00:00Z'), createdAt: new Date('2026-06-01T00:00:00Z'),
   updatedAt: new Date('2026-06-01T00:00:00Z'),
 };
@@ -70,6 +84,7 @@ beforeEach(() => {
   tokenResult = { accessToken: 'tok', expiresIn: 3600 };
   graphResult = { ok: true, orgDisplayName: 'Contoso' };
   tokenThrows = false;
+  insertedValues = undefined;
 });
 
 describe('m365 connection routes', () => {
@@ -105,6 +120,20 @@ describe('m365 connection routes', () => {
     expect(body.connected).toBe(true);
     expect(JSON.stringify(body)).not.toContain('super-secret');
     expect(JSON.stringify(body)).not.toContain('ENCRYPTED-SECRET');
+    expect(insertedValues).toMatchObject({
+      profile: 'legacy-direct',
+      authMode: 'client-secret-legacy',
+      credentialDomain: 'legacy-direct',
+      permissionManifestVersion: 0,
+      vaultRef: null,
+    });
+  });
+
+  it('does not attempt Graph auth when a legacy row has no encrypted secret', async () => {
+    selectRows = [{ ...storedRow, clientSecret: null }];
+    const res = await app().request('/m365/connection');
+    expect(res.status).toBe(200);
+    expect((await res.json()).connected).toBe(true);
   });
 
   it('POST /connection returns 400 with a hint when Graph verification fails', async () => {

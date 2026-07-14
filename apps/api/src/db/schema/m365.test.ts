@@ -1,26 +1,26 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { m365Connections } from './m365';
 
 describe('m365Connections schema', () => {
-  it('has the expected columns', () => {
+  it('has canonical metadata columns and only one deprecated secret column', () => {
     const cfg = getTableConfig(m365Connections);
-    const cols = cfg.columns.map((c) => c.name).sort();
-    expect(cols).toEqual(
-      [
-        'id', 'org_id', 'tenant_id', 'client_id', 'client_secret', 'display_name',
-        'status', 'created_by', 'last_verified_at', 'created_at', 'updated_at',
-      ].sort()
-    );
+    expect(cfg.columns.map((c) => c.name).sort()).toEqual([
+      'client_id', 'client_secret', 'consented_at', 'created_at', 'created_by',
+      'credential_domain', 'credential_version', 'display_name', 'expires_at',
+      'id', 'last_error_code', 'last_verified_at', 'observed_grants', 'org_id',
+      'permission_manifest_version', 'profile', 'revoked_at', 'status',
+      'tenant_id', 'updated_at', 'user_id', 'vault_ref', 'auth_mode',
+    ].sort());
+    expect(cfg.columns.find((c) => c.name === 'client_secret')?.notNull).toBe(false);
+    expect(cfg.columns.find((c) => c.name === 'vault_ref')?.notNull).toBe(false);
   });
 
-  it('is named m365_connections', () => {
-    expect(getTableConfig(m365Connections).name).toBe('m365_connections');
-  });
-
-  it('stores the client secret as the encrypted-at-rest column', () => {
-    const cfg = getTableConfig(m365Connections);
-    const secret = cfg.columns.find((c) => c.name === 'client_secret');
-    expect(secret?.notNull).toBe(true);
+  it('declares per-owner/profile uniqueness instead of one-row-per-org', () => {
+    const names = getTableConfig(m365Connections).indexes.map((i) => i.config.name).sort();
+    expect(names).toEqual([
+      'm365_connections_org_profile_uniq',
+      'm365_connections_user_profile_uniq',
+    ]);
   });
 });
