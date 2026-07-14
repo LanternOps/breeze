@@ -184,6 +184,144 @@ export const deviceExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
   partnerDeviceExportRecordSchema,
 );
 
+export const partnerExportCollectionSchema = z.object({
+  total: z.number().int().nonnegative(),
+  included: z.number().int().nonnegative(),
+  complete: z.boolean(),
+  reason: z.literal('collection_limit_exceeded').nullable(),
+}).strict().superRefine((value, ctx) => {
+  if (value.included > value.total) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['included'], message: 'included cannot exceed total' });
+  }
+  if (value.complete !== (value.included === value.total)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['complete'], message: 'complete must reflect collection bounds' });
+  }
+  if ((value.reason === null) !== value.complete) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: 'overflow reason must reflect completeness' });
+  }
+});
+
+const nullableInventoryString = z.string().max(1000).nullable();
+const inventoryCount = z.number().int().nonnegative().nullable();
+
+export const partnerDeviceInventoryExportRecordSchema = strictPartnerExportRecordSchema({
+  subjectType: z.literal('device'),
+  deviceId: z.string().uuid(),
+  hardware: z.object({
+    processor: z.object({ model: nullableInventoryString, cores: inventoryCount, threads: inventoryCount }).strict(),
+    memory: z.object({ totalMb: inventoryCount }).strict(),
+    graphics: z.object({ model: nullableInventoryString }).strict(),
+    motherboard: z.object({ manufacturer: nullableInventoryString, product: nullableInventoryString, version: nullableInventoryString }).strict(),
+    firmware: z.object({ biosVersion: nullableInventoryString }).strict(),
+  }).strict(),
+  disks: z.array(z.object({
+    id: z.string().uuid(), mountPoint: z.string().max(255), device: nullableInventoryString,
+    fileSystem: nullableInventoryString, totalGb: z.number().nonnegative(),
+  }).strict()).max(500),
+  interfaces: z.array(z.object({
+    id: z.string().uuid(), name: z.string().min(1).max(1000), macAddress: z.string().max(17).nullable(), primary: z.boolean(),
+  }).strict()).max(500),
+  addresses: z.array(z.object({
+    id: z.string().uuid(), interfaceId: z.string().uuid(), interfaceName: z.string().min(1).max(1000),
+    address: z.string().min(1).max(45), family: z.enum(['ipv4', 'ipv6']),
+    assignment: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']),
+    reservationEligible: z.boolean(), subnetMask: z.string().max(45).nullable(), gateway: z.string().max(45).nullable(),
+    dnsServers: z.array(z.string().min(1).max(45)).max(20), active: z.boolean(),
+    firstSeenAt: partnerExportTimestampSchema, deactivatedAt: partnerExportTimestampSchema.nullable(),
+  }).strict()).max(500),
+  warranty: z.object({
+    status: z.enum(['active', 'expiring', 'expired', 'unknown', 'subscription_active']),
+    startsOn: z.string().date().nullable(), endsOn: z.string().date().nullable(), subscription: z.boolean(),
+  }).strict().nullable(),
+  virtualMachines: z.array(z.object({
+    id: z.string().uuid(), externalId: z.string().min(1).max(64), name: z.string().min(1).max(256),
+    generation: z.number().int().positive(), memoryMb: inventoryCount, processorCount: inventoryCount,
+    rctEnabled: z.boolean(), passthroughDisks: z.boolean(),
+  }).strict()).max(500),
+  collections: z.object({
+    disks: partnerExportCollectionSchema, interfaces: partnerExportCollectionSchema,
+    addresses: partnerExportCollectionSchema, virtualMachines: partnerExportCollectionSchema,
+  }).strict(),
+});
+
+const partnerNetworkEquipmentSchema = z.object({
+  id: z.string().uuid(), type: z.enum(['router', 'switch', 'firewall', 'access_point', 'nas']),
+  name: z.string().max(255).nullable(), address: z.string().min(1).max(45), macAddress: z.string().max(17).nullable(),
+  manufacturer: z.string().max(255).nullable(), model: z.string().max(255).nullable(),
+}).strict();
+
+export const partnerSiteInventoryExportRecordSchema = strictPartnerExportRecordSchema({
+  subjectType: z.literal('site'),
+  siteSubjectId: z.string().uuid(),
+  networkEquipment: z.array(partnerNetworkEquipmentSchema).max(500),
+  networkSegments: z.array(z.object({
+    id: z.string().uuid(), cidr: z.string().min(1).max(50),
+  }).strict()).max(500),
+  collections: z.object({
+    networkEquipment: partnerExportCollectionSchema,
+    networkSegments: partnerExportCollectionSchema,
+  }).strict(),
+});
+export const partnerInventoryExportRecordSchema = z.discriminatedUnion('subjectType', [
+  partnerDeviceInventoryExportRecordSchema,
+  partnerSiteInventoryExportRecordSchema,
+]);
+export const deviceInventoryExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerInventoryExportRecordSchema,
+);
+
+export const partnerDeviceSoftwareExportRecordSchema = strictPartnerExportRecordSchema({
+  subjectType: z.literal('device'),
+  deviceId: z.string().uuid(),
+  software: z.array(z.object({
+    id: z.string().uuid(), name: z.string().min(1).max(500), version: z.string().max(100).nullable(),
+    vendor: z.string().max(255).nullable(), installedOn: z.string().date().nullable(), managed: z.boolean(),
+  }).strict()).max(1000),
+  collection: partnerExportCollectionSchema,
+});
+export const deviceSoftwareExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerDeviceSoftwareExportRecordSchema,
+);
+
+export const partnerRelationshipEndpointSchema = z.object({
+  type: z.enum(['organization', 'site', 'device', 'interface', 'address', 'virtual_machine', 'discovered_asset']),
+  id: z.string().uuid(),
+}).strict();
+
+export const partnerDeviceRelationshipExportRecordSchema = strictPartnerExportRecordSchema({
+  subjectType: z.literal('device'),
+  deviceId: z.string().uuid(),
+  edges: z.array(z.object({
+    key: z.string().min(1).max(128),
+    type: z.enum(['organization_site', 'site_device', 'device_interface', 'interface_address', 'hyperv_host_vm', 'network_topology', 'device_link']),
+    from: partnerRelationshipEndpointSchema,
+    to: partnerRelationshipEndpointSchema,
+    metadata: z.object({
+      interfaceName: z.string().max(1000).nullable().optional(),
+      assignment: z.enum(['dhcp', 'static', 'vpn', 'link-local', 'unknown']).optional(),
+      reservationEligible: z.boolean().optional(),
+      connectionType: z.string().max(50).nullable().optional(),
+      vlan: z.number().int().min(0).max(4095).nullable().optional(),
+      linkGroupRole: z.string().max(16).nullable().optional(),
+    }).strict(),
+  }).strict()).max(500),
+  collection: partnerExportCollectionSchema,
+});
+
+export const partnerSiteRelationshipExportRecordSchema = strictPartnerExportRecordSchema({
+  subjectType: z.literal('site'),
+  siteSubjectId: z.string().uuid(),
+  edges: partnerDeviceRelationshipExportRecordSchema.shape.edges,
+  collection: partnerExportCollectionSchema,
+});
+export const partnerRelationshipExportRecordSchema = z.discriminatedUnion('subjectType', [
+  partnerDeviceRelationshipExportRecordSchema,
+  partnerSiteRelationshipExportRecordSchema,
+]);
+export const deviceRelationshipsExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
+  partnerRelationshipExportRecordSchema,
+);
+
 export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {
   schemaVersion: '1';
   snapshotAt: string;

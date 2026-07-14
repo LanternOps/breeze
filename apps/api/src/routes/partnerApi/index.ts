@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { partnerApiAuthMiddleware } from '../../middleware/partnerApiAuth';
 import { partnerDeviceRoutes } from './devices';
 import { partnerOrganizationRoutes } from './organizations';
+import { partnerInventoryRoutes } from './inventory';
+import { partnerRelationshipRoutes } from './relationships';
 
 export const partnerApiRoutes = new Hono();
 
@@ -10,3 +12,5 @@ export const partnerApiRoutes = new Hono();
 partnerApiRoutes.use('*', partnerApiAuthMiddleware);
 partnerApiRoutes.route('/', partnerOrganizationRoutes);
 partnerApiRoutes.route('/', partnerDeviceRoutes);
+partnerApiRoutes.route('/', partnerInventoryRoutes);
+partnerApiRoutes.route('/', partnerRelationshipRoutes);

@@ -88,7 +88,11 @@ export function parseExportQuery(
   const raw = Object.fromEntries(new URL(c.req.url).searchParams.entries());
   const parsed = querySchema.safeParse(raw);
   if (!parsed.success) return invalidQuery(c);
-  if (parsed.data.siteId && resource !== 'devices') return invalidQuery(c);
+  const supportsSiteFilter = resource === 'devices'
+    || resource === 'device-inventory'
+    || resource === 'device-software'
+    || resource === 'device-relationships';
+  if (parsed.data.siteId && !supportsSiteFilter) return invalidQuery(c);
   if (parsed.data.orgId && !principal.accessibleOrgIds.includes(parsed.data.orgId)) {
     return c.json({ error: 'Organization not found.', code: 'partner_export_org_not_found' }, 404);
   }
@@ -97,7 +101,7 @@ export function parseExportQuery(
     const updatedSince = parsed.data.updatedSince ?? null;
     const filters = {
       orgId: parsed.data.orgId ?? null,
-      siteId: resource === 'devices' ? parsed.data.siteId ?? null : null,
+      siteId: supportsSiteFilter ? parsed.data.siteId ?? null : null,
     };
     const cursor = parsed.data.cursor
       ? decodePartnerExportCursor(parsed.data.cursor, {
