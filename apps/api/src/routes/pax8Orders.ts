@@ -218,6 +218,23 @@ async function runAuditedMutation<T>(
   }
 }
 
+function submitAuditDetails(result: Awaited<ReturnType<typeof submitOrder>>) {
+  let succeededCount = 0;
+  let failedCount = 0;
+  let needsReconcileCount = 0;
+  for (const line of result.lines) {
+    if (line.submitState === 'succeeded') succeededCount += 1;
+    else if (line.submitState === 'failed') failedCount += 1;
+    else if (line.submitState === 'needs_reconcile') needsReconcileCount += 1;
+  }
+  return {
+    orderStatus: result.status,
+    succeededCount,
+    failedCount,
+    needsReconcileCount,
+  };
+}
+
 pax8OrderRoutes.use('*', authMiddleware);
 
 // `requireScope()` intentionally follows this check. Its generic 403 would
@@ -443,14 +460,17 @@ pax8OrderRoutes.post(
       submitOrder({ partnerId: partner.partnerId, orderId: id, actorUserId: auth.user.id }));
     if ('response' in mutation) return mutation.response;
     const result = mutation.value;
+    const details = submitAuditDetails(result);
     if (result.status === 'completed') {
       auditOrderAction(c, {
         ...audit,
         result: 'success',
-        details: { status: result.status },
+        details,
       });
     } else {
-      auditOrderFailure(c, audit, { status: 200, errorClass: 'OrderResultNotCompleted' });
+      auditOrderFailure(c, { ...audit, details }, {
+        status: 200, errorClass: 'OrderResultNotCompleted',
+      });
     }
     return c.json(result);
   },
@@ -489,7 +509,9 @@ pax8OrderRoutes.post(
         details: { resolved: result.resolved, stillUnknown: result.stillUnknown },
       });
     } else {
-      auditOrderFailure(c, audit, { status: 200, errorClass: 'ReconciliationIncomplete' });
+      auditOrderFailure(c, {
+        ...audit, details: { resolved: result.resolved, stillUnknown: result.stillUnknown },
+      }, { status: 200, errorClass: 'ReconciliationIncomplete' });
     }
     return c.json(result);
   },

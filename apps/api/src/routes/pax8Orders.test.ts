@@ -411,6 +411,10 @@ describe('Pax8 order route handlers', () => {
     expect(mocks.writeRouteAudit).toHaveBeenCalledTimes(2);
     expect(mocks.writeRouteAudit).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({
       action: 'pax8.order.submit', result: 'success',
+      details: {
+        partnerId: PARTNER_A, orderStatus: 'completed',
+        succeededCount: 0, failedCount: 0, needsReconcileCount: 0,
+      },
     }));
     expect(mocks.writeRouteAudit).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({
       action: 'pax8.order.reconcile', result: 'success',
@@ -423,7 +427,58 @@ describe('Pax8 order route handlers', () => {
     expect(res.status).toBe(200);
     expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'pax8.order.submit', result: 'failure',
-      details: { partnerId: PARTNER_A, status: 200, errorClass: 'OrderResultNotCompleted' },
+      details: {
+        partnerId: PARTNER_A, orderStatus: 'failed',
+        succeededCount: 0, failedCount: 0, needsReconcileCount: 0,
+        status: 200, errorClass: 'OrderResultNotCompleted',
+      },
+    }));
+  });
+
+  it('audits non-completed submit state counts without line payloads', async () => {
+    mocks.submitOrder.mockResolvedValueOnce({
+      orderId: ORDER_ID,
+      status: 'partially_failed',
+      lines: [
+        { lineId: 'line-success', submitState: 'succeeded', error: null },
+        { lineId: 'line-failed', submitState: 'failed', error: 'sensitive vendor detail' },
+        { lineId: 'line-unknown', submitState: 'needs_reconcile', error: 'raw Pax8 body' },
+      ],
+    });
+    const res = await request(`/orders/${ORDER_ID}/submit`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const audit = mocks.writeRouteAudit.mock.calls[0]?.[1];
+    expect(audit).toMatchObject({
+      action: 'pax8.order.submit', result: 'failure',
+      details: {
+        partnerId: PARTNER_A,
+        orderStatus: 'partially_failed',
+        succeededCount: 1,
+        failedCount: 1,
+        needsReconcileCount: 1,
+        status: 200,
+        errorClass: 'OrderResultNotCompleted',
+      },
+    });
+    expect(JSON.stringify(audit)).not.toContain('line-success');
+    expect(JSON.stringify(audit)).not.toContain('sensitive vendor detail');
+    expect(JSON.stringify(audit)).not.toContain('raw Pax8 body');
+  });
+
+  it('audits incomplete reconciliation totals without changing its response', async () => {
+    mocks.reconcileOrder.mockResolvedValueOnce({ resolved: 2, stillUnknown: 1 });
+    const res = await request(`/orders/${ORDER_ID}/reconcile`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ resolved: 2, stillUnknown: 1 });
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'pax8.order.reconcile', result: 'failure',
+      details: {
+        partnerId: PARTNER_A,
+        resolved: 2,
+        stillUnknown: 1,
+        status: 200,
+        errorClass: 'ReconciliationIncomplete',
+      },
     }));
   });
 
