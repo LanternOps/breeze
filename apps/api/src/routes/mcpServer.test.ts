@@ -1,10 +1,95 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { z as zod } from 'zod';
+import { describe, expect, it, vi, beforeEach, afterEach, afterAll } from 'vitest';
+
+const testState = vi.hoisted(() => {
+  const originalAllowlist = process.env.MCP_EXECUTE_TOOL_ALLOWLIST;
+  const originalMaxSseSessions = process.env.MCP_MAX_SSE_SESSIONS_PER_KEY;
+  // The route parses this once. Individual production-gate cases use tools
+  // that are respectively inside/outside this fixed harness allowlist.
+  process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'execute_command,registry_operations';
+  process.env.MCP_MAX_SSE_SESSIONS_PER_KEY = '2';
+  return {
+    originalAllowlist,
+    originalMaxSseSessions,
+    apiKey: null as Record<string, any> | null,
+    db: {} as Record<string, any>,
+    redis: null as Record<string, any> | null,
+    bootstrap: { unauthTools: [], authTools: [] } as { unauthTools: any[]; authTools: any[] },
+    oauthEnabled: true,
+    oauthIssuer: 'https://us.example.com',
+    aiTools: new Map<string, any>(),
+    realCheckGuardrails: undefined as undefined | ((...args: any[]) => any),
+  };
+});
+
+const routeMocks = vi.hoisted(() => ({
+  executeTool: vi.fn(),
+  getToolDefinitions: vi.fn(),
+  getToolTier: vi.fn(),
+  verifyDeviceAccess: vi.fn(),
+  checkGuardrails: vi.fn(),
+  checkToolPermission: vi.fn(),
+  checkToolRateLimit: vi.fn(),
+  checkPermissionRequirement: vi.fn(),
+  writeAuditEvent: vi.fn(),
+  rateLimiter: vi.fn(),
+  enforceIpAllowlist: vi.fn(),
+  // A real vi.fn() (not a plain testState-backed factory) so individual tests
+  // can reprogram it via mockReturnValueOnce/mockReturnValue without a
+  // vi.doMock + vi.resetModules round trip — this suite's mcpServerRoutes is
+  // a static top-level import (see below), so a post-load vi.doMock never
+  // reaches it.
+  getUserPermissions: vi.fn(),
+}));
+
+// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now routes
+// through authorizeHumanApiKeyCreator, which re-validates the API key's
+// STORED scopes against these live permissions (validateApiKeyScopeDelegation)
+// before returning an AuthContext. This suite's tests are exercising
+// transport/session/tier concerns, not scope delegation, so the default
+// creator here must hold every non-admin permission the ai:read/ai:write/
+// ai:execute policies require — otherwise every test whose mocked apiKey
+// carries one of those scopes would be denied by the re-clamp guard before
+// ever reaching the behavior under test. `ai:execute_admin` (which requires
+// the wildcard ADMIN_ALL grant) is deliberately EXCLUDED so the "key lacks
+// ai:execute_admin" tests still exercise a real denial.
+const DEFAULT_PERMISSIONS_BASELINE = {
+  permissions: [
+    { resource: 'devices', action: 'read' },
+    { resource: 'devices', action: 'write' },
+    { resource: 'devices', action: 'execute' },
+    { resource: 'alerts', action: 'read' },
+    { resource: 'alerts', action: 'write' },
+    { resource: 'scripts', action: 'read' },
+    { resource: 'scripts', action: 'write' },
+    { resource: 'scripts', action: 'execute' },
+    { resource: 'automations', action: 'read' },
+    { resource: 'automations', action: 'write' },
+  ],
+  partnerId: null,
+  orgId: 'org-1',
+  roleId: 'role-1',
+  scope: 'organization' as const,
+};
+
+const WILDCARD_PERMISSIONS = {
+  permissions: [{ resource: '*', action: '*' }],
+  partnerId: null,
+  orgId: 'org-1',
+  roleId: 'role-1',
+  scope: 'organization' as const,
+};
+
+vi.mock('../config/env', () => ({
+  get MCP_OAUTH_ENABLED() { return testState.oauthEnabled; },
+  get OAUTH_ISSUER() { return testState.oauthIssuer; },
+}));
 
 // Mock heavy module-graph leaves so importing ./mcpServer doesn't stand up
 // a real postgres client / redis connection.
 vi.mock('../db', () => ({
-  db: {},
+  db: new Proxy({}, {
+    get: (_target, property) => testState.db[property as string],
+  }),
   withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
   withSystemDbAccessContext: vi.fn(),
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
@@ -32,70 +117,57 @@ vi.mock('../db/schema', () => ({
 // creator's site allowlist). Keep every real export the route graph needs and
 // stub only getUserPermissions to an unrestricted org perms object so these
 // transport/bootstrap tests don't need to model the permissions DB queries.
-//
-// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now routes
-// through authorizeHumanApiKeyCreator, which re-validates the API key's
-// STORED scopes against these live permissions (validateApiKeyScopeDelegation)
-// before returning an AuthContext. This suite's tests are exercising
-// transport/session/tier concerns, not scope delegation, so the default
-// creator here must hold every non-admin permission the ai:read/ai:write/
-// ai:execute policies require — otherwise every test whose mocked apiKey
-// carries one of those scopes would now be denied by the NEW re-clamp guard
-// before ever reaching the behavior under test. `ai:execute_admin` (which
-// requires the wildcard ADMIN_ALL grant) is deliberately EXCLUDED so the
-// "key lacks ai:execute_admin" test still exercises a real denial.
+// Routed through routeMocks.getUserPermissions (see DEFAULT_PERMISSIONS_BASELINE
+// / WILDCARD_PERMISSIONS above) so individual tests can reprogram it.
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
   return {
     ...actual,
-    getUserPermissions: vi.fn(async () => ({
-      permissions: [
-        { resource: 'devices', action: 'read' },
-        { resource: 'devices', action: 'write' },
-        { resource: 'devices', action: 'execute' },
-        { resource: 'alerts', action: 'read' },
-        { resource: 'alerts', action: 'write' },
-        { resource: 'scripts', action: 'read' },
-        { resource: 'scripts', action: 'write' },
-        { resource: 'scripts', action: 'execute' },
-        { resource: 'automations', action: 'read' },
-        { resource: 'automations', action: 'write' },
-      ],
-      partnerId: null,
-      orgId: 'org-1',
-      roleId: 'role-1',
-      scope: 'organization' as const,
-    })),
+    getUserPermissions: (...args: any[]) => routeMocks.getUserPermissions(...args),
   };
 });
 
 vi.mock('../services/aiTools', () => ({
-  getToolDefinitions: () => [],
-  executeTool: vi.fn(),
-  getToolTier: () => undefined,
+  getToolDefinitions: (...args: any[]) => routeMocks.getToolDefinitions(...args),
+  executeTool: (...args: any[]) => routeMocks.executeTool(...args),
+  getToolTier: (...args: any[]) => routeMocks.getToolTier(...args),
+  get aiTools() { return testState.aiTools; },
+  verifyDeviceAccess: (...args: any[]) => routeMocks.verifyDeviceAccess(...args),
 }));
 
-vi.mock('../services/aiGuardrails', () => ({
-  // Return a finite tier (1) by default: the route computes the effective tier
-  // as Math.max(baseTier, guardrailCheck.tier), so tier-1 here is a benign
-  // floor that lets the per-test getToolTier base tier drive the gates. A
-  // non-finite tier would now (correctly) fail closed.
-  checkGuardrails: () => ({ allowed: true, tier: 1 }),
-  checkToolPermission: async () => null,
-  checkToolRateLimit: async () => null,
-}));
+vi.mock('../services/aiGuardrails', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/aiGuardrails')>();
+  testState.realCheckGuardrails = actual.checkGuardrails;
+  return {
+    ...actual,
+    checkGuardrails: (...args: any[]) => routeMocks.checkGuardrails(...args),
+    checkToolPermission: (...args: any[]) => routeMocks.checkToolPermission(...args),
+    checkToolRateLimit: (...args: any[]) => routeMocks.checkToolRateLimit(...args),
+    checkPermissionRequirement: (...args: any[]) => routeMocks.checkPermissionRequirement(...args),
+  };
+});
 
 vi.mock('../services/auditEvents', () => ({
-  writeAuditEvent: vi.fn(),
+  writeAuditEvent: (...args: any[]) => routeMocks.writeAuditEvent(...args),
   requestLikeFromSnapshot: vi.fn(),
 }));
 
 vi.mock('../services/redis', () => ({
-  getRedis: () => null,
+  getRedis: () => testState.redis,
 }));
 
 vi.mock('../services/rate-limit', () => ({
-  rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
+  rateLimiter: (...args: any[]) => routeMocks.rateLimiter(...args),
+}));
+
+vi.mock('../middleware/apiKeyAuth', () => ({
+  apiKeyAuthMiddleware: async (c: any, next: any) => {
+    if (!testState.apiKey) throw new Error('API-key middleware called without test key state');
+    c.set('apiKey', testState.apiKey);
+    if (testState.apiKey.orgId) c.set('apiKeyOrgId', testState.apiKey.orgId);
+    await next();
+  },
+  requireApiKeyScope: () => async (_c: any, next: any) => next(),
 }));
 
 vi.mock('../middleware/bearerTokenAuth', () => ({
@@ -123,6 +195,49 @@ vi.mock('../middleware/bearerTokenAuth', () => ({
     return rows.map((r: any) => r.id);
   },
 }));
+
+vi.mock('../services/ipAllowlist', () => ({
+  enforceIpAllowlist: (...args: any[]) => routeMocks.enforceIpAllowlist(...args),
+  IP_NOT_ALLOWED_BODY: { code: 'ip_not_allowed', error: 'Access denied from this IP address' },
+  isBlocked: (decision: { decision: string }) => decision.decision === 'deny',
+}));
+
+vi.mock('../modules/mcpInvites', () => ({
+  initMcpBootstrap: () => testState.bootstrap,
+}));
+
+import { __loadMcpBootstrapForTests, mcpServerRoutes } from './mcpServer';
+
+function setTestApiKey(overrides: Record<string, unknown> = {}) {
+  testState.apiKey = {
+    id: 'key-1',
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    name: 'test',
+    keyPrefix: 'brz_test',
+    scopes: ['ai:read'],
+    rateLimit: 1000,
+    createdBy: 'user-1',
+    ...overrides,
+  };
+}
+
+function useSessionRedis(store: Map<string, string>) {
+  testState.redis = {
+    setex: vi.fn(async (key: string, _ttl: number, value: string) => {
+      store.set(key, value);
+      return 'OK';
+    }),
+    get: vi.fn(async (key: string) => store.get(key) ?? null),
+  };
+}
+
+afterAll(() => {
+  if (testState.originalAllowlist === undefined) delete process.env.MCP_EXECUTE_TOOL_ALLOWLIST;
+  else process.env.MCP_EXECUTE_TOOL_ALLOWLIST = testState.originalAllowlist;
+  if (testState.originalMaxSseSessions === undefined) delete process.env.MCP_MAX_SSE_SESSIONS_PER_KEY;
+  else process.env.MCP_MAX_SSE_SESSIONS_PER_KEY = testState.originalMaxSseSessions;
+});
 
 // Test the pure utility functions extracted from mcpServer.ts
 // These are not exported, so we test them via their behavior patterns
@@ -229,23 +344,45 @@ describe('MCP utility functions', () => {
 });
 
 // ============================================================================
-// Bootstrap carve-out integration tests
+// MCP transport integration tests
 // ============================================================================
 //
-// These tests exercise the route file directly. Because the module reads
-// IS_HOSTED at import time and kicks off a background load, we
-// set the env var BEFORE dynamic-importing the route module and reset modules
-// between cases.
+// The route no longer reads IS_HOSTED or starts bootstrap loading at import.
+// This suite reuses one static route graph and changes only live mock state.
 
-describe('MCP bootstrap carve-out', () => {
+describe('MCP transport integration', () => {
   const originalFlag = process.env.IS_HOSTED;
   const originalExecuteAdmin = process.env.MCP_REQUIRE_EXECUTE_ADMIN;
   const originalAllowlist = process.env.MCP_EXECUTE_TOOL_ALLOWLIST;
   const originalNodeEnv = process.env.NODE_ENV;
   const originalTrustProxyHeaders = process.env.TRUST_PROXY_HEADERS;
 
-  beforeEach(() => {
-    vi.resetModules();
+  beforeEach(async () => {
+    testState.apiKey = null;
+    testState.db = {};
+    testState.redis = null;
+    testState.bootstrap = { unauthTools: [], authTools: [] };
+    testState.oauthEnabled = true;
+    testState.oauthIssuer = 'https://us.example.com';
+    testState.aiTools = new Map();
+    routeMocks.executeTool.mockReset();
+    routeMocks.getToolDefinitions.mockReset().mockReturnValue([]);
+    routeMocks.getToolTier.mockReset().mockReturnValue(undefined);
+    routeMocks.verifyDeviceAccess.mockReset().mockResolvedValue({ device: { orgId: 'org-1', siteId: null } });
+    routeMocks.checkGuardrails.mockReset().mockImplementation((...args: any[]) =>
+      testState.realCheckGuardrails!(...args));
+    routeMocks.checkToolPermission.mockReset().mockResolvedValue(null);
+    routeMocks.checkToolRateLimit.mockReset().mockResolvedValue(null);
+    routeMocks.checkPermissionRequirement.mockReset().mockResolvedValue(null);
+    routeMocks.writeAuditEvent.mockReset();
+    routeMocks.rateLimiter.mockReset().mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    routeMocks.enforceIpAllowlist.mockReset().mockResolvedValue({ decision: 'allow' });
+    routeMocks.getUserPermissions.mockReset().mockResolvedValue(DEFAULT_PERMISSIONS_BASELINE);
+    await __loadMcpBootstrapForTests();
   });
 
   afterEach(() => {
@@ -259,191 +396,18 @@ describe('MCP bootstrap carve-out', () => {
     else process.env.NODE_ENV = originalNodeEnv;
     if (originalTrustProxyHeaders === undefined) delete process.env.TRUST_PROXY_HEADERS;
     else process.env.TRUST_PROXY_HEADERS = originalTrustProxyHeaders;
-    vi.doUnmock('../modules/mcpInvites');
-    vi.doUnmock('../middleware/apiKeyAuth');
-    vi.doUnmock('../services/ipAllowlist');
-    vi.doUnmock('../services/mcpToolExecutionLedger');
-  });
-
-  it('no auth header → tools/list always returns 401 + WWW-Authenticate', async () => {
-    // The bootstrap unauth carve-out was deleted in Phase 3. All unauth callers
-    // must receive 401 regardless of IS_HOSTED or any other flag.
-    delete process.env.IS_HOSTED;
-
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async () => {
-        throw new Error('should not be called when no X-API-Key header');
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-
-    const { mcpServerRoutes } = await import('./mcpServer');
-    const res = await mcpServerRoutes.request('/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-    });
-    expect(res.status).toBe(401);
-    const body = await res.json();
-    expect(body.error?.code).toBe(-32001);
-  });
-
-  it('authed key → authTools surface in tools/list AND dispatch to handler', async () => {
-    delete process.env.IS_HOSTED;
-
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-authtool',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read', 'ai:execute'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-
-    vi.doMock('../services/aiTools', () => ({
-      getToolDefinitions: () => [],
-      executeTool: vi.fn(),
-      getToolTier: () => undefined,
-    }));
-
-    vi.doMock('../db', () => ({
-      db: {
-        select: () => ({
-          from: () => ({
-            where: () => ({ limit: async () => [{ partnerId: 'partner-1', billingEmail: 'admin@acme.com' }] }),
-          }),
-        }),
-      },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn(),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
-
-    const handlerMock = vi.fn(async () => ({ invites_sent: 2, invite_ids: ['i1', 'i2'], skipped_duplicates: 0 }));
-    const fakeAuthTool = {
-      definition: {
-        name: 'send_deployment_invites',
-        description: 'fake authTool',
-        // Real zod schema — was previously a hand-rolled mock that always
-        // returned success, which silently bypassed any schema regressions.
-        // Use z.object({}).passthrough() so existing tests that pass arbitrary
-        // arguments (e.g. { emails: ['a@b.com'] }) still flow through.
-        inputSchema: zod.object({}).passthrough(),
-      },
-      handler: handlerMock,
-    };
-    vi.doMock('../modules/mcpInvites', () => ({
-      initMcpBootstrap: () => ({
-        unauthTools: [],
-        authTools: [fakeAuthTool],
-      }),
-    }));
-
-    // Bootstrap authTools now run through the shared Tier 3 ledger lifecycle
-    // (MCP-OAUTH-12), so this dispatch creates a ledger row. Scope the ledger
-    // stub to THIS test (a global mock would break the tier-3 tests below that
-    // assert the real ledger's insert values).
-    vi.doMock('../services/mcpToolExecutionLedger', () => ({
-      beginMcpToolExecutionLedger: vi.fn(async () => ({
-        executionId: 'exec-1',
-        sessionId: 'sess-1',
-        orgId: 'org-1',
-      })),
-      completeMcpToolExecutionLedger: vi.fn(async () => undefined),
-    }));
-
-    const mod = await import('./mcpServer');
-    await mod.__loadMcpBootstrapForTests();
-
-    // 1) tools/list surfaces send_deployment_invites for an ai:execute key.
-    const listRes = await mod.mcpServerRoutes.request('/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-    });
-    expect(listRes.status).toBe(200);
-    const listBody = await listRes.json();
-    const names = listBody.result.tools.map((t: any) => t.name);
-    expect(names).toContain('send_deployment_invites');
-
-    // Regression: the bootstrap tool's zod schema must convert to a JSON Schema
-    // that carries a `type`. The old hand-rolled converter switched on the
-    // zod-3 `_def.typeName` (removed in zod 4) and fell through to `{}`, which
-    // MCP clients reject — failing the ENTIRE tools/list (0 tools loaded).
-    const sendTool = listBody.result.tools.find(
-      (t: any) => t.name === 'send_deployment_invites',
-    );
-    expect(sendTool?.inputSchema?.type).toBe('object');
-
-    // 2) tools/call dispatches to the handler with parsed input + ctx.apiKey.
-    const callRes = await mod.mcpServerRoutes.request('/message', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/call',
-        params: { name: 'send_deployment_invites', arguments: { emails: ['a@b.com'] } },
-      }),
-    });
-    expect(callRes.status).toBe(200);
-    const callBody = await callRes.json();
-    expect(callBody.error).toBeUndefined();
-    expect(handlerMock).toHaveBeenCalledTimes(1);
-    const call = handlerMock.mock.calls[0] as unknown as [any, any];
-    const [calledInput, calledCtx] = call;
-    expect(calledInput).toEqual({ emails: ['a@b.com'] });
-    expect(calledCtx.apiKey.id).toBe('key-authtool');
-    expect(calledCtx.apiKey.partnerId).toBe('partner-1');
-    expect(calledCtx.apiKey.defaultOrgId).toBe('org-1');
-    expect(calledCtx.apiKey.partnerAdminEmail).toBe('admin@acme.com');
-    const contentText = callBody.result.content[0].text;
-    expect(JSON.parse(contentText)).toEqual({
-      invites_sent: 2,
-      invite_ids: ['i1', 'i2'],
-      skipped_duplicates: 0,
-    });
   });
 
   it('partner-scoped API key is denied by the partner IP allowlist before MCP dispatch', async () => {
     delete process.env.IS_HOSTED;
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-partner',
-          orgId: null,
-          partnerId: 'partner-1',
-          name: 'partner',
-          keyPrefix: 'brz_partner',
-          scopes: ['ai:read'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey({ id: 'key-partner', orgId: null, name: 'partner', keyPrefix: 'brz_partner' });
 
-    const enforceMock = vi.fn(async () => ({ decision: 'deny', reason: 'not_in_list' }));
-    vi.doMock('../services/ipAllowlist', () => ({
-      enforceIpAllowlist: enforceMock,
-      IP_NOT_ALLOWED_BODY: { code: 'ip_not_allowed', error: 'Access denied from this IP address' },
-      isBlocked: (decision: { decision: string }) => decision.decision === 'deny',
-    }));
+    const enforceMock = routeMocks.enforceIpAllowlist;
+    enforceMock.mockResolvedValue({ decision: 'deny', reason: 'not_in_list' });
 
     let selectCall = 0;
-    vi.doMock('../db', () => ({
-      db: {
+    testState.db = {
         select: () => {
           selectCall += 1;
           if (selectCall === 1) {
@@ -461,13 +425,8 @@ describe('MCP bootstrap carve-out', () => {
             }),
           };
         },
-      },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn((fn: any) => fn()),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
+      };
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_partner' },
@@ -494,25 +453,8 @@ describe('MCP bootstrap carve-out', () => {
   it('rejects oversized authed MCP JSON-RPC bodies before parsing', async () => {
     delete process.env.IS_HOSTED;
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-1',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey();
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -536,34 +478,17 @@ describe('MCP bootstrap carve-out', () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'oauth:access-jti-1',
-          oauthGrantId: 'grant-stable-1',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'OAuth bearer',
-          keyPrefix: 'oauth',
-          scopes: ['ai:read'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey({
+      id: 'oauth:access-jti-1',
+      oauthGrantId: 'grant-stable-1',
+      name: 'OAuth bearer',
+      keyPrefix: 'oauth',
+    });
 
-    const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) }));
-    vi.doMock('../services/redis', () => ({
-      getRedis: () => ({}),
-    }));
-    vi.doMock('../services/rate-limit', () => ({
-      rateLimiter,
-    }));
+    const rateLimiter = routeMocks.rateLimiter;
+    rateLimiter.mockResolvedValue({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) });
+    testState.redis = {};
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'oauth-bearer-test' },
@@ -577,43 +502,20 @@ describe('MCP bootstrap carve-out', () => {
   it('production defaults to requiring ai:execute_admin for tier-3 MCP calls', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
-    process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'execute_command';
     delete process.env.MCP_REQUIRE_EXECUTE_ADMIN;
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-1',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read', 'ai:execute'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey({ scopes: ['ai:read', 'ai:execute'] });
 
-    const executeTool = vi.fn(async () => '{"ok":true}');
-    vi.doMock('../services/aiTools', () => ({
-      getToolDefinitions: () => [{ name: 'execute_command', description: '', input_schema: {} }],
-      executeTool,
-      getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
-      aiTools: new Map([['execute_command', { deviceArgs: ['deviceId'] }]]),
-      verifyDeviceAccess: vi.fn(async () => ({ device: { orgId: 'org-1', siteId: null } })),
-    }));
-    vi.doMock('../services/redis', () => ({
-      getRedis: () => ({}),
-    }));
+    const executeTool = routeMocks.executeTool;
+    executeTool.mockResolvedValue('{"ok":true}');
+    routeMocks.getToolDefinitions.mockReturnValue([{ name: 'execute_command', description: '', input_schema: {} }]);
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 3 : undefined));
+    testState.aiTools = new Map([['execute_command', { deviceArgs: ['deviceId'] }]]);
+    testState.redis = { get: vi.fn(async () => null) };
 
     const ledgerInsertValues: any[] = [];
     const ledgerUpdateSet = vi.fn();
-    vi.doMock('../db', () => ({
-      db: {
+    testState.db = {
         select: () => ({
           from: () => ({
             where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
@@ -631,13 +533,8 @@ describe('MCP bootstrap carve-out', () => {
             return { where: async () => undefined };
           },
         }),
-      },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn(),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
+      };
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -658,43 +555,20 @@ describe('MCP bootstrap carve-out', () => {
   it('production can explicitly opt out of the execute-admin requirement while keeping the allowlist gate', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
-    process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'execute_command';
     process.env.MCP_REQUIRE_EXECUTE_ADMIN = 'false';
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-1',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read', 'ai:execute'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey({ scopes: ['ai:read', 'ai:execute'] });
 
-    const executeTool = vi.fn(async () => '{"ok":true}');
-    vi.doMock('../services/aiTools', () => ({
-      getToolDefinitions: () => [{ name: 'execute_command', description: '', input_schema: {} }],
-      executeTool,
-      getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
-      aiTools: new Map([['execute_command', { deviceArgs: ['deviceId'] }]]),
-      verifyDeviceAccess: vi.fn(async () => ({ device: { orgId: 'org-1', siteId: null } })),
-    }));
-    vi.doMock('../services/redis', () => ({
-      getRedis: () => ({}),
-    }));
+    const executeTool = routeMocks.executeTool;
+    executeTool.mockResolvedValue('{"ok":true}');
+    routeMocks.getToolDefinitions.mockReturnValue([{ name: 'execute_command', description: '', input_schema: {} }]);
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 3 : undefined));
+    testState.aiTools = new Map([['execute_command', { deviceArgs: ['deviceId'] }]]);
+    testState.redis = { get: vi.fn(async () => null) };
 
     const ledgerInsertValues: any[] = [];
     const ledgerUpdateSet = vi.fn();
-    vi.doMock('../db', () => ({
-      db: {
+    testState.db = {
         select: () => ({
           from: () => ({
             where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
@@ -712,13 +586,8 @@ describe('MCP bootstrap carve-out', () => {
             return { where: async () => undefined };
           },
         }),
-      },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn(),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
+      };
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -744,39 +613,16 @@ describe('MCP bootstrap carve-out', () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'development';
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-1',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          oauthGrantId: 'grant-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read', 'ai:execute'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey({ oauthGrantId: 'grant-1', scopes: ['ai:read', 'ai:execute'] });
 
-    vi.doMock('../services/aiTools', () => ({
-      getToolDefinitions: () => [{ name: 'execute_command', description: '', input_schema: {} }],
-      executeTool: vi.fn(async () => JSON.stringify({ status: 'completed', stdout: 'token=raw-secret' })),
-      getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
-      aiTools: new Map([['execute_command', { deviceArgs: ['deviceId'] }]]),
-      verifyDeviceAccess: vi.fn(async () => ({ device: { orgId: 'org-1', siteId: null } })),
-    }));
-    vi.doMock('../services/redis', () => ({
-      getRedis: () => ({}),
-    }));
+    routeMocks.getToolDefinitions.mockReturnValue([{ name: 'execute_command', description: '', input_schema: {} }]);
+    routeMocks.executeTool.mockResolvedValue(JSON.stringify({ status: 'completed', stdout: 'token=raw-secret' }));
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 3 : undefined));
+    testState.aiTools = new Map([['execute_command', { deviceArgs: ['deviceId'] }]]);
+    testState.redis = { get: vi.fn(async () => null) };
     const ledgerInsertValues: any[] = [];
     const ledgerUpdateSet = vi.fn();
-    vi.doMock('../db', () => ({
-      db: {
+    testState.db = {
         select: () => ({
           from: () => ({
             where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
@@ -794,18 +640,9 @@ describe('MCP bootstrap carve-out', () => {
             return { where: async () => undefined };
           },
         }),
-      },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn(),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
-    const writeAuditEvent = vi.fn();
-    vi.doMock('../services/auditEvents', () => ({
-      writeAuditEvent,
-      requestLikeFromSnapshot: vi.fn(),
-    }));
+      };
+    const writeAuditEvent = routeMocks.writeAuditEvent;
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     // Pass an attacker-forged ?sessionId=. With MED-1 follow-through the
     // server now drops sessionIds the caller doesn't own — the audit row
     // MUST NOT echo `mcp-attacker-forged`. The sanitization assertions
@@ -897,37 +734,15 @@ describe('MCP bootstrap carve-out', () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'development';
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-1',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read', 'ai:execute'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-    vi.doMock('../services/aiTools', () => ({
-      getToolDefinitions: () => [{ name: 'execute_command', description: '', input_schema: {} }],
-      executeTool: vi.fn(async () => {
-        throw new TypeError('boom with token=raw-secret');
-      }),
-      getToolTier: (name: string) => (name === 'execute_command' ? 3 : undefined),
-      aiTools: new Map([['execute_command', { deviceArgs: ['deviceId'] }]]),
-      verifyDeviceAccess: vi.fn(async () => ({ device: { orgId: 'org-1', siteId: null } })),
-    }));
-    vi.doMock('../services/redis', () => ({ getRedis: () => ({}) }));
+    setTestApiKey({ scopes: ['ai:read', 'ai:execute'] });
+    routeMocks.getToolDefinitions.mockReturnValue([{ name: 'execute_command', description: '', input_schema: {} }]);
+    routeMocks.executeTool.mockRejectedValue(new TypeError('boom with token=raw-secret'));
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 3 : undefined));
+    testState.aiTools = new Map([['execute_command', { deviceArgs: ['deviceId'] }]]);
+    testState.redis = { get: vi.fn(async () => null) };
     const ledgerInsertValues: any[] = [];
     const ledgerUpdateSet = vi.fn();
-    vi.doMock('../db', () => ({
-      db: {
+    testState.db = {
         select: () => ({
           from: () => ({
             where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
@@ -945,18 +760,9 @@ describe('MCP bootstrap carve-out', () => {
             return { where: async () => undefined };
           },
         }),
-      },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn(),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
-    const writeAuditEvent = vi.fn();
-    vi.doMock('../services/auditEvents', () => ({
-      writeAuditEvent,
-      requestLikeFromSnapshot: vi.fn(),
-    }));
+      };
+    const writeAuditEvent = routeMocks.writeAuditEvent;
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -1019,25 +825,7 @@ describe('MCP bootstrap carve-out', () => {
     // content-length header is omitted entirely — the loop must still 413.
     delete process.env.IS_HOSTED;
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-stream',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-
-    const { mcpServerRoutes } = await import('./mcpServer');
+    setTestApiKey({ id: 'key-stream' });
 
     const MAX = 64 * 1024; // matches MCP_MESSAGE_MAX_BODY_BYTES default
     const chunkSize = 8 * 1024;
@@ -1080,23 +868,8 @@ describe('MCP bootstrap carve-out', () => {
     // must succeed (different bucket), while a 6th on grant A must 429.
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
-    process.env.MCP_MAX_SSE_SESSIONS_PER_KEY = '2';
 
-    let nextApiKey: any = null;
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', nextApiKey);
-        c.set('apiKeyOrgId', nextApiKey.orgId);
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-    vi.doMock('../services/redis', () => ({ getRedis: () => ({}) }));
-    vi.doMock('../services/rate-limit', () => ({
-      rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 100, resetAt: new Date(Date.now() + 60_000) })),
-    }));
-
-    const { mcpServerRoutes } = await import('./mcpServer');
+    testState.redis = { get: vi.fn(async () => null) };
 
     const grantA = {
       id: 'oauth:jti-a-1',
@@ -1116,7 +889,7 @@ describe('MCP bootstrap carve-out', () => {
     //    test — the session is registered synchronously in the handler before
     //    streamSSE starts pumping.
     async function openSse(apiKey: any) {
-      nextApiKey = apiKey;
+      testState.apiKey = apiKey;
       const ac = new AbortController();
       const promise = mcpServerRoutes.request('/sse', {
         method: 'GET',
@@ -1132,7 +905,7 @@ describe('MCP bootstrap carve-out', () => {
     await openSse(grantA);
 
     // 2) A 3rd grant-A SSE attempt must 429 (per-key cap exhausted).
-    nextApiKey = grantA;
+    testState.apiKey = grantA;
     const overA = await mcpServerRoutes.request('/sse', {
       method: 'GET',
       headers: { 'X-API-Key': 'whatever' },
@@ -1142,7 +915,7 @@ describe('MCP bootstrap carve-out', () => {
     // 3) A grant-B SSE attempt must succeed — it lives in its own bucket.
     //    (We expect a 200 streaming response; abort immediately to avoid
     //    leaving an open stream around.)
-    nextApiKey = grantB;
+    testState.apiKey = grantB;
     const acB = new AbortController();
     const bPromise = mcpServerRoutes.request('/sse', {
       method: 'GET',
@@ -1171,7 +944,6 @@ describe('MCP bootstrap carve-out', () => {
     expect(grantKey({ id: 'oauth:jti-a-1' })).toBe('oauth:jti-a-1');
     expect(grantKey({ id: 'oauth:jti-a-1' }).startsWith('oauth-grant:')).toBe(false);
 
-    delete process.env.MCP_MAX_SSE_SESSIONS_PER_KEY;
   });
 
   it('SSE endpoint event uses the configured public base URL scheme/host, not the raw request URL', async () => {
@@ -1185,22 +957,10 @@ describe('MCP bootstrap carve-out', () => {
     delete process.env.BREEZE_SERVER;
     process.env.PUBLIC_API_URL = 'https://mcp.example.com';
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-sse-scheme', orgId: 'org-1', partnerId: 'partner-1',
-          name: 'test', keyPrefix: 'brz_test', scopes: ['ai:read'],
-          rateLimit: 1000, createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-    vi.doMock('../services/redis', () => ({ getRedis: () => null }));
+    setTestApiKey({ id: 'key-sse-scheme' });
+    testState.redis = null;
 
     try {
-      const { mcpServerRoutes } = await import('./mcpServer');
       const res = await mcpServerRoutes.request('/sse', {
         method: 'GET',
         headers: { 'X-API-Key': 'whatever' },
@@ -1243,36 +1003,11 @@ describe('MCP bootstrap carve-out', () => {
   it('MED-1 initialize: ignores client-supplied Mcp-Session-Id, mints server-prefixed value', async () => {
     delete process.env.IS_HOSTED;
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-med1-init',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey({ id: 'key-med1-init' });
 
     const sessionStore = new Map<string, string>();
-    vi.doMock('../services/redis', () => ({
-      getRedis: () => ({
-        setex: vi.fn(async (k: string, _ttl: number, v: string) => {
-          sessionStore.set(k, v);
-          return 'OK';
-        }),
-        get: vi.fn(async (k: string) => sessionStore.get(k) ?? null),
-      }),
-    }));
+    useSessionRedis(sessionStore);
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/sse', {
       method: 'POST',
       headers: {
@@ -1292,28 +1027,8 @@ describe('MCP bootstrap carve-out', () => {
   it('MED-1 reuse: rejects subsequent calls with a session-id owned by a different principal', async () => {
     delete process.env.IS_HOSTED;
 
-    let activeApiKey: any = null;
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', activeApiKey);
-        c.set('apiKeyOrgId', activeApiKey.orgId);
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
-
     const sessionStore = new Map<string, string>();
-    vi.doMock('../services/redis', () => ({
-      getRedis: () => ({
-        setex: vi.fn(async (k: string, _ttl: number, v: string) => {
-          sessionStore.set(k, v);
-          return 'OK';
-        }),
-        get: vi.fn(async (k: string) => sessionStore.get(k) ?? null),
-      }),
-    }));
-
-    const { mcpServerRoutes } = await import('./mcpServer');
+    useSessionRedis(sessionStore);
 
     const keyA = {
       id: 'key-med1-A',
@@ -1336,7 +1051,7 @@ describe('MCP bootstrap carve-out', () => {
       createdBy: 'user-B',
     };
 
-    activeApiKey = keyA;
+    testState.apiKey = keyA;
     const initA = await mcpServerRoutes.request('/sse', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_a' },
@@ -1347,7 +1062,7 @@ describe('MCP bootstrap carve-out', () => {
     expect(sessionId).toMatch(/^mcp-[a-f0-9]{20,}$/);
 
     // Principal B tries to ride principal A's session.
-    activeApiKey = keyB;
+    testState.apiKey = keyB;
     const stolen = await mcpServerRoutes.request('/sse', {
       method: 'POST',
       headers: {
@@ -1365,36 +1080,11 @@ describe('MCP bootstrap carve-out', () => {
   it('MED-1 same-principal: originating caller can reuse the minted session id', async () => {
     delete process.env.IS_HOSTED;
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-med1-same',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey({ id: 'key-med1-same' });
 
     const sessionStore = new Map<string, string>();
-    vi.doMock('../services/redis', () => ({
-      getRedis: () => ({
-        setex: vi.fn(async (k: string, _ttl: number, v: string) => {
-          sessionStore.set(k, v);
-          return 'OK';
-        }),
-        get: vi.fn(async (k: string) => sessionStore.get(k) ?? null),
-      }),
-    }));
+    useSessionRedis(sessionStore);
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const initRes = await mcpServerRoutes.request('/sse', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -1422,36 +1112,10 @@ describe('MCP bootstrap carve-out', () => {
   it('MED-1 missing-or-malformed session id on non-initialize → 400', async () => {
     delete process.env.IS_HOSTED;
 
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-med1-noid',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes: ['ai:read'],
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey({ id: 'key-med1-noid' });
 
     const sessionStore = new Map<string, string>();
-    vi.doMock('../services/redis', () => ({
-      getRedis: () => ({
-        setex: vi.fn(async (k: string, _ttl: number, v: string) => {
-          sessionStore.set(k, v);
-          return 'OK';
-        }),
-        get: vi.fn(async (k: string) => sessionStore.get(k) ?? null),
-      }),
-    }));
-
-    const { mcpServerRoutes } = await import('./mcpServer');
+    useSessionRedis(sessionStore);
 
     // No Mcp-Session-Id at all.
     const noHeader = await mcpServerRoutes.request('/sse', {
@@ -1478,50 +1142,27 @@ describe('MCP bootstrap carve-out', () => {
 
   // -------------------------------------------------------------------------
   // C2 — production gates apply to the ESCALATED effective tier, not the base
-  // tier. A base-tier-1 tool (registry_operations) with a TIER3 action
-  // (delete_key) escalates to tier 3, so the prod allowlist + execute_admin
-  // levers must fire exactly as they do for a statically-tier-3 tool. Uses the
-  // REAL aiGuardrails so the escalation is genuine.
+  // tier. Base-tier-1 registry/process tools with TIER3 actions escalate to
+  // tier 3, so the prod allowlist + execute_admin levers must fire exactly as
+  // they do for a statically-tier-3 tool. Uses the REAL aiGuardrails so the
+  // escalation is genuine.
   // -------------------------------------------------------------------------
 
   function mockKeyWithScopes(scopes: string[]) {
-    vi.doMock('../middleware/apiKeyAuth', () => ({
-      apiKeyAuthMiddleware: async (c: any, next: any) => {
-        c.set('apiKey', {
-          id: 'key-1',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          name: 'test',
-          keyPrefix: 'brz_test',
-          scopes,
-          rateLimit: 1000,
-          createdBy: 'user-1',
-        });
-        c.set('apiKeyOrgId', 'org-1');
-        await next();
-      },
-      requireApiKeyScope: () => async (_c: any, next: any) => next(),
-    }));
+    setTestApiKey({ scopes });
   }
 
-  function mockRealGuardrailsWithRegistryTier1() {
-    // registry_operations base tier 1; real aiGuardrails escalates
-    // action:'delete_key' → tier 3. Stub the RBAC/rate-limit checks (orthogonal).
-    vi.doMock('../services/aiGuardrails', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../services/aiGuardrails')>();
-      return {
-        ...actual,
-        checkToolPermission: vi.fn(async () => null),
-        checkToolRateLimit: vi.fn(async () => null),
-      };
-    });
-    vi.doMock('../services/aiTools', () => ({
-      getToolDefinitions: () => [{ name: 'registry_operations', description: '', input_schema: {} }],
-      executeTool: vi.fn(async () => JSON.stringify({ ok: true })),
-      getToolTier: (name: string) => (name === 'registry_operations' ? 1 : undefined),
-    }));
-    vi.doMock('../db', () => ({
-      db: {
+  function mockRealGuardrailsWithEscalatedTier1Tools() {
+    // Both tools are base tier 1; real aiGuardrails escalates their destructive
+    // actions to tier 3. RBAC/rate-limit checks remain the shared benign stubs.
+    routeMocks.getToolDefinitions.mockReturnValue([
+      { name: 'registry_operations', description: '', input_schema: {} },
+      { name: 'manage_processes', description: '', input_schema: {} },
+    ]);
+    routeMocks.executeTool.mockResolvedValue(JSON.stringify({ ok: true }));
+    routeMocks.getToolTier.mockImplementation((name: string) =>
+      name === 'registry_operations' || name === 'manage_processes' ? 1 : undefined);
+    testState.db = {
         select: () => ({
           from: () => ({
             where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }),
@@ -1533,42 +1174,24 @@ describe('MCP bootstrap carve-out', () => {
         update: () => ({
           set: () => ({ where: async () => undefined }),
         }),
-      },
-      withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
-      withSystemDbAccessContext: vi.fn(),
-      runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-    }));
-    vi.doMock('../services/redis', () => ({ getRedis: () => ({}) }));
+      };
+    testState.redis = { get: vi.fn(async () => null) };
   }
 
   it('C2: escalated tier-3 action NOT in the prod allowlist is denied', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
-    process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'execute_command'; // registry_operations absent
     mockKeyWithScopes(['ai:read', 'ai:execute', 'ai:execute_admin']);
     // SR2-15 (Task 3, scope re-clamp): this key's stored scopes include
-    // ai:execute_admin (requires the wildcard ADMIN_ALL grant). The module-
-    // level getUserPermissions mock deliberately withholds that grant (so the
+    // ai:execute_admin (requires the wildcard ADMIN_ALL grant). The default
+    // getUserPermissions mock deliberately withholds that grant (so the
     // "key lacks ai:execute_admin" test below stays a real denial); override
     // it here with a wildcard-permissioned creator so the coarse scope
     // re-clamp passes and this test can exercise the ACTUAL concern under
     // test — the MCP_EXECUTE_TOOL_ALLOWLIST gate, not scope delegation.
-    vi.doMock('../services/permissions', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../services/permissions')>();
-      return {
-        ...actual,
-        getUserPermissions: vi.fn(async () => ({
-          permissions: [{ resource: '*', action: '*' }],
-          partnerId: null,
-          orgId: 'org-1',
-          roleId: 'role-1',
-          scope: 'organization' as const,
-        })),
-      };
-    });
-    mockRealGuardrailsWithRegistryTier1();
+    routeMocks.getUserPermissions.mockResolvedValue(WILDCARD_PERMISSIONS);
+    mockRealGuardrailsWithEscalatedTier1Tools();
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -1576,7 +1199,7 @@ describe('MCP bootstrap carve-out', () => {
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/call',
-        params: { name: 'registry_operations', arguments: { action: 'delete_key', key: 'HKLM\\foo' } },
+        params: { name: 'manage_processes', arguments: { action: 'kill', pid: 7 } },
       }),
     });
     expect(res.status).toBe(200);
@@ -1587,12 +1210,10 @@ describe('MCP bootstrap carve-out', () => {
   it('C2: escalated tier-3 action in the allowlist but key lacks ai:execute_admin is denied', async () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'production';
-    process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'registry_operations';
     delete process.env.MCP_REQUIRE_EXECUTE_ADMIN;
     mockKeyWithScopes(['ai:read', 'ai:execute']); // no ai:execute_admin
-    mockRealGuardrailsWithRegistryTier1();
+    mockRealGuardrailsWithEscalatedTier1Tools();
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -1621,34 +1242,15 @@ describe('MCP bootstrap carve-out', () => {
     // above — this key's ai:execute_admin scope needs the wildcard ADMIN_ALL
     // grant to pass the coarse re-clamp; the concern under test here is the
     // non-finite-tier fail-closed guard, not scope delegation.
-    vi.doMock('../services/permissions', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../services/permissions')>();
-      return {
-        ...actual,
-        getUserPermissions: vi.fn(async () => ({
-          permissions: [{ resource: '*', action: '*' }],
-          partnerId: null,
-          orgId: 'org-1',
-          roleId: 'role-1',
-          scope: 'organization' as const,
-        })),
-      };
-    });
+    routeMocks.getUserPermissions.mockResolvedValue(WILDCARD_PERMISSIONS);
 
-    const executeTool = vi.fn(async () => JSON.stringify({ ok: true }));
-    vi.doMock('../services/aiTools', () => ({
-      getToolDefinitions: () => [{ name: 'manage_tags', description: '', input_schema: {} }],
-      executeTool,
-      getToolTier: (name: string) => (name === 'manage_tags' ? 1 : undefined),
-    }));
-    vi.doMock('../services/aiGuardrails', () => ({
-      checkGuardrails: () => ({ allowed: true, tier: undefined }),
-      checkToolPermission: async () => null,
-      checkToolRateLimit: async () => null,
-    }));
-    vi.doMock('../services/redis', () => ({ getRedis: () => ({}) }));
+    const executeTool = routeMocks.executeTool;
+    executeTool.mockResolvedValue(JSON.stringify({ ok: true }));
+    routeMocks.getToolDefinitions.mockReturnValue([{ name: 'manage_tags', description: '', input_schema: {} }]);
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'manage_tags' ? 1 : undefined));
+    routeMocks.checkGuardrails.mockReturnValue({ allowed: true, tier: undefined });
+    testState.redis = { get: vi.fn(async () => null) };
 
-    const { mcpServerRoutes } = await import('./mcpServer');
     const res = await mcpServerRoutes.request('/message', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -1664,36 +1266,9 @@ describe('MCP bootstrap carve-out', () => {
     expect(body.error?.code).toBe(-32000);
     expect(body.error?.message).toContain('Unable to evaluate tool guardrails');
     expect(executeTool).not.toHaveBeenCalled();
-
-    // `vi.doMock` registrations aren't cleared by `vi.resetModules()` — restore
-    // the file's default (non-wildcard) getUserPermissions mock so it doesn't
-    // leak forward into the "MCP instructions + prompts" tests below (doUnmock
-    // would strip the top-level `vi.mock` for the rest of the file, so we
-    // re-register the default factory explicitly instead).
-    vi.doMock('../services/permissions', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../services/permissions')>();
-      return {
-        ...actual,
-        getUserPermissions: vi.fn(async () => ({
-          permissions: [
-            { resource: 'devices', action: 'read' },
-            { resource: 'devices', action: 'write' },
-            { resource: 'devices', action: 'execute' },
-            { resource: 'alerts', action: 'read' },
-            { resource: 'alerts', action: 'write' },
-            { resource: 'scripts', action: 'read' },
-            { resource: 'scripts', action: 'write' },
-            { resource: 'scripts', action: 'execute' },
-            { resource: 'automations', action: 'read' },
-            { resource: 'automations', action: 'write' },
-          ],
-          partnerId: null,
-          orgId: 'org-1',
-          roleId: 'role-1',
-          scope: 'organization' as const,
-        })),
-      };
-    });
+    // No manual restore needed: the top-level beforeEach resets
+    // routeMocks.getUserPermissions back to DEFAULT_PERMISSIONS_BASELINE
+    // before every test, so this override never leaks forward.
   });
 
   // -------------------------------------------------------------------------
@@ -1705,14 +1280,13 @@ describe('MCP bootstrap carve-out', () => {
   // Nothing previously exercised these over the real JSON-RPC transport
   // (HTTP → apiKeyAuthMiddleware → handleJsonRpc dispatch → handler →
   // response). These tests close that gap using the same /message harness
-  // (mockKeyWithScopes + dynamic import) as the rest of this describe block.
+  // (mockKeyWithScopes + the shared static route) as the rest of this block.
   // -------------------------------------------------------------------------
   describe('MCP instructions + prompts over the wire', () => {
     it('initialize returns non-trivial instructions, the prompts capability, and the protocol version', async () => {
       delete process.env.IS_HOSTED;
       mockKeyWithScopes(['ai:read']);
 
-      const { mcpServerRoutes } = await import('./mcpServer');
       const res = await mcpServerRoutes.request('/message', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -1731,7 +1305,6 @@ describe('MCP bootstrap carve-out', () => {
       delete process.env.IS_HOSTED;
       mockKeyWithScopes(['ai:read']);
 
-      const { mcpServerRoutes } = await import('./mcpServer');
       const res = await mcpServerRoutes.request('/message', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -1757,7 +1330,6 @@ describe('MCP bootstrap carve-out', () => {
       delete process.env.IS_HOSTED;
       mockKeyWithScopes(['ai:read']);
 
-      const { mcpServerRoutes } = await import('./mcpServer');
       const res = await mcpServerRoutes.request('/message', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
@@ -1778,7 +1350,6 @@ describe('MCP bootstrap carve-out', () => {
       delete process.env.IS_HOSTED;
       mockKeyWithScopes(['ai:read']);
 
-      const { mcpServerRoutes } = await import('./mcpServer');
       const res = await mcpServerRoutes.request('/message', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
