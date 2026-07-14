@@ -2,15 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the two final M365 foundation review follow-ups before publishing the branch.
+**Goal:** Close the final M365 foundation review follow-ups and deployment/security blockers before publishing the branch.
 
-**Architecture:** Keep the existing executor and permission-profile boundaries unchanged. Tighten the Azure Key Vault reference contract to accept only service-generated 32-character hexadecimal versions, and strengthen tests so every profile's security-relevant mapping is asserted exactly.
+**Architecture:** Keep the executor and permission-profile boundaries unchanged. Tighten the Azure Key Vault reference contract, retain legacy write compatibility for the expand rollout, make personal communications rows self-or-system only, and remove unused name-wide credential deletion until a DB-backed lifecycle workflow can serialize it against rotation.
 
 **Tech Stack:** TypeScript, Vitest, Azure Key Vault Secrets SDK, pnpm.
 
 ## Global Constraints
 
-- No route, control-plane service, schema, or migration changes.
+- No route or control-plane service changes.
+- The expand migration retains discriminator defaults and `m365_connections_org_uniq`; a mandatory later contract migration removes them before any nonlegacy organization-profile writer ships.
+- User-owned communications metadata is accessible only to its owner or system scope; organization/partner tenancy grants do not widen it.
+- The foundation credential provider exposes only `put` and `get`; name-wide deletion is deferred to an authoritative DB-backed lifecycle workflow.
 - Credential material remains executor-only.
 - Azure Key Vault references require a canonical vault host, generated M365 secret name, UUID connection id, and 32-character hexadecimal version.
 - Permission profiles remain code-owned at manifest version 1.
@@ -90,13 +93,37 @@ Run: `pnpm --filter @breeze/api exec vitest run src/services/m365ControlPlane/pr
 
 Expected: all profile tests pass; this is coverage hardening of existing intended behavior, so no production RED phase is expected.
 
-### Task 3: Verify and publish
+### Task 3: Close deployment and credential-lifecycle blockers
+
+**Files:**
+- Modify: `apps/api/migrations/2026-07-13-m365-control-plane-foundation.sql`
+- Modify: `apps/api/src/db/schema/m365.ts`
+- Modify: `apps/api/src/db/schema/m365.test.ts`
+- Create: `apps/api/src/db/migration-m365-control-plane-foundation.test.ts`
+- Modify: `apps/api/src/__tests__/integration/m365ConnectionsRls.integration.test.ts`
+- Modify: `apps/api/src/executors/m365/credentials/types.ts`
+- Modify: `apps/api/src/executors/m365/credentials/azureKeyVaultProvider.ts`
+- Modify: `apps/api/src/executors/m365/credentials/azureKeyVaultProvider.test.ts`
+
+- [ ] **Step 1: Preserve old-writer compatibility atomically**
+
+Set legacy discriminator defaults and retain the `org_id` unique index in the unshipped foundation migration. Mirror them in the Drizzle schema and contract tests. Document that a later contract migration is mandatory before any writer creates multiple organization profiles.
+
+- [ ] **Step 2: Make personal communications rows self-or-system only**
+
+Recreate all four M365 policies with explicit system access, organization access only for non-null `org_id`, and self access only for the current non-null `user_id`. Add real-role tests for same-partner and same-organization peers.
+
+- [ ] **Step 3: Remove unsafe unused Key Vault deletion**
+
+Remove `CredentialProvider.delete`, the Azure name-wide delete implementation, its client-port method, and delete-only tests. A future lifecycle service must load the authoritative connection, serialize deletion against rotation, and verify the pinned reference before invoking name-wide deletion.
+
+### Task 4: Verify and publish
 
 **Files:**
 - No additional source files.
 
 **Interfaces:**
-- Consumes: Tasks 1 and 2.
+- Consumes: Tasks 1 through 3.
 - Produces: one review-follow-up commit and a draft pull request.
 
 - [ ] **Step 1: Run combined tests and static verification**

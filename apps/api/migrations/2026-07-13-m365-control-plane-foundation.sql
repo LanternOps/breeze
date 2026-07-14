@@ -26,6 +26,12 @@ WHERE profile IS NULL
 ALTER TABLE m365_connections ALTER COLUMN org_id DROP NOT NULL;
 ALTER TABLE m365_connections ALTER COLUMN client_secret DROP NOT NULL;
 ALTER TABLE m365_connections ALTER COLUMN tenant_id TYPE VARCHAR(36);
+-- Expand/contract defaults keep the previously deployed API's inserts valid
+-- while this migration runs before the replacement application is started.
+ALTER TABLE m365_connections ALTER COLUMN profile SET DEFAULT 'legacy-direct';
+ALTER TABLE m365_connections ALTER COLUMN auth_mode SET DEFAULT 'client-secret-legacy';
+ALTER TABLE m365_connections ALTER COLUMN credential_domain SET DEFAULT 'legacy-direct';
+ALTER TABLE m365_connections ALTER COLUMN permission_manifest_version SET DEFAULT 0;
 ALTER TABLE m365_connections ALTER COLUMN profile SET NOT NULL;
 ALTER TABLE m365_connections ALTER COLUMN auth_mode SET NOT NULL;
 ALTER TABLE m365_connections ALTER COLUMN credential_domain SET NOT NULL;
@@ -112,7 +118,11 @@ ALTER TABLE m365_connections ADD CONSTRAINT m365_connections_profile_binding_che
   OR (profile = 'customer-exchange-powershell' AND org_id IS NOT NULL AND auth_mode = 'application-certificate' AND credential_domain = 'customer-exchange-powershell')
 );
 
-DROP INDEX IF EXISTS m365_connections_org_uniq;
+-- The deployed API still uses ON CONFLICT (org_id). Retain this compatibility
+-- index for the rollout window; a later contract migration may remove it once
+-- every writer targets (org_id, profile).
+CREATE UNIQUE INDEX IF NOT EXISTS m365_connections_org_uniq
+  ON m365_connections (org_id);
 CREATE UNIQUE INDEX IF NOT EXISTS m365_connections_org_profile_uniq
   ON m365_connections (org_id, profile);
 CREATE UNIQUE INDEX IF NOT EXISTS m365_connections_user_profile_uniq
@@ -131,46 +141,26 @@ ALTER TABLE m365_connections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE m365_connections FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY breeze_m365_connection_select ON m365_connections FOR SELECT USING (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 );
 CREATE POLICY breeze_m365_connection_insert ON m365_connections FOR INSERT WITH CHECK (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 );
 CREATE POLICY breeze_m365_connection_update ON m365_connections FOR UPDATE USING (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 ) WITH CHECK (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 );
 CREATE POLICY breeze_m365_connection_delete ON m365_connections FOR DELETE USING (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 );

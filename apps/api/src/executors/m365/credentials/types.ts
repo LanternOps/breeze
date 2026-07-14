@@ -16,5 +16,4 @@ export interface CredentialProvider {
     material: M365CredentialMaterial;
   }): Promise<StoredCredentialReference>;
   get(reference: string, expectedDomain: M365CredentialDomain): Promise<M365CredentialMaterial>;
-  delete(reference: string, expectedDomain: M365CredentialDomain): Promise<void>;
 }

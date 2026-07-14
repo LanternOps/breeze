@@ -36,12 +36,12 @@ export const m365Connections = pgTable(
     tenantId: varchar('tenant_id', { length: 36 }).notNull(),
     clientId: varchar('client_id', { length: 64 }).notNull(),
     clientSecret: text('client_secret'),
-    profile: varchar('profile', { length: 64 }).$type<StoredM365ConnectionProfile>().notNull(),
-    authMode: varchar('auth_mode', { length: 40 }).$type<StoredM365AuthMode>().notNull(),
-    credentialDomain: varchar('credential_domain', { length: 64 }).$type<StoredM365CredentialDomain>().notNull(),
+    profile: varchar('profile', { length: 64 }).$type<StoredM365ConnectionProfile>().notNull().default('legacy-direct'),
+    authMode: varchar('auth_mode', { length: 40 }).$type<StoredM365AuthMode>().notNull().default('client-secret-legacy'),
+    credentialDomain: varchar('credential_domain', { length: 64 }).$type<StoredM365CredentialDomain>().notNull().default('legacy-direct'),
     vaultRef: text('vault_ref'),
     credentialVersion: varchar('credential_version', { length: 128 }),
-    permissionManifestVersion: integer('permission_manifest_version').notNull(),
+    permissionManifestVersion: integer('permission_manifest_version').notNull().default(0),
     observedGrants: jsonb('observed_grants').$type<string[]>().notNull().default([]),
     displayName: varchar('display_name', { length: 256 }),
     status: varchar('status', { length: 32 }).$type<M365ConnectionStatus>().notNull().default('pending-consent'),
@@ -55,6 +55,10 @@ export const m365Connections = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (t) => ({
+    // Expand/contract compatibility: the old API upserts on org_id while
+    // migrations run before the new API is deployed. Remove this index only
+    // after every deployed writer targets (org_id, profile).
+    orgUniq: uniqueIndex('m365_connections_org_uniq').on(t.orgId),
     orgProfileUniq: uniqueIndex('m365_connections_org_profile_uniq').on(t.orgId, t.profile),
     userProfileUniq: uniqueIndex('m365_connections_user_profile_uniq').on(t.userId, t.profile),
   }),

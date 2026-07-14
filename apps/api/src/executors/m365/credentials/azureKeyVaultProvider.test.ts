@@ -21,7 +21,6 @@ function client(): SecretClientPort {
         },
       }),
     })),
-    beginDeleteSecret: vi.fn(async () => ({ pollUntilDone: vi.fn(async () => undefined) })),
   };
 }
 
@@ -159,17 +158,9 @@ describe('AzureKeyVaultCredentialProvider', () => {
     )).rejects.toThrow('Credential secret has an unsupported envelope');
   });
 
-  it('waits for Key Vault deletion to complete', async () => {
-    const port = client();
-    const pollUntilDone = vi.fn(async () => undefined);
-    port.beginDeleteSecret = vi.fn(async () => ({ pollUntilDone }));
-    const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
-    await provider.delete(
-      REFERENCE,
-      'customer-graph-read',
-    );
-    expect(port.beginDeleteSecret).toHaveBeenCalledWith(SECRET_NAME);
-    expect(pollUntilDone).toHaveBeenCalledOnce();
+  it('does not expose name-wide deletion without a DB-backed lifecycle workflow', () => {
+    const provider = new AzureKeyVaultCredentialProvider('https://vault.example', client());
+    expect(provider).not.toHaveProperty('delete');
   });
 
   it('rejects a runtime-invalid put domain before credential material reaches the client', async () => {
@@ -192,30 +183,6 @@ describe('AzureKeyVaultCredentialProvider', () => {
       'Unsupported M365 credential domain',
     );
     expect(port.getSecret).not.toHaveBeenCalled();
-  });
-
-  it('rejects a runtime-invalid expected delete domain before accessing the client', async () => {
-    const port = client();
-    const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
-
-    await expect(provider.delete(REFERENCE, 'unrecognized' as never)).rejects.toThrow(
-      'Unsupported M365 credential domain',
-    );
-    expect(port.beginDeleteSecret).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    `akv://vault.example/m365-customer-graph-read-arbitrary/${SECRET_VERSION}`,
-    `akv://vault.example/${SECRET_NAME}/anything`,
-    `akv://vault.example/m365-customer-graph-read-extra-${CONNECTION_ID}/${SECRET_VERSION}`,
-  ])('rejects noncanonical delete reference %s before deleting any secret versions', async (reference) => {
-    const port = client();
-    const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
-
-    await expect(provider.delete(reference, 'customer-graph-read')).rejects.toThrow(
-      'Invalid Azure Key Vault credential reference',
-    );
-    expect(port.beginDeleteSecret).not.toHaveBeenCalled();
   });
 
   it('accepts an Azure-generated 32-hex-character secret version', async () => {
@@ -299,40 +266,4 @@ describe('AzureKeyVaultCredentialProvider', () => {
     expect(String(failure)).not.toContain(REFERENCE);
   });
 
-  it.each(['begin', 'poll'] as const)(
-    'replaces a credential delete %s failure with a fixed secret-free error',
-    async (failureStage) => {
-      const port = client();
-      const sentinel = `SENTINEL-DELETE-${failureStage}`;
-      const sdkError = Object.assign(new Error(`sdk delete failure: ${sentinel} ${REFERENCE}`), {
-        request: { reference: REFERENCE },
-        response: { body: sentinel },
-      });
-      port.beginDeleteSecret = failureStage === 'begin'
-        ? vi.fn(async () => { throw sdkError; })
-        : vi.fn(async () => ({ pollUntilDone: vi.fn(async () => { throw sdkError; }) }));
-      const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
-
-      const failure = await provider.delete(REFERENCE, 'customer-graph-read').catch((error: unknown) => error);
-
-      expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toBe('Azure Key Vault credential delete failed');
-      expect(failure).not.toHaveProperty('cause');
-      expect(failure).not.toHaveProperty('request');
-      expect(failure).not.toHaveProperty('response');
-      expect(failure).not.toHaveProperty('envelope');
-      expect(String(failure)).not.toContain(sentinel);
-      expect(String(failure)).not.toContain(REFERENCE);
-    },
-  );
-
-  it('deletes the whole named secret only after validating a canonical pinned reference', async () => {
-    const port = client();
-    const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
-
-    await provider.delete(REFERENCE, 'customer-graph-read');
-
-    // Azure beginDeleteSecret is name-scoped: deleting the name deletes all versions.
-    expect(port.beginDeleteSecret).toHaveBeenCalledWith(SECRET_NAME);
-  });
 });

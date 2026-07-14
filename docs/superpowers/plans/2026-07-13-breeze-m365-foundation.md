@@ -246,7 +246,7 @@ git commit -m "feat(m365): add versioned permission profiles"
 
 **Interfaces:**
 - Consumes: profile/domain/auth-mode string contracts from Task 1.
-- Produces: one connection row owned by exactly one organization or user, with a vault reference for every non-legacy profile.
+- Produces: one connection row owned by exactly one organization or user, with a vault reference for every non-legacy profile. The expand release temporarily retains one-row-per-org compatibility until all deployed writers use `(org_id, profile)`.
 
 - [ ] **Step 1: Replace the schema test expectations before changing the schema**
 
@@ -269,9 +269,10 @@ describe('m365Connections schema', () => {
     expect(cfg.columns.find((c) => c.name === 'vault_ref')?.notNull).toBe(false);
   });
 
-  it('declares per-owner/profile uniqueness instead of one-row-per-org', () => {
+  it('retains rollout compatibility alongside per-owner/profile uniqueness', () => {
     const names = getTableConfig(m365Connections).indexes.map((i) => i.config.name).sort();
     expect(names).toEqual([
+      'm365_connections_org_uniq',
       'm365_connections_org_profile_uniq',
       'm365_connections_user_profile_uniq',
     ]);
@@ -317,12 +318,12 @@ export const m365Connections = pgTable(
     tenantId: varchar('tenant_id', { length: 36 }).notNull(),
     clientId: varchar('client_id', { length: 64 }).notNull(),
     clientSecret: text('client_secret'),
-    profile: varchar('profile', { length: 64 }).$type<StoredM365ConnectionProfile>().notNull(),
-    authMode: varchar('auth_mode', { length: 40 }).$type<StoredM365AuthMode>().notNull(),
-    credentialDomain: varchar('credential_domain', { length: 64 }).$type<StoredM365CredentialDomain>().notNull(),
+    profile: varchar('profile', { length: 64 }).$type<StoredM365ConnectionProfile>().notNull().default('legacy-direct'),
+    authMode: varchar('auth_mode', { length: 40 }).$type<StoredM365AuthMode>().notNull().default('client-secret-legacy'),
+    credentialDomain: varchar('credential_domain', { length: 64 }).$type<StoredM365CredentialDomain>().notNull().default('legacy-direct'),
     vaultRef: text('vault_ref'),
     credentialVersion: varchar('credential_version', { length: 128 }),
-    permissionManifestVersion: integer('permission_manifest_version').notNull(),
+    permissionManifestVersion: integer('permission_manifest_version').notNull().default(0),
     observedGrants: jsonb('observed_grants').$type<string[]>().notNull().default([]),
     displayName: varchar('display_name', { length: 256 }),
     status: varchar('status', { length: 32 }).$type<M365ConnectionStatus>().notNull().default('pending-consent'),
@@ -336,6 +337,7 @@ export const m365Connections = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (t) => ({
+    orgUniq: uniqueIndex('m365_connections_org_uniq').on(t.orgId),
     orgProfileUniq: uniqueIndex('m365_connections_org_profile_uniq').on(t.orgId, t.profile),
     userProfileUniq: uniqueIndex('m365_connections_user_profile_uniq').on(t.userId, t.profile),
   }),
@@ -462,7 +464,10 @@ ALTER TABLE m365_connections ADD CONSTRAINT m365_connections_profile_binding_che
   OR (profile = 'customer-exchange-powershell' AND org_id IS NOT NULL AND auth_mode = 'application-certificate' AND credential_domain = 'customer-exchange-powershell')
 );
 
-DROP INDEX IF EXISTS m365_connections_org_uniq;
+-- Expand/contract compatibility for the old API's ON CONFLICT (org_id).
+-- Remove only after every deployed writer targets (org_id, profile).
+CREATE UNIQUE INDEX IF NOT EXISTS m365_connections_org_uniq
+  ON m365_connections (org_id);
 CREATE UNIQUE INDEX IF NOT EXISTS m365_connections_org_profile_uniq
   ON m365_connections (org_id, profile);
 CREATE UNIQUE INDEX IF NOT EXISTS m365_connections_user_profile_uniq
@@ -481,48 +486,28 @@ ALTER TABLE m365_connections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE m365_connections FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY breeze_m365_connection_select ON m365_connections FOR SELECT USING (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 );
 CREATE POLICY breeze_m365_connection_insert ON m365_connections FOR INSERT WITH CHECK (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 );
 CREATE POLICY breeze_m365_connection_update ON m365_connections FOR UPDATE USING (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 ) WITH CHECK (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 );
 CREATE POLICY breeze_m365_connection_delete ON m365_connections FOR DELETE USING (
-  public.breeze_has_org_access(org_id)
-  OR user_id = public.breeze_current_user_id()
-  OR EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = m365_connections.user_id
-      AND (public.breeze_has_partner_access(u.partner_id) OR public.breeze_has_org_access(u.org_id))
-  )
+  public.breeze_current_scope() = 'system'
+  OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id))
+  OR (user_id IS NOT NULL AND user_id = public.breeze_current_user_id())
 );
 ```
 
@@ -853,7 +838,7 @@ git commit -m "test(m365): prove connection tenant isolation"
 
 **Interfaces:**
 - Consumes: `M365CredentialDomain` from Task 1.
-- Produces: `CredentialProvider.put()`, `.get()`, and `.delete()` with domain-checked versioned `akv://` references.
+- Produces: `CredentialProvider.put()` and `.get()` with domain-checked versioned `akv://` references. Name-wide deletion is deferred to a DB-backed lifecycle workflow that serializes against rotation.
 - Security boundary: no route, AI tool, or control-plane service imports this directory.
 
 - [ ] **Step 1: Add Azure SDK dependencies**
@@ -883,7 +868,6 @@ function client(): SecretClientPort {
         },
       }),
     })),
-    beginDeleteSecret: vi.fn(async () => ({ pollUntilDone: vi.fn(async () => undefined) })),
   };
 }
 
@@ -951,15 +935,6 @@ describe('AzureKeyVaultCredentialProvider', () => {
     expect(port.setSecret).not.toHaveBeenCalled();
   });
 
-  it('waits for Key Vault deletion to complete', async () => {
-    const port = client();
-    const provider = new AzureKeyVaultCredentialProvider('https://vault.example', port);
-    await provider.delete(
-      'akv://vault.example/m365-customer-graph-read-id/version-1',
-      'customer-graph-read',
-    );
-    expect(port.beginDeleteSecret).toHaveBeenCalledWith('m365-customer-graph-read-id');
-  });
 });
 ```
 
@@ -990,7 +965,6 @@ export interface CredentialProvider {
     material: M365CredentialMaterial;
   }): Promise<StoredCredentialReference>;
   get(reference: string, expectedDomain: M365CredentialDomain): Promise<M365CredentialMaterial>;
-  delete(reference: string, expectedDomain: M365CredentialDomain): Promise<void>;
 }
 ```
 
@@ -1014,7 +988,6 @@ interface CredentialEnvelope {
 export interface SecretClientPort {
   setSecret(name: string, value: string, options?: unknown): Promise<{ properties: { version?: string } }>;
   getSecret(name: string, options?: { version?: string }): Promise<{ value?: string }>;
-  beginDeleteSecret(name: string): Promise<{ pollUntilDone(): Promise<unknown> }>;
 }
 
 interface ParsedReference {
@@ -1115,13 +1088,6 @@ export class AzureKeyVaultCredentialProvider implements CredentialProvider {
     return envelope.material;
   }
 
-  async delete(reference: string, expectedDomain: M365CredentialDomain): Promise<void> {
-    const parsed = parseReference(reference);
-    if (parsed.host !== this.vaultHost) throw new Error('Credential reference vault mismatch');
-    if (!parsed.name.startsWith(`m365-${expectedDomain}-`)) throw new Error('Credential domain mismatch');
-    const poller = await this.client.beginDeleteSecret(parsed.name);
-    await poller.pollUntilDone();
-  }
 }
 ```
 

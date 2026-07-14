@@ -114,6 +114,8 @@ It does not store reusable access tokens, refresh tokens, client secrets, or pri
 
 Production credentials live behind a provider-neutral `CredentialProvider`, with Azure Key Vault as the production provider. A self-hosted deployment may implement a separately encrypted provider, but the API and database contract remains the same.
 
+The foundation provider exposes version-pinned `put` and `get` operations only. Azure Key Vault deletion is name-wide rather than version-scoped, so deletion must wait for a DB-backed lifecycle workflow that loads the authoritative connection, serializes against rotation, and verifies the current stored reference before deleting all versions. No caller-supplied vault reference can directly trigger deletion.
+
 ### 6.2 Credential domains
 
 | Domain | Identity and secret | Accessible by | Intended capability |
@@ -162,6 +164,8 @@ pending_consent -> verifying -> active -> degraded -> suspended -> revoked
 ```
 
 A failed permission profile degrades only that connection profile. For example, an expired delegated communications session must not disable an otherwise healthy customer Graph read connection.
+
+The first schema release temporarily retains the legacy unique `org_id` index and discriminator defaults because production applies migrations before replacing the old API, whose upsert still targets `org_id`. This expand phase intentionally permits only one organization-owned profile. Before any writer creates additional organization profiles, a required contract migration must remove the legacy index and defaults after all deployed writers target `(org_id, profile)`.
 
 ### 7.1 Capability profiles
 

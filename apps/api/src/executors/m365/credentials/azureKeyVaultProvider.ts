@@ -15,7 +15,6 @@ interface CredentialEnvelope {
 export interface SecretClientPort {
   setSecret(name: string, value: string, options?: unknown): Promise<{ properties: { version?: string } }>;
   getSecret(name: string, options?: { version?: string }): Promise<{ value?: string }>;
-  beginDeleteSecret(name: string): Promise<{ pollUntilDone(): Promise<unknown> }>;
 }
 
 interface ParsedReference {
@@ -197,21 +196,5 @@ export class AzureKeyVaultCredentialProvider implements CredentialProvider {
       throw new Error('Credential material does not match credential domain');
     }
     return envelope.material;
-  }
-
-  async delete(reference: string, expectedDomain: M365CredentialDomain): Promise<void> {
-    assertCredentialDomain(expectedDomain);
-    const parsed = parseReference(reference);
-    if (parsed.host !== this.vaultHost) throw new Error('Credential reference vault mismatch');
-    if (parsed.domain !== expectedDomain) throw new Error('Credential domain mismatch');
-    try {
-      // Azure deletion is name-scoped and intentionally deletes the named secret
-      // with all of its versions. Canonical host/domain/name/version validation
-      // above must succeed before beginning that all-version operation.
-      const poller = await this.client.beginDeleteSecret(parsed.name);
-      await poller.pollUntilDone();
-    } catch {
-      throw new Error('Azure Key Vault credential delete failed');
-    }
   }
 }
