@@ -123,6 +123,9 @@ jobs:
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
 
+      - name: Run load-test static contract tests
+        run: pnpm test:load-static
+
       # Site-scope contract tests are pure static analysis (walk routes/*.ts
       # from disk, no DB/Redis), so they run here in the fast, blocking job
       # rather than the non-blocking smoke-test. Guards both the `:deviceId`-URL

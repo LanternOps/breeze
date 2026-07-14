@@ -20,7 +20,16 @@ export const DEVICE_ID = __ENV.DEVICE_ID || '';
 // Partner reconstruction export. The scenario intentionally uses the
 // dedicated X-API-Key machine credential rather than AUTH_TOKEN.
 export const PARTNER_API_KEY = __ENV.PARTNER_API_KEY || '';
+export const PARTNER_API_MODE = (__ENV.PARTNER_API_MODE || 'both').toLowerCase();
 export const PARTNER_API_PAGE_LIMIT = Number.parseInt(__ENV.PARTNER_API_PAGE_LIMIT || '500', 10);
+export const INCREMENTAL_PAGE_LIMIT = Number.parseInt(__ENV.INCREMENTAL_PAGE_LIMIT || '500', 10);
+export const INCREMENTAL_UPDATED_SINCE = __ENV.INCREMENTAL_UPDATED_SINCE || '';
+export const PARTNER_API_CHECKPOINTS_JSON = __ENV.PARTNER_API_CHECKPOINTS_JSON || '';
+export const PARTNER_API_SUMMARY_FILE = __ENV.PARTNER_API_SUMMARY_FILE || 'partner-api-export-summary.json';
+export const PARTNER_API_INCREMENTAL_EXPECTED_RECORDS = Number.parseInt(
+  __ENV.PARTNER_API_INCREMENTAL_EXPECTED_RECORDS || '0',
+  10,
+);
 export const PARTNER_API_EXPECTED_DEVICES = Number.parseInt(__ENV.PARTNER_API_EXPECTED_DEVICES || '10000', 10);
 export const PARTNER_API_MAX_RETRIES = Number.parseInt(__ENV.PARTNER_API_MAX_RETRIES || '5', 10);
 export const PARTNER_API_MAX_PAGES = Number.parseInt(__ENV.PARTNER_API_MAX_PAGES || '100000', 10);

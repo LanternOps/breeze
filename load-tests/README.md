@@ -46,7 +46,13 @@ process environment or a secret manager:
 | `DEVICE_ID` | (empty) | A known device ID for single-device tests |
 | `DEVICE_IDS` | (empty) | Comma-separated device IDs for command tests |
 | `PARTNER_API_KEY` | (empty) | Dedicated `brz_sp_...` service-principal key for partner exports |
+| `PARTNER_API_MODE` | `both` | `full`, `incremental`, or `both` traversal phases |
 | `PARTNER_API_PAGE_LIMIT` | `500` | Export page size (clamped to the API maximum of 500) |
+| `INCREMENTAL_PAGE_LIMIT` | `500` | Incremental-only page size; set to `1` for the changed-row cursor gate |
+| `INCREMENTAL_UPDATED_SINCE` | (empty) | One ISO checkpoint applied to every incremental resource |
+| `PARTNER_API_CHECKPOINTS_JSON` | (empty) | Per-resource checkpoint object from a prior full summary; takes precedence over `INCREMENTAL_UPDATED_SINCE` |
+| `PARTNER_API_INCREMENTAL_EXPECTED_RECORDS` | `0` | Minimum changed records required from every resource |
+| `PARTNER_API_SUMMARY_FILE` | `partner-api-export-summary.json` | Safe basename for the generated summary |
 | `PARTNER_API_EXPECTED_DEVICES` | `10000` | Minimum device records required in the seeded full traversal |
 | `PARTNER_API_MAX_RETRIES` | `5` | Bounded retries per page for HTTP 429 and 5xx responses (maximum 10) |
 | `PARTNER_API_MAX_PAGES` | `100000` | Safety bound per resource traversal |
@@ -178,6 +184,37 @@ contract error, duplicate identity, changing snapshot, detected pool
 saturation, fewer than the expected devices, retry/page exhaustion, or the
 15-minute incremental budget.
 
+For a true changed-row cursor gate, run the phases separately. The full summary
+contains a checkpoint for every resource. Mutate at least two export records
+for every resource after the full run, then feed those checkpoints into an
+incremental-only run with a one-record page and a two-record minimum:
+
+```bash
+# Read silently or inject this variable from the job's secret manager.
+read -r -s PARTNER_API_KEY && export PARTNER_API_KEY
+export PARTNER_API_MODE=full
+export PARTNER_API_SUMMARY_FILE=partner-export-full-summary.json
+k6 run -e BASE_URL=https://breeze.example.com scenarios/partner-api-export.js
+
+export PARTNER_API_CHECKPOINTS_JSON="$(jq -c .checkpoints partner-export-full-summary.json)"
+# Apply the fixture mutations here, after every captured checkpoint.
+export PARTNER_API_MODE=incremental
+export INCREMENTAL_PAGE_LIMIT=1
+export PARTNER_API_INCREMENTAL_EXPECTED_RECORDS=2
+export PARTNER_API_SUMMARY_FILE=partner-export-incremental-summary.json
+k6 run -e BASE_URL=https://breeze.example.com scenarios/partner-api-export.js
+
+unset PARTNER_API_KEY PARTNER_API_MODE PARTNER_API_CHECKPOINTS_JSON \
+  INCREMENTAL_PAGE_LIMIT PARTNER_API_INCREMENTAL_EXPECTED_RECORDS \
+  PARTNER_API_SUMMARY_FILE
+```
+
+`PARTNER_API_MODE=both` remains useful for cadence and no-change smoke tests.
+It cannot prove changed-row ordering because there is no mutation boundary
+between its setup and iteration. The changed-row gate requires each resource
+to return at least two records and, at page size one, at least two pages; this
+forces first-page and late-cursor execution for all 13 resources.
+
 ### With Docker
 
 ```bash
@@ -253,41 +290,24 @@ fixture with at least 10,000 devices, both for the first page and a late cursor
 page of each incremental traversal. Retain the plan, actual rows, rows removed
 by filter, sort method/disk spill, buffer hits/reads, and execution time.
 
-### Representative local evidence (2026-07-14)
+### Representative changed-row evidence (2026-07-14)
 
-A disposable PostgreSQL, Redis, and API stack was populated with one partner,
-one organization, one site, 10,000 devices, and one hardware, disk, network,
-software, and scalar custom-field value record per device. The site also held
-12,000 approved printer assets. k6 ran in Docker with the service-principal key
-inherited from the container environment; the key was never included in the
-k6 command arguments.
+The retained two-phase gate used 10,000 devices across two organizations and
+sites. A full-only run captured all 13 resource checkpoints. After at least two
+records or material clocks for every resource were changed, an
+incremental-only run used a page limit of one and required two records per
+resource. It completed 28 first/late pages with 28 changed records in 11.018
+seconds and recorded no retries, HTTP errors, pool-saturation signals,
+contract failures, duplicate identities, or snapshot changes.
 
-The full traversal completed in 71.909 seconds and the no-change incremental
-traversal completed in 1.832 seconds. Across 123 pages, 50,010 records, and
-40,026,561 response bytes, the run recorded zero retries, HTTP 429 responses,
-HTTP 5xx responses, pool-saturation signals, contract failures, duplicate
-identities, and snapshot changes. Notable full-traversal results were:
-
-| Resource | Page p95 | Traversal |
-|---|---:|---:|
-| `devices` | 172 ms | 5.551 s |
-| `device-inventory` | 1.413 s | 30.368 s |
-| `device-software` | 333 ms | 7.664 s |
-| `device-relationships` | 893 ms | 19.798 s |
-| `custom-field-values` | 343 ms | 7.382 s |
-
-`EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` was then run as the unprivileged
-application role with partner RLS context on the same fixture. The approved
-printer page used the primary-key index and returned 500 rows in 26.311 ms;
-the corresponding 12,000-row count used a sequential scan and completed in
-43.037 ms. No-change incremental device and material-state queries scanned
-10,000 devices without disk-spilling their 25 kB quicksorts and completed in
-68.739 ms and 78.300 ms, respectively.
-
-No index was added: the observed database work was small relative to the
-15-minute cadence, and the end-to-end incremental pass used about 0.2% of that
-budget. Re-evaluate the following candidates with the production-shaped data
-distribution if site asset density or change volume grows materially:
+The full fixture totals, per-resource changed counts and durations, and
+sanitized first/late `EXPLAIN (ANALYZE, BUFFERS)` evidence are retained in
+[`evidence/2026-07-14-partner-export-changed-incremental.md`](evidence/2026-07-14-partner-export-changed-incremental.md)
+and its adjacent JSON file. No index was added: the changed incremental gate
+used about 1.2% of the cadence, no sort spilled to disk, and the slowest
+isolated predicate plan completed in 157.324 ms. Re-evaluate the following
+candidates with production-shaped data if tenant cardinality or change volume
+grows materially:
 
 - Site inventory exports approved `printer`, `router`, `switch`, `firewall`,
   `access_point`, and `nas` assets. The existing
