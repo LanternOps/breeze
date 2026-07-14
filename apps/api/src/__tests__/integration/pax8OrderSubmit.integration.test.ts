@@ -26,7 +26,11 @@ const READY_COMPANY_METADATA = {
   ] }],
 };
 
-async function seedOrder(options: { action?: 'new_subscription' | 'cancel' } = {}) {
+async function seedOrder(options: {
+  action?: 'new_subscription' | 'cancel';
+  source?: 'direct' | 'quote';
+  companyReady?: boolean;
+} = {}) {
   return withSystemDbAccessContext(async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -46,7 +50,7 @@ async function seedOrder(options: { action?: 'new_subscription' | 'cancel' } = {
       pax8CompanyName: 'Acme',
       orgId: org.id,
       status: 'Active',
-      metadata: READY_COMPANY_METADATA,
+      metadata: options.companyReady === false ? {} : READY_COMPANY_METADATA,
     });
     const [contract] = await db.insert(contracts).values({
       partnerId: partner.id,
@@ -71,7 +75,7 @@ async function seedOrder(options: { action?: 'new_subscription' | 'cancel' } = {
       orgId: org.id,
       pax8CompanyId: null,
       status: 'ready',
-      source: 'quote',
+      source: options.source ?? 'quote',
       dedupeKey: `submit-test:${randomUUID()}`,
       createdBy: user.id,
     }).returning();
@@ -94,13 +98,21 @@ async function seedOrder(options: { action?: 'new_subscription' | 'cancel' } = {
 }
 
 function serviceWithClient(client: Record<string, unknown>) {
-  return createPax8OrderSubmitService({
-    repository: {
-      ...pax8OrderSubmitRepository,
-      createClient: vi.fn().mockResolvedValue(client),
-    },
-    runOutsideDbContext: (fn) => fn(),
-  });
+  return serviceHarness(client).service;
+}
+
+function serviceHarness(client: Record<string, unknown>) {
+  const createClient = vi.fn().mockResolvedValue(client);
+  return {
+    createClient,
+    service: createPax8OrderSubmitService({
+      repository: {
+        ...pax8OrderSubmitRepository,
+        createClient,
+      },
+      runOutsideDbContext: (fn) => fn(),
+    }),
+  };
 }
 
 function successfulClient() {
@@ -119,6 +131,33 @@ function successfulClient() {
 }
 
 describe('Pax8 submit pipeline (real Postgres)', () => {
+  runDb('rejects unready direct and quote-staged orders before client creation or writes', async () => {
+    for (const source of ['direct', 'quote'] as const) {
+      const fixture = await seedOrder({ source, companyReady: false });
+      const client = successfulClient();
+      const { service, createClient } = serviceHarness(client);
+
+      await expect(service.submitOrder({
+        partnerId: fixture.partner.id,
+        orderId: fixture.order.id,
+        actorUserId: fixture.user.id,
+      })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('ready') });
+
+      expect(createClient).not.toHaveBeenCalled();
+      expect(client.createOrder).not.toHaveBeenCalled();
+      expect(client.updateSubscriptionQuantity).not.toHaveBeenCalled();
+      expect(client.cancelSubscription).not.toHaveBeenCalled();
+      const [state] = await withSystemDbAccessContext(() => db.select({
+        status: pax8Orders.status,
+      }).from(pax8Orders).where(eq(pax8Orders.id, fixture.order.id)));
+      const [line] = await withSystemDbAccessContext(() => db.select({
+        submitState: pax8OrderLines.submitState,
+      }).from(pax8OrderLines).where(eq(pax8OrderLines.id, fixture.line.id)));
+      expect(state?.status).toBe('ready');
+      expect(line?.submitState).toBe('pending');
+    }
+  });
+
   runDb('atomically claims one submit, persists billing success, and keeps rejected billing untouched', async () => {
     const fixture = await seedOrder();
     const client = successfulClient();

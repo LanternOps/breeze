@@ -313,19 +313,35 @@ function requireCompanyOrderReady(mapping: {
   }
 }
 
-async function requireCurrentCompanyOrderReady(order: Pax8OrderRow): Promise<void> {
-  const mappings = await db
+type CompanyMappingReader = Pick<typeof db, 'select'>;
+
+async function currentCompanyMappings(
+  reader: CompanyMappingReader,
+  scope: { integrationId: string; partnerId: string; orgId: string },
+  lock: boolean,
+) {
+  const query = reader
     .select({
+      integrationId: pax8CompanyMappings.integrationId,
+      pax8CompanyId: pax8CompanyMappings.pax8CompanyId,
       status: pax8CompanyMappings.status,
       metadata: pax8CompanyMappings.metadata,
     })
     .from(pax8CompanyMappings)
     .where(and(
-      eq(pax8CompanyMappings.integrationId, order.integrationId),
-      eq(pax8CompanyMappings.partnerId, order.partnerId),
-      eq(pax8CompanyMappings.orgId, order.orgId),
+      eq(pax8CompanyMappings.integrationId, scope.integrationId),
+      eq(pax8CompanyMappings.partnerId, scope.partnerId),
+      eq(pax8CompanyMappings.orgId, scope.orgId),
       eq(pax8CompanyMappings.ignored, false),
     ));
+  return lock ? query.for('share') : query;
+}
+
+async function requireCurrentCompanyOrderReady(
+  order: Pax8OrderRow,
+  options: { reader?: CompanyMappingReader; lock?: boolean } = {},
+): Promise<void> {
+  const mappings = await currentCompanyMappings(options.reader ?? db, order, options.lock ?? false);
   if (mappings.length !== 1) {
     throw new Pax8OrderError('Resolve the Pax8 company mapping before staging this order.', 422);
   }
@@ -363,17 +379,29 @@ export async function getOrCreateDraftOrder(input: {
     // A nested transaction gives an ambient request transaction a SAVEPOINT.
     // Without it, a handled 23505 would leave the request transaction aborted
     // and the winner re-read below would fail with 25P02.
-    const [created] = await db.transaction((tx) => tx.insert(pax8Orders).values({
-      id,
-      integrationId: mapping.integrationId,
-      partnerId: input.partnerId,
-      orgId: input.orgId,
-      pax8CompanyId: mapping.pax8CompanyId,
-      status: 'draft',
-      source: 'direct',
-      dedupeKey: buildDedupeKey(id),
-      createdBy: input.actorUserId,
-    }).returning());
+    const [created] = await db.transaction(async (tx) => {
+      const finalMappings = await currentCompanyMappings(tx, {
+        integrationId: mapping.integrationId,
+        partnerId: input.partnerId,
+        orgId: input.orgId,
+      }, true);
+      if (finalMappings.length !== 1) {
+        throw new Pax8OrderError('Resolve the Pax8 company mapping before creating this order.', 422);
+      }
+      const finalMapping = finalMappings[0]!;
+      requireCompanyOrderReady(finalMapping);
+      return tx.insert(pax8Orders).values({
+        id,
+        integrationId: finalMapping.integrationId,
+        partnerId: input.partnerId,
+        orgId: input.orgId,
+        pax8CompanyId: finalMapping.pax8CompanyId,
+        status: 'draft',
+        source: 'direct',
+        dedupeKey: buildDedupeKey(id),
+        createdBy: input.actorUserId,
+      }).returning();
+    });
     if (!created) throw new Pax8OrderError('The Pax8 draft order could not be created.', 409);
     return created;
   } catch (error) {
@@ -446,6 +474,9 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
       .limit(1);
     if (!lockedOrder) throw new Pax8OrderError('Pax8 order not found.', 404);
     requireMutableOrder(lockedOrder);
+    if (lockedOrder.source === 'direct') {
+      await requireCurrentCompanyOrderReady(lockedOrder, { lock: true });
+    }
 
     const [position] = await db
       .select({ maxSortOrder: max(pax8OrderLines.sortOrder) })

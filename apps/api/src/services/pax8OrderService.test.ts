@@ -197,7 +197,7 @@ function selectRowsOnce(rows: unknown[]) {
 }
 
 function mockCompanyMappingLookup(mapping: Record<string, unknown> | null) {
-  selectRowsOnce(mapping ? [{
+  return selectRowsOnce(mapping ? [{
     orgId: 'o1',
     status: 'Active',
     metadata: {
@@ -270,7 +270,7 @@ beforeEach(() => {
     }
   });
   mocks.db.transaction.mockImplementation((fn: (tx: { insert: typeof mocks.db.insert }) => unknown) =>
-    fn({ insert: mocks.db.insert }));
+    fn({ insert: mocks.db.insert, select: mocks.db.select } as never));
 });
 
 describe('listPax8Products', () => {
@@ -340,6 +340,7 @@ describe('getOrCreateDraftOrder', () => {
       [{ ...baseOrder, id: 'quote-order', source: 'quote', status: 'awaiting_details' }],
       [],
     ));
+    mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
     insertReturningOnce([{ ...baseOrder, id: 'direct-order', source: 'direct' }]);
 
     const order = await getOrCreateDraftOrder({ partnerId: 'p1', orgId: 'o1', actorUserId: 'u1' });
@@ -350,6 +351,7 @@ describe('getOrCreateDraftOrder', () => {
   it('returns the winning direct draft when its insert loses the unique-index race', async () => {
     mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
     selectRowsOnce([]);
+    mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
     insertRejectingOnce({ cause: { code: '23505', constraint_name: 'pax8_orders_one_mutable_direct_per_org_uq' } });
     selectRowsOnce([{ ...baseOrder, id: 'winning-order', source: 'direct' }]);
 
@@ -361,6 +363,7 @@ describe('getOrCreateDraftOrder', () => {
   it('creates a direct draft with a stable per-order dedupe key', async () => {
     mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
     selectRowsOnce([]);
+    mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
     const insert = insertReturningOnce([{ ...baseOrder, id: 'created-order' }]);
 
     await getOrCreateDraftOrder({ partnerId: 'p1', orgId: 'o1', actorUserId: 'u1' });
@@ -375,6 +378,21 @@ describe('getOrCreateDraftOrder', () => {
       createdBy: 'u1',
       dedupeKey: expect.stringMatching(/^order:[0-9a-f-]{36}$/),
     }));
+  });
+
+  it('rechecks company readiness under a share lock in the draft insert transaction', async () => {
+    mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
+    selectRowsOnce([]);
+    const finalMapping = mockCompanyMappingLookup({
+      pax8CompanyId: 'co-1', integrationId: 'i1', status: 'Inactive',
+    });
+    insertReturningOnce([{ ...baseOrder, id: 'should-not-create' }]);
+
+    await expect(getOrCreateDraftOrder({ partnerId: 'p1', orgId: 'o1', actorUserId: 'u1' }))
+      .rejects.toMatchObject({ status: 422, message: expect.stringContaining('ready') });
+
+    expect(finalMapping.for).toHaveBeenCalledWith('share');
+    expect(mocks.db.insert).not.toHaveBeenCalled();
   });
 });
 
@@ -404,6 +422,24 @@ describe('addOrderLine', () => {
       partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
       pax8ProductId: 'prod-1', billingTerm: 'Monthly', quantity: '1.00',
     })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('ready') });
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rechecks direct-order readiness under a share lock in the final line transaction', async () => {
+    mockOrder({ source: 'direct' });
+    mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
+    mockOrder({ source: 'direct' });
+    const finalMapping = mockCompanyMappingLookup({
+      pax8CompanyId: 'co-1', integrationId: 'i1', metadata: null,
+    });
+    insertReturningOnce([{ id: 'should-not-stage' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'new_subscription',
+      pax8ProductId: 'prod-1', billingTerm: 'Monthly', quantity: '1.00',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('ready') });
+
+    expect(finalMapping.for).toHaveBeenCalledWith('share');
     expect(mocks.db.insert).not.toHaveBeenCalled();
   });
 
@@ -642,7 +678,8 @@ describe('addOrderLine', () => {
   });
 
   it('closes every partner DB context before awaiting the dependency HTTP call', async () => {
-    mockOrder();
+    mockOrder({ source: 'direct' });
+    mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
     mockSubscriptionSnapshot({ raw: { commitmentId: 'c1' } });
     let resolveDependencies!: (value: { commitments: Array<Record<string, unknown>> }) => void;
     let clientLookupDepth = -1;
@@ -657,7 +694,8 @@ describe('addOrderLine', () => {
       contextExitsAtHttp = mocks.contextExits;
       return new Promise((resolve) => { resolveDependencies = resolve; });
     });
-    mockOrder();
+    mockOrder({ source: 'direct' });
+    const finalMapping = mockCompanyMappingLookup({ pax8CompanyId: 'co-1', integrationId: 'i1' });
     selectRowsOnce([{ maxSortOrder: null }]);
     insertReturningOnce([{ id: 'line-1', orderId: 'ord-1', partnerId: 'p1', orgId: 'o1', action: 'change_quantity' }]);
 
@@ -675,10 +713,11 @@ describe('addOrderLine', () => {
 
     expect(clientLookupDepth).toBe(1);
     expect(httpDepth).toBe(0);
-    expect(contextExitsAtHttp).toBe(3);
+    expect(contextExitsAtHttp).toBe(4);
     expect(insertStartedBeforeHttpResolved).toBe(false);
     expect(mocks.contextDepth).toBe(0);
-    expect(mocks.contextExits).toBe(4);
+    expect(mocks.contextExits).toBe(5);
+    expect(finalMapping.for).toHaveBeenCalledWith('share');
     for (const [context] of mocks.withDbAccessContext.mock.calls) {
       expect(context).toMatchObject({
         scope: 'partner',

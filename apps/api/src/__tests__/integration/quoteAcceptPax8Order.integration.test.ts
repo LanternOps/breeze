@@ -14,6 +14,7 @@ import {
   quotes,
 } from '../../db/schema';
 import { acceptQuote } from '../../services/quoteAcceptService';
+import { pax8CompanyOrderReadiness } from '../../services/pax8CompanyReadiness';
 import { PAX8_COMPANY_MAPPING_REQUIRED_ERROR } from '../../services/quoteToPax8Order';
 import { addCatalogLine, createQuote } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
@@ -101,7 +102,7 @@ async function seedPax8Quote(options: {
 }
 
 describe('quote acceptance stages Pax8 fulfillment (real Postgres)', () => {
-  runDb('stages an unmapped awaiting-details order and wires only Phase 4 contract lines', async () => {
+  runDb('stages with missing company readiness and wires only Phase 4 contract lines', async () => {
     const fixture = await seedPax8Quote({ duplicateLines: 2 });
 
     const result = await withDbAccessContext(fixture.ctx, () => acceptQuote({
@@ -124,7 +125,10 @@ describe('quote acceptance stages Pax8 fulfillment (real Postgres)', () => {
       })
         .from(contractLines)
         .where(inArray(contractLines.contractId, result.contractIds));
-      return { order, lines, createdContractLines };
+      const companyMappings = await db.select({ id: pax8CompanyMappings.id })
+        .from(pax8CompanyMappings)
+        .where(eq(pax8CompanyMappings.integrationId, fixture.integration.id));
+      return { order, lines, createdContractLines, companyMappings };
     });
 
     expect(state.order).toMatchObject({
@@ -140,6 +144,7 @@ describe('quote acceptance stages Pax8 fulfillment (real Postgres)', () => {
       error: PAX8_COMPANY_MAPPING_REQUIRED_ERROR,
     });
     expect(state.lines).toHaveLength(2);
+    expect(state.companyMappings).toEqual([]);
     expect(state.lines.map((line) => line.quantity)).toEqual(['2.00', '3.00']);
     expect(state.lines.map((line) => line.billingTerm)).toEqual(['Monthly', 'Monthly']);
     expect(state.lines.every((line) => line.action === 'new_subscription')).toBe(true);
@@ -163,6 +168,11 @@ describe('quote acceptance stages Pax8 fulfillment (real Postgres)', () => {
       .where(eq(pax8Orders.id, result.pax8OrderId!)));
     const [line] = await withSystemDbAccessContext(() => db.select().from(pax8OrderLines)
       .where(eq(pax8OrderLines.orderId, result.pax8OrderId!)));
+    const [mapping] = await withSystemDbAccessContext(() => db.select({
+      status: pax8CompanyMappings.status,
+      metadata: pax8CompanyMappings.metadata,
+    }).from(pax8CompanyMappings).where(eq(pax8CompanyMappings.orgId, fixture.org.id)));
+    expect(pax8CompanyOrderReadiness(mapping?.status, mapping?.metadata).orderReady).toBe(false);
     expect(order?.pax8CompanyId).toBe('company-1');
     expect(order?.error).toBeNull();
     expect(line).toMatchObject({
