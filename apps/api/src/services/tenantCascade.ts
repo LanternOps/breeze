@@ -225,6 +225,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'patch_jobs',
   'pax8_company_mappings',
   'pax8_contract_line_links',
+  'pax8_order_lines',
+  'pax8_orders',
   'pax8_subscription_snapshots',
   'peripheral_events',
   'peripheral_policies',

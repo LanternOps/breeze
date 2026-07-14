@@ -759,6 +759,7 @@ export * from './ai';
 // ============================================
 
 export * from './billing-enums';
+export * from './pax8-enums';
 
 // ============================================
 // Vulnerability fleet-triage SSOT

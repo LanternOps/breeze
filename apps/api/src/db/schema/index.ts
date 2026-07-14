@@ -98,6 +98,7 @@ export * from './clientAi';
 export * from './mlFeedback';
 export * from './remediationSuggestions';
 export * from './pax8';
+export * from './pax8Orders';
 export * from './accounting';
 export * from './onedriveHelper';
 export * from './vulnerabilityManagement';

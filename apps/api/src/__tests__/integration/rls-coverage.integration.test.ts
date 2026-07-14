@@ -116,6 +116,11 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   'pax8_company_mappings',
   'pax8_subscription_snapshots',
   'pax8_contract_line_links',
+  // pax8_orders / pax8_order_lines (2026-07-13, ordering): same shape — org_id
+  // is the customer the order is FOR, not the tenancy axis. Ordering is an
+  // MSP-side act; an org-scoped token must never see one.
+  'pax8_orders',
+  'pax8_order_lines',
   // customer_email_domains (Phase 5): partner-axis (Shape 3) carrying a
   // denormalized org_id (the routing target). RLS axis is partner_id; the
   // org_id is for routing + cascade only. Functional cross-partner/cross-org
@@ -165,6 +170,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['pax8_subscription_snapshots', 'partner_id'],
   ['pax8_product_mappings', 'partner_id'],
   ['pax8_contract_line_links', 'partner_id'],
+  ['pax8_orders', 'partner_id'],
+  ['pax8_order_lines', 'partner_id'],
   ['accounting_connections', 'partner_id'],
   ['scripts', 'partner_id'],
   ['script_categories', 'partner_id'],
