@@ -1533,29 +1533,30 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	// Kernel-verify the peer's Windows session id (from peer PID, via
-	// ProcessIdToSessionId) BEFORE the role gate so the gate can bind the
-	// assist/user roles to the active console session. On non-Windows / failure
-	// this is "" and the console binding is inert (Unix path returns early).
+	// ProcessIdToSessionId) before the role gate. System/user helpers must claim
+	// that exact interactive session; assist remains bound to the active console.
+	// On non-Windows this session gate is inert.
 	verifiedWinSession := ""
 	if verifiedWinSessionID != 0 {
 		verifiedWinSession = fmt.Sprintf("%d", verifiedWinSessionID)
 	}
+	claimedWinSession := fmt.Sprintf("%d", authReq.WinSessionID)
 	consoleWinSession := b.ConsoleSessionID()
 
 	// Step 9: Validate role matches peer identity to prevent privilege escalation.
 	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user/assist
 	// helpers must NOT run as SYSTEM. This prevents a non-SYSTEM process from
 	// claiming system role to get desktop scopes, or SYSTEM from claiming user
-	// role. The watchdog must also run as root/SYSTEM. Additionally, assist/user
-	// are bound to the active console session so a co-logged-in user on a
-	// multi-user host can't register them from another session (#1009). The
-	// decision is factored into roleIdentityRejection so the gate can be
+	// role. The watchdog must also run as root/SYSTEM. System/user claims must
+	// equal the kernel-derived interactive session, while assist stays bound to
+	// the active console session (#1009). The decision is factored into
+	// roleIdentityRejection so the gate can be
 	// unit-tested with an injected peer-cred SID/UID and session ids (none of
 	// which can be faked over a pipe).
-	if reason, rejected := roleIdentityRejection(helperRole, creds.SID, creds.UID, verifiedWinSession, consoleWinSession, runtime.GOOS); rejected {
+	if reason, rejected := roleIdentityRejection(helperRole, creds.SID, creds.UID, verifiedWinSession, claimedWinSession, consoleWinSession, runtime.GOOS); rejected {
 		log.Warn("role/identity mismatch",
 			"reason", reason, "role", helperRole, "sid", creds.SID, "uid", creds.UID,
-			"peerWinSession", verifiedWinSession, "consoleWinSession", consoleWinSession,
+			"peerWinSession", verifiedWinSession, "claimedWinSession", claimedWinSession, "consoleWinSession", consoleWinSession,
 			"pid", creds.PID, "binaryKind", authReq.BinaryKind)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted:  false,
@@ -1624,11 +1625,12 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
 	// PID) instead of trusting the self-reported value, preventing
-	// session-jumping attacks. Falls back to the self-reported value only when
-	// the kernel lookup failed (verifiedWinSession == "").
+	// session-jumping attacks. System/user helpers cannot reach this point when
+	// the kernel lookup failed or disagrees with the authenticated claim. Other
+	// roles retain the legacy fallback when no kernel session is available.
 	if verifiedWinSession != "" {
 		session.WinSessionID = verifiedWinSession
-		if verifiedWinSession != fmt.Sprintf("%d", authReq.WinSessionID) {
+		if verifiedWinSession != claimedWinSession {
 			log.Warn("WinSessionID mismatch — using kernel-verified value",
 				"reported", authReq.WinSessionID,
 				"verified", verifiedWinSession,
@@ -1636,7 +1638,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			)
 		}
 	} else {
-		session.WinSessionID = fmt.Sprintf("%d", authReq.WinSessionID)
+		session.WinSessionID = claimedWinSession
 	}
 
 	if helperReservation != nil {
@@ -1871,22 +1873,19 @@ const systemSID = "S-1-5-18"
 // permanent. It returns ("", false) when the role/identity pairing is allowed.
 //
 // peerWinSession is the kernel-verified Windows session id of the peer (from
-// ProcessIdToSessionId) and consoleWinSession is the active console session id.
-// On Windows the assist/user roles are additionally bound to the active console
-// session: a co-logged-in non-SYSTEM user on a multi-user host (RDS/terminal
-// server) running the genuine allowlisted Helper from a NON-console session must
-// not be able to register as assist/user — otherwise it would obtain the device
-// helper token and intercept run_as_user scripts meant for the console operator
-// (#1009). The SYSTEM-capture gate is unchanged (still SID-only). The console
-// binding does not apply on Unix (single interactive session; the macOS desktop
-// helper authenticates as user-role from the GUI/loginwindow session).
+// ProcessIdToSessionId), claimedWinSession is the authenticated numeric claim,
+// and consoleWinSession is the active console session id. Windows system/user
+// helpers require a nonzero peer session that exactly matches their claim, so
+// legitimate RDP helpers are admitted without trusting self-reported routing.
+// Assist remains console-bound for its cross-user token capability (#1009).
+// Session binding does not apply on Unix.
 //
 // Pure and OS-parameterized so the privilege-escalation gate can be unit-tested
 // with an injected SID/UID and session ids — a real peer-cred SID and
 // kernel-verified session id can't be forged over a named pipe / Unix socket,
 // so end-to-end pipe tests can only exercise the current test process's own
 // identity.
-func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, consoleWinSession, goos string) (reason string, rejected bool) {
+func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, claimedWinSession, consoleWinSession, goos string) (reason string, rejected bool) {
 	if goos == "windows" {
 		switch {
 		case role == ipc.HelperRoleSystem && sid != systemSID:
@@ -1898,22 +1897,16 @@ func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, console
 		case role == ipc.HelperRoleWatchdog && sid != systemSID:
 			return "watchdog role requires SYSTEM identity", true
 		}
-		// Positive console-session assertion for the cross-user roles. An unknown
-		// console session — "" (lookup failed) or "0" (the Session-0 services
-		// sentinel / WTS-failure value; Broker.ConsoleSessionID normalizes it to
-		// "", but the raw value is rejected here too so this pure gate is correct
-		// in isolation) — is treated as "no match" so we fail closed rather than
-		// admit an arbitrary session.
-		consoleUnknown := consoleWinSession == "" || consoleWinSession == "0"
-		switch role {
-		case ipc.HelperRoleAssist:
-			if consoleUnknown || peerWinSession != consoleWinSession {
-				return "assist role requires the active console session", true
+		if role == ipc.HelperRoleUser || role == ipc.HelperRoleSystem {
+			if peerWinSession == "" || peerWinSession == "0" {
+				return role + " role requires an interactive peer session", true
 			}
-		case ipc.HelperRoleUser:
-			if consoleUnknown || peerWinSession != consoleWinSession {
-				return "user role requires the active console session", true
+			if peerWinSession != claimedWinSession {
+				return role + " role session claim does not match peer token", true
 			}
+		}
+		if role == ipc.HelperRoleAssist && (consoleWinSession == "" || consoleWinSession == "0" || peerWinSession != consoleWinSession) {
+			return "assist role requires the active console session", true
 		}
 		return "", false
 	}

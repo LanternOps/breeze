@@ -98,6 +98,30 @@ func TestSessionForUserPrefersMostRecentUserSession(t *testing.T) {
 	}
 }
 
+func TestSessionForUserSelectsRDPHelper(t *testing.T) {
+	now := time.Now()
+
+	consoleSession, consoleClient := newTestUserSession(t, "console-helper", "alice", now.Add(-20*time.Minute))
+	defer consoleClient.Close()
+	consoleSession.WinSessionID = "1"
+	rdpSession, rdpClient := newTestUserSession(t, "rdp-helper", "alice", now.Add(-time.Minute))
+	defer rdpClient.Close()
+	rdpSession.WinSessionID = "7"
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			consoleSession.SessionID: consoleSession,
+			rdpSession.SessionID:     rdpSession,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	if got := b.SessionForUser("alice"); got != rdpSession {
+		t.Fatalf("SessionForUser returned %v, want RDP helper %q", got, rdpSession.SessionID)
+	}
+}
+
 func TestLaunchProcessViaUserHelperBroadcastsToAllUserSessions(t *testing.T) {
 	now := time.Now()
 
@@ -217,6 +241,63 @@ func TestLaunchProcessViaUserHelperForSessionTargetsMatchingHelper(t *testing.T)
 	case <-seen:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for targeted helper launch")
+	}
+}
+
+func TestLaunchProcessViaUserHelperForSessionTargetsMatchingRDPHelper(t *testing.T) {
+	now := time.Now()
+
+	consoleSession, consoleClient := newTestUserSession(t, "console-helper", "alice", now.Add(-10*time.Minute))
+	rdpSession, rdpClient := newTestUserSession(t, "rdp-helper", "alice", now.Add(-time.Minute))
+	consoleSession.WinSessionID = "1"
+	rdpSession.WinSessionID = "7"
+	defer consoleSession.Close()
+	defer rdpSession.Close()
+	defer consoleClient.Close()
+	defer rdpClient.Close()
+
+	go consoleSession.RecvLoop(func(*Session, *ipc.Envelope) {})
+	go rdpSession.RecvLoop(func(*Session, *ipc.Envelope) {})
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			consoleSession.SessionID: consoleSession,
+			rdpSession.SessionID:     rdpSession,
+		},
+		byIdentity:   make(map[string][]*Session),
+		staleHelpers: make(map[string][]int),
+	}
+
+	seen := make(chan string, 1)
+	startResponder := func(label string, client *ipc.Conn) {
+		t.Helper()
+		go func() {
+			client.SetReadDeadline(time.Now().Add(5 * time.Second))
+			env, err := client.Recv()
+			if err != nil {
+				return
+			}
+			seen <- label
+			respPayload, _ := json.Marshal(ipc.LaunchProcessResult{OK: true, PID: 4242})
+			if err := client.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeLaunchResult, Payload: respPayload}); err != nil {
+				t.Errorf("send %s launch response: %v", label, err)
+			}
+		}()
+	}
+	startResponder("console", consoleClient)
+	startResponder("rdp", rdpClient)
+
+	if err := b.LaunchProcessViaUserHelperForSession("7", "/usr/local/bin/breeze-helper"); err != nil {
+		t.Fatalf("LaunchProcessViaUserHelperForSession: %v", err)
+	}
+
+	select {
+	case got := <-seen:
+		if got != "rdp" {
+			t.Fatalf("targeted launch reached %s helper, want rdp", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for targeted RDP helper launch")
 	}
 }
 
