@@ -153,6 +153,11 @@ export type UserTokenContext = {
 // Constants
 // ============================================
 
+// SR2-21: the terms-of-service version recorded on a pending registration (and
+// carried through to account creation at verification time). Bump when the ToS
+// text materially changes so the accepted version is auditable per signup.
+export const TERMS_VERSION = 'v1';
+
 export const REFRESH_COOKIE_NAME = 'breeze_refresh_token';
 export const REFRESH_COOKIE_PATH = '/api/v1/auth';
 export const REFRESH_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;

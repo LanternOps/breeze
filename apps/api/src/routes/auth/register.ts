@@ -2,35 +2,25 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users, partners, partnerUsers, roles } from '../../db/schema';
+import { users, partnerUsers } from '../../db/schema';
 import {
   hashPassword,
   isPasswordStrong,
-  createTokenPair,
   rateLimiter,
   getRedis,
-  mintRefreshTokenFamily,
-  bindRefreshJtiToFamily,
-  getUserEpochs
 } from '../../services';
-import { ENABLE_REGISTRATION, ENABLE_2FA, registerSchema, registerPartnerSchema } from './schemas';
+import { ENABLE_REGISTRATION, TERMS_VERSION, registerSchema, registerPartnerSchema } from './schemas';
 import { isHosted } from '../../config/env';
-import type { PartnerStatus } from '../../db/schema/orgs';
-import { dispatchHook } from '../../services/partnerHooks';
-import { createPartner } from '../../services/partnerCreate';
-import { writeAuditEvent, ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
+import { ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
 import { createAuditLog } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
-import { generateVerificationToken } from '../../services/emailVerification';
-import { combineMfaPolicyFacts, type MfaSecuritySettings } from '../../services/mfaPolicy';
-import { getEmailService } from '../../services/email';
+import { createPendingRegistration } from '../../services/pendingRegistration';
+import { enqueueRegistrationVerification } from '../../services/authEmailQueue';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
   runWithSystemDbAccess,
   getClientRateLimitKey,
-  setRefreshTokenCookie,
-  toPublicTokens,
-  resolveCurrentUserTokenContext,
+  authResponseFloorPromise,
   registrationDisabledResponse
 } from './helpers';
 
@@ -86,26 +76,47 @@ registerRoutes.post('/register', zValidator('json', registerSchema), async (c) =
   });
 });
 
-// Register Partner (self-service MSP/company signup)
+// Register Partner (self-service MSP/company signup) — SR2-21: email-first.
+//
+// Step 1 records a PENDING registration and returns a fixed generic body. It
+// creates NO user, NO partner, NO tokens, and — the whole point — performs NO
+// user-existence lookup. That lookup was the enumeration oracle: the old handler
+// branched on `existingUser.length > 0` (early generic 200) and that branch was
+// ~1 DB round-trip cheaper than the createPartner branch, so the response TIME
+// disclosed whether the address had an account even though the response BODY did
+// not. The account is created only after the verification link is clicked
+// (routes/auth/verifyEmail.ts), and the WORKER — which the requester cannot
+// observe — decides which email to send. See services/authEmailQueue.ts.
+//
+// Enumeration defense (overseer binding decision): structurally branch-free AND
+// an explicit timing floor. The handler does the IDENTICAL sequence for every
+// accepted input — isPasswordStrong → hashPassword (argon2, the dominant cost)
+// → one Redis SETEX → one queue add → the same 200 body — with no branch on the
+// email and no DB read (hosted mode). We additionally share /login's floor
+// equalizer so a future regression reintroducing existence-dependent work still
+// cannot leak a latency delta. The floor is kicked off first and awaited before
+// EVERY return.
 registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchema), async (c) => {
+  const floorPromise = authResponseFloorPromise();
+
   if (!ENABLE_REGISTRATION) {
+    await floorPromise;
     return registrationDisabledResponse(c);
   }
 
   const { companyName, email, password, name, acceptTerms } = c.req.valid('json');
   const rateLimitClient = getClientRateLimitKey(c);
 
-  return runWithSystemDbAccess(async () => {
-
-    // Self-hosted single-tenant installs need the seeded admin to finish
-    // setup before strangers can create partners. SaaS deployments
-    // (IS_HOSTED=true) skip the gate so the partner table can
-    // bootstrap from an empty state.
+  // Self-hosted single-tenant installs need the seeded admin to finish setup
+  // before strangers can create partners. SaaS deployments (IS_HOSTED=true) skip
+  // the gate entirely — no DB read at all, which is why hosted mode issues ZERO
+  // db.select() calls. The gate's DB read (self-hosted) and the hosted bypass
+  // audit both need a system DB context, so that — and ONLY that — is wrapped.
+  const gateDenial = await runWithSystemDbAccess(async (): Promise<Response | null> => {
     if (isHosted()) {
-      // Awaited so a DB-write failure surfaces here with full context, rather
-      // than orphaning a context-less captureException out of the request scope.
-      // Signup still proceeds on failure — these events are low-volume and
-      // gating user signup on audit-table availability would be heavy.
+      // Best-effort bypass audit. Signup still proceeds on failure — these
+      // events are low-volume and gating signup on audit-table availability
+      // would be heavy.
       const bypassDetails = {
         email: email.toLowerCase(),
         companyName,
@@ -134,328 +145,89 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
       }
       // eslint-disable-next-line no-console
       console.warn('[register-partner] setup-admin gate bypassed (saas mode)');
-    } else {
-      const [setupAdmin] = await db
-        .select({ setupCompletedAt: users.setupCompletedAt })
-        .from(users)
-        .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
-        .where(sql`${users.setupCompletedAt} IS NOT NULL`)
-        .limit(1);
-
-      if (!setupAdmin) {
-        return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
-      }
+      return null;
     }
 
-    // Rate limit registration - stricter for partner registration
-    const redis = getRedis();
-    if (!redis) {
-      return c.json({ error: 'Service temporarily unavailable' }, 503);
-    }
-    const rateCheck = await rateLimiter(redis, `register-partner:${rateLimitClient}`, 3, 3600);
-    if (!rateCheck.allowed) {
-      return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
-    }
-
-    // Validate password strength
-    const passwordCheck = isPasswordStrong(password);
-    if (!passwordCheck.valid) {
-      return c.json({ error: passwordCheck.errors[0] }, 400);
-    }
-
-    // Check if user exists
-    const existingUser = await db
-      .select({ id: users.id })
+    const [setupAdmin] = await db
+      .select({ setupCompletedAt: users.setupCompletedAt })
       .from(users)
-      .where(eq(users.email, email.toLowerCase()))
+      .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+      .where(sql`${users.setupCompletedAt} IS NOT NULL`)
       .limit(1);
 
-    if (existingUser.length > 0) {
-      return c.json({ success: true, message: 'If registration can proceed, you will receive next steps shortly.' });
+    if (!setupAdmin) {
+      return c.json({ error: 'System setup is not yet complete. Contact your administrator.' }, 403);
     }
+    return null;
+  });
+  if (gateDenial) {
+    await floorPromise;
+    return gateDenial;
+  }
 
-    // Hash password before transaction (CPU-intensive, don't hold tx open)
-    const passwordHash = await hashPassword(password);
+  // Rate limit registration — stricter for partner registration. Keyed on the
+  // CLIENT, never the email; the exceeded branch returns its own status.
+  const redis = getRedis();
+  if (!redis) {
+    await floorPromise;
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const rateCheck = await rateLimiter(redis, `register-partner:${rateLimitClient}`, 3, 3600);
+  if (!rateCheck.allowed) {
+    await floorPromise;
+    return c.json({ error: 'Too many registration attempts. Try again later.' }, 429);
+  }
 
-    type RegisterPhase =
-      | 'create-partner'
-      | 'post-create-fetch'
-      | 'token-creation'
-      | 'hook-dispatch'
-      | 'response-build';
-    let phase: RegisterPhase = 'create-partner';
-    let partnerIdForLog: string | undefined;
+  // Password strength is input-dependent, not account-dependent — a 400 here
+  // discloses nothing about whether the address exists.
+  const passwordCheck = isPasswordStrong(password);
+  if (!passwordCheck.valid) {
+    await floorPromise;
+    return c.json({ error: passwordCheck.errors[0] }, 400);
+  }
 
-    try {
-      // Atomic creation of partner, role, user, partner-user link, org, site.
-      // Slug generation + uniqueness loop now live inside the service so the
-      // MCP bootstrap tool can reuse them.
-      const result = await createPartner({
-        orgName: companyName,
-        adminEmail: email,
-        adminName: name,
-        passwordHash,
-        origin: {
-          mcp: false,
-          ip: getTrustedClientIpOrUndefined(c),
-          userAgent: c.req.header('user-agent'),
-        },
-        status: isHosted() ? 'pending' : 'active',
-      });
-      partnerIdForLog = result.partnerId;
+  // Hash BEFORE parking — a plaintext password is NEVER stored in the pending
+  // record. argon2 is also the dominant, input-independent cost that makes the
+  // handler's latency uniform regardless of whether the address has an account.
+  const passwordHash = await hashPassword(password);
 
-      phase = 'post-create-fetch';
+  // SR2-21: no user-existence lookup. Park the pending registration and let the
+  // worker (which the requester cannot observe) decide what to send. The record
+  // carries the step-1 abuse attribution (#2343): the LIVE step-1 request's
+  // trusted IP + user-agent. Step 2 threads THESE into createPartner — never the
+  // verification click's IP/UA, which is routinely a mail client or a link
+  // scanner in another country and would poison the signup-abuse corpus.
+  let tokenHash: string;
+  try {
+    const created = await createPendingRegistration({
+      email: email.toLowerCase().trim(),
+      companyName,
+      name,
+      passwordHash,
+      acceptTerms,
+      termsVersion: TERMS_VERSION,
+      hostedExpectation: isHosted(),
+      signupIp: getTrustedClientIpOrUndefined(c),
+      signupUserAgent: c.req.header('user-agent'),
+    });
+    tokenHash = created.tokenHash;
+    // The raw token never leaves createPendingRegistration except inside the
+    // verification EMAIL (built by the worker). It is not returned to the
+    // client, not logged, and not audited.
+  } catch (err) {
+    console.error('[register-partner] pending-registration write failed', err);
+    captureException(err, c);
+    await floorPromise;
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
 
-      // Fetch the partner + user rows we need downstream (slug, plan, status,
-      // billingEmail, mfa state) plus the two facts the MFA-policy decision
-      // below is made of (partner `security` settings + the new admin role's
-      // force_mfa). Kept outside the service so the service's return contract
-      // stays minimal / stable across callers.
-      const [newPartner] = await db
-        .select({
-          id: partners.id,
-          name: partners.name,
-          slug: partners.slug,
-          plan: partners.plan,
-          status: partners.status,
-          settings: partners.settings,
-        })
-        .from(partners)
-        .where(eq(partners.id, result.partnerId))
-        .limit(1);
+  // The queue job carries ONLY the token hash — never the raw token, the email,
+  // or the password hash. The worker reads the Redis record.
+  await enqueueRegistrationVerification(tokenHash);
 
-      const [newUser] = await db
-        .select({
-          id: users.id,
-          email: users.email,
-          name: users.name,
-          mfaEnabled: users.mfaEnabled,
-        })
-        .from(users)
-        .where(eq(users.id, result.adminUserId))
-        .limit(1);
-
-      const [newAdminRole] = await db
-        .select({ forceMfa: roles.forceMfa })
-        .from(roles)
-        .where(eq(roles.id, result.adminRoleId))
-        .limit(1);
-
-      if (!newPartner || !newUser || !newAdminRole) {
-        throw new Error('Partner, user or admin-role row missing after createPartner');
-      }
-
-      phase = 'token-creation';
-
-      // This is a token-MINT site: /register-partner auto-logs the new admin
-      // in. The old `!(ENABLE_2FA && newUser.mfaEnabled)` was a constant `true`
-      // here — a just-created user never has a factor — so it handed the
-      // session VACUOUS MFA assurance. If the new admin's role carries
-      // force_mfa (the "Partner Admin" posture the 2026-05-25-f migration
-      // intends) or the partner is created under a requireMfa policy, that
-      // claim satisfies every hasSatisfiedMfa() gate without a second factor
-      // ever existing, and it survives indefinitely through refresh rotation.
-      // Resolve the effective policy instead — same contract as /login and the
-      // CF-Access mint sites.
-      //
-      // The policy is resolved from facts read INSIDE this request's
-      // transaction — deliberately NOT via getEffectiveMfaPolicy(). That
-      // resolver would be INERT here and would fail OPEN: this whole handler
-      // runs inside runWithSystemDbAccess (an open `baseDb.transaction`), and
-      // createPartner writes the partner/role/user/partner_users rows into
-      // that same still-UNCOMMITTED transaction. getEffectiveMfaPolicy exits
-      // the ALS context (runOutsideDbContext) and opens a NEW transaction on a
-      // SECOND pooled connection, which under READ COMMITTED cannot see any of
-      // those rows: the role join returns nothing (roleForceMfa=false), the
-      // partner row reads as absent (settingsRequireMfa=false), nothing throws
-      // — so `required` was ALWAYS false and `mfa: true` was still a constant.
-      // A silent empty read, not an exception, so `failClosed` would not have
-      // rescued it either. Read the two facts here, in-tx, and apply the SAME
-      // rule (combineMfaPolicyFacts is the shared single source of truth for
-      // strictest-wins + the MFA_FORCE_FOR_PARTNER_ADMIN kill switch).
-      //
-      // Fail-closed: both facts come from rows this handler MUST have been able
-      // to read. If either SELECT errors, or either row is absent (the throw
-      // above), control leaves via this handler's try/catch → 500, before any
-      // token is minted. There is no path on which an unread fact degrades to
-      // "no policy → allow", which is exactly how the previous version failed.
-      const partnerSettings = (newPartner.settings ?? {}) as Record<string, unknown>;
-      const policy = combineMfaPolicyFacts({
-        roleForceMfa: newAdminRole.forceMfa === true,
-        security: partnerSettings.security as MfaSecuritySettings | undefined,
-        failClosed: true,
-      });
-      const mfaEnrollmentRequired = ENABLE_2FA && !newUser.mfaEnabled && policy.required;
-      const mfaSatisfied = !ENABLE_2FA || (!newUser.mfaEnabled && !policy.required);
-
-      // Auto-login from partner signup: mint a fresh refresh-token family so
-      // the first session inherits the same reuse-detection chain as a real
-      // /login. Skipping it here would leave brand-new partners' tokens
-      // outside the family-revocation envelope until their next manual login.
-      const registerFamilyId = await mintRefreshTokenFamily(newUser.id);
-      const epochs = await getUserEpochs(newUser.id);
-      if (!epochs) throw new Error('user epochs unavailable at token mint');
-      const tokens = await createTokenPair({
-        sub: newUser.id,
-        email: newUser.email,
-        roleId: result.adminRoleId,
-        orgId: result.orgId,
-        partnerId: newPartner.id,
-        scope: 'partner',
-        mfa: mfaSatisfied,
-        aep: epochs.authEpoch,
-        mep: epochs.mfaEpoch
-      }, { refreshFam: registerFamilyId });
-
-      await bindRefreshJtiToFamily(tokens.refreshJti, registerFamilyId);
-
-      setRefreshTokenCookie(c, tokens.refreshToken);
-
-      // Email verification — best-effort send. Failures must not fail the
-      // signup, but the result needs to be surfaced to the client so the
-      // UI can show a "we couldn't send the verification email — click to
-      // resend" banner instead of leaving the user waiting silently.
-      let verificationEmailSent = false;
-      try {
-        const rawToken = await generateVerificationToken({
-          partnerId: newPartner.id,
-          userId: newUser.id,
-          email: newUser.email,
-        });
-        const appBaseUrl = (
-          process.env.DASHBOARD_URL ||
-          process.env.PUBLIC_APP_URL ||
-          'http://localhost:4321'
-        ).replace(/\/$/, '');
-        const verificationUrl = `${appBaseUrl}/auth/verify-email?token=${encodeURIComponent(rawToken)}`;
-        const emailService = getEmailService();
-        if (emailService) {
-          await emailService.sendVerificationEmail({
-            to: newUser.email,
-            name: newUser.name,
-            verificationUrl,
-          });
-          verificationEmailSent = true;
-        } else {
-          // No email provider in production is a misconfiguration, not
-          // graceful degradation — capture so it's observable.
-          const err = new Error(
-            '[register-partner] Email service not configured; verification email skipped',
-          );
-          console.warn(err.message);
-          captureException(err, c);
-        }
-      } catch (verifyErr) {
-        console.error('[register-partner] verification email send failed', {
-          partnerId: newPartner.id,
-          userId: newUser.id,
-          error: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
-        });
-        captureException(verifyErr, c);
-      }
-
-
-      phase = 'hook-dispatch';
-
-      // Dispatch post-registration hook (external services can override status/redirect)
-      const hookResponse = await dispatchHook('registration', newPartner.id, {
-        email: newUser.email,
-        partnerName: newPartner.name,
-        plan: newPartner.plan,
-      });
-
-      // If hook overrides the partner status (e.g. to 'pending'), apply it
-      const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
-      let effectiveStatus: PartnerStatus = newPartner.status;
-
-      if (hookResponse?.status && hookResponse.status !== newPartner.status) {
-        if (!VALID_STATUSES.includes(hookResponse.status as any)) {
-          console.error(`[Registration] Hook returned invalid status '${hookResponse.status}' for partner ${newPartner.id}; ignoring`);
-        } else {
-          try {
-            const updateSet: Record<string, unknown> = {
-              status: hookResponse.status as typeof newPartner.status,
-            };
-
-            // Apply optional status message fields from hook response
-            if (hookResponse.message || hookResponse.actionUrl || hookResponse.actionLabel) {
-              const msgSettings: Record<string, string | null> = {};
-              if (hookResponse.message) msgSettings.statusMessage = hookResponse.message;
-              if (hookResponse.actionUrl) msgSettings.statusActionUrl = hookResponse.actionUrl;
-              if (hookResponse.actionLabel) msgSettings.statusActionLabel = hookResponse.actionLabel;
-              updateSet.settings = sql`COALESCE(${partners.settings}, '{}'::jsonb) || ${JSON.stringify(msgSettings)}::jsonb`;
-            }
-
-            await db
-              .update(partners)
-              .set(updateSet)
-              .where(eq(partners.id, newPartner.id));
-            effectiveStatus = hookResponse.status as PartnerStatus;
-          } catch (statusErr) {
-            console.error('[register-partner] hook-status update failed', {
-              partnerId: newPartner.id,
-              fromStatus: newPartner.status,
-              toStatus: hookResponse.status,
-              error: statusErr instanceof Error ? statusErr.message : String(statusErr),
-              stack: statusErr instanceof Error ? statusErr.stack : undefined,
-            });
-            // Returning the unchanged status to the client is a deliberate
-            // trade-off: surfacing a 500 here would partially undo a successful
-            // partner+user creation. The audit row below lets triage find
-            // partners whose effective status diverged from hook intent.
-            writeAuditEvent(c, {
-              orgId: null,
-              actorType: 'system',
-              action: 'register-partner.hook-status-update-failed',
-              resourceType: 'partner',
-              resourceId: newPartner.id,
-              resourceName: newPartner.name,
-              details: {
-                fromStatus: newPartner.status,
-                toStatus: hookResponse.status,
-              },
-              result: 'failure',
-              errorMessage: statusErr instanceof Error ? statusErr.message : String(statusErr),
-            });
-          }
-        }
-      }
-
-      phase = 'response-build';
-
-      // Only allow relative redirects from hooks to prevent open redirect
-      const redirectUrl = hookResponse?.redirectUrl?.startsWith('/') ? hookResponse.redirectUrl : undefined;
-
-      return c.json({
-        user: {
-          id: newUser.id,
-          email: newUser.email,
-          name: newUser.name,
-          mfaEnabled: false
-        },
-        partner: {
-          id: newPartner.id,
-          name: newPartner.name,
-          slug: newPartner.slug,
-          status: effectiveStatus,
-        },
-        tokens: toPublicTokens(tokens),
-        mfaRequired: false,
-        // Same contract /login returns, so the signup flow lands the new admin
-        // on enrollment instead of bouncing them off authMiddleware's 428.
-        mfaEnrollmentRequired,
-        enrollUrl: mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
-        verificationEmailSent,
-        ...(redirectUrl ? { redirectUrl } : {}),
-      });
-    } catch (err) {
-      console.error('[register-partner] failed', {
-        phase,
-        partnerId: partnerIdForLog,
-        error: err instanceof Error ? err.message : String(err),
-        stack: err instanceof Error ? err.stack : undefined,
-      });
-      return c.json({ error: 'Registration failed. Please try again.' }, 500);
-    }
+  await floorPromise;
+  return c.json({
+    success: true,
+    message: 'If registration can proceed, you will receive next steps shortly.',
   });
 });

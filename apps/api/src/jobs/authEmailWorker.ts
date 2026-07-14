@@ -18,11 +18,14 @@
  */
 
 import { createHash } from 'crypto';
+import { eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
+import { users } from '../db/schema';
 import { getBullMQConnection, getRedis } from '../services/redis';
 import { getEmailService } from '../services/email';
+import { peekPendingRegistration } from '../services/pendingRegistration';
 import { getPasswordResetEligibility } from '../services/passwordResetEligibility';
 import { advanceUserEpochs } from '../services/authLifecycle';
 import { recordFailedLogin } from '../services/anomalyMetrics';
@@ -135,13 +138,66 @@ async function handlePasswordReset(email: string): Promise<void> {
 }
 
 /**
- * SR2-21 (email-first registration) fills this in — the "you already have an
- * account" / "verify your new account" notice. Nothing enqueues a `registration`
- * job in this PR, so this is a logged no-op for now (kept present so the switch
- * in handleAuthEmailJob is exhaustive from day one). Task 9 replaces the body.
+ * SR2-21 (email-first registration). The requester's response was already sent
+ * (a fixed generic body); here — where the requester cannot observe the latency
+ * — we PEEK the pending record and decide which email to send. The click, not
+ * the worker, consumes the record: peek is non-consuming, and we never delete
+ * it, so both branches below are indistinguishable to a Redis observer.
  */
-async function handleRegistrationVerification(_tokenHash: string): Promise<void> {
-  console.warn('[auth-email] registration verification job received but not yet implemented (Task 9)');
+async function handleRegistrationVerification(tokenHash: string): Promise<void> {
+  const rec = await peekPendingRegistration(tokenHash);
+  if (!rec) {
+    // Expired by TTL, or the click already consumed it. Nothing to send and no
+    // retry (the record is gone). Not an error.
+    console.warn('[auth-email] registration verification job: pending record absent (expired/consumed)');
+    return;
+  }
+
+  const normalizedEmail = rec.email.toLowerCase().trim();
+
+  // FORCE-RLS `users` read from OUTSIDE a request — establish a system DB
+  // context or it is filtered to 0 rows and EVERY existing account looks free
+  // (which would mail the signup link to an address that already has an owner).
+  // No runOutsideDbContext first: there is no ambient context to exit (mirrors
+  // the password-reset path and every other jobs/*.ts worker).
+  const [existing] = await withSystemDbAccessContext(() =>
+    db
+      .select({ id: users.id, name: users.name })
+      .from(users)
+      .where(eq(users.email, normalizedEmail))
+      .limit(1),
+  );
+
+  const emailService = getEmailService();
+  if (!emailService) {
+    // Observable + retryable without changing the (already-sent) public
+    // response. The record is still parked (we peeked, not consumed), so a retry
+    // once mail is configured re-sends. Throwing lets BullMQ retry.
+    const err = new Error('[auth-email] email service not configured; registration email not sent');
+    captureException(err);
+    throw err;
+  }
+
+  if (existing) {
+    // Q5 option (b): the address ALREADY has an account. Notify the holder — but
+    // send the "someone tried to sign up" NOTICE, never the signup/verification
+    // link (that link would dead-end anyway, and mailing it would let an
+    // attacker drive a verification flow against someone else's mailbox). Do NOT
+    // delete the pending record: letting it expire by TTL keeps the two branches
+    // indistinguishable to a Redis observer.
+    await emailService.sendSignupAttemptOnExistingAccount({ to: rec.email, name: existing.name });
+    return;
+  }
+
+  // Free address: send the normal verification link carrying the RAW token (from
+  // the Redis value, never the queue job). The user's click consumes the record.
+  const appBaseUrl = (
+    process.env.DASHBOARD_URL ||
+    process.env.PUBLIC_APP_URL ||
+    'http://localhost:4321'
+  ).replace(/\/$/, '');
+  const verificationUrl = `${appBaseUrl}/auth/verify-email?token=${encodeURIComponent(rec.rawToken)}`;
+  await emailService.sendVerificationEmail({ to: rec.email, name: rec.name, verificationUrl });
 }
 
 let authEmailWorker: Worker | null = null;

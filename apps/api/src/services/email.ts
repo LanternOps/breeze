@@ -100,6 +100,12 @@ export interface EmailChangedEmailParams {
   pending?: boolean;
 }
 
+export interface SignupAttemptOnExistingAccountEmailParams {
+  to: string | string[];
+  name?: string | null;
+  supportEmail?: string;
+}
+
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 export interface AlertNotificationEmailParams {
@@ -313,6 +319,16 @@ export class EmailService {
 
   async sendEmailChanged(params: EmailChangedEmailParams): Promise<void> {
     const template = buildEmailChangedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text
+    });
+  }
+
+  async sendSignupAttemptOnExistingAccount(params: SignupAttemptOnExistingAccountEmailParams): Promise<void> {
+    const template = buildSignupAttemptOnExistingAccountTemplate(params);
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
@@ -733,6 +749,43 @@ function buildVerificationTemplate(params: VerificationEmailParams): EmailTempla
     'Welcome to Breeze. Please confirm your email address so we can finish setting up your account.',
     `Verify your email: ${params.verificationUrl}`,
     'This link expires in 24 hours. If you did not sign up for Breeze, you can safely ignore this email.',
+    support ? `Need help? Contact ${support}.` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return { subject, html, text };
+}
+
+// SR2-21 (Q5 option b): a signup was attempted against an address that ALREADY
+// has an account. The existing holder is notified — but is deliberately NOT sent
+// the signup/verification link (that would let an attacker drive a verification
+// flow against someone else's mailbox). No token, no button: just "you already
+// have an account, sign in".
+function buildSignupAttemptOnExistingAccountTemplate(
+  params: SignupAttemptOnExistingAccountEmailParams,
+): EmailTemplate {
+  const name = params.name?.trim() || 'there';
+  const subject = 'A Breeze sign-up was attempted with your email';
+  const preheader = 'You already have a Breeze account — no new account was created.';
+  const body = `
+      <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
+      <p style="${BODY_PARA}">Someone tried to create a Breeze account with this address. You already have one — sign in, or reset your password if you've forgotten it.</p>
+      <p style="${MUTED_PARA}">No new account was created and no action is required. If this wasn't you, you can safely ignore this email.</p>
+  `;
+  const html = renderLayout({
+    title: subject,
+    preheader,
+    heading: 'You already have a Breeze account',
+    body,
+    footer: supportFooter(params.supportEmail, 'Need help? Contact'),
+  });
+
+  const support = getSupportEmail(params.supportEmail);
+  const text = [
+    `Hi ${name},`,
+    "Someone tried to create a Breeze account with this address. You already have one — sign in, or reset your password if you've forgotten it.",
+    "No new account was created and no action is required. If this wasn't you, you can safely ignore this email.",
     support ? `Need help? Contact ${support}.` : null,
   ]
     .filter(Boolean)
