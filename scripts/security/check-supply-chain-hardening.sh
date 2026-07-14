@@ -106,6 +106,87 @@ for dockerfile in apps/api/Dockerfile apps/web/Dockerfile docker/Dockerfile.api 
   require_grep 'npm install -g pnpm@10\.33\.4' "$dockerfile" \
     "$dockerfile must pin pnpm to 10.33.4"
 done
+
+# The customer-Graph-read credential boundary ships as a separately built
+# executor. Keep its image, CI/release coverage, and deployment boundary from
+# silently disappearing while the feature remains dark by default.
+EXECUTOR_DOCKERFILE=apps/m365-graph-read-executor/Dockerfile
+[[ -f "$EXECUTOR_DOCKERFILE" ]] || fail "$EXECUTOR_DOCKERFILE must package the isolated Graph-read executor"
+require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+build' "$EXECUTOR_DOCKERFILE" \
+  "executor build stage must digest-pin Node while retaining the tag"
+require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+runner' "$EXECUTOR_DOCKERFILE" \
+  "executor runtime stage must digest-pin Node while retaining the tag"
+require_grep '^USER[[:space:]]+node$' "$EXECUTOR_DOCKERFILE" \
+  "executor runtime must run as the non-root node user"
+require_grep '^HEALTHCHECK .*\/healthz' "$EXECUTOR_DOCKERFILE" \
+  "executor image must declare its bounded health endpoint"
+require_grep '^CMD[[:space:]]+\["node",[[:space:]]*"dist/index\.cjs"\]' "$EXECUTOR_DOCKERFILE" \
+  "executor image must start only its compiled bounded runtime"
+reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$EXECUTOR_DOCKERFILE" \
+  "executor image must not copy env, certificate, key, or secret files"
+reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$EXECUTOR_DOCKERFILE" \
+  "executor image must use an explicit deterministic build context allowlist"
+require_grep 'directory: "/apps/m365-graph-read-executor"' .github/dependabot.yml \
+  "Dependabot must maintain the executor Dockerfile's digest-pinned base image"
+
+require_grep '^  test-m365-graph-read-executor:' .github/workflows/ci.yml \
+  "CI must run isolated Graph-read executor tests"
+require_grep '^  build-m365-graph-read-executor:' .github/workflows/ci.yml \
+  "CI must build the isolated Graph-read executor"
+require_grep 'TEST_M365_GRAPH_READ_EXECUTOR_RESULT' .github/workflows/ci.yml \
+  "ci-success must require the executor test job"
+require_grep 'BUILD_M365_GRAPH_READ_EXECUTOR_RESULT' .github/workflows/ci.yml \
+  "ci-success must require the executor build job"
+require_grep '^  build-docker-m365-graph-read-executor:' .github/workflows/release.yml \
+  "release must publish the executor as a separate image"
+require_grep '\$\{\{ env\.IMAGE_NAME \}\}/m365-graph-read-executor' .github/workflows/release.yml \
+  "release must use a distinct executor image repository"
+require_grep 'executor-image-digest:.*steps\..*\.outputs\.digest' .github/workflows/release.yml \
+  "release must expose the immutable executor image digest"
+require_grep 'breeze-m365-graph-read-executor:security-scan' .github/workflows/security.yml \
+  "security workflow must build and scan the executor image"
+
+for compose in docker-compose.yml deploy/docker-compose.prod.yml; do
+  reject_grep '^  m365-graph-read-executor:' "$compose" \
+    "$compose must not deploy the executor without an identity-capable private environment"
+  require_grep 'M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED:[[:space:]]+\$\{M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED:-false\}' "$compose" \
+    "$compose must keep customer Graph-read onboarding disabled by default"
+  require_grep 'M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE:[[:space:]]+/run/secrets/m365_graph_read_executor_signing_private_jwk' "$compose" \
+    "$compose must load the API executor-signing private JWK from a Docker secret"
+  require_grep '^  m365_graph_read_executor_signing_private_jwk:' "$compose" \
+    "$compose must define the API executor-signing private-JWK secret"
+
+  api_block="$(mktemp)"
+  awk '
+    /^  api:/ { in_api = 1 }
+    in_api && /^  [[:alnum:]_-]+:/ && $0 !~ /^  api:/ { exit }
+    in_api { print }
+  ' "$compose" > "$api_block"
+  require_grep '^[[:space:]]+read_only:[[:space:]]+true' "$api_block" \
+    "$compose API service must use a read-only root filesystem"
+  require_grep '^[[:space:]]+-[[:space:]]+no-new-privileges:true' "$api_block" \
+    "$compose API service must set no-new-privileges"
+  require_grep '^[[:space:]]+-[[:space:]]+ALL' "$api_block" \
+    "$compose API service must drop all Linux capabilities"
+  require_grep '^[[:space:]]+-[[:space:]]+/tmp:size=64m,mode=1777' "$api_block" \
+    "$compose API service must use a bounded tmpfs"
+  require_grep '^[[:space:]]+mode:[[:space:]]+0400' "$api_block" \
+    "$compose API signing private-JWK secret must be mounted mode 0400"
+  rm -f "$api_block"
+done
+
+for deployment_template in .env.example deploy/.env.example; do
+  require_grep '--read-only' "$deployment_template" \
+    "$deployment_template must document the executor read-only filesystem requirement"
+  require_grep '--cap-drop=ALL' "$deployment_template" \
+    "$deployment_template must document dropping all executor capabilities"
+  require_grep '--security-opt=no-new-privileges' "$deployment_template" \
+    "$deployment_template must document executor no-new-privileges"
+  require_grep '--tmpfs /tmp:rw,noexec,nosuid,size=64m' "$deployment_template" \
+    "$deployment_template must document the executor tmpfs requirement"
+  require_grep 'm365-graph-read-executor@sha256:<digest>' "$deployment_template" \
+    "$deployment_template must require a digest-addressed executor image"
+done
 require_grep '^  security-audit:' .github/workflows/ci.yml \
   "CI must include a blocking security-audit job"
 require_grep 'SECURITY_AUDIT_RESULT' .github/workflows/ci.yml \
