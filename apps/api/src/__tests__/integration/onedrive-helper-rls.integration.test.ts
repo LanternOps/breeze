@@ -27,7 +27,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import postgres from 'postgres';
 import {
@@ -48,11 +48,15 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
-const DATABASE_URL = process.env.DATABASE_URL
-  ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
+const DATABASE_URL_APP = process.env.DATABASE_URL_APP
+  ?? 'postgresql://breeze_app:breeze_test@localhost:5433/breeze_test';
 const ONEDRIVE_SERIALIZATION_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-08-01-c-serialize-onedrive-policy-references.sql',
+);
+const FEATURE_REFERENCE_GATE_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-08-01-d-harden-feature-reference-serialization.sql',
 );
 
 interface Deferred<T> {
@@ -68,21 +72,105 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
-async function waitForBackendLockWait(backendPid: number): Promise<void> {
+async function waitForExpectedRowOrFkLock(backendPid: number): Promise<void> {
   for (let attempt = 0; attempt < 1_000; attempt += 1) {
-    const rows = await getTestDb().execute<{ waiting: boolean }>(sql`
-      SELECT EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_stat_activity
-        WHERE pid = ${backendPid}
-          AND state = 'active'
-          AND cardinality(pg_catalog.pg_blocking_pids(pid)) > 0
-      ) AS waiting
+    const [waiting] = await getTestDb().execute<{
+      lockType: string;
+      mode: string;
+      hasBlocker: boolean;
+    }>(sql`
+      SELECT lock.locktype AS "lockType",
+        lock.mode,
+        cardinality(pg_catalog.pg_blocking_pids(lock.pid)) > 0 AS "hasBlocker"
+      FROM pg_catalog.pg_locks lock
+      WHERE lock.pid = ${backendPid}
+        AND NOT lock.granted
+      ORDER BY lock.locktype, lock.mode
+      LIMIT 1
     `);
-    if (rows[0]?.waiting) return;
+    if (waiting) {
+      expect(waiting).toEqual({
+        lockType: 'transactionid',
+        mode: 'ShareLock',
+        hasBlocker: true,
+      });
+      return;
+    }
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  throw new Error(`OneDrive reference backend ${backendPid} never waited on a lock`);
+  throw new Error(`OneDrive reference backend ${backendPid} never waited on a row/FK lock`);
+}
+
+async function waitForExpectedCAdvisoryLock(
+  backendPid: number,
+  sharedIdentities: string[],
+): Promise<void> {
+  const [expected] = await getTestDb().execute<{ identity: string; objectId: string }>(sql`
+    SELECT identity,
+      pg_catalog.hashtext(identity)::oid::text AS "objectId"
+    FROM pg_catalog.jsonb_array_elements_text(${JSON.stringify(sharedIdentities)}::jsonb) identity
+    ORDER BY pg_catalog.hashtext(identity)
+    LIMIT 1
+  `);
+  if (!expected) throw new Error('missing expected OneDrive advisory identity');
+
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    const [waiting] = await getTestDb().execute<{
+      classId: string;
+      objectId: string;
+      objectSubId: number;
+    }>(sql`
+      SELECT lock.classid::text AS "classId",
+        lock.objid::text AS "objectId",
+        lock.objsubid AS "objectSubId"
+      FROM pg_catalog.pg_locks lock
+      WHERE lock.pid = ${backendPid}
+        AND lock.locktype = 'advisory'
+        AND lock.mode = 'ExclusiveLock'
+        AND NOT lock.granted
+      LIMIT 1
+    `);
+    if (waiting) {
+      expect(waiting, `waiter must block on C identity ${expected.identity}`).toEqual({
+        classId: '1000302',
+        objectId: expected.objectId,
+        objectSubId: 2,
+      });
+      return;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`OneDrive reference backend ${backendPid} never waited on a C advisory lock`);
+}
+
+async function dropOneDriveFeatureReferenceGates(): Promise<void> {
+  await getTestDb().execute(sql.raw(`
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_insert
+      ON public.config_policy_onedrive_settings;
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_update
+      ON public.config_policy_onedrive_settings;
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_delete
+      ON public.config_policy_onedrive_settings;
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_insert
+      ON public.config_policy_onedrive_libraries;
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_update
+      ON public.config_policy_onedrive_libraries;
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_delete
+      ON public.config_policy_onedrive_libraries;
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_update
+      ON public.config_policy_feature_links;
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_delete
+      ON public.config_policy_feature_links;
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_update
+      ON public.configuration_policies;
+    DROP TRIGGER IF EXISTS aaa_feature_reference_gate_delete
+      ON public.configuration_policies;
+  `));
+}
+
+async function restoreFeatureReferenceGates(): Promise<void> {
+  const migration = readFileSync(FEATURE_REFERENCE_GATE_MIGRATION_FILE, 'utf8');
+  await getTestDb().execute(sql.raw(migration));
 }
 
 async function captureSqlState(work: () => Promise<unknown>): Promise<string | undefined> {
@@ -547,13 +635,22 @@ describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
 });
 
 describe('OneDrive normalized-reference serialization', () => {
+  beforeEach(async () => {
+    await dropOneDriveFeatureReferenceGates();
+  });
+
+  afterEach(async () => {
+    await restoreFeatureReferenceGates();
+  });
+
   runDb('rejects a policy owner move that waited behind a concurrent settings insert', async () => {
     const fx = await seedFixture();
+    const settingsId = randomUUID();
     const inserted = deferred<void>();
     const releaseInsert = deferred<void>();
     const moverEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
-    const mover = postgres(DATABASE_URL, {
+    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const mover = postgres(DATABASE_URL_APP, {
       max: 1,
       connection: { application_name: `onedrive-policy-mover-${randomUUID()}` },
       onnotice: () => {},
@@ -561,10 +658,17 @@ describe('OneDrive normalized-reference serialization', () => {
     let holderWork: Promise<void> | undefined;
     let moverWork: Promise<string | undefined> | undefined;
     try {
+      const [role] = await holder<{ who: string; bypass: boolean }[]>`
+        SELECT current_user AS who, rolbypassrls AS bypass
+        FROM pg_catalog.pg_roles WHERE rolname = current_user
+      `;
+      expect(role).toEqual({ who: 'breeze_app', bypass: false });
+
       holderWork = holder.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         await tx`
-          INSERT INTO public.config_policy_onedrive_settings (feature_link_id, org_id)
-          VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
+          INSERT INTO public.config_policy_onedrive_settings (id, feature_link_id, org_id)
+          VALUES (${settingsId}, ${fx.featureLinkA.id}, ${fx.orgA.id})
         `;
         inserted.resolve();
         await releaseInsert.promise;
@@ -572,6 +676,7 @@ describe('OneDrive normalized-reference serialization', () => {
       await inserted.promise;
 
       moverWork = captureSqlState(() => mover.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
         `;
@@ -583,7 +688,10 @@ describe('OneDrive normalized-reference serialization', () => {
           WHERE id = ${fx.configPolicyA.id}
         `;
       }));
-      await waitForBackendLockWait(await moverEntered.promise);
+      await waitForExpectedCAdvisoryLock(await moverEntered.promise, [
+        `feature-link:${fx.featureLinkA.id}`,
+        `policy:${fx.configPolicyA.id}`,
+      ]);
       releaseInsert.resolve();
       await holderWork;
 
@@ -605,8 +713,8 @@ describe('OneDrive normalized-reference serialization', () => {
     const moved = deferred<void>();
     const releaseMove = deferred<void>();
     const inserterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
-    const inserter = postgres(DATABASE_URL, {
+    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL_APP, {
       max: 1,
       connection: { application_name: `onedrive-settings-inserter-${randomUUID()}` },
       onnotice: () => {},
@@ -615,6 +723,7 @@ describe('OneDrive normalized-reference serialization', () => {
     let inserterWork: Promise<string | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         await tx`
           UPDATE public.configuration_policies
           SET org_id = ${fx.orgB.id}, updated_at = now()
@@ -626,6 +735,7 @@ describe('OneDrive normalized-reference serialization', () => {
       await moved.promise;
 
       inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
         `;
@@ -636,7 +746,10 @@ describe('OneDrive normalized-reference serialization', () => {
           VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
         `;
       }));
-      await waitForBackendLockWait(await inserterEntered.promise);
+      await waitForExpectedCAdvisoryLock(await inserterEntered.promise, [
+        `feature-link:${fx.featureLinkA.id}`,
+        `policy:${fx.configPolicyA.id}`,
+      ]);
       releaseMove.resolve();
       await holderWork;
 
@@ -658,12 +771,13 @@ describe('OneDrive normalized-reference serialization', () => {
     const inserted = deferred<void>();
     const releaseInsert = deferred<void>();
     const deleterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
-    const deleter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const deleter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
     let deleterWork: Promise<string | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         await tx`
           INSERT INTO public.config_policy_onedrive_settings (feature_link_id, org_id)
           VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
@@ -674,6 +788,7 @@ describe('OneDrive normalized-reference serialization', () => {
       await inserted.promise;
 
       deleterWork = captureSqlState(() => deleter.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
         `;
@@ -684,7 +799,7 @@ describe('OneDrive normalized-reference serialization', () => {
           WHERE id = ${fx.featureLinkA.id}
         `;
       }));
-      await waitForBackendLockWait(await deleterEntered.promise);
+      await waitForExpectedRowOrFkLock(await deleterEntered.promise);
       releaseInsert.resolve();
       await holderWork;
 
@@ -706,12 +821,13 @@ describe('OneDrive normalized-reference serialization', () => {
     const deleted = deferred<void>();
     const releaseDelete = deferred<void>();
     const inserterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
-    const inserter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
     let inserterWork: Promise<string | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         await tx`
           DELETE FROM public.config_policy_feature_links
           WHERE id = ${fx.featureLinkA.id}
@@ -722,6 +838,7 @@ describe('OneDrive normalized-reference serialization', () => {
       await deleted.promise;
 
       inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
         `;
@@ -732,7 +849,7 @@ describe('OneDrive normalized-reference serialization', () => {
           VALUES (${fx.featureLinkA.id}, ${fx.orgA.id})
         `;
       }));
-      await waitForBackendLockWait(await inserterEntered.promise);
+      await waitForExpectedRowOrFkLock(await inserterEntered.promise);
       releaseDelete.resolve();
       await holderWork;
 
@@ -755,12 +872,13 @@ describe('OneDrive normalized-reference serialization', () => {
     const inserted = deferred<void>();
     const releaseInsert = deferred<void>();
     const moverEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
-    const mover = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const mover = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
     let moverWork: Promise<string | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         await tx`
           INSERT INTO public.config_policy_onedrive_libraries
             (settings_id, org_id, library_id, display_name, targeting_mode)
@@ -771,6 +889,7 @@ describe('OneDrive normalized-reference serialization', () => {
       });
       await inserted.promise;
       moverWork = captureSqlState(() => mover.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
         `;
@@ -782,7 +901,7 @@ describe('OneDrive normalized-reference serialization', () => {
           WHERE id = ${settings.id}
         `;
       }));
-      await waitForBackendLockWait(await moverEntered.promise);
+      await waitForExpectedRowOrFkLock(await moverEntered.promise);
       releaseInsert.resolve();
       await holderWork;
       expect(await moverWork).toBe('23503');
@@ -808,12 +927,13 @@ describe('OneDrive normalized-reference serialization', () => {
     const moved = deferred<void>();
     const releaseMove = deferred<void>();
     const inserterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
-    const inserter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
     let inserterWork: Promise<string | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         await tx`
           UPDATE public.config_policy_onedrive_settings
           SET feature_link_id = ${fx.featureLinkB.id}, org_id = ${fx.orgB.id}, updated_at = now()
@@ -824,6 +944,7 @@ describe('OneDrive normalized-reference serialization', () => {
       });
       await moved.promise;
       inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
         `;
@@ -835,7 +956,7 @@ describe('OneDrive normalized-reference serialization', () => {
           VALUES (${settings.id}, ${fx.orgA.id}, 'race-library-b', 'Race B', 'everyone')
         `;
       }));
-      await waitForBackendLockWait(await inserterEntered.promise);
+      await waitForExpectedRowOrFkLock(await inserterEntered.promise);
       releaseMove.resolve();
       await holderWork;
       expect(await inserterWork).toBe('23503');
@@ -857,12 +978,13 @@ describe('OneDrive normalized-reference serialization', () => {
     const inserted = deferred<void>();
     const releaseInsert = deferred<void>();
     const deleterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
-    const deleter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const deleter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
     let deleterWork: Promise<string | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         await tx`
           INSERT INTO public.config_policy_onedrive_libraries
             (settings_id, org_id, library_id, display_name, targeting_mode)
@@ -874,6 +996,7 @@ describe('OneDrive normalized-reference serialization', () => {
       await inserted.promise;
 
       deleterWork = captureSqlState(() => deleter.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
         `;
@@ -884,7 +1007,7 @@ describe('OneDrive normalized-reference serialization', () => {
           WHERE id = ${settings.id}
         `;
       }));
-      await waitForBackendLockWait(await deleterEntered.promise);
+      await waitForExpectedRowOrFkLock(await deleterEntered.promise);
       releaseInsert.resolve();
       await holderWork;
 
@@ -913,12 +1036,13 @@ describe('OneDrive normalized-reference serialization', () => {
     const deleted = deferred<void>();
     const releaseDelete = deferred<void>();
     const inserterEntered = deferred<number>();
-    const holder = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
-    const inserter = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
+    const holder = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
+    const inserter = postgres(DATABASE_URL_APP, { max: 1, onnotice: () => {} });
     let holderWork: Promise<void> | undefined;
     let inserterWork: Promise<string | undefined> | undefined;
     try {
       holderWork = holder.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         await tx`
           DELETE FROM public.config_policy_onedrive_settings
           WHERE id = ${settings.id}
@@ -929,6 +1053,7 @@ describe('OneDrive normalized-reference serialization', () => {
       await deleted.promise;
 
       inserterWork = captureSqlState(() => inserter.begin(async (tx) => {
+        await tx`SELECT pg_catalog.set_config('breeze.scope', 'system', true)`;
         const [backend] = await tx<{ pid: number }[]>`
           SELECT pg_catalog.pg_backend_pid() AS pid
         `;
@@ -940,7 +1065,7 @@ describe('OneDrive normalized-reference serialization', () => {
           VALUES (${settings.id}, ${fx.orgA.id}, 'delete-race-b', 'Delete Race B', 'everyone')
         `;
       }));
-      await waitForBackendLockWait(await inserterEntered.promise);
+      await waitForExpectedRowOrFkLock(await inserterEntered.promise);
       releaseDelete.resolve();
       await holderWork;
 
@@ -1018,37 +1143,154 @@ describe('OneDrive normalized-reference serialization', () => {
     await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
 
-    const [catalog] = await admin.execute<{
-      triggerCount: number;
-      rowTriggerCount: number;
-      missingTransitionCount: number;
-      legacyCount: number;
-    }>(sql`
-      SELECT
-        count(*) FILTER (WHERE trigger.tgname LIKE 'a_onedrive_%')::integer AS "triggerCount",
-        count(*) FILTER (
-          WHERE trigger.tgname LIKE 'a_onedrive_%' AND (trigger.tgtype & 1) = 1
-        )::integer AS "rowTriggerCount",
-        count(*) FILTER (
-          WHERE trigger.tgname LIKE 'a_onedrive_%'
-            AND trigger.tgoldtable IS NULL AND trigger.tgnewtable IS NULL
-        )::integer AS "missingTransitionCount",
-        count(*) FILTER (WHERE trigger.tgname IN (
+    interface OneDriveTriggerTuple extends Record<string, unknown> {
+      relation: string;
+      name: string;
+      operation: 'DELETE' | 'INSERT' | 'UPDATE';
+      timing: 'AFTER' | 'BEFORE';
+      level: 'ROW' | 'STATEMENT';
+      oldTransitionTable: string | null;
+      newTransitionTable: string | null;
+      helper: string;
+    }
+    const triggers = await admin.execute<OneDriveTriggerTuple>(sql`
+      SELECT relation.relname AS relation,
+        trigger.tgname AS name,
+        CASE
+          WHEN (trigger.tgtype & 4) = 4 THEN 'INSERT'
+          WHEN (trigger.tgtype & 8) = 8 THEN 'DELETE'
+          ELSE 'UPDATE'
+        END AS operation,
+        CASE WHEN (trigger.tgtype & 2) = 2 THEN 'BEFORE' ELSE 'AFTER' END AS timing,
+        CASE WHEN (trigger.tgtype & 1) = 1 THEN 'ROW' ELSE 'STATEMENT' END AS level,
+        trigger.tgoldtable AS "oldTransitionTable",
+        trigger.tgnewtable AS "newTransitionTable",
+        proc.proname AS helper
+      FROM pg_catalog.pg_trigger trigger
+      JOIN pg_catalog.pg_class relation ON relation.oid = trigger.tgrelid
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+      JOIN pg_catalog.pg_proc proc ON proc.oid = trigger.tgfoid
+      WHERE namespace.nspname = 'public'
+        AND trigger.tgname LIKE 'a_onedrive_%'
+        AND NOT trigger.tgisinternal
+      ORDER BY relation.relname, trigger.tgname
+    `);
+    expect(triggers).toEqual([
+      {
+        relation: 'config_policy_feature_links',
+        name: 'a_onedrive_reference_link_delete',
+        operation: 'DELETE',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: 'old_rows',
+        newTransitionTable: null,
+        helper: 'breeze_revalidate_onedrive_parent_statements',
+      },
+      {
+        relation: 'config_policy_feature_links',
+        name: 'a_onedrive_reference_link_update',
+        operation: 'UPDATE',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: 'old_rows',
+        newTransitionTable: 'new_rows',
+        helper: 'breeze_revalidate_onedrive_parent_statements',
+      },
+      {
+        relation: 'config_policy_onedrive_libraries',
+        name: 'a_onedrive_library_delete',
+        operation: 'DELETE',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: 'old_rows',
+        newTransitionTable: null,
+        helper: 'breeze_enforce_onedrive_library_statements',
+      },
+      {
+        relation: 'config_policy_onedrive_libraries',
+        name: 'a_onedrive_library_insert',
+        operation: 'INSERT',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: null,
+        newTransitionTable: 'new_rows',
+        helper: 'breeze_enforce_onedrive_library_statements',
+      },
+      {
+        relation: 'config_policy_onedrive_libraries',
+        name: 'a_onedrive_library_update',
+        operation: 'UPDATE',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: 'old_rows',
+        newTransitionTable: 'new_rows',
+        helper: 'breeze_enforce_onedrive_library_statements',
+      },
+      {
+        relation: 'config_policy_onedrive_settings',
+        name: 'a_onedrive_settings_delete',
+        operation: 'DELETE',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: 'old_rows',
+        newTransitionTable: null,
+        helper: 'breeze_enforce_onedrive_settings_statements',
+      },
+      {
+        relation: 'config_policy_onedrive_settings',
+        name: 'a_onedrive_settings_insert',
+        operation: 'INSERT',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: null,
+        newTransitionTable: 'new_rows',
+        helper: 'breeze_enforce_onedrive_settings_statements',
+      },
+      {
+        relation: 'config_policy_onedrive_settings',
+        name: 'a_onedrive_settings_update',
+        operation: 'UPDATE',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: 'old_rows',
+        newTransitionTable: 'new_rows',
+        helper: 'breeze_enforce_onedrive_settings_statements',
+      },
+      {
+        relation: 'configuration_policies',
+        name: 'a_onedrive_reference_policy_delete',
+        operation: 'DELETE',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: 'old_rows',
+        newTransitionTable: null,
+        helper: 'breeze_revalidate_onedrive_parent_statements',
+      },
+      {
+        relation: 'configuration_policies',
+        name: 'a_onedrive_reference_policy_update',
+        operation: 'UPDATE',
+        timing: 'AFTER',
+        level: 'STATEMENT',
+        oldTransitionTable: 'old_rows',
+        newTransitionTable: 'new_rows',
+        helper: 'breeze_revalidate_onedrive_parent_statements',
+      },
+    ] satisfies OneDriveTriggerTuple[]);
+
+    const [legacy] = await admin.execute<{ count: number }>(sql`
+      SELECT count(*)::integer AS count
+      FROM pg_catalog.pg_trigger trigger
+      WHERE NOT trigger.tgisinternal
+        AND trigger.tgname IN (
           'config_policy_onedrive_settings_tenant_integrity',
           'config_policy_onedrive_libraries_tenant_integrity',
           'config_policy_onedrive_settings_link_reference_update',
           'config_policy_onedrive_settings_policy_owner_update',
           'config_policy_onedrive_libraries_settings_owner_update'
-        ))::integer AS "legacyCount"
-      FROM pg_catalog.pg_trigger trigger
-      WHERE NOT trigger.tgisinternal
+        )
     `);
-    expect(catalog).toEqual({
-      triggerCount: 10,
-      rowTriggerCount: 0,
-      missingTransitionCount: 0,
-      legacyCount: 0,
-    });
+    expect(legacy?.count).toBe(0);
 
     const helpers = await admin.execute<{
       name: string;
