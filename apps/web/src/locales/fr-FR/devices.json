@@ -18,6 +18,8 @@
     "type_network": "Réseau",
     "type_scheduled_task": "Tâche planifiée",
     "type_user_account": "Compte utilisateur",
+    "type_hardware": "Matériel",
+    "type_os_version": "Version du SE",
     "action_added": "Ajouté",
     "action_removed": "Supprimé",
     "action_modified": "Modifié",

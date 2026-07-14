@@ -18,6 +18,8 @@
     "type_network": "Rede",
     "type_scheduled_task": "Tarefa agendada",
     "type_user_account": "Conta de usuário",
+    "type_hardware": "Hardware",
+    "type_os_version": "Versão do SO",
     "action_added": "Adicionado",
     "action_removed": "Removido",
     "action_modified": "Modificado",

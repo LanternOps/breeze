@@ -39,6 +39,8 @@ const CHANGE_TYPES = [
   "network",
   "scheduled_task",
   "user_account",
+  "hardware",
+  "os_version",
 ] as const;
 const CHANGE_ACTIONS = ["added", "removed", "modified", "updated"] as const;
 const PAGE_LIMIT = 100;
@@ -72,6 +74,10 @@ function typeLabel(t: (key: string) => string, value: string): string {
       return t("deviceChangeHistoryTab.type_scheduled_task");
     case "user_account":
       return t("deviceChangeHistoryTab.type_user_account");
+    case "hardware":
+      return t("deviceChangeHistoryTab.type_hardware");
+    case "os_version":
+      return t("deviceChangeHistoryTab.type_os_version");
     default:
       return value;
   }
@@ -106,6 +112,10 @@ function badgeClassForType(value: string): string {
       return "bg-indigo-500/10 text-indigo-600";
     case "user_account":
       return "bg-emerald-500/10 text-emerald-600";
+    case "hardware":
+      return "bg-orange-500/10 text-orange-600";
+    case "os_version":
+      return "bg-sky-500/10 text-sky-600";
     default:
       return "bg-muted text-muted-foreground";
   }

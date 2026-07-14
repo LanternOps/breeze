@@ -18,6 +18,8 @@
     "type_network": "Network",
     "type_scheduled_task": "Scheduled Task",
     "type_user_account": "User Account",
+    "type_hardware": "Hardware",
+    "type_os_version": "OS Version",
     "action_added": "Added",
     "action_removed": "Removed",
     "action_modified": "Modified",

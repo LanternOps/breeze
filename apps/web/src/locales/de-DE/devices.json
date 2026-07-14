@@ -18,6 +18,8 @@
     "type_network": "Netzwerk",
     "type_scheduled_task": "Geplante Aufgabe",
     "type_user_account": "Benutzerkonto",
+    "type_hardware": "Hardware",
+    "type_os_version": "Betriebssystemversion",
     "action_added": "Hinzugefügt",
     "action_removed": "Entfernt",
     "action_modified": "Geändert",

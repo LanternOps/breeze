@@ -18,6 +18,8 @@
     "type_network": "Red",
     "type_scheduled_task": "Tarea programada",
     "type_user_account": "Cuenta de usuario",
+    "type_hardware": "Hardware",
+    "type_os_version": "Versión del SO",
     "action_added": "Añadido",
     "action_removed": "Eliminado",
     "action_modified": "Modificado",

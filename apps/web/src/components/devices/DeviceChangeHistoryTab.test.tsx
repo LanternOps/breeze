@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -155,5 +155,13 @@ describe('DeviceChangeHistoryTab', () => {
     expect(screen.queryByText('StaleApp')).toBeNull();
     expect(screen.getByText('Edge')).toBeInTheDocument();
     expect(screen.queryByText('Google Chrome')).toBeNull();
+  });
+
+  it('(i) offers hardware and os_version type filters', async () => {
+    fetchWithAuthMock.mockResolvedValue(page([]));
+    render(<DeviceChangeHistoryTab deviceId="dev-1" />);
+    const select = await screen.findByTestId('change-history-type-filter');
+    expect(within(select).getByText('Hardware')).toBeInTheDocument();
+    expect(within(select).getByText('OS Version')).toBeInTheDocument();
   });
 });
