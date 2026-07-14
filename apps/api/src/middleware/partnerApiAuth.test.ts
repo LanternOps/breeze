@@ -117,6 +117,7 @@ vi.mock('../services/clientIp', () => ({
 }));
 
 vi.mock('../services/auditEvents', () => ({
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeAuditEventAsync: mocks.writeAuditEvent,
 }));
 
@@ -127,6 +128,7 @@ import {
   requirePartnerApiScope,
   type PartnerApiPrincipalContext,
 } from './partnerApiAuth';
+import { partnerExportAuditMiddleware } from '../routes/partnerApi/audit';
 
 const RAW_KEY = `brz_sp_${'A'.repeat(43)}`;
 const KEY_ID = '11111111-1111-4111-8111-111111111111';
@@ -452,6 +454,44 @@ describe('partnerApiAuthMiddleware', () => {
     expect(auditJson).not.toContain(createHash('sha256').update(RAW_KEY).digest('hex'));
   });
 
+  it('writes exactly one managed export audit after the partner context closes', async () => {
+    mockBootstrap();
+    let auditInsidePartnerContext: boolean | undefined;
+    mocks.writeAuditEvent.mockImplementation(() => {
+      auditInsidePartnerContext = mocks.insidePartnerContext;
+    });
+    const app = new Hono();
+    app.use('*', partnerExportAuditMiddleware);
+    app.use('*', partnerApiAuthMiddleware);
+    app.get('/api/v1/partner-api/organizations', (c) => c.json({
+      schemaVersion: '1',
+      snapshotAt: '2026-07-14T12:00:00.000Z',
+      data: [],
+      nextCursor: null,
+      hasMore: false,
+    }));
+
+    const response = await app.request('/api/v1/partner-api/organizations', {
+      headers: { 'X-API-Key': RAW_KEY },
+    });
+
+    expect(response.status).toBe(200);
+    expect(auditInsidePartnerContext).toBe(false);
+    expect(mocks.writeAuditEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'partner_api.export',
+        result: 'success',
+        details: expect.objectContaining({
+          resource: 'organizations',
+          recordCount: 0,
+          httpStatus: 200,
+        }),
+      }),
+    );
+  });
+
   it('awaits both last-used and audit completion after the held request context closes', async () => {
     mockBootstrap();
     const update = deferred<void>();
@@ -639,6 +679,12 @@ describe('partnerApiAuthMiddleware', () => {
     );
     expect(withResolvedDbAccessContext).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
+    expect(context.get('partnerApiPrincipal')).toMatchObject({
+      servicePrincipalId: PRINCIPAL_ID,
+      keyId: KEY_ID,
+      partnerId: PARTNER_ID,
+      accessibleOrgIds: [],
+    });
   });
 
   it('fails closed when the principal Redis limiter rejects', async () => {

@@ -169,7 +169,7 @@ async function recordMachineUse(
   result: 'success' | 'failure',
   status: number,
 ): Promise<void> {
-  await Promise.all([
+  const work = [
     settleBookkeeping(
       () => runOutsideDbContext(() =>
         withSystemDbAccessContext(async () => {
@@ -181,6 +181,11 @@ async function recordMachineUse(
       ),
       'Failed to update partner API key usage timestamp',
     ),
+  ];
+  // The outer partner-export audit wrapper records the one canonical request
+  // event after this middleware releases its RLS context. Preserve the legacy
+  // machine-use event for standalone/direct middleware consumers only.
+  if (!c.get('partnerExportAuditManaged')) work.push(
     settleBookkeeping(
       () => writeAuditEventAsync(c, {
         orgId: null,
@@ -201,7 +206,8 @@ async function recordMachineUse(
       }),
       'Failed to write partner API machine-use audit',
     ),
-  ]);
+  );
+  await Promise.all(work);
 }
 
 function downstreamStatus(c: Context, thrown: unknown): number {
@@ -231,6 +237,11 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
 
   const trustedClientIp = getTrustedClientIpOrUndefined(c);
   const bootstrap = await bootstrapCredential(hashPartnerApiKey(rawKey), trustedClientIp);
+
+  // Expose only the already-authenticated IDs before rate limiting so the
+  // outer audit wrapper can attribute a 429. No downstream handler runs until
+  // organization discovery replaces this with the complete RLS principal.
+  c.set('partnerApiPrincipal', { ...bootstrap, accessibleOrgIds: [] });
 
   // Redis work must happen after the short system transaction has closed.
   const rateCheck = await rateLimiter(
