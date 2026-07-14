@@ -162,38 +162,68 @@ function nonEmptyString(value: unknown): string | null {
   return null;
 }
 
-function commitmentIdFromRecord(record: JsonRecord, depth = 0): string | null {
+function collectCommitmentIds(
+  record: JsonRecord,
+  ids: Set<string>,
+  options: { allowGenericId: boolean; allowEnvelopes: boolean },
+  seen = new Set<JsonRecord>(),
+): void {
+  if (seen.has(record)) return;
+  seen.add(record);
+
   for (const key of COMMITMENT_ID_KEYS) {
     const id = nonEmptyString(record[key]);
-    if (id) return id;
+    if (id) ids.add(id);
+  }
+  if (options.allowGenericId) {
+    const id = nonEmptyString(record.id);
+    if (id) ids.add(id);
   }
 
   for (const key of COMMITMENT_CONTAINERS) {
     const nested = asRecord(record[key]);
     if (!nested) continue;
-    const id = nonEmptyString(nested.id) ?? commitmentIdFromRecord(nested, depth + 1);
-    if (id) return id;
+    collectCommitmentIds(nested, ids, { allowGenericId: true, allowEnvelopes: false }, seen);
   }
 
   // Some Pax8 payloads wrap the subscription details one level below the
   // response item. Restrict recursion to named envelopes so product/company
   // IDs can never be mistaken for a commitment ID.
-  if (depth === 0) {
+  if (options.allowEnvelopes) {
     for (const key of ['subscription', 'details'] as const) {
       const nested = asRecord(record[key]);
       if (!nested) continue;
-      const id = commitmentIdFromRecord(nested, depth + 1);
-      if (id) return id;
+      collectCommitmentIds(nested, ids, { allowGenericId: false, allowEnvelopes: false }, seen);
     }
   }
-  return null;
+}
+
+function activeCommitmentIds(raw: unknown): string[] {
+  const record = asRecord(raw);
+  if (!record) return [];
+  const ids = new Set<string>();
+  collectCommitmentIds(record, ids, { allowGenericId: false, allowEnvelopes: true });
+  return [...ids];
 }
 
 function activeCommitment(raw: unknown, commitments: Pax8Commitment[]): Pax8Commitment {
-  const activeId = asRecord(raw) ? commitmentIdFromRecord(raw as JsonRecord) : null;
+  const activeIds = activeCommitmentIds(raw);
+  if (activeIds.length > 1) {
+    throw new Pax8OrderError(
+      'The Pax8 subscription snapshot contains ambiguous active commitment identifiers.',
+      422,
+    );
+  }
+  const [activeId] = activeIds;
   if (activeId) {
-    const match = commitments.find((commitment) => commitment.id === activeId);
-    if (match) return match;
+    const matches = commitments.filter((commitment) => commitment.id === activeId);
+    if (matches.length === 1) return matches[0]!;
+    if (matches.length > 1) {
+      throw new Pax8OrderError(
+        `Pax8 returned ambiguous dependency entries for the active commitment (${activeId}).`,
+        422,
+      );
+    }
     throw new Pax8OrderError(
       `The active Pax8 commitment (${activeId}) was not present in the product dependencies. Refresh Pax8 data before ordering.`,
       422,
@@ -356,27 +386,40 @@ export async function addOrderLine(input: AddOrderLineInput): Promise<Pax8OrderL
     }
   }
 
-  const [created] = await withPartnerDbContext(input.partnerId, () => db
-    .insert(pax8OrderLines)
-    .values({
-      orderId: order.id,
-      partnerId: order.partnerId,
-      orgId: order.orgId,
-      action: input.action,
-      submitState: 'pending',
-      pax8ProductId: input.pax8ProductId,
-      catalogItemId: input.catalogItemId,
-      billingTerm: input.billingTerm,
-      commitmentTermId: input.commitmentTermId,
-      quantity: input.quantity,
-      provisioningDetails: input.provisioningDetails ?? [],
-      targetSubscriptionId: input.targetSubscriptionId,
-      cancelDate: input.cancelDate,
-      contractLineId: input.contractLineId,
-      sourceQuoteLineId: input.sourceQuoteLineId,
-      sortOrder: input.sortOrder ?? 0,
-    })
-    .returning());
+  const [created] = await withPartnerDbContext(input.partnerId, async () => {
+    // The context is a transaction. Lock and re-check immediately before the
+    // insert so a submit transition cannot race the earlier validation/HTTP.
+    const [lockedOrder] = await db
+      .select()
+      .from(pax8Orders)
+      .where(and(eq(pax8Orders.partnerId, input.partnerId), eq(pax8Orders.id, input.orderId)))
+      .for('update')
+      .limit(1);
+    if (!lockedOrder) throw new Pax8OrderError('Pax8 order not found.', 404);
+    requireMutableOrder(lockedOrder);
+
+    return db
+      .insert(pax8OrderLines)
+      .values({
+        orderId: lockedOrder.id,
+        partnerId: lockedOrder.partnerId,
+        orgId: lockedOrder.orgId,
+        action: input.action,
+        submitState: 'pending',
+        pax8ProductId: input.pax8ProductId,
+        catalogItemId: input.catalogItemId,
+        billingTerm: input.billingTerm,
+        commitmentTermId: input.commitmentTermId,
+        quantity: input.quantity,
+        provisioningDetails: input.provisioningDetails ?? [],
+        targetSubscriptionId: input.targetSubscriptionId,
+        cancelDate: input.cancelDate,
+        contractLineId: input.contractLineId,
+        sourceQuoteLineId: input.sourceQuoteLineId,
+        sortOrder: input.sortOrder ?? 0,
+      })
+      .returning();
+  });
   if (!created) throw new Pax8OrderError('The Pax8 order line could not be created.', 409);
   return created;
 }

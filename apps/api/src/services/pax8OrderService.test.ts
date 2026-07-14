@@ -91,6 +91,7 @@ function queryChain(rows: unknown[]) {
   const chain: Record<string, unknown> = {};
   chain.from = vi.fn(() => chain);
   chain.where = vi.fn(() => chain);
+  chain.for = vi.fn(() => chain);
   chain.limit = vi.fn(async () => rows);
   chain.then = (resolve: (value: unknown[]) => unknown, reject: (error: unknown) => unknown) =>
     Promise.resolve(rows).then(resolve, reject);
@@ -120,7 +121,9 @@ function queryChainByPredicate(rowsWithoutDirectFilter: unknown[], rowsWithDirec
 }
 
 function selectRowsOnce(rows: unknown[]) {
-  mocks.db.select.mockReturnValueOnce(queryChain(rows));
+  const chain = queryChain(rows);
+  mocks.db.select.mockReturnValueOnce(chain);
+  return chain;
 }
 
 function mockCompanyMappingLookup(mapping: Record<string, unknown> | null) {
@@ -128,7 +131,7 @@ function mockCompanyMappingLookup(mapping: Record<string, unknown> | null) {
 }
 
 function mockOrder(overrides: Record<string, unknown> = {}) {
-  selectRowsOnce([{ ...baseOrder, ...overrides }]);
+  return selectRowsOnce([{ ...baseOrder, ...overrides }]);
 }
 
 function mockSubscriptionSnapshot(overrides: Record<string, unknown> = {}) {
@@ -358,6 +361,49 @@ describe('addOrderLine', () => {
     });
   });
 
+  it('fails closed when the snapshot contains conflicting active commitment ids', async () => {
+    mockOrder();
+    mockSubscriptionSnapshot({
+      raw: {
+        commitmentTermId: 'allowed',
+        commitment: { id: 'blocked' },
+      },
+    });
+    mockDependencies({
+      commitments: [
+        { id: 'allowed', allowForQuantityDecrease: true, allowForQuantityIncrease: true, allowForEarlyCancellation: true },
+        { id: 'blocked', allowForQuantityDecrease: false, allowForQuantityIncrease: false, allowForEarlyCancellation: false },
+      ],
+    });
+    insertReturningOnce([{ id: 'wrongly-authorized-line' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'change_quantity',
+      targetSubscriptionId: 'sub-1', quantity: '5.00',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('ambiguous') });
+
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when duplicate dependency entries match the active commitment id', async () => {
+    mockOrder();
+    mockSubscriptionSnapshot({ raw: { commitmentTermId: 'c1' } });
+    mockDependencies({
+      commitments: [
+        { id: 'c1', allowForQuantityDecrease: true, allowForQuantityIncrease: true, allowForEarlyCancellation: true },
+        { id: 'c1', allowForQuantityDecrease: false, allowForQuantityIncrease: false, allowForEarlyCancellation: false },
+      ],
+    });
+    insertReturningOnce([{ id: 'wrongly-authorized-line' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', action: 'change_quantity',
+      targetSubscriptionId: 'sub-1', quantity: '5.00',
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('ambiguous') });
+
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+  });
+
   it('rejects a line targeting a subscription in a different org', async () => {
     mockOrder();
     mockSubscriptionSnapshot({ orgId: 'OTHER-ORG' });
@@ -461,6 +507,7 @@ describe('addOrderLine', () => {
       contextExitsAtHttp = mocks.contextExits;
       return new Promise((resolve) => { resolveDependencies = resolve; });
     });
+    mockOrder();
     insertReturningOnce([{ id: 'line-1', orderId: 'ord-1', partnerId: 'p1', orgId: 'o1', action: 'change_quantity' }]);
 
     const pending = addOrderLine({
@@ -568,6 +615,7 @@ describe('addOrderLine', () => {
 
   it('inserts a valid new subscription line with order tenancy fields', async () => {
     mockOrder({ status: 'awaiting_details' });
+    mockOrder({ status: 'awaiting_details' });
     const insert = insertReturningOnce([{
       id: 'line-1',
       orderId: 'ord-1',
@@ -594,6 +642,24 @@ describe('addOrderLine', () => {
       action: 'new_subscription',
       submitState: 'pending',
     }));
+  });
+
+  it('rejects when the order becomes immutable before the final insert', async () => {
+    mockOrder({ status: 'draft' });
+    const finalOrderQuery = mockOrder({ status: 'submitting' });
+    insertReturningOnce([{ id: 'wrongly-inserted-line' }]);
+
+    await expect(addOrderLine({
+      partnerId: 'p1',
+      orderId: 'ord-1',
+      action: 'new_subscription',
+      pax8ProductId: 'prod-1',
+      billingTerm: 'Monthly',
+      quantity: '1.00',
+    })).rejects.toMatchObject({ status: 409 });
+
+    expect(mocks.db.insert).not.toHaveBeenCalled();
+    expect(finalOrderQuery.for).toHaveBeenCalledWith('update');
   });
 });
 
