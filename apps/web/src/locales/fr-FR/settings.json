@@ -2428,6 +2428,12 @@
     "title": "Abonnements Pax8", "description": "Vérifiez les quantités facturables, préparez les changements et envoyez les commandes Pax8.",
     "actions": { "newOrder": "Nouvelle commande", "retry": "Réessayer" }, "states": { "loadingProduct": "Chargement des exigences du produit…" },
     "products": { "emptyReason": "Associez des produits actifs du catalogue à Pax8 avant de commander." },
+    "enums": {
+      "orderStatus": { "draft": "Brouillon", "awaitingDetails": "En attente de détails", "ready": "Prête", "submitting": "Envoi en cours", "completed": "Terminée", "partiallyFailed": "Échec partiel", "failed": "Échec", "cancelled": "Annulée", "needsReconcile": "Rapprochement requis" },
+      "lineAction": { "newSubscription": "Nouvel abonnement", "changeQuantity": "Modifier la quantité", "cancel": "Résilier l’abonnement" },
+      "submitState": { "pending": "En attente", "inFlight": "En cours", "succeeded": "Réussie", "failed": "Échec", "needsReconcile": "Rapprochement requis" },
+      "billingTerm": { "monthly": "Mensuelle", "annual": "Annuelle", "twoYear": "2 ans", "threeYear": "3 ans", "oneTime": "Paiement unique", "trial": "Essai", "activation": "Mise en service" }
+    },
     "mapping": {
       "title": "Association de l’entreprise", "company": "Entreprise Pax8", "choose": "Choisir une entreprise", "map": "Associer l’entreprise",
       "empty": "Associez cette organisation à son entreprise Pax8 avant de commander.", "noIntegration": "Connectez et synchronisez d’abord Pax8 dans les intégrations partenaire.",

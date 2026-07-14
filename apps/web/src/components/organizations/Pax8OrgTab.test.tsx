@@ -1,6 +1,6 @@
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Pax8OrgTab, { Pax8SubscriptionTable } from './Pax8OrgTab';
 import {
@@ -14,6 +14,7 @@ import {
   preflightPax8Order,
   submitPax8Order,
 } from '../../lib/api/pax8Orders';
+import { i18n, loadLocale } from '../../lib/i18n';
 
 vi.mock('../../lib/api/pax8Orders', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/api/pax8Orders')>();
@@ -51,9 +52,14 @@ const order = (id: string, orgId = 'org-1') => ({
   updatedAt: '2026-07-14T00:00:00Z',
 } as const);
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   window.location.hash = '#pax8';
+  await i18n.changeLanguage('en');
+});
+
+afterEach(async () => {
+  await act(() => i18n.changeLanguage('en'));
 });
 
 describe('Pax8 subscription ledger display', () => {
@@ -181,7 +187,10 @@ describe('Pax8 organization mapping state', () => {
     await userEvent.type(quantity, '6');
     await userEvent.click(screen.getByRole('button', { name: /stage change/i }));
 
-    await vi.waitFor(() => expect(addPax8OrderLine).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(addPax8OrderLine).toHaveBeenCalledWith(
+      '44444444-4444-4444-8444-444444444444',
+      { action: 'change_quantity', targetSubscriptionId: 'sub-1', quantity: '6' },
+    ));
   });
 
   it('fails closed when the snapshot active commitment forbids the requested action', async () => {
@@ -211,6 +220,38 @@ describe('Pax8 organization mapping state', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/does not allow quantity increases/i);
     expect(addPax8OrderLine).not.toHaveBeenCalled();
+  });
+
+  it('stages cancellation by subscription identity without sending tenant linkage', async () => {
+    vi.mocked(listPax8Companies).mockImplementation(() => response({ data: [{
+      pax8CompanyId: 'company-1', pax8CompanyName: 'Acme', status: 'Active', mappedOrgId: 'org-1',
+      mappedOrgName: 'Acme', ignored: false, lastSeenAt: null, orderReady: true,
+      primaryAdminReady: true, primaryBillingReady: true, primaryTechnicalReady: true,
+    }], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Subscriptions).mockImplementation(() => response({ data: [{
+      id: 'snapshot-1', pax8SubscriptionId: 'sub-1', productId: 'prod-1', productName: 'Microsoft 365',
+      status: 'Active', breezeQuantity: '5.00', quantity: '5.00', quantityKnown: true,
+      activeCommitmentId: 'active', activeCommitmentAmbiguous: false,
+      lastSeenAt: '2026-07-14T00:00:00Z', contractLineId: 'contract-line-1',
+    }], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Orders).mockImplementation(() => response({ data: [order('44444444-4444-4444-8444-444444444444')] }));
+    vi.mocked(listPax8Products).mockImplementation(() => response({ data: [{
+      pax8ProductId: 'prod-1', catalogItemId: 'cat-1', catalogName: 'Microsoft 365',
+    }] }));
+    vi.mocked(getProductDependencies).mockImplementation(() => response({ data: { commitments: [{
+      id: 'active', term: 'Monthly', allowForQuantityIncrease: true, allowForQuantityDecrease: true,
+      allowForEarlyCancellation: true, cancellationFeeApplied: false,
+    }] } }));
+    vi.mocked(addPax8OrderLine).mockImplementation(() => response({ data: { id: 'line-1' } }));
+
+    render(<Pax8OrgTab orgId="org-1" />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Stage cancellation' }));
+
+    await vi.waitFor(() => expect(addPax8OrderLine).toHaveBeenCalledWith(
+      '44444444-4444-4444-8444-444444444444',
+      { action: 'cancel', targetSubscriptionId: 'sub-1' },
+    ));
   });
 
   it('fails closed for a deep-linked order belonging to another organization', async () => {
@@ -263,5 +304,19 @@ describe('Pax8 organization mapping state', () => {
     });
     expect(await screen.findByTestId('pax8-order-builder')).toBeInTheDocument();
     expect(getPax8Order).toHaveBeenLastCalledWith(secondId);
+  });
+
+  it('localizes order-history status instead of displaying the wire enum', async () => {
+    await loadLocale('es-419');
+    await act(() => i18n.changeLanguage('es-419'));
+    vi.mocked(listPax8Companies).mockImplementation(() => response({ data: [], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Subscriptions).mockImplementation(() => response({ data: [], integrationId: 'integration-1' }));
+    vi.mocked(listPax8Orders).mockImplementation(() => response({ data: [order('44444444-4444-4444-8444-444444444444')] }));
+    vi.mocked(listPax8Products).mockImplementation(() => response({ data: [] }));
+
+    render(<Pax8OrgTab orgId="org-1" />);
+
+    expect(await screen.findByText('Borrador')).toBeInTheDocument();
+    expect(screen.queryByText('draft')).not.toBeInTheDocument();
   });
 });

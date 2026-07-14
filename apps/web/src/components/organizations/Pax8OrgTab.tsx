@@ -27,7 +27,7 @@ import {
   type Pax8Subscription,
 } from '../../lib/api/pax8Orders';
 import Pax8OrderBuilder from './Pax8OrderBuilder';
-import { displayQuantity } from './pax8OrderUi';
+import { PAX8_ORDER_STATUS_I18N_KEYS, displayQuantity } from './pax8OrderUi';
 
 const onUnauthorized = () => void navigateTo('/login', { replace: true });
 const mutableStatuses = new Set(['draft', 'awaiting_details']);
@@ -200,7 +200,7 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
       const allowed = requested > current ? commitment.allowForQuantityIncrease : commitment.allowForQuantityDecrease;
       if (!allowed) { setActionError(requested > current ? t('pax8.subscriptions.increaseBlocked') : t('pax8.subscriptions.decreaseBlocked')); return; }
       const order = await ensureDraft(); if (!order) return;
-      await runAction<Pax8OrderLine>({ request: () => addPax8OrderLine(order.id, { action: 'change_quantity', targetSubscriptionId: subscription.pax8SubscriptionId, quantity: target, contractLineId: subscription.contractLineId }), parseSuccess: (value) => (value as { data: Pax8OrderLine }).data, successMessage: t('pax8.toasts.changeStaged'), errorFallback: t('pax8.errors.stageChange'), onUnauthorized });
+      await runAction<Pax8OrderLine>({ request: () => addPax8OrderLine(order.id, { action: 'change_quantity', targetSubscriptionId: subscription.pax8SubscriptionId, quantity: target }), parseSuccess: (value) => (value as { data: Pax8OrderLine }).data, successMessage: t('pax8.toasts.changeStaged'), errorFallback: t('pax8.errors.stageChange'), onUnauthorized });
       await load(); selectOrder(order.id);
     } catch (error) { if (!(error instanceof ActionError)) setActionError(error instanceof Error ? error.message : t('pax8.errors.stageChange')); handleActionError(error, t('pax8.errors.stageChange')); }
     finally { setBusy(null); }
@@ -222,7 +222,7 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
     setBusy(cancelCandidate.subscription.id);
     try {
       const order = await ensureDraft(); if (!order) return;
-      await runAction<Pax8OrderLine>({ request: () => addPax8OrderLine(order.id, { action: 'cancel', targetSubscriptionId: cancelCandidate.subscription.pax8SubscriptionId, contractLineId: cancelCandidate.subscription.contractLineId }), parseSuccess: (value) => (value as { data: Pax8OrderLine }).data, successMessage: t('pax8.toasts.cancelStaged'), errorFallback: t('pax8.errors.stageCancel'), onUnauthorized });
+      await runAction<Pax8OrderLine>({ request: () => addPax8OrderLine(order.id, { action: 'cancel', targetSubscriptionId: cancelCandidate.subscription.pax8SubscriptionId }), parseSuccess: (value) => (value as { data: Pax8OrderLine }).data, successMessage: t('pax8.toasts.cancelStaged'), errorFallback: t('pax8.errors.stageCancel'), onUnauthorized });
       setCancelCandidate(null); await load(); selectOrder(order.id);
     } catch (error) { handleActionError(error, t('pax8.errors.stageCancel')); }
     finally { setBusy(null); }
@@ -245,6 +245,6 @@ export default function Pax8OrgTab({ orgId }: { orgId: string }) {
 
     <section className="space-y-3"><div><h3 className="font-medium">{t('pax8.subscriptions.title')}</h3><p className="text-sm text-muted-foreground">{t('pax8.subscriptions.description')}</p></div><Pax8SubscriptionTable subscriptions={subscriptions} onChangeQuantity={(subscription, next) => void stageQuantity(subscription, next)} onCancel={(subscription) => void prepareCancel(subscription)} busyId={busy}/></section>
 
-    <section className="space-y-3"><div><h3 className="font-medium">{t('pax8.orders.title')}</h3><p className="text-sm text-muted-foreground">{t('pax8.orders.description')}</p></div>{orders.length === 0 ? <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">{t('pax8.orders.empty')}</div> : <div className="divide-y rounded-lg border bg-card">{orders.map((order) => <button type="button" key={order.id} onClick={() => selectOrder(order.id)} className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left hover:bg-muted/50"><span><span className="block text-sm font-medium">{order.source === 'quote' ? t('pax8.orders.quoteOrder') : t('pax8.orders.directOrder')}</span><span className="block text-xs text-muted-foreground">{new Date(order.updatedAt).toLocaleString()}</span></span><span className="rounded-full border bg-muted px-2 py-0.5 text-xs capitalize">{order.status.replaceAll('_', ' ')}</span></button>)}</div>}</section>
+    <section className="space-y-3"><div><h3 className="font-medium">{t('pax8.orders.title')}</h3><p className="text-sm text-muted-foreground">{t('pax8.orders.description')}</p></div>{orders.length === 0 ? <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">{t('pax8.orders.empty')}</div> : <div className="divide-y rounded-lg border bg-card">{orders.map((order) => <button type="button" key={order.id} onClick={() => selectOrder(order.id)} className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left hover:bg-muted/50"><span><span className="block text-sm font-medium">{order.source === 'quote' ? t('pax8.orders.quoteOrder') : t('pax8.orders.directOrder')}</span><span className="block text-xs text-muted-foreground">{new Date(order.updatedAt).toLocaleString()}</span></span><span className="rounded-full border bg-muted px-2 py-0.5 text-xs">{t(PAX8_ORDER_STATUS_I18N_KEYS[order.status])}</span></button>)}</div>}</section>
   </div>;
 }

@@ -23,7 +23,15 @@ import {
   type ProvisioningValue,
 } from '../../lib/api/pax8Orders';
 import { Pax8ProvisioningForm } from './Pax8ProvisioningForm';
-import { displayQuantity, extractPax8PreflightErrors, type PreflightErrors } from './pax8OrderUi';
+import {
+  PAX8_BILLING_TERM_I18N_KEYS,
+  PAX8_ORDER_ACTION_I18N_KEYS,
+  PAX8_ORDER_STATUS_I18N_KEYS,
+  PAX8_SUBMIT_STATE_I18N_KEYS,
+  displayQuantity,
+  extractPax8PreflightErrors,
+  type PreflightErrors,
+} from './pax8OrderUi';
 
 const onUnauthorized = () => void navigateTo('/login', { replace: true });
 const mutableStatuses = new Set(['draft', 'awaiting_details']);
@@ -54,7 +62,9 @@ export default function Pax8OrderBuilder({
   const { t } = useTranslation('settings');
   const { order, lines } = bundle;
   const mutable = mutableStatuses.has(order.status);
-  const needsReconcile = lines.some((line) => line.submitState === 'needs_reconcile');
+  const directMutable = mutable && order.source === 'direct';
+  const canReconcile = lines.some((line) => line.submitState === 'needs_reconcile' || line.submitState === 'in_flight')
+    || (order.status === 'submitting' && lines.length > 0 && lines.every((line) => line.submitState === 'pending'));
   const [selectedProductId, setSelectedProductId] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [billingTerm, setBillingTerm] = useState<(typeof PAX8_BILLING_TERMS)[number]>('Monthly');
@@ -243,7 +253,7 @@ export default function Pax8OrderBuilder({
           </p>
         </div>
         <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${statusClasses(order.status)}`}>
-          {order.status.replaceAll('_', ' ')}
+          {t(PAX8_ORDER_STATUS_I18N_KEYS[order.status])}
         </span>
       </div>
 
@@ -253,7 +263,7 @@ export default function Pax8OrderBuilder({
         </div>
       )}
 
-      {mutable && (
+      {directMutable && (
         <div className="rounded-lg border bg-card p-4">
           <h4 className="font-medium">{t('pax8.order.addProduct')}</h4>
           <div className="mt-3 grid gap-3 md:grid-cols-4">
@@ -267,7 +277,7 @@ export default function Pax8OrderBuilder({
             <label className="space-y-1 text-sm">
               <span className="font-medium">{t('pax8.order.billingTerm')}</span>
               <select value={billingTerm} onChange={(event) => setBillingTerm(event.target.value as typeof billingTerm)} className="h-10 w-full rounded-md border bg-background px-3">
-                {PAX8_BILLING_TERMS.map((term) => <option key={term} value={term}>{term}</option>)}
+                {PAX8_BILLING_TERMS.map((term) => <option key={term} value={term}>{t(PAX8_BILLING_TERM_I18N_KEYS[term])}</option>)}
               </select>
             </label>
             <label className="space-y-1 text-sm">
@@ -315,12 +325,12 @@ export default function Pax8OrderBuilder({
               return (
                 <tr key={line.id} data-testid={`pax8-order-line-${line.id}`}>
                   <td className="px-3 py-3 font-medium">{lineLabel(line, products, t('pax8.order.unknownItem'))}{messages.map((message) => <p key={message} className="mt-1 text-xs font-normal text-destructive" data-testid={`pax8-line-error-${line.id}`}>{message}</p>)}{line.error && <p className="mt-1 text-xs font-normal text-destructive">{line.error}</p>}</td>
-                  <td className="px-3 py-3">{line.action.replaceAll('_', ' ')}</td>
+                  <td className="px-3 py-3">{t(PAX8_ORDER_ACTION_I18N_KEYS[line.action])}</td>
                   <td className="px-3 py-3 tabular-nums">{displayQuantity(line.quantity)}</td>
-                  <td className="px-3 py-3"><span className={`rounded-full border px-2 py-0.5 text-xs ${statusClasses(line.submitState)}`}>{line.submitState.replaceAll('_', ' ')}</span></td>
+                  <td className="px-3 py-3"><span className={`rounded-full border px-2 py-0.5 text-xs ${statusClasses(line.submitState)}`}>{t(PAX8_SUBMIT_STATE_I18N_KEYS[line.submitState])}</span></td>
                   <td className="px-3 py-3"><div className="flex justify-end gap-1">
                     {mutable && line.action === 'new_subscription' && <button type="button" onClick={() => void beginEdit(line)} disabled={busy !== null} className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50">{t('pax8.order.editDetails')}</button>}
-                    {mutable && <button type="button" aria-label={t('pax8.order.remove')} onClick={() => void removeLine(line.id)} disabled={busy !== null} className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive disabled:opacity-50"><Trash2 className="h-4 w-4" /></button>}
+                    {directMutable && <button type="button" aria-label={t('pax8.order.remove')} onClick={() => void removeLine(line.id)} disabled={busy !== null} className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-destructive disabled:opacity-50"><Trash2 className="h-4 w-4" /></button>}
                   </div></td>
                 </tr>
               );
@@ -341,7 +351,7 @@ export default function Pax8OrderBuilder({
       {preflightErrors.order.length > 0 && <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" data-testid="pax8-order-errors">{preflightErrors.order.map((message) => <p key={message}>{message}</p>)}</div>}
 
       <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
-        {needsReconcile ? <button type="button" data-testid="pax8-reconcile" onClick={() => void reconcile()} disabled={busy !== null} className="inline-flex items-center gap-2 rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"><RefreshCw className="h-4 w-4" />{t('pax8.order.reconcile')}</button> : mutable && <button type="button" data-testid="pax8-submit" onClick={() => void preflightAndSubmit()} disabled={busy !== null || lines.length === 0} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{busy === 'submit' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}{t('pax8.order.reviewSubmit')}</button>}
+        {canReconcile ? <button type="button" data-testid="pax8-reconcile" onClick={() => void reconcile()} disabled={busy !== null} className="inline-flex items-center gap-2 rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"><RefreshCw className="h-4 w-4" />{t('pax8.order.reconcile')}</button> : mutable && <button type="button" data-testid="pax8-submit" onClick={() => void preflightAndSubmit()} disabled={busy !== null || lines.length === 0} className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{busy === 'submit' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}{t('pax8.order.reviewSubmit')}</button>}
         {order.status === 'completed' && <span className="inline-flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-300"><CheckCircle2 className="h-4 w-4" />{t('pax8.order.completed')}</span>}
       </div>
     </section>

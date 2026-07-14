@@ -1,4 +1,5 @@
 import { fetchWithAuth } from '../../stores/auth';
+import type { Pax8BillingTerm } from '@breeze/shared';
 
 export type Pax8OrderStatus =
   | 'draft' | 'awaiting_details' | 'ready' | 'submitting' | 'completed'
@@ -71,6 +72,17 @@ export interface Pax8OrderLine {
 }
 
 export interface Pax8OrderBundle { order: Pax8Order; lines: Pax8OrderLine[] }
+export interface AddPax8OrderLineRequest {
+  action: Pax8OrderAction;
+  pax8ProductId?: string;
+  catalogItemId?: string;
+  billingTerm?: Pax8BillingTerm;
+  commitmentTermId?: string;
+  quantity?: string;
+  provisioningDetails?: ProvisioningValue[];
+  targetSubscriptionId?: string;
+  cancelDate?: string;
+}
 export interface Pax8Company {
   pax8CompanyId: string;
   pax8CompanyName: string;
@@ -128,7 +140,7 @@ export const mapPax8Company = (body: { integrationId: string; pax8CompanyId: str
   fetchWithAuth('/pax8/companies/map', { method: 'POST', ...json(body) });
 export const createPax8Order = (orgId: string) =>
   fetchWithAuth('/pax8/orders', { method: 'POST', ...json({ orgId }) });
-export const addPax8OrderLine = (orderId: string, body: unknown) =>
+export const addPax8OrderLine = (orderId: string, body: AddPax8OrderLineRequest) =>
   fetchWithAuth(`/pax8/orders/${encodeURIComponent(orderId)}/lines`, { method: 'POST', ...json(body) });
 export const updatePax8OrderLine = (orderId: string, lineId: string, body: unknown) =>
   fetchWithAuth(`/pax8/orders/${encodeURIComponent(orderId)}/lines/${encodeURIComponent(lineId)}`, {

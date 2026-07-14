@@ -2481,6 +2481,12 @@
     "title": "Assinaturas Pax8", "description": "Revise quantidades faturáveis, prepare alterações e envie pedidos Pax8.",
     "actions": { "newOrder": "Novo pedido", "retry": "Tentar novamente" }, "states": { "loadingProduct": "Carregando requisitos do produto…" },
     "products": { "emptyReason": "Mapeie produtos ativos do catálogo para a Pax8 antes de pedir." },
+    "enums": {
+      "orderStatus": { "draft": "Rascunho", "awaitingDetails": "Aguardando detalhes", "ready": "Pronto", "submitting": "Enviando", "completed": "Concluído", "partiallyFailed": "Falha parcial", "failed": "Falhou", "cancelled": "Cancelado", "needsReconcile": "Requer reconciliação" },
+      "lineAction": { "newSubscription": "Nova assinatura", "changeQuantity": "Alterar quantidade", "cancel": "Cancelar assinatura" },
+      "submitState": { "pending": "Pendente", "inFlight": "Em andamento", "succeeded": "Concluído", "failed": "Falhou", "needsReconcile": "Requer reconciliação" },
+      "billingTerm": { "monthly": "Mensal", "annual": "Anual", "twoYear": "2 anos", "threeYear": "3 anos", "oneTime": "Pagamento único", "trial": "Avaliação", "activation": "Ativação" }
+    },
     "mapping": { "title": "Mapeamento da empresa", "company": "Empresa Pax8", "choose": "Escolher uma empresa", "map": "Mapear empresa", "empty": "Mapeie esta organização para sua empresa Pax8 antes de pedir.", "noIntegration": "Primeiro conecte e sincronize a Pax8 nas integrações do parceiro.", "unknownStatus": "Status não informado", "activeRequired": "A empresa Pax8 mapeada deve estar ativa e ter contatos principais Administrativo, Faturamento e Técnico." },
     "subscriptions": {
       "title": "Registro de assinaturas", "description": "As quantidades do Breeze são a fonte do faturamento. Os valores Pax8 são as observações mais recentes.",

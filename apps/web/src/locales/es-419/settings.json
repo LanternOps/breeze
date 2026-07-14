@@ -2428,6 +2428,12 @@
     "title": "Suscripciones de Pax8", "description": "Revisa cantidades facturables, prepara cambios y envía pedidos de Pax8.",
     "actions": { "newOrder": "Nuevo pedido", "retry": "Reintentar" }, "states": { "loadingProduct": "Cargando requisitos del producto…" },
     "products": { "emptyReason": "Asocia productos activos del catálogo con Pax8 antes de pedir." },
+    "enums": {
+      "orderStatus": { "draft": "Borrador", "awaitingDetails": "Esperando detalles", "ready": "Listo", "submitting": "Enviando", "completed": "Completado", "partiallyFailed": "Falló parcialmente", "failed": "Falló", "cancelled": "Cancelado", "needsReconcile": "Requiere conciliación" },
+      "lineAction": { "newSubscription": "Nueva suscripción", "changeQuantity": "Cambiar cantidad", "cancel": "Cancelar suscripción" },
+      "submitState": { "pending": "Pendiente", "inFlight": "En curso", "succeeded": "Correcto", "failed": "Falló", "needsReconcile": "Requiere conciliación" },
+      "billingTerm": { "monthly": "Mensual", "annual": "Anual", "twoYear": "2 años", "threeYear": "3 años", "oneTime": "Pago único", "trial": "Prueba", "activation": "Activación" }
+    },
     "mapping": {
       "title": "Asociación de empresa", "company": "Empresa de Pax8", "choose": "Elegir una empresa", "map": "Asociar empresa",
       "empty": "Asocia esta organización con su empresa de Pax8 antes de pedir.", "noIntegration": "Primero conecta y sincroniza Pax8 en las integraciones del socio.",

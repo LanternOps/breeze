@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { fetchWithAuth } from '../../stores/auth';
 import {
+  addPax8OrderLine,
+  type AddPax8OrderLineRequest,
   listPax8Orders,
   readData,
   updatePax8OrderLine,
@@ -11,6 +13,9 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 beforeEach(() => vi.clearAllMocks());
 
 describe('Pax8 ordering API client', () => {
+  it('does not expose tenant linkage as client-controlled add-line input', () => {
+    expectTypeOf<AddPax8OrderLineRequest>().not.toHaveProperty('contractLineId');
+  });
   it('scopes the order list to the selected organization', () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response());
     void listPax8Orders('org/one');
@@ -29,6 +34,24 @@ describe('Pax8 ordering API client', () => {
       body: JSON.stringify({
         commitmentTermId: 'commit-1',
         provisioningDetails: [{ key: 'domain', values: ['acme.example'] }],
+      }),
+    });
+  });
+
+  it('does not send a client-selected contract line when staging a subscription change', () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response());
+    void addPax8OrderLine('order-1', {
+      action: 'change_quantity',
+      targetSubscriptionId: 'subscription-1',
+      quantity: '12',
+    });
+    expect(fetchWithAuth).toHaveBeenCalledWith('/pax8/orders/order-1/lines', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'change_quantity',
+        targetSubscriptionId: 'subscription-1',
+        quantity: '12',
       }),
     });
   });

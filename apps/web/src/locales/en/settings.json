@@ -2483,6 +2483,12 @@
     "actions": { "newOrder": "New order", "retry": "Try again" },
     "states": { "loadingProduct": "Loading product requirements…" },
     "products": { "emptyReason": "Map active catalog products to Pax8 before ordering." },
+    "enums": {
+      "orderStatus": { "draft": "Draft", "awaitingDetails": "Awaiting details", "ready": "Ready", "submitting": "Submitting", "completed": "Completed", "partiallyFailed": "Partially failed", "failed": "Failed", "cancelled": "Cancelled", "needsReconcile": "Needs reconciliation" },
+      "lineAction": { "newSubscription": "New subscription", "changeQuantity": "Change quantity", "cancel": "Cancel subscription" },
+      "submitState": { "pending": "Pending", "inFlight": "In progress", "succeeded": "Succeeded", "failed": "Failed", "needsReconcile": "Needs reconciliation" },
+      "billingTerm": { "monthly": "Monthly", "annual": "Annual", "twoYear": "2-year", "threeYear": "3-year", "oneTime": "One-time", "trial": "Trial", "activation": "Activation" }
+    },
     "mapping": {
       "title": "Company mapping", "company": "Pax8 company", "choose": "Choose a company", "map": "Map company",
       "empty": "Map this organization to its Pax8 company before ordering.", "noIntegration": "Connect and sync Pax8 in partner integrations first.",
