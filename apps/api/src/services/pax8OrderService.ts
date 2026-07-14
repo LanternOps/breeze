@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PAX8_BILLING_TERMS, type Pax8BillingTerm, type Pax8OrderAction } from '@breeze/shared';
-import { and, desc, eq, inArray, notInArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, notInArray, sql, type SQL } from 'drizzle-orm';
 import {
   db,
   runOutsideDbContext,
@@ -9,9 +9,12 @@ import {
 } from '../db';
 import {
   pax8CompanyMappings,
+  pax8Integrations,
   pax8OrderLines,
   pax8Orders,
+  pax8ProductMappings,
   pax8SubscriptionSnapshots,
+  catalogItems,
 } from '../db/schema';
 import { createPax8ClientForIntegration } from './pax8SyncService';
 import type { Pax8Commitment } from './pax8Client';
@@ -451,6 +454,69 @@ export async function removeOrderLine(input: {
   });
 }
 
+export interface UpdateOrderLineInput {
+  partnerId: string;
+  orderId: string;
+  lineId: string;
+  commitmentTermId?: string | null;
+  provisioningDetails?: Array<{ key: string; values: string[] }>;
+}
+
+/**
+ * Completes quote-staged provisioning details without replacing the immutable
+ * source/contract linkage. Parent and child are locked in one short partner
+ * transaction so submit cannot transition the order between validation and
+ * persistence.
+ */
+export async function updateOrderLine(input: UpdateOrderLineInput): Promise<Pax8OrderLineRow> {
+  if (input.commitmentTermId === undefined && input.provisioningDetails === undefined) {
+    throw new Pax8OrderError('No editable Pax8 order line fields were provided.', 422);
+  }
+
+  return withPartnerDbContext(input.partnerId, async () => {
+    const [order] = await db
+      .select()
+      .from(pax8Orders)
+      .where(and(eq(pax8Orders.partnerId, input.partnerId), eq(pax8Orders.id, input.orderId)))
+      .for('update')
+      .limit(1);
+    if (!order) throw new Pax8OrderError('Pax8 order not found.', 404);
+    requireMutableOrder(order);
+
+    const [line] = await db
+      .select()
+      .from(pax8OrderLines)
+      .where(and(
+        eq(pax8OrderLines.partnerId, input.partnerId),
+        eq(pax8OrderLines.orgId, order.orgId),
+        eq(pax8OrderLines.orderId, order.id),
+        eq(pax8OrderLines.id, input.lineId),
+      ))
+      .for('update')
+      .limit(1);
+    if (!line) throw new Pax8OrderError('Pax8 order line not found.', 404);
+    if (line.action !== 'new_subscription') {
+      throw new Pax8OrderError('Only new-subscription provisioning details can be edited.', 422);
+    }
+
+    const changes: Pick<UpdateOrderLineInput, 'commitmentTermId' | 'provisioningDetails'> = {};
+    if (input.commitmentTermId !== undefined) changes.commitmentTermId = input.commitmentTermId;
+    if (input.provisioningDetails !== undefined) changes.provisioningDetails = input.provisioningDetails;
+
+    const [updated] = await db
+      .update(pax8OrderLines)
+      .set(changes)
+      .where(and(
+        eq(pax8OrderLines.partnerId, input.partnerId),
+        eq(pax8OrderLines.orderId, order.id),
+        eq(pax8OrderLines.id, line.id),
+      ))
+      .returning();
+    if (!updated) throw new Pax8OrderError('The Pax8 order line could not be updated.', 409);
+    return updated;
+  });
+}
+
 export async function getOrderWithLines(input: {
   partnerId: string;
   orderId: string;
@@ -494,4 +560,52 @@ export async function listPax8Orders(input: {
     .where(and(...conditions))
     .orderBy(desc(pax8Orders.updatedAt), desc(pax8Orders.id))
     .limit(100);
+}
+
+export interface Pax8ProductOption {
+  pax8ProductId: string;
+  catalogItemId: string;
+  catalogName: string;
+  catalogSku: string | null;
+  catalogDescription: string | null;
+  productName: string | null;
+  vendorSkuId: string | null;
+  billingFrequency: string | null;
+  commitmentTermMonths: number | null;
+}
+
+/** Product choices are entirely local metadata: no Pax8 HTTP and no secrets. */
+export async function listPax8Products(input: { partnerId: string }): Promise<Pax8ProductOption[]> {
+  return db
+    .select({
+      pax8ProductId: pax8ProductMappings.pax8ProductId,
+      catalogItemId: catalogItems.id,
+      catalogName: catalogItems.name,
+      catalogSku: catalogItems.sku,
+      catalogDescription: catalogItems.description,
+      productName: pax8ProductMappings.productName,
+      vendorSkuId: pax8ProductMappings.vendorSkuId,
+      billingFrequency: catalogItems.billingFrequency,
+      commitmentTermMonths: catalogItems.commitmentTermMonths,
+    })
+    .from(pax8ProductMappings)
+    .innerJoin(pax8Integrations, and(
+      eq(pax8ProductMappings.integrationId, pax8Integrations.id),
+      eq(pax8ProductMappings.partnerId, pax8Integrations.partnerId),
+    ))
+    .innerJoin(catalogItems, and(
+      eq(pax8ProductMappings.catalogItemId, catalogItems.id),
+      eq(pax8ProductMappings.partnerId, catalogItems.partnerId),
+    ))
+    .where(and(
+      eq(pax8ProductMappings.partnerId, input.partnerId),
+      eq(pax8Integrations.isActive, true),
+      eq(catalogItems.isActive, true),
+    ))
+    .orderBy(
+      asc(catalogItems.name),
+      asc(pax8ProductMappings.pax8ProductId),
+      asc(catalogItems.id),
+    )
+    .limit(200);
 }

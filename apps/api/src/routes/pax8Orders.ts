@@ -18,9 +18,11 @@ import {
   addOrderLine,
   getOrderWithLines,
   getOrCreateDraftOrder,
+  listPax8Products,
   listPax8Orders,
   Pax8OrderError,
   removeOrderLine,
+  updateOrderLine,
 } from '../services/pax8OrderService';
 import { preflightOrder, reconcileOrder, submitOrder } from '../services/pax8OrderSubmit';
 import { createPax8ClientForIntegration } from '../services/pax8SyncService';
@@ -92,6 +94,14 @@ const addLineSchema = z.object({
   contractLineId: z.string().guid().optional(),
   sortOrder: z.number().int().min(0).max(100_000).optional(),
 }).strict();
+
+const updateLineSchema = z.object({
+  commitmentTermId: z.string().trim().min(1).max(64).nullable().optional(),
+  provisioningDetails: z.array(provisioningDetailSchema).max(200).optional(),
+}).strict().refine(
+  (value) => value.commitmentTermId !== undefined || value.provisioningDetails !== undefined,
+  { message: 'At least one editable line field is required.' },
+);
 
 function partnerDbContext(auth: RouteAuth, partnerId: string): DbAccessContext {
   const system = auth.scope === 'system';
@@ -364,6 +374,43 @@ pax8OrderRoutes.post(
   },
 );
 
+pax8OrderRoutes.patch(
+  '/orders/:id/lines/:lineId',
+  partnerScopes,
+  billingManage,
+  requireMfa(),
+  zValidator('query', partnerQuerySchema),
+  zValidator('param', orderLineIdSchema),
+  zValidator('json', updateLineSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const { id, lineId } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const partner = resolvePartnerId(auth, query.partnerId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    let bundle: Awaited<ReturnType<typeof loadAuthorizedOrder>>;
+    try {
+      bundle = await loadAuthorizedOrder(auth, partner.partnerId, id);
+    } catch (error) {
+      return routeError(c, error);
+    }
+    const audit = {
+      action: 'pax8.order.line.update', partnerId: partner.partnerId,
+      orgId: bundle.order.orgId, orderId: id, details: { lineId },
+    };
+    const mutation = await runAuditedMutation(c, audit, () => updateOrderLine({
+      partnerId: partner.partnerId,
+      orderId: id,
+      lineId,
+      ...body,
+    }));
+    if ('response' in mutation) return mutation.response;
+    auditOrderAction(c, { ...audit, result: 'success' });
+    return c.json({ data: mutation.value });
+  },
+);
+
 pax8OrderRoutes.post(
   '/orders/:id/lines',
   partnerScopes,
@@ -552,6 +599,24 @@ pax8OrderRoutes.post(
       }, { status: 200, errorClass: 'ReconciliationIncomplete' });
     }
     return c.json(result);
+  },
+);
+
+pax8OrderRoutes.get(
+  '/products',
+  partnerScopes,
+  billingManage,
+  zValidator('query', partnerQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const partner = resolvePartnerId(auth, query.partnerId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    try {
+      return c.json({ data: await listPax8Products({ partnerId: partner.partnerId }) });
+    } catch (error) {
+      return routeError(c, error);
+    }
   },
 );
 

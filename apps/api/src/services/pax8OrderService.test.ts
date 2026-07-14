@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
     select: vi.fn(),
     insert: vi.fn(),
     delete: vi.fn(),
+    update: vi.fn(),
     transaction: vi.fn(),
   },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -35,6 +36,7 @@ vi.mock('../db/schema', () => new Proxy({
     id: 'pax8_order_lines.id',
     orderId: 'pax8_order_lines.order_id',
     partnerId: 'pax8_order_lines.partner_id',
+    action: 'pax8_order_lines.action',
   },
   pax8CompanyMappings: {
     partnerId: 'pax8_company_mappings.partner_id',
@@ -45,6 +47,30 @@ vi.mock('../db/schema', () => new Proxy({
     integrationId: 'pax8_subscription_snapshots.integration_id',
     partnerId: 'pax8_subscription_snapshots.partner_id',
     pax8SubscriptionId: 'pax8_subscription_snapshots.pax8_subscription_id',
+  },
+  pax8Integrations: {
+    id: 'pax8_integrations.id',
+    partnerId: 'pax8_integrations.partner_id',
+    isActive: 'pax8_integrations.is_active',
+  },
+  pax8ProductMappings: {
+    integrationId: 'pax8_product_mappings.integration_id',
+    partnerId: 'pax8_product_mappings.partner_id',
+    pax8ProductId: 'pax8_product_mappings.pax8_product_id',
+    catalogItemId: 'pax8_product_mappings.catalog_item_id',
+    productName: 'pax8_product_mappings.product_name',
+    vendorSkuId: 'pax8_product_mappings.vendor_sku_id',
+    metadata: 'pax8_product_mappings.metadata',
+  },
+  catalogItems: {
+    id: 'catalog_items.id',
+    partnerId: 'catalog_items.partner_id',
+    name: 'catalog_items.name',
+    sku: 'catalog_items.sku',
+    description: 'catalog_items.description',
+    billingFrequency: 'catalog_items.billing_frequency',
+    commitmentTermMonths: 'catalog_items.commitment_term_months',
+    isActive: 'catalog_items.is_active',
   },
 }, {
   get(target, prop) {
@@ -66,8 +92,10 @@ import {
   buildDedupeKey,
   getOrderWithLines,
   getOrCreateDraftOrder,
+  listPax8Products,
   listPax8Orders,
   removeOrderLine,
+  updateOrderLine,
 } from './pax8OrderService';
 
 const baseOrder = {
@@ -210,6 +238,7 @@ beforeEach(() => {
   mocks.db.select.mockReset();
   mocks.db.insert.mockReset();
   mocks.db.delete.mockReset();
+  mocks.db.update.mockReset();
   mocks.db.transaction.mockReset();
   mocks.runOutsideDbContext.mockReset();
   mocks.withDbAccessContext.mockReset();
@@ -229,6 +258,24 @@ beforeEach(() => {
   });
   mocks.db.transaction.mockImplementation((fn: (tx: { insert: typeof mocks.db.insert }) => unknown) =>
     fn({ insert: mocks.db.insert }));
+});
+
+describe('listPax8Products', () => {
+  it('lists a bounded stable set from the active partner integration and active catalog', async () => {
+    const rows = [{ pax8ProductId: 'prod-1', catalogItemId: 'cat-1', catalogName: 'M365' }];
+    const chain = queryChain(rows);
+    chain.innerJoin = vi.fn(() => chain);
+    mocks.db.select.mockReturnValueOnce(chain);
+
+    await expect(listPax8Products({ partnerId: 'p1' })).resolves.toEqual(rows);
+
+    expect(chain.innerJoin).toHaveBeenCalledTimes(2);
+    expect(chain.orderBy).toHaveBeenCalled();
+    expect(chain.limit).toHaveBeenCalledWith(200);
+    const where = vi.mocked(chain.where as any).mock.calls[0]?.[0];
+    expect(containsValue(where, 'p1')).toBe(true);
+    expect(containsValue(where, true)).toBe(true);
+  });
 });
 
 describe('getOrCreateDraftOrder', () => {
@@ -733,6 +780,59 @@ describe('removeOrderLine', () => {
 
     await expect(removeOrderLine({ partnerId: 'p1', orderId: 'ord-1', lineId: 'line-1' }))
       .resolves.toEqual({ removed: true });
+  });
+});
+
+describe('updateOrderLine', () => {
+  function updateReturningOnce(rows: unknown[]) {
+    const returning = vi.fn(async () => rows);
+    const where = vi.fn(() => ({ returning }));
+    const set = vi.fn(() => ({ where }));
+    mocks.db.update.mockReturnValueOnce({ set });
+    return { set, where, returning };
+  }
+
+  it('locks the mutable parent and updates only editable new-subscription details', async () => {
+    const orderQuery = mockOrder({ status: 'awaiting_details' });
+    const lineQuery = selectRowsOnce([{
+      id: 'line-1', orderId: 'ord-1', partnerId: 'p1', orgId: 'o1',
+      action: 'new_subscription', quantity: '2.00', billingTerm: 'Annual',
+    }]);
+    const update = updateReturningOnce([{ id: 'line-1', commitmentTermId: 'commit-2' }]);
+
+    await expect(updateOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', lineId: 'line-1',
+      commitmentTermId: 'commit-2',
+      provisioningDetails: [{ key: 'domain', values: ['acme.example'] }],
+    })).resolves.toMatchObject({ id: 'line-1' });
+
+    expect(orderQuery.for).toHaveBeenCalledWith('update');
+    expect(lineQuery.for).toHaveBeenCalledWith('update');
+    expect(update.set).toHaveBeenCalledWith({
+      commitmentTermId: 'commit-2',
+      provisioningDetails: [{ key: 'domain', values: ['acme.example'] }],
+    });
+  });
+
+  it('rejects an immutable-order race before writing', async () => {
+    mockOrder({ status: 'submitting' });
+
+    await expect(updateOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', lineId: 'line-1', provisioningDetails: [],
+    })).rejects.toMatchObject({ status: 409 });
+    expect(mocks.db.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects editing a non-new-subscription line', async () => {
+    mockOrder({ status: 'draft' });
+    selectRowsOnce([{
+      id: 'line-1', orderId: 'ord-1', partnerId: 'p1', orgId: 'o1', action: 'cancel',
+    }]);
+
+    await expect(updateOrderLine({
+      partnerId: 'p1', orderId: 'ord-1', lineId: 'line-1', provisioningDetails: [],
+    })).rejects.toMatchObject({ status: 422 });
+    expect(mocks.db.update).not.toHaveBeenCalled();
   });
 });
 

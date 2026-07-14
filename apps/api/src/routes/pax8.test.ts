@@ -42,6 +42,7 @@ vi.mock('../db/schema', () => ({
     id: 'contract_lines.id',
     orgId: 'contract_lines.org_id',
     lineType: 'contract_lines.line_type',
+    manualQuantity: 'contract_lines.manual_quantity',
   },
   pax8Integrations: {
     id: 'pax8_integrations.id',
@@ -189,13 +190,15 @@ function mockSubscriptionSelectOnce(integrationRows: unknown[], snapshotRows: un
     })),
   } as any);
 
-  // Second call: the snapshot join query (from/leftJoin/leftJoin/where/orderBy/limit)
+  // Second call: the snapshot join query (three left joins, then filtering).
   const leftJoinMock = vi.fn().mockReturnThis();
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn(() => ({
       leftJoin: leftJoinMock.mockImplementation(() => ({
         leftJoin: vi.fn(() => ({
-          where: whereSpy,
+          leftJoin: vi.fn(() => ({
+            where: whereSpy,
+          })),
         })),
       })),
     })),
@@ -472,6 +475,7 @@ describe('pax8 routes', () => {
     const body = await res.json();
     expect(body).toHaveProperty('integrationId', integration.id);
     expect(vi.mocked(db.select).mock.calls[1]?.[0]).toMatchObject({
+      breezeQuantity: 'contract_lines.manual_quantity',
       quantity: 'pax8_subscription_snapshots.quantity',
       quantityKnown: 'pax8_subscription_snapshots.quantity_known',
     });

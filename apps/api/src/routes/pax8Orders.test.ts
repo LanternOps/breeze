@@ -24,7 +24,9 @@ const mocks = vi.hoisted(() => ({
   getOrderWithLines: vi.fn(),
   getOrCreateDraftOrder: vi.fn(),
   addOrderLine: vi.fn(),
+  updateOrderLine: vi.fn(),
   removeOrderLine: vi.fn(),
+  listPax8Products: vi.fn(),
   preflightOrder: vi.fn(),
   submitOrder: vi.fn(),
   reconcileOrder: vi.fn(),
@@ -86,7 +88,9 @@ vi.mock('../services/pax8OrderService', async () => {
     getOrderWithLines: mocks.getOrderWithLines,
     getOrCreateDraftOrder: mocks.getOrCreateDraftOrder,
     addOrderLine: mocks.addOrderLine,
+    updateOrderLine: mocks.updateOrderLine,
     removeOrderLine: mocks.removeOrderLine,
+    listPax8Products: mocks.listPax8Products,
   };
 });
 
@@ -171,7 +175,9 @@ beforeEach(() => {
   mocks.getOrderWithLines.mockResolvedValue({ order: baseOrder, lines: [] });
   mocks.getOrCreateDraftOrder.mockResolvedValue(baseOrder);
   mocks.addOrderLine.mockResolvedValue({ id: LINE_ID, orderId: ORDER_ID, orgId: ORG_A });
+  mocks.updateOrderLine.mockResolvedValue({ id: LINE_ID, orderId: ORDER_ID, orgId: ORG_A, action: 'new_subscription' });
   mocks.removeOrderLine.mockResolvedValue({ removed: true });
+  mocks.listPax8Products.mockResolvedValue([{ pax8ProductId: 'prod-1', catalogItemId: 'cat-1', catalogName: 'M365' }]);
   mocks.preflightOrder.mockResolvedValue({ ok: true });
   mocks.submitOrder.mockResolvedValue({ orderId: ORDER_ID, status: 'completed', lines: [] });
   mocks.reconcileOrder.mockResolvedValue({ resolved: 1, stillUnknown: 0 });
@@ -277,6 +283,7 @@ describe('Pax8 order route security and tenancy', () => {
     const mutations: Array<[string, RequestInit]> = [
       ['/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ orgId: ORG_A }) }],
       [`/orders/${ORDER_ID}/lines`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'cancel', targetSubscriptionId: 'sub-1' }) }],
+      [`/orders/${ORDER_ID}/lines/${LINE_ID}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provisioningDetails: [] }) }],
       [`/orders/${ORDER_ID}/lines/${LINE_ID}`, { method: 'DELETE' }],
       [`/orders/${ORDER_ID}/preflight`, { method: 'POST' }],
       [`/orders/${ORDER_ID}/submit`, { method: 'POST' }],
@@ -389,6 +396,41 @@ describe('Pax8 order route handlers', () => {
     }));
   });
 
+  it('updates only mutable staged-line provisioning fields and audits the change', async () => {
+    const res = await request(`/orders/${ORDER_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        commitmentTermId: 'commit-1',
+        provisioningDetails: [{ key: 'domain', values: ['acme.example'] }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(mocks.updateOrderLine).toHaveBeenCalledWith({
+      partnerId: PARTNER_A, orderId: ORDER_ID, lineId: LINE_ID,
+      commitmentTermId: 'commit-1',
+      provisioningDetails: [{ key: 'domain', values: ['acme.example'] }],
+    });
+    expect(mocks.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'pax8.order.line.update', resourceId: ORDER_ID,
+      details: { partnerId: PARTNER_A, lineId: LINE_ID },
+    }));
+  });
+
+  it('validates staged-line PATCH and preserves cross-org authorization', async () => {
+    const invalid = await request(`/orders/${ORDER_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'cancel' }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(mocks.updateOrderLine).not.toHaveBeenCalled();
+
+    mocks.getOrderWithLines.mockResolvedValueOnce({ order: { ...baseOrder, orgId: ORG_B }, lines: [] });
+    const foreign = await request(`/orders/${ORDER_ID}/lines/${LINE_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provisioningDetails: [] }),
+    });
+    expect(foreign.status).toBe(403);
+    expect(mocks.updateOrderLine).not.toHaveBeenCalled();
+  });
+
   it('maps Pax8OrderError status and message exactly', async () => {
     mocks.submitOrder.mockRejectedValueOnce(new Pax8OrderError('Order is already submitting.', 409));
     const res = await request(`/orders/${ORDER_ID}/submit`, { method: 'POST' });
@@ -423,6 +465,16 @@ describe('Pax8 order route handlers', () => {
         path: `/orders/${ORDER_ID}/lines/${LINE_ID}`,
         init: { method: 'DELETE' },
         action: 'pax8.order.line.delete',
+        safeDetails: { lineId: LINE_ID },
+      },
+      {
+        service: mocks.updateOrderLine,
+        path: `/orders/${ORDER_ID}/lines/${LINE_ID}`,
+        init: {
+          method: 'PATCH', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ provisioningDetails: [] }),
+        },
+        action: 'pax8.order.line.update',
         safeDetails: { lineId: LINE_ID },
       },
       {
@@ -598,6 +650,24 @@ describe('Pax8 order route handlers', () => {
 });
 
 describe('Pax8 product proxy routes', () => {
+  it('requires billing permission and the exact authenticated partner for product mappings', async () => {
+    state.permissionDenied = true;
+    expect((await request('/products')).status).toBe(403);
+    state.permissionDenied = false;
+    expect((await request(`/products?partnerId=${PARTNER_B}`)).status).toBe(403);
+    expect(mocks.listPax8Products).not.toHaveBeenCalled();
+  });
+
+  it('lists bounded local product mappings without MFA or Pax8 HTTP', async () => {
+    state.mfaDenied = true;
+    const res = await request('/products');
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      data: [{ pax8ProductId: 'prod-1', catalogItemId: 'cat-1', catalogName: 'M365' }],
+    });
+    expect(mocks.listPax8Products).toHaveBeenCalledWith({ partnerId: PARTNER_A });
+    expect(mocks.createPax8ClientForIntegration).not.toHaveBeenCalled();
+  });
   it('proxies provision details and dependencies through the partner active integration', async () => {
     mocks.getProvisionDetails.mockResolvedValueOnce([{ key: 'tenant', valueType: 'Input' }]);
     mockIntegrationClient();

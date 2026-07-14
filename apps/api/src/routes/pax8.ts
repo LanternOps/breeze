@@ -386,6 +386,7 @@ pax8Routes.get('/subscriptions', partnerScopes, readPerm, zValidator('query', su
       currencyCode: pax8SubscriptionSnapshots.currencyCode,
       lastSeenAt: pax8SubscriptionSnapshots.lastSeenAt,
       contractLineId: pax8ContractLineLinks.contractLineId,
+      breezeQuantity: contractLines.manualQuantity,
       syncEnabled: pax8ContractLineLinks.syncEnabled,
       lastObservedQuantity: pax8ContractLineLinks.lastObservedQuantity,
       lastObservedAt: pax8ContractLineLinks.lastObservedAt,
@@ -396,6 +397,11 @@ pax8Routes.get('/subscriptions', partnerScopes, readPerm, zValidator('query', su
       eq(pax8SubscriptionSnapshots.pax8CompanyId, pax8CompanyMappings.pax8CompanyId),
     ))
     .leftJoin(pax8ContractLineLinks, eq(pax8SubscriptionSnapshots.id, pax8ContractLineLinks.subscriptionSnapshotId))
+    .leftJoin(contractLines, and(
+      eq(pax8ContractLineLinks.contractLineId, contractLines.id),
+      eq(pax8ContractLineLinks.orgId, contractLines.orgId),
+      eq(pax8SubscriptionSnapshots.orgId, contractLines.orgId),
+    ))
     .where(and(...conditions))
     .orderBy(desc(pax8SubscriptionSnapshots.lastSeenAt))
     .limit(query.limit);
