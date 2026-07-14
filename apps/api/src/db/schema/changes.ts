@@ -17,7 +17,9 @@ export const changeTypeEnum = pgEnum('change_type', [
   'startup',
   'network',
   'scheduled_task',
-  'user_account'
+  'user_account',
+  'hardware',
+  'os_version'
 ]);
 
 export const changeActionEnum = pgEnum('change_action', [

@@ -39,6 +39,8 @@ const CHANGE_TYPES = [
   "network",
   "scheduled_task",
   "user_account",
+  "hardware",
+  "os_version",
 ] as const;
 const CHANGE_ACTIONS = ["added", "removed", "modified", "updated"] as const;
 const PAGE_LIMIT = 100;
@@ -72,6 +74,10 @@ function typeLabel(t: (key: string) => string, value: string): string {
       return t("deviceChangeHistoryTab.type_scheduled_task");
     case "user_account":
       return t("deviceChangeHistoryTab.type_user_account");
+    case "hardware":
+      return t("deviceChangeHistoryTab.type_hardware");
+    case "os_version":
+      return t("deviceChangeHistoryTab.type_os_version");
     default:
       return value;
   }
@@ -106,6 +112,10 @@ function badgeClassForType(value: string): string {
       return "bg-indigo-500/10 text-indigo-600";
     case "user_account":
       return "bg-emerald-500/10 text-emerald-600";
+    case "hardware":
+      return "bg-orange-500/10 text-orange-600";
+    case "os_version":
+      return "bg-sky-500/10 text-sky-600";
     default:
       return "bg-muted text-muted-foreground";
   }
@@ -126,9 +136,20 @@ function badgeClassForAction(value: string): string {
 }
 
 // Renders a single before/after value. Objects become compact `key: val` pairs;
-// scalars stringify directly.
+// scalars stringify directly. A single-key `{ value: … }` wrapper (how the agent
+// emits Memory/Storage/BIOS/etc.) renders as just the value — no `value:` prefix —
+// so a Memory record reads `4 GB → 8 GB`.
 function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 1 && entries[0][0] === "value") {
+      const val = entries[0][1];
+      return val !== null && typeof val === "object"
+        ? JSON.stringify(val)
+        : String(val);
+    }
+  }
   if (typeof value === "object") {
     return Object.entries(value as Record<string, unknown>)
       .map(([key, val]) =>

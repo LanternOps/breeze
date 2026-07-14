@@ -66,6 +66,90 @@ func TestChangeTrackerCollectChanges_DetectsDrift(t *testing.T) {
 	expectChange(t, changes, ChangeTypeUserAccount, ChangeActionAdded, "bob")
 }
 
+func TestChangeTrackerSnapshotCapturesHardwareAndOS(t *testing.T) {
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	collector := NewChangeTrackerCollector(snapshotPath)
+	collector.gatherSnapshot = func() (*Snapshot, error) { return baselineSnapshot(), nil }
+
+	if _, err := collector.CollectChanges(); err != nil {
+		t.Fatalf("CollectChanges error: %v", err)
+	}
+	if collector.lastSnapshot.Hardware == nil || collector.lastSnapshot.Hardware.RAMTotalMB == 0 {
+		t.Fatalf("expected hardware captured in snapshot, got %+v", collector.lastSnapshot.Hardware)
+	}
+	if collector.lastSnapshot.System == nil || collector.lastSnapshot.System.OSVersion == "" {
+		t.Fatalf("expected OS captured in snapshot, got %+v", collector.lastSnapshot.System)
+	}
+}
+
+func TestChangeTrackerDetectsHardwareAndOSDrift(t *testing.T) {
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	collector := NewChangeTrackerCollector(snapshotPath)
+	call := 0
+	collector.gatherSnapshot = func() (*Snapshot, error) {
+		call++
+		if call == 1 {
+			return baselineSnapshot(), nil // seeds; must emit nothing for hw/os
+		}
+		return driftedSnapshot(), nil
+	}
+
+	first, err := collector.CollectChanges()
+	if err != nil {
+		t.Fatalf("baseline CollectChanges returned error: %v", err)
+	}
+	for _, ch := range first {
+		if ch.ChangeType == ChangeTypeHardware || ch.ChangeType == ChangeTypeOS {
+			t.Fatalf("first run must not emit hardware/os events, got %s/%s", ch.ChangeType, ch.Subject)
+		}
+	}
+
+	changes, err := collector.CollectChanges()
+	if err != nil {
+		t.Fatalf("drift CollectChanges returned error: %v", err)
+	}
+	expectChange(t, changes, ChangeTypeHardware, ChangeActionModified, "Memory")
+	expectChange(t, changes, ChangeTypeOS, ChangeActionUpdated, "Operating System")
+}
+
+// TestChangeTrackerCollectChanges_RealGatherPathCapturesHardwareAndOS leaves
+// gatherSnapshot nil so gatherCurrentSnapshot() runs the real host collectors
+// (NewHardwareCollector) via the WaitGroup-fanned goroutines, rather than a
+// stubbed fixture. This proves the collection/capture path actually wires
+// Hardware/System into the snapshot on a live host, not just in round-trip
+// fixture tests.
+func TestChangeTrackerCollectChanges_RealGatherPathCapturesHardwareAndOS(t *testing.T) {
+	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
+	collector := NewChangeTrackerCollector(snapshotPath)
+	// collector.gatherSnapshot intentionally left nil so the REAL gather path
+	// (NewHardwareCollector().CollectHardware/CollectSystemInfo) runs.
+	//
+	// Pre-seed a non-nil lastSnapshot (empty maps, nil Hardware/System) so
+	// gatherCurrentSnapshot is NOT treated as cold-start: slow/variable
+	// collectors (macOS `system_profiler SPApplicationsDataType`, network
+	// adapters) then hit their non-fatal "warn + reuse previous" branch on
+	// timeout instead of failing the whole gather. This de-flakes the test —
+	// its result now hinges only on the real hardware/OS collectors, which is
+	// exactly what we want to assert. collectWithTimeout still caps the slow
+	// software goroutine on its own, so no outer-timeout bump is needed.
+	seed := &Snapshot{}
+	collector.ensureSnapshotMaps(seed)
+	collector.lastSnapshot = seed
+
+	if _, err := collector.CollectChanges(); err != nil {
+		t.Fatalf("CollectChanges returned error: %v", err)
+	}
+	if collector.lastSnapshot == nil {
+		t.Fatal("expected lastSnapshot to be populated after CollectChanges")
+	}
+	if collector.lastSnapshot.Hardware == nil {
+		t.Error("expected real gather path to populate Hardware (non-nil), got nil")
+	}
+	if collector.lastSnapshot.System == nil {
+		t.Error("expected real gather path to populate System (non-nil), got nil")
+	}
+}
+
 func TestChangeTrackerCollectChanges_LoadsSnapshotFromDisk(t *testing.T) {
 	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
 	first := NewChangeTrackerCollector(snapshotPath)
@@ -142,6 +226,19 @@ func baselineSnapshot() *Snapshot {
 				Locked:   false,
 			},
 		},
+		Hardware: &HardwareState{
+			RAMTotalMB:   16384,
+			CPUModel:     "Intel Core i7",
+			CPUCores:     8,
+			DiskTotalGB:  512,
+			BIOSVersion:  "1.2.3",
+			SerialNumber: "SN-12345",
+			Motherboard:  "Acme Corp Model X",
+		},
+		System: &SystemState{
+			OSVersion: "12.6",
+			OSBuild:   "21G115",
+		},
 	}
 }
 
@@ -201,6 +298,19 @@ func driftedSnapshot() *Snapshot {
 				Disabled: false,
 				Locked:   false,
 			},
+		},
+		Hardware: &HardwareState{
+			RAMTotalMB:   8192,
+			CPUModel:     "Intel Core i7",
+			CPUCores:     8,
+			DiskTotalGB:  512,
+			BIOSVersion:  "1.2.3",
+			SerialNumber: "SN-12345",
+			Motherboard:  "Acme Corp Model X",
+		},
+		System: &SystemState{
+			OSVersion: "13.0",
+			OSBuild:   "22A380",
 		},
 	}
 }

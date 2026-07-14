@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -155,5 +155,35 @@ describe('DeviceChangeHistoryTab', () => {
     expect(screen.queryByText('StaleApp')).toBeNull();
     expect(screen.getByText('Edge')).toBeInTheDocument();
     expect(screen.queryByText('Google Chrome')).toBeNull();
+  });
+
+  it('(i) offers hardware and os_version type filters', async () => {
+    fetchWithAuthMock.mockResolvedValue(page([]));
+    render(<DeviceChangeHistoryTab deviceId="dev-1" />);
+    const select = await screen.findByTestId('change-history-type-filter');
+    expect(within(select).getByText('Hardware')).toBeInTheDocument();
+    expect(within(select).getByText('OS Version')).toBeInTheDocument();
+  });
+
+  it('(j) renders a single-key {value} wrapper without the "value:" prefix', async () => {
+    // Agent emits Memory as { value: "4 GB" } / { value: "8 GB" }. The cell must
+    // read "4 GB → 8 GB", not "value: 4 GB → value: 8 GB".
+    fetchWithAuthMock.mockResolvedValue(
+      page([
+        change({
+          id: 'mem',
+          changeType: 'hardware',
+          changeAction: 'modified',
+          subject: 'Memory',
+          beforeValue: { value: '4 GB' },
+          afterValue: { value: '8 GB' },
+        }),
+      ]),
+    );
+    render(<DeviceChangeHistoryTab deviceId="dev-1" />);
+    const row = await screen.findByTestId('change-history-row');
+    expect(within(row).getByText('4 GB')).toBeInTheDocument();
+    expect(within(row).getByText('8 GB')).toBeInTheDocument();
+    expect(row.textContent).not.toContain('value:');
   });
 });

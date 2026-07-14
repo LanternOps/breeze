@@ -231,9 +231,9 @@ describe('changes routes', () => {
 
     it('should accept all valid changeType values', async () => {
       mockDeviceFound();
-      mockInsertSuccess(6);
+      mockInsertSuccess(8);
 
-      const changeTypes = ['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account'];
+      const changeTypes = ['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account', 'hardware', 'os_version'];
       const changes = changeTypes.map((ct, i) =>
         makeChangePayload({
           changeType: ct,
@@ -250,7 +250,7 @@ describe('changes routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.count).toBe(6);
+      expect(body.count).toBe(8);
     });
 
     it('should accept optional beforeValue and afterValue', async () => {

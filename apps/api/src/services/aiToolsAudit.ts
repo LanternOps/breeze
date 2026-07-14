@@ -194,7 +194,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'query_change_log',
-      description: 'Search device configuration changes such as software installs/updates, service changes, startup drift, network changes, scheduled task changes, and user account changes.',
+      description: 'Search device configuration changes such as software installs/updates, service changes, startup drift, network changes, scheduled task changes, user account changes, hardware changes (memory/CPU/disk/BIOS/serial), and OS version updates.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -203,7 +203,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
           endTime: { type: 'string', description: 'Optional ISO timestamp upper bound (inclusive)' },
           changeType: {
             type: 'string',
-            enum: ['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account'],
+            enum: ['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account', 'hardware', 'os_version'],
             description: 'Optional change category filter'
           },
           changeAction: {

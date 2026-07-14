@@ -41,6 +41,11 @@ export default defineConfig({
       // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's
       // no-DB environment fails the suite on connect. Belongs to vitest.integration.config.ts.
       'src/jobs/suppressionExpiryReaper.integration.test.ts',
+      // Device change ingest real-DB test (#2502 Phase 2): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate in its
+      // beforeAll), so the unit runner's no-DB environment fails the suite on
+      // connect. Belongs to vitest.integration.config.ts.
+      'src/routes/agents/changes.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {
