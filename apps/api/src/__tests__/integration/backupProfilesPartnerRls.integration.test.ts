@@ -1345,6 +1345,133 @@ describe('backup feature-link / normalized-settings parity', () => {
       }))).resolves.toBeDefined();
   });
 
+  it('resolves FORCE-RLS backup rows under fixed system GUCs for non-bypass B definers', async () => {
+    const admin = getTestDb();
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const [profileA] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupProfiles).values({
+      name: 'Non-bypass profile A', orgId: orgA.id, partnerId: null,
+      selections: SERVER_SELECTIONS,
+    }).returning());
+    const [destinationA] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
+      orgId: orgA.id, name: 'Non-bypass destination A', type: 'file',
+      provider: 's3', providerConfig: {},
+    }).returning());
+    const [destinationB] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(backupConfigs).values({
+      orgId: orgB.id, name: 'Non-bypass destination B', type: 'file',
+      provider: 's3', providerConfig: {},
+    }).returning());
+    const [policyA] = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.insert(configurationPolicies).values({
+        name: 'Non-bypass policy A', orgId: orgA.id, partnerId: null, status: 'active',
+      }).returning());
+    if (!profileA || !destinationA || !destinationB || !policyA) {
+      throw new Error('non-bypass backup fixture insert failed');
+    }
+    createdProfiles.push(profileA.id);
+    createdConfigs.push(destinationA.id, destinationB.id);
+    createdPolicies.push(policyA.id);
+    const [linkA, settingsA] = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [link] = await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policyA.id, featureType: 'backup', featurePolicyId: profileA.id,
+      }).returning();
+      if (!link) throw new Error('non-bypass backup link insert failed');
+      const [settings] = await db.insert(configPolicyBackupSettings).values({
+        featureLinkId: link.id, orgId: orgA.id, partnerId: null,
+        backupProfileId: profileA.id, destinationConfigId: destinationA.id,
+        schedule: {}, retention: {},
+      }).returning();
+      return [link, settings];
+    });
+    if (!linkA || !settingsA) throw new Error('non-bypass backup relationship seed failed');
+
+    const [current] = await admin.execute<{ roleName: string }>(sql`
+      SELECT current_user AS "roleName"
+    `);
+    if (!current) throw new Error('database owner probe failed');
+    const ownerRole = `breeze_backup_b_owner_${randomUUID().replaceAll('-', '')}`;
+    await admin.execute(sql.raw(`CREATE ROLE ${ownerRole} NOLOGIN NOSUPERUSER NOBYPASSRLS`));
+    try {
+      await admin.execute(sql.raw(`
+        GRANT USAGE ON SCHEMA public TO ${ownerRole};
+        GRANT SELECT ON public.config_policy_backup_settings,
+          public.config_policy_feature_links, public.configuration_policies,
+          public.organizations, public.backup_profiles, public.backup_configs TO ${ownerRole};
+        GRANT UPDATE ON public.config_policy_backup_settings,
+          public.config_policy_feature_links, public.configuration_policies,
+          public.organizations, public.backup_profiles, public.backup_configs TO ${ownerRole};
+        GRANT EXECUTE ON FUNCTION
+          public.breeze_validate_config_policy_backup_settings(uuid, uuid, uuid, uuid, uuid),
+          public.breeze_validate_config_policy_feature_reference(uuid, public.config_feature_type, uuid),
+          public.breeze_backup_feature_settings_parity_is_valid(uuid) TO ${ownerRole};
+        ALTER FUNCTION public.breeze_enforce_backup_settings_stmt() OWNER TO ${ownerRole};
+        ALTER FUNCTION public.breeze_revalidate_backup_refs_stmt() OWNER TO ${ownerRole};
+      `));
+
+      const [roleFlags] = await admin.execute<{ superuser: boolean; bypass: boolean }>(sql.raw(`
+        SELECT rolsuper AS superuser, rolbypassrls AS bypass
+        FROM pg_catalog.pg_roles WHERE rolname = '${ownerRole}'
+      `));
+      expect(roleFlags).toEqual({ superuser: false, bypass: false });
+      const configured = await admin.execute<{ name: string; owner: string; config: string[] }>(sql`
+        SELECT p.proname AS name, owner.rolname AS owner, p.proconfig AS config
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        JOIN pg_catalog.pg_roles owner ON owner.oid = p.proowner
+        WHERE n.nspname = 'public'
+          AND p.proname IN ('breeze_enforce_backup_settings_stmt', 'breeze_revalidate_backup_refs_stmt')
+        ORDER BY p.proname
+      `);
+      expect(configured).toHaveLength(2);
+      expect(configured.every((fn) => fn.owner === ownerRole
+        && fn.config.includes('breeze.scope=system')
+        && fn.config.includes('breeze.accessible_org_ids=')
+        && fn.config.includes('breeze.accessible_partner_ids=')
+        && fn.config.includes('search_path=pg_catalog, public'))).toBe(true);
+
+      const setUnrelatedCallerContext = async (tx: Parameters<Parameters<typeof admin.transaction>[0]>[0]) => {
+        await tx.execute(sql`SELECT pg_catalog.set_config('breeze.scope', 'organization', true)`);
+        await tx.execute(sql`SELECT pg_catalog.set_config('breeze.org_id', ${orgB.id}, true)`);
+        await tx.execute(sql`SELECT pg_catalog.set_config('breeze.accessible_org_ids', ${orgB.id}, true)`);
+        await tx.execute(sql`SELECT pg_catalog.set_config(
+          'breeze.accessible_partner_ids', ${partnerB.id}, true
+        )`);
+        await tx.execute(sql`SELECT pg_catalog.set_config(
+          'breeze.current_partner_id', ${partnerB.id}, true
+        )`);
+      };
+
+      expect(await captureSqlState(() => admin.transaction(async (tx) => {
+        await setUnrelatedCallerContext(tx);
+        await tx.update(configPolicyBackupSettings)
+          .set({ destinationConfigId: destinationB.id })
+          .where(eq(configPolicyBackupSettings.id, settingsA.id));
+      }))).toBe('23503');
+
+      expect(await captureSqlState(() => admin.transaction(async (tx) => {
+        await setUnrelatedCallerContext(tx);
+        await tx.update(backupProfiles)
+          .set({ orgId: orgB.id })
+          .where(eq(backupProfiles.id, profileA.id));
+      }))).toBe('23503');
+
+      const [unchanged] = await admin.select({
+        destinationConfigId: configPolicyBackupSettings.destinationConfigId,
+        profileOrgId: backupProfiles.orgId,
+      }).from(configPolicyBackupSettings)
+        .innerJoin(backupProfiles, eq(backupProfiles.id, configPolicyBackupSettings.backupProfileId))
+        .where(eq(configPolicyBackupSettings.id, settingsA.id));
+      expect(unchanged).toEqual({ destinationConfigId: destinationA.id, profileOrgId: orgA.id });
+    } finally {
+      const quotedCurrent = `"${current.roleName.replaceAll('"', '""')}"`;
+      await admin.execute(sql.raw(`REASSIGN OWNED BY ${ownerRole} TO ${quotedCurrent}`));
+      await admin.execute(sql.raw(`DROP OWNED BY ${ownerRole}`));
+      await admin.execute(sql.raw(`DROP ROLE ${ownerRole}`));
+    }
+  }, 30_000);
+
   it('migrations are idempotent and keep serialization, parity, and export trigger contracts intact', async () => {
     const parityMigration = readFileSync(BACKUP_PARITY_MIGRATION_FILE, 'utf8');
     const serializationMigration = readFileSync(BACKUP_SERIALIZATION_MIGRATION_FILE, 'utf8');
