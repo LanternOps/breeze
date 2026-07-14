@@ -126,13 +126,34 @@ function isValidSsoStateCookie(state: string, cookieHeader: string | undefined):
 // Schemas
 // ============================================
 
+// Nullable-optional field helper for genuinely-nullable DB columns (issuer,
+// defaultRoleId — see schema/sso.ts). Three distinct wire states must map to
+// three distinct outcomes:
+//   - key absent from the JSON body    -> parsed value is `undefined`, the
+//     key is dropped from the parsed object entirely -> PATCH leaves the
+//     column untouched ("unchanged").
+//   - key present as `''` or `null`    -> parsed value is `null` -> PATCH
+//     writes SQL NULL ("explicitly cleared"; e.g. a <select> reset to its
+//     blank "no role" option, or a text input the admin backspaced out).
+//   - key present with a valid value   -> validated and passed through.
+// Collapsing '' into "leave unchanged" (e.g. via `.or(z.literal(''))`
+// stripped to undefined) would make a previously-set defaultRoleId
+// impossible to ever clear again once set — the form always resubmits the
+// full current value, so blank must mean "clear", not "skip".
+function nullableOptional<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess(
+    (v) => (v === '' ? null : v),
+    schema.nullable().optional()
+  );
+}
+
 const createProviderSchema = z.object({
   ownerScope: z.enum(['organization', 'partner']).default('organization'),
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['oidc', 'saml']),
   preset: z.string().optional(),
-  issuer: z.string().url().optional(),
+  issuer: nullableOptional(z.string().url()),
   clientId: z.string().optional(),
   clientSecret: z.string().optional(),
   scopes: z.string().optional(),
@@ -144,7 +165,7 @@ const createProviderSchema = z.object({
     groups: z.string().optional()
   }).optional(),
   autoProvision: z.boolean().optional(),
-  defaultRoleId: z.string().guid().optional(),
+  defaultRoleId: nullableOptional(z.string().guid()),
   allowedDomains: z.string().optional(),
   enforceSSO: z.boolean().optional(),
   trustsIdpMfa: z.boolean().optional()

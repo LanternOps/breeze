@@ -6,6 +6,7 @@ import SsoProviderForm, { type SsoProviderFormValues, type ProviderPreset, type 
 import { fetchWithAuth } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
 import { navigateTo } from '@/lib/navigation';
+import { runAction, handleActionError } from '../../lib/runAction';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
 
@@ -242,20 +243,22 @@ export default function SsoProvidersPage() {
         delete payload.ownerScope;
       }
 
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(payload)
+      // A blank optional field (e.g. defaultRoleId reset to "Select a role",
+      // issuer backspaced out) is posted as '' here. The API normalizes ''
+      // to an explicit NULL — clearing the column — rather than leaving it
+      // untouched, so the admin can actually unset a previously-configured
+      // default role. Mutation outcome (success or failure) must always
+      // reach the user — runAction is the repo convention for that.
+      await runAction({
+        request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
+        errorFallback: t('ssoProvidersPage.failedToSaveProvider'),
+        onUnauthorized: () => navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || t('ssoProvidersPage.failedToSaveProvider'));
-      }
 
       await fetchProviders();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('ssoProvidersPage.anErrorOccurred'));
+      handleActionError(err, t('ssoProvidersPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
