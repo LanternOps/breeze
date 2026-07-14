@@ -128,6 +128,12 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
   const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
 
   if (rel === '/auth/logout') return true;
+  // /users/me is exempted WHOLESALE so an unenrolled user can load their profile
+  // (GET) and finish enrolling. This path-level exemption cannot see the body,
+  // so the narrower rule — that it must NOT admit a RECOVERY-ADDRESS change
+  // (SR2-18) — is enforced in the PATCH /users/me handler (routes/users.ts),
+  // which re-checks getEffectiveMfaPolicy + userIsMfaProtected before recording
+  // a pending email.
   if (rel === '/users/me') return true;
   if (rel.startsWith('/auth/mfa/')) return true;
   // Phone verification is part of the MFA setup flow (SMS factor).

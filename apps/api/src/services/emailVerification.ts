@@ -15,6 +15,11 @@ export interface GenerateTokenInput {
   partnerId: string;
   userId: string;
   email: string;
+  // 'signup' (prove the address on a brand-new partner — the historical
+  // behaviour) or 'email_change' (prove control of users.pending_email on an
+  // existing account, SR2-17). Defaults to 'signup' so every existing caller
+  // is unchanged. Task 8 builds the consume-time branch that reads this column.
+  purpose?: 'signup' | 'email_change';
 }
 
 /**
@@ -66,6 +71,7 @@ export async function generateVerificationToken(input: GenerateTokenInput): Prom
       userId: input.userId,
       email: input.email.toLowerCase(),
       emailEpoch: user.emailEpoch,
+      purpose: input.purpose ?? 'signup',
       expiresAt,
     });
   });
