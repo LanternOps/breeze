@@ -66,6 +66,27 @@ describe('recursive export safety', () => {
     });
   });
 
+  it.each([
+    ['shell password', { content: 'password=hunter2' }],
+    ['exported API key', { content: "export API_KEY='ordinary-low-entropy'" }],
+    ['PowerShell password', { content: "$Password = 'Summer2026!'" }],
+    ['PowerShell secure string', { content: "ConvertTo-SecureString 'Summer2026!' -AsPlainText -Force" }],
+    ['authorization assignment', { content: 'Authorization = Basic dXNlcjpwYXNz' }],
+  ])('rejects low-entropy credential assignment syntax: %s', (_name, definition) => {
+    expect(inspectDefinitionForSecrets(definition)).toMatchObject({
+      safe: false,
+      reason: 'secret_detected',
+    });
+  });
+
+  it.each(['local_admin_password', 'backup-api-token', 'serviceCredential'])
+    ('rejects a secret-semantic identifier value: %s', (fieldKey) => {
+      expect(inspectDefinitionForSecrets({ fieldKey, value: 'Summer2026!' })).toMatchObject({
+        safe: false,
+        reason: 'secret_detected',
+      });
+    });
+
   it('trusts only the derived revision field instead of exempting arbitrary hashes', () => {
     const revision = 'a3f15d4c9e78b260a3f15d4c9e78b260a3f15d4c9e78b260a3f15d4c9e78b260';
     expect(inspectDefinitionForSecrets({

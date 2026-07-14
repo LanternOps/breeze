@@ -154,6 +154,27 @@ describe('partner desired-configuration exports', () => {
     expect(JSON.stringify(blocked)).not.toContain('dnf install');
   });
 
+  it.each([
+    'password=hunter2',
+    "$Password = 'Summer2026!'",
+    "ConvertTo-SecureString 'Summer2026!' -AsPlainText -Force",
+  ])('blocks the whole script for low-entropy credential syntax without leaking derived metadata: %s', async (content) => {
+    mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+      sourceScope: 'organization', name: 'Unsafe rebuild', description: null, category: 'build',
+      osTypes: ['windows'], language: 'powershell', content, parameters: null,
+      timeoutSeconds: 300, runAs: 'system', version: 1, exitCodeSeverityMapping: null,
+    })]);
+    const body = await (await request('/scripts', 'scripts:read')).json();
+    expect(body.data).toEqual([]);
+    expect(body.blocked).toEqual([expect.objectContaining({
+      resource: 'scripts', id: SOURCE_A, orgId: ORG_A, reason: 'secret_detected',
+    })]);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(content);
+    expect(serialized).not.toContain('hunter2');
+    expect(serialized).not.toContain('Summer2026');
+  });
+
   it('exports automation steps and stable script dependencies without run state', async () => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'partner', name: 'Rebuild application', description: null, enabled: true,
@@ -199,6 +220,25 @@ describe('partner desired-configuration exports', () => {
     expect(customFieldExportEnvelopeSchema.parse(body).data[0]).toMatchObject({
       id: SOURCE_A, orgId: ORG_A, fieldKey: 'rack', values: [{ deviceId: DEVICE_ID, value: 'DC1-R07' }],
     });
+  });
+
+  it('blocks a secret-semantic custom definition and value without leaking the value or its hash', async () => {
+    const secretValue = 'Summer2026!';
+    mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+      sourceScope: 'partner', name: 'local_admin_password', fieldKey: 'local_admin_password',
+      type: 'text', options: null, required: false, defaultValue: null, deviceTypes: ['server'],
+      values: [{ deviceId: DEVICE_ID, value: secretValue }],
+      valueCollection: { total: 1, included: 1, complete: true, reason: null },
+    })]);
+    const body = await (await request('/custom-fields', 'custom-fields:read')).json();
+    expect(body.data).toEqual([]);
+    expect(body.blocked).toEqual([expect.objectContaining({
+      resource: 'custom-fields', id: SOURCE_A, orgId: ORG_A, reason: 'secret_detected',
+    })]);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(secretValue);
+    expect(serialized).not.toContain('local_admin_password');
+    expect(serialized).not.toContain('Summer2026');
   });
 
   it('fans partner definitions out with stable composite pagination identity', async () => {

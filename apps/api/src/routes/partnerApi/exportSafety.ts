@@ -36,6 +36,8 @@ const SECRET_VALUE_PATTERNS = [
   /\b(?:gh[oprsu]_|sk-(?:live|test)?-?|xox[baprs]-)[A-Za-z0-9_-]{20,}/u,
   /\bAKIA[0-9A-Z]{16}\b/u,
   /\bhttps?:\/\/[^\s/:@]+:[^\s/@]+@/iu,
+  /(?:^|[\s;|&])(?:export\s+|setx?\s+)?\$?(?:env:)?(?:password|passwd|pwd|token|api[_-]?key|authorization|credential|secret|private[_-]?key)\s*(?:=|:)\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s;]+)/imu,
+  /\bConvertTo-SecureString\s+(?:"[^"\r\n]+"|'[^'\r\n]+')\s+-AsPlainText\b/iu,
 ] as const;
 
 type CanonicalJson = null | boolean | number | string | CanonicalJson[] | { [key: string]: CanonicalJson };
@@ -115,6 +117,8 @@ function windowContainsHighEntropyToken(window: string): boolean {
 
 function isSecretLikeValue(value: string): boolean {
   return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value))
+    || (/^[A-Za-z0-9_.-]{1,128}$/u.test(value)
+      && splitFieldName(value).some((token) => FORBIDDEN_FIELD_TOKENS.has(token)))
     || windowContainsHighEntropyToken(value);
 }
 

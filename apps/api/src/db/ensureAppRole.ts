@@ -150,6 +150,9 @@ export async function ensureAppRole(): Promise<void> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='partner_export_site_material_state') THEN
           REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE partner_export_site_material_state FROM breeze_app;
         END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='partner_export_configuration_org_state') THEN
+          REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE partner_export_configuration_org_state FROM breeze_app;
+        END IF;
       END $$;
     `);
 

@@ -5,6 +5,7 @@ import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { db as appDb, withDbAccessContext } from '../../db';
+import { ensureAppRole } from '../../db/ensureAppRole';
 import {
   automations,
   backupConfigs,
@@ -135,14 +136,18 @@ describe('partner desired-configuration material watermarks', () => {
     await db.update(devices).set({ customFields: { rack: 'DC1-R07' } }).where(eq(devices.id, device.id));
     expect((await stateClock(org.id, 'custom-fields')).getTime()).toBeGreaterThan(before.getTime());
 
-    const [privileges] = await db.execute<{ select: boolean; insert: boolean; update: boolean; delete: boolean }>(sql`
+    // Simulate the post-migration startup call. This blanket-grants table
+    // privileges before applying its permanent per-table exceptions.
+    await ensureAppRole();
+    const [privileges] = await db.execute<{ select: boolean; insert: boolean; update: boolean; delete: boolean; truncate: boolean }>(sql`
       SELECT
         has_table_privilege('breeze_app', 'partner_export_configuration_org_state', 'SELECT') AS select,
         has_table_privilege('breeze_app', 'partner_export_configuration_org_state', 'INSERT') AS insert,
         has_table_privilege('breeze_app', 'partner_export_configuration_org_state', 'UPDATE') AS update,
-        has_table_privilege('breeze_app', 'partner_export_configuration_org_state', 'DELETE') AS delete
+        has_table_privilege('breeze_app', 'partner_export_configuration_org_state', 'DELETE') AS delete,
+        has_table_privilege('breeze_app', 'partner_export_configuration_org_state', 'TRUNCATE') AS truncate
     `);
-    expect(privileges).toEqual({ select: true, insert: false, update: false, delete: false });
+    expect(privileges).toEqual({ select: true, insert: false, update: false, delete: false, truncate: false });
     const [functionPrivileges] = await db.execute<{ touch: boolean; ownerTrigger: boolean }>(sql`
       SELECT
         has_function_privilege('breeze_app', 'public.breeze_partner_export_touch_configuration_orgs(uuid[],text[])', 'EXECUTE') AS touch,
