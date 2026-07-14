@@ -106,6 +106,18 @@ describe('DeviceChangeHistoryTab', () => {
     expect(await screen.findByTestId('change-history-load-more-error')).toBeInTheDocument();
     expect(screen.queryByTestId('change-history-error')).toBeNull();
     expect(screen.getByText('Google Chrome')).toBeInTheDocument();
+
+    // A fresh page-1 load (filter change) clears the stale inline error even
+    // though the new page also has hasMore=true.
+    fetchWithAuthMock.mockResolvedValueOnce(
+      page([change({ id: 'c3', subject: 'Safari' })], true, 'def'),
+    );
+    await userEvent.selectOptions(
+      screen.getByTestId('change-history-type-filter'),
+      'network',
+    );
+    expect(await screen.findByText('Safari')).toBeInTheDocument();
+    expect(screen.queryByTestId('change-history-load-more-error')).toBeNull();
   });
 
   it('(h) a late "Load more" response after a filter change is dropped, not appended', async () => {

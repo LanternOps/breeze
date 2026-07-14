@@ -13,9 +13,11 @@ type ChangeItem = {
   changeType: string;
   changeAction: string;
   subject: string;
-  beforeValue: Record<string, unknown> | null;
-  afterValue: Record<string, unknown> | null;
-  details: Record<string, unknown> | null;
+  // jsonb columns: usually an object of changed fields, but can be an array or
+  // scalar. Kept as `unknown` — formatValue handles every shape.
+  beforeValue: unknown;
+  afterValue: unknown;
+  details: unknown;
 };
 
 type ChangesResponse = {
@@ -143,8 +145,8 @@ function ChangeCell({
   before,
   after,
 }: {
-  before: Record<string, unknown> | null;
-  after: Record<string, unknown> | null;
+  before: unknown;
+  after: unknown;
 }) {
   const hasBefore = before !== null && before !== undefined;
   const hasAfter = after !== null && after !== undefined;
@@ -212,6 +214,9 @@ export default function DeviceChangeHistoryTab({
       } else {
         setLoading(true);
         setError(undefined);
+        // Drop any inline "Load more" error from a prior page so it doesn't
+        // linger above a new page that also has hasMore.
+        setLoadMoreError(undefined);
       }
       try {
         const params = new URLSearchParams({
