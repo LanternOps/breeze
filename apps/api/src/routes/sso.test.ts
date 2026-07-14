@@ -127,6 +127,11 @@ vi.mock('../db', () => ({
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  // I1: the three discovery routes are in SELF_MANAGED_DB_CONTEXT_ROUTES, so they
+  // open their own short request-scoped contexts around each db op (the outbound
+  // OIDC fetch runs between them, holding no connection). Pass-through here — the
+  // real behavior is exercised by the middleware predicate test + integration.
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => any) => fn()),
   // SR2-10 Fix 2: revalidateSsoDefaultRole asserts the ambient context is
   // 'system' before doing anything else. withSystemDbAccessContext above is a
   // dumb passthrough (it does not actually track ambient state the way the
@@ -320,7 +325,17 @@ vi.mock('../middleware/auth', () => ({
       return c.json({ error: 'MFA required' }, 403);
     }
     return next();
-  })
+  }),
+  // I1: routes/sso rebuilds the request's RLS context from `auth` for its own
+  // short DB blocks (the provider routes opt out of the ambient request tx).
+  dbAccessContextFromAuth: vi.fn((auth: any) => ({
+    scope: auth.scope,
+    orgId: auth.orgId ?? null,
+    accessibleOrgIds: auth.accessibleOrgIds ?? null,
+    accessiblePartnerIds: auth.partnerId ? [auth.partnerId] : [],
+    userId: auth.user?.id ?? null,
+    currentPartnerId: auth.partnerId ?? null,
+  }))
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
