@@ -244,6 +244,53 @@ describe("M365CustomerGraphReadCard", () => {
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
   });
 
+  it("clears an Org A callback during an in-flight switch, keeps Org B data, and refreshes once for a B callback", async () => {
+    const pendingOrgA = deferredResponse();
+    fetchWithAuthMock
+      .mockReturnValueOnce(pendingOrgA.promise)
+      .mockResolvedValueOnce(makeResponse(envelope({
+        connection: connection({
+          id: "88888888-8888-4888-8888-888888888888",
+          tenantId: "99999999-9999-4999-8999-999999999999",
+          displayName: "Contoso B",
+        }),
+      })))
+      .mockResolvedValueOnce(makeResponse(envelope({
+        connection: connection({
+          id: "88888888-8888-4888-8888-888888888888",
+          tenantId: "99999999-9999-4999-8999-999999999999",
+          displayName: "Contoso B",
+        }),
+      })));
+
+    const view = render(
+      <M365CustomerGraphReadCard
+        callbackResult="tenant_mismatch"
+        callbackRefreshKey={1}
+      />,
+    );
+    expect(screen.getByText("Microsoft returned a different tenant. Start consent again for this organization.")).toBeInTheDocument();
+
+    state.currentOrgId = ORG_B;
+    view.rerender(
+      <M365CustomerGraphReadCard callbackResult={null} callbackRefreshKey={1} />,
+    );
+    expect(screen.queryByText("Microsoft returned a different tenant. Start consent again for this organization.")).not.toBeInTheDocument();
+    expect(await screen.findByText("Contoso B")).toBeInTheDocument();
+
+    pendingOrgA.resolve(makeResponse(envelope({ connection: connection() })));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.getByText("Contoso B")).toBeInTheDocument();
+    expect(screen.queryByText("Northwind Tenant")).not.toBeInTheDocument();
+
+    view.rerender(
+      <M365CustomerGraphReadCard callbackResult="active" callbackRefreshKey={2} />,
+    );
+    expect(await screen.findByText("Microsoft consent completed. The refreshed connection status is shown below.")).toBeInTheDocument();
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(3));
+  });
+
   it.each([
     ["pending-consent", "Pending consent"],
     ["verifying", "Verifying"],

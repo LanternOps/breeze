@@ -33,6 +33,7 @@ import StripePaymentsIntegration from "./StripePaymentsIntegration";
 import UnifiIntegration from "./UnifiIntegration";
 import { getJwtClaims } from "../../lib/authScope";
 import { useHelpStore, rebaseDocsUrl } from "../../stores/helpStore";
+import { useOrgStore } from "../../stores/orgStore";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 
@@ -169,6 +170,10 @@ export default function IntegrationsPage({
   initialTab = "webhooks",
 }: IntegrationsPageProps) {
   const { t } = useTranslation("integrations");
+  const currentOrgId = useOrgStore((value) => value.currentOrgId);
+  const claims = getJwtClaims();
+  const callbackOrgId = currentOrgId
+    || (claims.scope === "organization" ? claims.orgId ?? null : null);
   // Deep-link support: the URL hash selects the initial tab — and sub-tab — on
   // load, e.g. /integrations#psa or /integrations#huntress.
   //
@@ -184,7 +189,8 @@ export default function IntegrationsPage({
   const [customerGraphReadCallback, setCustomerGraphReadCallback] = useState<{
     result: M365CustomerGraphReadCallbackResult | null;
     refreshKey: number;
-  }>({ result: null, refreshKey: 0 });
+    orgId: string | null;
+  }>({ result: null, refreshKey: 0, orgId: null });
 
   // Adopt the hash post-commit / pre-paint (no visible flash of the fallback
   // tab), and keep following it for back/forward and externally-changed hashes.
@@ -202,6 +208,7 @@ export default function IntegrationsPage({
         setCustomerGraphReadCallback((current) => ({
           result: parsed.customerGraphReadResult ?? null,
           refreshKey: current.refreshKey + 1,
+          orgId: callbackOrgId,
         }));
         window.history.replaceState(
           window.history.state,
@@ -210,14 +217,16 @@ export default function IntegrationsPage({
         );
       } else {
         setCustomerGraphReadCallback((current) =>
-          current.result === null ? current : { ...current, result: null },
+          current.result === null && current.orgId === null
+            ? current
+            : { ...current, result: null, orgId: null },
         );
       }
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
     return () => window.removeEventListener("hashchange", applyHash);
-  }, [initialTab]);
+  }, [callbackOrgId, initialTab]);
 
   // Select a top-level tab and reflect it in the URL hash so the tab is
   // deep-linkable / shareable and survives a reload.
@@ -245,7 +254,11 @@ export default function IntegrationsPage({
   // org-scope users get a clear message instead of 403 errors. getJwtClaims returns
   // null scope on a missing/undecodable token, so only a confirmed 'organization'
   // scope is blocked; everything else falls through to the server's own check.
-  const isOrgScoped = getJwtClaims().scope === "organization";
+  const isOrgScoped = claims.scope === "organization";
+  const visibleCustomerGraphReadResult = callbackOrgId !== null
+    && customerGraphReadCallback.orgId === callbackOrgId
+    ? customerGraphReadCallback.result
+    : null;
 
   return (
     <div className="space-y-6">
@@ -424,7 +437,7 @@ export default function IntegrationsPage({
         <div className="space-y-6">
           <M365Integration />
           <M365CustomerGraphReadCard
-            callbackResult={customerGraphReadCallback.result}
+            callbackResult={visibleCustomerGraphReadResult}
             callbackRefreshKey={customerGraphReadCallback.refreshKey}
           />
         </div>
