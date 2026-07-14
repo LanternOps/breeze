@@ -671,6 +671,22 @@ describe('removeOrderLine', () => {
       .rejects.toMatchObject({ status: 409 });
   });
 
+  it('rejects without deleting when the order becomes immutable before deletion', async () => {
+    const transitioningOrder = { ...baseOrder, status: 'draft' };
+    const lockedOrderQuery = selectRowsOnce([transitioningOrder]);
+    mocks.withDbAccessContext.mockImplementationOnce(async (_context: unknown, fn: () => unknown) => {
+      transitioningOrder.status = 'submitting';
+      return fn();
+    });
+    deleteReturningOnce([{ id: 'wrongly-deleted-line' }]);
+
+    await expect(removeOrderLine({ partnerId: 'p1', orderId: 'ord-1', lineId: 'line-1' }))
+      .rejects.toMatchObject({ status: 409 });
+
+    expect(mocks.db.delete).not.toHaveBeenCalled();
+    expect(lockedOrderQuery.for).toHaveBeenCalledWith('update');
+  });
+
   it('deletes only the partner and order-scoped line', async () => {
     mockOrder();
     deleteReturningOnce([{ id: 'line-1' }]);

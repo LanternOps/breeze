@@ -429,18 +429,26 @@ export async function removeOrderLine(input: {
   orderId: string;
   lineId: string;
 }): Promise<{ removed: boolean }> {
-  const order = await loadOrder(input.partnerId, input.orderId);
-  requireMutableOrder(order);
+  return withPartnerDbContext(input.partnerId, async () => {
+    const [order] = await db
+      .select()
+      .from(pax8Orders)
+      .where(and(eq(pax8Orders.partnerId, input.partnerId), eq(pax8Orders.id, input.orderId)))
+      .for('update')
+      .limit(1);
+    if (!order) throw new Pax8OrderError('Pax8 order not found.', 404);
+    requireMutableOrder(order);
 
-  const removed = await db
-    .delete(pax8OrderLines)
-    .where(and(
-      eq(pax8OrderLines.partnerId, input.partnerId),
-      eq(pax8OrderLines.orderId, input.orderId),
-      eq(pax8OrderLines.id, input.lineId),
-    ))
-    .returning({ id: pax8OrderLines.id });
-  return { removed: removed.length > 0 };
+    const removed = await db
+      .delete(pax8OrderLines)
+      .where(and(
+        eq(pax8OrderLines.partnerId, input.partnerId),
+        eq(pax8OrderLines.orderId, input.orderId),
+        eq(pax8OrderLines.id, input.lineId),
+      ))
+      .returning({ id: pax8OrderLines.id });
+    return { removed: removed.length > 0 };
+  });
 }
 
 export async function getOrderWithLines(input: {
