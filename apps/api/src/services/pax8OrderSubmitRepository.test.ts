@@ -18,7 +18,11 @@ vi.mock('./pax8OrderService', () => {
       super(message);
     }
   }
-  class Pax8OrderRestageRequiredError extends Pax8OrderError {}
+  class Pax8OrderRestageRequiredError extends Pax8OrderError {
+    constructor(message: string) {
+      super(message, 409);
+    }
+  }
   return {
     Pax8OrderError,
     Pax8OrderRestageRequiredError,
@@ -145,7 +149,6 @@ describe('pax8OrderSubmitRepository.claimOrder', () => {
     const { Pax8OrderRestageRequiredError } = await import('./pax8OrderService');
     mocks.validateLines.mockRejectedValueOnce(new Pax8OrderRestageRequiredError(
       'This legacy quantity change has no authorization baseline; remove and stage it again.',
-      409,
     ));
 
     await expect(pax8OrderSubmitRepository.claimOrder({
@@ -182,7 +185,6 @@ describe('pax8OrderSubmitRepository.claimOrder', () => {
     const { Pax8OrderRestageRequiredError } = await import('./pax8OrderService');
     mocks.validateLines.mockRejectedValueOnce(new Pax8OrderRestageRequiredError(
       'Quote conflict must remain non-actionable.',
-      409,
     ));
 
     await expect(pax8OrderSubmitRepository.claimOrder({
