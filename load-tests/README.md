@@ -33,8 +33,9 @@ k6 version
 
 ## Configuration
 
-All scenarios read configuration from `config.js`. Override values with
-environment variables passed via `-e`:
+All scenarios read configuration from `config.js`. Override non-secret values
+with environment variables passed via `-e`; inject secret values through the
+process environment or a secret manager:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -140,10 +141,16 @@ dedicated service-principal key with all eight partner read scopes; a human JWT
 or ordinary organization API key cannot authenticate this route.
 
 ```bash
-k6 run -e BASE_URL=https://breeze.example.com \
-       -e PARTNER_API_KEY=brz_sp_replace_with_test_key \
-       scenarios/partner-api-export.js
+# Read silently or replace this line with your secret manager's environment injection.
+read -r -s PARTNER_API_KEY && export PARTNER_API_KEY
+k6 run -e BASE_URL=https://breeze.example.com scenarios/partner-api-export.js
+unset PARTNER_API_KEY
 ```
+
+Never pass the key with k6's `-e` flag: command-line arguments can be captured
+by shell history, process listings, and CI logs. The local k6 process reads the
+inherited `PARTNER_API_KEY` environment variable. In automation, inject that
+variable directly from the job's secret manager and mask it from logs.
 
 The setup phase performs a full cursor traversal of all 13 v1 resources. The
 single shared iteration then uses each resource's full-crawl `snapshotAt` as
@@ -165,7 +172,8 @@ For every resource, including `custom-fields` and scalar
   operational pool-saturation proxy, as are explicit pool-saturation headers
   or bounded error codes.
 
-The scenario writes `partner-api-export-summary.json`. A run fails on a v1
+The scenario writes `partner-api-export-summary.json`, including full and
+incremental page/traversal duration distributions for every resource. A run fails on a v1
 contract error, duplicate identity, changing snapshot, detected pool
 saturation, fewer than the expected devices, retry/page exhaustion, or the
 15-minute incremental budget.
@@ -245,11 +253,41 @@ fixture with at least 10,000 devices, both for the first page and a late cursor
 page of each incremental traversal. Retain the plan, actual rows, rows removed
 by filter, sort method/disk spill, buffer hits/reads, and execution time.
 
-The current local verification database contained one device and one
-discovered asset, the API stack was not running, and k6 was not installed. That
-environment cannot provide representative planner or latency evidence, so this
-change adds no database index. Static predicate inspection identifies two
-candidates that the seeded run must evaluate:
+### Representative local evidence (2026-07-14)
+
+A disposable PostgreSQL, Redis, and API stack was populated with one partner,
+one organization, one site, 10,000 devices, and one hardware, disk, network,
+software, and scalar custom-field value record per device. The site also held
+12,000 approved printer assets. k6 ran in Docker with the service-principal key
+inherited from the container environment; the key was never included in the
+k6 command arguments.
+
+The full traversal completed in 71.909 seconds and the no-change incremental
+traversal completed in 1.832 seconds. Across 123 pages, 50,010 records, and
+40,026,561 response bytes, the run recorded zero retries, HTTP 429 responses,
+HTTP 5xx responses, pool-saturation signals, contract failures, duplicate
+identities, and snapshot changes. Notable full-traversal results were:
+
+| Resource | Page p95 | Traversal |
+|---|---:|---:|
+| `devices` | 172 ms | 5.551 s |
+| `device-inventory` | 1.413 s | 30.368 s |
+| `device-software` | 333 ms | 7.664 s |
+| `device-relationships` | 893 ms | 19.798 s |
+| `custom-field-values` | 343 ms | 7.382 s |
+
+`EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` was then run as the unprivileged
+application role with partner RLS context on the same fixture. The approved
+printer page used the primary-key index and returned 500 rows in 26.311 ms;
+the corresponding 12,000-row count used a sequential scan and completed in
+43.037 ms. No-change incremental device and material-state queries scanned
+10,000 devices without disk-spilling their 25 kB quicksorts and completed in
+68.739 ms and 78.300 ms, respectively.
+
+No index was added: the observed database work was small relative to the
+15-minute cadence, and the end-to-end incremental pass used about 0.2% of that
+budget. Re-evaluate the following candidates with the production-shaped data
+distribution if site asset density or change volume grows materially:
 
 - Site inventory exports approved `printer`, `router`, `switch`, `firewall`,
   `access_point`, and `nas` assets. The existing

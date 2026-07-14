@@ -48,8 +48,20 @@ const pageDuration = new Trend('partner_export_page_duration', true);
 const fullDuration = new Trend('partner_export_full_duration', true);
 const incrementalDuration = new Trend('partner_export_incremental_duration', true);
 
+const perResourceEvidenceThresholds = {};
+for (const resource of RESOURCES) {
+  for (const mode of ['full', 'incremental']) {
+    const selector = `resource:${resource},mode:${mode}`;
+    perResourceEvidenceThresholds[`partner_export_page_duration{${selector}}`] = ['max>=0'];
+    perResourceEvidenceThresholds[`partner_export_traversal_duration{${selector}}`] = mode === 'incremental'
+      ? ['max<900000']
+      : ['max>=0'];
+  }
+}
+
 export const options = {
   setupTimeout: '30m',
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)'],
   scenarios: {
     incremental_export: {
       executor: 'shared-iterations',
@@ -64,9 +76,9 @@ export const options = {
     partner_export_duplicate_records: ['count==0'],
     partner_export_snapshot_changes: ['count==0'],
     partner_export_pool_saturation: ['count==0'],
-    'partner_export_traversal_duration{mode:incremental}': ['max<900000'],
     partner_export_incremental_duration: ['max<900000'],
     dropped_iterations: ['count==0'],
+    ...perResourceEvidenceThresholds,
   },
 };
 
@@ -269,7 +281,31 @@ function metricValue(data, name, field) {
     : 0;
 }
 
+function durationDistribution(data, name) {
+  const values = data.metrics[name] && data.metrics[name].values;
+  if (!values) return null;
+  return {
+    avg: values.avg || 0,
+    min: values.min || 0,
+    med: values.med || 0,
+    max: values.max || 0,
+    p90: values['p(90)'] || 0,
+    p95: values['p(95)'] || 0,
+  };
+}
+
 export function handleSummary(data) {
+  const resourceDurations = {};
+  for (const resource of RESOURCES) {
+    resourceDurations[resource] = {};
+    for (const mode of ['full', 'incremental']) {
+      const selector = `resource:${resource},mode:${mode}`;
+      resourceDurations[resource][mode] = {
+        pagesMs: durationDistribution(data, `partner_export_page_duration{${selector}}`),
+        traversalMs: durationDistribution(data, `partner_export_traversal_duration{${selector}}`),
+      };
+    }
+  }
   const summary = {
     pages: metricValue(data, 'partner_export_pages', 'count'),
     records: metricValue(data, 'partner_export_records', 'count'),
@@ -283,6 +319,7 @@ export function handleSummary(data) {
     snapshotChanges: metricValue(data, 'partner_export_snapshot_changes', 'count'),
     fullDurationMs: metricValue(data, 'partner_export_full_duration', 'max'),
     incrementalDurationMs: metricValue(data, 'partner_export_incremental_duration', 'max'),
+    resourceDurations,
   };
   return {
     stdout: `\n=== Partner API export ===\n${JSON.stringify(summary, null, 2)}\n`,
