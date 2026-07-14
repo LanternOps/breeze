@@ -16,7 +16,7 @@ import {
 import { acceptQuote } from '../../services/quoteAcceptService';
 import { pax8CompanyOrderReadiness } from '../../services/pax8CompanyReadiness';
 import { PAX8_COMPANY_MAPPING_REQUIRED_ERROR } from '../../services/quoteToPax8Order';
-import { addCatalogLine, createQuote } from '../../services/quoteService';
+import { addCatalogLine, createQuote, getQuote } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
 import type { QuoteActor } from '../../services/quoteTypes';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -153,6 +153,30 @@ describe('quote acceptance stages Pax8 fulfillment (real Postgres)', () => {
     expect(state.lines.every((line) => state.createdContractLines.some((created) => created.id === line.contractLineId))).toBe(true);
     expect(state.createdContractLines.every((line) => line.catalogItemId === null)).toBe(true);
     expect(state.createdContractLines.every((line) => line.unitPrice === '19.95')).toBe(true);
+  });
+
+  runDb('returns the staged order summary on quote reload without leaking it cross-tenant', async () => {
+    const fixture = await seedPax8Quote({ duplicateLines: 2, mappedCompany: true });
+    const accepted = await withDbAccessContext(fixture.ctx, () => acceptQuote({
+      quoteId: fixture.quote.id,
+      signerName: 'A Customer',
+    }));
+
+    const reloaded = await withDbAccessContext(fixture.ctx, () =>
+      getQuote(fixture.quote.id, actor(fixture.org.id, fixture.partner.id)));
+    expect(reloaded).toMatchObject({
+      pax8OrderId: accepted.pax8OrderId,
+      pax8OrderLineCount: 2,
+    });
+
+    const foreign = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      return { partner, org };
+    });
+    await expect(withDbAccessContext(context(foreign.org.id, foreign.partner.id), () =>
+      getQuote(fixture.quote.id, actor(foreign.org.id, foreign.partner.id))))
+      .rejects.toMatchObject({ status: 404, code: 'QUOTE_NOT_FOUND' });
   });
 
   runDb('captures a mapped company and leaves one-time fulfillment detached from contracts', async () => {

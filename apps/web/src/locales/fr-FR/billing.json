@@ -566,6 +566,11 @@
         "sent": "Envoyé",
         "viewed": "Vu"
       },
+      "pax8Order": {
+        "message_one": "Ce devis a préparé une commande Pax8 ({{count}} article) en attente des détails de provisionnement",
+        "message_other": "Ce devis a préparé une commande Pax8 ({{count}} articles) en attente des détails de provisionnement",
+        "open": "Ouvrir la commande Pax8"
+      },
       "pricing": "Tarification",
       "proposalImageAlt": "Image de la proposition",
       "table": {

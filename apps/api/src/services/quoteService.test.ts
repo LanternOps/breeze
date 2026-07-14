@@ -141,6 +141,7 @@ describe('quoteService deposits', () => {
     queueResult([{ id: 'q1', orgId: 'org1', taxRate: '0.10000', depositType: 'percent', depositPercent: '30.00' }]); // quote
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]); // lines
+    queueResult([]); // no staged Pax8 order
 
     const { quote } = await svc.getQuote('q1', actor);
 
@@ -148,6 +149,31 @@ describe('quoteService deposits', () => {
     expect(quote.categoryBreakdown).toEqual([
       { category: 'hardware', oneTimeTotal: '1000.00', monthlyTotal: '0.00', annualTotal: '0.00' },
     ]);
+  });
+
+  it('getQuote returns the persisted staged Pax8 order summary for reloads', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', taxRate: null, depositType: 'none', depositPercent: null }]);
+    queueResult([]); // blocks
+    queueResult([]); // quote lines
+    queueResult([{ pax8OrderId: 'order-1' }]);
+    queueResult([{ count: 3 }]);
+
+    const detail = await svc.getQuote('q1', actor);
+
+    expect(detail.pax8OrderId).toBe('order-1');
+    expect(detail.pax8OrderLineCount).toBe(3);
+  });
+
+  it('getQuote returns a null staged-order summary when acceptance staged no Pax8 order', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', taxRate: null, depositType: 'none', depositPercent: null }]);
+    queueResult([]); // blocks
+    queueResult([]); // quote lines
+    queueResult([]); // no Pax8 order for this quote/tenant
+
+    const detail = await svc.getQuote('q1', actor);
+
+    expect(detail.pax8OrderId).toBeNull();
+    expect(detail.pax8OrderLineCount).toBe(0);
   });
 
   it('listQuotes left-joins the converted invoice and flattens invoiceDepositDue/invoiceAmountPaid onto each row', async () => {

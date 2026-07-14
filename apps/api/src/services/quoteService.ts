@@ -1,10 +1,11 @@
-import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
 import { organizations, partners } from '../db/schema/orgs';
 import { catalogItems } from '../db/schema/catalog';
+import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
@@ -331,6 +332,22 @@ export async function getQuote(id: string, actor: QuoteActor) {
   assertQuoteAccess(actor, q);
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
   const lines = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder);
+  // Quote acceptance returns the staged order id once, but the technician may
+  // reload or open the converted quote later. Keep discoverability in the quote
+  // read model itself. The quote access check runs first, and the lookup repeats
+  // the partner + org axes in addition to relying on the tables' forced RLS.
+  const [pax8OrderSummary] = await db.select({ pax8OrderId: pax8Orders.id }).from(pax8Orders).where(and(
+    eq(pax8Orders.sourceQuoteId, id),
+    eq(pax8Orders.partnerId, q.partnerId),
+    eq(pax8Orders.orgId, q.orgId),
+  )).orderBy(desc(pax8Orders.createdAt)).limit(1);
+  const [pax8OrderLineSummary] = pax8OrderSummary
+    ? await db.select({ count: count(pax8OrderLines.id) }).from(pax8OrderLines).where(and(
+        eq(pax8OrderLines.orderId, pax8OrderSummary.pax8OrderId),
+        eq(pax8OrderLines.partnerId, q.partnerId),
+        eq(pax8OrderLines.orgId, q.orgId),
+      ))
+    : [];
   // dueOnAcceptanceTotal is a derived (non-persisted) figure: the amount accept
   // actually invoices (one-time lines only — recurring is deferred to the Phase 4
   // contract). Computed from the canonical quoteMath so it stays penny-consistent
@@ -348,7 +365,10 @@ export async function getQuote(id: string, actor: QuoteActor) {
       depositDueTotal: totals.depositDueTotal,
       categoryBreakdown: totals.categoryBreakdown,
     },
-    blocks, lines,
+    blocks,
+    lines,
+    pax8OrderId: pax8OrderSummary?.pax8OrderId ?? null,
+    pax8OrderLineCount: Number(pax8OrderLineSummary?.count ?? 0),
   };
 }
 

@@ -51,6 +51,7 @@ describe('quoteService site-axis guard', () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, taxRate: null, depositType: 'none', depositPercent: null }]); // quote row
     queueResult([]); // blocks
     queueResult([]); // lines
+    queueResult([]); // staged Pax8 order
     const { quote } = await svc.getQuote('q1', unrestricted);
     expect(quote.id).toBe('q1');
   });

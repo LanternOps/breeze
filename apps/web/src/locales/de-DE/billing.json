@@ -566,6 +566,11 @@
         "sent": "Gesendet",
         "viewed": "Gesehen"
       },
+      "pax8Order": {
+        "message_one": "Dieses Angebot hat einen Pax8-Auftrag ({{count}} Position) bereitgestellt, für den noch Bereitstellungsdetails fehlen",
+        "message_other": "Dieses Angebot hat einen Pax8-Auftrag ({{count}} Positionen) bereitgestellt, für den noch Bereitstellungsdetails fehlen",
+        "open": "Pax8-Auftrag öffnen"
+      },
       "pricing": "Preise",
       "proposalImageAlt": "Angebotsbild",
       "table": {

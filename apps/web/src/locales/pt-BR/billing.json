@@ -566,6 +566,11 @@
         "sent": "Enviado",
         "viewed": "Visualizado"
       },
+      "pax8Order": {
+        "message_one": "Esta cotação preparou um pedido da Pax8 ({{count}} item) aguardando os detalhes de provisionamento",
+        "message_other": "Esta cotação preparou um pedido da Pax8 ({{count}} itens) aguardando os detalhes de provisionamento",
+        "open": "Abrir pedido da Pax8"
+      },
       "pricing": "Preços",
       "proposalImageAlt": "Imagem da proposta",
       "table": {

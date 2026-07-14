@@ -174,6 +174,7 @@ describe('sendQuote deposit validation', () => {
     }]);
     queueResult([]); // blocks
     queueResult([]); // lines — none at all, so dueOnAcceptanceTotal is $0
+    queueResult([]); // no staged Pax8 order
 
     await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
   });
@@ -185,6 +186,7 @@ describe('sendQuote deposit validation', () => {
     }]);
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([]); // no staged Pax8 order
 
     await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
   });
@@ -201,6 +203,7 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     // A one-time line exists (so dueOnAcceptance > 0) but NONE are depositEligible.
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([]); // no staged Pax8 order
 
     await expect(sendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'DEPOSIT_INVALID' });
   });
@@ -212,6 +215,7 @@ describe('sendQuote deposit validation', () => {
     }]);
     queueResult([]); // blocks
     queueResult([]); // lines
+    queueResult([]); // no staged Pax8 order
 
     // Proves the deposit gate is skipped for depositType 'none' — the failure
     // that surfaces is the pre-existing status guard, never DEPOSIT_INVALID.
@@ -259,6 +263,7 @@ describe('sendQuote customer-facing PDF', () => {
     }]);
     queueResult([]); // blocks
     queueResult([visibleLine, internalLine]); // lines
+    queueResult([]); // no staged Pax8 order
 
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
@@ -306,6 +311,7 @@ describe('sendQuote bill-to snapshot', () => {
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([]);       // getQuote: no staged Pax8 order
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
     queueResult([org]);    // org (billing snapshot + recipient)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)

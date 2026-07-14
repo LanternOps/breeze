@@ -149,12 +149,32 @@ describe('quote crud + lines routes', () => {
   });
 
   it('GET /:id fetches one quote', async () => {
-    (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID }, blocks: [], lines: [] });
+    (svc.getQuote as any).mockResolvedValue({
+      quote: { id: QUOTE_ID },
+      blocks: [],
+      lines: [],
+      pax8OrderId: '55555555-5555-5555-5555-555555555555',
+      pax8OrderLineCount: 2,
+    });
     const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.quote.id).toBe(QUOTE_ID);
+    expect(body.data).toMatchObject({
+      pax8OrderId: '55555555-5555-5555-5555-555555555555',
+      pax8OrderLineCount: 2,
+    });
     expect(svc.getQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+  });
+
+  it('GET /:id denies callers without quotes:read before loading the staged-order summary', async () => {
+    const { HTTPException } = await import('hono/http-exception');
+    gate.permGate = async () => { throw new HTTPException(403, { message: 'Permission denied' }); };
+
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+
+    expect(res.status).toBe(403);
+    expect(svc.getQuote).not.toHaveBeenCalled();
   });
 
   it('POST /:id/lines adds a manual line', async () => {

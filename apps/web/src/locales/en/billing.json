@@ -566,6 +566,11 @@
         "sent": "Sent",
         "viewed": "Viewed"
       },
+      "pax8Order": {
+        "message_one": "This quote staged a Pax8 order ({{count}} item) awaiting provisioning details",
+        "message_other": "This quote staged a Pax8 order ({{count}} items) awaiting provisioning details",
+        "open": "Open Pax8 order"
+      },
       "pricing": "Pricing",
       "proposalImageAlt": "Proposal image",
       "table": {

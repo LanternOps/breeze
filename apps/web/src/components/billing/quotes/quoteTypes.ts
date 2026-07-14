@@ -149,6 +149,10 @@ export interface QuoteDetail {
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   branding?: QuoteBranding;
+  /** Persisted fulfillment staged during acceptance. Included in the detail
+   * read model so technicians can discover the order after a reload. */
+  pax8OrderId?: string | null;
+  pax8OrderLineCount?: number;
 }
 
 export const STATUS_LABELS: Record<QuoteStatus, string> = {
