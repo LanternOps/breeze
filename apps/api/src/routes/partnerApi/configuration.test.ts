@@ -11,6 +11,25 @@ const SOURCE_B = '55555555-5555-4555-8555-555555555555';
 const DEVICE_ID = '66666666-6666-4666-8666-666666666666';
 const CREATED_AT = new Date('2026-07-10T12:00:00.000Z');
 const UPDATED_AT = new Date('2026-07-12T12:00:00.000Z');
+const PATCH_INLINE_MIRROR_MATERIAL = '__breezePatchInlineMirror';
+const NORMALIZED_PATCH_FACTS = {
+  sources: ['os'],
+  autoApprove: false,
+  autoApproveSeverities: [],
+  scheduleFrequency: 'weekly',
+  scheduleTime: '02:00',
+  scheduleDayOfWeek: 'sun',
+  scheduleDayOfMonth: 1,
+  rebootPolicy: 'if_required',
+  exclusiveWindowsUpdate: false,
+};
+
+function patchMaterial(rawMirror: unknown = {}) {
+  return {
+    ...NORMALIZED_PATCH_FACTS,
+    [PATCH_INLINE_MIRROR_MATERIAL]: rawMirror,
+  };
+}
 
 const mocks = vi.hoisted(() => ({
   execute: vi.fn(),
@@ -115,7 +134,7 @@ describe('partner desired-configuration exports', () => {
   it('exports policy definitions and distinct assignment records', async () => {
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'organization', name: 'Server baseline', description: 'Durable desired state',
-      status: 'active', features: [{ id: SOURCE_B, type: 'patch', policyId: null, settings: { rebootPolicy: 'if_required' } }],
+      status: 'active', features: [{ id: SOURCE_B, type: 'patch', policyId: null, settings: patchMaterial() }],
     })]);
     const policy = await (await request('/configuration-policies', 'configuration:read')).json();
     expect(configurationPolicyExportEnvelopeSchema.parse(policy).data[0]).toMatchObject({
@@ -137,17 +156,6 @@ describe('partner desired-configuration exports', () => {
   });
 
   it('canonicalizes the internal patch mirror before safety inspection or DTO assembly', async () => {
-    const normalizedPatchFacts = {
-      sources: ['os'],
-      autoApprove: false,
-      autoApproveSeverities: [],
-      scheduleFrequency: 'weekly',
-      scheduleTime: '02:00',
-      scheduleDayOfWeek: 'sun',
-      scheduleDayOfMonth: 1,
-      rebootPolicy: 'if_required',
-      exclusiveWindowsUpdate: false,
-    };
     mocks.queryResults.push([row(SOURCE_A, ORG_A, {
       sourceScope: 'organization',
       name: 'Canonical patch policy',
@@ -157,14 +165,11 @@ describe('partner desired-configuration exports', () => {
         id: SOURCE_B,
         type: 'patch',
         policyId: null,
-        settings: {
-          ...normalizedPatchFacts,
-          __breezePatchInlineMirror: {
+        settings: patchMaterial({
             autoApproveDeferralDays: 7,
             apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
             password: 'hunter2',
-          },
-        },
+        }),
       }],
     })]);
 
@@ -173,7 +178,7 @@ describe('partner desired-configuration exports', () => {
     const body = await response.json();
     expect(body.blocked).toBeUndefined();
     expect(body.data[0].features[0].settings).toEqual({
-      ...normalizedPatchFacts,
+      ...NORMALIZED_PATCH_FACTS,
       autoApproveDeferralDays: 7,
       apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
     });
@@ -188,24 +193,123 @@ describe('partner desired-configuration exports', () => {
         id: SOURCE_B,
         type: 'patch',
         policyId: null,
-        settings: {
-          ...normalizedPatchFacts,
-          __breezePatchInlineMirror: {
+        settings: patchMaterial({
             autoApproveDeferralDays: 7,
             apps: [{ action: 'block' }],
             apiKey: 'sk-live-never-export',
-          },
-        },
+        }),
       }],
     })]);
     const invalidBody = await (await request('/configuration-policies', 'configuration:read')).json();
     expect(invalidBody.blocked).toBeUndefined();
     expect(invalidBody.data[0].features[0].settings).toEqual({
-      ...normalizedPatchFacts,
+      ...NORMALIZED_PATCH_FACTS,
       autoApproveDeferralDays: 0,
       apps: [],
     });
     expect(JSON.stringify(invalidBody)).not.toMatch(/__breezePatchInlineMirror|sk-live-never-export/u);
+  });
+
+  it.each([
+    'security', 'software_policy', 'peripheral_control',
+    'warranty', 'helper', 'vulnerability',
+  ] as const)('blocks a whole %s policy when an existing row contains the reserved marker', async (featureType) => {
+    mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+      sourceScope: 'organization',
+      name: 'Unsafe policy',
+      description: null,
+      status: 'active',
+      features: [{
+        id: SOURCE_B,
+        type: featureType,
+        policyId: null,
+        settings: { nested: { [PATCH_INLINE_MIRROR_MATERIAL]: 'attacker-value' } },
+      }],
+    })]);
+
+    const response = await request('/configuration-policies', 'configuration:read');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toEqual([]);
+    expect(body.blocked).toEqual([{
+      resource: 'configuration-policies',
+      id: SOURCE_A,
+      orgId: ORG_A,
+      reason: 'secret_detected',
+      fieldPaths: ['features'],
+    }]);
+    expect(JSON.stringify(body)).not.toMatch(/__breezePatchInlineMirror|attacker-value/u);
+  });
+
+  it('blocks an attacker collision nested inside otherwise valid patch mirror material', async () => {
+    mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+      sourceScope: 'organization',
+      name: 'Unsafe patch policy',
+      description: null,
+      status: 'active',
+      features: [{
+        id: SOURCE_B,
+        type: 'patch',
+        policyId: null,
+        settings: patchMaterial({
+          nested: { [PATCH_INLINE_MIRROR_MATERIAL]: 'collision-secret' },
+        }),
+      }],
+    })]);
+
+    const body = await (await request('/configuration-policies', 'configuration:read')).json();
+    expect(body.data).toEqual([]);
+    expect(body.blocked).toEqual([expect.objectContaining({
+      resource: 'configuration-policies', id: SOURCE_A, orgId: ORG_A,
+      reason: 'secret_detected', fieldPaths: ['features'],
+    })]);
+    expect(JSON.stringify(body)).not.toMatch(/__breezePatchInlineMirror|collision-secret/u);
+  });
+
+  it('blocks malformed non-array feature material before revision hashing', async () => {
+    mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+      sourceScope: 'organization',
+      name: 'Malformed features policy',
+      description: null,
+      status: 'active',
+      features: {
+        nested: { [PATCH_INLINE_MIRROR_MATERIAL]: 'non-array-collision' },
+      },
+    })]);
+
+    const body = await (await request('/configuration-policies', 'configuration:read')).json();
+    expect(body.data).toEqual([]);
+    expect(body.blocked).toEqual([expect.objectContaining({
+      resource: 'configuration-policies', id: SOURCE_A, orgId: ORG_A,
+      reason: 'secret_detected', fieldPaths: ['features'],
+    })]);
+    expect(JSON.stringify(body)).not.toMatch(/__breezePatchInlineMirror|non-array-collision/u);
+  });
+
+  it.each([
+    ['non-object settings', 'malformed-patch-material'],
+    ['missing mirror material', NORMALIZED_PATCH_FACTS],
+    ['missing normalized child', {
+      ...NORMALIZED_PATCH_FACTS,
+      scheduleTime: undefined,
+      [PATCH_INLINE_MIRROR_MATERIAL]: {},
+    }],
+  ] as const)('blocks patch rows with %s before revision or DTO assembly', async (_name, settings) => {
+    mocks.queryResults.push([row(SOURCE_A, ORG_A, {
+      sourceScope: 'organization',
+      name: 'Malformed patch policy',
+      description: null,
+      status: 'active',
+      features: [{ id: SOURCE_B, type: 'patch', policyId: null, settings }],
+    })]);
+
+    const body = await (await request('/configuration-policies', 'configuration:read')).json();
+    expect(body.data).toEqual([]);
+    expect(body.blocked).toEqual([expect.objectContaining({
+      resource: 'configuration-policies', id: SOURCE_A, orgId: ORG_A,
+      reason: 'secret_detected', fieldPaths: ['features'],
+    })]);
+    expect(JSON.stringify(body)).not.toContain(PATCH_INLINE_MIRROR_MATERIAL);
   });
 
   it('exports a complete rebuild-safe script with parameters or blocks the whole script', async () => {

@@ -37,6 +37,7 @@ import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './par
 import { z } from 'zod';
 import {
   backupExcludePatternsSchema,
+  configFeatureInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
@@ -1145,6 +1146,10 @@ export async function addFeatureLink(
   featurePolicyId?: string | null,
   inlineSettings?: unknown
 ) {
+  if (inlineSettings !== undefined && inlineSettings !== null) {
+    inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
+  }
+
   if (featureType === 'pam' && inlineSettings !== undefined && inlineSettings !== null) {
     pamInlineSettingsSchema.parse(inlineSettings);
   }
@@ -1215,6 +1220,10 @@ export async function updateFeatureLink(
   updates: { featurePolicyId?: string | null; inlineSettings?: unknown },
   configPolicyId?: string
 ) {
+  if (updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+    updates.inlineSettings = configFeatureInlineSettingsSchema.parse(updates.inlineSettings);
+  }
+
   return db.transaction(async (tx) => {
     // Fetch current link to get featureType, scoped to configPolicyId when provided
     const conditions = [eq(configPolicyFeatureLinks.id, linkId)];

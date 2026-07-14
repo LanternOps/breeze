@@ -185,12 +185,24 @@ export function buildEnvelope<T extends ExportSourceRow>(input: {
   partnerId: string;
   rows: readonly T[];
   query: ExportQueryInput;
+  preflightBlock?: (row: T) => readonly string[] | null;
   makeRecord: (row: T) => Record<string, unknown>;
 }) {
   const page = paginatePartnerExportRows(input.rows, { traversal: input.query.traversal, limit: input.query.limit });
   const data: Record<string, unknown>[] = [];
   const blocked: PartnerExportBlockedRecord[] = [];
   for (const row of page.data) {
+    const preflightFieldPaths = input.preflightBlock?.(row) ?? null;
+    if (preflightFieldPaths) {
+      blocked.push({
+        resource: input.resource,
+        id: row.id,
+        orgId: row.orgId!,
+        reason: 'secret_detected',
+        fieldPaths: [...preflightFieldPaths],
+      });
+      continue;
+    }
     const withoutRevision = input.makeRecord(row);
     const definition = { ...withoutRevision, revision: computePartnerExportRevision(withoutRevision) };
     const inspected = safelyExportDefinition(

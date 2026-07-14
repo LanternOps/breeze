@@ -1,6 +1,11 @@
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { sql, type SQL } from 'drizzle-orm';
+import {
+  CONFIG_POLICY_PATCH_INLINE_MIRROR_KEY,
+  containsConfigPolicyReservedKey,
+  patchInlineSettingsSchema,
+} from '@breeze/shared/validators';
 import { db } from '../../db';
 import { requirePartnerApiScope, type PartnerApiPrincipalContext } from '../../middleware/partnerApiAuth';
 import { acquirePartnerExportReadLocks } from './consistency';
@@ -38,7 +43,18 @@ interface DesiredConfigurationRow extends Record<string, unknown> {
   definition: Record<string, unknown>;
 }
 
-const PATCH_INLINE_MIRROR_MATERIAL = '__breezePatchInlineMirror';
+const PATCH_NORMALIZED_MATERIAL_KEYS = [
+  'sources',
+  'autoApprove',
+  'autoApproveSeverities',
+  'scheduleFrequency',
+  'scheduleTime',
+  'scheduleDayOfWeek',
+  'scheduleDayOfMonth',
+  'rebootPolicy',
+  'exclusiveWindowsUpdate',
+] as const;
+const PATCH_NORMALIZED_MATERIAL_KEY_SET = new Set<string>(PATCH_NORMALIZED_MATERIAL_KEYS);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -51,30 +67,74 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function canonicalizePolicyPatchSettings(
   definition: Record<string, unknown>,
-): Record<string, unknown> {
-  if (!Array.isArray(definition.features)) return definition;
-  return {
-    ...definition,
-    features: definition.features.map((feature) => {
-      if (!isRecord(feature) || feature.type !== 'patch' || !isRecord(feature.settings)) {
-        return feature;
-      }
-      if (!Object.prototype.hasOwnProperty.call(feature.settings, PATCH_INLINE_MIRROR_MATERIAL)) {
-        return feature;
-      }
+): { safe: true; definition: Record<string, unknown> } | { safe: false } {
+  const definitionMetadata = { ...definition };
+  delete definitionMetadata.features;
+  if (containsConfigPolicyReservedKey(definitionMetadata)) return { safe: false };
+  // The export DTO requires an array. Treat malformed/missing feature
+  // material as blocked here too, before it can enter revision hashing.
+  if (!Array.isArray(definition.features)) return { safe: false };
 
-      const materialized = { ...feature.settings };
-      const rawMirror = materialized[PATCH_INLINE_MIRROR_MATERIAL];
-      delete materialized[PATCH_INLINE_MIRROR_MATERIAL];
-      const canonicalMirror = tryNormalizePatchInlineSettings(rawMirror).settings;
-      const settings = normalizePatchInlineSettings({
-        ...materialized,
-        autoApproveDeferralDays: canonicalMirror.autoApproveDeferralDays,
-        apps: canonicalMirror.apps,
-      });
-      return { ...feature, settings };
-    }),
-  };
+  const features: unknown[] = [];
+  for (const feature of definition.features) {
+    if (!isRecord(feature)) {
+      if (containsConfigPolicyReservedKey(feature)) return { safe: false };
+      features.push(feature);
+      continue;
+    }
+
+    const featureMetadata = { ...feature };
+    delete featureMetadata.settings;
+    if (containsConfigPolicyReservedKey(featureMetadata)) return { safe: false };
+
+    if (feature.type !== 'patch') {
+      if (containsConfigPolicyReservedKey(feature.settings)) return { safe: false };
+      features.push(feature);
+      continue;
+    }
+
+    if (
+      !isRecord(feature.settings)
+      || !Object.prototype.hasOwnProperty.call(
+        feature.settings,
+        CONFIG_POLICY_PATCH_INLINE_MIRROR_KEY,
+      )
+    ) {
+      return { safe: false };
+    }
+
+    const featureSettings = feature.settings;
+    const materialKeys = Object.keys(featureSettings);
+    if (
+      materialKeys.length !== PATCH_NORMALIZED_MATERIAL_KEYS.length + 1
+      || PATCH_NORMALIZED_MATERIAL_KEYS.some((key) => featureSettings[key] === undefined)
+      || materialKeys.some((key) => (
+        key !== CONFIG_POLICY_PATCH_INLINE_MIRROR_KEY
+        && !PATCH_NORMALIZED_MATERIAL_KEY_SET.has(key)
+      ))
+    ) {
+      return { safe: false };
+    }
+
+    const materialized = { ...featureSettings };
+    const rawMirror = materialized[CONFIG_POLICY_PATCH_INLINE_MIRROR_KEY];
+    delete materialized[CONFIG_POLICY_PATCH_INLINE_MIRROR_KEY];
+    if (containsConfigPolicyReservedKey(materialized) || containsConfigPolicyReservedKey(rawMirror)) {
+      return { safe: false };
+    }
+    const normalizedMaterial = patchInlineSettingsSchema.safeParse(materialized);
+    if (!normalizedMaterial.success) return { safe: false };
+
+    const canonicalMirror = tryNormalizePatchInlineSettings(rawMirror).settings;
+    const settings = normalizePatchInlineSettings({
+      ...normalizedMaterial.data,
+      autoApproveDeferralDays: canonicalMirror.autoApproveDeferralDays,
+      apps: canonicalMirror.apps,
+    });
+    features.push({ ...feature, settings });
+  }
+
+  return { safe: true, definition: { ...definition, features } };
 }
 
 const CONFIGURATION_FAILURE = {
@@ -423,10 +483,14 @@ async function exportResource(c: Context, resource: keyof typeof CONFIGURATION_F
       : await db.execute<DesiredConfigurationRow>(pageQuery(sourceQuery(resource, principal, parsed), parsed));
     const normalizedRows = rows.map((row) => {
       const normalized = normalizeSourceRow<DesiredConfigurationRow>(row);
-      if (resource !== 'configuration-policies') return normalized;
+      if (resource !== 'configuration-policies') {
+        return { ...normalized, definition: row.definition, exportPreflightBlocked: false };
+      }
+      const canonicalized = canonicalizePolicyPatchSettings(row.definition);
       return {
         ...normalized,
-        definition: canonicalizePolicyPatchSettings(row.definition),
+        definition: canonicalized.safe ? canonicalized.definition : {},
+        exportPreflightBlocked: !canonicalized.safe,
       };
     });
     const envelope = buildEnvelope({
@@ -434,6 +498,7 @@ async function exportResource(c: Context, resource: keyof typeof CONFIGURATION_F
       partnerId: principal.partnerId,
       rows: normalizedRows,
       query: parsed,
+      preflightBlock: (row) => row.exportPreflightBlocked ? ['features'] : null,
       makeRecord: (row) => ({
         id: row.id,
         orgId: row.orgId,

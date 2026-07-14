@@ -60,6 +60,32 @@ const PATCH_INPUT = {
   rebootPolicy: 'never',
 };
 
+describe('feature link reserved export marker service backstop', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    'patch', 'security', 'software_policy', 'peripheral_control',
+    'warranty', 'helper', 'vulnerability',
+  ] as const)('rejects marker injection before add transaction for %s', async (featureType) => {
+    await expect(addFeatureLink(
+      'policy-1',
+      featureType,
+      null,
+      { nested: { __breezePatchInlineMirror: 'attacker-value' } },
+    )).rejects.toThrow(/reserved/i);
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('rejects marker injection before update transaction for the AI/service path', async () => {
+    await expect(updateFeatureLink('link-1', {
+      inlineSettings: { nested: [{ __breezePatchInlineMirror: 'attacker-value' }] },
+    }, 'policy-1')).rejects.toThrow(/reserved/i);
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+});
+
 describe('patch feature link round-trip (apps + autoApproveDeferralDays)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

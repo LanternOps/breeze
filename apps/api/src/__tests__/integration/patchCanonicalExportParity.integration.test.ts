@@ -1,5 +1,5 @@
 import './setup';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { db as appDb, withDbAccessContext } from '../../db';
@@ -354,6 +354,83 @@ runDb('final partner HTTP export matches tryNormalizePatchInlineSettings without
     expect.soft(dto, `${testCase.name}: raw mirror key`).not.toContain('__breezePatchInlineMirror');
     expect.soft(dto, `${testCase.name}: raw forbidden values`).not.toMatch(/hunter2|sk-live-never-export/u);
   }
+});
+
+runDb('existing reserved-marker collisions and incomplete patch material fail closed before export', async () => {
+  const db = getTestDb();
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const [policy] = await db.insert(configurationPolicies).values({
+    orgId: org.id,
+    name: 'Reserved marker export containment',
+    status: 'active',
+  }).returning();
+  if (!policy) throw new Error('reserved marker policy insert failed');
+  await db.insert(configPolicyAssignments).values({
+    configPolicyId: policy.id,
+    level: 'organization',
+    targetId: org.id,
+  });
+
+  const app = configurationExportApp(partner.id, org.id);
+  const expectBlocked = async (forbiddenValue?: string) => {
+    const response = await app.request('/configuration-policies');
+    expect(response.status, await response.clone().text()).toBe(200);
+    const body = await response.json() as {
+      data: unknown[];
+      blocked?: Array<Record<string, unknown>>;
+    };
+    expect(body.data).toEqual([]);
+    expect(body.blocked).toEqual([{
+      resource: 'configuration-policies',
+      id: policy.id,
+      orgId: org.id,
+      reason: 'secret_detected',
+      fieldPaths: ['features'],
+    }]);
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('__breezePatchInlineMirror');
+    if (forbiddenValue) expect(serialized).not.toContain(forbiddenValue);
+  };
+
+  for (const featureType of [
+    'security', 'software_policy', 'peripheral_control',
+    'warranty', 'helper', 'vulnerability',
+  ] as const) {
+    const [link] = await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policy.id,
+      featureType,
+      inlineSettings: {
+        nested: { __breezePatchInlineMirror: `attacker-${featureType}` },
+      },
+    }).returning();
+    if (!link) throw new Error(`${featureType} marker link insert failed`);
+    await expectBlocked(`attacker-${featureType}`);
+    await db.delete(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, link.id));
+  }
+
+  const [collisionLink] = await db.insert(configPolicyFeatureLinks).values({
+    configPolicyId: policy.id,
+    featureType: 'patch',
+    inlineSettings: {
+      nested: { __breezePatchInlineMirror: 'patch-collision-secret' },
+    },
+  }).returning();
+  if (!collisionLink) throw new Error('patch collision link insert failed');
+  await db.execute(sql`
+    INSERT INTO public.config_policy_patch_settings (feature_link_id)
+    VALUES (${collisionLink.id}::uuid)
+  `);
+  await expectBlocked('patch-collision-secret');
+  await db.delete(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.id, collisionLink.id));
+
+  const [incompleteLink] = await db.insert(configPolicyFeatureLinks).values({
+    configPolicyId: policy.id,
+    featureType: 'patch',
+    inlineSettings: {},
+  }).returning();
+  if (!incompleteLink) throw new Error('incomplete patch link insert failed');
+  await expectBlocked();
 });
 
 function configurationExportApp(partnerId: string, orgId: string): Hono {
