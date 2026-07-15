@@ -647,3 +647,24 @@ func TestMarkSessionClosedRestartsTheStartupWindow(t *testing.T) {
 		t.Fatal("startup window was not restarted on session close; a live helper would be killed immediately")
 	}
 }
+
+func TestNoteExitUnknownDoesNotMarkHelperExited(t *testing.T) {
+	// Wait returns (-1, err) when the handle operation fails. Recording -1 as a
+	// real exit code marks a possibly-live helper as exited, after which nothing
+	// ever terminates it: keys() hides it and beginStop just deletes it.
+	r := newHelperRegistry()
+	key := HelperKey{WindowsSessionID: 7, Role: "user"}
+	process := newFakeHelperProcess(6060)
+
+	generation, _ := r.reserve(key, time.Now())
+	entry, _ := r.attachReserved(key, generation, process, "user-helper")
+
+	r.noteExitUnknown(key, generation)
+
+	if entry.state == helperExited {
+		t.Fatal("unknown exit was recorded as helperExited; a live helper is now untrackable")
+	}
+	if entry.exitCode != -1 {
+		t.Fatalf("exitCode = %d; an unknown exit must not fabricate a real code", entry.exitCode)
+	}
+}

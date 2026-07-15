@@ -328,8 +328,16 @@ func (m *HelperLifecycleManager) watchProcess(entry *trackedHelper) {
 }
 
 func (m *HelperLifecycleManager) watchDetachedProcess(key HelperKey, generation uint64, process helperProcess) {
-	exitCode, _ := process.Wait()
+	exitCode, err := process.Wait()
 	_ = process.Close()
+	if err != nil {
+		// Mirror watchProcess: never swallow this. Wait returns (-1, err) on
+		// failure, and recording -1 as a real exit code marks a possibly-live
+		// helper exited.
+		log.Warn("lifecycle: wait on detached helper process failed", "helperKey", key.String(), "pid", processID(process), "error", err.Error())
+		m.registry.noteExitUnknown(key, generation)
+		return
+	}
 	m.registry.noteExit(key, generation, exitCode)
 }
 

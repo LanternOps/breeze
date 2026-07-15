@@ -165,6 +165,22 @@ func (r *helperRegistry) noteExit(key HelperKey, generation uint64, exitCode int
 	r.mu.Unlock()
 }
 
+// noteExitUnknown records that a helper's Wait failed, so whether it exited —
+// and with what code — is unknown. It deliberately does NOT set helperExited:
+// that state hides the entry from keys() and makes beginStop drop it without
+// terminating, which would strand a live process. Leaving the entry in its
+// current state lets startupExpired or the next stopKey deal with it.
+func (r *helperRegistry) noteExitUnknown(key HelperKey, generation uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := r.generation[generation]
+	if entry == nil || entry.key != key {
+		return
+	}
+	entry.doneOnce.Do(func() { close(entry.done) })
+	delete(r.generation, generation)
+}
+
 func (r *helperRegistry) detach(key HelperKey, generation uint64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
