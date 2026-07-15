@@ -3,7 +3,13 @@ import { Hono } from 'hono';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-vi.mock('../services/aiTools', () => ({ aiTools: new Map() }));
+vi.mock('../services/aiTools', () => {
+  const aiTools = new Map();
+  return {
+    aiTools,
+    hasCoreAiToolName: (name: string) => aiTools.has(name),
+  };
+});
 // Auth mocks stamp a response header so tests can observe WHICH guard the
 // loader's default-deny wrapper applied to each route.
 vi.mock('../middleware/auth', () => ({
@@ -142,7 +148,7 @@ describe('mountExtensions', () => {
     });
     expect(active?.aiTools.has('demo_tool')).toBe(true);
     expect((await app.request('/api/v1/ext/demo/health')).status).toBe(200);
-    expect((await app.request('/api/v1/legacy-alias/health')).status).toBe(404);
+    expect((await app.request('/api/v1/legacy-alias/health')).status).toBe(200);
   });
 
   it('does not activate or publish staged contributions when registration fails', async () => {
@@ -205,16 +211,19 @@ describe('mountExtensions', () => {
   it('activates a discovered extension at /api/v1/ext/<name> and registers its tools', async () => {
     scaffoldRuntimeExtension(root);
     const app = new Hono();
-    await mountExtensions(app, root);
+    const registry = new ExtensionContributionRegistry();
+    mountExtensionGateway(app, registry, async () => true);
+    await loadSourceExtensions(registry, root);
     const res = await app.request('/api/v1/ext/demo/health');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ext: 'demo', initialAiToolCount: 0 });
     const { aiTools } = await import('../services/aiTools');
-    expect(aiTools.has('demo_tool')).toBe(true);
+    expect(aiTools.has('demo_tool')).toBe(false);
+    expect(registry.getAiTool('demo_tool')).toBeDefined();
   });
 
   it('provides seam-v2 context members and registers the agent skip prefix', async () => {
-    scaffoldRuntimeExtension(root, { agentRoutes: true });
+    scaffoldRuntimeExtension(root, { agentRoutes: true, routeNamespace: 'legacy-agent' });
     const app = new Hono();
     app.use('*', globalRateLimit({ limit: 1, windowSeconds: 60 }));
 
@@ -237,6 +246,8 @@ describe('mountExtensions', () => {
 
     expect((await app.request('/api/v1/ext/demo/agent/health')).status).toBe(200);
     expect((await app.request('/api/v1/ext/demo/agent/health')).status).toBe(200);
+    expect((await app.request('/api/v1/legacy-agent/agent/health')).status).toBe(200);
+    expect((await app.request('/api/v1/legacy-agent/agent/health')).status).toBe(200);
   });
 
   it('loads the dist CJS default export when present', async () => {

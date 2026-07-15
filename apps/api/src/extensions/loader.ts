@@ -24,7 +24,7 @@ import {
   legacyExtensionAuthMiddleware,
 } from './gateway';
 import { assertExtensionTenancyRls, assertNoUnaccountedPublicTables } from './tenancyTripwire';
-import { aiTools } from '../services/aiTools';
+import { aiTools, hasCoreAiToolName } from '../services/aiTools';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
@@ -80,7 +80,7 @@ async function stageLegacyExtension(
     get(target, prop) {
       if (prop === 'set') {
         return (key: string, value: AiToolLike) => {
-          if (target.has(key)) {
+          if (hasCoreAiToolName(key) || target.has(key)) {
             throw new Error(
               `[extensions] AI tool "${key}" already registered (extension "${extension.name}")`,
             );
@@ -165,12 +165,12 @@ export async function loadSourceExtensions(
   }
 
   for (const contributions of staged) {
-    for (const [name, tool] of contributions.aiTools) {
-      (aiTools as Map<string, AiToolLike>).set(name, tool);
-    }
     registry.activate(contributions);
     if (contributions.routeApp && contributions.manifest.agentRoutes === true) {
       registerGlobalRateLimitSkipPrefix(`/api/v1/ext/${contributions.name}/agent/`);
+      registerGlobalRateLimitSkipPrefix(
+        `/api/v1/${contributions.manifest.routeNamespace}/agent/`,
+      );
     }
     console.log(
       contributions.routeApp

@@ -271,7 +271,7 @@ import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { loadSourceExtensions } from './extensions/loader';
-import { ExtensionContributionRegistry } from './extensions/contributionRegistry';
+import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
@@ -940,7 +940,6 @@ api.route('/dr', drRoutes);
 api.route('/admin', adminRoutes);
 api.route('/admin', accountDeletionAdminRoutes);
 
-const extensionContributionRegistry = new ExtensionContributionRegistry();
 mountExtensionGateway(app, extensionContributionRegistry, async () => true);
 
 app.route('/api/v1', api);

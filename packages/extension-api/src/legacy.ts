@@ -22,7 +22,7 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'client-ai', 'config', 'configuration-policies', 'contracts',
   'custom-fields', 'deployments', 'desktop-ws', 'dev', 'device-groups',
   'devices', 'discovery', 'dns-security', 'docs', 'dr', 'enrollment-keys',
-  'events', 'filters', 'google', 'groups', 'helper', 'huntress',
+  'events', 'ext', 'filters', 'google', 'groups', 'helper', 'huntress',
   'incidents', 'installer', 'integrations', 'internal', 'invoices', 'logs',
   'm365', 'maintenance', 'mcp', 'me', 'metrics', 'mobile', 'monitoring',
   'monitors', 'network', 'notifications', 'oauth', 'onedrive', 'orgs',

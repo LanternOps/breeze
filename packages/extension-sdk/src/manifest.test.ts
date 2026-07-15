@@ -179,6 +179,7 @@ describe('parseExtensionManifestV1', () => {
 
   it('preserves reserved namespaces, default-deny public routes, and tenancy prefix checks', () => {
     expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'devices' })).toThrow();
+    expect(() => parseExtensionManifestV1({ ...valid, routeNamespace: 'ext' })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, publicRoutes: ['/*'] })).toThrow();
     expect(() => parseExtensionManifestV1({ ...valid, publicRoutes: ['/agent/hook'] })).toThrow();
     expect(() => parseExtensionManifestV1({

@@ -135,6 +135,32 @@ describe('mountExtensionGateway', () => {
     expect(await response.json()).toEqual({ route: 'root' });
   });
 
+  it('dispatches canonical and legacy URLs through the same snapshot when name differs', async () => {
+    const manifest = makeManifest({ name: 'demo', routeNamespace: 'legacy-demo' });
+    const { app } = makeGatewayFixture({ manifest });
+
+    const canonical = await app.request('/api/v1/ext/demo/items/item-42');
+    const legacy = await app.request('/api/v1/legacy-demo/items/item-42');
+
+    expect(canonical.status).toBe(200);
+    expect(legacy.status).toBe(200);
+    expect(await legacy.json()).toEqual({
+      id: 'item-42',
+      userId: 'user-1',
+      authLifetime: 'user',
+    });
+  });
+
+  it('falls through on alias misses so core routes are never shadowed', async () => {
+    const { app } = makeGatewayFixture({
+      manifest: makeManifest({ routeNamespace: 'legacy-demo' }),
+    });
+    app.get('/api/v1/devices/health', (c) => c.json({ core: true }));
+
+    expect(await (await app.request('/api/v1/devices/health')).json()).toEqual({ core: true });
+    expect((await app.request('/api/v1/not-an-extension/health')).status).toBe(404);
+  });
+
   it('uses agent auth for agent paths and never public-route exemptions', async () => {
     const manifest = makeManifest({ publicRoutes: ['/agent/*'] });
     const { app } = makeGatewayFixture({ manifest });
@@ -150,6 +176,20 @@ describe('mountExtensionGateway', () => {
     const { app } = makeGatewayFixture();
 
     const response = await app.request('/api/v1/ext/demo/agent/device-1/config', {
+      headers: { Authorization: 'Bearer agent-test' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deviceId: 'device-1', authLifetime: 'agent' });
+  });
+
+  it('preserves agent auth and its lifetime through the legacy alias', async () => {
+    const { app } = makeGatewayFixture({
+      manifest: makeManifest({ routeNamespace: 'legacy-demo' }),
+    });
+
+    expect((await app.request('/api/v1/legacy-demo/agent/device-1/config')).status).toBe(401);
+    const response = await app.request('/api/v1/legacy-demo/agent/device-1/config', {
       headers: { Authorization: 'Bearer agent-test' },
     });
 
@@ -253,6 +293,23 @@ describe('mountExtensionGateway', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ version: 2 });
     expect(app.routes).toHaveLength(routeCount);
+  });
+
+  it('atomically switches legacy aliases with the active replacement snapshot', async () => {
+    const { app, registry } = makeGatewayFixture({
+      manifest: makeManifest({ routeNamespace: 'old-alias' }),
+    });
+    const replacement = new Hono();
+    replacement.get('/health', (c) => c.json({ version: 2 }));
+
+    activateRoute(
+      registry,
+      replacement,
+      makeManifest({ version: '2.0.0', routeNamespace: 'new-alias' }),
+    );
+
+    expect((await app.request('/api/v1/old-alias/health')).status).toBe(404);
+    expect(await (await app.request('/api/v1/new-alias/health')).json()).toEqual({ version: 2 });
   });
 
   it('propagates wrapper errors to the outer app error handler', async () => {

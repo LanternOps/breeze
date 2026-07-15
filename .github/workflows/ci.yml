@@ -130,6 +130,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test extension SDK
+        run: pnpm --filter @breeze/extension-sdk test
+
+      - name: Type-check extension SDK
+        run: pnpm --filter @breeze/extension-sdk typecheck
+
+      - name: Test legacy extension adapter
+        run: pnpm --filter @breeze/extension-api test
+
+      - name: Type-check legacy extension adapter
+        run: pnpm --filter @breeze/extension-api typecheck
+
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
 

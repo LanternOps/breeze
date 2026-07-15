@@ -8,6 +8,7 @@ import type {
 
 import {
   ExtensionContributionRegistry,
+  type RegistryAiTool,
   type StagedExtensionContributions,
 } from './contributionRegistry';
 
@@ -176,12 +177,81 @@ describe('ExtensionContributionRegistry', () => {
     session.registrar.registerJob(makeJob());
 
     const staged = session.finish();
-    session.registrar.registerJob(makeJob('later'));
 
     expect(Object.isFrozen(staged)).toBe(true);
     expect([...staged.jobs.keys()]).toEqual(['nightly']);
     expectTypeOf(staged.jobs).toEqualTypeOf<ReadonlyMap<string, ExtensionJobDefinition>>();
-    expectTypeOf(staged.aiTools).toEqualTypeOf<ReadonlyMap<string, ExtensionAiTool>>();
+    expectTypeOf(staged.aiTools).toEqualTypeOf<ReadonlyMap<string, RegistryAiTool>>();
+  });
+
+  it('seals the staging session and its retained registrar after finish', () => {
+    const registry = new ExtensionContributionRegistry();
+    const session = registry.begin(makeManifest());
+    const registrar = session.registrar;
+
+    session.finish();
+
+    expect(Object.isFrozen(registrar)).toBe(true);
+    expect(() => registrar.mountRoute(new Hono())).toThrow(/finished|sealed/i);
+    expect(() => registrar.registerJob(makeJob('later'))).toThrow(/finished|sealed/i);
+    expect(() => registrar.registerAiTool('later', makeTool('later'))).toThrow(/finished|sealed/i);
+    expect(() => session.finish()).toThrow(/already finished|sealed/i);
+  });
+
+  it('deep-clones and freezes manifest and contribution metadata', () => {
+    const registry = new ExtensionContributionRegistry();
+    const manifest = makeManifest('demo', '1.0.0', { jobs: ['nightly'], aiTools: ['lookup'] });
+    const job = makeJob();
+    const deviceArgs = ['deviceId'];
+    const tool = { ...makeTool(), deviceArgs };
+    const session = registry.begin(manifest);
+    session.registrar.registerJob(job);
+    session.registrar.registerAiTool('lookup', tool);
+
+    const staged = session.finish();
+    manifest.version = '9.9.9';
+    manifest.tenancy.orgCascadeDeleteTables.push('demo_late');
+    job.name = 'changed';
+    tool.definition.description = 'changed';
+    deviceArgs.push('otherDeviceId');
+
+    expect(staged.manifest.version).toBe('1.0.0');
+    expect(staged.manifest.tenancy.orgCascadeDeleteTables).toEqual([]);
+    expect(staged.jobs.get('nightly')?.name).toBe('nightly');
+    expect(staged.aiTools.get('lookup')?.definition.description).toBe('lookup tool');
+    expect(staged.aiTools.get('lookup')?.deviceArgs).toEqual(['deviceId']);
+    expect(Object.isFrozen(staged.manifest.tenancy.orgCascadeDeleteTables)).toBe(true);
+    expect(Object.isFrozen(staged.jobs.get('nightly'))).toBe(true);
+    expect(Object.isFrozen(staged.aiTools.get('lookup')?.definition)).toBe(true);
+  });
+
+  it('exposes runtime-immutable map views even when callers cast them to Map', () => {
+    const staged = makeStaged('demo', '1.0.0', { job: true, tool: true });
+
+    expect(() => (staged.jobs as Map<string, ExtensionJobDefinition>).set('later', makeJob('later')))
+      .toThrow();
+    expect(() => (staged.aiTools as unknown as Map<string, ExtensionAiTool>).delete('lookup'))
+      .toThrow();
+    expect([...staged.jobs.keys()]).toEqual(['nightly']);
+    expect([...staged.aiTools.keys()]).toEqual(['lookup']);
+  });
+
+  it('copies route registrations into a sealed host-owned Hono app', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const extensionApp = new Hono();
+    extensionApp.get('/before', (c) => c.json({ version: 'original' }));
+    const session = registry.begin(makeManifest());
+    session.registrar.mountRoute(extensionApp);
+
+    const staged = session.finish();
+    extensionApp.get('/after', (c) => c.json({ late: true }));
+    const originalRoute = extensionApp.routes[0] as { handler: () => Response } | undefined;
+    if (originalRoute) originalRoute.handler = () => new Response('replaced');
+
+    expect((await staged.routeApp!.request('/before')).status).toBe(200);
+    expect(await (await staged.routeApp!.request('/before')).json()).toEqual({ version: 'original' });
+    expect((await staged.routeApp!.request('/after')).status).toBe(404);
+    expect(() => staged.routeApp!.get('/snapshot-mutation', (c) => c.text('late'))).toThrow();
   });
 
   it('withdraws an active extension without removing its contributions', () => {

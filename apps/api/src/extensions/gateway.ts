@@ -64,8 +64,10 @@ export function buildExtensionAuthGuard(
   };
 }
 
-function createSnapshotWrapper(active: StagedExtensionContributions): Hono {
-  const mountPrefix = `/api/v1/ext/${active.name}`;
+function createSnapshotWrapper(
+  active: StagedExtensionContributions,
+  mountPrefix: string,
+): Hono {
   const wrapper = new Hono();
   wrapper.use('*', buildExtensionAuthGuard(mountPrefix, active.manifest));
   if (active.routeApp) wrapper.route(mountPrefix, active.routeApp);
@@ -78,9 +80,9 @@ function createSnapshotWrapper(active: StagedExtensionContributions): Hono {
 
 function createAgentSnapshotWrapper(
   active: StagedExtensionContributions,
+  mountPrefix: string,
   isEnabled: (name: string) => Promise<boolean>,
 ): Hono {
-  const mountPrefix = `/api/v1/ext/${active.name}`;
   const wrapper = new Hono();
   const authGuard = buildExtensionAuthGuard(mountPrefix, active.manifest);
 
@@ -119,41 +121,69 @@ export function mountExtensionGateway(
   registry: ExtensionContributionRegistry,
   isEnabled: (name: string) => Promise<boolean>,
 ): void {
-  const wrappers = new WeakMap<StagedExtensionContributions, Hono>();
-  const agentWrappers = new WeakMap<StagedExtensionContributions, Hono>();
+  const wrappers = new WeakMap<StagedExtensionContributions, Map<string, Hono>>();
+  const agentWrappers = new WeakMap<StagedExtensionContributions, Map<string, Hono>>();
 
-  const dispatch = async (c: Context): Promise<Response> => {
-    const name = c.req.param('extension');
-    if (!name) return c.json({ error: 'extension unavailable' }, 503);
-    const active = registry.get(name);
-    if (!active) {
-      return c.json({ error: 'extension unavailable' }, 503);
-    }
-
-    const mountPrefix = `/api/v1/ext/${name}`;
+  const dispatchSnapshot = async (
+    c: Context,
+    active: StagedExtensionContributions,
+    mountPrefix: string,
+  ): Promise<Response> => {
     const relativePath = c.req.path.slice(mountPrefix.length) || '/';
     if (relativePath === '/agent' || relativePath.startsWith('/agent/')) {
-      let agentWrapper = agentWrappers.get(active);
+      let byPrefix = agentWrappers.get(active);
+      if (!byPrefix) {
+        byPrefix = new Map();
+        agentWrappers.set(active, byPrefix);
+      }
+      let agentWrapper = byPrefix.get(mountPrefix);
       if (!agentWrapper) {
-        agentWrapper = createAgentSnapshotWrapper(active, isEnabled);
-        agentWrappers.set(active, agentWrapper);
+        agentWrapper = createAgentSnapshotWrapper(active, mountPrefix, isEnabled);
+        byPrefix.set(mountPrefix, agentWrapper);
       }
       return agentWrapper.fetch(c.req.raw, c.env, executionContext(c));
     }
 
-    if (!active.enabled || !(await isEnabled(name))) {
+    if (!active.enabled || !(await isEnabled(active.name))) {
       return c.json({ error: 'extension unavailable' }, 503);
     }
 
-    let wrapper = wrappers.get(active);
+    let byPrefix = wrappers.get(active);
+    if (!byPrefix) {
+      byPrefix = new Map();
+      wrappers.set(active, byPrefix);
+    }
+    let wrapper = byPrefix.get(mountPrefix);
     if (!wrapper) {
-      wrapper = createSnapshotWrapper(active);
-      wrappers.set(active, wrapper);
+      wrapper = createSnapshotWrapper(active, mountPrefix);
+      byPrefix.set(mountPrefix, wrapper);
     }
 
     return wrapper.fetch(c.req.raw, c.env, executionContext(c));
   };
 
-  app.all('/api/v1/ext/:extension', dispatch);
-  app.all('/api/v1/ext/:extension/*', dispatch);
+  const dispatchCanonical = async (c: Context): Promise<Response> => {
+    const name = c.req.param('extension');
+    if (!name) return c.json({ error: 'extension unavailable' }, 503);
+    const active = registry.get(name);
+    if (!active) return c.json({ error: 'extension unavailable' }, 503);
+    return dispatchSnapshot(c, active, `/api/v1/ext/${name}`);
+  };
+
+  const dispatchAlias: MiddlewareHandler = async (c, next) => {
+    const routeNamespace = c.req.param('routeNamespace');
+    const active = routeNamespace
+      ? registry.getByRouteNamespace(routeNamespace)
+      : undefined;
+    if (!active) {
+      await next();
+      return c.res;
+    }
+    return dispatchSnapshot(c, active, `/api/v1/${routeNamespace}`);
+  };
+
+  app.all('/api/v1/ext/:extension', dispatchCanonical);
+  app.all('/api/v1/ext/:extension/*', dispatchCanonical);
+  app.all('/api/v1/:routeNamespace', dispatchAlias);
+  app.all('/api/v1/:routeNamespace/*', dispatchAlias);
 }

@@ -57,6 +57,8 @@
     "@sentry/node": "^10.54.0",
     "@simplewebauthn/server": "^13.3.2",
     "@types/qrcode": "^1.5.6",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "archiver": "^7.0.1",
     "argon2": "^0.44.0",
     "bullmq": "^5.79.2",
