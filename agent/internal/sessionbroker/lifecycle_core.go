@@ -16,8 +16,17 @@ const (
 
 	// helperStartupTimeout bounds how long a helper may sit in helperStarting —
 	// launched but not yet connected over IPC — before the lifecycle manager
-	// terminates and respawns it. Must comfortably exceed a cold helper start on
-	// a loaded RDS host; 90s is ~3x the observed worst case.
+	// terminates and respawns it.
+	//
+	// 90s is a conservative guess, NOT a measured value: it must exceed a cold
+	// helper start on a loaded RDS host, and no such measurement exists yet. Too
+	// low kills healthy slow-starting helpers in a respawn loop, so err high. If
+	// the "never reached IPC within startup timeout" warning shows up in fleet
+	// logs for helpers that were merely slow, raise this.
+	//
+	// Bounded by design: this only ever terminates a helper that has NOT
+	// connected. main's deleted KillStaleHelpers was strictly more aggressive —
+	// it killed before EVERY respawn with no timeout at all.
 	helperStartupTimeout = 90 * time.Second
 )
 
