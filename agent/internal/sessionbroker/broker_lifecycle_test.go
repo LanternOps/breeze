@@ -32,12 +32,13 @@ func TestBrokerLifecycleCleanupNeverReopensRecordedPID(t *testing.T) {
 type fakeOwnedPeerProcess struct {
 	pid uint32
 
-	mu         sync.Mutex
-	alive      bool
-	terminated int
-	closed     int
-	claimed    chan struct{}
-	release    chan struct{}
+	mu           sync.Mutex
+	alive        bool
+	terminated   int
+	closed       int
+	claimed      chan struct{}
+	release      chan struct{}
+	terminateErr error
 }
 
 type closeTrackingListener struct {
@@ -134,9 +135,13 @@ func (p *fakeOwnedPeerProcess) Terminate() error {
 		<-p.release
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	// A failed kill must leave the process running: no counter bump, still alive.
+	if p.terminateErr != nil {
+		return p.terminateErr
+	}
 	p.terminated++
 	p.alive = false
-	p.mu.Unlock()
 	return nil
 }
 func (p *fakeOwnedPeerProcess) Close() error {

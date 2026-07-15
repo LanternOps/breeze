@@ -2016,7 +2016,22 @@ func (b *Broker) TerminateHelperKey(key HelperKey) {
 
 	if claim != nil {
 		if err := claim.terminateAndClose(); err != nil {
-			log.Debug("failed to terminate helper process", "helperKey", key.String(), "pid", session.PID, "error", err.Error())
+			// Warn, not Debug: the default level is info (config.go), so the
+			// previous Debug line meant a failed kill left NO evidence at all.
+			// This is the enforcement path, not best-effort cleanup.
+			//
+			// The maps are already cleared at this point, which is safe for
+			// lifecycle-tracked helpers: helperRegistry.reserve refuses to
+			// respawn while the tracked process is alive OR its liveness is
+			// unknown. A scheduled helper has no registry entry, so a failed
+			// kill there can still be followed by a proactive spawn — see the
+			// follow-up noted in the remediation plan. Do NOT "fix" that by
+			// re-registering this session in helperByKey: the session is closed
+			// immediately below, HasHelperKeyOwner does not filter closed
+			// owners, and nothing would ever clear the entry, so the key would
+			// be wedged for the process lifetime.
+			log.Warn("failed to terminate helper process",
+				"helperKey", key.String(), "pid", session.PID, "error", err.Error())
 		}
 	}
 	_ = session.closeTransportAndPeer()
