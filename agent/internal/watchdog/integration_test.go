@@ -1,6 +1,7 @@
 package watchdog
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -122,7 +123,15 @@ func (h *integHarness) tickRecovering() {
 	result, err := h.recovery.Attempt(RecoveryRequest{
 		StateFilePID: 4242,
 		Intent:       RecoveryIntentUnhealthy,
+		Context:      context.Background(),
 	})
+	// Mirrors main.go: a terminal disposition goes straight to failover, and
+	// only an error-free VerifyHeartbeat enters verification.
+	if result.Disposition == RecoveryDispositionFailover {
+		h.pendingVerifyAt = time.Time{}
+		h.wd.HandleEvent(EventRecoveryExhausted)
+		return
+	}
 	if err == nil && result.Disposition == RecoveryDispositionVerifyHeartbeat {
 		h.pendingVerifyAt = h.clk.Now()
 	}
