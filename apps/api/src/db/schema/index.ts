@@ -104,3 +104,4 @@ export * from './vulnerabilityManagement';
 export * from './partnerLoginBranding';
 export * from './recoveryKeys';
 export * from './abuseSignals';
+export * from './servicePrincipals';

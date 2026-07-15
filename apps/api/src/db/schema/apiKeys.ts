@@ -1,6 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, integer, jsonb, pgEnum } from 'drizzle-orm/pg-core';
 import { organizations } from './orgs';
 import { users } from './users';
+import { servicePrincipals } from './servicePrincipals';
 
 export const apiKeyStatusEnum = pgEnum('api_key_status', ['active', 'revoked', 'expired']);
 
@@ -20,4 +21,7 @@ export const apiKeys = pgTable('api_keys', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   status: apiKeyStatusEnum('status').notNull().default('active'),
   source: text('source').notNull().default('manual'),
+  // 'human' | 'service' — non-human keys carry principalId (SR2-15).
+  principalType: varchar('principal_type', { length: 16 }).notNull().default('human'),
+  principalId: uuid('principal_id').references(() => servicePrincipals.id),
 });
