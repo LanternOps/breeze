@@ -1509,6 +1509,55 @@ describe('validateConfig', () => {
       });
     });
 
+    // Compose maps these as `${APNS_*:-}`, so an operator who has not configured
+    // push still gets every key injected as "". That must read as "unset", not as
+    // an opted-in partial set, and the ENVIRONMENT enum must not reject "".
+    it('treats an all-empty APNS_* set as unset (compose injects "" for each)', () => {
+      withEnv(
+        {
+          ...validEnv,
+          APNS_AUTH_KEY: '',
+          APNS_KEY_ID: '',
+          APNS_TEAM_ID: '',
+          APNS_BUNDLE_ID: '',
+          APNS_ENVIRONMENT: '',
+        },
+        () => {
+          const config = validateConfig();
+          expect(config.APNS_ENVIRONMENT).toBeUndefined();
+        }
+      );
+    });
+
+    it('treats an empty APNS_ENVIRONMENT as unset when credentials are configured', () => {
+      withEnv({ ...validEnv, ...apnsFull, APNS_ENVIRONMENT: '' }, () => {
+        const config = validateConfig();
+        expect(config.APNS_ENVIRONMENT).toBeUndefined();
+      });
+    });
+
+    it('still refuses boot on an invalid APNS_ENVIRONMENT', () => {
+      withEnv({ ...validEnv, ...apnsFull, APNS_ENVIRONMENT: 'staging' }, () => {
+        expect(() => validateConfig()).toThrow('APNS_ENVIRONMENT');
+      });
+    });
+
+    it('still refuses boot on a partial set even when the empty keys are present', () => {
+      withEnv(
+        {
+          ...validEnv,
+          APNS_TEAM_ID: 'TEAM123456',
+          APNS_BUNDLE_ID: 'app.breeze.mobile',
+          APNS_AUTH_KEY: '',
+          APNS_KEY_ID: '',
+          APNS_ENVIRONMENT: '',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow('APNS_AUTH_KEY');
+        }
+      );
+    });
+
     it.each(['APNS_AUTH_KEY', 'APNS_KEY_ID', 'APNS_TEAM_ID', 'APNS_BUNDLE_ID'])(
       'refuses boot when %s is missing but other APNS_* are set',
       (missing) => {
