@@ -22,6 +22,11 @@ func TestRoleIdentityRejection(t *testing.T) {
 		{"non-SYSTEM cannot claim system", ipc.HelperRoleSystem, nonSystemSID, "7", "7", "1", "system role requires SYSTEM identity", true},
 		{"SYSTEM matching RDP session", ipc.HelperRoleSystem, systemSID, "7", "7", "1", "", false},
 		{"assist remains console bound", ipc.HelperRoleAssist, nonSystemSID, "7", "7", "1", "assist role requires the active console session", true},
+		{"assist from console session accepted", ipc.HelperRoleAssist, nonSystemSID, "1", "1", "1", "", false},
+		{"assist as SYSTEM rejected on SID", ipc.HelperRoleAssist, systemSID, "1", "1", "1", "assist role requires non-SYSTEM identity", true},
+		{"assist rejected when console lookup failed (session 0 sentinel)", ipc.HelperRoleAssist, nonSystemSID, "0", "0", "0", "assist role requires the active console session", true},
+		{"watchdog as SYSTEM unaffected by console session", ipc.HelperRoleWatchdog, systemSID, "0", "0", "1", "", false},
+		{"watchdog as non-SYSTEM rejected", ipc.HelperRoleWatchdog, nonSystemSID, "1", "1", "1", "watchdog role requires SYSTEM identity", true},
 	}
 
 	for _, tc := range tests {
