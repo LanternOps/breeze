@@ -680,7 +680,7 @@ function buildRecommendations(summary: PostureSummary, agg: PostureAggregates): 
     recs.push({ severity: 'bad', text: `Remediate ${agg.criticalCount} critical patch/vulnerability finding${agg.criticalCount === 1 ? '' : 's'} (see per-device detail).` });
   }
   if (c.backupRequired !== false && c.backupConfigured === false) {
-    recs.push({ severity: 'bad', text: 'Configure backups - no backup solution is currently detected for this organization.' });
+    recs.push({ severity: 'bad', text: 'Configure backups — no backup solution is currently detected for this organization.' });
   }
   if (p.mfaStepUpEnforced === false) {
     recs.push({ severity: 'bad', text: 'Enforce MFA step-up so privileged actions require a second factor.' });
@@ -958,13 +958,13 @@ function drawPostureProductRow(doc: jsPDF, product: PostureProduct, y: number): 
   // (avoids "Backup (local) (Backup)").
   const cat = product.product.toLowerCase().includes(catLabel.toLowerCase()) ? '' : ` (${catLabel})`;
   const coverage = product.deviceCoverage != null
-    ? ` - ${product.deviceCoverage} device${product.deviceCoverage === 1 ? '' : 's'}`
+    ? ` — ${product.deviceCoverage} device${product.deviceCoverage === 1 ? '' : 's'}`
     : '';
   // Sync status is only interesting when it's a problem; success is machine
   // noise on a client-facing page.
   const syncOk = !product.lastSyncStatus || /^(ok|success|succeeded)$/i.test(product.lastSyncStatus);
-  const sync = syncOk ? '' : ` - sync ${product.lastSyncStatus}`;
-  const degraded = product.active === false ? ' - not reporting' : '';
+  const sync = syncOk ? '' : ` — sync ${product.lastSyncStatus}`;
+  const degraded = product.active === false ? ' — not reporting' : '';
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   set.fill(doc, product.active === false ? C.warning : C.success);

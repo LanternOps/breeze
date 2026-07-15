@@ -28,10 +28,24 @@ const execSummary: ExecutiveSummary = {
 };
 const opts = { generatedAt: 'Jul 1, 2026, 9:00 AM', timezone: 'UTC' };
 
+// jsPDF encodes standard-font text as WinAnsi (cp1252) bytes, which surface in
+// the page command strings as raw 0x80-0x9f characters — an em-dash arrives as
+// \x97, not "—". That range is the only place cp1252 diverges from latin1, so
+// mapping it back lets the assertions below match the typography a reader
+// actually sees. Without it, `toContain('— 1 device')` fails and the tempting
+// "fix" is to downgrade the PDF's punctuation to ASCII to suit the test.
+const CP1252_HIGH =
+  '\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021' +
+  '\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f' +
+  '\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014' +
+  '\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178';
+const decodeWinAnsi = (s: string): string =>
+  s.replace(/[\u0080-\u009f]/g, (ch) => CP1252_HIGH[ch.charCodeAt(0) - 0x80] ?? ch);
+
 function pdfCommandPages(doc: ReturnType<typeof buildReportPdf>): string[] {
   return ((doc.internal as unknown as { pages: Array<string[] | undefined> }).pages ?? [])
     .filter((page): page is string[] => Array.isArray(page))
-    .map((page) => page.join('\n'));
+    .map((page) => decodeWinAnsi(page.join('\n')));
 }
 
 function pdfCommandText(doc: ReturnType<typeof buildReportPdf>): string {
@@ -139,8 +153,8 @@ describe('buildReportPdf in Node (no DOM)', () => {
     }
     expect(text).toContain('continued');
     expect(text).toContain('Antivirus');
-    expect(text).toContain(' - 1 device');
-    expect(text).not.toContain(' - 1 devices');
+    expect(text).toContain(' — 1 device');
+    expect(text).not.toContain(' — 1 devices');
   });
 
   it('renders optional missing backup neutrally and omits the backup recommendation', () => {
