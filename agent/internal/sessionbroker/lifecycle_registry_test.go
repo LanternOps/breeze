@@ -590,3 +590,60 @@ func TestMarkSessionClosedTreatsUnknownLivenessAsAlive(t *testing.T) {
 		t.Fatal("unknown liveness was recorded as helperExited; a live helper can now be duplicated")
 	}
 }
+
+func TestStartupExpiredDetectsHelperThatNeverConnected(t *testing.T) {
+	r := newHelperRegistry()
+	key := HelperKey{WindowsSessionID: 7, Role: "user"}
+	start := time.Now()
+
+	generation, _ := r.reserve(key, start)
+	if _, attached := r.attachReserved(key, generation, newFakeHelperProcess(5150), "user-helper"); !attached {
+		t.Fatal("attachReserved failed")
+	}
+
+	if r.startupExpired(key, start.Add(30*time.Second), helperStartupTimeout) {
+		t.Fatal("a helper still inside its startup window must not be recycled")
+	}
+	if !r.startupExpired(key, start.Add(helperStartupTimeout+time.Second), helperStartupTimeout) {
+		t.Fatal("a helper that never reached IPC past the timeout must be recycled")
+	}
+}
+
+func TestStartupExpiredIgnoresConnectedHelper(t *testing.T) {
+	r := newHelperRegistry()
+	key := HelperKey{WindowsSessionID: 7, Role: "user"}
+	start := time.Now()
+	process := newFakeHelperProcess(5151)
+
+	generation, _ := r.reserve(key, start)
+	r.attachReserved(key, generation, process, "user-helper")
+	r.markConnected(key, process.ProcessID(), &Session{})
+
+	if r.startupExpired(key, start.Add(24*time.Hour), helperStartupTimeout) {
+		t.Fatal("a connected helper must never be treated as a failed startup")
+	}
+}
+
+func TestMarkSessionClosedRestartsTheStartupWindow(t *testing.T) {
+	r := newHelperRegistry()
+	key := HelperKey{WindowsSessionID: 7, Role: "user"}
+	start := time.Now()
+	process := newFakeHelperProcess(5152)
+
+	generation, _ := r.reserve(key, start)
+	entry, _ := r.attachReserved(key, generation, process, "user-helper")
+	session := &Session{}
+	r.markConnected(key, process.ProcessID(), session)
+
+	// Long-lived helper: connected at start, IPC drops much later. The process
+	// is still alive, so it goes back to helperStarting. Its startup clock must
+	// restart, or it would be recycled instantly on the next reconcile.
+	r.markSessionClosed(key, session)
+
+	if entry.state != helperStarting {
+		t.Fatalf("state = %q, want %q", entry.state, helperStarting)
+	}
+	if r.startupExpired(key, time.Now().Add(time.Second), helperStartupTimeout) {
+		t.Fatal("startup window was not restarted on session close; a live helper would be killed immediately")
+	}
+}

@@ -238,6 +238,25 @@ func (r *helperRegistry) markSessionClosed(key HelperKey, session *Session) {
 	}
 }
 
+// startupExpired reports whether key's helper was launched but never reached
+// IPC within timeout. It replaces the KillStaleHelpers path this branch deleted:
+// a CreateProcessAsUser that "succeeds" and then crashes or hangs before
+// connecting is still a lifecycle failure, and without this the helperStarting
+// entry blocks reserve forever while nothing ever terminates the process.
+//
+// launchedAt is set by attach/attachReserved and restarted by markSessionClosed,
+// so a long-lived helper whose IPC drops gets a fresh window rather than being
+// recycled on the next tick.
+func (r *helperRegistry) startupExpired(key HelperKey, now time.Time, timeout time.Duration) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := r.current[key]
+	if entry == nil || entry.state != helperStarting || entry.launchedAt.IsZero() {
+		return false
+	}
+	return now.Sub(entry.launchedAt) >= timeout
+}
+
 func (r *helperRegistry) clearFatal(sessionID uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

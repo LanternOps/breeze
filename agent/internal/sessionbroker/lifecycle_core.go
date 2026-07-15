@@ -13,6 +13,12 @@ const (
 	fatalCooldown       = 10 * time.Minute
 	helperFatalExitCode = 2
 	helperPanicExitCode = 3
+
+	// helperStartupTimeout bounds how long a helper may sit in helperStarting —
+	// launched but not yet connected over IPC — before the lifecycle manager
+	// terminates and respawns it. Must comfortably exceed a cold helper start on
+	// a loaded RDS host; 90s is ~3x the observed worst case.
+	helperStartupTimeout = 90 * time.Second
 )
 
 type SCMSessionEvent struct {
@@ -229,6 +235,19 @@ func (m *HelperLifecycleManager) reconcile() {
 		if !desired[key] {
 			m.stopKey(key)
 		}
+	}
+	// Recycle helpers that launched but never reached IPC. Without this a
+	// helperStarting entry blocks reserve forever and nothing terminates the
+	// process, so the session/role slot stays dead until the agent restarts.
+	// Runs with m.mu released: stopTrackedKey takes the registry lock itself.
+	now := time.Now()
+	for key := range desired {
+		if !m.registry.startupExpired(key, now, helperStartupTimeout) {
+			continue
+		}
+		log.Warn("lifecycle: helper never reached IPC within startup timeout; recycling",
+			"helperKey", key.String(), "timeout", helperStartupTimeout.String())
+		m.stopTrackedKey(key)
 	}
 	for key := range desired {
 		m.spawnKey(key)
