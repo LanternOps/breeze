@@ -40,6 +40,10 @@ vi.mock('../services/tenantStatus', () => ({
   getActiveOrgTenant: vi.fn().mockResolvedValue({ orgId: 'org-1', partnerId: 'partner-1' })
 }));
 
+vi.mock('../services/apiKeyAuthorization', () => ({
+  authorizeHumanApiKeyCreator: vi.fn()
+}));
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((left, right) => ({ left, right })),
   and: vi.fn()
@@ -49,6 +53,7 @@ import type { Context } from 'hono';
 import { db, withDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import { getActiveOrgTenant } from '../services/tenantStatus';
+import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
 import * as apiKeyAuthModule from './apiKeyAuth';
 
 const { apiKeyAuthMiddleware, requireApiKeyScope } = apiKeyAuthModule;
@@ -114,6 +119,12 @@ describe('apiKeyAuth middleware', () => {
       allowed: true,
       remaining: 299,
       resetAt: new Date(Date.now() + 60_000)
+    });
+    vi.mocked(authorizeHumanApiKeyCreator).mockResolvedValue({
+      ok: true,
+      permissions: {} as any,
+      allowedSiteIds: undefined,
+      clampedScopes: ['devices:read']
     });
   });
 
@@ -495,7 +506,10 @@ describe('apiKeyAuth middleware', () => {
       id: 'key-4',
       orgId: 'org-2',
       partnerId: null,
-      scopes: ['read'],
+      // SR2-15: context scopes are the LIVE-clamped output of
+      // authorizeHumanApiKeyCreator (mocked to ['devices:read'] by the
+      // beforeEach default), not the raw stored key scope (['read']).
+      scopes: ['devices:read'],
       rateLimit: 5,
       createdBy: 'user-2'
     });
@@ -614,6 +628,56 @@ describe('apiKeyAuth middleware', () => {
     // api_keys lookup + creator-status lookup — owner status is delegated to
     // tenantStatus, so no third select happens for that.
     expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  describe('SR2-15: live creator membership + permission-ceiling', () => {
+    it('rejects with 401 when the creator has lost tenant membership', async () => {
+      buildSequentialSelectMock([
+        [{ id: 'key-1', orgId: 'org-1', name: 'k', keyPrefix: 'brz_x', keyHash: 'h', scopes: ['devices:read'], expiresAt: null, rateLimit: 1000, usageCount: 0, status: 'active', createdBy: 'user-1', source: 'manual' }],
+        [{ status: 'active' }],   // creator status still active (PR1 check passes)…
+      ]);
+      vi.mocked(authorizeHumanApiKeyCreator).mockResolvedValue({ ok: false, reason: 'no_membership' });
+      const c = createContext({ 'X-API-Key': 'brz_membership_gone' });
+      const next = vi.fn();
+      await expect(apiKeyAuthMiddleware(c, next)).rejects.toMatchObject({ status: 401 });
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('rejects with 401 when the creator no longer holds a stored scope (permission reduction)', async () => {
+      buildSequentialSelectMock([
+        [{ id: 'key-1', orgId: 'org-1', name: 'k', keyPrefix: 'brz_x', keyHash: 'h', scopes: ['devices:read', 'devices:write'], expiresAt: null, rateLimit: 1000, usageCount: 0, status: 'active', createdBy: 'user-1', source: 'manual' }],
+        [{ status: 'active' }],
+      ]);
+      vi.mocked(authorizeHumanApiKeyCreator).mockResolvedValue({ ok: false, reason: 'scope_exceeds_current_permissions' });
+      const c = createContext({ 'X-API-Key': 'brz_perm_reduced' });
+      await expect(apiKeyAuthMiddleware(c, vi.fn())).rejects.toMatchObject({ status: 401 });
+    });
+
+    it('passes the org AND the org-owning partner to the resolver (partner-axis keys)', async () => {
+      buildSequentialSelectMock([
+        [{ id: 'key-1', orgId: 'org-1', name: 'k', keyPrefix: 'brz_x', keyHash: 'h', scopes: ['devices:read'], expiresAt: null, rateLimit: 1000, usageCount: 0, status: 'active', createdBy: 'user-1', source: 'manual' }],
+        [{ status: 'active' }],
+      ]);
+      const next = vi.fn();
+      await apiKeyAuthMiddleware(createContext({ 'X-API-Key': 'brz_ok' }), next);
+      expect(authorizeHumanApiKeyCreator).toHaveBeenCalledWith(
+        expect.objectContaining({ createdBy: 'user-1', orgId: 'org-1', partnerId: 'partner-1', scopes: ['devices:read'] }),
+      );
+      expect(next).toHaveBeenCalled();
+    });
+
+    it('carries the LIVE-clamped scopes and allowedSiteIds into the request context', async () => {
+      buildSequentialSelectMock([
+        [{ id: 'key-1', orgId: 'org-1', name: 'k', keyPrefix: 'brz_x', keyHash: 'h', scopes: ['devices:read', 'devices:write'], expiresAt: null, rateLimit: 1000, usageCount: 0, status: 'active', createdBy: 'user-1', source: 'manual' }],
+        [{ status: 'active' }],
+      ]);
+      vi.mocked(authorizeHumanApiKeyCreator).mockResolvedValue({ ok: true, permissions: {} as any, allowedSiteIds: ['site-a'], clampedScopes: ['devices:read'] });
+      const c = createContext({ 'X-API-Key': 'brz_ok' });
+      await apiKeyAuthMiddleware(c, vi.fn());
+      const ctxKey = c.get('apiKey') as any;
+      expect(ctxKey.scopes).toEqual(['devices:read']);       // clamped, not the stored two
+      expect(ctxKey.allowedSiteIds).toEqual(['site-a']);
+    });
   });
 });
 

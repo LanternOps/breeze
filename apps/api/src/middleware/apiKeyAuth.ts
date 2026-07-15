@@ -7,6 +7,7 @@ import { apiKeys, users } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import { getTrustedClientIp } from '../services/clientIp';
+import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
 
 export interface ApiKeyContext {
   apiKey: {
@@ -18,6 +19,7 @@ export interface ApiKeyContext {
     scopes: string[];
     rateLimit: number;
     createdBy: string;
+    allowedSiteIds?: string[];
   };
   orgId: string;
 }
@@ -162,6 +164,27 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'API key creator is not active' });
   }
 
+  // SR2-15 (PR 5): a human-delegated key's authority is LIVE-bound to its
+  // creator. Beyond the status check above, the creator must (a) still hold a
+  // membership/role on this key's tenant (off-boarding gate) and (b) not have
+  // had their permissions reduced below the key's stored scopes since mint.
+  // We resolve the creator's CURRENT permissions on BOTH axes (org + the org's
+  // owning partner, since a Partner Admin has no organization_users row) and
+  // re-clamp. FAIL CLOSED: the resolver returns ok:false for a null/errored
+  // permission read, and we reject before opening the org context. This adds one
+  // getUserPermissions call (Redis-version-cached, 5-min TTL — a cache hit is an
+  // mget + in-proc lookup, no Postgres round-trip) to the hot path; correctness
+  // over cost per the PR 5 plan (Q1: live re-resolution, not an epoch).
+  const authz = await authorizeHumanApiKeyCreator({
+    createdBy: apiKey.createdBy,
+    orgId: apiKey.orgId,
+    partnerId: ownerTenant.partnerId,
+    scopes: apiKey.scopes ?? [],
+  });
+  if (!authz.ok) {
+    throw new HTTPException(401, { message: 'API key creator is no longer authorized' });
+  }
+
   // Check rate limits (requests per hour)
   const redis = getRedis();
   const rateLimitKey = `api_key_rate:${apiKey.id}`;
@@ -222,7 +245,8 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     partnerId: resolvedPartnerId,
     name: apiKey.name,
     keyPrefix: apiKey.keyPrefix,
-    scopes: apiKey.scopes || [],
+    scopes: authz.clampedScopes,
+    allowedSiteIds: authz.allowedSiteIds,
     rateLimit: apiKey.rateLimit,
     createdBy: apiKey.createdBy,
   });
