@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -482,16 +483,27 @@ func runWatchdog(stopCh <-chan struct{}) {
 				"count_24h": recovery.Count24h(),
 				"pid":       pid,
 			})
-			ok, err := recovery.Attempt(pid)
-			if ok {
+			result, err := recovery.Attempt(watchdog.RecoveryRequest{
+				StateFilePID: pid,
+				Intent:       watchdog.RecoveryIntentUnhealthy,
+				Context:      context.Background(),
+			})
+			switch {
+			case err != nil:
+				journal.Log(watchdog.LevelError, "recovery.failed", map[string]any{
+					"error": errStr(err),
+				})
+			case result.Disposition == watchdog.RecoveryDispositionVerifyHeartbeat:
 				pendingVerify = &struct{ startedAt time.Time }{startedAt: time.Now()}
 				journal.Log(watchdog.LevelInfo, "recovery.attempt_dispatched", map[string]any{
 					"attempt":   recovery.Attempts(),
 					"count_24h": recovery.Count24h(),
 				})
-			} else {
-				journal.Log(watchdog.LevelError, "recovery.failed", map[string]any{
-					"error": errStr(err),
+			default:
+				// No side effect and nothing to verify (e.g. the controller
+				// only observed an in-flight service transition).
+				journal.Log(watchdog.LevelInfo, "recovery.observed_transition", map[string]any{
+					"action": string(result.Action),
 				})
 			}
 
@@ -764,8 +776,13 @@ func handleFailoverCommand(
 	case "restart_agent":
 		recovery.Reset()
 		wd.HandleEvent(watchdog.EventStartAgent)
-		ok, err := recovery.Attempt(0)
-		if ok {
+		// Explicit intent: an operator restart is always a verified graceful
+		// restart, never whichever rung the escalation ladder happens to be on.
+		res, err := recovery.Attempt(watchdog.RecoveryRequest{
+			Intent:  watchdog.RecoveryIntentRestart,
+			Context: context.Background(),
+		})
+		if err == nil && res.ActionTaken {
 			resultStatus = "completed"
 			result = map[string]string{"action": "restart_agent"}
 		} else {
@@ -775,8 +792,13 @@ func handleFailoverCommand(
 
 	case "start_agent":
 		wd.HandleEvent(watchdog.EventStartAgent)
-		ok, err := recovery.Attempt(0)
-		if ok {
+		// Explicit intent: "start" must never escalate to force-killing a
+		// process just because a prior attempt was already recorded.
+		res, err := recovery.Attempt(watchdog.RecoveryRequest{
+			Intent:  watchdog.RecoveryIntentEnsureStart,
+			Context: context.Background(),
+		})
+		if err == nil && res.ActionTaken {
 			resultStatus = "completed"
 			result = map[string]string{"action": "start_agent"}
 		} else {

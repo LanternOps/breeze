@@ -12,6 +12,16 @@ import (
 
 const agentWindowsServiceName = "BreezeAgent"
 
+// osServiceController is the production serviceController on Windows. It
+// currently adapts the unverified SCM helpers below to the structured
+// contract, preserving today's behavior; the verified SCM state machine
+// replaces this in a later task of the same plan.
+type osServiceController struct{}
+
+func (osServiceController) Recover(attempt int, req RecoveryRequest) (RecoveryResult, error) {
+	return escalatingServiceRecover(attempt, req)
+}
+
 // restartAgentService stops then starts the Windows service for the agent.
 // It waits up to 15 seconds for the service to reach the Stopped state before
 // issuing the start request.

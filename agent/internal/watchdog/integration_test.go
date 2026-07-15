@@ -119,8 +119,11 @@ func (h *integHarness) tickRecovering() {
 		h.wd.HandleEvent(EventRecoveryExhausted)
 		return
 	}
-	ok, _ := h.recovery.Attempt(4242)
-	if ok {
+	result, err := h.recovery.Attempt(RecoveryRequest{
+		StateFilePID: 4242,
+		Intent:       RecoveryIntentUnhealthy,
+	})
+	if err == nil && result.Disposition == RecoveryDispositionVerifyHeartbeat {
 		h.pendingVerifyAt = h.clk.Now()
 	}
 }
