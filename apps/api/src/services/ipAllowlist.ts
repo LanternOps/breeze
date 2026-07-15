@@ -18,7 +18,7 @@ export const IP_NOT_ALLOWED_BODY = {
   error: 'Access denied from this IP address',
 } as const;
 
-export function isBlocked(d: IpAllowlistDecision): boolean {
+export function isBlocked(d: IpAllowlistDecision): d is Extract<IpAllowlistDecision, { decision: 'deny' }> {
   return d.decision === 'deny';
 }
 

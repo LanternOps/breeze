@@ -6,6 +6,7 @@ import { installerBootstrapTokens } from "../db/schema/installerBootstrapTokens"
 import { enrollmentKeys, organizations } from "../db/schema/orgs";
 import { hashEnrollmentKey } from "../services/enrollmentKeySecurity";
 import { BOOTSTRAP_TOKEN_PATTERN } from "../services/installerBootstrapToken";
+import { getTrustedClientIp } from "../services/clientIp";
 
 const CHILD_TTL_MIN = Number(
   process.env.CHILD_ENROLLMENT_KEY_TTL_MINUTES ?? 24 * 60,
@@ -83,7 +84,7 @@ async function redeemBootstrapToken(c: Context, token: string) {
     return c.json({ error: "invalid token" }, 400);
   }
 
-  const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+  const ip = getTrustedClientIp(c, c.env?.incoming?.socket?.remoteAddress ?? "unknown");
 
   const result = await withSystemDbAccessContext(async () => {
     // ── 1. Look up token ──────────────────────────────────────────────

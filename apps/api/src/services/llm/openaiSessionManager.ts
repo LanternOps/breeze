@@ -31,6 +31,7 @@ import { sanitizeErrorForClient } from '../aiAgent';
 import { getConfig } from '../../config/validate';
 import type { OpenAISession } from './types';
 import type { RequestLike } from '../auditEvents';
+import { getTrustedClientIpOrUndefined } from '../clientIp';
 
 // Mirror StreamingSessionManager: leave request ALS before starting the async turn so
 // nested withDbAccessContext(...) takes the transaction + set_config path (RLS GUCs).
@@ -60,7 +61,7 @@ export class OpenAISessionManager {
     requestContext: RequestLike | undefined,
   ): OpenAISession {
     const snapshot: AuditSnapshot = {
-      ip: requestContext?.req.header('x-forwarded-for') ?? requestContext?.req.header('x-real-ip'),
+      ip: requestContext ? getTrustedClientIpOrUndefined(requestContext) : undefined,
       userAgent: requestContext?.req.header('user-agent'),
     };
 
