@@ -44,8 +44,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run pnpm audit
-        run: pnpm audit --audit-level=critical
+      - name: Install osv-scanner
+        run: bash scripts/security/install-osv-scanner.sh
+
+      - name: Run dependency audit
+        run: bash scripts/security/check-npm-audit.sh
 
   go-vuln:
     name: Go Vulnerability Check

@@ -412,26 +412,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Production dependency audit. We scope to `--prod` so devDependencies
-      # (vitest, eslint, etc.) don't gate releases. We gate at `critical`
-      # because `pnpm audit` does NOT support workspace-level filtering and
-      # `apps/mobile` is NOT in the customer launch artifact yet — its dev
-      # tooling currently pulls in `ip@<=2.0.1` (HIGH GHSA-2p57-rm9w-gvfp,
-      # no upstream patch) via `@react-native-community/cli-doctor`. Raising
-      # the gate to `high` here would block every PR until mobile is removed
-      # or that transitive is replaced.
+      # Dependency audit. Uses osv-scanner against pnpm-lock.yaml because npm
+      # retired the /-/npm/v1/security/audits{,/quick} endpoints (HTTP 410) and
+      # pnpm has not migrated to the bulk advisory endpoint at any version, so
+      # `pnpm audit` now fails closed everywhere.
       #
-      # Follow-up to flip to `high`:
-      #   1. Decide if mobile ships, then either fix the chain (upstream is
-      #      stuck — likely a fork or relocate mobile out of the workspace)
-      #      OR drop apps/mobile.
-      #   2. Confirm `pnpm audit --prod --audit-level=high` exits 0.
-      #   3. Bump this gate.
+      # Gate stays at `critical`, matching the previous `--audit-level=critical`.
+      # The earlier `--prod` scoping existed to dodge a HIGH `ip@<=2.0.1`
+      # (GHSA-2p57-rm9w-gvfp) pulled in by apps/mobile dev tooling; the
+      # `ip@<=2.0.1: npm:neoip@^3.1.0` override in package.json has since
+      # resolved that, and the tree is now clean at every severity, so the scan
+      # covers dev dependencies too.
       #
-      # Until then: the other pnpm.overrides (brace-expansion, qs, ws) still
-      # close the non-mobile moderate advisories.
-      - name: Run npm audit (prod deps, critical only)
-        run: pnpm audit --prod --audit-level=critical
+      # Follow-up: tighten AUDIT_THRESHOLD to HIGH once we're comfortable that a
+      # new dev-only advisory blocking PRs is an acceptable trade.
+      - name: Install osv-scanner
+        run: bash scripts/security/install-osv-scanner.sh
+
+      - name: Run dependency audit (critical gate)
+        run: bash scripts/security/check-npm-audit.sh
 
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh

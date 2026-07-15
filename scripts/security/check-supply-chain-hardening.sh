@@ -93,9 +93,9 @@ require_grep 'checksum mismatch' agent/internal/agentapp/watchdog_bootstrap_test
   "watchdog bootstrap tests must cover checksum mismatch"
 
 require_grep '"packageManager": "pnpm@10\.33\.4"' package.json \
-  "package.json must pin pnpm to an audit-endpoint-compatible version"
+  "package.json must pin pnpm to a reproducible version"
 require_grep "PNPM_VERSION: '10\.33\.4'" .github/workflows/security.yml \
-  "security workflow must use pnpm 10.33.4+ for blocking audit"
+  "security workflow must pin PNPM_VERSION to 10.33.4"
 # Defense-in-depth: every site that installs pnpm must pin the same version
 # as the packageManager field, so a single uncoordinated bump can't sneak in.
 require_grep "PNPM_VERSION: '10\.33\.4'" .github/workflows/ci.yml \
@@ -112,6 +112,25 @@ require_grep 'SECURITY_AUDIT_RESULT' .github/workflows/ci.yml \
   "ci-success must depend on the security-audit job"
 reject_grep 'continue-on-error:[[:space:]]*true' .github/workflows/security.yml \
   "security workflow must not make dependency audits advisory-only"
+
+# The dependency audit runs on osv-scanner (npm retired the audit endpoints that
+# `pnpm audit` calls, so it fails closed at every pnpm version). Both audit sites
+# must keep invoking the real gate, and the scanner binary must stay pinned and
+# checksum-verified before install.
+for audit_workflow in .github/workflows/ci.yml .github/workflows/security.yml; do
+  require_grep 'scripts/security/check-npm-audit\.sh' "$audit_workflow" \
+    "$audit_workflow must run the blocking dependency audit gate"
+  require_grep 'scripts/security/install-osv-scanner\.sh' "$audit_workflow" \
+    "$audit_workflow must install osv-scanner via the checksum-verified installer"
+done
+require_grep 'OSV_SCANNER_VERSION:-[0-9]+\.[0-9]+\.[0-9]+' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must pin an explicit version"
+require_grep 'sha256sum -c -' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must verify the downloaded binary checksum"
+reject_grep 'curl .*\|[[:space:]]*(sudo )?(tar|sh|bash)' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must not pipe remote payloads into a shell or archiver"
+require_grep 'produced no parseable report' scripts/security/check-npm-audit.sh \
+  "dependency audit must fail closed when osv-scanner produces no report"
 reject_grep 'Login response:' .github/workflows/ci.yml \
   "CI smoke tests must not print full login responses"
 require_grep '::add-mask::\$\{TOKEN\}' .github/workflows/ci.yml \
