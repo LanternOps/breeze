@@ -171,10 +171,14 @@ func (b *Broker) reserveWindowsHelper(identityKey, peerSID string, key HelperKey
 	return reservation, nil
 }
 
+// helperOwnerReplaceable reports whether an existing helper session may be
+// displaced by a new claimant. A broker-closed session is the only stale signal
+// we act on. session.peerProcess now provides a kernel-bound handle (see
+// peer_process_windows.go), but consulting its liveness here would let a
+// claimant displace a HEALTHY helper that simply has not closed yet.
+// Displacement stays conservative on purpose: a refused admission is
+// recoverable, evicting a working helper is not.
 func helperOwnerReplaceable(owner *Session) bool {
-	// Task 4 adds a kernel-bound peer process handle to this decision. Until
-	// that handle exists, PID polling would be vulnerable to PID reuse, so a
-	// broker-closed session is the sole authoritative stale signal.
 	return owner.IsClosed()
 }
 

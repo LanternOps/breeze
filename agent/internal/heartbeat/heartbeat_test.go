@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -148,5 +149,59 @@ func TestHeartbeatTimeoutNeverOverlapsLifecycleCleanupWithBrokerClose(t *testing
 	case <-brokerClosed:
 	default:
 		t.Fatal("broker was not closed after lifecycle cleanup")
+	}
+}
+
+func TestBootstrapRetriesUntilItSucceedsThenListens(t *testing.T) {
+	// WTSEnumerateSessionsW fails transiently early in Windows boot. One flake
+	// must not cost the agent its pipe listener for the whole process lifetime.
+	var attempts int32
+	listened := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go bootstrapThenListenWithRetry(ctx, func() error {
+		if atomic.AddInt32(&attempts, 1) < 3 {
+			return errors.New("WTSEnumerateSessionsW: the RPC server is unavailable")
+		}
+		return nil
+	}, func() { close(listened) }, time.Millisecond)
+
+	select {
+	case <-listened:
+	case <-time.After(2 * time.Second):
+		t.Fatal("listener never started despite bootstrap eventually succeeding")
+	}
+	if got := atomic.LoadInt32(&attempts); got < 3 {
+		t.Fatalf("attempts = %d, want >= 3", got)
+	}
+}
+
+func TestBootstrapRetryStopsOnContextCancel(t *testing.T) {
+	var attempts int32
+	ctx, cancel := context.WithCancel(context.Background())
+	listened := make(chan struct{})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bootstrapThenListenWithRetry(ctx, func() error {
+			atomic.AddInt32(&attempts, 1)
+			return errors.New("permanent")
+		}, func() { close(listened) }, time.Millisecond)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry loop did not exit on context cancel")
+	}
+	select {
+	case <-listened:
+		t.Fatal("listener started despite bootstrap never succeeding")
+	default:
 	}
 }

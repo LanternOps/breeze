@@ -860,6 +860,38 @@ func bootstrapThenListen(bootstrap func() error, listen func()) error {
 	return nil
 }
 
+// lifecycleBootstrapRetryInterval matches the lifecycle reconcile cadence: both
+// recover from the same transient WTS enumeration failure.
+const lifecycleBootstrapRetryInterval = 30 * time.Second
+
+// bootstrapThenListenWithRetry keeps the fail-closed contract of
+// bootstrapThenListen — never listen without desired state — while making the
+// failure recoverable. Bootstrap reaches WTSEnumerateSessionsW, which fails
+// transiently when the agent service starts before Remote Desktop Services' RPC
+// endpoint is ready. Without a retry, one boot-order flake costs the agent its
+// pipe listener for the entire process lifetime: no remote desktop, no PAM, no
+// helper IPC, while the machine keeps heartbeating healthy. The reconcile loop
+// already treats this same error as transient and retries it.
+//
+// Blocks until bootstrap succeeds (then listens exactly once) or ctx is done.
+func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, listen func(), retry time.Duration) {
+	for {
+		err := bootstrapThenListen(bootstrap, listen)
+		if err == nil {
+			return
+		}
+		log.Warn("helper lifecycle bootstrap failed; retrying before starting broker listener",
+			"retryIn", retry.String(), "error", err.Error())
+		select {
+		case <-ctx.Done():
+			log.Error("helper lifecycle bootstrap never succeeded; broker listener not started",
+				"error", ctx.Err().Error())
+			return
+		case <-time.After(retry):
+		}
+	}
+}
+
 func (h *Heartbeat) Start() {
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
@@ -875,11 +907,9 @@ func (h *Heartbeat) Start() {
 		h.helperLifecycle = lifecycle
 		h.lifecycleCancel = cancel
 		h.mu.Unlock()
-		if err := bootstrapThenListen(lifecycle.Bootstrap, func() {
+		go bootstrapThenListenWithRetry(ctx, lifecycle.Bootstrap, func() {
 			go h.sessionBroker.Listen(h.stopChan)
-		}); err != nil {
-			log.Error("helper lifecycle bootstrap failed; refusing broker listener without desired state", "error", err.Error())
-		}
+		}, lifecycleBootstrapRetryInterval)
 		go lifecycle.Start(ctx)
 	} else if h.sessionBroker != nil {
 		go h.sessionBroker.Listen(h.stopChan)
