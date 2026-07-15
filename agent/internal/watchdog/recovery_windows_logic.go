@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -106,6 +107,11 @@ const (
 // the one we asked for. It is distinct from a timeout: we have a firm answer,
 // it is just the wrong one, so there is nothing to wait for.
 var errUnexpectedTerminalState = errors.New("service settled in an unexpected terminal state")
+
+// errSettleQueryFailed distinguishes "SCM stopped answering while we waited"
+// from "SCM answered but never settled". Both fail closed, but they are
+// different diagnoses in the journal.
+var errSettleQueryFailed = errors.New("scm query failed while waiting for the service to settle")
 
 // windowsRecoveryController implements serviceController on top of a
 // windowsRecoveryBackend.
@@ -265,27 +271,239 @@ func (c *windowsRecoveryController) ensureStartRecovery(result RecoveryResult, r
 	return c.ensureStarted(result, req, 0)
 }
 
-// forcedRecovery is the attempt-2 rung: validate the SCM-named process is
-// really our agent, terminate it, wait for it to exit, then bring the service
-// back.
+// forcedRecovery is the attempt-2 rung and the only path that terminates a
+// process. Its ordering is:
 //
-// TODO(task-3): implement the verified forced ordering
-// (validate -> terminate -> process exited -> start/observe -> new live PID)
-// per docs/superpowers/plans/2026-07-14-windows-watchdog-verified-recovery.md.
-// Until then this fails closed: forced recovery is the only path that can
-// terminate a process, and a half-built version of it could terminate the
-// wrong one. Returning a terminal failover disposition costs us an escalation
-// rung (the watchdog hands off to failover instead of force-restarting) but
-// cannot kill anything. This controller is not yet wired into production —
-// NewRecoveryManager still builds the legacy Windows controller until task 4 —
-// so no shipped behavior depends on this branch today.
-func (c *windowsRecoveryController) forcedRecovery(result RecoveryResult, _ RecoveryRequest) (RecoveryResult, error) {
+//	validate -> terminate -> process exited -> (Stopped -> start | SCM already
+//	restarting -> observe) -> Running with a new live PID
+//
+// Two rules make it safe. First, req.StateFilePID is never used for anything
+// destructive: it is a hint written by the agent that may be arbitrarily stale,
+// and Windows recycles PIDs aggressively, so terminating it could kill an
+// unrelated process. Every destructive step targets the PID SCM names right
+// now, re-checked immediately before the kill.
+//
+// Second, every uncertainty fails closed to RecoveryDispositionFailover, which
+// RecoveryManager latches as terminal so attempt 3 cannot come back and try the
+// same kill against the same fog. "We could not tell" is never "recovered".
+func (c *windowsRecoveryController) forcedRecovery(result RecoveryResult, req RecoveryRequest) (RecoveryResult, error) {
 	result.Action = RecoveryActionForced
-	result.Disposition = RecoveryDispositionFailover
-	return result, &RecoveryError{
-		Class: RecoveryFailureControl,
-		Phase: "forced_recovery_unimplemented",
-		Err:   errors.New("verified forced recovery is not implemented yet"),
+	result.Phase = "query_scm_pid"
+
+	snapshot, err := c.backend.Query()
+	if err != nil {
+		result.Disposition = RecoveryDispositionFailover
+		return result, recoveryQueryError("query_scm_pid", snapshot, err)
+	}
+	result.InitialState = string(snapshot.State)
+	result.FinalState = string(snapshot.State)
+
+	if isPendingState(snapshot.State) {
+		// SCM already owns a transition; watch it rather than race it.
+		return c.observeTransition(result, req, snapshot)
+	}
+	if snapshot.State == serviceStopped {
+		// Nothing to terminate — the process we were going to kill is already
+		// gone.
+		result.Action = RecoveryActionStart
+		return c.ensureStarted(result, req, 0)
+	}
+	if snapshot.State != serviceRunning || snapshot.PID <= 0 {
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{
+			Class: RecoveryFailureIdentityMismatch,
+			Phase: "validate_scm_owner",
+			State: string(snapshot.State),
+			PID:   snapshot.PID,
+		}
+	}
+	result.OldPID = snapshot.PID
+
+	configured, err := c.backend.ConfiguredBinaryPath()
+	if err != nil {
+		result.Disposition = RecoveryDispositionFailover
+		return result, recoveryQueryError("service_config", snapshot, err)
+	}
+
+	proc, err := c.backend.OpenProcess(snapshot.PID)
+	if err != nil {
+		result.Disposition = RecoveryDispositionFailover
+		return result, recoveryQueryError("open_service_process", snapshot, err)
+	}
+	defer proc.Close()
+
+	// Prove the handle we are about to terminate is our agent's image, and that
+	// it is a live process rather than a zombie whose PID may already have been
+	// handed to someone else.
+	result.Phase = "validate_image"
+	actual, err := proc.ImagePath()
+	if err != nil || !sameWindowsExecutable(configured, actual) {
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{Class: RecoveryFailureIdentityMismatch, Phase: "validate_image", State: string(snapshot.State), PID: snapshot.PID, Err: err}
+	}
+	result.Phase = "validate_process_live"
+	alive, err := proc.Alive()
+	if err != nil || !alive {
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{Class: RecoveryFailureIdentityMismatch, Phase: "validate_process_live", State: string(snapshot.State), PID: snapshot.PID, Err: err}
+	}
+
+	// Close the TOCTOU window: SCM may have restarted the service while we were
+	// validating, in which case our handle names a process SCM no longer owns.
+	result.Phase = "revalidate_scm_pid"
+	fresh, err := c.backend.Query()
+	if err != nil {
+		result.Disposition = RecoveryDispositionFailover
+		return result, recoveryQueryError("revalidate_scm_pid", fresh, err)
+	}
+	result.FinalState = string(fresh.State)
+	if isPendingState(fresh.State) {
+		// SCM recovery or another controller already owns the transition.
+		return c.observeTransition(result, req, fresh)
+	}
+	if fresh.State != serviceRunning || fresh.PID != snapshot.PID {
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{
+			Class: RecoveryFailureIdentityMismatch,
+			Phase: "revalidate_scm_owner",
+			State: string(fresh.State),
+			PID:   snapshot.PID,
+		}
+	}
+
+	// Everything past here is a side effect, so the attempt is charged even if
+	// the control itself fails.
+	result.ActionTaken = true
+	result.Phase = "terminate"
+	if err := proc.Terminate(); err != nil {
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{Class: RecoveryFailureControl, Phase: "terminate", State: string(fresh.State), PID: snapshot.PID, Err: err}
+	}
+
+	result.Phase = "wait_process_exit"
+	if err := proc.Wait(req.Context, c.processExitTimeout); err != nil {
+		if isRecoveryCancellation(err) {
+			// A shutdown is not a diagnosis: leave the disposition alone so it
+			// normalizes to none rather than latching terminal failover.
+			return result, &RecoveryError{Class: RecoveryFailureCanceled, Phase: "wait_process_exit", PID: snapshot.PID, Err: err}
+		}
+		// The process may still hold the agent's ports, locks and state file.
+		// Starting a second one on top of it is worse than failing over.
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{Class: RecoveryFailureProcessExitTimeout, Phase: "wait_process_exit", PID: snapshot.PID, Err: err}
+	}
+
+	return c.startAfterTermination(result, req, configured)
+}
+
+// startAfterTermination brings the service back once the terminated process has
+// exited. SCM's own failure-recovery action may already be restarting it, so
+// this observes before deciding whether to issue a Start — a competing Start
+// would race SCM. Either way the resulting process must clear the same identity
+// and liveness bar as the one we killed.
+func (c *windowsRecoveryController) startAfterTermination(result RecoveryResult, req RecoveryRequest, configured string) (RecoveryResult, error) {
+	result.Phase = "wait_service_settled"
+	settled, err := c.waitForSettled(req, c.stopTimeout)
+	if settled.State != "" {
+		result.FinalState = string(settled.State)
+	}
+	if err != nil {
+		if isRecoveryCancellation(err) {
+			return result, &RecoveryError{Class: RecoveryFailureCanceled, Phase: "wait_service_settled", State: string(settled.State), PID: settled.PID, Err: err}
+		}
+		class := RecoveryFailureStopTimeout
+		if errors.Is(err, errSettleQueryFailed) {
+			class = RecoveryFailureQuery
+		}
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{Class: class, Phase: "wait_service_settled", State: string(settled.State), PID: settled.PID, Err: err}
+	}
+
+	oldPID := result.OldPID
+	switch settled.State {
+	case serviceStopped:
+		result, err = c.ensureStarted(result, req, oldPID)
+	case serviceRunning:
+		// SCM restarted it for us. Do not issue a competing Start.
+		result, err = c.verifyRunning(result, settled, oldPID)
+	default:
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{
+			Class: RecoveryFailureIdentityMismatch,
+			Phase: "verify_running",
+			State: string(settled.State),
+			PID:   settled.PID,
+		}
+	}
+	if err != nil {
+		return result, err
+	}
+	if result.Disposition != RecoveryDispositionVerifyHeartbeat || result.NewPID <= 0 {
+		// ensureStarted lost a race to SCM and the transition it observed ended
+		// somewhere other than Running (typically back at Stopped). Nothing came
+		// up, so there is no new process to verify — leave the disposition as the
+		// observation found it rather than manufacturing a verdict here.
+		return result, nil
+	}
+	return c.verifyNewProcess(result, configured, result.NewPID)
+}
+
+// verifyNewProcess is the last gate before reporting a forced restart as
+// successful. verifyRunning already proved SCM says Running with a PID distinct
+// from the one we killed; this proves that PID is our agent's image and is
+// actually alive. Without it a forced recovery could report success for a PID
+// SCM named but that had already died, or for a recycled PID belonging to
+// something else entirely.
+func (c *windowsRecoveryController) verifyNewProcess(result RecoveryResult, configured string, pid int) (RecoveryResult, error) {
+	proc, err := c.backend.OpenProcess(pid)
+	if err != nil {
+		result.Disposition = RecoveryDispositionFailover
+		return result, recoveryQueryError("open_new_process", serviceSnapshot{State: serviceRunning, PID: pid}, err)
+	}
+	defer proc.Close()
+
+	result.Phase = "validate_new_image"
+	actual, err := proc.ImagePath()
+	if err != nil || !sameWindowsExecutable(configured, actual) {
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{Class: RecoveryFailureIdentityMismatch, Phase: "validate_new_image", State: string(serviceRunning), PID: pid, Err: err}
+	}
+	result.Phase = "validate_new_process_live"
+	alive, err := proc.Alive()
+	if err != nil || !alive {
+		result.Disposition = RecoveryDispositionFailover
+		return result, &RecoveryError{Class: RecoveryFailureIdentityMismatch, Phase: "validate_new_process_live", State: string(serviceRunning), PID: pid, Err: err}
+	}
+
+	result.Phase = "verify_new_process"
+	return result, nil
+}
+
+// waitForSettled polls SCM until it leaves every pending state, returning
+// whatever definite state it landed in. Unlike waitForState it does not want a
+// specific outcome: after a termination either Stopped (we start it) or Running
+// (SCM already did) is legitimate, and the caller decides.
+func (c *windowsRecoveryController) waitForSettled(req RecoveryRequest, timeout time.Duration) (serviceSnapshot, error) {
+	deadline := c.clk.Now().Add(timeout)
+	var last serviceSnapshot
+	for {
+		if err := req.Context.Err(); err != nil {
+			return last, err
+		}
+		snapshot, err := c.backend.Query()
+		if err != nil {
+			return last, fmt.Errorf("%w: %w", errSettleQueryFailed, err)
+		}
+		last = snapshot
+		if !isPendingState(snapshot.State) {
+			return snapshot, nil
+		}
+		if !c.clk.Now().Before(deadline) {
+			return snapshot, fmt.Errorf("timed out after %s waiting for the service to settle (last state %s)", timeout, snapshot.State)
+		}
+		if err := c.clk.Sleep(req.Context, c.pollInterval); err != nil {
+			return snapshot, err
+		}
 	}
 }
 
@@ -532,6 +750,32 @@ func (c *windowsRecoveryController) waitForState(req RecoveryRequest, want servi
 			return snapshot, err
 		}
 	}
+}
+
+// normalizeWindowsExecutablePath canonicalizes a Windows executable path for
+// comparison. SCM's service config and QueryFullProcessImageName do not agree
+// on surface form — the config value is often quoted, may use forward slashes,
+// and may carry the \\?\ extended-length prefix — while Windows paths are
+// case-insensitive. Comparing raw strings would reject our own agent.
+func normalizeWindowsExecutablePath(path string) string {
+	path = strings.Trim(strings.TrimSpace(path), `"`)
+	path = strings.ReplaceAll(path, "/", `\`)
+	path = strings.TrimPrefix(path, `\\?\`)
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(path), `\`))
+}
+
+// sameWindowsExecutable reports whether two paths name the same image.
+//
+// An empty normalized path means "we do not know", and two unknowns are not a
+// match: a backend that failed to report a path must never satisfy the identity
+// gate that guards termination.
+func sameWindowsExecutable(configured, actual string) bool {
+	c := normalizeWindowsExecutablePath(configured)
+	a := normalizeWindowsExecutablePath(actual)
+	if c == "" || a == "" {
+		return false
+	}
+	return c == a
 }
 
 func recoveryQueryError(phase string, snapshot serviceSnapshot, err error) *RecoveryError {

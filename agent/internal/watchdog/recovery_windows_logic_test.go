@@ -3,11 +3,16 @@ package watchdog
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// testAgentImagePath is the configured service binary every forced-recovery
+// fixture validates against.
+const testAgentImagePath = `C:\Program Files\Breeze\breeze-agent.exe`
 
 // This file is deliberately OS-neutral: it exercises the Windows recovery state
 // machine through fakes so the transition ordering is testable on any host.
@@ -658,6 +663,436 @@ func TestUnexpectedInitialStateFailsClosed(t *testing.T) {
 	}
 	if backend.stopCalls != 0 || backend.startCalls != 0 || result.Disposition != RecoveryDispositionFailover {
 		t.Fatalf("stop=%d start=%d result=%+v", backend.stopCalls, backend.startCalls, result)
+	}
+}
+
+// forcedRecoverySuccessBackend is the canonical happy-path forced fixture: SCM
+// names oldPID twice (initial query + revalidation), the service settles
+// Stopped once the process exits, then Start brings it back as newPID. Both
+// processes carry the configured image.
+func forcedRecoverySuccessBackend(oldPID, newPID int) *fakeWindowsBackend {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceRunning, PID: oldPID},
+		serviceSnapshot{State: serviceRunning, PID: oldPID},
+		serviceSnapshot{State: serviceStopped},
+		serviceSnapshot{State: serviceRunning, PID: newPID},
+	)
+	backend.configuredPath = testAgentImagePath
+	backend.processes[oldPID] = newFakeWatchedProcess(testAgentImagePath)
+	backend.processes[newPID] = newFakeWatchedProcess(testAgentImagePath)
+	return backend
+}
+
+// TestForcedRecoveryUsesFreshSCMPIDNotStateFilePID is the core safety property:
+// the state-file PID is a stale hint that may have been recycled onto an
+// unrelated process, so every destructive action must target the PID SCM names
+// right now.
+func TestForcedRecoveryUsesFreshSCMPIDNotStateFilePID(t *testing.T) {
+	backend := forcedRecoverySuccessBackend(200, 300)
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{StateFilePID: 999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OldPID != 200 || result.NewPID != 300 {
+		t.Fatalf("result=%+v, want OldPID=200 NewPID=300 from SCM, not the state file", result)
+	}
+	if !reflect.DeepEqual(backend.openedPIDs, []int{200, 300}) {
+		t.Fatalf("openedPIDs=%v, want [200 300]: the state-file PID 999 must never be opened", backend.openedPIDs)
+	}
+	if result.StateFilePID != 999 || result.Disposition != RecoveryDispositionVerifyHeartbeat {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+// TestForcedRecoveryImageMismatchDoesNotTerminateOrStart: SCM named a PID whose
+// image is not our agent. That PID was recycled onto someone else's process —
+// terminating it would kill an arbitrary program.
+func TestForcedRecoveryImageMismatchDoesNotTerminateOrStart(t *testing.T) {
+	backend := newFakeWindowsBackend(serviceSnapshot{State: serviceRunning, PID: 200})
+	backend.configuredPath = testAgentImagePath
+	proc := newFakeWatchedProcess(`C:\Windows\System32\notepad.exe`)
+	backend.processes[200] = proc
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	var recoveryErr *RecoveryError
+	if !errors.As(err, &recoveryErr) || recoveryErr.Class != RecoveryFailureIdentityMismatch {
+		t.Fatalf("err=%v, want identity mismatch", err)
+	}
+	if result.Disposition != RecoveryDispositionFailover {
+		t.Fatalf("disposition=%q, want failover: an unidentifiable process is never retried", result.Disposition)
+	}
+	if proc.terminateCalls != 0 || backend.startCalls != 0 {
+		t.Fatalf("terminate=%d start=%d, want 0 and 0", proc.terminateCalls, backend.startCalls)
+	}
+}
+
+// TestForcedRecoveryOrdersExitBeforeStart pins the exact required ordering:
+// validate -> terminate -> process exited -> Stopped -> start -> new live PID.
+// Starting before the old process has actually exited is how two agents end up
+// running at once.
+func TestForcedRecoveryOrdersExitBeforeStart(t *testing.T) {
+	backend := forcedRecoverySuccessBackend(100, 200)
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "query,config,open:100,image,alive,query,terminate,wait,query,start,query,open:200,image,alive"
+	if got := backend.ops(); got != want {
+		t.Fatalf("operations=%q,\n want %q", got, want)
+	}
+	if result.Action != RecoveryActionForced || !result.ActionTaken {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.Disposition != RecoveryDispositionVerifyHeartbeat || result.NewPID != 200 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+// TestForcedRecoveryConfigQueryFailureEntersFailover: if we cannot read SCM's
+// state or the configured binary path, we cannot prove what we would be
+// killing. That is terminal, not retryable.
+func TestForcedRecoveryConfigQueryFailureEntersFailover(t *testing.T) {
+	t.Run("scm query fails", func(t *testing.T) {
+		backend := forcedRecoverySuccessBackend(100, 200)
+		backend.queryErr = errors.New("SCM unavailable")
+		result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+		var recoveryErr *RecoveryError
+		if !errors.As(err, &recoveryErr) || recoveryErr.Class != RecoveryFailureQuery {
+			t.Fatalf("err=%v, want %q", err, RecoveryFailureQuery)
+		}
+		if result.Disposition != RecoveryDispositionFailover || result.ActionTaken {
+			t.Fatalf("result=%+v", result)
+		}
+		if got := backend.ops(); got != "query" {
+			t.Fatalf("operations=%q, want no action after a failed query", got)
+		}
+	})
+
+	t.Run("service config fails", func(t *testing.T) {
+		backend := forcedRecoverySuccessBackend(100, 200)
+		backend.configErr = errors.New("OpenService config denied")
+		result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+		var recoveryErr *RecoveryError
+		if !errors.As(err, &recoveryErr) || recoveryErr.Class != RecoveryFailureQuery {
+			t.Fatalf("err=%v, want %q", err, RecoveryFailureQuery)
+		}
+		if result.Disposition != RecoveryDispositionFailover {
+			t.Fatalf("disposition=%q, want failover", result.Disposition)
+		}
+		if got := backend.ops(); got != "query,config" {
+			t.Fatalf("operations=%q, want nothing opened or terminated", got)
+		}
+		if backend.startCalls != 0 || backend.processes[100].terminateCalls != 0 {
+			t.Fatalf("start=%d terminate=%d", backend.startCalls, backend.processes[100].terminateCalls)
+		}
+	})
+}
+
+// TestForcedRecoveryOpenProcessFailureEntersFailover: a PID we cannot open is a
+// PID we cannot identify.
+func TestForcedRecoveryOpenProcessFailureEntersFailover(t *testing.T) {
+	backend := forcedRecoverySuccessBackend(100, 200)
+	backend.openErr = errors.New("access denied")
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	var recoveryErr *RecoveryError
+	if !errors.As(err, &recoveryErr) || recoveryErr.Class != RecoveryFailureQuery {
+		t.Fatalf("err=%v, want %q", err, RecoveryFailureQuery)
+	}
+	if result.Disposition != RecoveryDispositionFailover || result.ActionTaken {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := backend.ops(); got != "query,config,open:100" {
+		t.Fatalf("operations=%q, want nothing terminated or started", got)
+	}
+}
+
+// TestForcedRecoveryPIDChangesAfterOpenFailsClosed: SCM handed us a different
+// PID between the identity check and the termination, so the handle we
+// validated no longer belongs to the service. Killing it anyway would terminate
+// a process the SCM has already moved on from.
+func TestForcedRecoveryPIDChangesAfterOpenFailsClosed(t *testing.T) {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceRunning, PID: 200},
+	)
+	backend.configuredPath = testAgentImagePath
+	backend.processes[100] = newFakeWatchedProcess(testAgentImagePath)
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	var recoveryErr *RecoveryError
+	if !errors.As(err, &recoveryErr) || recoveryErr.Class != RecoveryFailureIdentityMismatch {
+		t.Fatalf("err=%v, want identity mismatch", err)
+	}
+	if recoveryErr.Phase != "revalidate_scm_owner" {
+		t.Fatalf("phase=%q, want revalidate_scm_owner", recoveryErr.Phase)
+	}
+	if result.Disposition != RecoveryDispositionFailover || result.ActionTaken {
+		t.Fatalf("result=%+v", result)
+	}
+	if backend.processes[100].terminateCalls != 0 || backend.startCalls != 0 {
+		t.Fatalf("terminate=%d start=%d", backend.processes[100].terminateCalls, backend.startCalls)
+	}
+}
+
+// TestForcedRecoverySamePIDPendingStateObservesWithoutTerminate: SCM entered a
+// transition while we were validating. It already owns the recovery, so we
+// bound-observe it instead of racing it with a termination.
+func TestForcedRecoverySamePIDPendingStateObservesWithoutTerminate(t *testing.T) {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceStopPending, PID: 100},
+		serviceSnapshot{State: serviceStopped},
+	)
+	backend.configuredPath = testAgentImagePath
+	backend.processes[100] = newFakeWatchedProcess(testAgentImagePath)
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	if err != nil {
+		t.Fatalf("observing SCM's own transition is not a failure: %v", err)
+	}
+	if backend.processes[100].terminateCalls != 0 || backend.startCalls != 0 {
+		t.Fatalf("terminate=%d start=%d, want 0 and 0", backend.processes[100].terminateCalls, backend.startCalls)
+	}
+	// Nothing was restarted, so nothing was charged and there is no recovery
+	// for the heartbeat check to confirm.
+	if result.ActionTaken || result.Disposition != RecoveryDispositionNone {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.Action != RecoveryActionObserve {
+		t.Fatalf("action=%q, want %q", result.Action, RecoveryActionObserve)
+	}
+}
+
+// TestForcedRecoveryProcessExitTimeout: the process did not exit, so the old
+// agent may still hold its ports and locks. Starting a second one would be
+// worse than failing over.
+func TestForcedRecoveryProcessExitTimeout(t *testing.T) {
+	backend := forcedRecoverySuccessBackend(100, 200)
+	backend.processes[100].waitErr = errors.New("process still alive after 35s")
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	var recoveryErr *RecoveryError
+	if !errors.As(err, &recoveryErr) || recoveryErr.Class != RecoveryFailureProcessExitTimeout {
+		t.Fatalf("err=%v, want %q", err, RecoveryFailureProcessExitTimeout)
+	}
+	if result.Disposition != RecoveryDispositionFailover {
+		t.Fatalf("disposition=%q, want failover", result.Disposition)
+	}
+	if backend.startCalls != 0 {
+		t.Fatalf("startCalls=%d, want 0: never start while the old process may still be alive", backend.startCalls)
+	}
+	// The terminate was issued, so the attempt is charged.
+	if !result.ActionTaken {
+		t.Fatalf("result=%+v, want ActionTaken", result)
+	}
+}
+
+// TestForcedRecoverySCMStoppedTimeout: the process exited but SCM never settled,
+// so we cannot tell whether SCM is about to restart the service itself.
+func TestForcedRecoverySCMStoppedTimeout(t *testing.T) {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceStopPending, PID: 100},
+	)
+	backend.configuredPath = testAgentImagePath
+	backend.processes[100] = newFakeWatchedProcess(testAgentImagePath)
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	var recoveryErr *RecoveryError
+	if !errors.As(err, &recoveryErr) || recoveryErr.Class != RecoveryFailureStopTimeout {
+		t.Fatalf("err=%v, want %q", err, RecoveryFailureStopTimeout)
+	}
+	if result.Disposition != RecoveryDispositionFailover || backend.startCalls != 0 {
+		t.Fatalf("result=%+v start=%d", result, backend.startCalls)
+	}
+}
+
+// TestForcedRecoveryRejectsSameNewPID: SCM still names the PID we terminated.
+// The "new" process is the corpse of the old one.
+func TestForcedRecoveryRejectsSameNewPID(t *testing.T) {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceRunning, PID: 100},
+	)
+	backend.configuredPath = testAgentImagePath
+	backend.processes[100] = newFakeWatchedProcess(testAgentImagePath)
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	var recoveryErr *RecoveryError
+	if !errors.As(err, &recoveryErr) || recoveryErr.Class != RecoveryFailureIdentityMismatch {
+		t.Fatalf("err=%v, want identity mismatch", err)
+	}
+	if result.Disposition != RecoveryDispositionFailover || result.NewPID != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if !reflect.DeepEqual(backend.openedPIDs, []int{100}) {
+		t.Fatalf("openedPIDs=%v, want only the old PID", backend.openedPIDs)
+	}
+}
+
+// TestForcedRecoveryRejectsDeadNewProcess: SCM says Running with a fresh PID but
+// that process is already gone. Reporting a recovery here would strand the
+// device.
+func TestForcedRecoveryRejectsDeadNewProcess(t *testing.T) {
+	backend := forcedRecoverySuccessBackend(100, 200)
+	backend.processes[200].alive = false
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	var recoveryErr *RecoveryError
+	if !errors.As(err, &recoveryErr) || recoveryErr.Class != RecoveryFailureIdentityMismatch {
+		t.Fatalf("err=%v, want identity mismatch", err)
+	}
+	if result.Disposition != RecoveryDispositionFailover {
+		t.Fatalf("disposition=%q, want failover", result.Disposition)
+	}
+}
+
+// TestForcedRecoveryObservesAutomaticSCMRestartWithoutCallingStart: SCM's own
+// failure-recovery action restarted the service after our termination. Issuing
+// a competing Start would race it, so we observe — but still hold the new
+// process to the same identity and liveness proof.
+func TestForcedRecoveryObservesAutomaticSCMRestartWithoutCallingStart(t *testing.T) {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceStartPending, PID: 200},
+		serviceSnapshot{State: serviceRunning, PID: 200},
+	)
+	backend.configuredPath = testAgentImagePath
+	backend.processes[100] = newFakeWatchedProcess(testAgentImagePath)
+	backend.processes[200] = newFakeWatchedProcess(testAgentImagePath)
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend.startCalls != 0 {
+		t.Fatalf("startCalls=%d, want 0: SCM already owns the restart", backend.startCalls)
+	}
+	want := "query,config,open:100,image,alive,query,terminate,wait,query,query,open:200,image,alive"
+	if got := backend.ops(); got != want {
+		t.Fatalf("operations=%q,\n want %q", got, want)
+	}
+	if result.NewPID != 200 || result.Disposition != RecoveryDispositionVerifyHeartbeat {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+// TestForcedRecoveryStartRaceEndingStoppedVerifiesNoNewProcess: our Start lost a
+// race to SCM and the transition SCM owned ended back at Stopped. Nothing came
+// up, so there is no new PID — the controller must not try to verify one, and
+// must not report a recovery that did not happen.
+func TestForcedRecoveryStartRaceEndingStoppedVerifiesNoNewProcess(t *testing.T) {
+	backend := newFakeWindowsBackend(
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceRunning, PID: 100},
+		serviceSnapshot{State: serviceStopped},
+		serviceSnapshot{State: serviceStopPending, PID: 100},
+		serviceSnapshot{State: serviceStopped},
+	)
+	backend.configuredPath = testAgentImagePath
+	backend.processes[100] = newFakeWatchedProcess(testAgentImagePath)
+	backend.startErr = errFakeServiceCannotAcceptCtl
+	result, err := newTestWindowsRecoveryController(backend).Recover(2, RecoveryRequest{})
+	if err != nil {
+		t.Fatalf("losing a start race to SCM is not a failure: %v", err)
+	}
+	if result.Disposition != RecoveryDispositionVerifyHeartbeat && result.Disposition != RecoveryDispositionNone {
+		t.Fatalf("disposition=%q", result.Disposition)
+	}
+	if result.Disposition == RecoveryDispositionVerifyHeartbeat {
+		t.Fatalf("nothing came up, so nothing is coming back: %+v", result)
+	}
+	if result.NewPID != 0 {
+		t.Fatalf("NewPID=%d, want 0", result.NewPID)
+	}
+	// Only the terminated process was ever opened: there is no new PID to open.
+	if !reflect.DeepEqual(backend.openedPIDs, []int{100}) {
+		t.Fatalf("openedPIDs=%v, want only the terminated PID", backend.openedPIDs)
+	}
+}
+
+// TestRecoveryCancellationInterruptsProcessExitWait: the watchdog is shutting
+// down mid-forced-recovery. The process-exit wait must unblock immediately
+// rather than hold shutdown for the full recovery deadline, and a shutdown must
+// never be diagnosed as failover.
+func TestRecoveryCancellationInterruptsProcessExitWait(t *testing.T) {
+	backend := forcedRecoverySuccessBackend(100, 200)
+	proc := backend.processes[100]
+	proc.blockWait = true
+	controller := newTestWindowsRecoveryController(backend)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type outcome struct {
+		result RecoveryResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := controller.Recover(2, RecoveryRequest{Context: ctx})
+		done <- outcome{result, err}
+	}()
+
+	select {
+	case <-proc.waitReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("controller never reached the process-exit wait barrier")
+	}
+	cancel()
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancellation did not interrupt the process-exit wait promptly")
+	}
+
+	var recoveryErr *RecoveryError
+	if !errors.As(got.err, &recoveryErr) || recoveryErr.Class != RecoveryFailureCanceled {
+		t.Fatalf("err=%v, want %q", got.err, RecoveryFailureCanceled)
+	}
+	if got.result.Disposition == RecoveryDispositionFailover {
+		t.Fatalf("cancellation escalated to failover: %+v", got.result)
+	}
+	// The terminate landed before the cancellation, so it stays charged.
+	if !got.result.ActionTaken || proc.terminateCalls != 1 {
+		t.Fatalf("result=%+v terminate=%d", got.result, proc.terminateCalls)
+	}
+	if backend.startCalls != 0 {
+		t.Fatalf("startCalls=%d after cancellation, want 0", backend.startCalls)
+	}
+}
+
+func TestNormalizeWindowsExecutablePath(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured string
+		actual     string
+		want       bool
+	}{
+		{"identical", `C:\Program Files\Breeze\breeze-agent.exe`, `C:\Program Files\Breeze\breeze-agent.exe`, true},
+		{"case insensitive", `C:\Program Files\Breeze\breeze-agent.exe`, `c:\program files\breeze\BREEZE-AGENT.EXE`, true},
+		{"quoted service config", `"C:\Program Files\Breeze\breeze-agent.exe"`, `C:\Program Files\Breeze\breeze-agent.exe`, true},
+		{"surrounding whitespace", "  C:\\Breeze\\breeze-agent.exe  ", `C:\Breeze\breeze-agent.exe`, true},
+		{"forward slashes", `C:/Breeze/breeze-agent.exe`, `C:\Breeze\breeze-agent.exe`, true},
+		{"extended-length prefix", `\\?\C:\Breeze\breeze-agent.exe`, `C:\Breeze\breeze-agent.exe`, true},
+		{"different binary", `C:\Breeze\breeze-agent.exe`, `C:\Windows\System32\notepad.exe`, false},
+		{"different directory", `C:\Breeze\breeze-agent.exe`, `C:\Temp\breeze-agent.exe`, false},
+		{"empty actual", `C:\Breeze\breeze-agent.exe`, ``, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameWindowsExecutable(tt.configured, tt.actual); got != tt.want {
+				t.Fatalf("sameWindowsExecutable(%q, %q)=%v, want %v", tt.configured, tt.actual, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSameWindowsExecutableRejectsEmptyPair: two unknowns are not a match. A
+// backend that fails to report either path must never satisfy the identity gate.
+func TestSameWindowsExecutableRejectsEmptyPair(t *testing.T) {
+	if sameWindowsExecutable("", "") {
+		t.Fatal("empty configured and actual paths must not compare equal")
+	}
+	if sameWindowsExecutable(`  `, `"" `) {
+		t.Fatal("whitespace/quote-only paths must not compare equal")
 	}
 }
 
