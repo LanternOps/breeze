@@ -276,6 +276,50 @@ func TestWindowsHelperSpawnerRetainsMainBinaryFallback(t *testing.T) {
 	}
 }
 
+// TestWindowsHelperSpawnerSpawnsWhenJobAssignDenied is the regression for #2536.
+// On a real RD Session Host the helper is created inside the session's own job
+// and cannot join the agent's job, so AssignProcessToJobObject returns
+// ERROR_ACCESS_DENIED. The old behavior fail-closed here (returned an error),
+// which left EVERY RDS session with no helper at all and looped forever. The
+// helper must instead still spawn — tracked by its process handle — and record
+// that it is not job-owned. Before the fix this test fails at the first
+// assertion because Spawn returns an error.
+func TestWindowsHelperSpawnerSpawnsWhenJobAssignDenied(t *testing.T) {
+	buf := captureLogs(t)
+	job := &fakeHelperJob{assignErr: windows.ERROR_ACCESS_DENIED}
+	var resumeCalls, terminateCalls int
+	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
+		resolveExecutable: fakeResolvedHelperExecutable,
+		createSuspended: func(_ HelperKey, _ ResolvedHelperExecutable) (*suspendedHelper, error) {
+			return fakeSuspendedHelper(), nil
+		},
+		resumeThread:     func(windows.Handle) (uint32, error) { resumeCalls++; return 1, nil },
+		terminateProcess: func(windows.Handle, uint32) error { terminateCalls++; return nil },
+		closeHandle:      func(windows.Handle) error { return nil },
+	})
+
+	process, err := spawner.Spawn(HelperKey{WindowsSessionID: 4, Role: "system"})
+	if err != nil {
+		t.Fatalf("Spawn returned error on denied job assign, want a spawned helper: %v", err)
+	}
+	if process == nil {
+		t.Fatal("Spawn returned nil helper on denied job assign")
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resumeThread calls = %d, want 1 (helper must run, not stay suspended)", resumeCalls)
+	}
+	if terminateCalls != 0 {
+		t.Fatalf("terminateProcess calls = %d, want 0 (helper must not be killed when only job ownership failed)", terminateCalls)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "handle-based ownership only") {
+		t.Fatalf("missing best-effort ownership warning; logs: %s", logs)
+	}
+	if !strings.Contains(logs, "jobOwned=false") {
+		t.Fatalf("spawn diagnostic should record jobOwned=false; logs: %s", logs)
+	}
+}
+
 func TestWindowsHelperSpawnerWarnsBeforeRepeatedCreateFailures(t *testing.T) {
 	createErr := errors.New("CreateProcessAsUser failed")
 	tests := []struct {
@@ -346,57 +390,13 @@ func TestWindowsHelperSpawnerWarnsBeforeRepeatedCreateFailures(t *testing.T) {
 	}
 }
 
-func TestWindowsHelperSpawnerAssignFailureTerminatesSuspendedProcess(t *testing.T) {
-	assignErr := errors.New("assign failed")
-	job := &fakeHelperJob{assignErr: assignErr}
-	var mu sync.Mutex
-	var resumed []windows.Handle
-	var terminated []windows.Handle
-	var closed []windows.Handle
-	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
-		resolveExecutable: fakeResolvedHelperExecutable,
-		createSuspended: func(HelperKey, ResolvedHelperExecutable) (*suspendedHelper, error) {
-			return fakeSuspendedHelper(), nil
-		},
-		resumeThread: func(handle windows.Handle) (uint32, error) {
-			mu.Lock()
-			defer mu.Unlock()
-			resumed = append(resumed, handle)
-			return 1, nil
-		},
-		terminateProcess: func(handle windows.Handle, _ uint32) error {
-			mu.Lock()
-			defer mu.Unlock()
-			terminated = append(terminated, handle)
-			return nil
-		},
-		closeHandle: func(handle windows.Handle) error {
-			mu.Lock()
-			defer mu.Unlock()
-			closed = append(closed, handle)
-			return nil
-		},
-	})
-
-	process, err := spawner.Spawn(HelperKey{WindowsSessionID: 7, Role: "system"})
-	if process != nil {
-		t.Fatalf("process = %#v, want nil", process)
-	}
-	if !errors.Is(err, assignErr) || !strings.Contains(err.Error(), "assign helper to job") {
-		t.Fatalf("Spawn error = %v, want wrapped assignment error", err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(resumed) != 0 {
-		t.Fatalf("resumed handles = %v, want none", resumed)
-	}
-	if fmt.Sprint(terminated) != fmt.Sprint([]windows.Handle{101}) {
-		t.Fatalf("terminated handles = %v, want [101]", terminated)
-	}
-	if fmt.Sprint(closed) != fmt.Sprint([]windows.Handle{102, 101}) {
-		t.Fatalf("closed handles = %v, want [102 101]", closed)
-	}
-}
+// Note: a former test asserted that a Job Object assign failure fail-closes
+// (terminates the suspended helper and returns an error). That contract was
+// intentionally reversed for #2536 — on an RD Session Host assign always fails,
+// so fail-closing left every RDS session with no helper. The new contract is
+// covered by TestWindowsHelperSpawnerSpawnsWhenJobAssignDenied above (assign
+// failure → helper still spawns, tracked by handle). Resume failure, unlike
+// assign failure, remains a hard error and still fail-closes below.
 
 func TestWindowsHelperSpawnerResumeFailureTerminatesSuspendedProcess(t *testing.T) {
 	resumeErr := errors.New("resume failed")

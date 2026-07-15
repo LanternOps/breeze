@@ -271,8 +271,20 @@ func (s *windowsHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 			_ = s.ops.closeHandle(pending.process)
 		}
 	}()
+	jobOwned := true
 	if err := s.job.Assign(pending.process); err != nil {
-		return nil, fmt.Errorf("assign helper to job: %w", err)
+		// On an RD Session Host the helper is created inside the session's own
+		// job, which forbids joining a second job, so AssignProcessToJobObject is
+		// denied. The old fail-closed behavior (return here) left EVERY RDS
+		// session with no helper at all and looped forever — see #2536, found on
+		// a real RDS host. Proceed without job membership instead: the helper is
+		// still tracked and terminated through its process handle on logoff,
+		// shutdown, and reconcile. Only OS-enforced KILL_ON_JOB_CLOSE cleanup
+		// after an agent *crash* is lost, and the single-instance guard plus
+		// reconcile reclaim such orphans on the next start.
+		jobOwned = false
+		log.Warn("helper not assigned to job object; using handle-based ownership only",
+			"helperKey", key.String(), "pid", pending.pid, "error", err.Error())
 	}
 	if _, err := s.ops.resumeThread(pending.thread); err != nil {
 		return nil, fmt.Errorf("resume helper: %w", err)
@@ -296,6 +308,7 @@ func (s *windowsHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 		"role", helper.Role,
 		"windowsSessionId", helper.WindowsSessionID,
 		"mainBinaryFallback", helper.MainBinaryFallback,
+		"jobOwned", jobOwned,
 	)
 	return helper, nil
 }
@@ -387,20 +400,7 @@ func createSystemHelperSuspended(sessionID uint32, resolvedExe ResolvedHelperExe
 		Desktop: desktop,
 	}
 	var pi windows.ProcessInformation
-	creationFlags := uint32(windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW | windows.CREATE_UNICODE_ENVIRONMENT)
-	if err := windows.CreateProcessAsUser(
-		dupToken,
-		nil,
-		cmdLine,
-		nil,
-		nil,
-		false,
-		creationFlags,
-		nil,
-		nil,
-		&si,
-		&pi,
-	); err != nil {
+	if err := createSuspendedHelperProcess(dupToken, cmdLine, nil, &si, &pi); err != nil {
 		return nil, fmt.Errorf("CreateProcessAsUser(session=%d): %w", sessionID, err)
 	}
 	return &suspendedHelper{
@@ -411,6 +411,28 @@ func createSystemHelperSuspended(sessionID uint32, resolvedExe ResolvedHelperExe
 		mainBinaryFallback: resolvedExe.MainBinaryFallback,
 		tokenSource:        "system",
 	}, nil
+}
+
+// createSuspendedHelperProcess launches the helper as token in winsta0\Default,
+// suspended, first asking it to break away from any job it would otherwise
+// inherit (CREATE_BREAKAWAY_FROM_JOB) so it can be assigned to the agent's Job
+// Object. Breakaway only affects the CALLING process's job, so on an RD Session
+// Host — where the helper joins the target session's own job — it may not free
+// the helper; the caller's job assignment is therefore best-effort (see #2536).
+//
+// If breakaway is refused (the calling process's job lacks
+// JOB_OBJECT_LIMIT_BREAKAWAY_OK, so CreateProcessAsUser returns
+// ERROR_ACCESS_DENIED), retry without the flag so we never fail to create the
+// process just because breakaway was unavailable.
+func createSuspendedHelperProcess(token windows.Token, cmdLine *uint16, envBlock *uint16, si *windows.StartupInfo, pi *windows.ProcessInformation) error {
+	const base = uint32(windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW | windows.CREATE_UNICODE_ENVIRONMENT)
+	err := windows.CreateProcessAsUser(token, nil, cmdLine, nil, nil, false,
+		base|windows.CREATE_BREAKAWAY_FROM_JOB, envBlock, nil, si, pi)
+	if err == nil {
+		return nil
+	}
+	return windows.CreateProcessAsUser(token, nil, cmdLine, nil, nil, false,
+		base, envBlock, nil, si, pi)
 }
 
 // createUserHelperSuspended creates the interactive-user helper without
@@ -439,20 +461,7 @@ func createUserHelperSuspended(sessionID uint32, resolvedExe ResolvedHelperExecu
 		Desktop: desktop,
 	}
 	var pi windows.ProcessInformation
-	creationFlags := uint32(windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW | windows.CREATE_UNICODE_ENVIRONMENT)
-	if err := windows.CreateProcessAsUser(
-		dupToken,
-		nil,
-		cmdLine,
-		nil,
-		nil,
-		false,
-		creationFlags,
-		envBlock,
-		nil,
-		&si,
-		&pi,
-	); err != nil {
+	if err := createSuspendedHelperProcess(dupToken, cmdLine, envBlock, &si, &pi); err != nil {
 		return nil, fmt.Errorf("CreateProcessAsUser(session=%d, role=user): %w", sessionID, err)
 	}
 	return &suspendedHelper{
