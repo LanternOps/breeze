@@ -218,6 +218,9 @@ importers:
       '@types/archiver':
         specifier: ^7.0.0
         version: 7.0.0
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
       '@types/node':
         specifier: ^25.9.3
         version: 25.9.3
@@ -245,6 +248,9 @@ importers:
       drizzle-kit:
         specifier: ^0.31.10
         version: 0.31.10
+      js-yaml:
+        specifier: ^4.3.0
+        version: 4.3.0
       jszip:
         specifier: ^3.10.1
         version: 3.10.1

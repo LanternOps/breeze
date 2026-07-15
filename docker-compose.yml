@@ -57,8 +57,13 @@ services:
       <<: *healthcheck
       test: ['CMD', 'caddy', 'version']
       start_period: 20s
+    # Static IP so the API can identify the bundled Caddy as its immediate peer
+    # and trust the client IP it forwards (TRUSTED_PROXY_CIDRS below defaults to
+    # this address). Override BREEZE_CADDY_IP only together with
+    # TRUSTED_PROXY_CIDRS and BREEZE_DOCKER_SUBNET — see .env.example.
     networks:
-      - breeze
+      breeze:
+        ipv4_address: ${BREEZE_CADDY_IP:-172.31.0.10}
 
   api:
     image: ${BREEZE_API_IMAGE_REF:?Set BREEZE_API_IMAGE_REF to a digest-pinned image ref}
@@ -93,8 +98,13 @@ services:
       PUBLIC_PORTAL_URL: ${PUBLIC_PORTAL_URL:-https://${BREEZE_DOMAIN}/portal}
       API_URL: ${API_URL:-}
       FORCE_HTTPS: ${FORCE_HTTPS:-true}
-      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
-      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+      # The bundled Caddy is the only trusted peer, and we pin its address
+      # ourselves (see the caddy service). Anything else reaching the API
+      # directly is untrusted and falls back to its raw socket peer. Operators
+      # who front the API with their own proxy must point TRUSTED_PROXY_CIDRS at
+      # it — a CIDR that matches nothing simply means no headers are trusted.
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-${BREEZE_CADDY_IP:-172.31.0.10}/32}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
@@ -337,8 +347,18 @@ services:
       --external-ip=${TURN_HOST:-}
 
 networks:
+  # Fixed subnet so Caddy gets a stable, known peer address (see caddy service
+  # above). The default is deliberately distinct from
+  # deploy/docker-compose.prod.yml's 172.30.0.0/24 so the two stacks never
+  # collide if ever run on the same Docker host. Both defaults sit inside
+  # Docker's default bridge pool (172.17.0.0/12), so a host that has already
+  # auto-allocated this range needs BREEZE_DOCKER_SUBNET set to something
+  # outside it — set BREEZE_CADDY_IP to a matching address when you do.
   breeze:
     name: breeze
+    ipam:
+      config:
+        - subnet: ${BREEZE_DOCKER_SUBNET:-172.31.0.0/24}
 
 volumes:
   binaries:

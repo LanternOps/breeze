@@ -247,3 +247,12 @@ export function getTrustedClientIpOrUndefined(c: RequestLike): string | undefine
   const ip = getTrustedClientIp(c, '');
   return ip || undefined;
 }
+
+// The immediate TCP peer, socket-only — NEVER consults forwarded headers, so
+// it cannot be spoofed at L7. Used as a rate-limit key of last resort when no
+// trusted client IP is available. Unlike getTrustedClientIp this does NOT gate
+// on TRUST_PROXY_HEADERS: the socket address is always the real peer.
+export function getImmediatePeerIpOrUndefined(c: RequestLike): string | undefined {
+  const ctx = c as RequestLike & { env?: { incoming?: { socket?: { remoteAddress?: string } } } };
+  return normalizeIpCandidate(ctx.env?.incoming?.socket?.remoteAddress ?? '') ?? undefined;
+}

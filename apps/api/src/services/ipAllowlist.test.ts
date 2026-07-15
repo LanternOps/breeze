@@ -4,6 +4,7 @@ import {
   enforceIpAllowlist,
   readPartnerAllowlist,
   clearPartnerAllowlistCache,
+  isBlocked,
 } from './ipAllowlist';
 
 const serviceMocks = vi.hoisted(() => ({
@@ -62,9 +63,11 @@ describe('evaluateIpAllowlist', () => {
     expect(evaluateIpAllowlist({ ...base, allowlist: undefined })).toEqual({ decision: 'skip', reason: 'empty_list' });
   });
 
-  it('skips (fail-open) when the client IP is not trustable', () => {
+  it('denies (fail-closed) when the client IP is not trustable', () => {
+    // Flipped for SR2-16: an allowlist-protected partner must not be silently
+    // bypassed when the true client IP cannot be determined.
     expect(evaluateIpAllowlist({ ...base, clientIp: undefined })).toEqual({
-      decision: 'skip',
+      decision: 'deny',
       reason: 'untrusted_ip',
     });
   });
@@ -74,6 +77,43 @@ describe('evaluateIpAllowlist', () => {
       decision: 'skip',
       reason: 'platform_admin',
     });
+  });
+});
+
+describe('evaluateIpAllowlist — fail-closed on untrusted IP (SR2-16)', () => {
+  it('DENIES when an allowlist is configured but the client IP is not trustable (untrusted peer / spoofed header / no proxy-trust config)', () => {
+    // GUARD-BITE: this is RED today (returns { decision: 'skip', reason: 'untrusted_ip' }
+    // and isBlocked(skip)===false ⇒ the request is silently allowed past the allowlist).
+    const d = evaluateIpAllowlist({
+      mode: 'enforce',
+      allowlist: ['203.0.113.0/24'],
+      clientIp: undefined,
+      isPlatformAdmin: false,
+    });
+    expect(d).toEqual({ decision: 'deny', reason: 'untrusted_ip' });
+    expect(isBlocked(d)).toBe(true);
+  });
+
+  it('does NOT deny when there is no allowlist (empty list) even if the IP is untrustable', () => {
+    const d = evaluateIpAllowlist({ mode: 'enforce', allowlist: [], clientIp: undefined, isPlatformAdmin: false });
+    expect(d).toEqual({ decision: 'skip', reason: 'empty_list' });
+  });
+
+  it('does NOT deny a platform admin even with an allowlist + untrustable IP', () => {
+    const d = evaluateIpAllowlist({ mode: 'enforce', allowlist: ['203.0.113.0/24'], clientIp: undefined, isPlatformAdmin: true });
+    expect(d).toEqual({ decision: 'skip', reason: 'platform_admin' });
+  });
+
+  it('does NOT deny when enforcement mode is off', () => {
+    const d = evaluateIpAllowlist({ mode: 'off', allowlist: ['203.0.113.0/24'], clientIp: undefined, isPlatformAdmin: false });
+    expect(d).toEqual({ decision: 'skip', reason: 'mode_off' });
+  });
+
+  it('still allows a trusted client IP that is in the list, and denies one that is not (regression)', () => {
+    expect(evaluateIpAllowlist({ mode: 'enforce', allowlist: ['203.0.113.5/32'], clientIp: '203.0.113.5', isPlatformAdmin: false }))
+      .toEqual({ decision: 'allow' });
+    expect(evaluateIpAllowlist({ mode: 'enforce', allowlist: ['203.0.113.5/32'], clientIp: '198.51.100.9', isPlatformAdmin: false }))
+      .toEqual({ decision: 'deny', reason: 'not_in_list' });
   });
 });
 

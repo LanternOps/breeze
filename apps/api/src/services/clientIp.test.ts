@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   getTrustedClientIp,
   getTrustedClientIpOrUndefined,
+  getImmediatePeerIpOrUndefined,
   isTrustedProxySource,
   setProxyTrustMetricsRecorder,
   _resetProxyTrustWarnStateForTests,
@@ -365,6 +366,27 @@ describe('clientIp', () => {
         makeContext({ 'cf-connecting-ip': '203.0.113.10' }),
       );
       expect(ip).toBeUndefined();
+    });
+  });
+
+  describe('getImmediatePeerIpOrUndefined — socket-only peer, never consults headers (SR2-16)', () => {
+    it('returns the socket address regardless of TRUST_PROXY_HEADERS', () => {
+      process.env.TRUST_PROXY_HEADERS = 'false';
+      expect(getImmediatePeerIpOrUndefined(makeContext({}, '198.51.100.77'))).toBe('198.51.100.77');
+
+      process.env.TRUST_PROXY_HEADERS = 'true';
+      expect(getImmediatePeerIpOrUndefined(makeContext({}, '198.51.100.77'))).toBe('198.51.100.77');
+    });
+
+    it('never honors a forwarded header even when present alongside the socket address', () => {
+      const ip = getImmediatePeerIpOrUndefined(
+        makeContext({ 'cf-connecting-ip': '203.0.113.10', 'x-forwarded-for': '9.9.9.9' }, '198.51.100.77'),
+      );
+      expect(ip).toBe('198.51.100.77');
+    });
+
+    it('returns undefined when there is no socket (non-Node runtime / test shim)', () => {
+      expect(getImmediatePeerIpOrUndefined(makeContext({}))).toBeUndefined();
     });
   });
 });
