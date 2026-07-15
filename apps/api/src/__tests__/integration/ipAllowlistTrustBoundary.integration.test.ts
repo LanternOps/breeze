@@ -14,9 +14,8 @@
  * partner was silently let through whenever proxy trust was unconfigured,
  * stale, or a request carried a spoofed forwarded-IP header from an
  * untrusted peer. Task 1 flipped that branch to `deny`. This suite proves
- * the fix end-to-end against real infrastructure and (see the bottom
- * `describe.skip` block / task report) was verified to go RED against the
- * pre-fix `skip` branch.
+ * the fix end-to-end against real infrastructure; the deny assertions were
+ * verified to go RED by reverting that branch to `skip` before restoring it.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';

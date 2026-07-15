@@ -40,11 +40,17 @@ function loadCompose(): ComposeFile {
  */
 function resolveDefault(rawValue: string | undefined): string | undefined {
   if (rawValue === undefined) return undefined;
-  const trimmed = rawValue.trim();
-  const withDefault = /^\$\{[A-Z0-9_]+:-(.*)\}$/.exec(trimmed);
-  if (withDefault) return withDefault[1];
-  if (/^\$\{[A-Z0-9_]+\}$/.test(trimmed)) return undefined; // no fallback -> unset
-  return trimmed; // plain literal, not interpolation at all
+  let value = rawValue.trim();
+  // Collapse innermost-first so nested defaults resolve the way Compose
+  // resolves them, e.g. `${TRUSTED_PROXY_CIDRS:-${BREEZE_CADDY_IP:-1.2.3.4}/32}`
+  // -> `1.2.3.4/32`. The inner pattern excludes `${}` so it can only match a
+  // fallback that has no further interpolation left inside it.
+  const innermostWithDefault = /\$\{[A-Za-z0-9_]+:-([^${}]*)\}/;
+  while (innermostWithDefault.test(value)) {
+    value = value.replace(innermostWithDefault, (_match, fallback: string) => fallback);
+  }
+  if (/^\$\{[A-Za-z0-9_]+\}$/.test(value)) return undefined; // no fallback -> unset
+  return value; // plain literal, or a fully-resolved default
 }
 
 function getServiceEnv(service: ComposeService | undefined, key: string): string | undefined {
@@ -60,7 +66,9 @@ function getServiceEnv(service: ComposeService | undefined, key: string): string
 function getPinnedIpv4(service: ComposeService | undefined): string | undefined {
   const networks = service?.networks;
   if (!networks || Array.isArray(networks)) return undefined;
-  return networks.breeze?.ipv4_address;
+  // The pin is parameterized (`${BREEZE_CADDY_IP:-...}`) to match
+  // deploy/docker-compose.prod.yml, so resolve it to the out-of-the-box value.
+  return resolveDefault(networks.breeze?.ipv4_address);
 }
 
 /**
@@ -104,12 +112,25 @@ describe('bundled Caddy peer pinning + proxy-trust static contract (SR2-16)', ()
     expect(subnets.length, 'breeze network must declare an ipam subnet').toBeGreaterThan(0);
   });
 
-  it('locks TRUST_PROXY_HEADERS default to false (opt-in trust — owner decision, SR2-16)', () => {
+  it('trusts proxy headers by default, matching deploy/docker-compose.prod.yml (SR2-16)', () => {
+    // The bundled stack knows exactly where its proxy is because it pins the
+    // address itself, so the API can derive real client IPs out of the box.
+    // Operators fronting the API with their own proxy override
+    // TRUSTED_PROXY_CIDRS; a CIDR matching nothing trusts nothing (fails closed).
     const resolved = resolveDefault(getServiceEnv(api, 'TRUST_PROXY_HEADERS'));
-    expect(resolved).toBe('false');
+    expect(resolved).toBe('true');
   });
 
-  it('guard-bites on the real compose file: if TRUST_PROXY_HEADERS ever defaults to true, TRUSTED_PROXY_CIDRS must pin to the caddy address', () => {
+  it('resolves nested compose defaults so TRUSTED_PROXY_CIDRS follows BREEZE_CADDY_IP', () => {
+    // Guards the resolver this suite depends on: if it silently returned the
+    // raw `${...}` string, the pin assertion below would compare garbage.
+    expect(resolveDefault('${TRUSTED_PROXY_CIDRS:-${BREEZE_CADDY_IP:-172.31.0.10}/32}')).toBe('172.31.0.10/32');
+    expect(resolveDefault('${BREEZE_CADDY_IP:-172.31.0.10}')).toBe('172.31.0.10');
+    expect(resolveDefault('${UNSET_WITH_NO_FALLBACK}')).toBeUndefined();
+    expect(resolveDefault('plain-literal')).toBe('plain-literal');
+  });
+
+  it('guard-bites on the real compose file: TRUSTED_PROXY_CIDRS must pin to the caddy address', () => {
     const trustDefault = resolveDefault(getServiceEnv(api, 'TRUST_PROXY_HEADERS'));
     const cidrsDefault = resolveDefault(getServiceEnv(api, 'TRUSTED_PROXY_CIDRS'));
     const caddyIp = getPinnedIpv4(caddy);
