@@ -198,6 +198,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'log_correlations',
   'log_search_queries',
   'm365_connections',
+  'm365_consent_sessions',
   'maintenance_windows',
   'metric_anomalies',
   'metric_anomaly_candidates',
