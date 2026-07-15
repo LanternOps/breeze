@@ -16,6 +16,47 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
+// TestMain grants the test process explicit access to the broker's named pipe.
+//
+// Production restricts the pipe to SYSTEM + IU (Interactive Users). Every
+// automated context is a NON-interactive logon — a CI runner service, a
+// scheduled task, an SSH session — so the token has no S-1-5-4 and the test
+// cannot dial the pipe it just created, failing with "Access is denied". That
+// is the pipe DACL working correctly, not a bug, but it made every
+// TestNamedPipe* case fail on real Windows.
+//
+// So we swap the descriptor for one granting SYSTEM + this exact user SID. The
+// accept path, handshake, and peer-credential checks are still exercised for
+// real; only the gate that keeps non-interactive callers out is relaxed, and
+// only for this process's own pipe. Set once here, before any test runs, so
+// there is no data race with parallel tests in this package.
+func TestMain(m *testing.M) {
+	current, err := user.Current()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sessionbroker tests: cannot resolve current user SID: %v\n", err)
+		os.Exit(1)
+	}
+	pipeSecurityOverride = fmt.Sprintf("D:P(A;;GA;;;SY)(A;;GA;;;%s)", current.Uid)
+	os.Exit(m.Run())
+}
+
+// TestPipeSecurityOverrideIsTestOnly pins the production descriptor so the
+// override above can never silently become the shipped one. If pipeSecurity
+// stops restricting to Interactive Users, that is a security change and must be
+// a deliberate edit here, not a side effect of a test helper.
+func TestPipeSecurityOverrideIsTestOnly(t *testing.T) {
+	const want = "D:P(A;;GA;;;SY)(A;;GRGW;;;IU)"
+	if pipeSecurity != want {
+		t.Fatalf("production pipe SDDL = %q, want %q", pipeSecurity, want)
+	}
+	if pipeSecurityOverride == "" {
+		t.Fatal("TestMain did not set pipeSecurityOverride; the pipe tests below would be testing the production DACL and failing for environmental reasons")
+	}
+	if pipeSecurityOverride == pipeSecurity {
+		t.Fatal("override equals production SDDL; the tests would fail on any non-interactive logon")
+	}
+}
+
 // testPipeName returns a unique named pipe path for testing.
 func testPipeName(t *testing.T) string {
 	t.Helper()
