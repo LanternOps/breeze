@@ -1229,6 +1229,26 @@ Do not re-plan it. Execute that document task-by-task after Task 9's gate passes
 
 ---
 
+## Real-Windows verification (2026-07-14, VM `WIN-DHQNR1F8LO2` / Server 2022)
+
+Ran the suite natively on a real Windows host, not just `GOOS=windows go vet`. Results:
+
+- **All 14 new tests from this plan PASS on real Windows** (gate cases, spawn refusal, liveness-unknown, startup recycle, bootstrap retry).
+- **Zero regressions from this plan**: the failure list is byte-identical on the pre-remediation baseline (`eb2b4f393`) and after. `main` fails identically too — so every failure below predates this branch.
+- `go build ./...` OK under Go 1.25.10 (auto-fetched; VM ships 1.22.5).
+- `-race` needs cgo and the VM has no gcc. `windows-latest` ships mingw so CI likely works — **unverified**.
+
+**`test-agent-windows` will likely be RED on its first run.** It is wired into `ci-success` as a *required* job and has never executed (no PR on this branch). The failures are pre-existing, not this branch's code:
+
+| Failure | Cause | Fixed? |
+|---|---|---|
+| 6 × `TestNamedPipe*` "Access is denied" | Pipe SDDL grants `IU` (Interactive Users). CI runner services, scheduled tasks, and SSH are all NON-interactive logons — no `S-1-5-4` in the token, so the test can't dial its own pipe. The DACL is working as designed. | **3 fixed** via a test-only SDDL override set in a Windows `TestMain` (`broker_windows.go`, commit `3cb38377b`) |
+| `TestNamedPipeFullHandshake`, `TestNamedPipeSessionIDCollisionRejected` | Authenticate as `system` role, but the test process is Administrator, not SYSTEM → `system role requires SYSTEM identity`. The gate is correct; the test needs a SYSTEM token (e.g. PsExec `-s` / a service). | No — needs a CI design decision |
+| `TestNamedPipeSessionDetector` | Asserts every detected WTS session has a username; session 0 (Services) legitimately has none. **Test-logic bug** — fails on any host with a services session. | No — pre-existing bug in `main` |
+| 6 × `TestHandleScript*` | `bash` not installed on the VM. `windows-latest` ships Git-bash, so these should pass in CI. | N/A (environmental) |
+
+Recommendation: decide how the two SYSTEM-token tests should run in CI (skip-unless-SYSTEM with a loud reason, or run that package under a SYSTEM context), and fix `TestNamedPipeSessionDetector`'s username assertion. Until then the required Windows job blocks the branch on faults it did not introduce.
+
 ## Out of scope (file as follow-up issues, do not fix here)
 
 These are real findings from the review that this plan deliberately does not address. Each is defensible to defer; none is a blocker.
