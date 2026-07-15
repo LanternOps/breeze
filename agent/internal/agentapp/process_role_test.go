@@ -1,10 +1,31 @@
 package agentapp
 
 import (
+	"os"
 	"reflect"
 	"testing"
 	"time"
 )
+
+func TestCurrentProcessStartupCapturesDiagnosticRoleMetadata(t *testing.T) {
+	startup := currentProcessStartup("user-helper", "user", false)
+
+	if startup.PID != os.Getpid() {
+		t.Fatalf("PID = %d, want %d", startup.PID, os.Getpid())
+	}
+	if startup.Binary == "" || startup.ExecutablePath == "" {
+		t.Fatalf("executable metadata missing: %+v", startup)
+	}
+	if startup.LaunchMode != "user-helper" || startup.HelperRole != "user" {
+		t.Fatalf("role metadata = (%q, %q)", startup.LaunchMode, startup.HelperRole)
+	}
+	if !startup.MainBinaryFallback || startup.CompanionHelper {
+		t.Fatalf("helper provenance = fallback:%v companion:%v", startup.MainBinaryFallback, startup.CompanionHelper)
+	}
+	if startup.Version != version || startup.CreatedAt.IsZero() {
+		t.Fatalf("version/creation metadata = (%q, %v)", startup.Version, startup.CreatedAt)
+	}
+}
 
 func TestClassifyProcess(t *testing.T) {
 	tests := []struct {

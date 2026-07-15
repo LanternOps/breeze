@@ -2,6 +2,7 @@ package agentapp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +14,58 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 )
+
+func TestRunAgentDuplicateStopsBeforeInitialization(t *testing.T) {
+	testRunAgentGuardFailureStopsBeforeInitialization(t, ErrMainAgentAlreadyRunning, exitAlreadyRunning)
+}
+
+func TestRunAgentSecurityFailureStopsBeforeInitialization(t *testing.T) {
+	testRunAgentGuardFailureStopsBeforeInitialization(t, errors.New("lock ACL verification failed"), exitInstanceGuardError)
+}
+
+func testRunAgentGuardFailureStopsBeforeInitialization(t *testing.T, guardErr error, wantExit int) {
+	t.Helper()
+
+	origAcquire := acquireMainAgentGuardFn
+	origExit := mainAgentExitFn
+	origMarker := writeInstanceGuardMarkerFn
+	origWriteEvent := writeInstanceGuardEventFn
+	origReconcile := reconcileServiceUnitIfNeededFn
+	origStart := startAgentFn
+	t.Cleanup(func() {
+		acquireMainAgentGuardFn = origAcquire
+		mainAgentExitFn = origExit
+		writeInstanceGuardMarkerFn = origMarker
+		writeInstanceGuardEventFn = origWriteEvent
+		reconcileServiceUnitIfNeededFn = origReconcile
+		startAgentFn = origStart
+	})
+
+	reconciled, started, markerWritten, exitCode := false, false, false, 0
+	acquireMainAgentGuardFn = func(ProcessStartup) (mainAgentGuard, error) {
+		return nil, guardErr
+	}
+	writeInstanceGuardMarkerFn = writeInstanceGuardMarker
+	writeInstanceGuardEventFn = func(source, message string) error {
+		markerWritten = true
+		if source != "BreezeAgent" || !strings.Contains(message, guardErr.Error()) {
+			t.Errorf("marker = source:%q message:%q", source, message)
+		}
+		return nil
+	}
+	mainAgentExitFn = func(code int) { exitCode = code }
+	reconcileServiceUnitIfNeededFn = func() { reconciled = true }
+	startAgentFn = func(*config.Config) (*agentComponents, error) {
+		started = true
+		return nil, nil
+	}
+
+	runAgent()
+
+	if exitCode != wantExit || reconciled || started || !markerWritten {
+		t.Fatalf("exit=%d, want=%d reconciled=%v started=%v marker=%v", exitCode, wantExit, reconciled, started, markerWritten)
+	}
+}
 
 // TestHelperWarnLimiterBudget verifies that the first `limit` calls with the
 // same message all emit WARN (emit=true, suppressed=0), and that the (limit+1)th

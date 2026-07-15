@@ -3,6 +3,8 @@ package agentapp
 import (
 	"errors"
 	"os"
+
+	breezeeventlog "github.com/breeze-rmm/agent/internal/eventlog"
 )
 
 const (
@@ -18,6 +20,8 @@ type mainAgentGuard interface {
 }
 
 var (
-	acquireMainAgentGuardFn = acquireMainAgentGuard
-	mainAgentExitFn         = os.Exit
+	acquireMainAgentGuardFn    = acquireMainAgentGuard
+	mainAgentExitFn            = os.Exit
+	writeInstanceGuardMarkerFn = writeInstanceGuardMarker
+	writeInstanceGuardEventFn  = breezeeventlog.WriteError
 )

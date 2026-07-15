@@ -104,8 +104,9 @@ var waitForEnrollmentPollInterval = 10 * time.Second
 // is defined in service_seams_windows.go because its signature references
 // Windows-only types.
 var (
-	startAgentFn        func(*config.Config) (*agentComponents, error) = startAgent
-	waitForEnrollmentFn func(context.Context, string) *config.Config   = waitForEnrollment
+	startAgentFn                   func(*config.Config) (*agentComponents, error) = startAgent
+	waitForEnrollmentFn            func(context.Context, string) *config.Config   = waitForEnrollment
+	reconcileServiceUnitIfNeededFn                                                = reconcileServiceUnitIfNeeded
 )
 
 // initBootstrapLogging initializes the logging package with stderr +
@@ -908,18 +909,40 @@ func retryTCCGrant() {
 // - Receiving pending commands from the server via heartbeat response
 // - Executing commands and reporting results back to the server
 func runAgent() {
+	serviceMode := isWindowsService()
+	startup := currentProcessStartup("run", "", serviceMode)
+	guard, err := acquireMainAgentGuardFn(startup)
+	if err != nil {
+		writeInstanceGuardMarkerFn(startup, err)
+		if errors.Is(err, ErrMainAgentAlreadyRunning) {
+			fmt.Fprintf(
+				os.Stderr,
+				"Breeze main agent is already running (pid=%d session=%d mode=%s)\n",
+				startup.PID,
+				startup.WindowsSessionID,
+				startup.LaunchMode,
+			)
+			mainAgentExitFn(exitAlreadyRunning)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Breeze main-agent instance guard failed: %v\n", err)
+		mainAgentExitFn(exitInstanceGuardError)
+		return
+	}
+	defer guard.Close()
+
 	// Self-heal the installed service unit from older installs (launchd plists on
 	// macOS; systemd unit on Linux) after a binary-only auto-update.
-	reconcileServiceUnitIfNeeded()
+	reconcileServiceUnitIfNeededFn()
 
 	// On Windows, if launched by the SCM, run under the service framework
 	// so we report Running/Stopped status back to the SCM correctly. The
 	// service wrapper owns its own config loading, enrollment check, and
 	// cancellation via the SCM request channel.
-	if isWindowsService() {
+	if serviceMode {
 		if err := runAsService(cfgFile); err != nil {
 			log.Error("service failed", "error", err.Error())
-			os.Exit(1)
+			mainAgentExitFn(1)
 		}
 		return
 	}
