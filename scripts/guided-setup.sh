@@ -614,7 +614,7 @@ preserve_existing_compose_project_name() {
   local configured name volume_name
 
   name="$(sanitize_compose_project_name "$(basename "${WORK_DIR}")")"
-  [[ -n "${name}" && "${name}" != "breeze" ]] || return
+  [[ -n "${name}" && "${name}" != "breeze" ]] || return 0
 
   volume_name="${name}_postgres_data"
   configured="$(get_env_value "COMPOSE_PROJECT_NAME")"
