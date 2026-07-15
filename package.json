@@ -9,6 +9,7 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "test:community-readme": "node --test .github/scripts/update-community-readme.test.mjs",
     "db:migrate": "turbo run db:migrate --filter=@breeze/api",
     "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
     "db:seed": "turbo run db:seed --filter=@breeze/api",

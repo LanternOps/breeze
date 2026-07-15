@@ -388,6 +388,18 @@ For detailed architecture documentation, see [docs/architecture.md](docs/archite
 
 ---
 
+## Support Breeze
+
+Breeze is free and open source. If it helps your team, you can support ongoing development by [sponsoring LanternOps on GitHub](https://github.com/sponsors/LanternOps).
+
+### Sponsors
+
+<!-- sponsors:start -->
+_No public sponsors yet. [Become the first sponsor →](https://github.com/sponsors/LanternOps)_
+<!-- sponsors:end -->
+
+---
+
 ## Contributing
 
 Breeze is built by MSPs, for MSPs. Contributions are welcome.
@@ -421,6 +433,18 @@ make build  # outputs to agent/bin/
 - **Agent testing** — Run the agent on Windows/Linux and report what works and what doesn't.
 - **Playbooks** — Share your remediation workflows so others can use them.
 - **Documentation** — Help us make the docs better.
+
+### Contributors
+
+Thank you to everyone who has contributed to Breeze.
+
+<!-- contributors:start -->
+<a href="https://github.com/ToddHebebrand"><img src="https://avatars.githubusercontent.com/u/8375744?v=4&amp;s=128" width="64" height="64" alt="ToddHebebrand" title="ToddHebebrand (@ToddHebebrand)" /></a>
+<a href="https://github.com/bdunncompany"><img src="https://avatars.githubusercontent.com/u/17571793?v=4&amp;s=128" width="64" height="64" alt="bdunncompany" title="bdunncompany (@bdunncompany)" /></a>
+<a href="https://github.com/ramphex"><img src="https://avatars.githubusercontent.com/u/43665314?v=4&amp;s=128" width="64" height="64" alt="ramphex" title="ramphex (@ramphex)" /></a>
+<a href="https://github.com/Emilien-Etadam"><img src="https://avatars.githubusercontent.com/u/56485277?v=4&amp;s=128" width="64" height="64" alt="Emilien-Etadam" title="Emilien-Etadam (@Emilien-Etadam)" /></a>
+<a href="https://github.com/CookieSource"><img src="https://avatars.githubusercontent.com/u/36531905?v=4&amp;s=128" width="64" height="64" alt="CookieSource" title="CookieSource (@CookieSource)" /></a>
+<!-- contributors:end -->
 
 ### Community
 
