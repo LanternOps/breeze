@@ -7,8 +7,8 @@ import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations, partners, permissions, rolePermissions } from '../db/schema';
-import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
+import { users, partnerUsers, organizationUsers, roles, organizations, partners } from '../db/schema';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
   deleteAvatar,
