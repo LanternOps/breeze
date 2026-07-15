@@ -392,6 +392,23 @@
     "section": "backup"
   },
   {
+    "path": "/backup/profiles/",
+    "title": "Backup Profiles",
+    "description": "Build a reusable backup profile once — choosing which sources it protects — and apply it across organizations, including partner-wide profiles that cover every org.",
+    "headings": [
+      "What a Profile Protects",
+      "Org-Owned vs. Partner-Wide Profiles",
+      "Managing Profiles",
+      "Applying a Profile in a Policy",
+      "OS Presets (Quick Start)",
+      "Destination Cards",
+      "Org Default Destination",
+      "Per-Selection Job Fan-Out",
+      "Integrator Reference"
+    ],
+    "section": "backup"
+  },
+  {
     "path": "/backup/restoring/",
     "title": "Restoring Data",
     "description": "Restore files, folders, or full systems from backup snapshots.",
@@ -616,6 +633,7 @@
       "Server",
       "Email",
       "SMS (Twilio)",
+      "Mobile Push Notifications (iOS)",
       "Binary Distribution",
       "Object Storage",
       "WebRTC / TURN",
@@ -697,6 +715,8 @@
     "description": "How to upgrade a self-hosted Breeze RMM deployment to a new version.",
     "headings": [
       "Docker Compose Upgrade",
+      "Version-specific notes",
+      "v0.95.0 — authentication & tenancy hardening",
       "Agent Updates",
       "Linux Binary-In-Use Handling",
       "Watchdog Recovery",
@@ -1351,7 +1371,10 @@
       "On the device list",
       "On the device Info tab",
       "Battery and Power Status",
-      "The Device Info Tab"
+      "The Device Info Tab",
+      "The Change History Tab",
+      "What's Recorded",
+      "Reading the Timeline"
     ],
     "section": "features"
   },
@@ -3501,6 +3524,11 @@
       "Key Rotation",
       "Revocation",
       "Key Statuses",
+      "Service Principals",
+      "What a Service Principal Can Do",
+      "Scope-Delegation Ceiling",
+      "Statuses",
+      "API Reference",
       "Enrollment Keys",
       "Key Format",
       "Creating an Enrollment Key",
@@ -3826,6 +3854,11 @@
       "Service Provider Metadata",
       "SAML Attribute Mapping",
       "SSO Login Flow",
+      "Sign-In Hardening",
+      "Verified Email Required",
+      "Tighter Session Binding",
+      "Gated Just-in-Time Provisioning",
+      "Discovery Protected Against Unsafe Endpoints",
       "Provider Configuration",
       "Create Provider Schema",
       "Provider Statuses",

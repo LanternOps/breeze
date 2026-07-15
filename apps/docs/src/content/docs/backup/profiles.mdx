@@ -1,0 +1,123 @@
+---
+title: Backup Profiles
+description: Build a reusable backup profile once — choosing which sources it protects — and apply it across organizations, including partner-wide profiles that cover every org.
+sidebar:
+  order: 4
+  label: "Backup Profiles"
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+A **backup profile** is a reusable, named definition of *what to protect* on a class of devices — for example a "Server" profile or a "Windows Workstation" profile. You build the profile once, then apply it to as many organizations as you like instead of re-selecting the same folders and data sources policy by policy.
+
+A profile deliberately answers only *what* gets backed up. *Where* backups are stored, *when* they run, and *how long* restore points are kept are set separately, where the profile is assigned. That separation is what lets a single "Server" profile be reused across many customers that each have their own storage destination and schedule.
+
+<Aside type="tip">
+  A profile defines what gets protected. Schedules, retention, and destinations are set where the profile is assigned.
+</Aside>
+
+---
+
+## What a Profile Protects
+
+A profile enables any combination of the following data sources — at least one must be enabled:
+
+| Source | What it captures |
+|--------|------------------|
+| **Files** | One or more folder paths, with optional exclusion patterns. File backups require at least one path. |
+| **System State** | Registry, boot files, and core system components (Windows). |
+| **SQL Server** | Discovered SQL Server databases, with a full / differential / log backup type and optional database excludes. |
+| **Hyper-V** | Virtual machines, with an application- or crash-consistency setting and optional VM excludes. |
+
+<Aside type="note">
+  Cloud-synced folders such as OneDrive and Dropbox are offered as opt-in **exclusion** chips on the Files source, so you can skip re-backing-up data that already lives in the cloud. They are not a separate backup source.
+</Aside>
+
+---
+
+## Org-Owned vs. Partner-Wide Profiles
+
+Every profile is owned in exactly one of two ways, chosen when you create it:
+
+- **This organization** — the profile belongs to a single organization and is only assignable there.
+- **All organizations** (partner-wide) — the profile belongs to your partner and is assignable in **every** organization you manage, including organizations you create later.
+
+Partner-wide profiles carry an **All orgs** badge in the profile list. Because a partner-wide profile reaches across all your customers, creating, editing, or deleting one requires full partner access.
+
+<Aside type="caution">
+  Ownership is fixed at creation. You can rename a profile or change what it protects, but you cannot later convert an organization profile into a partner-wide one (or vice versa) — create a new profile instead.
+</Aside>
+
+---
+
+## Managing Profiles
+
+Profiles live on the **Profiles** tab of the **Backup** dashboard.
+
+<Steps>
+1. Open **Backup → Profiles**. Each profile shows its owner badge, the sources it enables, and how many policies currently use it ("Used by N policies").
+2. Click to create a profile. Start from a template card — **Server**, **Windows Workstation**, **macOS Workstation**, **Linux Server**, or **Blank** — which pre-fills the editor. Everything remains editable.
+3. Choose the owner scope (**This organization** or **All organizations**), name the profile, and enable the sources it should protect.
+4. Save. The profile is now available to assign from any configuration policy's Backup tab.
+</Steps>
+
+A profile that is in use by one or more policies cannot be deleted until it is unlinked from them — the delete is blocked inline and names the policies that still reference it.
+
+---
+
+## Applying a Profile in a Policy
+
+Profiles are applied to devices through a **configuration policy's Backup tab**, which has been redesigned into four clearly titled groups:
+
+| Group | Purpose |
+|-------|---------|
+| **Source** | What to back up on each device. |
+| **Destination** | Where backups are stored. |
+| **Schedule & retention** | When backups run and how long restore points are kept. |
+| **Protection** | Legal hold / immutability (snapshot protection). |
+
+In the **Source** group you choose between **Use a profile** — selecting one of your reusable profiles from a set of cards — and **Custom selection**, which keeps the older per-policy source editor for one-off cases.
+
+### OS Presets (Quick Start)
+
+When building a custom file selection, one-click **presets** seed sensible paths and exclusions that you can then edit freely:
+
+- **Windows user data** — backs up `C:\Users`, skips temp files, browser caches, and the Recycle Bin.
+- **macOS user data** — backs up `/Users`, skips caches, Trash, and local iPhone backups.
+- **Linux home + config** — backs up `/home` and `/etc`, skips caches and Trash.
+
+Presets are combinable for mixed-OS fleets — apply more than one and paths that do not exist on a given device are simply skipped when the backup runs.
+
+### Destination Cards
+
+The **Destination** group presents each configured storage destination as a selectable card showing its provider, bucket or path, and its enabled, encrypted, and object-lock (WORM) status. You can edit or test the selected destination in place. Storage destinations hold provider credentials and are shared infrastructure — one destination can be reused by many policies.
+
+### Org Default Destination
+
+You can mark one destination per organization as its **default**. Policies that don't name an explicit destination — and every **partner-wide** policy — fall back to each device's org default at backup time.
+
+<Aside type="caution">
+  A partner-wide backup policy relies on each organization having a default destination. If an organization has none, its backups fail with a loud error rather than being silently skipped. Set a default destination under each organization's backup destinations before rolling out a partner-wide policy.
+</Aside>
+
+---
+
+## Per-Selection Job Fan-Out
+
+When a profile enables more than one source, Breeze runs **one backup job per enabled source** on each device, rather than a single combined job.
+
+This matters in practice: a device covered by Files **and** System State **and** SQL Server now produces three independent backup jobs, each succeeding or failing on its own. Previously a device with several sources selected could end up with only one working backup. The Backup tab states this directly — "A policy using this profile runs one backup job per enabled source." Jobs run in a fixed order (Files, then System State, then SQL Server, then Hyper-V) and are de-duplicated per device and source.
+
+---
+
+## Integrator Reference
+
+For automation, backup profiles are exposed under the backup API (`/api/v1/backup`). All mutations require the `backup:write` permission and a completed MFA challenge; reads require `backup:read`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/backup/profiles` | List profiles (`includeInactive`, `orgId` query parameters). Each profile includes an in-use policy count. |
+| `GET` | `/backup/profiles/:id` | Retrieve a single profile. |
+| `POST` | `/backup/profiles` | Create a profile (`name`, `ownerScope`, `orgId`, `selections`, ...). Partner scope requires full partner access. |
+| `PATCH` | `/backup/profiles/:id` | Update a profile's name, description, sources, or active state. Ownership is immutable. |
+| `DELETE` | `/backup/profiles/:id` | Delete a profile. Returns `409` with the referencing policies if it is still linked. |
