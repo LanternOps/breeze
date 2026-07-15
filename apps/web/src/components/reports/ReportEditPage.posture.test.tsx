@@ -12,11 +12,28 @@ vi.mock('@/lib/navigation', () => ({
   navigateTo: (...args: unknown[]) => navigateTo(...args),
 }));
 
-const genericBuilder = vi.fn();
+// Stand-in for the real builder: records the props the edit page hands it, and
+// exposes a submit that mimics the builder's own PUT so we can assert the
+// payload the page is responsible for (baseConfig) without driving the whole
+// builder UI. The real merge is covered in ReportBuilder.test.tsx.
+const builderProps = vi.fn();
 vi.mock('./ReportBuilder', () => ({
-  default: () => {
-    genericBuilder();
-    return null;
+  default: (props: Record<string, unknown>) => {
+    builderProps(props);
+    return (
+      <button
+        data-testid="report-builder-submit"
+        type="button"
+        onClick={() => {
+          void fetchWithAuth('/reports/report-1', {
+            method: 'PUT',
+            body: JSON.stringify({ config: { ...(props.baseConfig as object) } }),
+          });
+        }}
+      >
+        update
+      </button>
+    );
   },
 }));
 
@@ -38,97 +55,90 @@ const report = {
 };
 
 let loadedReport: Omit<typeof report, 'config'> & { config: Record<string, unknown> } = report;
-let putResponse: { ok: boolean; status: number; json: () => Promise<unknown> };
 
 describe('ReportEditPage posture options', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     loadedReport = report;
-    putResponse = {
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ data: loadedReport }),
-    };
     fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/reports/report-1' && !init?.method) {
         return Promise.resolve({ ok: true, json: () => Promise.resolve(loadedReport) });
       }
       if (url === '/reports/report-1' && init?.method === 'PUT') {
-        return Promise.resolve(putResponse);
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
       }
       return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
     });
   });
 
-  it('preserves posture config and never renders the generic builder', async () => {
+  const lastBaseConfig = () =>
+    (builderProps.mock.calls.at(-1)![0] as { baseConfig: Record<string, unknown> }).baseConfig;
+
+  it('offers the generic builder alongside the posture option', async () => {
+    render(<ReportEditPage reportId="report-1" />);
+
+    await screen.findByTestId('posture-backup-required');
+    // The regression this guards: posture reports were editable only via a
+    // single checkbox, with no way to change name, schedule or recipients.
+    await waitFor(() => expect(builderProps).toHaveBeenCalled());
+    expect(screen.getByTestId('report-builder-submit')).toBeInTheDocument();
+  });
+
+  it('hands the builder the stored posture config so a save cannot drop it', async () => {
+    render(<ReportEditPage reportId="report-1" />);
+
+    await screen.findByTestId('posture-backup-required');
+    await waitFor(() =>
+      expect(lastBaseConfig()).toEqual({
+        backupRequired: false,
+        includeCis: false,
+        maxLocalAdmins: 4,
+      }),
+    );
+  });
+
+  it('carries a toggled backup option into the builder payload', async () => {
     render(<ReportEditPage reportId="report-1" />);
     const user = userEvent.setup();
+
     const checkbox = await screen.findByTestId('posture-backup-required');
     expect(checkbox).not.toBeChecked();
-    expect(genericBuilder).not.toHaveBeenCalled();
-
     await user.click(checkbox);
-    await user.click(screen.getByTestId('posture-options-submit'));
+    await user.click(screen.getByTestId('report-builder-submit'));
 
     await waitFor(() => {
       const putCall = fetchWithAuth.mock.calls.find(
-        ([url, init]) => url === '/reports/report-1' && (init as RequestInit | undefined)?.method === 'PUT',
+        ([url, init]) =>
+          url === '/reports/report-1' && (init as RequestInit | undefined)?.method === 'PUT',
       );
       expect(putCall).toBeDefined();
       expect(JSON.parse(String((putCall![1] as RequestInit).body))).toEqual({
-        config: {
-          backupRequired: true,
-          includeCis: false,
-          maxLocalAdmins: 4,
-        },
+        config: { backupRequired: true, includeCis: false, maxLocalAdmins: 4 },
       });
     });
   });
 
   it('treats a missing legacy backupRequired value as required', async () => {
-    loadedReport = {
-      ...report,
-      config: { includeCis: true, maxLocalAdmins: 2 },
-    };
+    loadedReport = { ...report, config: { includeCis: true, maxLocalAdmins: 2 } };
 
     render(<ReportEditPage reportId="report-1" />);
 
     expect(await screen.findByTestId('posture-backup-required')).toBeChecked();
-    expect(genericBuilder).not.toHaveBeenCalled();
+    await waitFor(() => expect(lastBaseConfig().backupRequired).toBe(true));
   });
 
-  it('surfaces an edit failure without navigating and restores the submit button', async () => {
-    putResponse = {
-      ok: false,
-      status: 500,
-      json: () => Promise.resolve({ error: 'boom' }),
+  it('leaves non-posture reports without the posture option but still config-safe', async () => {
+    loadedReport = {
+      ...report,
+      type: 'executive_summary',
+      config: { execSetting: 'keep-me' },
     };
+
     render(<ReportEditPage reportId="report-1" />);
-    const user = userEvent.setup();
 
-    await screen.findByTestId('posture-backup-required');
-    await user.click(screen.getByTestId('posture-options-submit'));
-
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
-    expect(navigateTo).not.toHaveBeenCalledWith('/reports');
-    await waitFor(() => expect(screen.getByTestId('posture-options-submit')).not.toBeDisabled());
-  });
-
-  it('redirects a 401 to login without an error toast or reports navigation', async () => {
-    putResponse = {
-      ok: false,
-      status: 401,
-      json: () => Promise.resolve({}),
-    };
-    render(<ReportEditPage reportId="report-1" />);
-    const user = userEvent.setup();
-
-    await screen.findByTestId('posture-backup-required');
-    await user.click(screen.getByTestId('posture-options-submit'));
-
-    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true }));
-    expect(showToast).not.toHaveBeenCalled();
-    expect(navigateTo).not.toHaveBeenCalledWith('/reports');
-    await waitFor(() => expect(screen.getByTestId('posture-options-submit')).not.toBeDisabled());
+    await waitFor(() => expect(builderProps).toHaveBeenCalled());
+    expect(screen.queryByTestId('posture-backup-required')).toBeNull();
+    // executive_summary carries its own config and hit the same wipe.
+    expect(lastBaseConfig()).toEqual({ execSetting: 'keep-me' });
   });
 });

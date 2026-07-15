@@ -4,9 +4,8 @@ import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { Report, ReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { runAction } from '@/lib/runAction';
 import Breadcrumbs from '../layout/Breadcrumbs';
-import { PostureReportOptionsForm } from './PostureReportOptionsForm';
+import { PostureBackupRequiredField } from './PostureReportOptionsForm';
 import { useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -23,7 +22,6 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [backupRequired, setBackupRequired] = useState(true);
-  const [saving, setSaving] = useState(false);
 
   const fetchReport = useCallback(async () => {
     try {
@@ -56,33 +54,6 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const handleCancel = useCallback(() => {
     void navigateTo('/reports');
   }, []);
-
-  const handlePostureSubmit = useCallback(async () => {
-    if (!report) return;
-
-    const config = report.config as Record<string, unknown>;
-    setSaving(true);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/reports/${reportId}`, {
-          method: 'PUT',
-          body: JSON.stringify({
-            config: { ...config, backupRequired },
-          }),
-        }),
-        errorFallback: t('reports.reportBuilder.errors.saveReport'),
-        successMessage: t('reports.reportBuilder.actions.updateReport'),
-        onUnauthorized: () => {
-          void navigateTo('/login', { replace: true });
-        },
-      });
-      void navigateTo('/reports');
-    } catch {
-      // runAction already surfaced the failure (toast, or redirect on 401).
-    } finally {
-      setSaving(false);
-    }
-  }, [backupRequired, report, reportId, t]);
 
   if (loading) {
     return (
@@ -123,6 +94,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
 
   // Convert report config to form values
   const config = report.config as Record<string, unknown>;
+  const isPosture = report.type === 'security_compliance_posture';
   const defaultValues: Partial<ReportBuilderFormValues> = {
     name: report.name,
     type: report.type as ReportType,
@@ -155,28 +127,23 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
         </div>
       </div>
 
-      {report.type === 'security_compliance_posture' ? (
+      {isPosture && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
-          <PostureReportOptionsForm
+          <PostureBackupRequiredField
             backupRequired={backupRequired}
-            busy={saving}
-            submitLabel={t('reports.reportBuilder.actions.updateReport')}
             onBackupRequiredChange={setBackupRequired}
-            onSubmit={() => {
-              void handlePostureSubmit();
-            }}
-            onCancel={handleCancel}
           />
         </div>
-      ) : (
-        <ReportBuilder
-          mode="edit"
-          reportId={reportId}
-          defaultValues={defaultValues}
-          onSubmit={handleSubmit}
-          onCancel={handleCancel}
-        />
       )}
+
+      <ReportBuilder
+        mode="edit"
+        reportId={reportId}
+        defaultValues={defaultValues}
+        baseConfig={isPosture ? { ...config, backupRequired } : config}
+        onSubmit={handleSubmit}
+        onCancel={handleCancel}
+      />
     </div>
   );
 }
