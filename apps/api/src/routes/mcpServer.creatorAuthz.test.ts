@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { z as zod } from 'zod';
+import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
 
 // SR2-15 (core-auth-hardening, Task 3) regression: the MCP org-scope branch of
 // buildAuthFromApiKey now authorizes the human creator LIVE via the shared
@@ -182,6 +183,59 @@ describe('MCP org-scoped key: live scope re-clamp on top of #2510 null-deny (SR2
     expect(body.result).toBeUndefined();
     expect(body.error).toBeDefined();
     // The tool never dispatched — auth was rejected before RBAC/execution.
+    expect(mocks.checkToolPermission).not.toHaveBeenCalled();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('SR2-15 (sharper): ai:execute re-clamp bites for a creator who still holds the FULL ai:read baseline (isolated from the ai:read bundle clamp)', async () => {
+    // The companion test above ("a permission-reduced creator...") starves
+    // devices:read too, so validateApiKeyScopeDelegation actually trips on the
+    // ai:read bundle FIRST (devices:read is one of ai:read's four required
+    // grants) — it never isolates whether the ai:execute re-clamp itself
+    // bites. This test keeps every ai:read grant (devices/alerts/scripts/
+    // automations read) intact and strips ONLY the execute-backing
+    // permissions (devices:execute, scripts:execute), so a denial here can
+    // only be explained by the ai:execute re-clamp specifically.
+    const fullReadOnlyExecuteCreator = {
+      permissions: [
+        { resource: 'devices', action: 'read' },
+        { resource: 'alerts', action: 'read' },
+        { resource: 'scripts', action: 'read' },
+        { resource: 'automations', action: 'read' },
+        // Deliberately NO devices:execute / scripts:execute — demoted from an
+        // execute-capable role to read-only after the key was minted.
+      ],
+      partnerId: null,
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'organization' as const,
+      allowedSiteIds: undefined,
+    } as const;
+
+    // Sanity-check the isolation directly against the REAL (unmocked)
+    // validateApiKeyScopeDelegation before driving the HTTP path: ai:read
+    // ALONE is satisfied by this fixture (so the denial below cannot be the
+    // ai:read bundle clamp), while ai:execute ALONE is not.
+    const readOnlyCheck = validateApiKeyScopeDelegation(['ai:read'], fullReadOnlyExecuteCreator as any);
+    expect(readOnlyCheck.ok).toBe(true);
+    const executeOnlyCheck = validateApiKeyScopeDelegation(['ai:execute'], fullReadOnlyExecuteCreator as any);
+    expect(executeOnlyCheck.ok).toBe(false);
+    if (!executeOnlyCheck.ok) {
+      expect(executeOnlyCheck.error).toContain('ai:execute');
+    }
+
+    mocks.getUserPermissions.mockResolvedValueOnce(fullReadOnlyExecuteCreator as any);
+
+    const res = await callTool(['ai:read', 'ai:execute'], 'devices_execute_script');
+
+    // Before this task's re-clamp, buildAuthFromApiKey never re-validated
+    // stored scopes at all, so this creator (non-null perms, key carries
+    // ai:execute) would have been served (200, tool dispatched) on stale
+    // authority.
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.result).toBeUndefined();
+    expect(body.error).toBeDefined();
     expect(mocks.checkToolPermission).not.toHaveBeenCalled();
     expect(mocks.executeTool).not.toHaveBeenCalled();
   });
