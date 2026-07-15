@@ -1542,7 +1542,10 @@
     "connect": "Connect",
     "emailMismatch": "That identity provider account uses a different email than your Breeze account. Sign in to your provider with the email on your Breeze account and try again.",
     "identityInUse": "That identity provider account is already linked to a different Breeze user.",
-    "userGone": "Your account could not be found. Please sign in again."
+    "sessionInvalid": "Your session changed before linking could finish. Please sign in again and retry.",
+    "providerInactive": "That single sign-on provider is no longer active. Contact your administrator.",
+    "configChanged": "The single sign-on configuration changed while you were connecting. Please try again.",
+    "emailUnverified": "Your identity provider did not confirm that your email address is verified. Contact your administrator."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Loading connected apps…",

@@ -11,7 +11,15 @@ type LinkOption = { id: string; name: string; type: string; linked: boolean };
 const LINK_ERROR_KEYS: Record<string, string> = {
   email_mismatch: 'connectSsoCard.emailMismatch',
   identity_in_use: 'connectSsoCard.identityInUse',
-  user_gone: 'connectSsoCard.userGone'
+  // SR2-11: the pending link was invalidated by a live security-state change
+  // (sign-out, password reset, MFA change, suspension, lost membership). The
+  // server deliberately does NOT say which — that would be an account-state
+  // oracle — so the copy asks the user to sign in and retry.
+  session_invalid: 'connectSsoCard.sessionInvalid',
+  provider_inactive: 'connectSsoCard.providerInactive',
+  config_changed: 'connectSsoCard.configChanged',
+  // SR2-12: the IdP did not positively verify the asserted address.
+  email_unverified: 'connectSsoCard.emailUnverified'
 };
 
 export default function ConnectSsoCard() {

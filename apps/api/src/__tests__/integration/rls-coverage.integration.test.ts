@@ -77,6 +77,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'partner_abuse_signals', // Operator abuse signals ABOUT partners. Forced RLS, system-only policy — partners must never see their own risk signals.
+  'sso_sessions', // Pre-auth SSO CSRF/PKCE transaction store (state/nonce/code_verifier + link binding). No tenant column; written/consumed only by unauthenticated callback + system-context routes. Forced RLS, system-only policy → only system context.
 ]);
 
 // Tables with org_id metadata that are intentionally not generic org-tenant
@@ -605,6 +606,69 @@ describe('RLS coverage contract', () => {
     expect(`${authCodes?.qual}\n${authCodes?.with_check}`).toContain('user_id = breeze_current_user_id()');
     expect(`${grants?.qual}\n${grants?.with_check}`).toContain('account_id = breeze_current_user_id()');
     expect(`${refreshTokens?.qual}\n${refreshTokens?.with_check}`).toContain('user_id = breeze_current_user_id()');
+  });
+
+  it('sso_sessions is forced-RLS and reachable only from system scope', async () => {
+    const [cls] = (await db.execute(sql`
+      SELECT c.relrowsecurity AS rls_on, c.relforcerowsecurity AS force_on
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = 'sso_sessions';
+    `)) as unknown as Array<{ rls_on: boolean; force_on: boolean }>;
+
+    expect(cls?.rls_on).toBe(true);
+    expect(cls?.force_on).toBe(true);
+
+    const policies = (await db.execute(sql`
+      SELECT policyname, cmd, COALESCE(qual, '') AS qual, COALESCE(with_check, '') AS with_check
+      FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'sso_sessions'
+      ORDER BY policyname;
+    `)) as unknown as Array<{ policyname: string; cmd: string; qual: string; with_check: string }>;
+
+    // Exactly one ALL-command system-only policy. sso_sessions is a pre-auth
+    // CSRF/PKCE transaction store with no tenant column — no tenant axis may
+    // read or write it, only withSystemDbAccessContext.
+    expect(policies).toHaveLength(1);
+    expect(policies[0]?.policyname).toBe('sso_sessions_system_only');
+    expect(policies[0]?.cmd).toBe('ALL');
+    const predicate = `${policies[0]?.qual}\n${policies[0]?.with_check}`;
+    expect(predicate).toContain("current_setting('breeze.scope'");
+    expect(predicate).not.toContain('breeze_has_org_access');
+    expect(predicate).not.toContain('breeze_has_partner_access');
+  });
+
+  it('sso_sessions carries the provider-version and link-binding columns', async () => {
+    const cols = (await db.execute(sql`
+      SELECT column_name, is_nullable, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'sso_sessions'
+        AND column_name IN ('provider_version', 'initiating_auth_epoch', 'initiating_mfa_epoch', 'initiating_session_id')
+      ORDER BY column_name;
+    `)) as unknown as Array<{ column_name: string; is_nullable: string; data_type: string }>;
+
+    expect(cols.map((c) => c.column_name)).toEqual([
+      'initiating_auth_epoch', 'initiating_mfa_epoch', 'initiating_session_id', 'provider_version',
+    ]);
+    // All nullable: login sessions have no initiating user; provider_version is
+    // NULL only for pre-deploy in-flight rows (which the callback rejects).
+    for (const c of cols) expect(c.is_nullable).toBe('YES');
+
+    const [pv] = (await db.execute(sql`
+      SELECT is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'sso_providers' AND column_name = 'config_version';
+    `)) as unknown as Array<{ is_nullable: string; column_default: string }>;
+    expect(pv?.is_nullable).toBe('NO');
+    expect(pv?.column_default).toContain('1');
+
+    const [drcb] = (await db.execute(sql`
+      SELECT is_nullable, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'sso_providers' AND column_name = 'default_role_configured_by';
+    `)) as unknown as Array<{ is_nullable: string; data_type: string }>;
+    expect(drcb?.is_nullable).toBe('YES');
+    expect(drcb?.data_type).toBe('uuid');
   });
 
   it('every tenant-scoped public table has FORCE ROW LEVEL SECURITY enabled', async () => {

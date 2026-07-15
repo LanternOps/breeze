@@ -32,6 +32,14 @@ export class SsrfBlockedError extends Error {
   }
 }
 
+/** The response body exceeded the caller's `maxBytes` ceiling. The socket is destroyed. */
+export class ResponseTooLargeError extends Error {
+  constructor(public readonly maxBytes: number) {
+    super(`response body exceeded maxBytes (${maxBytes})`);
+    this.name = 'ResponseTooLargeError';
+  }
+}
+
 // IPv4 ranges that must never be dialed from the server.
 // Ordered roughly by how commonly they appear.
 const PRIVATE_V4_MATCHERS: Array<(octets: number[]) => boolean> = [
@@ -195,6 +203,17 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * even when this is true. Leave unset for strict (hosted-SaaS) behavior.
    */
   allowPrivateNetwork?: boolean;
+  /**
+   * Hard ceiling on the response body in bytes. On overrun the socket is
+   * destroyed and ResponseTooLargeError is thrown — the partial body is never
+   * buffered further. Unset = unbounded (legacy behavior for existing callers).
+   *
+   * safeFetch previously had NO size cap: it buffered whatever the remote sent.
+   * That is an unauthenticated memory-exhaustion vector wherever a remote host
+   * is attacker-influenced and the calling route is public — e.g. the SSO
+   * callback's JWKS fetch (SR2-13).
+   */
+  maxBytes?: number;
 }
 
 /**
@@ -358,8 +377,25 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       // Follow no redirects by default — caller gets the raw response and can
       // re-invoke safeFetch if they want to trust the Location header.
       const chunks: Buffer[] = [];
-      res.on('data', (c: Buffer) => chunks.push(c));
+      let received = 0;
+      let aborted = false;
+      const maxBytes = init.maxBytes;
+      res.on('data', (c: Buffer) => {
+        if (aborted) return;
+        received += c.length;
+        if (maxBytes !== undefined && received > maxBytes) {
+          // Overrun: stop buffering, tear down the socket, and reject exactly
+          // once. `aborted` guards against a late 'data'/'end' after destroy
+          // re-entering resolve/reject (the Promise is already settled).
+          aborted = true;
+          req.destroy();
+          reject(new ResponseTooLargeError(maxBytes));
+          return;
+        }
+        chunks.push(c);
+      });
       res.on('end', () => {
+        if (aborted) return;
         const bodyBytes = Buffer.concat(chunks);
         const responseHeaders = new Headers();
         for (const [k, v] of Object.entries(res.headers)) {

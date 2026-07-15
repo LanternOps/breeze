@@ -7,6 +7,15 @@ const ROLES: Role[] = [
   { id: 'partner-role', name: 'Partner Technician', scope: 'partner' },
 ];
 
+// SR2-10 Fix 1: a built-in system role can never be resolved by SSO JIT
+// provisioning (its org_id/partner_id are always NULL), so config time now
+// 400s it — the dropdown must not offer it in the first place.
+const ROLES_WITH_SYSTEM: Role[] = [
+  ...ROLES,
+  { id: 'system-org-role', name: 'Built-in Org Admin', scope: 'organization', isSystem: true },
+  { id: 'system-partner-role', name: 'Built-in Partner Admin', scope: 'partner', isSystem: true },
+];
+
 describe('SsoProviderForm ownership selector', () => {
   it('shows the ownership selector on create for partner-scope users', () => {
     render(<SsoProviderForm showOwnerScope roles={ROLES} />);
@@ -61,5 +70,22 @@ describe('SsoProviderForm ownership selector', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ ownerScope: 'organization' }));
+  });
+
+  // SR2-10 Fix 1: the API now 400s a defaultRoleId that isn't scoped to the
+  // provider's own org/partner — a built-in system role never is (its
+  // org_id/partner_id are always NULL). Filtering it out of the dropdown means
+  // an admin literally cannot select a role guaranteed to fail.
+  it('excludes isSystem roles from the org default-role dropdown', () => {
+    render(<SsoProviderForm showOwnerScope roles={ROLES_WITH_SYSTEM} />);
+    expect(screen.getByRole('option', { name: 'Org Technician' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'Built-in Org Admin' })).toBeNull();
+  });
+
+  it('excludes isSystem roles from the partner default-role dropdown', () => {
+    render(<SsoProviderForm showOwnerScope roles={ROLES_WITH_SYSTEM} />);
+    fireEvent.click(screen.getByTestId('sso-provider-owner-partner'));
+    expect(screen.getByRole('option', { name: 'Partner Technician' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'Built-in Partner Admin' })).toBeNull();
   });
 });

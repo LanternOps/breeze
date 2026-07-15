@@ -4,14 +4,43 @@ import {
   verifyIdTokenClaims,
   verifyIdTokenSignature,
   assertEmailVerified,
+  readEmailVerifiedClaim,
   idpAssertedMfa,
   discoverOIDCConfig,
   isInternalUrl,
+  assertSafeOidcEndpoint,
+  validateDiscoveredEndpoints,
+  exchangeCodeForTokens,
+  _resetIdTokenJwksCacheForTests,
+  OIDC_FETCH_TIMEOUT_MS,
   type OIDCConfig,
+  type OIDCDiscoveryDocument,
   PROVIDER_PRESETS,
   SAML_PROVIDER_PRESETS,
   ALL_SSO_PRESETS
 } from './sso';
+import { createRemoteJWKSet, customFetch } from 'jose';
+import { safeFetch, SsrfBlockedError } from './urlSafety';
+import { assertOutsideHeldDbContext } from '../db';
+
+// SR2-13/14: mock the outbound-HTTP + jose transport so the SSRF-safe wiring
+// can be asserted without a network. `safeFetch` DEFAULTS to the real
+// implementation (so the direct SSRF-rejection + #1105 tripwire tests exercise
+// the genuine guard); per-test `...Once` overrides stub it where a controlled
+// response body is needed. `createRemoteJWKSet` is captured so the injected
+// `customFetch` can be inspected. `../db` is mocked only for the tripwire.
+vi.mock('./urlSafety', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./urlSafety')>();
+  return {
+    ...actual,
+    safeFetch: vi.fn((...args: Parameters<typeof actual.safeFetch>) => actual.safeFetch(...args)),
+  };
+});
+vi.mock('jose', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('jose')>();
+  return { ...actual, createRemoteJWKSet: vi.fn(() => async () => ({})) };
+});
+vi.mock('../db', () => ({ assertOutsideHeldDbContext: vi.fn() }));
 
 describe('idpAssertedMfa (security review #2 H-1)', () => {
   it('is true only when amr contains the RFC 8176 "mfa" reference', () => {
@@ -194,6 +223,26 @@ describe('sso service', () => {
     // server-to-server userinfo call, not the id_token email, anyway.
     it('passes when email_verified is absent (does not lock out Azure AD)', () => {
       expect(() => assertEmailVerified({})).not.toThrow();
+    });
+  });
+
+  describe('readEmailVerifiedClaim (SR2-12)', () => {
+    it.each([
+      [{ email_verified: true }, 'true'],
+      [{ email_verified: 'true' }, 'true'],
+      [{ email_verified: false }, 'false'],
+      [{ email_verified: 'false' }, 'false'],
+      [{}, 'absent'],
+      [{ email_verified: null }, 'absent'],
+      [{ email_verified: 'maybe' }, 'absent'],
+      [{ email_verified: 1 }, 'absent'],
+    ])('%o -> %s', (source, expected) => {
+      expect(readEmailVerifiedClaim(source as Record<string, unknown>)).toBe(expected);
+    });
+
+    it('returns absent for null/undefined', () => {
+      expect(readEmailVerifiedClaim(null)).toBe('absent');
+      expect(readEmailVerifiedClaim(undefined)).toBe('absent');
     });
   });
 
@@ -399,5 +448,151 @@ describe('sso service', () => {
         expect(isInternalUrl('https://[::ffff:169.254.169.254]', true)).toBe(true); // mapped metadata
       });
     });
+  });
+});
+
+describe('SSRF-safe OIDC transport (SR2-13/14)', () => {
+  const baseConfig: OIDCConfig = {
+    issuer: 'https://issuer.example.com',
+    clientId: 'client-123',
+    clientSecret: 'secret-456',
+    authorizationUrl: 'https://issuer.example.com/auth',
+    tokenUrl: 'https://issuer.example.com/token',
+    userInfoUrl: 'https://issuer.example.com/userinfo',
+    scopes: 'openid profile email'
+  };
+
+  const publicDiscoveryDoc: OIDCDiscoveryDocument = {
+    issuer: 'https://issuer.example.com',
+    authorization_endpoint: 'https://issuer.example.com/auth',
+    token_endpoint: 'https://issuer.example.com/token',
+    userinfo_endpoint: 'https://issuer.example.com/userinfo',
+    jwks_uri: 'https://issuer.example.com/jwks'
+  };
+
+  function jsonResponse(body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  }
+
+  // A structurally-valid compact JWS so jose parses the header, accepts the alg,
+  // and reaches the (injected) key resolver — the point at which customFetch
+  // fires. The signature is bogus; these tests never assert a successful verify.
+  function rs256Token(): string {
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'x' })).toString('base64url');
+    const payload = Buffer.from(
+      JSON.stringify({ iss: baseConfig.issuer, aud: baseConfig.clientId })
+    ).toString('base64url');
+    return `${header}.${payload}.AAAA`;
+  }
+
+  beforeEach(() => {
+    _resetIdTokenJwksCacheForTests();
+    vi.mocked(safeFetch).mockClear();
+    vi.mocked(createRemoteJWKSet).mockClear();
+    vi.mocked(assertOutsideHeldDbContext).mockClear();
+  });
+
+  // 1
+  it('assertSafeOidcEndpoint enforces HTTPS + public routability', () => {
+    expect(() => assertSafeOidcEndpoint('token_endpoint', 'https://idp.example.com/jwks')).not.toThrow();
+    expect(() => assertSafeOidcEndpoint('token_endpoint', undefined)).toThrow(/missing/);
+    expect(() => assertSafeOidcEndpoint('token_endpoint', 'http://idp.example.com/jwks')).toThrow(/rejected/);
+    expect(() => assertSafeOidcEndpoint('token_endpoint', 'http://169.254.169.254/x')).toThrow(/rejected/);
+    expect(() => assertSafeOidcEndpoint('token_endpoint', 'https://127.0.0.1/jwks')).toThrow(/rejected/);
+    expect(() => assertSafeOidcEndpoint('token_endpoint', 'https://localhost/jwks')).toThrow(/rejected/);
+    // Self-host escape hatch: http + RFC1918 permitted; metadata still blocked.
+    expect(() => assertSafeOidcEndpoint('token_endpoint', 'http://10.0.0.5/jwks', true)).not.toThrow();
+    expect(() => assertSafeOidcEndpoint('token_endpoint', 'http://169.254.169.254/x', true)).toThrow(/rejected/);
+  });
+
+  // 2
+  it('validateDiscoveredEndpoints rejects a cleartext token_endpoint and an internal jwks_uri', () => {
+    expect(() => validateDiscoveredEndpoints(publicDiscoveryDoc)).not.toThrow();
+    expect(() =>
+      validateDiscoveredEndpoints({ ...publicDiscoveryDoc, token_endpoint: 'http://issuer.example.com/token' })
+    ).toThrow(/token_endpoint/);
+    expect(() =>
+      validateDiscoveredEndpoints({ ...publicDiscoveryDoc, jwks_uri: 'https://10.0.0.5/jwks' })
+    ).toThrow(/jwks_uri/);
+  });
+
+  // 3
+  it('discoverOIDCConfig rejects a document with an internal jwks_uri (and does not return it)', async () => {
+    vi.mocked(safeFetch).mockResolvedValueOnce(
+      jsonResponse({ ...publicDiscoveryDoc, jwks_uri: 'http://10.0.0.5/jwks' })
+    );
+    await expect(discoverOIDCConfig('https://issuer.example.com')).rejects.toThrow(/jwks_uri/);
+  });
+
+  // 4 — load-bearing: safeFetch is injected into jose, and the injected fn
+  // rejects a private-IP URL (proving jose's internal refresh path is guarded).
+  it('injects safeFetch into jose via customFetch, and the injected fn blocks a private IP', async () => {
+    const config: OIDCConfig = { ...baseConfig, jwksUrl: 'https://idp.example.com/jwks' };
+    // jwtVerify will fail on the stub key; we only need createRemoteJWKSet to run.
+    await verifyIdTokenSignature('a.b.c', config, 'nonce').catch(() => {});
+
+    const opts = vi.mocked(createRemoteJWKSet).mock.calls[0]![1] as Record<PropertyKey, unknown>;
+    expect(typeof opts[customFetch]).toBe('function');
+
+    const fetchImpl = opts[customFetch] as (u: string, o: Record<string, unknown>) => Promise<Response>;
+    await expect(fetchImpl('http://169.254.169.254/jwks', {})).rejects.toThrow(SsrfBlockedError);
+  });
+
+  // 5
+  it('verifyIdTokenSignature rejects an internal jwksUrl before constructing a key set', async () => {
+    const config: OIDCConfig = { ...baseConfig, jwksUrl: 'http://127.0.0.1/jwks' };
+    await expect(verifyIdTokenSignature(rs256Token(), config, 'nonce')).rejects.toThrow();
+    expect(createRemoteJWKSet).not.toHaveBeenCalled();
+  });
+
+  // 6
+  it('exchangeCodeForTokens refuses a plain-http tokenUrl and never dispatches the secret', async () => {
+    const config: OIDCConfig = { ...baseConfig, tokenUrl: 'http://evil.example.com/token' };
+    await expect(
+      exchangeCodeForTokens({ config, code: 'code', redirectUri: 'https://app.example.com/cb' })
+    ).rejects.toThrow(/token_endpoint/);
+    expect(safeFetch).not.toHaveBeenCalled();
+  });
+
+  // 7
+  it('passes OIDC_FETCH_TIMEOUT_MS to token + discovery fetches', async () => {
+    vi.mocked(safeFetch).mockResolvedValueOnce(jsonResponse({ access_token: 'a', token_type: 'Bearer' }));
+    await exchangeCodeForTokens({ config: baseConfig, code: 'code', redirectUri: 'https://app.example.com/cb' });
+    expect(vi.mocked(safeFetch).mock.calls[0]![1]).toMatchObject({ timeoutMs: OIDC_FETCH_TIMEOUT_MS });
+
+    vi.mocked(safeFetch).mockClear();
+    vi.mocked(safeFetch).mockResolvedValueOnce(jsonResponse(publicDiscoveryDoc));
+    await discoverOIDCConfig('https://issuer.example.com');
+    expect(vi.mocked(safeFetch).mock.calls[0]![1]).toMatchObject({ timeoutMs: OIDC_FETCH_TIMEOUT_MS });
+  });
+
+  // 10 (M4) — the #1105 tripwire is load-bearing: JWKS now flows through
+  // safeFetch, which throws in a held DB context. Pin that calling
+  // verifyIdTokenSignature inside a held context trips it, so nobody moves the
+  // callback's call site into a withSystemDbAccessContext block.
+  it('trips the #1105 tripwire when verifyIdTokenSignature runs inside a held DB context', async () => {
+    vi.mocked(assertOutsideHeldDbContext).mockImplementationOnce((op: string) => {
+      throw new Error(`${op} ran inside a held withDbAccessContext transaction (#1105)`);
+    });
+    // Make jose's key resolver actually drive the injected transport, exactly as
+    // it does on a real kid-miss / cache-expiry refresh.
+    vi.mocked(createRemoteJWKSet).mockImplementationOnce(
+      (url: URL, opts: any) =>
+        (async () => {
+          await opts[customFetch](url.toString(), {
+            headers: new Headers(),
+            method: 'GET',
+            redirect: 'manual',
+            signal: new AbortController().signal
+          });
+          return {};
+        }) as any
+    );
+
+    const config: OIDCConfig = { ...baseConfig, jwksUrl: 'https://idp.example.com/jwks' };
+    await expect(verifyIdTokenSignature(rs256Token(), config, 'nonce')).rejects.toThrow(/safeFetch/);
   });
 });

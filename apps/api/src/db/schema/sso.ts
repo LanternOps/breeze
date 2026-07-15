@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, uniqueIndex, integer } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 
@@ -55,6 +55,26 @@ export const ssoProviders = pgTable('sso_providers', {
   // Breeze MFA-gated routes via their IdP). Off by default — fail-safe.
   trustsIdpMfa: boolean('trusts_idp_mfa').notNull().default(false),
 
+  // Monotonic config generation (SR2-11). Bumped by PATCH /providers/:id and by
+  // POST /providers/:id/status. Pending sso_sessions snapshot this value; the
+  // callback rejects a session whose snapshot no longer matches, so a provider
+  // reconfigured or disabled mid-flow cannot complete a login or a link.
+  configVersion: integer('config_version').notNull().default(1),
+
+  // SR2-10: the admin who LAST SET defaultRoleId — the principal whose LIVE
+  // permission ceiling the callback re-checks the delegated role against just
+  // before JIT provisioning. Stamped by POST /providers and by every PATCH that
+  // sets defaultRoleId, so "re-save the default role" is a first-class repair
+  // when the previous configurer is offboarded. NOT createdBy: that names the
+  // original creator (who may never have touched defaultRoleId), and no route
+  // ever rewrites it.
+  //
+  // ON DELETE SET NULL (2026-07-17): a hard-deleted configurer must REVOKE the
+  // standing delegation, not preserve it. NULL here makes JIT fail closed
+  // (`default_role_configurer_unknown` in revalidateSsoDefaultRole); the repair
+  // is a current admin re-saving the default role, which re-stamps this column.
+  defaultRoleConfiguredBy: uuid('default_role_configured_by').references(() => users.id, { onDelete: 'set null' }),
+
   // Metadata
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -104,6 +124,23 @@ export const ssoSessions = pgTable('sso_sessions', {
   // deleted by the callback) must not block a hard user delete — sso_sessions
   // has no partner_id/org_id, so the tenant-cascade sweep never reaches it.
   linkUserId: uuid('link_user_id').references(() => users.id, { onDelete: 'cascade' }),
+
+  // SR2-11 pending-transaction binding.
+  //
+  // providerVersion: sso_providers.config_version at creation. NULL only for
+  // rows written before this column existed — the callback REJECTS those.
+  providerVersion: integer('provider_version'),
+
+  // The three initiating_* columns are LINK-MODE ONLY (set by
+  // POST /sso/link/start alongside linkUserId). A login session has no
+  // initiating user, so they stay NULL there — which is why they are nullable.
+  // The link callback requires all three to be present AND to still match live
+  // state, which is what makes logout / password reset / MFA reset / suspension
+  // / global revocation invalidate a pending link.
+  initiatingAuthEpoch: integer('initiating_auth_epoch'),
+  initiatingMfaEpoch: integer('initiating_mfa_epoch'),
+  // = refresh_token_families.family_id == the initiating access token's `sid`.
+  initiatingSessionId: uuid('initiating_session_id'),
 
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()
