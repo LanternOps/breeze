@@ -150,6 +150,10 @@ services:
       TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-600}
       TRUST_PROXY_HEADERS: "true"
       TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-172.30.0.11/32}"
+      # This reference stack is fronted by Cloudflare (cloudflared → Caddy), so
+      # CF-Connecting-IP is authoritative. Self-hosters NOT behind Cloudflare
+      # must leave this unset — see the base docker-compose.yml note.
+      TRUST_CF_CONNECTING_IP: "${TRUST_CF_CONNECTING_IP:-true}"
       PARTNER_HOOKS_URL: http://billing:3002/hooks
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}

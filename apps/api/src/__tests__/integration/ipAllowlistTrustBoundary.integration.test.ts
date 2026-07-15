@@ -81,6 +81,7 @@ describe('SR2-16 — partner IP allowlist trust boundary (real DB)', () => {
   const originalTrust = process.env.TRUST_PROXY_HEADERS;
   const originalCidrs = process.env.TRUSTED_PROXY_CIDRS;
   const originalMode = process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
+  const originalTrustCf = process.env.TRUST_CF_CONNECTING_IP;
 
   afterEach(() => {
     if (originalTrust === undefined) delete process.env.TRUST_PROXY_HEADERS;
@@ -89,12 +90,15 @@ describe('SR2-16 — partner IP allowlist trust boundary (real DB)', () => {
     else process.env.TRUSTED_PROXY_CIDRS = originalCidrs;
     if (originalMode === undefined) delete process.env.IP_ALLOWLIST_ENFORCEMENT_MODE;
     else process.env.IP_ALLOWLIST_ENFORCEMENT_MODE = originalMode;
+    if (originalTrustCf === undefined) delete process.env.TRUST_CF_CONNECTING_IP;
+    else process.env.TRUST_CF_CONNECTING_IP = originalTrustCf;
   });
 
   describe('Hosted / Cloudflare mode — trusted peer, CF-Connecting-IP honored', () => {
     it('allows when CF-Connecting-IP (from the trusted Caddy/CF peer) matches the allowlist', async () => {
       process.env.TRUST_PROXY_HEADERS = 'true';
       process.env.TRUSTED_PROXY_CIDRS = `${TRUSTED_PROXY_PEER}/32`;
+      process.env.TRUST_CF_CONNECTING_IP = 'true';
 
       const partner = await createPartner();
       await setPartnerAllowlist(partner.id, [ALLOWLISTED_IP]);
@@ -109,6 +113,7 @@ describe('SR2-16 — partner IP allowlist trust boundary (real DB)', () => {
     it('denies with not_in_list when CF-Connecting-IP (from the trusted peer) is NOT in the allowlist', async () => {
       process.env.TRUST_PROXY_HEADERS = 'true';
       process.env.TRUSTED_PROXY_CIDRS = `${TRUSTED_PROXY_PEER}/32`;
+      process.env.TRUST_CF_CONNECTING_IP = 'true';
 
       const partner = await createPartner();
       await setPartnerAllowlist(partner.id, [ALLOWLISTED_IP]);
@@ -117,6 +122,29 @@ describe('SR2-16 — partner IP allowlist trust boundary (real DB)', () => {
       const decision = await enforceIpAllowlist(c, { partnerId: partner.id, isPlatformAdmin: false });
 
       expect(decision).toEqual({ decision: 'deny', reason: 'not_in_list' });
+      expect(isBlocked(decision)).toBe(true);
+    });
+  });
+
+  describe('Self-hosted, NOT behind Cloudflare — CF-Connecting-IP is not trusted (TRUST_CF_CONNECTING_IP unset)', () => {
+    // The bundled Caddy does not strip CF-Connecting-IP. With the flag off, a
+    // CF-Connecting-IP even from the TRUSTED proxy peer must be ignored — the
+    // request is attributed to the real peer IP, not the header — so an
+    // attacker cannot spoof an allowlisted IP by sending the header.
+    it('ignores CF-Connecting-IP and attributes to the peer IP, denying a spoofed allowlisted value', async () => {
+      process.env.TRUST_PROXY_HEADERS = 'true';
+      process.env.TRUSTED_PROXY_CIDRS = `${TRUSTED_PROXY_PEER}/32`;
+      delete process.env.TRUST_CF_CONNECTING_IP;
+
+      const partner = await createPartner();
+      await setPartnerAllowlist(partner.id, [ALLOWLISTED_IP]);
+
+      // CF-Connecting-IP claims the allowlisted IP, but the flag is off and there
+      // is no XFF, so resolution falls to the (trusted) peer IP, which is not on
+      // the allowlist → deny.
+      const c = makeContext({ 'cf-connecting-ip': ALLOWLISTED_IP }, TRUSTED_PROXY_PEER);
+      const decision = await enforceIpAllowlist(c, { partnerId: partner.id, isPlatformAdmin: false });
+
       expect(isBlocked(decision)).toBe(true);
     });
   });
