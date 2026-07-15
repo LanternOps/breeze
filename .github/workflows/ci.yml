@@ -805,6 +805,11 @@ jobs:
   lint-agent:
     name: Lint Agent (Go)
     runs-on: ubuntu-latest
+    # CGO off (matches test-agent): the agent's only cgo files are the linux
+    # X11/pcap capture backends, whose C headers are not on the runner. vet +
+    # lint cover the CGO-off build; the cgo backends are compiled by build-agent.
+    env:
+      CGO_ENABLED: '0'
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -831,13 +836,15 @@ jobs:
 
   # ─── Go agent race tests (broad) ──────────────────────────────────────
   # test-agent runs the suite CGO-off (no race detector). This job races the
-  # ENTIRE linux-buildable agent tree so new concurrency-heavy packages are
-  # covered automatically without a hand-maintained list (~80s locally). CGO is
-  # required by the race detector. Windows-only concurrency is covered by the
-  # agent's own windows race jobs.
+  # ENTIRE agent tree so new concurrency-heavy packages are covered
+  # automatically without a hand-maintained list (~80s). The race detector
+  # requires CGO; it runs on macOS to match the repo's only cgo agent build
+  # (build-agent darwin) — the linux agent is never cgo-built in CI, and the
+  # concurrency logic under test is platform-independent. Windows-only
+  # concurrency is covered by the agent's own windows race jobs.
   test-agent-race:
     name: Test Agent (race)
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -855,6 +862,8 @@ jobs:
 
       - name: go test -race ./...
         working-directory: agent
+        env:
+          CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
         run: CGO_ENABLED=1 go test -race -count=1 ./...
 
   # ─── Windows runtime smoke (#1000) ────────────────────────────────────
