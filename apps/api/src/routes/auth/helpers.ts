@@ -12,6 +12,7 @@ import {
   verifyPassword,
   getUserEpochs
 } from '../../services';
+import { getImmediatePeerIpOrUndefined } from '../../services/clientIp';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { consumeMFAToken } from '../../services/mfa';
@@ -113,15 +114,20 @@ export function getClientRateLimitKey(c: RequestLike): string {
     return `ip:${trustedIp}`;
   }
 
+  // No proxy-verified client IP. Do NOT fingerprint forwarded IP headers —
+  // an attacker rotating X-Forwarded-For from an untrusted peer would mint a
+  // fresh bucket per request and evade the per-IP limit (SR2-16). Key on the
+  // immediate TCP peer, which cannot be spoofed at L7.
+  const peerIp = getImmediatePeerIpOrUndefined(c);
+  if (peerIp) {
+    return `socket:${peerIp}`;
+  }
+
+  // Only when even the socket address is unavailable (non-Node runtime / test
+  // shim) fall back to a NON-IP fingerprint. Never include x-forwarded-for /
+  // x-real-ip / cf-connecting-ip here — they are attacker-controlled.
   const read = (name: string) => c.req.header(name) ?? c.req.header(name.toLowerCase()) ?? '';
-  const fingerprintSource = [
-    read('user-agent'),
-    read('accept-language'),
-    read('origin'),
-    read('x-forwarded-for'),
-    read('x-real-ip'),
-    read('cf-connecting-ip')
-  ].join('|');
+  const fingerprintSource = [read('user-agent'), read('accept-language'), read('origin')].join('|');
 
   const digest = createHash('sha256')
     .update(fingerprintSource || 'no-client-fingerprint')

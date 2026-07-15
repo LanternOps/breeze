@@ -6,8 +6,26 @@ import {
   userRequiresSetup,
   parsePendingMfa,
   evaluatePendingMfa,
+  getClientRateLimitKey,
   type PendingMfaRecord,
 } from './helpers';
+import type { RequestLike } from '../../services/auditEvents';
+
+// Mirrors the canonical shim in services/clientIp.test.ts.
+function makeContext(headers: Record<string, string | undefined>, remoteAddress?: string): RequestLike {
+  const normalized: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (v !== undefined) normalized[k.toLowerCase()] = v;
+  }
+  return {
+    req: {
+      header: (name: string) => normalized[name.toLowerCase()],
+    },
+    ...(remoteAddress
+      ? { env: { incoming: { socket: { remoteAddress } } } }
+      : {}),
+  } as RequestLike;
+}
 
 describe('getAllowedOrigins (G5 — dev-origin gating)', () => {
   const originalNodeEnv = process.env.NODE_ENV;
@@ -245,5 +263,36 @@ describe('evaluatePendingMfa (SR2-06)', () => {
       ok: false,
       reason: 'expired',
     });
+  });
+});
+
+describe('getClientRateLimitKey — spoof-proof per-IP key (SR2-16)', () => {
+  const origTrust = process.env.TRUST_PROXY_HEADERS;
+  beforeEach(() => { process.env.TRUST_PROXY_HEADERS = 'false'; }); // untrusted / no proxy trust
+  afterEach(() => { if (origTrust === undefined) delete process.env.TRUST_PROXY_HEADERS; else process.env.TRUST_PROXY_HEADERS = origTrust; });
+
+  it('keys on the SOCKET peer, so a rotating spoofed X-Forwarded-For from the same peer yields the SAME key (cannot evade the per-IP limit)', () => {
+    // GUARD-BITE: RED today — the fingerprint hashes x-forwarded-for, so the two
+    // keys differ and an attacker mints a fresh bucket per request.
+    const a = getClientRateLimitKey(makeContext({ 'x-forwarded-for': '1.2.3.4' }, '198.51.100.77'));
+    const b = getClientRateLimitKey(makeContext({ 'x-forwarded-for': '5.6.7.8' }, '198.51.100.77'));
+    expect(a).toBe('socket:198.51.100.77');
+    expect(b).toBe('socket:198.51.100.77');
+    expect(a).toBe(b);
+  });
+
+  it('never includes spoofable IP headers in the fingerprint fallback (no socket, no trusted IP)', () => {
+    const withHdr = getClientRateLimitKey(makeContext({ 'x-forwarded-for': '9.9.9.9', 'user-agent': 'UA' }));
+    const noHdr = getClientRateLimitKey(makeContext({ 'user-agent': 'UA' }));
+    expect(withHdr.startsWith('fp:')).toBe(true);
+    expect(withHdr).toBe(noHdr); // x-forwarded-for must NOT change the fingerprint
+  });
+
+  it('prefers the trusted client IP when proxy trust is properly configured', () => {
+    process.env.TRUST_PROXY_HEADERS = 'true';
+    process.env.TRUSTED_PROXY_CIDRS = '198.51.100.77/32';
+    const key = getClientRateLimitKey(makeContext({ 'cf-connecting-ip': '203.0.113.5' }, '198.51.100.77'));
+    expect(key).toBe('ip:203.0.113.5');
+    delete process.env.TRUSTED_PROXY_CIDRS;
   });
 });
