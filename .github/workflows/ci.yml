@@ -133,6 +133,12 @@ jobs:
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
 
+      # Keep this explicit even though the API unit suite also discovers the
+      # test. It is the release gate for the checked-in SDK v1 fixture and must
+      # remain until the documented v1 compatibility window closes.
+      - name: Gate SDK v1 compatibility fixture
+        run: pnpm --filter=@breeze/api test --run src/extensions/compatibility.test.ts
+
       # Site-scope contract tests are pure static analysis (walk routes/*.ts
       # from disk, no DB/Redis), so they run here in the fast, blocking job
       # rather than the non-blocking smoke-test. Guards both the `:deviceId`-URL
