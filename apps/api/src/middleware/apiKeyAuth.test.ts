@@ -41,7 +41,8 @@ vi.mock('../services/tenantStatus', () => ({
 }));
 
 vi.mock('../services/apiKeyAuthorization', () => ({
-  authorizeHumanApiKeyCreator: vi.fn()
+  authorizeHumanApiKeyCreator: vi.fn(),
+  authorizeServicePrincipalKey: vi.fn()
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -53,7 +54,7 @@ import type { Context } from 'hono';
 import { db, withDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import { getActiveOrgTenant } from '../services/tenantStatus';
-import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
+import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from '../services/apiKeyAuthorization';
 import * as apiKeyAuthModule from './apiKeyAuth';
 
 const { apiKeyAuthMiddleware, requireApiKeyScope } = apiKeyAuthModule;
@@ -677,6 +678,119 @@ describe('apiKeyAuth middleware', () => {
       const ctxKey = c.get('apiKey') as any;
       expect(ctxKey.scopes).toEqual(['devices:read']);       // clamped, not the stored two
       expect(ctxKey.allowedSiteIds).toEqual(['site-a']);
+    });
+  });
+
+  describe('SR2-15: service-principal keys branch on principalType', () => {
+    it('calls authorizeServicePrincipalKey (not the human resolver) and skips the creator-status lookup for a service key', async () => {
+      // Only ONE select (the api_keys row) — no second creator-status select,
+      // since a service-principal key has no human "creator active" gate.
+      buildSelectMock([
+        {
+          id: 'key-svc',
+          orgId: 'org-1',
+          name: 'CI bot key',
+          keyPrefix: 'brz_svc',
+          keyHash: 'h',
+          scopes: ['ai:read'],
+          expiresAt: null,
+          rateLimit: 1000,
+          usageCount: 0,
+          status: 'active',
+          createdBy: 'user-1',
+          source: 'manual',
+          principalType: 'service',
+          principalId: 'principal-1'
+        }
+      ]);
+      vi.mocked(authorizeServicePrincipalKey).mockResolvedValue({
+        ok: true,
+        permissions: null,
+        allowedSiteIds: undefined,
+        clampedScopes: ['ai:read']
+      });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+      } as any);
+
+      const c = createContext({ 'X-API-Key': 'brz_service' });
+      const next = vi.fn();
+      await apiKeyAuthMiddleware(c, next);
+
+      expect(authorizeServicePrincipalKey).toHaveBeenCalledWith({ principalId: 'principal-1', scopes: ['ai:read'] });
+      expect(authorizeHumanApiKeyCreator).not.toHaveBeenCalled();
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(next).toHaveBeenCalled();
+
+      const ctxKey = c.get('apiKey') as any;
+      expect(ctxKey.principalType).toBe('service');
+      expect(ctxKey.principalId).toBe('principal-1');
+      expect(ctxKey.scopes).toEqual(['ai:read']);
+    });
+
+    it('rejects with 401 when authorizeServicePrincipalKey denies (disabled principal / fail-closed / scope exceeded)', async () => {
+      buildSelectMock([
+        {
+          id: 'key-svc-2',
+          orgId: 'org-1',
+          name: 'CI bot key',
+          keyPrefix: 'brz_svc',
+          keyHash: 'h',
+          scopes: ['ai:read'],
+          expiresAt: null,
+          rateLimit: 1000,
+          usageCount: 0,
+          status: 'active',
+          createdBy: 'user-1',
+          source: 'manual',
+          principalType: 'service',
+          principalId: 'principal-disabled'
+        }
+      ]);
+      vi.mocked(authorizeServicePrincipalKey).mockResolvedValue({ ok: false, reason: 'no_membership' });
+
+      const c = createContext({ 'X-API-Key': 'brz_service_denied' });
+      const next = vi.fn();
+
+      await expect(apiKeyAuthMiddleware(c, next)).rejects.toMatchObject({ status: 401 });
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('still runs the human creator-status + authorizeHumanApiKeyCreator path when principalType is the human default', async () => {
+      // Regression guard for the scope-freeze requirement: a human key
+      // (principalType 'human' or absent) must behave EXACTLY as before —
+      // creator-status select still runs, authorizeServicePrincipalKey is
+      // never invoked.
+      buildSequentialSelectMock([
+        [
+          {
+            id: 'key-human',
+            orgId: 'org-1',
+            name: 'k',
+            keyPrefix: 'brz_x',
+            keyHash: 'h',
+            scopes: ['devices:read'],
+            expiresAt: null,
+            rateLimit: 1000,
+            usageCount: 0,
+            status: 'active',
+            createdBy: 'user-1',
+            source: 'manual',
+            principalType: 'human',
+            principalId: null
+          }
+        ],
+        [{ status: 'active' }]
+      ]);
+
+      const c = createContext({ 'X-API-Key': 'brz_human' });
+      const next = vi.fn();
+      await apiKeyAuthMiddleware(c, next);
+
+      expect(authorizeHumanApiKeyCreator).toHaveBeenCalled();
+      expect(authorizeServicePrincipalKey).not.toHaveBeenCalled();
+      expect(db.select).toHaveBeenCalledTimes(2);
+      expect(next).toHaveBeenCalled();
     });
   });
 });

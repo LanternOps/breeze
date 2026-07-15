@@ -7,7 +7,7 @@ import { apiKeys, users } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import { getTrustedClientIp } from '../services/clientIp';
-import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
+import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from '../services/apiKeyAuthorization';
 
 export interface ApiKeyContext {
   apiKey: {
@@ -20,6 +20,11 @@ export interface ApiKeyContext {
     rateLimit: number;
     createdBy: string;
     allowedSiteIds?: string[];
+    // SR2-15: 'human' (default) | 'service'. Service-principal keys carry a
+    // non-null principalId and are authorized against the PRINCIPAL, never
+    // a human creator's permissions.
+    principalType?: string;
+    principalId?: string | null;
   };
   orgId: string;
 }
@@ -112,7 +117,9 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
         usageCount: apiKeys.usageCount,
         status: apiKeys.status,
         createdBy: apiKeys.createdBy,
-        source: apiKeys.source
+        source: apiKeys.source,
+        principalType: apiKeys.principalType,
+        principalId: apiKeys.principalId
       })
       .from(apiKeys)
       .where(eq(apiKeys.keyHash, keyHash))
@@ -147,21 +154,33 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'API key owner is not active' });
   }
 
-  // SR2-15 (PR 1 subset): a delegated human API key must not outlive its
-  // creator's active status. The full membership/permission-ceiling resolver
-  // and service principals land in PR 5; here we fail closed on a
-  // disabled/absent creator. (The MCP path's fail-OPEN null-perms bug is fixed
-  // in PR 5 — do not build on that behavior.)
-  const creator = await withSystemDbAccessContext(async () => {
-    const [row] = await db
-      .select({ status: users.status })
-      .from(users)
-      .where(eq(users.id, apiKey.createdBy))
-      .limit(1);
-    return row ?? null;
-  });
-  if (!creator || creator.status !== 'active') {
-    throw new HTTPException(401, { message: 'API key creator is not active' });
+  // SR2-15 (PR 5): service-principal keys (principalType === 'service') skip
+  // the human creator-status/liveness checks entirely — they are authorized
+  // against the PRINCIPAL, not a human. A service principal has no
+  // interactive login, so there is no "creator active" status to check; its
+  // liveness gate is the principal's own `status` column (see
+  // authorizeServicePrincipalKey). Human keys (the default, principalType
+  // undefined or 'human') take the existing creator-status + live-permission
+  // path below, unchanged.
+  const isServicePrincipalKey = apiKey.principalType === 'service' && !!apiKey.principalId;
+
+  if (!isServicePrincipalKey) {
+    // SR2-15 (PR 1 subset): a delegated human API key must not outlive its
+    // creator's active status. The full membership/permission-ceiling resolver
+    // and service principals land in PR 5; here we fail closed on a
+    // disabled/absent creator. (The MCP path's fail-OPEN null-perms bug is fixed
+    // in PR 5 — do not build on that behavior.)
+    const creator = await withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .select({ status: users.status })
+        .from(users)
+        .where(eq(users.id, apiKey.createdBy))
+        .limit(1);
+      return row ?? null;
+    });
+    if (!creator || creator.status !== 'active') {
+      throw new HTTPException(401, { message: 'API key creator is not active' });
+    }
   }
 
   // SR2-15 (PR 5): a human-delegated key's authority is LIVE-bound to its
@@ -175,12 +194,21 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
   // getUserPermissions call (Redis-version-cached, 5-min TTL — a cache hit is an
   // mget + in-proc lookup, no Postgres round-trip) to the hot path; correctness
   // over cost per the PR 5 plan (Q1: live re-resolution, not an epoch).
-  const authz = await authorizeHumanApiKeyCreator({
-    createdBy: apiKey.createdBy,
-    orgId: apiKey.orgId,
-    partnerId: ownerTenant.partnerId,
-    scopes: apiKey.scopes ?? [],
-  });
+  //
+  // A service-principal key branches to authorizeServicePrincipalKey instead:
+  // it re-clamps against the PRINCIPAL's own current scopes (never a human's
+  // permissions) and denies on a disabled/missing principal.
+  const authz = isServicePrincipalKey
+    ? await authorizeServicePrincipalKey({
+        principalId: apiKey.principalId as string,
+        scopes: apiKey.scopes ?? [],
+      })
+    : await authorizeHumanApiKeyCreator({
+        createdBy: apiKey.createdBy,
+        orgId: apiKey.orgId,
+        partnerId: ownerTenant.partnerId,
+        scopes: apiKey.scopes ?? [],
+      });
   if (!authz.ok) {
     throw new HTTPException(401, { message: 'API key creator is no longer authorized' });
   }
@@ -249,6 +277,11 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     allowedSiteIds: authz.allowedSiteIds,
     rateLimit: apiKey.rateLimit,
     createdBy: apiKey.createdBy,
+    // SR2-15: threaded through so the MCP path (mcpServer.ts's
+    // buildAuthFromApiKey, which reads this same c.get('apiKey')) can branch
+    // on principal type too, without a second DB read.
+    principalType: apiKey.principalType,
+    principalId: apiKey.principalId,
   });
   c.set('apiKeyOrgId', apiKey.orgId);
 

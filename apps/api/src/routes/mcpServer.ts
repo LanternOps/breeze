@@ -33,7 +33,7 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
 import { getUserPermissions } from '../services/permissions';
-import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
+import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from '../services/apiKeyAuthorization';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import { resolveServerUrl } from '../services/recoveryBootstrap';
 import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToolsSiteScope';
@@ -256,6 +256,12 @@ type McpApiKeyWithAuthFields = McpApiKeyContext & {
   scopes: string[];
   name: string;
   createdBy: string;
+  // SR2-15: 'human' (default, or absent for OAuth-bearer callers) | 'service'.
+  // Set by apiKeyAuthMiddleware's `c.set('apiKey', ...)` for X-API-Key
+  // callers; OAuth bearer tokens never carry it (they're always human) so
+  // buildAuthFromApiKey treats an absent/undefined value as 'human'.
+  principalType?: string;
+  principalId?: string | null;
 };
 
 function buildMcpAuditAction(method: string): string {
@@ -465,6 +471,8 @@ async function buildCheckedAuthFromApiKey(
     name: apiKey.name,
     createdBy: apiKey.createdBy,
     scopes: apiKey.scopes,
+    principalType: apiKey.principalType,
+    principalId: apiKey.principalId ?? null,
   });
 
   // SR2-15 fail-closed: buildAuthFromApiKey returns null when the key's creator
@@ -1840,6 +1848,8 @@ async function buildAuthFromApiKey(apiKey: {
   name: string;
   createdBy: string;
   scopes: string[];
+  principalType?: string;
+  principalId?: string | null;
 }): Promise<AuthContext | null> {
   const user = {
     id: apiKey.createdBy,
@@ -1866,6 +1876,15 @@ async function buildAuthFromApiKey(apiKey: {
     // unreadable. The key remains org-scoped (orgCondition pins to this org).
     const partnerId =
       apiKey.partnerId ?? (await getActiveOrgTenant(apiKey.orgId))?.partnerId ?? null;
+
+    // SR2-15 (PR 5): a service-principal key (principalType === 'service')
+    // is authorized against the PRINCIPAL, never the human who last rotated
+    // it — `createdBy` on a service key is an audit trail (who minted the
+    // current key), not an acting identity to delegate from. Human keys (the
+    // default; also every OAuth-bearer caller, which never carries
+    // principalType) take the unchanged authorizeHumanApiKeyCreator path.
+    const isServicePrincipalKey = apiKey.principalType === 'service' && !!apiKey.principalId;
+
     // SR2-15: LIVE-authorize the human creator via the shared resolver — it does
     // BOTH the null-perms fail-closed deny (#2510) AND the scope re-clamp this
     // task adds. The old code read `creatorPerms?.allowedSiteIds` off a raw
@@ -1879,15 +1898,20 @@ async function buildAuthFromApiKey(apiKey: {
     // original, now-stale, broader scopes — the MCP path never re-clamped. A
     // key delegates its creator's authority; it must never outlive a reduction
     // in that authority, any more than it may outlive its total loss.
-    const authz = await authorizeHumanApiKeyCreator({
-      createdBy: apiKey.createdBy,
-      orgId: apiKey.orgId,
-      partnerId,
-      scopes: apiKey.scopes ?? [],
-    });
+    const authz = isServicePrincipalKey
+      ? await authorizeServicePrincipalKey({
+          principalId: apiKey.principalId as string,
+          scopes: apiKey.scopes ?? [],
+        })
+      : await authorizeHumanApiKeyCreator({
+          createdBy: apiKey.createdBy,
+          orgId: apiKey.orgId,
+          partnerId,
+          scopes: apiKey.scopes ?? [],
+        });
     if (!authz.ok) {
-      // buildCheckedAuthFromApiKey maps null -> 403 (creator has no access, or
-      // the key's scopes exceed the creator's current permissions).
+      // buildCheckedAuthFromApiKey maps null -> 403 (creator/principal has no
+      // access, or the key's scopes exceed the current permission/scope ceiling).
       return null;
     }
     const allowedSiteIds = authz.allowedSiteIds;

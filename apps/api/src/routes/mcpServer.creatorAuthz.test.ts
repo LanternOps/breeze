@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { z as zod } from 'zod';
 import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
+import type { ApiKeyAuthorizationResult } from '../services/apiKeyAuthorization';
 
 // SR2-15 (core-auth-hardening, Task 3) regression: the MCP org-scope branch of
 // buildAuthFromApiKey now authorizes the human creator LIVE via the shared
@@ -48,6 +49,19 @@ const mocks = vi.hoisted(() => ({
     _auth: { allowedSiteIds?: string[]; canAccessSite: (s: string | null | undefined) => boolean },
   ) => null),
   executeTool: vi.fn(async () => JSON.stringify({ ok: true })),
+  // SR2-15 (Task 5): service-principal branch of buildAuthFromApiKey. Mocked
+  // (real authorizeHumanApiKeyCreator stays real above, exercised via the
+  // getUserPermissions mock) because the real implementation reads
+  // `service_principals` through the DB, which this file's `../db` mock
+  // (`db: {}`) has no select() to satisfy.
+  authorizeServicePrincipalKey: vi.fn(
+    async (_input: { principalId: string; scopes: string[] }): Promise<ApiKeyAuthorizationResult> => ({
+      ok: true,
+      permissions: null,
+      allowedSiteIds: undefined,
+      clampedScopes: _input.scopes,
+    }),
+  ),
 }));
 
 vi.mock('../services/tenantStatus', async (importOriginal) => {
@@ -58,6 +72,11 @@ vi.mock('../services/tenantStatus', async (importOriginal) => {
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
   return { ...actual, getUserPermissions: mocks.getUserPermissions };
+});
+
+vi.mock('../services/apiKeyAuthorization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/apiKeyAuthorization')>();
+  return { ...actual, authorizeServicePrincipalKey: mocks.authorizeServicePrincipalKey };
 });
 
 vi.mock('../services/aiGuardrails', () => ({
@@ -111,7 +130,7 @@ vi.mock('../services/mcpToolExecutionLedger', () => ({
   completeMcpToolExecutionLedger: async () => undefined,
 }));
 
-function mockApiKey(scopes: string[]) {
+function mockApiKey(scopes: string[], principal?: { principalType: string; principalId: string | null }) {
   vi.doMock('../middleware/apiKeyAuth', () => ({
     apiKeyAuthMiddleware: async (c: any, next: any) => {
       c.set('apiKey', {
@@ -123,6 +142,7 @@ function mockApiKey(scopes: string[]) {
         scopes,
         rateLimit: 1000,
         createdBy: 'creator-user',
+        ...(principal ?? {}),
       });
       c.set('apiKeyOrgId', 'org-1');
       await next();
@@ -131,8 +151,12 @@ function mockApiKey(scopes: string[]) {
   }));
 }
 
-async function callTool(scopes: string[], toolName: string) {
-  mockApiKey(scopes);
+async function callTool(
+  scopes: string[],
+  toolName: string,
+  principal?: { principalType: string; principalId: string | null },
+) {
+  mockApiKey(scopes, principal);
   const mod = await import('./mcpServer');
   return mod.mcpServerRoutes.request('/message', {
     method: 'POST',
@@ -153,6 +177,7 @@ describe('MCP org-scoped key: live scope re-clamp on top of #2510 null-deny (SR2
     mocks.getUserPermissions.mockClear();
     mocks.checkToolPermission.mockClear();
     mocks.executeTool.mockClear();
+    mocks.authorizeServicePrincipalKey.mockClear();
     delete process.env.IS_HOSTED;
   });
 
@@ -260,5 +285,72 @@ describe('MCP org-scoped key: live scope re-clamp on top of #2510 null-deny (SR2
     expect(res.status).toBe(403);
     expect(mocks.checkToolPermission).not.toHaveBeenCalled();
     expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+});
+
+// SR2-15 (Task 5): the MCP org-scope branch of buildAuthFromApiKey branches
+// on apiKey.principalType — a 'service' key is authorized against the
+// PRINCIPAL (authorizeServicePrincipalKey), never the human creator-permission
+// resolver above. This proves the branch is actually wired end-to-end through
+// the MCP request path (apiKeyAuthMiddleware's context -> buildAuthFromApiKey
+// -> tool dispatch), not just unit-tested in isolation.
+describe('MCP org-scoped key: service-principal branch (SR2-15 Task 5)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mocks.getActiveOrgTenant.mockClear();
+    mocks.getUserPermissions.mockClear();
+    mocks.checkToolPermission.mockClear();
+    mocks.executeTool.mockClear();
+    mocks.authorizeServicePrincipalKey.mockClear();
+    delete process.env.IS_HOSTED;
+  });
+
+  afterEach(() => {
+    vi.doUnmock('../middleware/apiKeyAuth');
+  });
+
+  it('dispatches a service-principal key via authorizeServicePrincipalKey, never the human resolver', async () => {
+    const res = await callTool(['ai:read'], 'list_devices', { principalType: 'service', principalId: 'principal-1' });
+
+    expect(res.status).toBe(200);
+    expect(mocks.authorizeServicePrincipalKey).toHaveBeenCalledWith({ principalId: 'principal-1', scopes: ['ai:read'] });
+    expect(mocks.getUserPermissions).not.toHaveBeenCalled();
+    expect(mocks.checkToolPermission).toHaveBeenCalled();
+  });
+
+  // Guard-bite (a): a disabled principal's service key is rejected — proven
+  // here at the MCP transport boundary (403), with the DENY sourced from the
+  // resolver's own fail-closed logic (unit-proven in
+  // apiKeyAuthorization.test.ts; this test proves the WIRING).
+  it('rejects (403) when authorizeServicePrincipalKey denies (disabled principal / fail-closed)', async () => {
+    mocks.authorizeServicePrincipalKey.mockResolvedValueOnce({ ok: false, reason: 'no_membership' });
+
+    const res = await callTool(['ai:read'], 'list_devices', { principalType: 'service', principalId: 'principal-disabled' });
+
+    expect(res.status).toBe(403);
+    expect(mocks.checkToolPermission).not.toHaveBeenCalled();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  // Guard-bite (b): a service key whose stored scope exceeds the principal's
+  // current scopes is rejected.
+  it('rejects (403) when authorizeServicePrincipalKey denies for scope_exceeds_current_permissions', async () => {
+    mocks.authorizeServicePrincipalKey.mockResolvedValueOnce({ ok: false, reason: 'scope_exceeds_current_permissions' });
+
+    const res = await callTool(['ai:read', 'ai:execute'], 'devices_execute_script', {
+      principalType: 'service',
+      principalId: 'principal-narrowed',
+    });
+
+    expect(res.status).toBe(403);
+    expect(mocks.checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('a human key (principalType absent, the default) is unaffected — still routes through authorizeHumanApiKeyCreator/getUserPermissions', async () => {
+    const res = await callTool(['ai:read'], 'list_devices');
+
+    expect(res.status).toBe(200);
+    expect(mocks.getUserPermissions).toHaveBeenCalled();
+    expect(mocks.authorizeServicePrincipalKey).not.toHaveBeenCalled();
   });
 });

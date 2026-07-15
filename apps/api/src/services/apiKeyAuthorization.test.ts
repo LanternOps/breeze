@@ -12,9 +12,28 @@ vi.mock('./permissions', async (importOriginal) => {
   };
 });
 
-import { authorizeHumanApiKeyCreator } from './apiKeyAuthorization';
+vi.mock('../db', () => ({
+  db: { select: vi.fn() },
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock('../db/schema', () => ({
+  servicePrincipals: { id: 'id', status: 'status', scopes: 'scopes' },
+}));
+
+import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from './apiKeyAuthorization';
 import { getUserPermissions } from './permissions';
+import { db } from '../db';
 import type { UserPermissions } from './permissions';
+
+const buildSelectMock = (result: unknown[]) =>
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(result),
+      }),
+    }),
+  } as any);
 
 // A creator who holds devices:read + devices:write on the org axis.
 const fullPerms: UserPermissions = {
@@ -70,5 +89,65 @@ describe('authorizeHumanApiKeyCreator', () => {
       createdBy: 'user-1', orgId: 'org-1', partnerId: 'partner-1', scopes: ['devices:read'],
     });
     expect(res).toEqual({ ok: false, reason: 'no_membership' });
+  });
+});
+
+describe('authorizeServicePrincipalKey', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('authorizes when the principal is active and the stored scopes are a subset of its current scopes', async () => {
+    buildSelectMock([{ status: 'active', scopes: ['ai:read', 'devices:read'] }]);
+    const res = await authorizeServicePrincipalKey({ principalId: 'principal-1', scopes: ['ai:read'] });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.clampedScopes).toEqual(['ai:read']);
+      expect(res.allowedSiteIds).toBeUndefined();
+      expect(res.permissions).toBeNull();
+    }
+  });
+
+  // Guard-bite (a): a disabled principal's key is rejected.
+  it('DENIES (no_membership) when the principal status is not active (disable-cascade gate)', async () => {
+    buildSelectMock([{ status: 'disabled', scopes: ['ai:read'] }]);
+    const res = await authorizeServicePrincipalKey({ principalId: 'principal-1', scopes: ['ai:read'] });
+    expect(res).toEqual({ ok: false, reason: 'no_membership' });
+  });
+
+  // Guard-bite (d): fail-closed on a missing/errored principal read.
+  it('DENIES (no_membership) when the principal row is missing', async () => {
+    buildSelectMock([]);
+    const res = await authorizeServicePrincipalKey({ principalId: 'principal-missing', scopes: ['ai:read'] });
+    expect(res).toEqual({ ok: false, reason: 'no_membership' });
+  });
+
+  it('FAILS CLOSED (no_membership) when the principal read THROWS (DB/RLS error), never authorizing', async () => {
+    vi.mocked(db.select).mockImplementation(() => {
+      throw new Error('RLS/DB down');
+    });
+    const res = await authorizeServicePrincipalKey({ principalId: 'principal-1', scopes: ['ai:read'] });
+    expect(res).toEqual({ ok: false, reason: 'no_membership' });
+  });
+
+  // Guard-bite (b): a service key's stored scope not covered by the
+  // principal's CURRENT scopes is rejected — this is a plain subset check
+  // against the principal's own ceiling, never a human permission lookup.
+  it('DENIES (scope_exceeds_current_permissions) when a stored scope is not in the principal\'s current scopes', async () => {
+    buildSelectMock([{ status: 'active', scopes: ['ai:read'] }]);
+    const res = await authorizeServicePrincipalKey({
+      principalId: 'principal-1',
+      scopes: ['ai:read', 'ai:execute_admin'],
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toBe('scope_exceeds_current_permissions');
+      expect(res.detail).toMatchObject({ exceededScopes: ['ai:execute_admin'] });
+    }
+  });
+
+  it('reads the principal under withSystemDbAccessContext (auth path runs before request RLS context)', async () => {
+    const { withSystemDbAccessContext } = await import('../db');
+    buildSelectMock([{ status: 'active', scopes: ['ai:read'] }]);
+    await authorizeServicePrincipalKey({ principalId: 'principal-1', scopes: ['ai:read'] });
+    expect(withSystemDbAccessContext).toHaveBeenCalled();
   });
 });
