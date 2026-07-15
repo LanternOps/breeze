@@ -1146,6 +1146,27 @@ ssoRoutes.patch(
   const issuerChanged = body.issuer !== undefined && body.issuer !== existing.issuer;
   const rediscovered: Partial<typeof ssoProviders.$inferInsert> = {};
   if (issuerChanged && (body.type ?? existing.type) === 'oidc') {
+    // The web form resubmits every field, so a blanked Issuer arrives as
+    // issuer:'' → null (nullableOptional). An OIDC provider cannot function
+    // without an issuer, and discoverOIDCConfig(null) would null-deref into an
+    // opaque `issuer "null"` 400. Reject clearly before attempting discovery.
+    if (!body.issuer) {
+      writeRouteAudit(c, {
+        orgId: existing.orgId,
+        action: 'sso.provider.update.rejected',
+        resourceType: 'sso_provider',
+        resourceId: existing.id,
+        details: {
+          reason: 'oidc_issuer_cleared',
+          partnerId: existing.partnerId,
+        },
+      });
+      return c.json({
+        error: 'An OIDC provider requires an Issuer URL; it cannot be cleared. '
+          + 'To remove this provider, delete it instead.',
+        code: 'oidc_issuer_required',
+      }, 400);
+    }
     try {
       const discovery = await discoverOIDCConfig(body.issuer!, {
         allowPrivateNetwork: selfHostAllowsPrivateNetwork()

@@ -746,6 +746,34 @@ describe('sso routes', () => {
       expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ defaultRoleId: null }));
     });
 
+    it('rejects clearing the issuer on an OIDC provider with a clear 400, not a null-deref discovery crash', async () => {
+      // The web edit form resubmits every field, so blanking the Issuer sends
+      // issuer:'' -> null. issuerChanged becomes true and, for an OIDC provider,
+      // the old code called discoverOIDCConfig(null) -> issuer.replace on null
+      // -> TypeError -> opaque 400 'OIDC discovery failed for issuer "null"'.
+      // An OIDC provider requires an issuer; reject clearly before discovery.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { id: PROVIDER_UUID, orgId: ORG_UUID, partnerId: null, type: 'oidc', issuer: 'https://issuer.example.com' }
+            ])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/sso/providers/${PROVIDER_UUID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issuer: '' })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe('oidc_issuer_required');
+      expect(discoverOIDCConfig).not.toHaveBeenCalled();
+    });
+
     it('clears a partner-owned provider default role without re-running the partner-role permission check', async () => {
       // existing.partnerId is truthy — the update route's role-ceiling check
       // only fires `if (existing.partnerId && body.defaultRoleId)`. Clearing
