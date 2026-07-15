@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
@@ -188,6 +189,140 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
     createdBy: actor.userId,
   }).returning();
   return row!;
+}
+
+/**
+ * Deep-copy an accessible quote into a new draft. Images and every aggregate
+ * relationship receive fresh IDs because image rendering is constrained to
+ * image.quote_id and line items can reference blocks, images, and parent lines.
+ * Lifecycle, document, seller/customer snapshots, and expiry are intentionally
+ * reset so an old accepted/expired quote is safe to revise and send again.
+ */
+export async function cloneQuote(id: string, actor: QuoteActor) {
+  const { quote: source, blocks, lines } = await getQuote(id, actor);
+  const images = await db.select().from(quoteImages).where(eq(quoteImages.quoteId, id));
+
+  const year = new Date().getUTCFullYear();
+  const counter = await allocateQuoteCounter(source.partnerId, year);
+  const quoteNumber = formatQuoteNumber('Q', year, counter);
+  const quoteId = randomUUID();
+
+  const imageIds = new Map(images.map((image) => [image.id, randomUUID()]));
+  const blockIds = new Map(blocks.map((block) => [block.id, randomUUID()]));
+  const lineIds = new Map(lines.map((line) => [line.id, randomUUID()]));
+  const totals = computeQuoteTotals(
+    lines as QuoteLineForMath[],
+    source.taxRate ? parseFloat(source.taxRate) : null,
+    toQuoteDepositConfig(source.depositType, source.depositPercent),
+  );
+
+  return db.transaction(async (tx) => {
+    const [cloned] = await tx.insert(quotes).values({
+      id: quoteId,
+      partnerId: source.partnerId,
+      orgId: source.orgId,
+      siteId: source.siteId,
+      quoteNumber,
+      title: source.title,
+      status: 'draft',
+      currencyCode: source.currencyCode,
+      issueDate: null,
+      expiryDate: null,
+      acceptedAt: null,
+      declinedAt: null,
+      convertedAt: null,
+      subtotal: totals.subtotal,
+      taxRate: source.taxRate,
+      taxTotal: totals.taxTotal,
+      total: totals.total,
+      oneTimeTotal: totals.oneTimeTotal,
+      monthlyRecurringTotal: totals.monthlyRecurringTotal,
+      annualRecurringTotal: totals.annualRecurringTotal,
+      depositType: source.depositType,
+      depositPercent: source.depositPercent,
+      depositAmount: totals.depositDueTotal,
+      billToName: source.billToName,
+      billToAddress: null,
+      billToTaxId: null,
+      introNotes: source.introNotes,
+      terms: source.terms,
+      sellerSnapshot: null,
+      termsAndConditions: source.termsAndConditions,
+      declineReason: null,
+      convertedInvoiceId: null,
+      pdfDocumentRef: null,
+      pdfSha256: null,
+      sentAt: null,
+      firstViewedAt: null,
+      viewedAt: null,
+      createdBy: actor.userId,
+    }).returning();
+
+    if (images.length > 0) {
+      await tx.insert(quoteImages).values(images.map((image) => ({
+        id: imageIds.get(image.id)!,
+        quoteId,
+        orgId: source.orgId,
+        imageData: image.imageData,
+        mime: image.mime,
+        byteSize: image.byteSize,
+        sha256: image.sha256,
+      })));
+    }
+
+    if (blocks.length > 0) {
+      await tx.insert(quoteBlocks).values(blocks.map((block) => {
+        let content = block.content;
+        if (block.blockType === 'image' && content && typeof content === 'object' && !Array.isArray(content)) {
+          const sourceImageId = (content as Record<string, unknown>).imageId;
+          const clonedImageId = typeof sourceImageId === 'string' ? imageIds.get(sourceImageId) : undefined;
+          if (!clonedImageId) {
+            throw new QuoteServiceError('Quote image could not be cloned', 409, 'IMAGE_NOT_FOUND');
+          }
+          content = { ...(content as Record<string, unknown>), imageId: clonedImageId };
+        }
+        return {
+          id: blockIds.get(block.id)!,
+          quoteId,
+          orgId: source.orgId,
+          blockType: block.blockType,
+          content,
+          sortOrder: block.sortOrder,
+        };
+      }));
+    }
+
+    if (lines.length > 0) {
+      await tx.insert(quoteLines).values(lines.map((line) => ({
+        id: lineIds.get(line.id)!,
+        quoteId,
+        blockId: line.blockId ? blockIds.get(line.blockId) ?? null : null,
+        orgId: source.orgId,
+        sourceType: line.sourceType,
+        catalogItemId: line.catalogItemId,
+        parentLineId: line.parentLineId ? lineIds.get(line.parentLineId) ?? null : null,
+        name: line.name,
+        description: line.description,
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+        taxable: line.taxable,
+        customerVisible: line.customerVisible,
+        lineTotal: line.lineTotal,
+        recurrence: line.recurrence,
+        termMonths: line.termMonths,
+        billingFrequency: line.billingFrequency,
+        unitCost: line.unitCost,
+        depositEligible: line.depositEligible,
+        itemType: line.itemType,
+        sku: line.sku,
+        partNumber: line.partNumber,
+        imageId: line.imageId ? imageIds.get(line.imageId) ?? null : null,
+        sortOrder: line.sortOrder,
+      })));
+    }
+
+    return cloned!;
+  });
 }
 
 export async function getQuote(id: string, actor: QuoteActor) {

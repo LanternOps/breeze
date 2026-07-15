@@ -526,6 +526,11 @@
       }
     },
     "actions": {
+      "cloneError": "Impossible de dupliquer le devis.",
+      "cloneQuote": "Dupliquer le devis",
+      "cloneSavingTitle": "Attendez la fin de l'enregistrement avant de dupliquer.",
+      "cloneSuccess": "Devis dupliqué.",
+      "cloning": "Duplication…",
       "deleteConfirm": {
         "message": "Cette action supprime définitivement le devis brouillon. Elle est irréversible.",
         "title": "Supprimer le devis brouillon"

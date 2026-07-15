@@ -10,7 +10,7 @@ import {
   reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema,
 } from '@breeze/shared';
 import {
-  createQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
+  createQuote, cloneQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
   reorderBlocks, reorderLines, moveLineToBlock,
 } from '../../services/quoteService';
@@ -47,6 +47,10 @@ quoteCrudRoutes.get('/', scopes, readPerm, zValidator('query', listQuotesQuerySc
 });
 quoteCrudRoutes.post('/', scopes, writePerm, zValidator('json', createQuoteSchema), async (c) => {
   try { return c.json({ data: await createQuote(c.req.valid('json'), quoteActorFrom(c)) }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idParam), async (c) => {
+  try { return c.json({ data: await cloneQuote(c.req.valid('param').id, quoteActorFrom(c)) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {

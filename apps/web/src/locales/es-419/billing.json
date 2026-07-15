@@ -526,6 +526,11 @@
       }
     },
     "actions": {
+      "cloneError": "No se pudo clonar la cotización.",
+      "cloneQuote": "Clonar cotización",
+      "cloneSavingTitle": "Espere a que se guarden los cambios antes de clonar.",
+      "cloneSuccess": "Cotización clonada.",
+      "cloning": "Clonando…",
       "deleteConfirm": {
         "message": "Esto elimina permanentemente el borrador de la cotización. Esto no se puede deshacer.",
         "title": "Eliminar borrador de cotización"

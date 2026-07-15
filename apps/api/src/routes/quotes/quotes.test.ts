@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the service layer — routes are thin; we assert wiring, validation, error mapping.
 vi.mock('../../services/quoteService', () => ({
   createQuote: vi.fn(),
+  cloneQuote: vi.fn(),
   getQuote: vi.fn(),
   listQuotes: vi.fn(),
   updateQuote: vi.fn(),
@@ -108,6 +109,33 @@ describe('quote crud + lines routes', () => {
     const body = await res.json();
     expect(body.data.id).toBe(QUOTE_ID);
     expect(svc.createQuote).toHaveBeenCalledOnce();
+  });
+
+  it('POST /:id/clone clones a quote into a new draft', async () => {
+    (svc.cloneQuote as any).mockResolvedValue({ id: BLOCK_ID, status: 'draft' });
+    const res = await app().request(`/${QUOTE_ID}/clone`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({ id: BLOCK_ID, status: 'draft' });
+    expect(svc.cloneQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+  });
+
+  it('POST /:id/clone rejects an invalid quote id before calling the service', async () => {
+    const res = await app().request('/not-a-uuid/clone', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(svc.cloneQuote).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/clone is blocked by the write-permission gate', async () => {
+    const { HTTPException } = await import('hono/http-exception');
+    gate.permGate = async () => { throw new HTTPException(403, { message: 'Permission denied' }); };
+
+    const res = await app().request(`/${QUOTE_ID}/clone`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(svc.cloneQuote).not.toHaveBeenCalled();
   });
 
   it('POST / rejects an invalid body (non-UUID orgId → 400, no service call)', async () => {

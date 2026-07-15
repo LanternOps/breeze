@@ -526,6 +526,11 @@
       }
     },
     "actions": {
+      "cloneError": "Das Angebot konnte nicht dupliziert werden.",
+      "cloneQuote": "Angebot duplizieren",
+      "cloneSavingTitle": "Warten Sie vor dem Duplizieren, bis die Änderungen gespeichert sind.",
+      "cloneSuccess": "Angebot dupliziert.",
+      "cloning": "Wird dupliziert…",
       "deleteConfirm": {
         "message": "Dadurch wird der Angebotsentwurf dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
         "title": "Angebotsentwurf löschen"

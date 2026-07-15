@@ -526,6 +526,11 @@
       }
     },
     "actions": {
+      "cloneError": "Não foi possível clonar a cotação.",
+      "cloneQuote": "Clonar cotação",
+      "cloneSavingTitle": "Aguarde até que as alterações sejam salvas antes de clonar.",
+      "cloneSuccess": "Cotação clonada.",
+      "cloning": "Clonando…",
       "deleteConfirm": {
         "message": "Esta ação exclui permanentemente a cotação em rascunho. Não é possível desfazê-la.",
         "title": "Excluir cotação em rascunho"

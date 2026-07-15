@@ -5,7 +5,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
-import { deleteQuote, sendQuote } from '../../../lib/api/quotes';
+import { cloneQuote, deleteQuote, sendQuote } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { useQuotePdfDownload } from './useQuoteImage';
 import { type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
@@ -47,6 +47,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const [sendOpen, setSendOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [cloning, setCloning] = useState(false);
   const refresh = useCallback(() => onChanged?.(), [onChanged]);
 
   // An empty quote (no blocks, no lines) can't be sent.
@@ -100,6 +101,24 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     }
   }, [deleting, quote.id, t]);
 
+  const clone = useCallback(async () => {
+    if (cloning || savePending) return;
+    setCloning(true);
+    try {
+      const result = await runAction<{ data: { id: string } }>({
+        request: () => cloneQuote(quote.id),
+        errorFallback: t('quotes.actions.cloneError'),
+        successMessage: t('quotes.actions.cloneSuccess'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      if (result?.data?.id) void navigateTo(`/billing/quotes/${result.data.id}`);
+    } catch (err) {
+      handleActionError(err, t('quotes.actions.cloneError'));
+    } finally {
+      setCloning(false);
+    }
+  }, [cloning, quote.id, savePending, t]);
+
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
   // sit in a row. The class fragments below are the only thing the variant changes.
@@ -109,10 +128,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     : 'inline-flex w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium';
 
   const canSend = can('quotes', 'send') && isDraft;
+  const canClone = can('quotes', 'write');
   const canDelete = can('quotes', 'write') && isDraft;
 
   // Nothing to show (e.g. a viewer on an issued quote) — render no empty container.
-  if (!canSend && !can('quotes', 'read') && !canDelete) return null;
+  if (!canSend && !can('quotes', 'read') && !canClone && !canDelete) return null;
 
   return (
     <>
@@ -141,6 +161,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             className={`${btnBase} bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50`}
           >
             {sending ? t('quotes.actions.sending') : savePending ? t('common:states.saving') : t('quotes.actions.sendProposal')}
+          </button>
+        )}
+        {canClone && (
+          <button
+            type="button"
+            onClick={() => void clone()}
+            disabled={cloning || savePending}
+            title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
+            data-testid="quote-clone"
+            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+          >
+            {cloning ? t('quotes.actions.cloning') : t('quotes.actions.cloneQuote')}
           </button>
         )}
         {/* PDF download is a read affordance (quotes has no dedicated export

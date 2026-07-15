@@ -69,6 +69,10 @@ export function createQuote(body: CreateQuoteInput): Promise<Response> {
   });
 }
 
+export function cloneQuote(id: string): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/clone`, { method: 'POST' });
+}
+
 export function updateQuote(id: string, body: UpdateQuoteInput): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}`, {
     method: 'PATCH',

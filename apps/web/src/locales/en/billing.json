@@ -526,6 +526,11 @@
       }
     },
     "actions": {
+      "cloneError": "Could not clone the quote.",
+      "cloneQuote": "Clone quote",
+      "cloneSavingTitle": "Wait for changes to finish saving before cloning.",
+      "cloneSuccess": "Quote cloned.",
+      "cloning": "Cloning…",
       "deleteConfirm": {
         "message": "This permanently deletes the draft quote. This can't be undone.",
         "title": "Delete draft quote"
