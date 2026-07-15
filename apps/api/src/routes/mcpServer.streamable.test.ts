@@ -68,12 +68,25 @@ vi.mock('../db/schema', () => ({
 // buildAuthFromApiKey now calls getUserPermissions for org keys (to inherit the
 // creator's site allowlist). Stub it to an unrestricted org perms object so the
 // transport tests don't need to model the permissions DB queries.
+//
+// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now
+// re-validates the mocked key's stored scopes (default ['ai:read']) against
+// these permissions via authorizeHumanApiKeyCreator. These are pure transport
+// tests, not scope-delegation tests, so the creator here must actually hold
+// the devices/alerts/scripts/automations read grants 'ai:read' requires —
+// otherwise every request in this file would be denied by the NEW re-clamp
+// before ever reaching the transport behavior under test.
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
   return {
     ...actual,
     getUserPermissions: vi.fn(async () => ({
-      permissions: [],
+      permissions: [
+        { resource: 'devices', action: 'read' },
+        { resource: 'alerts', action: 'read' },
+        { resource: 'scripts', action: 'read' },
+        { resource: 'automations', action: 'read' },
+      ],
       partnerId: null,
       orgId: 'org-1',
       roleId: 'role-1',

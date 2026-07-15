@@ -33,6 +33,7 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
 import { getUserPermissions } from '../services/permissions';
+import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import { resolveServerUrl } from '../services/recoveryBootstrap';
 import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToolsSiteScope';
@@ -463,6 +464,7 @@ async function buildCheckedAuthFromApiKey(
     partnerId: apiKey.partnerId ?? null,
     name: apiKey.name,
     createdBy: apiKey.createdBy,
+    scopes: apiKey.scopes,
   });
 
   // SR2-15 fail-closed: buildAuthFromApiKey returns null when the key's creator
@@ -1837,6 +1839,7 @@ async function buildAuthFromApiKey(apiKey: {
   partnerId: string | null;
   name: string;
   createdBy: string;
+  scopes: string[];
 }): Promise<AuthContext | null> {
   const user = {
     id: apiKey.createdBy,
@@ -1863,29 +1866,31 @@ async function buildAuthFromApiKey(apiKey: {
     // unreadable. The key remains org-scoped (orgCondition pins to this org).
     const partnerId =
       apiKey.partnerId ?? (await getActiveOrgTenant(apiKey.orgId))?.partnerId ?? null;
-    const creatorPerms = await getUserPermissions(apiKey.createdBy, {
-      partnerId: partnerId || undefined,
+    // SR2-15: LIVE-authorize the human creator via the shared resolver — it does
+    // BOTH the null-perms fail-closed deny (#2510) AND the scope re-clamp this
+    // task adds. The old code read `creatorPerms?.allowedSiteIds` off a raw
+    // getUserPermissions() call: a null read collapsed to `undefined`, and
+    // siteAccessCheck(undefined) means "full access to EVERY site in the org" —
+    // the same value a legitimate full-access admin gets. #2510 already closed
+    // that hole with an explicit null-check. What #2510 did NOT do: re-validate
+    // that the key's STORED scopes are still backed by the creator's CURRENT
+    // permissions. A creator whose role was downgraded after the key was minted
+    // (e.g. admin -> read-only) would still have their key served with the
+    // original, now-stale, broader scopes — the MCP path never re-clamped. A
+    // key delegates its creator's authority; it must never outlive a reduction
+    // in that authority, any more than it may outlive its total loss.
+    const authz = await authorizeHumanApiKeyCreator({
+      createdBy: apiKey.createdBy,
       orgId: apiKey.orgId,
+      partnerId,
+      scopes: apiKey.scopes ?? [],
     });
-    // SR2-15 fail-closed: getUserPermissions returns null when the creating user
-    // has NO resolvable authority for this org — neither an organization_users
-    // role on the org NOR a partner_users role on the owning partner (e.g. a
-    // still-`active` user stripped of the membership this key derives from). We
-    // must NOT let that null collapse through the old `creatorPerms?.allowedSiteIds`
-    // into `undefined`, which siteAccessCheck() reads as "full access to EVERY
-    // site in the org" — the identical value a legitimate full-access admin gets.
-    // A key delegates its creator's authority; with none to delegate, the key has
-    // none. Reject it (buildCheckedAuthFromApiKey maps null → 403).
-    //
-    // Unaffected: a legitimate full-access admin returns a NON-null perms object
-    // whose allowedSiteIds is undefined (state 2) — still all-sites; a
-    // site-restricted creator returns a non-null object with an explicit list
-    // (state 3) — restriction preserved. A partner-admin-minted key resolves via
-    // the partner axis to a non-null object, so those keep working too.
-    if (!creatorPerms) {
+    if (!authz.ok) {
+      // buildCheckedAuthFromApiKey maps null -> 403 (creator has no access, or
+      // the key's scopes exceed the creator's current permissions).
       return null;
     }
-    const allowedSiteIds = creatorPerms.allowedSiteIds;
+    const allowedSiteIds = authz.allowedSiteIds;
     return {
       user,
       token: {} as AuthContext['token'],
@@ -1901,6 +1906,28 @@ async function buildAuthFromApiKey(apiKey: {
   }
 
   // Partner-scope caller (OAuth bearer token, or API key with no orgId).
+  //
+  // SR2-15: this branch had no explicit null-perms deny — an off-boarded
+  // partner admin's bearer key was only "data-starved" (accessibleOrgIds
+  // resolves to [] via resolvePartnerAccessibleOrgIds, which reads
+  // partner_users fresh and returns [] when the membership row is gone),
+  // never outright rejected. That's an unsatisfiable org filter, not a
+  // denial: tools/list still succeeds and the caller looks authenticated.
+  // Add an explicit reject so an off-boarded partner admin's key is denied,
+  // matching the org-scope branch's fail-closed behavior above.
+  if (apiKey.partnerId) {
+    let partnerPerms: Awaited<ReturnType<typeof getUserPermissions>>;
+    try {
+      partnerPerms = await getUserPermissions(apiKey.createdBy, { partnerId: apiKey.partnerId });
+    } catch {
+      // FAIL CLOSED: a DB/RLS error is indistinguishable from "no access".
+      return null;
+    }
+    if (!partnerPerms) {
+      return null;
+    }
+  }
+
   // Resolve the concrete org allowlist so orgCondition / canAccessOrg are
   // consistent and defense-in-depth filtering works alongside RLS.
   const accessibleOrgIds = apiKey.partnerId

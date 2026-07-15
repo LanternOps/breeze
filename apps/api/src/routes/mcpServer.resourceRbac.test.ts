@@ -52,20 +52,41 @@ function mockDb(rows: any[]) {
   }));
 }
 
+// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now calls
+// getUserPermissions ONCE via authorizeHumanApiKeyCreator to re-validate the
+// API key's coarse 'ai:read' scope (API_KEY_SCOPE_POLICIES['ai:read'] bundles
+// devices+alerts+scripts+automations read as a single unit — ALL FOUR are
+// required or the whole scope is denied) BEFORE resources/read's own
+// fine-grained checkPermissionRequirement runs its OWN, SEPARATE
+// getUserPermissions call. This suite exists to test that fine-grained gate
+// in isolation (MCP-OAUTH-03), including states like "role lacking
+// scripts.read" that are otherwise impossible to reach with a valid 'ai:read'
+// key scope. So: the FIRST getUserPermissions call (the coarse ceiling) gets
+// a full baseline permission set — the creator genuinely holds 'ai:read' —
+// and every SUBSEQUENT call (the fine-grained per-resource check inside
+// resources/read) returns the scenario's real `perms`, preserving each
+// test's actual premise without loosening any resources/read assertion.
+const FULL_AI_READ_BASELINE = [
+  { resource: 'devices', action: 'read' },
+  { resource: 'alerts', action: 'read' },
+  { resource: 'scripts', action: 'read' },
+  { resource: 'automations', action: 'read' },
+];
+
 function mockPermissions(perms: { resource: string; action: string }[]) {
   vi.doMock('../services/permissions', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../services/permissions')>();
-    return {
-      ...actual,
-      getUserPermissions: vi.fn(async () => ({
-        permissions: perms,
-        partnerId: null,
-        orgId: 'org-1',
-        roleId: 'role-1',
-        scope: 'organization' as const,
-        allowedSiteIds: undefined,
-      })),
-    };
+    const buildResult = (permissions: { resource: string; action: string }[]) => ({
+      permissions,
+      partnerId: null,
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'organization' as const,
+      allowedSiteIds: undefined,
+    });
+    const getUserPermissions = vi.fn(async () => buildResult(perms));
+    getUserPermissions.mockResolvedValueOnce(buildResult(FULL_AI_READ_BASELINE));
+    return { ...actual, getUserPermissions };
   });
 }
 

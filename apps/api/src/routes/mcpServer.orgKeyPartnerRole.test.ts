@@ -16,10 +16,19 @@ const mocks = vi.hoisted(() => ({
   // that belongs to a partner (the fix) vs. an org with no usable partner.
   getActiveOrgTenant: vi.fn(async (_orgId: string): Promise<{ orgId: string; partnerId: string } | null> => null),
   // Spy so we can assert the partnerId buildAuthFromApiKey threads into role
-  // resolution. Returns a benign org-perms object (its shape is irrelevant to
-  // these assertions; checkToolPermission is stubbed below).
+  // resolution. Returns a benign org-perms object; checkToolPermission is
+  // stubbed below, but SR2-15 (Task 3) now also routes this through
+  // authorizeHumanApiKeyCreator's scope re-clamp, so the mocked key's
+  // scopes: ['ai:read'] must actually be backed by these permissions or every
+  // "still works" assertion in this suite gets denied by the NEW guard rather
+  // than exercising the partner-role-resolution behavior under test.
   getUserPermissions: vi.fn(async (_userId: string, _ctx: { partnerId?: string; orgId?: string }) => ({
-    permissions: [],
+    permissions: [
+      { resource: 'devices', action: 'read' },
+      { resource: 'alerts', action: 'read' },
+      { resource: 'scripts', action: 'read' },
+      { resource: 'automations', action: 'read' },
+    ],
     partnerId: null,
     orgId: 'org-1',
     roleId: 'role-1',

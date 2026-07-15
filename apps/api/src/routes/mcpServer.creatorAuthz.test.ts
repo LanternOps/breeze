@@ -1,42 +1,38 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { z as zod } from 'zod';
 
-// SR2-15 (core-auth-hardening) regression: an org-scoped MCP API key inherits
-// its creator's site-axis restriction via getUserPermissions(...).allowedSiteIds.
+// SR2-15 (core-auth-hardening, Task 3) regression: the MCP org-scope branch of
+// buildAuthFromApiKey now authorizes the human creator LIVE via the shared
+// authorizeHumanApiKeyCreator() resolver instead of a raw getUserPermissions()
+// call. #2510 already fixed the null-perms fail-open (creatorPermsNull suite).
+// THIS suite pins the delta #2510 did NOT cover: the resolver ALSO re-clamps
+// the key's STORED scopes against the creator's CURRENT permissions.
 //
-// THE FAIL-OPEN this suite pins closed: when the creator has been stripped of the
-// membership the key derives from — they're still `status='active'`, so PR 1's
-// creator-status gate passes — getUserPermissions returns **null**. The old code
-// read `creatorPerms?.allowedSiteIds`, so null collapsed to `undefined`, and
-// siteAccessCheck(undefined) means "full access to EVERY site in the org". A key
-// whose creator has NO authority got unrestricted org+site access.
-//
-// Fix: buildAuthFromApiKey returns null on null perms → buildCheckedAuthFromApiKey
-// denies with 403 (fail CLOSED). A legitimate full-access admin (non-null perms,
-// allowedSiteIds undefined) and a site-restricted creator (explicit list) are
-// unaffected.
+// The guard-bite this suite adds: a creator whose live permissions have been
+// reduced below what the key's stored scopes require must be DENIED, not
+// served with the key's original (now stale) scope grant. Before this task,
+// buildAuthFromApiKey only null-checked getUserPermissions() and used
+// creatorPerms.allowedSiteIds — it never re-ran scope delegation, so a key
+// minted while its creator was e.g. an org admin kept working at full
+// ai:execute strength even after that creator was demoted to read-only.
 
 const mocks = vi.hoisted(() => ({
   getActiveOrgTenant: vi.fn(async (_orgId: string): Promise<{ orgId: string; partnerId: string } | null> => ({
     orgId: 'org-1',
     partnerId: 'partner-1',
   })),
-  // Default: a legitimate FULL-ACCESS org admin (non-null, allowedSiteIds
-  // undefined). Individual tests override with mockResolvedValueOnce.
-  //
-  // SR2-15 (scope re-clamp, this task): buildAuthFromApiKey's org branch now
-  // routes through authorizeHumanApiKeyCreator, which re-validates the key's
-  // stored scopes against these live permissions. The mocked key below carries
-  // scope 'ai:read' (API_KEY_SCOPE_POLICIES['ai:read'] = devices.read,
-  // alerts.read, scripts.read, automations.read), so the default perms object
-  // must actually hold those grants or every "still works" assertion in this
-  // suite would be denied by the NEW re-clamp guard rather than by the
-  // null-perms behavior this suite exists to pin.
+  // Default: a legitimate creator whose live permissions cover devices +
+  // alerts + scripts + automations read/write/execute — i.e. enough to back
+  // every scope this suite's keys carry. Individual tests override with
+  // mockResolvedValueOnce to model a REDUCED creator.
   getUserPermissions: vi.fn(async (_userId: string, _ctx: { partnerId?: string; orgId?: string }) => ({
     permissions: [
       { resource: 'devices', action: 'read' },
+      { resource: 'devices', action: 'write' },
+      { resource: 'devices', action: 'execute' },
       { resource: 'alerts', action: 'read' },
       { resource: 'scripts', action: 'read' },
+      { resource: 'scripts', action: 'execute' },
       { resource: 'automations', action: 'read' },
     ],
     partnerId: null,
@@ -45,8 +41,6 @@ const mocks = vi.hoisted(() => ({
     scope: 'organization' as const,
     allowedSiteIds: undefined as string[] | undefined,
   })),
-  // Capturing stub: 3rd arg is the full AuthContext handed to the RBAC gate, so
-  // we can inspect allowedSiteIds / canAccessSite. Returns null = allow.
   checkToolPermission: vi.fn(async (
     _toolName: string,
     _input: unknown,
@@ -74,6 +68,7 @@ vi.mock('../services/aiGuardrails', () => ({
 vi.mock('../services/aiTools', () => ({
   getToolDefinitions: () => [
     { name: 'list_devices', description: 'list', inputSchema: zod.object({}).passthrough() },
+    { name: 'devices_execute_script', description: 'execute a script on a device', inputSchema: zod.object({}).passthrough() },
   ],
   executeTool: mocks.executeTool,
   getToolTier: () => 1,
@@ -115,7 +110,7 @@ vi.mock('../services/mcpToolExecutionLedger', () => ({
   completeMcpToolExecutionLedger: async () => undefined,
 }));
 
-function mockApiKey() {
+function mockApiKey(scopes: string[]) {
   vi.doMock('../middleware/apiKeyAuth', () => ({
     apiKeyAuthMiddleware: async (c: any, next: any) => {
       c.set('apiKey', {
@@ -124,7 +119,7 @@ function mockApiKey() {
         partnerId: null,
         name: 'test',
         keyPrefix: 'brz_test',
-        scopes: ['ai:read'],
+        scopes,
         rateLimit: 1000,
         createdBy: 'creator-user',
       });
@@ -135,8 +130,8 @@ function mockApiKey() {
   }));
 }
 
-async function callListDevices() {
-  mockApiKey();
+async function callTool(scopes: string[], toolName: string) {
+  mockApiKey(scopes);
   const mod = await import('./mcpServer');
   return mod.mcpServerRoutes.request('/message', {
     method: 'POST',
@@ -145,12 +140,12 @@ async function callListDevices() {
       jsonrpc: '2.0',
       id: 1,
       method: 'tools/call',
-      params: { name: 'list_devices', arguments: {} },
+      params: { name: toolName, arguments: {} },
     }),
   });
 }
 
-describe('MCP org-scoped key: creator perms fail closed on null (SR2-15)', () => {
+describe('MCP org-scoped key: live scope re-clamp on top of #2510 null-deny (SR2-15)', () => {
   beforeEach(() => {
     vi.resetModules();
     mocks.getActiveOrgTenant.mockClear();
@@ -164,58 +159,52 @@ describe('MCP org-scoped key: creator perms fail closed on null (SR2-15)', () =>
     vi.doUnmock('../middleware/apiKeyAuth');
   });
 
-  it('DENIES the request (403) when getUserPermissions returns null (creator stripped of membership)', async () => {
-    // Creator is still active (PR 1 gate passes) but has NO org role and NO
-    // partner role → getUserPermissions returns null.
-    mocks.getUserPermissions.mockResolvedValueOnce(null as any);
+  it('SR2-15: a permission-reduced creator cannot use a scope above their current permissions', async () => {
+    // The key was minted with ai:execute (devices:execute + scripts:execute
+    // backing) but the creator's LIVE permissions now cover devices:read only
+    // — e.g. demoted from admin to read-only after the key was created.
+    mocks.getUserPermissions.mockResolvedValueOnce({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: null,
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'organization' as const,
+      allowedSiteIds: undefined,
+    } as any);
 
-    const res = await callListDevices();
+    const res = await callTool(['ai:read', 'ai:execute'], 'devices_execute_script');
 
+    // Before the fix: buildAuthFromApiKey only null-checked getUserPermissions
+    // and never re-validated the key's stored scopes, so this reduced creator's
+    // stale ai:execute grant would still be served (200, tool dispatched).
     expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.result).toBeUndefined();
+    expect(body.error).toBeDefined();
     // The tool never dispatched — auth was rejected before RBAC/execution.
     expect(mocks.checkToolPermission).not.toHaveBeenCalled();
     expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 
-  it('a legitimate FULL-access admin (non-null perms, allowedSiteIds undefined) still gets all-site access', async () => {
-    // Default mock already models this (allowedSiteIds: undefined).
-    const res = await callListDevices();
+  it('SR2-15: a creator whose live permissions still cover the stored scopes is served normally', async () => {
+    // Default mock (module-level) already covers devices read/write/execute +
+    // scripts read/execute + alerts/automations read — enough for ai:read +
+    // ai:execute.
+    const res = await callTool(['ai:read', 'ai:execute'], 'devices_execute_script');
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.error).toBeUndefined();
-
-    const [, , auth] = mocks.checkToolPermission.mock.calls[0] as [
-      string, unknown, { allowedSiteIds?: string[]; canAccessSite: (s: string | null | undefined) => boolean },
-    ];
-    expect(auth.allowedSiteIds).toBeUndefined();
-    // Unrestricted: every site allowed.
-    expect(auth.canAccessSite('any-site-at-all')).toBe(true);
+    expect(mocks.checkToolPermission).toHaveBeenCalled();
   });
 
-  it('a site-restricted creator keeps EXACTLY their sites (no widening)', async () => {
-    mocks.getUserPermissions.mockResolvedValueOnce({
-      permissions: [
-        { resource: 'devices', action: 'read' },
-        { resource: 'alerts', action: 'read' },
-        { resource: 'scripts', action: 'read' },
-        { resource: 'automations', action: 'read' },
-      ],
-      partnerId: null,
-      orgId: 'org-1',
-      roleId: 'role-1',
-      scope: 'organization',
-      allowedSiteIds: ['site-a'],
-    } as any);
+  it('SR2-15: a creator stripped of all membership (null perms) is still DENIED (guards #2510 stays intact)', async () => {
+    mocks.getUserPermissions.mockResolvedValueOnce(null as any);
 
-    const res = await callListDevices();
+    const res = await callTool(['ai:read'], 'list_devices');
 
-    expect(res.status).toBe(200);
-    const [, , auth] = mocks.checkToolPermission.mock.calls[0] as [
-      string, unknown, { allowedSiteIds?: string[]; canAccessSite: (s: string | null | undefined) => boolean },
-    ];
-    expect(auth.allowedSiteIds).toEqual(['site-a']);
-    expect(auth.canAccessSite('site-a')).toBe(true);
-    expect(auth.canAccessSite('site-b')).toBe(false);
+    expect(res.status).toBe(403);
+    expect(mocks.checkToolPermission).not.toHaveBeenCalled();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 });
