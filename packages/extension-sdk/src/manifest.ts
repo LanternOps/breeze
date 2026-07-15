@@ -169,6 +169,9 @@ const manifestSchemaV1 = z.object({
       .regex(/^\/[a-zA-Z0-9\-_./]*(\/\*)?$/, {
         message: 'publicRoutes entries must be absolute sub-paths like "/health" or "/webhooks/*"',
       })
+      .refine((path) => !path.split('/').some((segment) => segment === '.' || segment === '..'), {
+        message: 'publicRoutes entries may not contain "." or ".." path segments',
+      })
       .refine((path) => path !== '/' && path !== '/*', {
         message: 'publicRoutes may not blanket the whole namespace',
       })
@@ -187,9 +190,6 @@ const manifestSchemaV1 = z.object({
 }).strict().superRefine((manifest, ctx) => {
   if (manifest.web && !manifest.requires.webSdk) {
     ctx.addIssue({ code: 'custom', path: ['requires', 'webSdk'], message: 'webSdk is required when web is declared' });
-  }
-  if (!manifest.web && manifest.requires.capabilities.some((capability) => capability.startsWith('web.'))) {
-    ctx.addIssue({ code: 'custom', path: ['requires', 'capabilities'], message: 'web capabilities require a web contribution' });
   }
   if (!uniqueBy(manifest.jobs, (job) => job.name)) {
     ctx.addIssue({ code: 'custom', path: ['jobs'], message: 'job names must be unique' });

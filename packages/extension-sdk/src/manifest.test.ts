@@ -67,14 +67,23 @@ describe('parseExtensionManifestV1', () => {
     expect(parsed.requires.webSdk).toBeUndefined();
   });
 
+  it('accepts any unique supported capabilities independently of contributions', () => {
+    const { web: _web, ...serverOnly } = valid;
+    const parsed = parseExtensionManifestV1({
+      ...serverOnly,
+      requires: {
+        ...valid.requires,
+        webSdk: undefined,
+        capabilities: [...SUPPORTED_EXTENSION_CAPABILITIES],
+      },
+    });
+    expect(parsed.requires.capabilities).toEqual(SUPPORTED_EXTENSION_CAPABILITIES);
+  });
+
   it.each([
     ['unknown capability', { ...valid, requires: { ...valid.requires, capabilities: ['unknown.v1'] } }],
     ['duplicate capability', { ...valid, requires: { ...valid.requires, capabilities: ['server.routes.v1', 'server.routes.v1'] } }],
     ['missing web SDK', { ...valid, requires: { ...valid.requires, webSdk: undefined } }],
-    ['web capability without web', (() => {
-      const { web: _web, ...serverOnly } = valid;
-      return { ...serverOnly, requires: { ...valid.requires, capabilities: ['web.pages.v1'] } };
-    })()],
   ])('rejects invalid requirements: %s', (_name, raw) => {
     expect(() => parseExtensionManifestV1(raw)).toThrow();
   });
@@ -176,6 +185,24 @@ describe('parseExtensionManifestV1', () => {
       ...valid,
       tenancy: { ...valid.tenancy, orgCascadeDeleteTables: ['other_items'] },
     })).toThrow(/demo_/);
+  });
+
+  it.each([
+    '/foo/../agent/hook',
+    '/foo/./health',
+    '/../health',
+    '/foo/..',
+    '/foo/.',
+  ])('rejects public routes containing traversal segment %s', (route) => {
+    expect(() => parseExtensionManifestV1({ ...valid, publicRoutes: [route] })).toThrow();
+  });
+
+  it('allows dots inside non-traversal public-route segments', () => {
+    const parsed = parseExtensionManifestV1({
+      ...valid,
+      publicRoutes: ['/health.json', '/.well-known/status'],
+    });
+    expect(parsed.publicRoutes).toEqual(['/health.json', '/.well-known/status']);
   });
 
   it('rejects unknown keys at every manifest level', () => {
