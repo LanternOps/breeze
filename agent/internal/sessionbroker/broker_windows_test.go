@@ -57,6 +57,30 @@ func TestPipeSecurityOverrideIsTestOnly(t *testing.T) {
 	}
 }
 
+// requireSystemIdentity skips unless the test process runs as SYSTEM.
+//
+// These handshakes send an AuthRequest with no HelperRole, which the broker
+// defaults to ipc.HelperRoleSystem (broker.go), and roleIdentityRejection
+// requires S-1-5-18 for that role. A CI runner, an SSH session, and an
+// interactive admin are all non-SYSTEM, so the handshake is correctly rejected
+// with "system role requires SYSTEM identity" — the gate working, not a bug.
+//
+// Skipping is the honest outcome: the alternative is a test that is red
+// everywhere forever, or weakening a privilege gate to make a test pass. To
+// exercise these for real, run the package under a SYSTEM context (e.g.
+// PsExec -s).
+func requireSystemIdentity(t *testing.T) {
+	t.Helper()
+	cu, err := user.Current()
+	if err != nil {
+		t.Fatalf("user.Current: %v", err)
+	}
+	if cu.Uid != systemSID {
+		t.Skipf("needs SYSTEM identity: running as %s (SID %s), but an unset HelperRole defaults to the %q role which requires %s",
+			cu.Username, cu.Uid, ipc.HelperRoleSystem, systemSID)
+	}
+}
+
 // testPipeName returns a unique named pipe path for testing.
 func testPipeName(t *testing.T) string {
 	t.Helper()
@@ -99,6 +123,7 @@ func TestNamedPipeListenAndAccept(t *testing.T) {
 }
 
 func TestNamedPipeFullHandshake(t *testing.T) {
+	requireSystemIdentity(t)
 	pipeName := testPipeName(t) + "-handshake"
 	stopChan := make(chan struct{})
 
@@ -282,6 +307,13 @@ func TestNamedPipeSessionDetector(t *testing.T) {
 		t.Logf("Detected session: user=%s, session=%s, state=%s, display=%s",
 			s.Username, s.Session, s.State, s.Display)
 
+		// Session 0 is the non-interactive Services session: it legitimately
+		// has no user. The detector reports it and helperRoleDesired filters it
+		// out downstream, so requiring a username here fails on every host that
+		// has one — which is every Windows host.
+		if s.Session == "0" || s.Type == "services" {
+			continue
+		}
 		if s.Username == "" {
 			t.Error("session has empty username")
 		}
@@ -432,6 +464,7 @@ func TestNamedPipeMissingSIDRejected(t *testing.T) {
 }
 
 func TestNamedPipeSessionIDCollisionRejected(t *testing.T) {
+	requireSystemIdentity(t)
 	pipeName := testPipeName(t) + "-collision"
 	stopChan := make(chan struct{})
 
