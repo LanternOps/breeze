@@ -21,12 +21,12 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { withSystemDbAccessContext } from '../../db';
+import { withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { users, emailVerificationTokens, refreshTokenFamilies } from '../../db/schema';
 import { consumeVerificationToken } from '../../services/emailVerification';
 import { requestPendingEmailChange } from '../../services/pendingEmail';
 import { mintRefreshTokenFamily } from '../../services/refreshTokenFamily';
-import { createPartner, createUser } from './db-utils';
+import { createPartner, createUser, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 
 /**
@@ -77,6 +77,41 @@ async function familyRevoked(familyId: string) {
 }
 
 const uniq = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+describe('email_change initiation — RLS context (SR2-17, real Postgres)', () => {
+  // PATCH /users/me runs requestPendingEmailChange inside the CALLER's own RLS
+  // context (scope + userId set by the auth middleware), not a system context.
+  // email_verification_tokens was partner-axis-only, so an ORG-scoped caller
+  // (breeze_has_partner_access false) had the token INSERT rejected (42501) and
+  // the whole request 500'd — a headline feature broken for every org-scoped
+  // user. The 2026-07-20 migration adds a breeze_current_user_id() branch so the
+  // caller can mint their OWN token in-context. This drives that exact context
+  // (org scope + the caller's userId, matching the real route) and asserts the
+  // mint succeeds.
+  it('initiates under an ORG-scoped caller context without an RLS denial', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const newEmail = `orgscope-new-${uniq()}@example.com`;
+
+    const { rawToken } = await withDbAccessContext(
+      {
+        scope: 'organization',
+        orgId: env.organization.id,
+        accessibleOrgIds: [env.organization.id],
+        userId: env.user.id,
+      } as Parameters<typeof withDbAccessContext>[0],
+      () =>
+        requestPendingEmailChange({
+          userId: env.user.id,
+          partnerId: env.partner.id,
+          newEmail,
+        }),
+    );
+
+    expect(rawToken).toBeTruthy();
+    const t = await tokenState(env.user.id);
+    expect(t?.purpose).toBe('email_change');
+  });
+});
 
 describe('email_change commit — atomic swap + sign-out (SR2-17, real Postgres)', () => {
   it('PROPERTY 1: swaps address, clears pending, advances auth+email epochs, revokes family, consumes token — all committed together', async () => {
