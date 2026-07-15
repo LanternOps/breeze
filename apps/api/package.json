@@ -42,6 +42,7 @@
     "@azure/identity": "^4.6.0",
     "@azure/keyvault-secrets": "^4.9.0",
     "@breeze/extension-api": "workspace:*",
+    "@breeze/extension-sdk": "workspace:*",
     "@breeze/shared": "workspace:*",
     "@elastic/elasticsearch": "^9.3.2",
     "@fastify/busboy": "^3.2.0",

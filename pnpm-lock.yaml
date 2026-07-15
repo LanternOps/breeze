@@ -98,6 +98,9 @@ importers:
       '@breeze/extension-api':
         specifier: workspace:*
         version: link:../../packages/extension-api
+      '@breeze/extension-sdk':
+        specifier: workspace:*
+        version: link:../../packages/extension-sdk
       '@breeze/shared':
         specifier: workspace:*
         version: link:../../packages/shared
