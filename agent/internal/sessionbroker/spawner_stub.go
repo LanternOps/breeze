@@ -27,7 +27,14 @@ func (s *SpawnedHelper) Close() error { return nil }
 
 func (s *SpawnedHelper) ProcessID() uint32      { return s.PID }
 func (s *SpawnedHelper) ExecutablePath() string { return s.BinaryPath }
-func (s *SpawnedHelper) Alive() bool            { return false }
+
+// Alive always errors on non-Windows: the stub never spawns, so a SpawnedHelper
+// here is a programming error. Returning (false, nil) would tell callers a live
+// helper is dead - the exact confusion this signature exists to prevent.
+func (s *SpawnedHelper) Alive() (bool, error) {
+	return false, fmt.Errorf("SpawnedHelper: helper tracking not supported on this platform")
+}
+
 func (s *SpawnedHelper) Terminate() error       { return nil }
 
 // Wait is a no-op on non-Windows platforms. Returns (exitCode=-1, nil).

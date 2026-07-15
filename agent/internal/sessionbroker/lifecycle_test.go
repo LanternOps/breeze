@@ -44,10 +44,10 @@ func TestHandleSCMDisconnectStopsUserAndRetainsSystem(t *testing.T) {
 
 	m.handleSCMEvent(SCMSessionEvent{EventType: wtsSessionDisconnect, SessionID: 7})
 
-	if !system.Alive() {
+	if !aliveNow(t, system) {
 		t.Fatal("system helper was stopped on disconnect")
 	}
-	if user.Alive() {
+	if aliveNow(t, user) {
 		t.Fatal("user helper remained alive on disconnect")
 	}
 }

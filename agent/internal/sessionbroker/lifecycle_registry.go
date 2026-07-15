@@ -72,8 +72,17 @@ func (r *helperRegistry) reserve(key HelperKey, now time.Time) (uint64, bool) {
 		if previous.state == helperStarting || previous.state == helperStopping {
 			return 0, false
 		}
-		if previous.process != nil && previous.process.Alive() {
-			return 0, false
+		if previous.process != nil {
+			alive, err := previous.process.Alive()
+			if err != nil {
+				// Unknown liveness: refuse the reservation. A duplicate helper
+				// racing the original over DXGI capture is worse than no helper.
+				log.Warn("lifecycle: helper liveness unknown; refusing respawn", "helperKey", key.String(), "pid", previous.process.ProcessID(), "error", err.Error())
+				return 0, false
+			}
+			if alive {
+				return 0, false
+			}
 		}
 		if !previous.fatalExitUntil.IsZero() && now.Before(previous.fatalExitUntil) {
 			return 0, false
@@ -163,8 +172,13 @@ func (r *helperRegistry) detach(key HelperKey, generation uint64) bool {
 	if entry == nil || entry.generation != generation {
 		return false
 	}
-	if entry.process != nil && entry.process.Alive() {
-		return false
+	if entry.process != nil {
+		alive, err := entry.process.Alive()
+		if err != nil || alive {
+			// Unknown or alive: keep the entry so the caller retries rather
+			// than dropping a process it never confirmed dead.
+			return false
+		}
 	}
 	delete(r.current, key)
 	return true
@@ -209,8 +223,16 @@ func (r *helperRegistry) markSessionClosed(key HelperKey, session *Session) {
 		return
 	}
 	entry.brokerSession = nil
-	if entry.process != nil && entry.process.Alive() {
+	if entry.process == nil {
+		entry.state = helperExited
+		return
+	}
+	alive, err := entry.process.Alive()
+	if err != nil || alive {
 		entry.state = helperStarting
+		// Restart the startup window: this helper connected once, so it gets a
+		// full timeout to reconnect before startupExpired recycles it.
+		entry.launchedAt = time.Now()
 	} else {
 		entry.state = helperExited
 	}

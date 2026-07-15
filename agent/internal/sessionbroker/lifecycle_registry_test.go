@@ -1,6 +1,7 @@
 package sessionbroker
 
 import (
+	"errors"
 	"context"
 	"sync"
 	"testing"
@@ -65,6 +66,7 @@ type fakeHelperProcess struct {
 	terminateCount int
 	closeCount     int
 	terminateExits bool
+	aliveErr       error
 }
 
 func newFakeHelperProcess(pid uint32) *fakeHelperProcess {
@@ -80,10 +82,30 @@ func newFakeHelperProcess(pid uint32) *fakeHelperProcess {
 func (p *fakeHelperProcess) ProcessID() uint32      { return p.pid }
 func (p *fakeHelperProcess) ExecutablePath() string { return p.path }
 
-func (p *fakeHelperProcess) Alive() bool {
+func (p *fakeHelperProcess) Alive() (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.alive
+	if p.aliveErr != nil {
+		return false, p.aliveErr
+	}
+	return p.alive, nil
+}
+
+func (p *fakeHelperProcess) setAliveErr(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.aliveErr = err
+}
+
+// aliveNow fails the test if liveness cannot be determined, so a test never
+// silently reads "unknown" as "dead".
+func aliveNow(t *testing.T, p helperProcess) bool {
+	t.Helper()
+	alive, err := p.Alive()
+	if err != nil {
+		t.Fatalf("Alive() error = %v", err)
+	}
+	return alive
 }
 
 func (p *fakeHelperProcess) Terminate() error {
@@ -226,7 +248,7 @@ func TestScheduledHelperPublishedDuringSpawnRollsBackProactiveProcess(t *testing
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if proactive.Alive() {
+	if aliveNow(t, proactive) {
 		t.Fatal("proactive duplicate remains alive after scheduled owner publication")
 	}
 	if !b.HasHelperKeyOwner(key) {
@@ -379,10 +401,10 @@ func TestSCMDisconnectThenReconcileRetainsSystemAndStopsUserForDisconnectedRDP(t
 	if userDesired {
 		t.Fatal("user helper remained desired after disconnected-RDP reconcile")
 	}
-	if !system.Alive() {
+	if !aliveNow(t, system) {
 		t.Fatal("SYSTEM helper was stopped after disconnected-RDP reconcile")
 	}
-	if user.Alive() {
+	if aliveNow(t, user) {
 		t.Fatal("user helper remained alive after disconnected-RDP reconcile")
 	}
 }
@@ -527,5 +549,44 @@ func TestSpawnKeyRefusesNonLifecycleRole(t *testing.T) {
 	spawner.mu.Unlock()
 	if got != 0 {
 		t.Fatalf("spawner was called %d times for role %q; want 0", got, key.Role)
+	}
+}
+
+func TestReserveRefusesWhenLivenessUnknown(t *testing.T) {
+	// GetExitCodeProcess can fail. Reading that as "dead" hands out a second
+	// reservation for a live key, so two helpers fight over DXGI capture.
+	r := newHelperRegistry()
+	key := HelperKey{WindowsSessionID: 7, Role: "user"}
+	process := newFakeHelperProcess(4242)
+	process.setAliveErr(errors.New("GetExitCodeProcess: access denied"))
+
+	generation, ok := r.reserve(key, time.Now())
+	if !ok {
+		t.Fatal("first reserve must succeed on an empty slot")
+	}
+	if _, attached := r.attachReserved(key, generation, process, "user-helper"); !attached {
+		t.Fatal("attachReserved failed")
+	}
+
+	if _, ok := r.reserve(key, time.Now()); ok {
+		t.Fatal("reserve granted a duplicate helper while liveness was unknown")
+	}
+}
+
+func TestMarkSessionClosedTreatsUnknownLivenessAsAlive(t *testing.T) {
+	r := newHelperRegistry()
+	key := HelperKey{WindowsSessionID: 7, Role: "user"}
+	process := newFakeHelperProcess(4243)
+
+	generation, _ := r.reserve(key, time.Now())
+	entry, _ := r.attachReserved(key, generation, process, "user-helper")
+	session := &Session{}
+	r.markConnected(key, process.ProcessID(), session)
+
+	process.setAliveErr(errors.New("GetExitCodeProcess: access denied"))
+	r.markSessionClosed(key, session)
+
+	if entry.state == helperExited {
+		t.Fatal("unknown liveness was recorded as helperExited; a live helper can now be duplicated")
 	}
 }

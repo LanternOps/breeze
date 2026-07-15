@@ -23,7 +23,10 @@ type SCMSessionEvent struct {
 type helperProcess interface {
 	ProcessID() uint32
 	ExecutablePath() string
-	Alive() bool
+	// Alive reports liveness. A non-nil error means liveness is UNKNOWN, not
+	// false: callers must fail closed and treat unknown as alive. Matches
+	// ownedPeerProcess.Alive so the two cannot be confused at a glance.
+	Alive() (bool, error)
 	Terminate() error
 	Wait() (int, error)
 	Close() error
@@ -343,9 +346,15 @@ func (m *HelperLifecycleManager) stopTrackedKey(key HelperKey) {
 		m.registry.detach(key, entry.generation)
 		return
 	}
-	if entry.process != nil && entry.process.Alive() {
-		if err := entry.process.Terminate(); err != nil {
-			log.Warn("lifecycle: failed to terminate helper", "helperKey", key.String(), "pid", entry.process.ProcessID(), "error", err.Error())
+	if entry.process != nil {
+		alive, err := entry.process.Alive()
+		if err != nil {
+			log.Warn("lifecycle: helper liveness unknown; terminating to fail closed", "helperKey", key.String(), "pid", entry.process.ProcessID(), "error", err.Error())
+		}
+		if err != nil || alive {
+			if err := entry.process.Terminate(); err != nil {
+				log.Warn("lifecycle: failed to terminate helper", "helperKey", key.String(), "pid", entry.process.ProcessID(), "error", err.Error())
+			}
 		}
 	}
 	if waitDone(entry.done, m.finalWait) {

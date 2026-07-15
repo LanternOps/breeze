@@ -85,17 +85,24 @@ func (s *SpawnedHelper) Close() error {
 func (s *SpawnedHelper) ProcessID() uint32      { return s.PID }
 func (s *SpawnedHelper) ExecutablePath() string { return s.BinaryPath }
 
-func (s *SpawnedHelper) Alive() bool {
+// Alive reports whether the helper process is still running. A non-nil error
+// means the state could not be determined; callers must not read that as "dead".
+func (s *SpawnedHelper) Alive() (bool, error) {
 	if s == nil {
-		return false
+		return false, fmt.Errorf("SpawnedHelper: nil helper")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.Handle == 0 {
-		return false
+		// Close() already released the handle; the helper is definitively no
+		// longer ours to track. Known-dead, not unknown.
+		return false, nil
 	}
 	var exitCode uint32
-	return windows.GetExitCodeProcess(s.Handle, &exitCode) == nil && exitCode == windowsProcessStillActive
+	if err := windows.GetExitCodeProcess(s.Handle, &exitCode); err != nil {
+		return false, fmt.Errorf("GetExitCodeProcess: %w", err)
+	}
+	return exitCode == windowsProcessStillActive, nil
 }
 
 func (s *SpawnedHelper) Terminate() error {
