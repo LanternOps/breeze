@@ -73,8 +73,14 @@ services:
       NODE_ENV: production
       API_PORT: 3001
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      # Production requires ONE of DATABASE_URL_APP / BREEZE_APP_DB_PASSWORD /
+      # POSTGRES_PASSWORD to configure the unprivileged request role (#2368).
+      # All three must be mapped here — the validator names POSTGRES_PASSWORD as
+      # a valid option, and compose only interpolates vars listed in this block,
+      # so omitting it makes that advice silently fail.
       DATABASE_URL_APP: ${DATABASE_URL_APP:-}
       BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
@@ -157,6 +163,15 @@ services:
       OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
       OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
       ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
+      # Native APNs push for the iOS app (all optional; unset = push disabled).
+      # All-or-none: setting ANY of these makes the four credentials required,
+      # so a half-configured relay fails at boot instead of silently at first
+      # send. Empty values are treated as unset.
+      APNS_AUTH_KEY: ${APNS_AUTH_KEY:-}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
+      APNS_ENVIRONMENT: ${APNS_ENVIRONMENT:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro

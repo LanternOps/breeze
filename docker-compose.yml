@@ -108,6 +108,15 @@ services:
       OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
       OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
       ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
+      # Native APNs push for the iOS app (all optional; unset = push disabled).
+      # All-or-none: setting ANY of these makes the four credentials required,
+      # so a half-configured relay fails at boot instead of silently at first
+      # send. Empty values are treated as unset.
+      APNS_AUTH_KEY: ${APNS_AUTH_KEY:-}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
+      APNS_ENVIRONMENT: ${APNS_ENVIRONMENT:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}
