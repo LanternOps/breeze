@@ -1229,7 +1229,7 @@ Do not re-plan it. Execute that document task-by-task after Task 9's gate passes
 
 ---
 
-## Real-Windows verification (2026-07-14, VM `WIN-DHQNR1F8LO2` / Server 2022)
+## Real-Windows verification (2026-07-14, Windows Server 2022 test VM)
 
 Ran the suite natively on a real Windows host, not just `GOOS=windows go vet`. Results:
 
