@@ -2068,8 +2068,8 @@ func (b *Broker) TerminateHelperKey(key HelperKey) {
 			// lifecycle-tracked helpers: helperRegistry.reserve refuses to
 			// respawn while the tracked process is alive OR its liveness is
 			// unknown. A scheduled helper has no registry entry, so a failed
-			// kill there can still be followed by a proactive spawn — see the
-			// follow-up noted in the remediation plan. Do NOT "fix" that by
+			// kill there can still be followed by a proactive spawn — tracked
+			// in #2530 (needs bounded ownership retention). Do NOT "fix" that by
 			// re-registering this session in helperByKey: the session is closed
 			// immediately below, HasHelperKeyOwner does not filter closed
 			// owners, and nothing would ever clear the entry, so the key would
