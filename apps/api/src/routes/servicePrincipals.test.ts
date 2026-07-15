@@ -44,7 +44,21 @@ vi.mock('../services/servicePrincipals', () => {
 // Reset to granted in beforeEach. This is what proves guard-bite (c): the
 // migrate-key route actually runs through requirePermission, not a rubber
 // stamp — flip this to false and the 403 assertion goes RED.
-const permissionMockState = vi.hoisted(() => ({ granted: true }));
+// `permissions` mirrors what the real requirePermission sets via
+// c.set('permissions', ...). Default is an all-permissions caller (wildcard)
+// with no site restriction, so the scope-delegation ceiling passes for the
+// happy path; individual tests narrow it to exercise the ceiling.
+const permissionMockState = vi.hoisted(() => ({
+  granted: true,
+  permissions: {
+    permissions: [{ resource: '*', action: '*' }],
+    partnerId: null,
+    orgId: null,
+    roleId: 'role-1',
+    scope: 'organization',
+    allowedSiteIds: undefined,
+  } as any,
+}));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
@@ -59,6 +73,7 @@ vi.mock('../middleware/auth', () => ({
     if (!permissionMockState.granted) {
       return c.json({ error: 'Permission denied' }, 403);
     }
+    c.set('permissions', permissionMockState.permissions);
     return next();
   }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next())
@@ -95,6 +110,14 @@ describe('service principal routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     permissionMockState.granted = true;
+    permissionMockState.permissions = {
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: null,
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: undefined,
+    } as any;
     setAuth();
     app = new Hono();
     app.route('/service-principals', servicePrincipalRoutes);
@@ -161,6 +184,52 @@ describe('service principal routes', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ orgId: OTHER_ORG_ID, name: 'CI bot', scopes: [] })
+      });
+
+      expect(res.status).toBe(403);
+      expect(createServicePrincipal).not.toHaveBeenCalled();
+    });
+
+    // SR2-15 ceiling: a principal must never carry a scope its creator lacks.
+    // Without this, an org admin holding only orgs:write could mint a principal
+    // with devices:execute and reach /dev/push (arbitrary binary → fleet).
+    it('rejects a scope the creator does not hold (delegation ceiling) and never creates', async () => {
+      permissionMockState.permissions = {
+        permissions: [{ resource: 'organizations', action: 'write' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: undefined,
+      } as any;
+
+      const res = await app.request('/service-principals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: ORG_ID, name: 'escalate', scopes: ['devices:execute'] })
+      });
+
+      expect(res.status).toBe(403);
+      expect(createServicePrincipal).not.toHaveBeenCalled();
+    });
+
+    // A service principal is organization-wide (no site axis). A site-restricted
+    // creator must not mint one, or they escape their own restriction across
+    // every site in the org.
+    it('rejects creation by a site-restricted caller and never creates', async () => {
+      permissionMockState.permissions = {
+        permissions: [{ resource: '*', action: '*' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: ['site-a'],
+      } as any;
+
+      const res = await app.request('/service-principals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: ORG_ID, name: 'CI bot', scopes: ['ai:read'] })
       });
 
       expect(res.status).toBe(403);

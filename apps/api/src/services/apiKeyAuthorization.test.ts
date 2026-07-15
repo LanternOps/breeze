@@ -90,6 +90,46 @@ describe('authorizeHumanApiKeyCreator', () => {
     });
     expect(res).toEqual({ ok: false, reason: 'no_membership' });
   });
+
+  // A partner creator's org access can be narrowed (orgAccess/allowedOrgIds)
+  // without removing their partner_users role row — so getUserPermissions still
+  // resolves a role, but the creator can no longer reach the key's org. The key
+  // must not outlive that access.
+  it('DENIES (no_membership) when a partner creator lost access to the key org (orgAccess narrowed) despite a live partner role', async () => {
+    const narrowedPartner = {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: 'partner-1',
+      orgId: null,
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'selected',
+      allowedOrgIds: ['org-2'],
+      allowedSiteIds: undefined,
+    } as UserPermissions;
+    vi.mocked(getUserPermissions).mockResolvedValue(narrowedPartner);
+    const res = await authorizeHumanApiKeyCreator({
+      createdBy: 'user-1', orgId: 'org-1', partnerId: 'partner-1', scopes: ['devices:read'],
+    });
+    expect(res).toEqual({ ok: false, reason: 'no_membership' });
+  });
+
+  it('authorizes a partner creator who still has access to the key org', async () => {
+    const partnerWithAccess = {
+      permissions: [{ resource: 'devices', action: 'read' }],
+      partnerId: 'partner-1',
+      orgId: null,
+      roleId: 'role-1',
+      scope: 'partner',
+      orgAccess: 'selected',
+      allowedOrgIds: ['org-1'],
+      allowedSiteIds: undefined,
+    } as UserPermissions;
+    vi.mocked(getUserPermissions).mockResolvedValue(partnerWithAccess);
+    const res = await authorizeHumanApiKeyCreator({
+      createdBy: 'user-1', orgId: 'org-1', partnerId: 'partner-1', scopes: ['devices:read'],
+    });
+    expect(res.ok).toBe(true);
+  });
 });
 
 describe('authorizeServicePrincipalKey', () => {

@@ -5,7 +5,8 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { servicePrincipals } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
 import {
   createServicePrincipal,
   rotateServicePrincipalKey,
@@ -172,6 +173,31 @@ servicePrincipalRoutes.post(
       if (!hasAccess) {
         return c.json({ error: 'Access to this organization denied' }, 403);
       }
+    }
+
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+
+    // A service principal is organization-wide — service_principals has no site
+    // axis — so a site-restricted creator must not mint one, or the principal
+    // would reach every site in the org and escape the creator's restriction.
+    if (permissions?.allowedSiteIds) {
+      return c.json(
+        { error: 'Site-restricted users cannot create service principals, which are organization-wide' },
+        403,
+      );
+    }
+
+    // SR2-15 delegation ceiling: a principal must never carry a scope its
+    // creator does not currently hold. Mirrors the human API-key mint path
+    // (routes/apiKeys.ts → validateRequestedScopes); without it, an org admin
+    // with only orgs:write could mint a devices:execute principal and push an
+    // arbitrary binary to the fleet via /dev/push.
+    const delegation = validateApiKeyScopeDelegation(data.scopes, permissions);
+    if (!delegation.ok) {
+      return c.json(
+        { error: delegation.error, ...(delegation.details ? { details: delegation.details } : {}) },
+        delegation.status,
+      );
     }
 
     const principal = await createServicePrincipal({
