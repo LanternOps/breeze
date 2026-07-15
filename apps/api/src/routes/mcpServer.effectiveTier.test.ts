@@ -67,12 +67,33 @@ vi.mock('../services/aiGuardrails', async (importOriginal) => {
 
 // Stub getUserPermissions so buildAuthFromApiKey for org keys doesn't hit the
 // permissions DB. Tests that need a site restriction override this per-case.
+//
+// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now
+// re-validates a key's stored scopes against these permissions via
+// authorizeHumanApiKeyCreator before an AuthContext is ever built. This
+// file's tests exercise tier/scope GATING (FIX 1) with `ai:read`/`ai:write`/
+// `ai:execute`-scoped keys, not scope delegation, so the default creator here
+// must hold every permission those coarse scopes require (devices/alerts/
+// scripts/automations read/write/execute) — otherwise every "still works"
+// assertion below would be denied by the NEW re-clamp before ever reaching
+// the tier-gating logic under test.
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
   return {
     ...actual,
     getUserPermissions: vi.fn(async () => ({
-      permissions: [],
+      permissions: [
+        { resource: 'devices', action: 'read' },
+        { resource: 'devices', action: 'write' },
+        { resource: 'devices', action: 'execute' },
+        { resource: 'alerts', action: 'read' },
+        { resource: 'alerts', action: 'write' },
+        { resource: 'scripts', action: 'read' },
+        { resource: 'scripts', action: 'write' },
+        { resource: 'scripts', action: 'execute' },
+        { resource: 'automations', action: 'read' },
+        { resource: 'automations', action: 'write' },
+      ],
       partnerId: null,
       orgId: 'org-1',
       roleId: 'role-1',
@@ -99,6 +120,46 @@ afterEach(() => {
   vi.doUnmock('../services/aiTools');
   vi.doUnmock('../middleware/apiKeyAuth');
 });
+
+// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now calls
+// getUserPermissions ONCE via authorizeHumanApiKeyCreator to re-validate the
+// key's coarse 'ai:read' scope (API_KEY_SCOPE_POLICIES['ai:read'] bundles
+// devices+alerts+scripts+automations read as a single all-or-nothing unit)
+// BEFORE resources/read's own fine-grained checkPermissionRequirement runs
+// its OWN, separate getUserPermissions call. The site-axis (FIX 3) tests
+// below intentionally model a site-RESTRICTED creator who holds only ONE
+// resource's read grant — that's incompatible with the coarse 'ai:read'
+// ceiling on its own, so: the FIRST call (the coarse ceiling) gets a full
+// baseline that always satisfies 'ai:read', and every SUBSEQUENT call (the
+// fine-grained per-resource + site-axis gate) returns the scenario's actual
+// restricted permissions, preserving each test's premise without loosening
+// any assertion.
+const FULL_AI_READ_BASELINE = [
+  { resource: 'devices', action: 'read' },
+  { resource: 'alerts', action: 'read' },
+  { resource: 'scripts', action: 'read' },
+  { resource: 'automations', action: 'read' },
+];
+
+function mockSiteRestrictedPerms(
+  perms: Array<{ resource: string; action: string }>,
+  allowedSiteIds: string[],
+) {
+  vi.doMock('../services/permissions', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../services/permissions')>();
+    const buildResult = (permissions: Array<{ resource: string; action: string }>) => ({
+      permissions,
+      partnerId: null,
+      orgId: 'org-1',
+      roleId: 'role-1',
+      scope: 'organization' as const,
+      allowedSiteIds,
+    });
+    const getUserPermissions = vi.fn(async () => buildResult(perms));
+    getUserPermissions.mockResolvedValueOnce(buildResult(FULL_AI_READ_BASELINE));
+    return { ...actual, getUserPermissions };
+  });
+}
 
 function mockApiKey(scopes: string[]) {
   vi.doMock('../middleware/apiKeyAuth', () => ({
@@ -344,20 +405,7 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
     // Restrict creator to site-A only. MCP-OAUTH-03: resources/read now
     // requires devices.read before it will even reach the site-axis
     // narrowing under test here, so the role must hold it.
-    vi.doMock('../services/permissions', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../services/permissions')>();
-      return {
-        ...actual,
-        getUserPermissions: vi.fn(async () => ({
-          permissions: [{ resource: 'devices', action: 'read' }],
-          partnerId: null,
-          orgId: 'org-1',
-          roleId: 'role-1',
-          scope: 'organization' as const,
-          allowedSiteIds: ['site-A'],
-        })),
-      };
-    });
+    mockSiteRestrictedPerms([{ resource: 'devices', action: 'read' }], ['site-A']);
 
     // db mock: resolveSiteAllowedDeviceIds returns both devices with siteIds;
     // the real canAccessSite filter (built from allowedSiteIds) then narrows to
@@ -434,20 +482,7 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
   it('C4: site-restricted caller does not see site-B alerts via resources/read', async () => {
     // MCP-OAUTH-03: resources/read now requires alerts.read before the
     // site-axis narrowing under test here even runs.
-    vi.doMock('../services/permissions', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../services/permissions')>();
-      return {
-        ...actual,
-        getUserPermissions: vi.fn(async () => ({
-          permissions: [{ resource: 'alerts', action: 'read' }],
-          partnerId: null,
-          orgId: 'org-1',
-          roleId: 'role-1',
-          scope: 'organization' as const,
-          allowedSiteIds: ['site-A'],
-        })),
-      };
-    });
+    mockSiteRestrictedPerms([{ resource: 'alerts', action: 'read' }], ['site-A']);
 
     const capturedAlertConds: any[] = [];
     vi.doMock('../db', () => ({
@@ -550,20 +585,7 @@ describe('MCP resources/read site-axis enforcement (FIX 3)', () => {
   function restrictToSiteA() {
     // MCP-OAUTH-03: resources/read now requires devices.read before the
     // site-axis narrowing under test here even runs.
-    vi.doMock('../services/permissions', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../services/permissions')>();
-      return {
-        ...actual,
-        getUserPermissions: vi.fn(async () => ({
-          permissions: [{ resource: 'devices', action: 'read' }],
-          partnerId: null,
-          orgId: 'org-1',
-          roleId: 'role-1',
-          scope: 'organization' as const,
-          allowedSiteIds: ['site-A'],
-        })),
-      };
-    });
+    mockSiteRestrictedPerms([{ resource: 'devices', action: 'read' }], ['site-A']);
   }
 
   async function readDevice(id: string) {

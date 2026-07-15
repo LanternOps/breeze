@@ -277,6 +277,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'sensitive_data_findings',
   'sensitive_data_policies',
   'sensitive_data_scans',
+  'service_principals',
   'service_process_check_results',
   'sites',
   'sla_compliance',

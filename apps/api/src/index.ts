@@ -62,6 +62,7 @@ import { searchRoutes } from './routes/search';
 import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
+import { servicePrincipalRoutes } from './routes/servicePrincipals';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
 import { ssoRoutes } from './routes/sso';
@@ -830,6 +831,7 @@ api.route('/vnc-exchange', vncExchangeRoutes); // No auth — one-time code is t
 api.route('/vnc-viewer', vncViewerRoutes); // Viewer-token auth (purpose='viewer', scoped to a tunnel sessionId)
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
+api.route('/service-principals', servicePrincipalRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
 api.route('/installer', installerRoutes);

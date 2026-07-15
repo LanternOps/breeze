@@ -32,12 +32,35 @@ vi.mock('../db/schema', () => ({
 // creator's site allowlist). Keep every real export the route graph needs and
 // stub only getUserPermissions to an unrestricted org perms object so these
 // transport/bootstrap tests don't need to model the permissions DB queries.
+//
+// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now routes
+// through authorizeHumanApiKeyCreator, which re-validates the API key's
+// STORED scopes against these live permissions (validateApiKeyScopeDelegation)
+// before returning an AuthContext. This suite's tests are exercising
+// transport/session/tier concerns, not scope delegation, so the default
+// creator here must hold every non-admin permission the ai:read/ai:write/
+// ai:execute policies require — otherwise every test whose mocked apiKey
+// carries one of those scopes would now be denied by the NEW re-clamp guard
+// before ever reaching the behavior under test. `ai:execute_admin` (which
+// requires the wildcard ADMIN_ALL grant) is deliberately EXCLUDED so the
+// "key lacks ai:execute_admin" test still exercises a real denial.
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
   return {
     ...actual,
     getUserPermissions: vi.fn(async () => ({
-      permissions: [],
+      permissions: [
+        { resource: 'devices', action: 'read' },
+        { resource: 'devices', action: 'write' },
+        { resource: 'devices', action: 'execute' },
+        { resource: 'alerts', action: 'read' },
+        { resource: 'alerts', action: 'write' },
+        { resource: 'scripts', action: 'read' },
+        { resource: 'scripts', action: 'write' },
+        { resource: 'scripts', action: 'execute' },
+        { resource: 'automations', action: 'read' },
+        { resource: 'automations', action: 'write' },
+      ],
       partnerId: null,
       orgId: 'org-1',
       roleId: 'role-1',
@@ -1523,6 +1546,26 @@ describe('MCP bootstrap carve-out', () => {
     process.env.NODE_ENV = 'production';
     process.env.MCP_EXECUTE_TOOL_ALLOWLIST = 'execute_command'; // registry_operations absent
     mockKeyWithScopes(['ai:read', 'ai:execute', 'ai:execute_admin']);
+    // SR2-15 (Task 3, scope re-clamp): this key's stored scopes include
+    // ai:execute_admin (requires the wildcard ADMIN_ALL grant). The module-
+    // level getUserPermissions mock deliberately withholds that grant (so the
+    // "key lacks ai:execute_admin" test below stays a real denial); override
+    // it here with a wildcard-permissioned creator so the coarse scope
+    // re-clamp passes and this test can exercise the ACTUAL concern under
+    // test — the MCP_EXECUTE_TOOL_ALLOWLIST gate, not scope delegation.
+    vi.doMock('../services/permissions', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../services/permissions')>();
+      return {
+        ...actual,
+        getUserPermissions: vi.fn(async () => ({
+          permissions: [{ resource: '*', action: '*' }],
+          partnerId: null,
+          orgId: 'org-1',
+          roleId: 'role-1',
+          scope: 'organization' as const,
+        })),
+      };
+    });
     mockRealGuardrailsWithRegistryTier1();
 
     const { mcpServerRoutes } = await import('./mcpServer');
@@ -1574,6 +1617,23 @@ describe('MCP bootstrap carve-out', () => {
     delete process.env.IS_HOSTED;
     process.env.NODE_ENV = 'development';
     mockKeyWithScopes(['ai:read', 'ai:execute', 'ai:execute_admin']);
+    // SR2-15 (Task 3, scope re-clamp): same override as the C2 allowlist test
+    // above — this key's ai:execute_admin scope needs the wildcard ADMIN_ALL
+    // grant to pass the coarse re-clamp; the concern under test here is the
+    // non-finite-tier fail-closed guard, not scope delegation.
+    vi.doMock('../services/permissions', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../services/permissions')>();
+      return {
+        ...actual,
+        getUserPermissions: vi.fn(async () => ({
+          permissions: [{ resource: '*', action: '*' }],
+          partnerId: null,
+          orgId: 'org-1',
+          roleId: 'role-1',
+          scope: 'organization' as const,
+        })),
+      };
+    });
 
     const executeTool = vi.fn(async () => JSON.stringify({ ok: true }));
     vi.doMock('../services/aiTools', () => ({
@@ -1604,6 +1664,36 @@ describe('MCP bootstrap carve-out', () => {
     expect(body.error?.code).toBe(-32000);
     expect(body.error?.message).toContain('Unable to evaluate tool guardrails');
     expect(executeTool).not.toHaveBeenCalled();
+
+    // `vi.doMock` registrations aren't cleared by `vi.resetModules()` — restore
+    // the file's default (non-wildcard) getUserPermissions mock so it doesn't
+    // leak forward into the "MCP instructions + prompts" tests below (doUnmock
+    // would strip the top-level `vi.mock` for the rest of the file, so we
+    // re-register the default factory explicitly instead).
+    vi.doMock('../services/permissions', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../services/permissions')>();
+      return {
+        ...actual,
+        getUserPermissions: vi.fn(async () => ({
+          permissions: [
+            { resource: 'devices', action: 'read' },
+            { resource: 'devices', action: 'write' },
+            { resource: 'devices', action: 'execute' },
+            { resource: 'alerts', action: 'read' },
+            { resource: 'alerts', action: 'write' },
+            { resource: 'scripts', action: 'read' },
+            { resource: 'scripts', action: 'write' },
+            { resource: 'scripts', action: 'execute' },
+            { resource: 'automations', action: 'read' },
+            { resource: 'automations', action: 'write' },
+          ],
+          partnerId: null,
+          orgId: 'org-1',
+          roleId: 'role-1',
+          scope: 'organization' as const,
+        })),
+      };
+    });
   });
 
   // -------------------------------------------------------------------------

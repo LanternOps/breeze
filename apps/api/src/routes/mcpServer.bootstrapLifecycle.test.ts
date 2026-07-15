@@ -185,23 +185,45 @@ function mockApiKey(scopes: string[]) {
   }));
 }
 
+// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now calls
+// getUserPermissions ONCE via authorizeHumanApiKeyCreator to re-validate the
+// key's coarse scopes (callBootstrap always drives ['ai:read', 'ai:execute'],
+// which bundles devices/alerts/scripts/automations read + devices/scripts
+// execute as a single all-or-nothing unit) BEFORE the REAL aiGuardrails
+// checkToolPermission runs its OWN, separate getUserPermissions call to
+// enforce the bootstrap tool's actual RBAC requirement (MCP-OAUTH-11 — the
+// concern this suite tests). So: the FIRST call (the coarse ceiling) gets a
+// full baseline that always satisfies 'ai:read' + 'ai:execute', and every
+// SUBSEQUENT call (the real per-tool RBAC gate) returns the scenario's actual
+// `permissions`, preserving every test's premise (including the "missing
+// devices.write" denial cases) without loosening any assertion.
+const FULL_AI_READ_EXECUTE_BASELINE = [
+  { resource: 'devices', action: 'read' },
+  { resource: 'alerts', action: 'read' },
+  { resource: 'scripts', action: 'read' },
+  { resource: 'automations', action: 'read' },
+  { resource: 'devices', action: 'execute' },
+  { resource: 'scripts', action: 'execute' },
+];
+
 function mockPerms(permissions: Array<{ resource: string; action: string }>, roleId: string | null = 'role-1') {
   vi.doMock('../services/permissions', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../services/permissions')>();
-    return {
-      ...actual,
-      getUserPermissions: vi.fn(async () =>
-        roleId === null
-          ? null
-          : {
-              permissions,
-              partnerId: 'partner-1',
-              orgId: 'org-1',
-              roleId,
-              scope: 'organization' as const,
-            },
-      ),
-    };
+    const buildResult = (perms: Array<{ resource: string; action: string }>) =>
+      roleId === null
+        ? null
+        : {
+            permissions: perms,
+            partnerId: 'partner-1',
+            orgId: 'org-1',
+            roleId,
+            scope: 'organization' as const,
+          };
+    const getUserPermissions = vi.fn(async () => buildResult(permissions));
+    if (roleId !== null) {
+      getUserPermissions.mockResolvedValueOnce(buildResult(FULL_AI_READ_EXECUTE_BASELINE));
+    }
+    return { ...actual, getUserPermissions };
   });
 }
 

@@ -1,37 +1,28 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { z as zod } from 'zod';
 
-// SR2-15 (core-auth-hardening) regression: an org-scoped MCP API key inherits
-// its creator's site-axis restriction via getUserPermissions(...).allowedSiteIds.
+// SR2-15 (core-auth-hardening, Task 3) regression: the MCP PARTNER-scope
+// branch of buildAuthFromApiKey (apiKey.orgId === null — OAuth bearer token,
+// or an API key with no org_id) previously had NO null-perms deny at all. An
+// off-boarded partner admin's key was only "data-starved"
+// (resolvePartnerAccessibleOrgIds reads partner_users fresh and returns []
+// for a gone membership, producing an unsatisfiable org filter) but never
+// outright rejected — tools/list still succeeded and the caller looked
+// authenticated. Task 3 added an explicit
+// `getUserPermissions(apiKey.createdBy, { partnerId: apiKey.partnerId })`
+// call in this branch with `return null` (-> 403 via buildCheckedAuthFromApiKey)
+// on a null/errored read, matching the org-scope branch's fail-closed
+// posture (see mcpServer.creatorPermsNull.test.ts for that sibling coverage).
 //
-// THE FAIL-OPEN this suite pins closed: when the creator has been stripped of the
-// membership the key derives from — they're still `status='active'`, so PR 1's
-// creator-status gate passes — getUserPermissions returns **null**. The old code
-// read `creatorPerms?.allowedSiteIds`, so null collapsed to `undefined`, and
-// siteAccessCheck(undefined) means "full access to EVERY site in the org". A key
-// whose creator has NO authority got unrestricted org+site access.
-//
-// Fix: buildAuthFromApiKey returns null on null perms → buildCheckedAuthFromApiKey
-// denies with 403 (fail CLOSED). A legitimate full-access admin (non-null perms,
-// allowedSiteIds undefined) and a site-restricted creator (explicit list) are
-// unaffected.
+// This suite pins THAT delta closed: an off-boarded partner-admin creator
+// (still `status='active'`, so the PR1 creator-status gate passes, but with
+// no partner_users row left) must be DENIED, not served on stale authority.
 
 const mocks = vi.hoisted(() => ({
-  getActiveOrgTenant: vi.fn(async (_orgId: string): Promise<{ orgId: string; partnerId: string } | null> => ({
-    orgId: 'org-1',
-    partnerId: 'partner-1',
-  })),
-  // Default: a legitimate FULL-ACCESS org admin (non-null, allowedSiteIds
-  // undefined). Individual tests override with mockResolvedValueOnce.
-  //
-  // SR2-15 (scope re-clamp, this task): buildAuthFromApiKey's org branch now
-  // routes through authorizeHumanApiKeyCreator, which re-validates the key's
-  // stored scopes against these live permissions. The mocked key below carries
-  // scope 'ai:read' (API_KEY_SCOPE_POLICIES['ai:read'] = devices.read,
-  // alerts.read, scripts.read, automations.read), so the default perms object
-  // must actually hold those grants or every "still works" assertion in this
-  // suite would be denied by the NEW re-clamp guard rather than by the
-  // null-perms behavior this suite exists to pin.
+  // Default: a legitimate partner-admin creator whose live permissions still
+  // cover the key's stored scope (ai:read = devices/alerts/scripts/
+  // automations read). Individual tests override with mockResolvedValueOnce
+  // to model an off-boarded creator (null).
   getUserPermissions: vi.fn(async (_userId: string, _ctx: { partnerId?: string; orgId?: string }) => ({
     permissions: [
       { resource: 'devices', action: 'read' },
@@ -39,25 +30,23 @@ const mocks = vi.hoisted(() => ({
       { resource: 'scripts', action: 'read' },
       { resource: 'automations', action: 'read' },
     ],
-    partnerId: null,
-    orgId: 'org-1',
+    partnerId: 'partner-1',
+    orgId: null,
     roleId: 'role-1',
-    scope: 'organization' as const,
+    scope: 'partner' as const,
     allowedSiteIds: undefined as string[] | undefined,
   })),
-  // Capturing stub: 3rd arg is the full AuthContext handed to the RBAC gate, so
-  // we can inspect allowedSiteIds / canAccessSite. Returns null = allow.
   checkToolPermission: vi.fn(async (
     _toolName: string,
     _input: unknown,
-    _auth: { allowedSiteIds?: string[]; canAccessSite: (s: string | null | undefined) => boolean },
+    _auth: { scope?: string; partnerId?: string | null },
   ) => null),
   executeTool: vi.fn(async () => JSON.stringify({ ok: true })),
 }));
 
 vi.mock('../services/tenantStatus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/tenantStatus')>();
-  return { ...actual, getActiveOrgTenant: mocks.getActiveOrgTenant };
+  return { ...actual };
 });
 
 vi.mock('../services/permissions', async (importOriginal) => {
@@ -103,6 +92,10 @@ vi.mock('../services/rate-limit', () => ({
 }));
 vi.mock('../middleware/bearerTokenAuth', () => ({
   bearerTokenAuthMiddleware: async () => { throw new Error('should not be called without a Bearer header'); },
+  // The off-boarded creator's actual org list is irrelevant to THIS guard —
+  // buildAuthFromApiKey must deny before it ever reaches this resolver. Kept
+  // empty like the sibling org-scope suite; resolveMcpExecutionOrgId is
+  // mocked separately below so it doesn't gate the positive-control test.
   resolvePartnerAccessibleOrgIds: async () => [],
 }));
 vi.mock('./mcpExecutionOrg', () => ({
@@ -115,20 +108,25 @@ vi.mock('../services/mcpToolExecutionLedger', () => ({
   completeMcpToolExecutionLedger: async () => undefined,
 }));
 
+// Partner-scope key: orgId null, partnerId set — an OAuth-provisioned key or
+// a manual key with no org_id, driven here via the X-API-Key middleware for
+// simplicity (buildAuthFromApiKey's branch selection is purely
+// `apiKey.orgId` truthy/falsy, independent of which auth header reached it —
+// see mcpServer.bearer.test.ts for the Bearer-header variant of this shape).
 function mockApiKey() {
   vi.doMock('../middleware/apiKeyAuth', () => ({
     apiKeyAuthMiddleware: async (c: any, next: any) => {
       c.set('apiKey', {
         id: 'key-1',
-        orgId: 'org-1',
-        partnerId: null,
+        orgId: null,
+        partnerId: 'partner-1',
         name: 'test',
         keyPrefix: 'brz_test',
         scopes: ['ai:read'],
         rateLimit: 1000,
-        createdBy: 'creator-user',
+        createdBy: 'partner-admin-user',
       });
-      c.set('apiKeyOrgId', 'org-1');
+      c.set('apiKeyOrgId', null);
       await next();
     },
     requireApiKeyScope: () => async (_c: any, next: any) => next(),
@@ -150,10 +148,9 @@ async function callListDevices() {
   });
 }
 
-describe('MCP org-scoped key: creator perms fail closed on null (SR2-15)', () => {
+describe('MCP partner-scoped key: creator perms fail closed on null (SR2-15 off-boarding deny)', () => {
   beforeEach(() => {
     vi.resetModules();
-    mocks.getActiveOrgTenant.mockClear();
     mocks.getUserPermissions.mockClear();
     mocks.checkToolPermission.mockClear();
     mocks.executeTool.mockClear();
@@ -164,58 +161,39 @@ describe('MCP org-scoped key: creator perms fail closed on null (SR2-15)', () =>
     vi.doUnmock('../middleware/apiKeyAuth');
   });
 
-  it('DENIES the request (403) when getUserPermissions returns null (creator stripped of membership)', async () => {
-    // Creator is still active (PR 1 gate passes) but has NO org role and NO
-    // partner role → getUserPermissions returns null.
+  it('DENIES the request (403) when getUserPermissions(partnerId) returns null (off-boarded partner-admin creator)', async () => {
+    // Creator is still active (PR1 gate passes) but their partner_users
+    // membership is gone, so the partner-axis getUserPermissions read
+    // resolves null. Before this task, the partner branch had no null-perms
+    // deny at all: this off-boarded creator's key would still be served
+    // (tools/list, tools/call all succeeding on stale authority), only
+    // silently data-starved by an empty accessibleOrgIds. This guard closes
+    // that: the branch must reject outright, matching the org-scope branch.
     mocks.getUserPermissions.mockResolvedValueOnce(null as any);
 
     const res = await callListDevices();
 
     expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.result).toBeUndefined();
+    expect(body.error).toBeDefined();
     // The tool never dispatched — auth was rejected before RBAC/execution.
     expect(mocks.checkToolPermission).not.toHaveBeenCalled();
     expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 
-  it('a legitimate FULL-access admin (non-null perms, allowedSiteIds undefined) still gets all-site access', async () => {
-    // Default mock already models this (allowedSiteIds: undefined).
+  it('a partner-scoped key whose creator still has an active partner membership is served normally (positive control)', async () => {
+    // Default mock (module-level) already models a legitimate partner-admin
+    // creator with non-null permissions covering the key's ai:read scope.
     const res = await callListDevices();
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.error).toBeUndefined();
-
-    const [, , auth] = mocks.checkToolPermission.mock.calls[0] as [
-      string, unknown, { allowedSiteIds?: string[]; canAccessSite: (s: string | null | undefined) => boolean },
-    ];
-    expect(auth.allowedSiteIds).toBeUndefined();
-    // Unrestricted: every site allowed.
-    expect(auth.canAccessSite('any-site-at-all')).toBe(true);
-  });
-
-  it('a site-restricted creator keeps EXACTLY their sites (no widening)', async () => {
-    mocks.getUserPermissions.mockResolvedValueOnce({
-      permissions: [
-        { resource: 'devices', action: 'read' },
-        { resource: 'alerts', action: 'read' },
-        { resource: 'scripts', action: 'read' },
-        { resource: 'automations', action: 'read' },
-      ],
-      partnerId: null,
-      orgId: 'org-1',
-      roleId: 'role-1',
-      scope: 'organization',
-      allowedSiteIds: ['site-a'],
-    } as any);
-
-    const res = await callListDevices();
-
-    expect(res.status).toBe(200);
-    const [, , auth] = mocks.checkToolPermission.mock.calls[0] as [
-      string, unknown, { allowedSiteIds?: string[]; canAccessSite: (s: string | null | undefined) => boolean },
-    ];
-    expect(auth.allowedSiteIds).toEqual(['site-a']);
-    expect(auth.canAccessSite('site-a')).toBe(true);
-    expect(auth.canAccessSite('site-b')).toBe(false);
+    expect(mocks.getUserPermissions).toHaveBeenCalledWith(
+      'partner-admin-user',
+      expect.objectContaining({ partnerId: 'partner-1' }),
+    );
+    expect(mocks.checkToolPermission).toHaveBeenCalled();
   });
 });
