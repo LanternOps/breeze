@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
@@ -32,6 +33,27 @@ type ProcessStartup struct {
 	MainBinaryFallback bool      `json:"mainBinaryFallback"`
 	Version            string    `json:"version"`
 	CreatedAt          time.Time `json:"createdAt"`
+}
+
+var mainProcessStartupCache struct {
+	sync.RWMutex
+	startup ProcessStartup
+}
+
+func cacheMainProcessStartup(startup ProcessStartup) {
+	mainProcessStartupCache.Lock()
+	mainProcessStartupCache.startup = startup
+	mainProcessStartupCache.Unlock()
+}
+
+func cachedMainProcessStartup() ProcessStartup {
+	mainProcessStartupCache.RLock()
+	startup := mainProcessStartupCache.startup
+	mainProcessStartupCache.RUnlock()
+	if startup.PID != 0 {
+		return startup
+	}
+	return currentProcessStartup("run", "", isWindowsService())
 }
 
 func currentProcessStartup(command, role string, service bool) ProcessStartup {
@@ -91,4 +113,27 @@ func processStartupFields(s ProcessStartup) map[string]any {
 		"version":            s.Version,
 		"createdAt":          s.CreatedAt,
 	}
+}
+
+func logProcessStartup(startup ProcessStartup) {
+	fields := processStartupFields(startup)
+	keys := []string{
+		"binary",
+		"executablePath",
+		"pid",
+		"parentPid",
+		"windowsSessionId",
+		"launchMode",
+		"helperRole",
+		"lifecycleKey",
+		"companionHelper",
+		"mainBinaryFallback",
+		"version",
+		"createdAt",
+	}
+	args := make([]any, 0, len(keys)*2)
+	for _, key := range keys {
+		args = append(args, key, fields[key])
+	}
+	log.Info("process startup", args...)
 }

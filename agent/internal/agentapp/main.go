@@ -611,11 +611,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		}
 	}
 
-	log.Info("starting agent",
-		"version", version,
-		"server", cfg.ServerURL,
-		"agentId", cfg.AgentID,
-	)
+	logProcessStartup(cachedMainProcessStartup())
 
 	// Surface a failed systemd unit auto-heal (reconcileServiceUnitIfNeeded /
 	// the reconcile-unit subcommand) to the fleet now that the log shipper is
@@ -911,6 +907,7 @@ func retryTCCGrant() {
 func runAgent() {
 	serviceMode := isWindowsService()
 	startup := currentProcessStartup("run", "", serviceMode)
+	cacheMainProcessStartup(startup)
 	guard, err := acquireMainAgentGuardFn(startup)
 	if err != nil {
 		writeInstanceGuardMarkerFn(startup, err)
@@ -1569,15 +1566,7 @@ func runHelperProcess(name, role, context, binaryKind string) {
 		}
 	}()
 
-	log.Info("starting helper",
-		"name", name,
-		"version", version,
-		"socket", socketPath,
-		"pid", os.Getpid(),
-		"role", role,
-		"context", context,
-		"binaryKind", binaryKind,
-	)
+	logProcessStartup(currentProcessStartup("user-helper", role, false))
 
 	// Handle shutdown signals via a done channel so multiple selects
 	// can observe the shutdown without racing on a buffered sigChan.

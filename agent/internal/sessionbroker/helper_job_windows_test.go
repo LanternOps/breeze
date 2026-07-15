@@ -230,28 +230,49 @@ func fakeResolvedHelperExecutable() (ResolvedHelperExecutable, error) {
 }
 
 func TestWindowsHelperSpawnerRetainsMainBinaryFallback(t *testing.T) {
+	buf := captureLogs(t)
 	job := &fakeHelperJob{}
 	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
 		resolveExecutable: func() (ResolvedHelperExecutable, error) {
 			return ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-agent.exe`, MainBinaryFallback: true}, nil
 		},
-		createSuspended: func(_ HelperKey, resolved ResolvedHelperExecutable) (*suspendedHelper, error) {
-			pending := fakeSuspendedHelper()
-			pending.binaryPath = resolved.Path
-			pending.mainBinaryFallback = resolved.MainBinaryFallback
-			return pending, nil
+		createSuspended: func(_ HelperKey, _ ResolvedHelperExecutable) (*suspendedHelper, error) {
+			// Return deliberately stale suspended-process bookkeeping. The
+			// public diagnostic must retain the typed resolver provenance.
+			return fakeSuspendedHelper(), nil
 		},
 		resumeThread: func(windows.Handle) (uint32, error) { return 1, nil },
 		closeHandle:  func(windows.Handle) error { return nil },
 	})
 
-	process, err := spawner.Spawn(HelperKey{WindowsSessionID: 7, Role: "user"})
+	key := HelperKey{WindowsSessionID: 7, Role: "user"}
+	process, err := spawner.Spawn(key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	helper := process.(*SpawnedHelper)
 	if !helper.MainBinaryFallback {
 		t.Fatal("SpawnedHelper.MainBinaryFallback = false, want true")
+	}
+	if helper.BinaryPath != `C:\Program Files\Breeze\breeze-agent.exe` {
+		t.Fatalf("SpawnedHelper.BinaryPath = %q, want typed resolver path", helper.BinaryPath)
+	}
+	if helper.CommandMode != "user-helper" || helper.Role != key.Role || helper.WindowsSessionID != key.WindowsSessionID {
+		t.Fatalf("SpawnedHelper role provenance = command:%q role:%q session:%d", helper.CommandMode, helper.Role, helper.WindowsSessionID)
+	}
+	logs := buf.String()
+	if count := strings.Count(logs, "spawned user helper in session"); count != 1 {
+		t.Fatalf("spawn diagnostic count = %d, want 1; logs: %s", count, logs)
+	}
+	for _, field := range []string{"commandMode=user-helper", "windowsSessionId=7", "role=user", "mainBinaryFallback=true"} {
+		if !strings.Contains(logs, field) {
+			t.Fatalf("spawn diagnostic missing %q; logs: %s", field, logs)
+		}
+	}
+	for _, forbidden := range []string{"authToken", "helperAuthToken", "mtlsKey", "tokenSource", "certificate", "tenant", "orgId"} {
+		if strings.Contains(logs, forbidden) {
+			t.Fatalf("spawn diagnostic contains forbidden field %q; logs: %s", forbidden, logs)
+		}
 	}
 }
 

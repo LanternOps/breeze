@@ -16,6 +16,9 @@ import "fmt"
 type SpawnedHelper struct {
 	PID                uint32
 	BinaryPath         string
+	CommandMode        string
+	Role               string
+	WindowsSessionID   uint32
 	MainBinaryFallback bool
 }
 

@@ -43,3 +43,21 @@ func TestBuildUserHelperCmdLine_AlwaysExplicitRole(t *testing.T) {
 		})
 	}
 }
+
+func TestSpawnedHelperDiagnosticsRetainRoleProvenance(t *testing.T) {
+	helper := &SpawnedHelper{
+		PID:                42,
+		BinaryPath:         `C:\Program Files\Breeze\breeze-agent.exe`,
+		CommandMode:        "user-helper",
+		Role:               "user",
+		WindowsSessionID:   7,
+		MainBinaryFallback: true,
+	}
+
+	if helper.CommandMode != "user-helper" || helper.Role != "user" || helper.WindowsSessionID != 7 {
+		t.Fatalf("spawn role provenance = command:%q role:%q session:%d", helper.CommandMode, helper.Role, helper.WindowsSessionID)
+	}
+	if helper.BinaryPath != `C:\Program Files\Breeze\breeze-agent.exe` || !helper.MainBinaryFallback {
+		t.Fatalf("spawn executable provenance = path:%q fallback:%v", helper.BinaryPath, helper.MainBinaryFallback)
+	}
+}

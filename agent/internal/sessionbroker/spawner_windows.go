@@ -24,6 +24,9 @@ type SpawnedHelper struct {
 	PID                uint32
 	Handle             windows.Handle
 	BinaryPath         string
+	CommandMode        string
+	Role               string
+	WindowsSessionID   uint32
 	MainBinaryFallback bool
 	mu                 sync.Mutex
 	terminated         bool
@@ -268,20 +271,24 @@ func (s *windowsHelperSpawner) Spawn(key HelperKey) (helperProcess, error) {
 	_ = s.ops.closeHandle(pending.thread)
 	cleanup = false
 
-	log.Info("spawned user helper in session",
-		"sessionId", key.WindowsSessionID,
-		"role", key.Role,
-		"pid", pending.pid,
-		"exe", pending.binaryPath,
-		"mainBinaryFallback", pending.mainBinaryFallback,
-		"tokenSource", pending.tokenSource,
-	)
-	return &SpawnedHelper{
+	helper := &SpawnedHelper{
 		PID:                pending.pid,
 		Handle:             pending.process,
-		BinaryPath:         pending.binaryPath,
-		MainBinaryFallback: pending.mainBinaryFallback,
-	}, nil
+		BinaryPath:         resolvedExe.Path,
+		CommandMode:        "user-helper",
+		Role:               key.Role,
+		WindowsSessionID:   key.WindowsSessionID,
+		MainBinaryFallback: resolvedExe.MainBinaryFallback,
+	}
+	log.Info("spawned user helper in session",
+		"pid", helper.PID,
+		"binaryPath", helper.BinaryPath,
+		"commandMode", helper.CommandMode,
+		"role", helper.Role,
+		"windowsSessionId", helper.WindowsSessionID,
+		"mainBinaryFallback", helper.MainBinaryFallback,
+	)
+	return helper, nil
 }
 
 func (s *windowsHelperSpawner) Close() error {

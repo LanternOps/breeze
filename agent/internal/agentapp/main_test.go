@@ -1,6 +1,7 @@
 package agentapp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -13,7 +14,104 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 )
+
+func TestProcessStartupFieldsContainRoleEvidenceOnly(t *testing.T) {
+	startup := ProcessStartup{
+		Binary:             "breeze-agent.exe",
+		ExecutablePath:     `C:\Program Files\Breeze\breeze-agent.exe`,
+		PID:                42,
+		ParentPID:          4,
+		WindowsSessionID:   7,
+		LaunchMode:         "user-helper",
+		HelperRole:         "user",
+		LifecycleKey:       "7-user",
+		MainBinaryFallback: true,
+		Version:            "0.70.0",
+		CreatedAt:          time.Unix(100, 0),
+	}
+	fields := processStartupFields(startup)
+	for _, key := range []string{"pid", "parentPid", "windowsSessionId", "launchMode", "helperRole", "lifecycleKey", "mainBinaryFallback"} {
+		if _, ok := fields[key]; !ok {
+			t.Fatalf("missing field %q", key)
+		}
+	}
+	for _, forbidden := range []string{"authToken", "helperAuthToken", "mtlsKey"} {
+		if _, ok := fields[forbidden]; ok {
+			t.Fatalf("forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestLogProcessStartupEmitsOneStructuredEvent(t *testing.T) {
+	var output bytes.Buffer
+	logging.Init("json", "info", &output)
+	t.Cleanup(func() { logging.Init("text", "info", nil) })
+
+	startup := ProcessStartup{
+		Binary:             "breeze-agent.exe",
+		ExecutablePath:     `C:\Program Files\Breeze\breeze-agent.exe`,
+		PID:                42,
+		ParentPID:          4,
+		WindowsSessionID:   7,
+		LaunchMode:         "user-helper",
+		HelperRole:         "user",
+		LifecycleKey:       "7-user",
+		MainBinaryFallback: true,
+		Version:            "0.70.0",
+		CreatedAt:          time.Unix(100, 0),
+	}
+	logProcessStartup(startup)
+
+	got := output.String()
+	if count := strings.Count(got, `"msg":"process startup"`); count != 1 {
+		t.Fatalf("process startup event count = %d, want 1; log=%s", count, got)
+	}
+	for _, evidence := range []string{
+		`"windowsSessionId":7`,
+		`"launchMode":"user-helper"`,
+		`"helperRole":"user"`,
+		`"lifecycleKey":"7-user"`,
+		`"mainBinaryFallback":true`,
+	} {
+		if !strings.Contains(got, evidence) {
+			t.Fatalf("process startup log missing %s: %s", evidence, got)
+		}
+	}
+	for _, forbidden := range []string{"authToken", "helperAuthToken", "mtlsKey"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("process startup log contains forbidden field %q: %s", forbidden, got)
+		}
+	}
+}
+
+func TestCachedMainProcessStartupUsesGuardRecord(t *testing.T) {
+	mainProcessStartupCache.Lock()
+	original := mainProcessStartupCache.startup
+	mainProcessStartupCache.startup = ProcessStartup{}
+	mainProcessStartupCache.Unlock()
+	t.Cleanup(func() {
+		mainProcessStartupCache.Lock()
+		mainProcessStartupCache.startup = original
+		mainProcessStartupCache.Unlock()
+	})
+
+	want := ProcessStartup{
+		Binary:           "breeze-agent.exe",
+		ExecutablePath:   `C:\Program Files\Breeze\breeze-agent.exe`,
+		PID:              42,
+		ParentPID:        4,
+		WindowsSessionID: 7,
+		LaunchMode:       "service-run",
+		Version:          "0.70.0",
+		CreatedAt:        time.Unix(100, 0),
+	}
+	cacheMainProcessStartup(want)
+	if got := cachedMainProcessStartup(); got != want {
+		t.Fatalf("cachedMainProcessStartup() = %+v, want %+v", got, want)
+	}
+}
 
 func TestRunAgentDuplicateStopsBeforeInitialization(t *testing.T) {
 	testRunAgentGuardFailureStopsBeforeInitialization(t, ErrMainAgentAlreadyRunning, exitAlreadyRunning)
