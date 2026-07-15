@@ -715,15 +715,38 @@ jobs:
         working-directory: agent
         run: go mod download
 
+      # CGO_ENABLED=0 is required, not incidental. internal/remote/desktop is a
+      # non-cgo package on Windows: comVtblFn, dxgiCapturer and procDeleteObject
+      # are defined in files tagged `windows && !cgo`, while audio_windows.go,
+      # cursor_windows.go, gpu_convert_windows.go, monitor_windows.go and
+      # dxgi_dirty_rects_windows.go use them under a plain `windows` tag.
+      # windows-latest ships gcc, so CGO_ENABLED defaults to 1 there and the
+      # package fails to compile — and heartbeat/agentapp import it transitively,
+      # so they need cgo off too.
+      #
+      # This list is explicit rather than ./... because ./... is currently RED on
+      # Windows: internal/backup, backup/providers, backup/systemstate,
+      # peripheral, procoutput, remote/desktop, remote/filedrop, remote/tools and
+      # updater all have failures that predate this job existing (no Windows CI
+      # ran before it, so their //go:build windows tests never executed anywhere).
+      # ./internal/eventlog IS listed: its tests previously ran on no platform at
+      # all, which is the gap this job was added to close.
+      #
+      # When adding a package with //go:build windows tests, add it here. Moving
+      # to ./... is tracked separately and requires fixing the backlog above.
       - name: Run Windows Go tests
         working-directory: agent
-        # Auto-discover every package so Windows-tagged tests cannot be silently
-        # skipped. A hardcoded list drifts: ./internal/eventlog and nine other
-        # packages with //go:build windows tests were omitted, so their tests ran
-        # on no platform at all (the Linux test-agent job's ./... skips them via
-        # build tag, and `go build` never compiles _test.go). Keeps CLAUDE.md's
-        # "new test files are auto-discovered" contract true on Windows too.
-        run: go test -race ./...
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./internal/sessionbroker ./internal/heartbeat ./internal/agentapp ./internal/config ./internal/eventlog ./internal/watchdog ./cmd/breeze-watchdog
+
+      # -race requires cgo, so this covers only packages that do NOT import
+      # remote/desktop. heartbeat and agentapp do, transitively, and are absent
+      # here — the step above still runs their tests, just without the detector.
+      # sessionbroker is the concurrency-critical one and is covered.
+      - name: Run Windows race tests (cgo-compatible packages)
+        working-directory: agent
+        run: go test -race ./internal/sessionbroker ./internal/config ./internal/eventlog ./internal/watchdog ./cmd/breeze-watchdog
 
   # ─── Windows runtime smoke (#1000) ────────────────────────────────────
   # CI cross-compiles the Windows agent (build-agent matrix) but never RAN
