@@ -21,17 +21,12 @@ type State =
   | { phase: 'sign_in' }
   | {
       phase: 'error';
-      reason:
-        | 'invalid'
-        | 'expired'
-        | 'consumed'
-        | 'superseded'
-        // The account's email moved after this link was mailed (#2428). NOT
-        // 'superseded' — no newer link exists, so the copy must not send the
-        // user hunting for one. They need to request a fresh link instead.
-        | 'address_changed'
-        | 'network'
-        | 'unknown';
+      // The verify endpoint returns ONE generic failure for every consume error
+      // (invalid / expired / used / superseded / address-changed) to avoid an
+      // enumeration oracle, so the client cannot distinguish them. We present a
+      // single recoverable failure ('invalid') that always offers a fresh link,
+      // and keep 'network' distinct because it is client-side (retry, not resend).
+      reason: 'invalid' | 'network';
     };
 
 export default function VerifyEmailPage() {
@@ -75,22 +70,16 @@ export default function VerifyEmailPage() {
         setState({ phase: 'sign_in' });
         return;
       }
-      const err = result.error;
-      if (
-        err === 'invalid' ||
-        err === 'expired' ||
-        err === 'consumed' ||
-        err === 'superseded' ||
-        err === 'address_changed'
-      ) {
-        setState({ phase: 'error', reason: err });
-        return;
-      }
-      if (err === 'Network error') {
+      // Network is the only failure the client can distinguish; it warrants a
+      // retry, not a resend. Every server-side consume failure is deliberately
+      // indistinguishable (enumeration-safe), so it collapses to 'invalid',
+      // which always offers a fresh link — the correct recovery for the whole
+      // class (and resend-verification no-ops safely if already verified).
+      if (result.error === 'Network error') {
         setState({ phase: 'error', reason: 'network' });
         return;
       }
-      setState({ phase: 'error', reason: 'unknown' });
+      setState({ phase: 'error', reason: 'invalid' });
     })();
   }, []);
 
@@ -202,51 +191,18 @@ export default function VerifyEmailPage() {
         defaultValue: 'The verification link is not recognized. Sign in and request a new one from your account settings.',
       }),
     },
-    expired: {
-      title: t('verifyEmail.errors.expired.title', { defaultValue: 'This link has expired' }),
-      body: t('verifyEmail.errors.expired.body', {
-        defaultValue: 'Verification links expire after 24 hours. Sign in and request a new one from your account settings.',
-      }),
-    },
-    consumed: {
-      title: t('verifyEmail.errors.consumed.title', { defaultValue: 'This link has already been used' }),
-      body: t('verifyEmail.errors.consumed.body', {
-        defaultValue: 'Your email is already verified, or the link was used on another device.',
-      }),
-    },
-    superseded: {
-      title: t('verifyEmail.errors.superseded.title', { defaultValue: 'A newer verification link was sent' }),
-      body: t('verifyEmail.errors.superseded.body', {
-        defaultValue: 'Please use the most recent verification email — the older link is no longer valid.',
-      }),
-    },
-    address_changed: {
-      title: t('verifyEmail.errors.addressChanged.title', {
-        defaultValue: 'Your email address has changed',
-      }),
-      body: t('verifyEmail.errors.addressChanged.body', {
-        defaultValue:
-          'This link was sent to your previous address, so it can no longer be used. Sign in and request a new verification email for your current address.',
-      }),
-    },
     network: {
       title: t('verifyEmail.errors.network.title', { defaultValue: 'We couldn’t reach Breeze' }),
       body: t('verifyEmail.errors.network.body', { defaultValue: 'Check your connection and try the link again.' }),
     },
-    unknown: {
-      title: t('verifyEmail.errors.unknown.title', { defaultValue: 'Verification failed' }),
-      body: t('verifyEmail.errors.unknown.body', {
-        defaultValue: 'Something went wrong. Please try again or contact support.',
-      }),
-    },
   };
   const copy = errorCopy[state.reason];
-  // 'address_changed' MUST offer the resend path: the user's only route to a
-  // usable link is a fresh one for their current address, and PATCH /users/me
-  // now clears email_verified_at so /auth/resend-verification will actually
-  // mint it (it refuses while the account reads as already-verified).
-  const showResendLink =
-    state.reason === 'invalid' || state.reason === 'expired' || state.reason === 'address_changed';
+  // Every server-side failure collapses to 'invalid' (see the consume handler),
+  // so the recoverable case must always offer a fresh link — the user's route
+  // back is a new link for their current address, and PATCH /users/me clears
+  // email_verified_at so /auth/resend-verification will actually mint one (it
+  // refuses while the account reads as already-verified). Network is a retry.
+  const showResendLink = state.reason === 'invalid';
 
   return (
     <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
