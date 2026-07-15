@@ -120,6 +120,11 @@ export const CHECKSUM_RECONCILIATIONS: Record<
     to: '83cf9d01bf2030bb1cf063c4624c3847d9eac71ce90ae4d511228a98d14eaca6',
     reason: '#1936: guard patch_approvals org_id backfill for already partner-scoped reruns; note why step-3 dedup needs no org_id guard',
   },
+  '2026-07-16-td-synnex-sftp-price-file.sql': {
+    from: '8e08c23f4e1dfc6ceeb8c4624d9536c037f4062d287598b2ae106c3529d5dc08',
+    to: 'dc7be5f3209a46f4120f653eb4575ec5b64a6a23126e937a412afad7f26efc6a',
+    reason: '0.95.1: GRANT/REVOKE CREATE ON SCHEMA public around ALTER FUNCTION ... OWNER TO breeze_search so a NOSUPERUSER migrator (DO managed doadmin) can complete the owner change. v0.95.0 succeeded only on superuser DBs; heal those (already applied) instead of crashing their upgrade.',
+  },
 };
 
 /**

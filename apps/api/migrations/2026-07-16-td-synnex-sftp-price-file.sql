@@ -216,8 +216,20 @@ BEGIN
 END;
 $$;
 
+-- Reassigning ownership requires the NEW owner (breeze_search) to hold CREATE on
+-- the function's schema. Grant it just for the ALTER, then revoke immediately.
+-- Without this a NOSUPERUSER migrator (e.g. DO-managed `doadmin`, and any
+-- managed-Postgres self-hoster) fails the OWNER TO with `permission denied for
+-- schema public` — a superuser bypasses the check, which is why this passed on
+-- the docker-compose superuser (CI + local smoke) but broke on managed prod.
+GRANT CREATE ON SCHEMA public TO breeze_search;
+
 ALTER FUNCTION public.breeze_search_td_synnex_pa(TEXT[], BOOLEAN, INT, INT)
   OWNER TO breeze_search;
+
+-- breeze_search only needs to OWN the SECURITY DEFINER function, never to create
+-- objects in public; drop the temporary grant so the role stays minimal.
+REVOKE CREATE ON SCHEMA public FROM breeze_search;
 
 REVOKE ALL ON FUNCTION public.breeze_search_td_synnex_pa(TEXT[], BOOLEAN, INT, INT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.breeze_search_td_synnex_pa(TEXT[], BOOLEAN, INT, INT) TO breeze_app;
