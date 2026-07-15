@@ -113,4 +113,41 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
 
-Related pages: [Device Groups](/features/device-groups/) for organizing devices into collections, [Tags](/features/tags/) and [Custom Fields](/features/custom-fields/) for metadata, and [IP History](/features/ip-history/) for the timeline of a device's network addresses.
+---
+
+## The Change History Tab
+
+Opening a device and selecting **Change History** shows a newest-first timeline of what has physically and logically changed on that endpoint over time — a swapped disk, added memory, a new CPU, a BIOS update, or an operating-system upgrade. Use it to answer questions like "when did this machine's RAM change?" or "did the OS get upgraded before that issue started?" without cross-referencing screenshots or asking the user.
+
+Breeze detects these changes automatically: the agent takes periodic inventory snapshots and compares each one against the previous snapshot. Any difference is recorded as a change entry and surfaced here. A device that has just been upgraded to a newer agent records nothing on its first snapshot, so upgrading never produces a spurious burst of "added" entries.
+
+### What's Recorded
+
+Alongside the system-level changes covered in [Change Tracking](/features/change-tracking/) (software, services, startup items, network, scheduled tasks, and user accounts), the Change History tab records:
+
+| Category | Examples |
+|----------|----------|
+| **Hardware** | Memory capacity (for example, "4 GB → 8 GB"), CPU model or core count, total fixed-disk capacity, BIOS, and serial / motherboard changes. |
+| **OS Version** | Operating-system version upgrades. |
+
+<Aside type="note">
+  Disk changes are tracked by **total fixed-disk capacity**, so an upgrade that increases capacity is recorded. Swapping a disk for one of the same size is not distinguished as a separate change.
+</Aside>
+
+### Reading the Timeline
+
+Each entry shows:
+
+| Column | Contents |
+|--------|----------|
+| **When** | Timestamp of the detected change. |
+| **Type** | The change category (Hardware, OS Version, Software, Service, and so on). |
+| **Action** | Added, Removed, Modified, or Updated. |
+| **Subject** | What changed. |
+| **Change** | The before-and-after values — rendered as `old → new`, with additions shown as a new value and removals struck through. |
+
+Two filters narrow the list: a **Type** filter (including dedicated **Hardware** and **OS Version** options) and an **Action** filter (Added / Removed / Modified / Updated). The tab loads in pages of 100 entries with a **Load more** control, and is deep-linkable via the `#change-history` anchor.
+
+---
+
+Related pages: [Device Groups](/features/device-groups/) for organizing devices into collections, [Tags](/features/tags/) and [Custom Fields](/features/custom-fields/) for metadata, [Change Tracking](/features/change-tracking/) for software and configuration change auditing, and [IP History](/features/ip-history/) for the timeline of a device's network addresses.

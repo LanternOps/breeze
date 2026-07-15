@@ -150,6 +150,55 @@ curl -X DELETE https://breeze.yourdomain.com/api/v1/api-keys/KEY_UUID \
 
 ---
 
+## Service Principals
+
+A **service principal** is an API key that outlives the person who created it. Ordinary API keys are tied to the human who minted them: when that employee is off-boarded and loses their organization membership, keys they created stop working. That is the right default for interactive access, but it is wrong for a nightly backup script, a monitoring integration, or a CI pipeline that has to keep running after staff turnover. A service principal is the deliberate, audited home for that automation -- a first-class, organization-owned non-human identity that owns its own key, so the automation no longer depends on any one person's account staying alive.
+
+Service principals are managed from the same **API Keys** area of the dashboard. Every operation is gated the same way as human key management: it requires a signed-in user session (a service-principal key can never reach its own management surface), the `organizations:write` permission, and a completed MFA challenge.
+
+### What a Service Principal Can Do
+
+| Action | Effect |
+|--------|--------|
+| **Create** | Register a named principal for an organization with a chosen set of scopes, then mint its first key. |
+| **Rotate** | Issue a fresh key and immediately revoke the previous one. There is never a window where two keys for the same principal are active at once. The new key is shown exactly once. |
+| **Disable** | Retire the principal and cascade-revoke every active key it owns in a single step. |
+| **Adopt an existing key** | Re-point an existing human-owned API key onto a service principal, so an off-boarded employee's still-needed automation keeps running under a durable identity instead of dying with their account. |
+
+<Aside type="caution">
+  Just like a rotated API key, a newly minted or rotated service-principal key is returned **once**. Store it in your secrets manager immediately -- it cannot be retrieved later.
+</Aside>
+
+### Scope-Delegation Ceiling
+
+A service principal can never be handed authority that the person configuring it does not already hold. Every path that mints or re-points a live key -- create, rotate, and key adoption -- verifies that the acting user currently holds **every** scope being granted. A user cannot capture a broader-than-their-own credential by rotating a principal that a more privileged colleague set up, and when an existing key is adopted its scopes are narrowed to the intersection of the key's scopes and the principal's scopes.
+
+Because a service principal is organization-wide (it has no site dimension), a **site-restricted user cannot create or manage one** -- doing so would let their automation reach every site in the organization and escape their restriction. These users receive an explicit error.
+
+### Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `active` | The principal and its current key can authenticate. |
+| `disabled` | The principal has been retired and all of its keys have been revoked. |
+
+### API Reference
+
+All routes are prefixed with `/api/v1/service-principals`, require JWT (user-session) authentication, `organizations:write` for mutations, and a completed MFA challenge for every create/rotate/disable/adopt operation. An API key alone cannot call these endpoints.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/service-principals` | List principals for accessible organizations. Accepts `page`, `limit`, `orgId`, and `status` (`active` or `disabled`) query parameters. |
+| `POST` | `/service-principals` | Create a principal. Body: `orgId`, `name`, `scopes[]`. Subject to the scope-delegation ceiling. |
+| `GET` | `/service-principals/:id` | Retrieve a single principal. |
+| `POST` | `/service-principals/:id/rotate` | Mint a new key and revoke the prior one. Returns the new key once. |
+| `POST` | `/service-principals/:id/disable` | Disable the principal and cascade-revoke its keys. |
+| `POST` | `/service-principals/:id/migrate-key` | Adopt an existing key onto this principal. Body: `keyId`. The key must belong to the same organization; its scopes are clamped to the principal's scopes. |
+
+Every mutation is recorded in the audit log (`service_principal.create`, `service_principal.rotate_key`, `service_principal.disable`, `service_principal.migrate_key`) with the acting user, the principal, and -- for key operations -- the new key's prefix only. The raw key material is never logged.
+
+---
+
 ## Enrollment Keys
 
 Enrollment keys are purpose-built tokens for agent onboarding. They are tied to an organization (and optionally a site) and enforce both a time-to-live (TTL) and a maximum usage count to limit exposure.

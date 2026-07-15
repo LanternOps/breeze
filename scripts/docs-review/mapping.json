@@ -345,6 +345,18 @@
       ]
     },
     {
+      "pattern": "apps/api/src/routes/servicePrincipals.ts",
+      "docs": [
+        "reference/api-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/requestDatabaseConfig.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
       "pattern": "agent/internal/backup/**",
       "docs": [
         "backup/overview.mdx",
