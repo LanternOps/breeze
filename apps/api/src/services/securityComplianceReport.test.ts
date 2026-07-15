@@ -310,6 +310,16 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(names.join(' ')).toMatch(/umbrella|dns/);
   });
 
+  it('keeps the unidentified "other" provider off a client-facing inventory', async () => {
+    // The base fixture has a provider:'other' row. There is no pretty name for
+    // it, so dropping the guard in the generator would ship a green-dotted
+    // product literally called "other" on an insurance attestation PDF.
+    mockGeneratorQueries();
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const names = (r.summary as any).securityProducts.map((p: any) => p.product.toLowerCase());
+    expect(names).not.toContain('other');
+  });
+
   it('lists native and managed products once with unique scoped coverage', async () => {
     mockGeneratorQueries({
       2: [

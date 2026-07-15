@@ -17,14 +17,17 @@ const PROVIDER_NAMES: Record<string, string> = {
 };
 
 const EDR_PROVIDERS = new Set(['sentinelone', 'crowdstrike', 'elastic_defend']);
-const CATEGORY_ORDER: PostureProductCategory[] = [
-  'mdr',
-  'edr',
-  'antivirus',
-  'dns_filtering',
-  'backup',
-  'identity',
-];
+// Keyed by the union rather than an array: indexOf() on a missing member returns
+// -1 and silently sorts it to the front, whereas a new PostureProductCategory
+// that isn't ranked here fails the build.
+const CATEGORY_ORDER: Record<PostureProductCategory, number> = {
+  mdr: 0,
+  edr: 1,
+  antivirus: 2,
+  dns_filtering: 3,
+  backup: 4,
+  identity: 5,
+};
 
 export function prettySecurityProvider(provider: string): string {
   return PROVIDER_NAMES[provider] ?? provider;
@@ -82,7 +85,7 @@ export function buildSecurityProductInventory(
     }))
     .sort(
       (a, b) =>
-        CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category) ||
+        CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category] ||
         a.product.localeCompare(b.product),
     );
 }
