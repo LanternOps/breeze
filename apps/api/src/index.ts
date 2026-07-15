@@ -270,7 +270,9 @@ import { drainAuditRetryQueue } from './services/auditService';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
-import { mountExtensions } from './extensions/loader';
+import { loadSourceExtensions } from './extensions/loader';
+import { ExtensionContributionRegistry } from './extensions/contributionRegistry';
+import { mountExtensionGateway } from './extensions/gateway';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
@@ -938,6 +940,9 @@ api.route('/dr', drRoutes);
 api.route('/admin', adminRoutes);
 api.route('/admin', accountDeletionAdminRoutes);
 
+const extensionContributionRegistry = new ExtensionContributionRegistry();
+mountExtensionGateway(app, extensionContributionRegistry, async () => true);
+
 app.route('/api/v1', api);
 
 // 404 handler
@@ -1527,7 +1532,7 @@ async function bootstrap(): Promise<void> {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
   }
 
-  await mountExtensions(app);
+  await loadSourceExtensions(extensionContributionRegistry);
 
   try {
     await bootstrapPlatformAdmins();
