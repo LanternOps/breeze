@@ -1247,7 +1247,23 @@ Ran the suite natively on a real Windows host, not just `GOOS=windows go vet`. R
 | `TestNamedPipeSessionDetector` | Asserts every detected WTS session has a username; session 0 (Services) legitimately has none. **Test-logic bug** — fails on any host with a services session. | No — pre-existing bug in `main` |
 | 6 × `TestHandleScript*` | `bash` not installed on the VM. `windows-latest` ships Git-bash, so these should pass in CI. | N/A (environmental) |
 
-Recommendation: decide how the two SYSTEM-token tests should run in CI (skip-unless-SYSTEM with a loud reason, or run that package under a SYSTEM context), and fix `TestNamedPipeSessionDetector`'s username assertion. Until then the required Windows job blocks the branch on faults it did not introduce.
+**Resolved.** The two SYSTEM-token tests now skip with an explicit reason (`requireSystemIdentity`), and `TestNamedPipeSessionDetector` no longer requires a username for session 0. `sessionbroker` is green on both windows-latest and the Server 2022 host.
+
+### Windows CI outcome (PR #2520, run 29390886709)
+
+38/40 checks pass. `test-agent-windows` needed two fixes before it could report at all:
+
+1. **cgo.** The job was born broken: `-race` forces `CGO_ENABLED=1`, `internal/remote/desktop` cannot compile with cgo on Windows (`comVtblFn`/`dxgiCapturer`/`procDeleteObject` are defined in `windows && !cgo` files but used from plain-`windows` ones), and `heartbeat`/`agentapp` import it transitively — so the ORIGINAL curated list would have failed identically. Fixed with `CGO_ENABLED: "0"`.
+2. **Inherited red.** Six tests fail on windows-latest. All six exist on `main` and none of their files are touched by this branch:
+   - `heartbeat`: `TestSendHelperTokenUpdateOnlyReachesAssistSessions`, `TestHandleHelperSessionAuthenticatedPushesOnlyToAssist`, `TestReconcileUserHelper_UnexpectedStatError_NoDownload`, `TestResolveRunAsSessionUserPrefersRunAsUserScope`
+   - `agentapp`: `TestStaticUnitMatchesEmbedded`
+   - `config`: `TestPersistedServerURLProviderFollowsPromotion`
+
+   The job is therefore scoped to `sessionbroker`, `eventlog`, `watchdog`, `cmd/breeze-watchdog` — all verified green on windows-latest AND the Server 2022 host. A gate that is red on inherited debt gets ignored; a green one that covers the branch's own Windows code does not.
+
+**Follow-up issue needed:** fix the 6 tests above plus the `./...` backlog (`backup{,/providers,/systemstate}`, `peripheral`, `procoutput`, `remote/{desktop,filedrop,tools}`, `updater`), then widen the job to `./...` and re-add `heartbeat`/`agentapp`/`config`. Also: `internal/remote/desktop`'s five mis-tagged files should get `&& !cgo` so the package's real constraint is explicit.
+
+The `TestHandleScript*` bash failures seen on the Server 2022 host do NOT occur on windows-latest, which ships Git-bash — environmental, not a defect.
 
 ## Out of scope (file as follow-up issues, do not fix here)
 
