@@ -589,3 +589,16 @@ git commit -m "test(api): stabilize final cold-path harnesses"
 ### Task 17: Final handoff gate
 
 Run the expanded focused set, lint, direct TypeScript compilation, and two consecutive normal API-suite runs with the committed worker cap and no CLI overrides. Both runs must pass. Then complete final whole-branch review and address all Critical/Important findings plus any recorded stale-comment/mock-export cleanup.
+
+### Task 18: Decouple bootstrap permission parity from the AI tool registry
+
+**Files:**
+- Modify: `apps/api/src/services/aiGuardrails.bootstrapParity.test.ts`
+
+Add a static `./aiTools` mock exporting `getToolTier` because this test exercises the real bootstrap tool names against the real `TOOL_PERMISSIONS` map, not the independently covered eager 48-tool registry. Keep real `initMcpBootstrap`, real `aiGuardrails.TOOL_PERMISSIONS`, the non-empty assertion, and exact empty-missing assertion. Do not change its timeout or production code.
+
+Verify the bootstrap parity test under `--no-cache`, then run it with `aiGuardrails.test.ts`, `aiToolsRegistryParity.test.ts`, and the two bootstrap handler suites. Run TypeScript, commit as `test(api): isolate bootstrap permission parity`.
+
+### Task 19: Definitive all-green verification and review
+
+Run the focused gate, lint, TypeScript, and two forced-fresh normal API suites. Both must pass with zero timeout messages. Then perform final whole-branch review and cleanup.
