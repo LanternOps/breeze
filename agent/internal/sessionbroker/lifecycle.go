@@ -12,7 +12,20 @@ const (
 	initialDelay      = 3 * time.Second
 	reconcileInterval = 30 * time.Second
 
-	wtsSessionDisconnect = 0x4
+	// WTS_* notification codes from winuser.h, forwarded verbatim by the SCM
+	// SessionChange handler (service_windows.go) — it filters nothing, so every
+	// code below can arrive.
+	//
+	// Connect/disconnect come in console and remote PAIRS. Naming matters here:
+	// this set was previously a single `wtsSessionDisconnect = 0x4`, whose name
+	// implied it covered disconnects generally. It does not — 0x4 is
+	// WTS_REMOTE_DISCONNECT only. Console disconnect (0x2) went unhandled, and
+	// WTS_REMOTE_CONNECT (0x3) — an RDP user reconnecting to their existing
+	// session — had no case at all.
+	wtsConsoleConnect    = 0x1
+	wtsConsoleDisconnect = 0x2
+	wtsRemoteConnect     = 0x3
+	wtsRemoteDisconnect  = 0x4
 	wtsSessionLogon      = 0x5
 	wtsSessionLogoff     = 0x6
 	wtsSessionLock       = 0x7
@@ -86,10 +99,16 @@ func (m *HelperLifecycleManager) handleSCMEvent(event SCMSessionEvent) {
 	systemKey := HelperKey{WindowsSessionID: event.SessionID, Role: "system"}
 	userKey := HelperKey{WindowsSessionID: event.SessionID, Role: "user"}
 	switch event.EventType {
-	case wtsSessionLogon, wtsSessionUnlock, wtsSessionCreate:
+	// Session became usable. Reconnect (console 0x1 / remote 0x3) belongs here:
+	// the session already exists and the user never logged off, so no
+	// logon/unlock/create fires and only these codes signal the return.
+	case wtsSessionLogon, wtsSessionUnlock, wtsSessionCreate, wtsConsoleConnect, wtsRemoteConnect:
 		m.registry.clearFatal(event.SessionID)
 		m.reconcile()
-	case wtsSessionDisconnect:
+	// Session went away but is still logged on. The user helper requires
+	// state=="active" so it goes; the SYSTEM helper is retained deliberately
+	// (an RDP session keeps running when disconnected).
+	case wtsRemoteDisconnect, wtsConsoleDisconnect:
 		m.removeDesired(userKey)
 		m.stopKey(userKey)
 		m.reconcile()

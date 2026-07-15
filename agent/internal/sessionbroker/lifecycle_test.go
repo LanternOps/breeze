@@ -42,7 +42,7 @@ func TestHandleSCMDisconnectStopsUserAndRetainsSystem(t *testing.T) {
 	m.desired[HelperKey{WindowsSessionID: 7, Role: "system"}] = true
 	m.desired[HelperKey{WindowsSessionID: 7, Role: "user"}] = true
 
-	m.handleSCMEvent(SCMSessionEvent{EventType: wtsSessionDisconnect, SessionID: 7})
+	m.handleSCMEvent(SCMSessionEvent{EventType: wtsRemoteDisconnect, SessionID: 7})
 
 	if !aliveNow(t, system) {
 		t.Fatal("system helper was stopped on disconnect")
@@ -83,5 +83,45 @@ func TestFatalExitCodeConsistency(t *testing.T) {
 func TestPanicExitCodeConsistency(t *testing.T) {
 	if helperPanicExitCode != 3 || helperPanicExitCode == helperFatalExitCode {
 		t.Fatalf("panic exit code = %d, fatal = %d", helperPanicExitCode, helperFatalExitCode)
+	}
+}
+
+// TestHandleSCMRemoteConnectRestoresUserHelper covers reconnecting to an
+// existing, previously-disconnected RDP session — the core flow of this branch.
+//
+// Windows fires WTS_REMOTE_CONNECT (0x3) for that, NOT logon/unlock/create: the
+// session already exists and the user never logged off. Before this case
+// existed, 0x3 fell through the switch and the user helper (which requires
+// state=="active") came back only on the next 30s reconcile tick, so a
+// reconnecting user sat without a helper for up to half a minute.
+func TestHandleSCMRemoteConnectRestoresUserHelper(t *testing.T) {
+	m, spawner := newWindowsLifecycleHarness(t, []DetectedSession{{Session: "7", State: "active", Type: "rdp"}})
+	userKey := HelperKey{WindowsSessionID: 7, Role: "user"}
+
+	m.handleSCMEvent(SCMSessionEvent{EventType: wtsRemoteConnect, SessionID: 7})
+
+	if got := spawner.SpawnCount(userKey); got == 0 {
+		t.Fatal("RDP reconnect did not spawn the user helper; it will not return until the next reconcile tick")
+	}
+}
+
+// TestHandleSCMConsoleDisconnectStopsUserHelper covers switch-user / lock at the
+// physical console, which fires WTS_CONSOLE_DISCONNECT (0x2). The constant
+// formerly named wtsSessionDisconnect was really WTS_REMOTE_DISCONNECT (0x4)
+// only, so the console case was unhandled and the user helper survived a
+// console disconnect.
+func TestHandleSCMConsoleDisconnectStopsUserHelper(t *testing.T) {
+	m, _ := newWindowsLifecycleHarness(t, []DetectedSession{{Session: "7", State: "disconnected", Type: "console"}})
+	system := newFakeHelperProcess(6300)
+	user := newFakeHelperProcess(6400)
+	m.registry.attach(HelperKey{WindowsSessionID: 7, Role: "system"}, system, "helper", "system-helper")
+	m.registry.attach(HelperKey{WindowsSessionID: 7, Role: "user"}, user, "helper", "user-helper")
+	m.desired[HelperKey{WindowsSessionID: 7, Role: "system"}] = true
+	m.desired[HelperKey{WindowsSessionID: 7, Role: "user"}] = true
+
+	m.handleSCMEvent(SCMSessionEvent{EventType: wtsConsoleDisconnect, SessionID: 7})
+
+	if aliveNow(t, user) {
+		t.Fatal("user helper survived a console disconnect")
 	}
 }
