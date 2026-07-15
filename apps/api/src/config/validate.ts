@@ -1299,6 +1299,28 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     // (AGENT_ENROLLMENT_SECRET is now a hard error in production — see the
     // schema superRefine. No warning needed here; the validator throws if
     // it's missing or weak.)
+
+    // SR2-16: a prod deploy that trusts proxy headers but leaves
+    // TRUST_CF_CONNECTING_IP off resolves client IPs from X-Forwarded-For only.
+    // That is correct for a non-Cloudflare front, but a Cloudflare-fronted
+    // deploy that forgets the flag silently loses CF-Connecting-IP attribution —
+    // rate limits, audit-log IPs and partner IP allowlists then key off XFF (or
+    // the proxy hop if XFF isn't populated). Warn so the flag is a conscious
+    // choice; hard-failing would break legitimate non-Cloudflare self-hosters.
+    const trustProxy = (env.TRUST_PROXY_HEADERS ?? '').trim().toLowerCase();
+    const proxyTrustOn = ['1', 'true', 'yes', 'on'].includes(trustProxy);
+    const trustCf = (env.TRUST_CF_CONNECTING_IP ?? '').trim().toLowerCase();
+    const cfTrustOff = !['1', 'true', 'yes', 'on'].includes(trustCf);
+    if (proxyTrustOn && cfTrustOff) {
+      warnings.push({
+        key: 'TRUST_CF_CONNECTING_IP',
+        message:
+          'Proxy header trust is enabled but TRUST_CF_CONNECTING_IP is off, so CF-Connecting-IP is ignored. ' +
+          'This is correct for a non-Cloudflare front. If this deployment IS behind Cloudflare, set ' +
+          'TRUST_CF_CONNECTING_IP=true — otherwise client IPs (rate limits, audit logs, IP allowlists) resolve ' +
+          'from X-Forwarded-For instead of the Cloudflare edge IP.',
+      });
+    }
   }
 
   // Warn when 2FA is globally disabled: this neuters ALL requireMfa() step-up

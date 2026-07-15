@@ -32,6 +32,7 @@ describe('OpenAISessionManager.getOrCreate — auditSnapshot.ip via trusted reso
     else process.env.TRUST_PROXY_HEADERS = origTrust;
     if (origCidrs === undefined) delete process.env.TRUSTED_PROXY_CIDRS;
     else process.env.TRUSTED_PROXY_CIDRS = origCidrs;
+    delete process.env.TRUST_CF_CONNECTING_IP;
   });
 
   it('records undefined, not a spoofed x-forwarded-for, when the peer is untrusted (SR2-16)', () => {
@@ -51,6 +52,7 @@ describe('OpenAISessionManager.getOrCreate — auditSnapshot.ip via trusted reso
   it('records the real trusted client IP when the peer is a trusted proxy (SR2-16)', () => {
     process.env.TRUST_PROXY_HEADERS = 'true';
     process.env.TRUSTED_PROXY_CIDRS = '198.51.100.77/32';
+    process.env.TRUST_CF_CONNECTING_IP = 'true';
 
     manager = new OpenAISessionManager({} as OpenAICompatibleProvider);
     const ctx = makeContext({ 'cf-connecting-ip': '203.0.113.5' }, '198.51.100.77');

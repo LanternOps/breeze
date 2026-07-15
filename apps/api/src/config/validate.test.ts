@@ -726,6 +726,40 @@ describe('validateConfig', () => {
     warnSpy.mockRestore();
   });
 
+  it('warns when proxy trust is on but TRUST_CF_CONNECTING_IP is off in production (SR2-16)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      validateConfig();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('TRUST_CF_CONNECTING_IP')
+      );
+    });
+    warnSpy.mockRestore();
+  });
+
+  it('does not warn about TRUST_CF_CONNECTING_IP when it is enabled', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      TRUST_CF_CONNECTING_IP: 'true',
+    }, () => {
+      validateConfig();
+      const cfWarnings = warnSpy.mock.calls
+        .flat()
+        .filter((m) => typeof m === 'string' && m.includes('TRUST_CF_CONNECTING_IP'));
+      expect(cfWarnings).toHaveLength(0);
+    });
+    warnSpy.mockRestore();
+  });
+
   it('accepts optional Stripe env vars (API-key model — no Connect OAuth)', () => {
     withEnv({
       ...validEnv,

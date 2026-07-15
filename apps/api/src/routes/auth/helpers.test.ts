@@ -269,7 +269,7 @@ describe('evaluatePendingMfa (SR2-06)', () => {
 describe('getClientRateLimitKey — spoof-proof per-IP key (SR2-16)', () => {
   const origTrust = process.env.TRUST_PROXY_HEADERS;
   beforeEach(() => { process.env.TRUST_PROXY_HEADERS = 'false'; }); // untrusted / no proxy trust
-  afterEach(() => { if (origTrust === undefined) delete process.env.TRUST_PROXY_HEADERS; else process.env.TRUST_PROXY_HEADERS = origTrust; });
+  afterEach(() => { if (origTrust === undefined) delete process.env.TRUST_PROXY_HEADERS; else process.env.TRUST_PROXY_HEADERS = origTrust; delete process.env.TRUST_CF_CONNECTING_IP; });
 
   it('keys on the SOCKET peer, so a rotating spoofed X-Forwarded-For from the same peer yields the SAME key (cannot evade the per-IP limit)', () => {
     // GUARD-BITE: RED today — the fingerprint hashes x-forwarded-for, so the two
@@ -291,6 +291,7 @@ describe('getClientRateLimitKey — spoof-proof per-IP key (SR2-16)', () => {
   it('prefers the trusted client IP when proxy trust is properly configured', () => {
     process.env.TRUST_PROXY_HEADERS = 'true';
     process.env.TRUSTED_PROXY_CIDRS = '198.51.100.77/32';
+    process.env.TRUST_CF_CONNECTING_IP = 'true';
     const key = getClientRateLimitKey(makeContext({ 'cf-connecting-ip': '203.0.113.5' }, '198.51.100.77'));
     expect(key).toBe('ip:203.0.113.5');
     delete process.env.TRUSTED_PROXY_CIDRS;

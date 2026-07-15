@@ -579,6 +579,7 @@ describe('POST /devices/provision', () => {
         else process.env.TRUST_PROXY_HEADERS = origTrust;
         if (origCidrs === undefined) delete process.env.TRUSTED_PROXY_CIDRS;
         else process.env.TRUSTED_PROXY_CIDRS = origCidrs;
+        delete process.env.TRUST_CF_CONNECTING_IP;
       });
 
       function fetchReqWithPeer(headers: Record<string, string>, remoteAddress?: string) {
@@ -624,6 +625,7 @@ describe('POST /devices/provision', () => {
       it('records the real cf-connecting-ip when the peer is a trusted proxy (SR2-16)', async () => {
         process.env.TRUST_PROXY_HEADERS = 'true';
         process.env.TRUSTED_PROXY_CIDRS = '198.51.100.77/32';
+        process.env.TRUST_CF_CONNECTING_IP = 'true';
 
         mockHandleSelect([
           {

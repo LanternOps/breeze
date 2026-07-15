@@ -110,6 +110,11 @@ services:
       # it — a CIDR that matches nothing simply means no headers are trusted.
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-${BREEZE_CADDY_IP:-172.31.0.10}/32}
+      # Only trust CF-Connecting-IP when this deployment is genuinely fronted by
+      # Cloudflare — a non-CF reverse proxy does not strip the header, so a
+      # client could otherwise spoof it. Off by default; set true in .env only
+      # if you front Breeze with Cloudflare.
+      TRUST_CF_CONNECTING_IP: ${TRUST_CF_CONNECTING_IP:-}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
       MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
       ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
