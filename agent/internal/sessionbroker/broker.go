@@ -648,23 +648,63 @@ func (b *Broker) finishPreAuth(conn net.Conn) {
 	b.acceptMu.Unlock()
 }
 
+// aLongTimeAgo is a deadline far enough in the past that setting it cancels any
+// pending IO immediately. Mirrors the net/http idiom.
+var aLongTimeAgo = time.Unix(1, 0)
+
+// armHandshakeDeadline gives rawConn its handshake deadline, unless the broker
+// has already stopped accepting — in which case the caller must close and give
+// up.
+//
+// This runs under acceptMu to order it against StopAcceptingAndWait, which
+// cancels unpublished connections by setting a deadline in the past. Without
+// that ordering a handler could re-arm a future deadline immediately after
+// shutdown cancelled it, silently undoing the cancellation and stalling
+// shutdown for a full HandshakeTimeout. A deadline, unlike a closed handle, can
+// be overwritten — so the two must not interleave.
+func (b *Broker) armHandshakeDeadline(rawConn net.Conn) bool {
+	b.acceptMu.Lock()
+	defer b.acceptMu.Unlock()
+	if b.acceptStopped {
+		return false
+	}
+	_ = rawConn.SetDeadline(time.Now().Add(HandshakeTimeout))
+	return true
+}
+
+// StopAcceptingAndWait stops admitting new connections and waits for in-flight
+// pre-auth handlers to finish.
+//
+// Unpublished connections are cancelled with a past deadline rather than closed
+// here. handleConnection reads the raw pipe handle via ipc.GetPeerCredentials,
+// and go-winio's Fd() reads win32File.handle with no synchronization while
+// Close() writes it — closing from this goroutine is a real data race, caught by
+// -race on windows. The consequence is worse than a torn read: a handle closed
+// mid-call can be reused by the OS for an unrelated object, so
+// GetNamedPipeClientProcessId could report a different process's PID and the
+// broker would derive that peer's SID. This is the authentication path.
+//
+// A past deadline cancels pending IO immediately (go-winio special-cases it),
+// never touches the handle, and leaves the handler as the sole owner of closing
+// the connection — every early-exit path in handleConnection closes it.
+//
+// Published connections are excluded: acceptStopped is set under acceptMu here,
+// so beginConnectionPublication returns false afterwards. Nothing cancelled here
+// can later become a live session and inherit a dead deadline, and a connection
+// that already published clears the handshake deadline itself.
 func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
 	b.acceptMu.Lock()
 	b.acceptStopped = true
 	listener := b.listener
 	b.listener = nil
-	connections := make([]net.Conn, 0, len(b.preAuthConns))
 	for conn, publishing := range b.preAuthConns {
 		if !publishing {
-			connections = append(connections, conn)
+			_ = conn.SetDeadline(aLongTimeAgo)
 		}
 	}
 	b.acceptMu.Unlock()
 	if listener != nil {
 		_ = listener.Close()
-	}
-	for _, conn := range connections {
-		_ = conn.Close()
 	}
 	done := make(chan struct{})
 	go func() {
@@ -1500,8 +1540,12 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	if b.beforePreAuthRead != nil {
 		b.beforePreAuthRead()
 	}
-	// Set handshake deadline
-	rawConn.SetDeadline(time.Now().Add(HandshakeTimeout))
+	// Set handshake deadline. Fails closed if shutdown began first, so we never
+	// re-arm a connection StopAcceptingAndWait just cancelled.
+	if !b.armHandshakeDeadline(rawConn) {
+		rawConn.Close()
+		return
+	}
 
 	// Step 1: Get peer credentials (kernel-enforced)
 	creds, err := ipc.GetPeerCredentials(rawConn)
