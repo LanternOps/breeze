@@ -10,8 +10,8 @@ export type IpAllowlistMode = 'enforce' | 'off';
 
 export type IpAllowlistDecision =
   | { decision: 'allow' }
-  | { decision: 'deny'; reason: 'not_in_list' }
-  | { decision: 'skip'; reason: 'mode_off' | 'empty_list' | 'untrusted_ip' | 'platform_admin' | 'no_partner' };
+  | { decision: 'deny'; reason: 'not_in_list' | 'untrusted_ip' }
+  | { decision: 'skip'; reason: 'mode_off' | 'empty_list' | 'platform_admin' | 'no_partner' };
 
 export const IP_NOT_ALLOWED_BODY = {
   code: 'ip_not_allowed',
@@ -33,7 +33,7 @@ export function evaluateIpAllowlist(params: {
   if (mode === 'off') return { decision: 'skip', reason: 'mode_off' };
   if (!allowlist || allowlist.length === 0) return { decision: 'skip', reason: 'empty_list' };
   if (isPlatformAdmin) return { decision: 'skip', reason: 'platform_admin' };
-  if (clientIp === undefined) return { decision: 'skip', reason: 'untrusted_ip' };
+  if (clientIp === undefined) return { decision: 'deny', reason: 'untrusted_ip' };
   return ipMatchesAny(clientIp, allowlist)
     ? { decision: 'allow' }
     : { decision: 'deny', reason: 'not_in_list' };
@@ -127,6 +127,11 @@ export async function enforceIpAllowlist(
   });
 
   if (isBlocked(decision)) {
+    // untrusted_ip denies also fire the loud operator warning: this combination
+    // (allowlist configured, true client IP undeterminable) almost always means
+    // TRUST_PROXY_HEADERS/TRUSTED_PROXY_CIDRS is unconfigured or stale (#2364),
+    // and the partner is now locked out rather than silently bypassed (SR2-16).
+    if (decision.reason === 'untrusted_ip') warnInactiveAllowlist(params.partnerId);
     writeAuditEvent(c, {
       orgId: null,
       action: 'ip_allowlist.denied',
@@ -136,7 +141,7 @@ export async function enforceIpAllowlist(
       actorType: 'user',
       actorId: params.actorId ?? null,
       actorEmail: params.actorEmail ?? undefined,
-      details: { clientIp: clientIp ?? null },
+      details: { clientIp: clientIp ?? null, reason: decision.reason },
     });
   } else if (decision.decision === 'skip' && decision.reason === 'platform_admin') {
     writeAuditEvent(c, {
@@ -150,8 +155,6 @@ export async function enforceIpAllowlist(
       actorEmail: params.actorEmail ?? undefined,
       details: { clientIp: clientIp ?? null },
     });
-  } else if (decision.decision === 'skip' && decision.reason === 'untrusted_ip') {
-    warnInactiveAllowlist(params.partnerId);
   }
 
   return decision;

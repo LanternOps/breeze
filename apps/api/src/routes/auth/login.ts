@@ -409,8 +409,8 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
   }
 
   // Partner IP allowlist: block before issuing tokens so the login form shows
-  // a precise error. Platform admins and untrusted-IP fail-open are handled
-  // inside enforceIpAllowlist.
+  // a precise error. Platform admins bypass; an untrusted/undeterminable
+  // client IP now FAILS CLOSED (deny) inside enforceIpAllowlist (SR2-16).
   let ipDecision;
   try {
     ipDecision = await enforceIpAllowlist(c, {
