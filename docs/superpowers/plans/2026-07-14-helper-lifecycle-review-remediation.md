@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **STATUS: Phase 1 COMPLETE** (2026-07-14). All 9 tasks executed and committed (`77c75f5cf`..`0785194fa`); verification gate green (`go test -race -count=1 ./...`, darwin+windows builds, vet clean). **Task 6 shipped its visibility half only** — the planned ownership-retention was rejected during execution after verifying it would wedge the helper key permanently; see "Out of scope" for the full reasoning. Phase 2 (watchdog slice 6) is tracked in its own plan doc.
+
 **Goal:** Close the eight verified review blockers in the Windows helper lifecycle layer so slices 1-5 of `2026-07-14-windows-agent-helper-lifecycle-durability-design.md` are merge-ready, before executing the watchdog slice.
 
 **Architecture:** Every blocker shares one root cause — the helper liveness layer collapses "I don't know" into "it's dead". The fix widens `helperProcess.Alive()` to `(bool, error)` so uncertainty is representable, then makes each of the four call sites fail *closed* (unknown ⇒ assume alive ⇒ terminate/refuse, never ⇒ spawn a duplicate). Around that root fix sit five independent repairs: restore deleted security-gate coverage, make the Windows CI job auto-discover packages, close a fail-open to SYSTEM, replace the deleted `KillStaleHelpers` deadlock-breaker with a startup timeout that finally reads `launchedAt`, and make a failed helper kill both visible and retryable.
@@ -28,7 +30,7 @@
 - `agent/internal/sessionbroker/lifecycle_core.go` — `helperProcess` interface + `stopTrackedKey`/`reconcile` callers (Tasks 4, 5); `watchDetachedProcess` logging (Task 8).
 - `agent/internal/sessionbroker/lifecycle_registry.go` — `reserve`/`detach`/`markSessionClosed` callers (Task 4); `startupExpired` + `launchedAt` wiring (Task 5).
 - `agent/internal/sessionbroker/lifecycle_registry_test.go` — `fakeHelperProcess` implements the new signature (Task 4).
-- `agent/internal/sessionbroker/broker.go` — `TerminateHelperKey` visibility + key retention (Task 6).
+- `agent/internal/sessionbroker/broker.go` — `TerminateHelperKey` failure visibility (Task 6; the key-retention half was rejected during execution — see "Out of scope").
 - `agent/internal/sessionbroker/broker_admission.go` — resolve the stale `helperOwnerReplaceable` comment (Task 7).
 - `agent/internal/heartbeat/heartbeat.go` — bootstrap retry (Task 7).
 
@@ -45,7 +47,7 @@
 - Consumes: `roleIdentityRejection(role, sid string, uid uint32, peerWinSession, claimedWinSession, consoleWinSession, goos string) (reason string, rejected bool)` from `broker.go:2119`; `systemSID` const; `ipc.HelperRoleAssist`, `ipc.HelperRoleWatchdog`.
 - Produces: nothing consumed by later tasks.
 
-- [ ] **Step 1: Add the five failing cases to the existing table**
+- [x] **Step 1: Add the five failing cases to the existing table**
 
 In `console_session_gate_test.go`, the table literal currently ends with the `"assist remains console bound"` line. Add these five cases immediately after it, inside the same `}{...}` literal:
 
@@ -57,14 +59,14 @@ In `console_session_gate_test.go`, the table literal currently ends with the `"a
 		{"watchdog as non-SYSTEM rejected", ipc.HelperRoleWatchdog, nonSystemSID, "1", "1", "1", "watchdog role requires SYSTEM identity", true},
 ```
 
-- [ ] **Step 2: Run the test to confirm the restored cases pass against current code**
+- [x] **Step 2: Run the test to confirm the restored cases pass against current code**
 
 Run: `cd agent && go test -race ./internal/sessionbroker -run TestRoleIdentityRejection -v`
 Expected: PASS, 12 subtests. These cases describe behavior the code *already has* — they pass now. Their value is proven in Step 3, not here.
 
 If `"assist rejected when console lookup failed (session 0 sentinel)"` FAILS, stop and report: it means the `consoleWinSession == "0"` disjunct at `broker.go:2139` does not behave as the #1009 fix intends, which is a real bug rather than a test gap.
 
-- [ ] **Step 3: Prove each case actually guards its gate (mutation check)**
+- [x] **Step 3: Prove each case actually guards its gate (mutation check)**
 
 For each mutation below, apply it to `agent/internal/sessionbroker/broker.go`, run `cd agent && go test ./internal/sessionbroker -run TestRoleIdentityRejection`, confirm **FAIL**, then revert the mutation with `git checkout agent/internal/sessionbroker/broker.go`.
 
@@ -75,17 +77,17 @@ For each mutation below, apply it to `agent/internal/sessionbroker/broker.go`, r
 
 All four must FAIL. Any mutation that still passes means the case does not guard its gate — fix the case before continuing.
 
-- [ ] **Step 4: Verify the working tree is clean of mutations**
+- [x] **Step 4: Verify the working tree is clean of mutations**
 
 Run: `cd agent && git diff --stat internal/sessionbroker/broker.go`
 Expected: empty output. If not, `git checkout agent/internal/sessionbroker/broker.go`.
 
-- [ ] **Step 5: Run the full package suite**
+- [x] **Step 5: Run the full package suite**
 
 Run: `cd agent && go test -race ./internal/sessionbroker`
 Expected: `ok`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add agent/internal/sessionbroker/console_session_gate_test.go
@@ -105,7 +107,7 @@ git commit -m "test(agent): restore deleted helper role-authorization gate cases
 - Consumes: the `test-agent-windows` job added earlier on this branch.
 - Produces: nothing consumed by later tasks.
 
-- [ ] **Step 1: Confirm the gap is real before changing anything**
+- [x] **Step 1: Confirm the gap is real before changing anything**
 
 Run: `grep -n 'go test -race ./internal/sessionbroker' .github/workflows/ci.yml`
 Expected: line 720, with no `./internal/eventlog` in the list.
@@ -113,7 +115,7 @@ Expected: line 720, with no `./internal/eventlog` in the list.
 Run: `head -1 agent/internal/eventlog/eventlog_windows_test.go`
 Expected: `//go:build windows` — confirming the Linux job cannot run it.
 
-- [ ] **Step 2: Replace the hardcoded list with package auto-discovery**
+- [x] **Step 2: Replace the hardcoded list with package auto-discovery**
 
 In `.github/workflows/ci.yml`, replace line 720:
 
@@ -133,7 +135,7 @@ with:
         run: go test -race ./...
 ```
 
-- [ ] **Step 3: Verify the cross-compile still builds every test binary**
+- [x] **Step 3: Verify the cross-compile still builds every test binary**
 
 `go test -race ./...` cannot run on this darwin host for Windows, so vet is the compile check. Run:
 
@@ -141,12 +143,12 @@ with:
 
 Expected: only `VET_DONE`. The filtered `unsafe.Pointer` warnings are pre-existing in `internal/remote/desktop` and out of scope.
 
-- [ ] **Step 4: Verify the YAML parses**
+- [x] **Step 4: Verify the YAML parses**
 
 Run: `python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/ci.yml')); print('YAML_OK')"`
 Expected: `YAML_OK`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .github/workflows/ci.yml
@@ -169,7 +171,7 @@ git commit -m "ci(agent): auto-discover Windows test packages"
 - Consumes: `HelperKey{WindowsSessionID uint32; Role string}` from `helper_key.go:8`; `ResolvedHelperExecutable` from `userhelper_path.go:45`; `ipc.HelperRoleSystem`/`ipc.HelperRoleUser` (`ipc/message.go:123-124`).
 - Produces: `helperRoleSpawnable(role string) bool` — used by no later task, but keep the name stable.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `createHelperSuspended` calls real Windows APIs, so it cannot be unit-tested on this host. Extract and test the *decision*. Append to `agent/internal/sessionbroker/spawner_cmdline_test.go`:
 
@@ -200,12 +202,12 @@ func TestHelperRoleSpawnableRejectsNonLifecycleRoles(t *testing.T) {
 
 Ensure the file's import block includes `"github.com/breeze-rmm/agent/internal/ipc"`.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cd agent && go test ./internal/sessionbroker -run TestHelperRoleSpawnable`
 Expected: FAIL — `undefined: helperRoleSpawnable`
 
-- [ ] **Step 3: Add the predicate in a platform-neutral file**
+- [x] **Step 3: Add the predicate in a platform-neutral file**
 
 `spawner_cmdline_test.go` has no build tag, so the predicate must live in a file that builds everywhere. Add to `agent/internal/sessionbroker/helper_key.go` (imports `"github.com/breeze-rmm/agent/internal/ipc"` — add it):
 
@@ -222,12 +224,12 @@ func helperRoleSpawnable(role string) bool {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd agent && go test ./internal/sessionbroker -run TestHelperRoleSpawnable -v`
 Expected: PASS, 7 subtests.
 
-- [ ] **Step 5: Make the spawn switch exhaustive and fail closed**
+- [x] **Step 5: Make the spawn switch exhaustive and fail closed**
 
 Replace `createHelperSuspended` at `spawner_windows.go:313-318` in full. It calls the predicate rather than duplicating the role list, so the tested predicate is the thing that actually guards the privilege boundary:
 
@@ -254,7 +256,7 @@ func createHelperSuspended(key HelperKey, resolvedExe ResolvedHelperExecutable) 
 
 Confirm `spawner_windows.go` imports both `"fmt"` and `"github.com/breeze-rmm/agent/internal/ipc"`; add whichever is missing.
 
-- [ ] **Step 6: Gate the platform-neutral spawn path on the same predicate**
+- [x] **Step 6: Gate the platform-neutral spawn path on the same predicate**
 
 `createHelperSuspended` is Windows-only, so Step 5 cannot be tested on this host. Add the same guard to `spawnKey` in `lifecycle_core.go:256` — a path that *is* testable everywhere — immediately after the `m.mu.Lock()` and the `m.stopping || !m.desired[key]` check, before the reserve:
 
@@ -268,7 +270,7 @@ Confirm `spawner_windows.go` imports both `"fmt"` and `"github.com/breeze-rmm/ag
 
 Match the surrounding unlock style exactly — the existing early returns in `spawnKey` unlock explicitly rather than using `defer`.
 
-- [ ] **Step 7: Write the failing test for the spawn-path gate**
+- [x] **Step 7: Write the failing test for the spawn-path gate**
 
 Append to `agent/internal/sessionbroker/lifecycle_registry_test.go`. This reuses the package's real harness (`newLifecycleHarness` at `:316`) and real fake (`fakeHelperSpawner` at `:162`, which already counts spawns per key in its `spawned` map — no new counter needed):
 
@@ -298,23 +300,23 @@ func TestSpawnKeyRefusesNonLifecycleRole(t *testing.T) {
 
 If `m.desired`'s type is not `map[HelperKey]bool`, match its real declaration in `lifecycle_core.go` — check with `grep -n 'desired ' agent/internal/sessionbroker/lifecycle_core.go`.
 
-- [ ] **Step 8: Run the test to verify it fails, then passes**
+- [x] **Step 8: Run the test to verify it fails, then passes**
 
 Run: `cd agent && go test ./internal/sessionbroker -run TestSpawnKeyRefusesNonLifecycleRole`
 
 Expected before Step 6's guard is added: FAIL (spawner called once). With the guard: PASS. If it passes *before* the guard exists, the test is vacuous — find out what else is short-circuiting the spawn and fix the test.
 
-- [ ] **Step 9: Verify the Windows path still compiles**
+- [x] **Step 9: Verify the Windows path still compiles**
 
 Run: `cd agent && GOOS=windows go vet ./internal/sessionbroker`
 Expected: clean (no output). This is the only check that compiles the Step 5 change on this host.
 
-- [ ] **Step 10: Run the full package suite**
+- [x] **Step 10: Run the full package suite**
 
 Run: `cd agent && go test -race ./internal/sessionbroker`
 Expected: `ok`
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add agent/internal/sessionbroker/helper_key.go agent/internal/sessionbroker/spawner_windows.go agent/internal/sessionbroker/lifecycle_core.go agent/internal/sessionbroker/spawner_cmdline_test.go agent/internal/sessionbroker/lifecycle_registry_test.go
@@ -339,7 +341,7 @@ This is the root fix. `helperProcess.Alive() bool` cannot express failure, so a 
 - Consumes: `helperProcess` interface (`lifecycle_core.go:23`).
 - Produces: `helperProcess.Alive() (bool, error)` — Task 5 relies on this signature. `fakeHelperProcess.aliveErr error` field — Task 5's tests reuse it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `agent/internal/sessionbroker/lifecycle_registry_test.go`:
 
@@ -386,12 +388,12 @@ func TestMarkSessionClosedTreatsUnknownLivenessAsAlive(t *testing.T) {
 
 Ensure the file imports `"errors"`.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd agent && go test ./internal/sessionbroker -run 'TestReserveRefusesWhenLivenessUnknown|TestMarkSessionClosedTreatsUnknownLivenessAsAlive'`
 Expected: FAIL — `process.setAliveErr undefined`
 
-- [ ] **Step 3: Widen the interface**
+- [x] **Step 3: Widen the interface**
 
 In `lifecycle_core.go`, change line 26 inside `type helperProcess interface`:
 
@@ -415,7 +417,7 @@ type helperProcess interface {
 }
 ```
 
-- [ ] **Step 4: Update the Windows implementation**
+- [x] **Step 4: Update the Windows implementation**
 
 Replace `SpawnedHelper.Alive` at `spawner_windows.go:86-97`:
 
@@ -441,7 +443,7 @@ func (s *SpawnedHelper) Alive() (bool, error) {
 }
 ```
 
-- [ ] **Step 5: Update the non-Windows stub**
+- [x] **Step 5: Update the non-Windows stub**
 
 Replace `spawner_stub.go:30`:
 
@@ -454,7 +456,7 @@ func (s *SpawnedHelper) Alive() (bool, error) {
 }
 ```
 
-- [ ] **Step 6: Make all four production callers fail closed**
+- [x] **Step 6: Make all four production callers fail closed**
 
 In `lifecycle_registry.go`, replace the `reserve` liveness check at `:75`:
 
@@ -519,7 +521,7 @@ In `lifecycle_core.go`, replace the `stopTrackedKey` check at `:341`:
 
 Confirm `lifecycle_registry.go` imports the logger used elsewhere in the package (match the import path already used in `lifecycle_core.go`). Add it if absent.
 
-- [ ] **Step 7: Update the test fake**
+- [x] **Step 7: Update the test fake**
 
 In `lifecycle_registry_test.go`, add an `aliveErr` field to `fakeHelperProcess` (after `terminateExits bool`):
 
@@ -548,7 +550,7 @@ func (p *fakeHelperProcess) setAliveErr(err error) {
 
 If the existing `Alive` body differs from `return p.alive`, preserve its logic and only add the `aliveErr` branch plus the `(bool, error)` return.
 
-- [ ] **Step 8: Update direct test callers**
+- [x] **Step 8: Update direct test callers**
 
 Five call sites now return two values. In `lifecycle_registry_test.go:229,382,385` and `lifecycle_test.go:47,50`, replace each `x.Alive()` boolean use with a helper. Add to `lifecycle_registry_test.go`:
 
@@ -567,22 +569,22 @@ func aliveNow(t *testing.T, p helperProcess) bool {
 
 Then rewrite each site, e.g. `if !system.Alive() {` becomes `if !aliveNow(t, system) {`. `lifecycle_test.go` is `//go:build windows`; `aliveNow` lives in an untagged test file, so it is visible there — verify with the Step 10 vet.
 
-- [ ] **Step 9: Run the tests to verify they pass**
+- [x] **Step 9: Run the tests to verify they pass**
 
 Run: `cd agent && go test -race ./internal/sessionbroker -run 'TestReserveRefusesWhenLivenessUnknown|TestMarkSessionClosedTreatsUnknownLivenessAsAlive' -v`
 Expected: PASS, both tests.
 
-- [ ] **Step 10: Verify Windows-tagged files still compile**
+- [x] **Step 10: Verify Windows-tagged files still compile**
 
 Run: `cd agent && GOOS=windows go vet ./internal/sessionbroker`
 Expected: clean. This is the only check that compiles `lifecycle_test.go`, `spawner_windows.go`, and `peer_process_windows.go` on this host — do not skip it.
 
-- [ ] **Step 11: Run the full suite**
+- [x] **Step 11: Run the full suite**
 
 Run: `cd agent && go test -race ./internal/sessionbroker ./internal/heartbeat`
 Expected: `ok` for both.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add agent/internal/sessionbroker/lifecycle_core.go agent/internal/sessionbroker/lifecycle_registry.go agent/internal/sessionbroker/spawner_windows.go agent/internal/sessionbroker/spawner_stub.go agent/internal/sessionbroker/lifecycle_registry_test.go agent/internal/sessionbroker/lifecycle_test.go
@@ -604,7 +606,7 @@ git commit -m "fix(agent): make helper liveness express unknown and fail closed"
 - Consumes: `helperProcess.Alive() (bool, error)` and `fakeHelperProcess` from Task 4; `helperRegistry`, `trackedHelper`, `helperStarting` (`lifecycle_registry.go:11-31`); `stopTrackedKey` (`lifecycle_core.go:332`).
 - Produces: `helperRegistry.startupExpired(key HelperKey, now time.Time, timeout time.Duration) bool`; `helperStartupTimeout` const.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `agent/internal/sessionbroker/lifecycle_registry_test.go`:
 
@@ -667,12 +669,12 @@ func TestMarkSessionClosedRestartsTheStartupWindow(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd agent && go test ./internal/sessionbroker -run 'TestStartupExpired|TestMarkSessionClosedRestarts'`
 Expected: FAIL — `r.startupExpired undefined` and `helperStartupTimeout undefined`
 
-- [ ] **Step 3: Add the registry predicate and restart the clock**
+- [x] **Step 3: Add the registry predicate and restart the clock**
 
 Add to `lifecycle_registry.go`, after `markSessionClosed`:
 
@@ -708,7 +710,7 @@ In `markSessionClosed`, inside the branch that sets `entry.state = helperStartin
 		} else {
 ```
 
-- [ ] **Step 4: Add the timeout constant and recycle in reconcile**
+- [x] **Step 4: Add the timeout constant and recycle in reconcile**
 
 In `lifecycle_core.go`, add near the other package constants (top of file, after the imports):
 
@@ -736,27 +738,27 @@ In `reconcile`, immediately after the desired set is computed and before the exi
 
 Place this so it runs before the loop that spawns missing keys, so a recycled key is respawned in the same reconcile pass. If the desired set is held under `m.mu` at that point, copy the keys into a local slice under the lock and run the sweep after unlocking — `stopTrackedKey` must never be called while `m.mu` is held.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `cd agent && go test -race ./internal/sessionbroker -run 'TestStartupExpired|TestMarkSessionClosedRestarts' -v`
 Expected: PASS, all three tests.
 
-- [ ] **Step 6: Verify the lock-order constraint holds under race detection**
+- [x] **Step 6: Verify the lock-order constraint holds under race detection**
 
 Run: `cd agent && go test -race ./internal/sessionbroker -run 'TestConcurrent' -v`
 Expected: PASS, no race reports. These are the existing concurrency tests (`TestConcurrentReconcileStopAndExitOwnsHandleOnce`, `TestConcurrentStopKeyHasSingleTerminationOwner`) and they cover the `m.mu` → registry lock order the sweep must not invert.
 
-- [ ] **Step 7: Verify Windows compile**
+- [x] **Step 7: Verify Windows compile**
 
 Run: `cd agent && GOOS=windows go vet ./internal/sessionbroker`
 Expected: clean.
 
-- [ ] **Step 8: Run the full suite**
+- [x] **Step 8: Run the full suite**
 
 Run: `cd agent && go test -race ./internal/sessionbroker`
 Expected: `ok`
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add agent/internal/sessionbroker/lifecycle_registry.go agent/internal/sessionbroker/lifecycle_core.go agent/internal/sessionbroker/lifecycle_registry_test.go
@@ -777,13 +779,13 @@ git commit -m "fix(agent): recycle helpers that never reach IPC"
 - Consumes: `ownedPeerProcessRef.claimTermination()` (`lifecycle_core.go:52-113`); `fakeOwnedPeerProcess` (`broker_lifecycle_test.go`); `Broker.TerminateHelperKey`.
 - Produces: nothing consumed by later tasks.
 
-- [ ] **Step 1: Read the current implementation before changing it**
+- [x] **Step 1: Read the current implementation before changing it**
 
 Run: `cd agent && sed -n '1995,2030p' internal/sessionbroker/broker.go`
 
 Note the exact order: `claimTermination()` → `removeSessionMapsLocked(session)` → `b.mu.Unlock()` → `claim.terminateAndClose()`. The termination happens *after* the maps are cleared and the lock is released. Preserve that ordering — it is deliberate (no syscall under `b.mu`).
 
-- [ ] **Step 2: Add a terminate-failure seam to the existing fake**
+- [x] **Step 2: Add a terminate-failure seam to the existing fake**
 
 `fakeOwnedPeerProcess` (`broker_lifecycle_test.go:32`) has no way to fail. Add a `terminateErr` field after `closed int`:
 
@@ -812,7 +814,7 @@ func (p *fakeOwnedPeerProcess) Terminate() error {
 
 Note the original takes and releases `p.mu` around only the counter mutation; switching to `defer` here is safe because nothing below blocks. Do not move the `p.claimed` handshake inside the lock — the concurrency tests depend on it running before `p.mu` is taken.
 
-- [ ] **Step 3: Write the failing test**
+- [x] **Step 3: Write the failing test**
 
 Append to `agent/internal/sessionbroker/broker_lifecycle_test.go`, reusing the file's real harness (`New` at `:229`, `newFakeOwnedPeerProcess` at `:121`, `newOwnedSession` at `:154`):
 
@@ -839,12 +841,12 @@ func TestTerminateHelperKeyRetainsOwnershipWhenKillFails(t *testing.T) {
 
 Ensure the file imports `"errors"`. Setting `proc.terminateErr` directly before the session goes live is race-free — no goroutine touches the fake yet.
 
-- [ ] **Step 4: Run the test to verify it fails**
+- [x] **Step 4: Run the test to verify it fails**
 
 Run: `cd agent && go test ./internal/sessionbroker -run TestTerminateHelperKeyRetainsOwnershipWhenKillFails`
 Expected: FAIL — the broker currently releases ownership unconditionally.
 
-- [ ] **Step 5: Raise the log level and retain the key on failure**
+- [x] **Step 5: Raise the log level and retain the key on failure**
 
 Replace the termination block at `broker.go:2017-2021`:
 
@@ -882,22 +884,22 @@ func (b *Broker) retainHelperKeyOwnership(key HelperKey, session *Session) {
 
 Verify the real field name and type of the helper-key ownership map (`grep -n 'helperByKey' internal/sessionbroker/broker.go`) and match it exactly; `broker.go:258` is the declaration. If re-registration requires more than one map (check what `removeSessionMapsLocked` clears), restore only the helper-key ownership — do **not** resurrect the session in `byIdentity` or the snapshot, which would misreport a dying session as live.
 
-- [ ] **Step 6: Run the test to verify it passes**
+- [x] **Step 6: Run the test to verify it passes**
 
 Run: `cd agent && go test -race ./internal/sessionbroker -run TestTerminateHelperKeyRetainsOwnershipWhenKillFails -v`
 Expected: PASS
 
-- [ ] **Step 7: Run the full suite and the concurrency tests**
+- [x] **Step 7: Run the full suite and the concurrency tests**
 
 Run: `cd agent && go test -race ./internal/sessionbroker`
 Expected: `ok`. If any existing admission or lifecycle test fails, the retention has changed a contract another test pins — read that test before adjusting either. `TestSessionCloseReleasesOwnedPeerProcessOnce` and `TestUnexpectedDisconnectReleasesOwnedPeerProcess` both use `fakeOwnedPeerProcess` and must still pass with `terminateErr` nil.
 
-- [ ] **Step 8: Verify Windows compile**
+- [x] **Step 8: Verify Windows compile**
 
 Run: `cd agent && GOOS=windows go vet ./internal/sessionbroker`
 Expected: clean.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add agent/internal/sessionbroker/broker.go agent/internal/sessionbroker/broker_lifecycle_test.go
@@ -919,7 +921,7 @@ git commit -m "fix(agent): surface and retry failed helper termination"
 - Consumes: `bootstrapThenListen(bootstrap func() error, listen func()) error` (`heartbeat.go:851`); `HelperLifecycleManager.Bootstrap() error` (`lifecycle_core.go:182`).
 - Produces: `bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, listen func(), retry time.Duration)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `agent/internal/heartbeat/heartbeat_test.go`:
 
@@ -981,12 +983,12 @@ func TestBootstrapRetryStopsOnContextCancel(t *testing.T) {
 
 Ensure the file imports `"context"`, `"errors"`, `"sync/atomic"`, and `"time"`.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd agent && go test ./internal/heartbeat -run TestBootstrapRetr`
 Expected: FAIL — `undefined: bootstrapThenListenWithRetry`
 
-- [ ] **Step 3: Add the retry wrapper**
+- [x] **Step 3: Add the retry wrapper**
 
 Add to `heartbeat.go` immediately after `bootstrapThenListen`:
 
@@ -1017,12 +1019,12 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd agent && go test -race ./internal/heartbeat -run TestBootstrapRetr -v`
 Expected: PASS, both tests.
 
-- [ ] **Step 5: Wire the retry into Start()**
+- [x] **Step 5: Wire the retry into Start()**
 
 Replace `heartbeat.go:877-882`:
 
@@ -1043,7 +1045,7 @@ const lifecycleBootstrapRetryInterval = 30 * time.Second
 
 The retry now runs in its own goroutine, so `Start()` no longer blocks on bootstrap. Confirm `TestBootstrapFailureRefusesBrokerListen` still passes unchanged — the fail-closed contract it pins must survive.
 
-- [ ] **Step 6: Resolve the stale security comment**
+- [x] **Step 6: Resolve the stale security comment**
 
 `broker_admission.go:174-179` says a kernel-bound peer handle does not exist yet; it landed in this same branch (`peer_process_windows.go`, `session.peerProcess`). Replace the comment, keeping the behavior:
 
@@ -1059,12 +1061,12 @@ func helperOwnerReplaceable(owner *Session) bool {
 }
 ```
 
-- [ ] **Step 7: Run the heartbeat and sessionbroker suites**
+- [x] **Step 7: Run the heartbeat and sessionbroker suites**
 
 Run: `cd agent && go test -race ./internal/heartbeat ./internal/sessionbroker`
 Expected: `ok` for both, including the unchanged `TestBootstrapFailureRefusesBrokerListen`.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add agent/internal/heartbeat/heartbeat.go agent/internal/heartbeat/heartbeat_test.go agent/internal/sessionbroker/broker_admission.go
@@ -1085,7 +1087,7 @@ git commit -m "fix(agent): retry helper lifecycle bootstrap before listening"
 - Consumes: `fakeHelperProcess` from Task 4; `helperRegistry.noteExit`.
 - Produces: nothing consumed by later tasks.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `agent/internal/sessionbroker/lifecycle_registry_test.go`:
 
@@ -1109,12 +1111,12 @@ func TestNoteExitIgnoresFabricatedExitCodeOnWaitFailure(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cd agent && go test ./internal/sessionbroker -run TestNoteExitIgnoresFabricatedExitCode`
 Expected: FAIL — `r.noteExitUnknown undefined`
 
-- [ ] **Step 3: Add the unknown-exit path**
+- [x] **Step 3: Add the unknown-exit path**
 
 Add to `lifecycle_registry.go` beside `noteExit`:
 
@@ -1136,12 +1138,12 @@ func (r *helperRegistry) noteExitUnknown(key HelperKey, generation uint64) {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd agent && go test -race ./internal/sessionbroker -run TestNoteExitIgnoresFabricatedExitCode -v`
 Expected: PASS
 
-- [ ] **Step 5: Log the error and route unknown exits correctly**
+- [x] **Step 5: Log the error and route unknown exits correctly**
 
 Replace `watchDetachedProcess` at `lifecycle_core.go:303-307`:
 
@@ -1161,17 +1163,17 @@ func (m *HelperLifecycleManager) watchDetachedProcess(key HelperKey, generation 
 }
 ```
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `cd agent && go test -race ./internal/sessionbroker`
 Expected: `ok`
 
-- [ ] **Step 7: Verify Windows compile**
+- [x] **Step 7: Verify Windows compile**
 
 Run: `cd agent && GOOS=windows go vet ./internal/sessionbroker`
 Expected: clean.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add agent/internal/sessionbroker/lifecycle_core.go agent/internal/sessionbroker/lifecycle_registry.go agent/internal/sessionbroker/lifecycle_registry_test.go
@@ -1188,27 +1190,27 @@ git commit -m "fix(agent): stop recording fabricated exit codes for detached hel
 - Consumes: every preceding task.
 - Produces: the green signal that gates Phase 2.
 
-- [ ] **Step 1: Run the whole agent suite with race detection**
+- [x] **Step 1: Run the whole agent suite with race detection**
 
 Run: `cd agent && go test -race -count=1 ./...`
 Expected: no `FAIL` lines. `-count=1` defeats the test cache — do not omit it.
 
-- [ ] **Step 2: Verify both platform builds**
+- [x] **Step 2: Verify both platform builds**
 
 Run: `cd agent && go build ./... && GOOS=windows go build ./... && echo BUILD_OK`
 Expected: `BUILD_OK`
 
-- [ ] **Step 3: Verify vet on both platforms**
+- [x] **Step 3: Verify vet on both platforms**
 
 Run: `cd agent && go vet ./... && GOOS=windows go vet ./... 2>&1 | grep -v 'possible misuse of unsafe.Pointer'; echo VET_DONE`
 Expected: `VET_DONE` with no other output. The filtered warnings are pre-existing in `internal/remote/desktop`.
 
-- [ ] **Step 4: Confirm no dead liveness fields remain unread**
+- [x] **Step 4: Confirm no dead liveness fields remain unread**
 
 Run: `cd agent && grep -rn 'launchedAt' internal/sessionbroker/*.go | grep -v _test.go`
 Expected: at least one **read** site (in `startupExpired`), not only assignments. `executablePath` and `commandMode` on `trackedHelper` remain write-only and are acceptable — they are diagnostic fields, tracked as a follow-up, not a blocker.
 
-- [ ] **Step 5: Report the gate result**
+- [x] **Step 5: Report the gate result**
 
 Summarize: tests green, both builds clean, vet clean. Report any deviation rather than proceeding to Phase 2.
 
