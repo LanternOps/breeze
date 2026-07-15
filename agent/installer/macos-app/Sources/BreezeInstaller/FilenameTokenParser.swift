@@ -1,9 +1,14 @@
 import Foundation
 
 /// Loads the bootstrap token + API host from the installer zip payload.
-/// Modern installers keep the token in a sibling JSON file so Finder,
-/// browser, and proxy filename logs do not receive it. The filename parser
-/// remains as a legacy compatibility fallback.
+///
+/// The token is delivered in two places: a sibling `Breeze Installer.bootstrap.json`
+/// (preferred — clean parse, no token in the visible bundle name) and the app
+/// bundle's own filename `Breeze Installer [TOKEN@host].app` (fallback). The
+/// filename copy is NOT redundant: macOS App Translocation copies only the .app
+/// bundle to a randomized read-only path when a quarantined app is launched in
+/// place, stranding the sibling JSON. The bundle name travels with the app, so
+/// the filename fallback is what keeps the install working in that case (#2544).
 enum FilenameTokenParser {
     struct Result: Equatable {
         let token: String
