@@ -524,7 +524,15 @@ const envSchema = z
     APNS_KEY_ID: z.string().optional(),
     APNS_TEAM_ID: z.string().optional(),
     APNS_BUNDLE_ID: z.string().optional(),
-    APNS_ENVIRONMENT: z.enum(['sandbox', 'production']).optional(),
+    // Empty string means "unset", matching the trim() semantics the all-or-none
+    // block uses. Compose maps this as `${APNS_ENVIRONMENT:-}`, which always
+    // injects the key — as "" when the operator hasn't set it — and a bare
+    // `.optional()` enum rejects "" and refuses to boot. The string fields above
+    // tolerate "" natively; only the enum needs this.
+    APNS_ENVIRONMENT: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z.enum(['sandbox', 'production']).optional()
+    ),
 
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
