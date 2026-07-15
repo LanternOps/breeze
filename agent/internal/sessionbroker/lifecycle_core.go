@@ -259,6 +259,11 @@ func (m *HelperLifecycleManager) spawnKey(key HelperKey) {
 		m.mu.Unlock()
 		return
 	}
+	if !helperRoleSpawnable(key.Role) {
+		m.mu.Unlock()
+		log.Error("lifecycle: refusing to spawn helper for non-lifecycle role", "helperKey", key.String(), "role", key.Role)
+		return
+	}
 	if m.broker != nil && m.broker.HasHelperKeyOwner(key) {
 		m.mu.Unlock()
 		return

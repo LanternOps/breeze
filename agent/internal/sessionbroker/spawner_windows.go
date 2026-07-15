@@ -9,6 +9,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 // SpawnedHelper describes a helper process after a successful spawn. It
@@ -310,11 +312,23 @@ func (s *windowsHelperSpawner) Close() error {
 	return s.job.Close()
 }
 
+// createHelperSuspended creates the helper process for key without letting its
+// primary thread run. The role selects the token privilege level, so an
+// unrecognized role must never reach a spawn call: the previous permissive
+// default sent anything that was not exactly "user" down the SYSTEM-token
+// branch, so an empty or misspelled role silently escalated.
 func createHelperSuspended(key HelperKey, resolvedExe ResolvedHelperExecutable) (*suspendedHelper, error) {
-	if key.Role == "user" {
-		return createUserHelperSuspended(key.WindowsSessionID, resolvedExe)
+	if !helperRoleSpawnable(key.Role) {
+		return nil, fmt.Errorf("refusing to spawn helper for non-lifecycle role %q", key.Role)
 	}
-	return createSystemHelperSuspended(key.WindowsSessionID, resolvedExe)
+	switch key.Role {
+	case ipc.HelperRoleUser:
+		return createUserHelperSuspended(key.WindowsSessionID, resolvedExe)
+	case ipc.HelperRoleSystem:
+		return createSystemHelperSuspended(key.WindowsSessionID, resolvedExe)
+	default:
+		return nil, fmt.Errorf("role %q passed helperRoleSpawnable but has no spawn path", key.Role)
+	}
 }
 
 // createSystemHelperSuspended creates the SYSTEM-token helper without allowing

@@ -507,3 +507,25 @@ func TestLifecycleStopEndsStartLoop(t *testing.T) {
 		t.Fatal("Start loop did not finish after Stop")
 	}
 }
+
+func TestSpawnKeyRefusesNonLifecycleRole(t *testing.T) {
+	// A non-lifecycle role must never reach the spawner: on Windows the role
+	// selects the token privilege level, so anything not recognized as "user"
+	// took the SYSTEM branch. The zero-value HelperKey is the realistic vector.
+	spawner := &fakeHelperSpawner{}
+	m := newLifecycleHarness(t, []DetectedSession{{Session: "7", State: "active", Type: "rdp"}}, spawner)
+	key := HelperKey{WindowsSessionID: 7, Role: ""}
+
+	m.mu.Lock()
+	m.desired = map[HelperKey]bool{key: true}
+	m.mu.Unlock()
+
+	m.spawnKey(key)
+
+	spawner.mu.Lock()
+	got := spawner.spawned[key]
+	spawner.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("spawner was called %d times for role %q; want 0", got, key.Role)
+	}
+}
