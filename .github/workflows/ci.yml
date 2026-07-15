@@ -717,7 +717,13 @@ jobs:
 
       - name: Run Windows Go tests
         working-directory: agent
-        run: go test -race ./internal/sessionbroker ./internal/heartbeat ./internal/agentapp ./internal/config ./internal/watchdog ./cmd/breeze-watchdog
+        # Auto-discover every package so Windows-tagged tests cannot be silently
+        # skipped. A hardcoded list drifts: ./internal/eventlog and nine other
+        # packages with //go:build windows tests were omitted, so their tests ran
+        # on no platform at all (the Linux test-agent job's ./... skips them via
+        # build tag, and `go build` never compiles _test.go). Keeps CLAUDE.md's
+        # "new test files are auto-discovered" contract true on Windows too.
+        run: go test -race ./...
 
   # ─── Windows runtime smoke (#1000) ────────────────────────────────────
   # CI cross-compiles the Windows agent (build-agent matrix) but never RAN
