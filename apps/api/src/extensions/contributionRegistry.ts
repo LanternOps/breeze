@@ -60,6 +60,7 @@ export class ExtensionStagingSession {
       throw new Error('Extension registered more than one route app');
     }
 
+    this.assertAiToolDefinitionNamesMatch();
     this.assertDeclaredNamesMatch();
 
     return Object.freeze({
@@ -71,6 +72,16 @@ export class ExtensionStagingSession {
       aiTools: new Map(this.aiTools),
       enabled: true,
     });
+  }
+
+  private assertAiToolDefinitionNamesMatch(): void {
+    for (const [registrationName, tool] of this.aiTools) {
+      if (tool.definition.name !== registrationName) {
+        throw new Error(
+          `AI tool registration name "${registrationName}" does not match definition name "${tool.definition.name}"`,
+        );
+      }
+    }
   }
 
   private assertDeclaredNamesMatch(): void {

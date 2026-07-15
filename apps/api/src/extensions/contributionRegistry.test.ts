@@ -124,6 +124,23 @@ describe('ExtensionContributionRegistry', () => {
     expect(() => session.finish()).toThrow(/duplicate AI tool.*lookup/i);
   });
 
+  it('rejects an AI tool whose definition name differs from its registration name', () => {
+    const registry = new ExtensionContributionRegistry();
+    const session = registry.begin(makeManifest('demo', '1.0.0', { aiTools: ['declared'] }));
+    session.registrar.registerAiTool('declared', makeTool('undeclared'));
+
+    expect(() => session.finish()).toThrow(/registration name "declared".*definition name "undeclared"/i);
+  });
+
+  it('rejects two registration keys that use the same AI-tool definition name', () => {
+    const registry = new ExtensionContributionRegistry();
+    const session = registry.begin(makeManifest('demo', '1.0.0', { aiTools: ['first', 'second'] }));
+    session.registrar.registerAiTool('first', makeTool('first'));
+    session.registrar.registerAiTool('second', makeTool('first'));
+
+    expect(() => session.finish()).toThrow(/registration name "second".*definition name "first"/i);
+  });
+
   it('rejects more than one route app at finish', () => {
     const registry = new ExtensionContributionRegistry();
     const session = registry.begin(makeManifest());
