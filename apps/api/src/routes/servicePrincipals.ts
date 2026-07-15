@@ -175,30 +175,8 @@ servicePrincipalRoutes.post(
       }
     }
 
-    const permissions = c.get('permissions') as UserPermissions | undefined;
-
-    // A service principal is organization-wide — service_principals has no site
-    // axis — so a site-restricted creator must not mint one, or the principal
-    // would reach every site in the org and escape the creator's restriction.
-    if (permissions?.allowedSiteIds) {
-      return c.json(
-        { error: 'Site-restricted users cannot create service principals, which are organization-wide' },
-        403,
-      );
-    }
-
-    // SR2-15 delegation ceiling: a principal must never carry a scope its
-    // creator does not currently hold. Mirrors the human API-key mint path
-    // (routes/apiKeys.ts → validateRequestedScopes); without it, an org admin
-    // with only orgs:write could mint a devices:execute principal and push an
-    // arbitrary binary to the fleet via /dev/push.
-    const delegation = validateApiKeyScopeDelegation(data.scopes, permissions);
-    if (!delegation.ok) {
-      return c.json(
-        { error: delegation.error, ...(delegation.details ? { details: delegation.details } : {}) },
-        delegation.status,
-      );
-    }
+    const denied = enforceScopeDelegation(c, data.scopes);
+    if (denied) return denied;
 
     const principal = await createServicePrincipal({
       orgId: data.orgId,
@@ -260,6 +238,37 @@ async function requirePrincipalOrgAccess(c: any, id: string) {
   return { principal, auth };
 }
 
+// SR2-15 delegation ceiling. A service-principal key must never carry a scope
+// its human actor does not currently hold, and a site-restricted actor cannot
+// manage an org-wide principal. Enforced on create AND on every path that hands
+// out or re-points a live key (rotate, migrate-key) — guarding create alone is a
+// front-door-only check: rotate would still let a sub-ceiling actor capture a
+// full-scope credential from an over-scoped principal. Returns a 403 Response to
+// short-circuit, or null when the actor is within their ceiling.
+function enforceScopeDelegation(c: any, scopes: string[]) {
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+
+  // A service principal is organization-wide — service_principals has no site
+  // axis — so a site-restricted actor must not manage one, or the principal
+  // reaches every site in the org and escapes their restriction.
+  if (permissions?.allowedSiteIds) {
+    return c.json(
+      { error: 'Site-restricted users cannot manage service principals, which are organization-wide' },
+      403,
+    );
+  }
+
+  const delegation = validateApiKeyScopeDelegation(scopes, permissions);
+  if (!delegation.ok) {
+    return c.json(
+      { error: delegation.error, ...(delegation.details ? { details: delegation.details } : {}) },
+      delegation.status,
+    );
+  }
+
+  return null;
+}
+
 // POST /service-principals/:id/rotate - mint a new key, revoke the prior one
 servicePrincipalRoutes.post(
   '/:id/rotate',
@@ -271,6 +280,13 @@ servicePrincipalRoutes.post(
     const { id } = c.req.valid('param');
     const gate = await requirePrincipalOrgAccess(c, id);
     if ('response' in gate) return gate.response;
+
+    // Rotate hands the caller a fresh live key carrying the principal's scopes,
+    // so the actor must currently hold every one of them — otherwise a
+    // sub-ceiling actor could capture a full-scope credential from a principal
+    // an over-privileged colleague created.
+    const denied = enforceScopeDelegation(c, gate.principal.scopes ?? []);
+    if (denied) return denied;
 
     try {
       const rotated = await rotateServicePrincipalKey(id, gate.auth.user.id);
@@ -323,6 +339,12 @@ servicePrincipalRoutes.post(
     const { keyId } = c.req.valid('json');
     const gate = await requirePrincipalOrgAccess(c, id);
     if ('response' in gate) return gate.response;
+
+    // Re-pointing a human key onto this principal makes it outlive its human
+    // creator's off-boarding gate, so the actor must hold the principal's
+    // scopes — the same ceiling as create/rotate.
+    const denied = enforceScopeDelegation(c, gate.principal.scopes ?? []);
+    if (denied) return denied;
 
     try {
       const migrated = await migrateHumanKeyToServicePrincipal(keyId, id, gate.auth.user.id);

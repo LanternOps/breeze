@@ -283,6 +283,33 @@ describe('service principal routes', () => {
       expect(res.status).toBe(403);
       expect(rotateServicePrincipalKey).not.toHaveBeenCalled();
     });
+
+    // Ceiling bypass guard: rotate hands out a fresh live key with the
+    // principal's scopes. A caller who does NOT hold those scopes must not be
+    // able to capture that credential from an over-scoped principal — the same
+    // fleet-RCE escalation the create ceiling closes, via the rotate door.
+    it('denies rotate by a sub-ceiling caller on an over-scoped principal', async () => {
+      permissionMockState.permissions = {
+        permissions: [{ resource: 'organizations', action: 'write' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: undefined,
+      } as any;
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID, scopes: ['devices:execute'] }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/rotate`, { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(rotateServicePrincipalKey).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /service-principals/:id/disable', () => {
@@ -364,6 +391,33 @@ describe('service principal routes', () => {
 
       expect(res.status).toBe(200);
       expect(migrateHumanKeyToServicePrincipal).toHaveBeenCalledWith(KEY_ID, PRINCIPAL_ID, 'user-123');
+    });
+
+    it('denies migrate-key by a sub-ceiling caller on an over-scoped principal', async () => {
+      permissionMockState.permissions = {
+        permissions: [{ resource: 'organizations', action: 'write' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: undefined,
+      } as any;
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID, scopes: ['devices:execute'] }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/migrate-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId: KEY_ID })
+      });
+
+      expect(res.status).toBe(403);
+      expect(migrateHumanKeyToServicePrincipal).not.toHaveBeenCalled();
     });
 
     it('maps ApiKeyNotFoundError from the service layer to 404', async () => {
