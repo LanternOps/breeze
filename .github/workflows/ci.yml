@@ -742,7 +742,8 @@ jobs:
       #
       # Those packages are excluded so this gate reports on code that is actually
       # green, rather than being red on inherited debt and therefore ignored.
-      # Fixing them and widening to ./... is tracked separately.
+      # Fixing them and widening to ./... is tracked in #2523, which records the
+      # root cause of each failure.
       #
       # ./internal/eventlog IS listed and IS green: its tests previously ran on no
       # platform at all (Linux skips them via build tag, and `go build` never

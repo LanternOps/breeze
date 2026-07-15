@@ -95,4 +95,4 @@ evidence of why admission failed.
 - **Six pre-existing Windows test failures** in `internal/agentapp`, `internal/config`,
   and `internal/heartbeat` are unrelated to this work and also fail on `main`. The CI
   Windows job therefore covers `sessionbroker`, `eventlog`, `watchdog`, and
-  `cmd/breeze-watchdog` only. Tracked separately; the narrowed job is still required.
+  `cmd/breeze-watchdog` only. Tracked in #2523; the narrowed job is still required.
