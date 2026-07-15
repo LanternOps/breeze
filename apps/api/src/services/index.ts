@@ -21,3 +21,5 @@ export { getUserEpochs } from './authEpochs';
 export { getRefreshFamily } from './refreshTokenFamily';
 export { getEffectiveMfaPolicy } from './mfaPolicy';
 export type { EffectiveMfaPolicy, MfaPolicyInput, MfaAllowedMethods } from './mfaPolicy';
+export { authorizeHumanApiKeyCreator } from './apiKeyAuthorization';
+export type { ApiKeyAuthorizationResult } from './apiKeyAuthorization';
