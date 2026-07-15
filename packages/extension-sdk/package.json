@@ -1,6 +1,6 @@
 {
-  "name": "@breeze/extension-api",
-  "version": "0.1.0",
+  "name": "@breeze/extension-sdk",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
@@ -11,11 +11,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@breeze/extension-sdk": "workspace:*",
+    "semver": "^7.7.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "drizzle-orm": "0.45.2",
+    "@types/semver": "^7.7.1",
     "hono": "^4.12.30",
     "typescript": "^5.7.2",
     "vitest": "^4.1.9"

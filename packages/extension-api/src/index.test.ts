@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { parseExtensionManifest, RESERVED_ROUTE_NAMESPACES } from './index';
+import {
+  parseExtensionManifest,
+  parseExtensionManifestV1,
+  RESERVED_ROUTE_NAMESPACES,
+  SUPPORTED_EXTENSION_CAPABILITIES,
+} from './index';
+
+describe('versioned SDK adapter', () => {
+  it('re-exports the v1 SDK alongside legacy names', () => {
+    expect(parseExtensionManifestV1).toBeTypeOf('function');
+    expect(SUPPORTED_EXTENSION_CAPABILITIES).toContain('server.routes.v1');
+    expect(parseExtensionManifest).not.toBe(parseExtensionManifestV1);
+  });
+});
 
 describe('parseExtensionManifest', () => {
   const valid = {
