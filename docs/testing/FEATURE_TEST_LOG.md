@@ -3531,3 +3531,275 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 > forward on `main` — verified present in `origin/main`, which is also well ahead of the
 > throwaway branch (Zod-4 migration, contract auto-renew, quotes + portal Caddy routes).
 > The QA branch was discarded; only this log + `UI_IMPROVEMENTS.md` + the checklist were salvaged.
+
+---
+
+## UI QA Sweep — 2026-06-27 (since v0.84.0 / 2026-06-26 sweep)
+
+**Scope:** UI-affecting changes in PRs #1955–#1997 (the 2026-06-26 sweep covered through #1950).
+**Env:** local code-mounted dev stack (`docker-compose.override.yml.dev`), http://localhost via Caddy.
+Fresh Postgres volume seeded with `db:seed:e2e` (2 devices, 2 alerts, 1 site, org `47da1c82…`).
+
+**Environment fixes required before stack would boot (real infra bugs):**
+- `.dev` override line 97 bind-mounted `apps/web/postcss.config.mjs`, a file that has never existed in the
+  repo (astro uses `@astrojs/tailwind`). Docker auto-created an empty *directory* there → mount failure.
+  Removed the line + stale dir locally. **This is a latent bug in the tracked override** (present since #166,
+  Feb 2026) — worth a fix-forward PR.
+- `breeze-web:dev` + `breeze-portal:dev` images had `tailwind.config.mjs` baked as a *directory* (stale
+  BuildKit COPY cache) → host-file mount failed with "not a directory". Fixed via `--no-cache` rebuild of both.
+
+### Baseline login + nav crawl — PASS
+- ✅ Login (`admin@breeze.local`), `/setup` wizard "Skip setup" → Dashboard renders ("Good morning, Breeze"), 0 console errors.
+- ⚠️ Test-env note: a stale auth cookie/`localStorage` selected-org from a prior DB caused dashboard 403s
+  (requests for org `aa0e43c8…` absent from the new DB). Cleared cookies+storage and re-logged in → resolved.
+  Not a product bug; flagged so future sweeps clear browser state after a DB recreation.
+
+### #1424/#1994 Devices unified default sort — PASS (fixture-depth caveat)
+- ✅ `/devices` renders the unified merged list with Organization + Site columns; clickable sort headers (`cursor-pointer`), no console errors.
+- ⚠️ Only 2 seeded devices, both status "Up" → can't stress-test the default ordering meaningfully. Code path renders and is interactive.
+- ⚠️ UI/UX: a fresh-account `OnboardingTour` popover (`z-[61]`) intercepts pointer events on first interaction; had to "Skip tour" before any clicks landed. Expected for new accounts but worth knowing it blocks automation/first clicks.
+
+### #1977/#1984 Patches page #hash tab state — PASS
+- ✅ Clicking "Update Rings" tab sets `location.hash = #rings`.
+- ✅ Reloading `/patches#rings` restores the Update Rings view (New Ring button + rings content) — tab state survives reload via hash. Matches the documented URL-state convention.
+
+### #1978/#1986 "Add first site" nag suppression — PASS (positive path; suppression unit-tested)
+- ✅ Created a new org "QA Nag Test Org" (0 sites) → guided modal "Add the first site for QA Nag Test Org" appears with "Skip for now". Confirms the refactored create→fetchSites→nag path still fires for genuinely site-less orgs.
+- ℹ️ The suppression case (org created already owning a site, e.g. partner bootstrap "Main Office") isn't reproducible through the create-org UI; covered by the added `OrganizationsPage.firstSite.test.tsx` (verified non-vacuous in the PR).
+- 🧹 Left a throwaway org "QA Nag Test Org" (no devices/sites) in the local seed DB.
+
+### #1979/#1985 Auth signup gate — PASS (enabled path; disabled path unit-covered)
+- ✅ Runtime `/config` returns `registration.enabled: true` (env-driven `ENABLE_REGISTRATION`, read live per #1308).
+- ✅ `/auth#signup` shows both "Sign in" + "Create account" tabs and the full signup form (companyName, name, email, password, confirmPassword, acceptTerms); no "registration closed" notice.
+- ℹ️ Disabled path (tab hidden + closed-notice for `#signup`) requires restarting the API with `ENABLE_REGISTRATION=false`; not done mid-sweep. Covered by added unit tests (`config.test.ts`, `AuthPage.test.tsx`).
+
+### #1975/#1983 Record payment disabled tooltip — PASS
+- Built a real invoice end-to-end: blank draft → Manual line ($100) → Add → Issue → INV-2026-0001 "Issued", Balance Due $100.
+- ✅ Disabled "Record payment" button carries `title="Enter a payment amount to record it"`.
+- ✅ Entering amount $50 → button enabled, `title` cleared.
+- ✅ Bonus: clicking Record payment → status "Partially paid", Paid $50 / Balance $50, payment row listed (visible state change, not a silent 2xx).
+- ⚠️ UI/UX (related papercut, NOT this PR): on an empty draft the **Issue** and **Issue & Send** buttons are disabled with **no `title`** explaining why (need ≥1 line item) — same dead-control class #1975 just fixed for Record payment. Candidate for the same one-line tooltip treatment.
+
+### #1981/#1997 Software Deployment automation action — PASS (config needs catalog fixtures)
+- ✅ New Automation → action-type dropdown (`actions.0.type`) now lists **"Deploy Software"** alongside Run Script / Send Notification / Create Alert / Execute Command.
+- ✅ Selecting it reveals the software-picker config field (`actions.0.catalogId`, label "Software").
+- ⚠️ Picker is empty ("Select software…") — no software-catalog entries seeded. Full config/run path needs a catalog product (and ties into #1957 built-ins). Action-type wiring + form render verified.
+
+### #1957 Huntress & SentinelOne built-in deployment packages — PARTIAL (connect needs real creds)
+- ✅ Integrations → Security tab renders both **SentinelOne** and **Huntress** cards.
+- ✅ SentinelOne card shows a clear not-connected state with actionable guidance: "Switch your scope to All orgs to add the management URL and API token" (partner-level). Good empty-state, not a dead end.
+- ⚠️ BLOCKED: built-in package auto-appearance in Software Library + the `Built-in · <vendor>` badge require an actually-connected integration (real Huntress/S1 credentials), which the local fixture can't provide. Server-side key resolution path unverifiable here; covered by the PR's unit/integration tests.
+
+### #1976/#1987 Partner settings Zod field message — PASS
+- Reproduced a real server-side Zod 400: Partner Settings → Remote → Add provider → name "QA Test Provider", URL template `https://example.com/connect-no-placeholder` (deliberately omitting `{id}`) → Save Settings.
+- ✅ The **specific** field message surfaced: *"URL template must include the {id} placeholder for the per-device value."* — not the generic "Failed to save settings" fallback. Confirms `extractApiError` recovers the zod-v4 (non-enumerable `issues`, JSON-stringified into `message`) wire shape, the exact regression the PR pinned.
+
+### #1725/#1958 Config-policy "Breeze Defaults" baseline — PASS
+- ✅ `/configuration-policies/defaults` renders the virtual baseline: "How devices behave out of the box with no configuration policy assigned… read-only — create a policy to override".
+- ✅ 17 feature baseline cards (Patches, Alerts, Backup, Security, Monitoring, Maintenance, Compliance, Automation, Event Logs, Software Policy, …) each "Not enforced" with a real override link `/configuration-policies/new?feature=<key>` (incl. `feature=alert_rule` and `feature=automation`, the two tabs this PR added).
+- ✅ The override link lands on a working New Policy page (Configure New / Link to Existing → Policy Details form). Feature-tab editors (AlertRuleTab/AutomationTab) come after naming; their forms are unit-tested.
+
+### #1971 Org-scope toggle (DeviceStatusChart + MonitoringIntegration) — PASS (test-only PR; regression check)
+- ℹ️ #1971 is test-only (adds coverage for the existing org-scope toggle). Verified the live control still works.
+- ✅ Header `org-scope-all` button toggles `aria-pressed` false→true and the org store `allOrgs` flag flips; DeviceStatusChart re-renders without console error. Toggled back to scoped cleanly.
+
+### #1908/#1989 + #1967 Reliability score display — PARTIAL (telemetry-blocked; empty state PASS)
+- ✅ Device detail Reliability panel renders a graceful empty state: "No reliability snapshot available yet." — no NaN/undefined/saturation artifacts.
+- ⚠️ BLOCKED: a real rate-normalized/de-saturated score needs reliability snapshot telemetry (agent `reliability.submit`), which the e2e fixtures don't provide. The scoring algorithm itself is backend computation, covered by the reliability-scoring unit tests (double-count + saturation regressions). UI display of a real score not exercised here.
+
+### #6 Agent-update maintenance window editor (#1963/#1990) — testing…
+
+(#6 result)
+- ✅ Org Settings → maintenance window is now a structured editor: radios "Always — agents may update anytime (24/7)" (default) vs "Only during a maintenance window"; selecting window mode reveals start/end time inputs (default 02:00–04:00) + "evaluated in UTC" note. Replaces the old free-text field.
+- ✅ Validation works: a zero-length window (03:00–03:00) **disables** the Save defaults button; a valid window (03:00–05:00) **re-enables** it — malformed windows can't be committed (#1990's "rejects malformed windows at save time").
+- ⚠️ UI/UX: the disabled Save gives no inline reason for the zero-length case (no visible "end must be after start" text captured) — relies on the user inferring it. Minor; consider an inline hint.
+- **#6 Agent-update maintenance window editor — PASS**
+
+### #1960 Billing: markup defaults / tax precision / catalog images / quote editing — PASS
+- ✅ **Catalog item editor** (`/settings/catalog` → Add item): Unit price + Cost basis fields with a **live Margin** readout — entered price 100 / cost 60 → "Margin 40.0%" (marginMath). Empty state "Add a cost basis to see margin".
+- ✅ **Catalog images**: drawer has a "Product image" section ("Save the item first, then add a product image") — image upload deferred until the item is persisted.
+- ✅ **Quote editing** (`/billing/quotes` → New quote → draft): block-based QuoteEditor (Heading / Rich text / Image / Pricing table) with LIVE TOTALS (one-time / monthly / annual / due-on-acceptance). Adding a Pricing table block exposes **Catalog item** + **Manual line** row controls — the #1960 line-editing surface.
+- ℹ️ Partner-level markup defaults (`PartnerBillingSettings`) use the same `marginMath` util verified above; tax-precision is a calc fix (unit-tested in `marginMath.test.ts`).
+
+---
+
+## UI QA Sweep — 2026-06-27 — SUMMARY
+
+| # | Area / PR | Result |
+|---|-----------|--------|
+| — | Baseline login + nav crawl | PASS |
+| 1 | Auth signup gate (#1979/#1985) | PASS (enabled path; disabled unit-covered) |
+| 2 | Devices unified default sort (#1424/#1994) | PASS (fixture-depth caveat) |
+| 3 | Patches #hash tab state (#1977/#1984) | PASS |
+| 4 | "Add first site" nag suppression (#1978/#1986) | PASS |
+| 5 | Record payment disabled tooltip (#1975/#1983) | PASS |
+| 6 | Agent-update maintenance window (#1963/#1990) | PASS |
+| 7 | Software Deployment automation action (#1981/#1997) | PASS (config needs catalog fixtures) |
+| 8 | Config-policy Breeze Defaults baseline (#1725/#1958) | PASS |
+| 9 | Billing markup/tax/catalog/quote (#1960) | PASS |
+| 10 | Huntress/SentinelOne packages (#1957) | PARTIAL (connect needs real creds) |
+| 11 | Reliability score display (#1989/#1967) | PARTIAL (telemetry-blocked; empty state OK) |
+| 12 | Org-scope toggle (#1971) | PASS (test-only PR; regression OK) |
+| 13 | Partner settings Zod field message (#1976/#1987) | PASS |
+
+**Top findings (UI/UX papercuts, no hard FAILs):**
+1. **Disabled-control-without-reason pattern** recurs: invoice **Issue / Issue & Send** buttons (empty draft) and the maintenance-window **Save defaults** (zero-length window) are disabled with no tooltip/inline reason — the same dead-control class #1975 just fixed for Record payment. Candidate for the same one-line `title`/hint treatment.
+2. **Latent dev-infra bug** (not a product issue): `docker-compose.override.yml.dev` line 97 mounted a non-existent `apps/web/postcss.config.mjs` (present since #166); Docker auto-created an empty dir → stack wouldn't boot. Plus stale BuildKit cache baked `tailwind.config.mjs` as a directory in web+portal images. Both fixed locally; the override line warrants a fix-forward PR.
+3. **OnboardingTour overlay** (`z-[61]`) intercepts the first click on any page for fresh accounts — expected, but blocks automation/first interaction until "Skip tour".
+
+No GitHub issues filed — findings are papercuts/dev-infra, not user-facing defects warranting an issue. Recommend a small fix-forward PR for the override (finding 2) and optionally the disabled-tooltip sweep (finding 1).
+
+---
+
+## UI QA Sweep — 2026-06-27
+
+**Stack:** latest main (commit 61506446e), Astro 7.0.3 + TW4. URL http://localhost. Login admin@breeze.local.
+**Focus:** TW4/Astro7 layout regressions (PR #1995/#1991/#2008), quotes/invoices (#2011), reliability de-junk (#2005), warranty effective-config cards (#2003), site detail persistence (#2001).
+
+### Phase 2 — Login + Nav Crawl
+
+Nav crawl — every destination rendered with proper TW4 styling unless noted. Probe = main-content text + console errors.
+
+| Page | Render | Notes |
+|---|---|---|
+| Dashboard | ✅ | Stat cards, recent alerts, fleet status, activity table; screenshot confirms clean TW4 layout |
+| Devices | ✅ | Table 2 rows, filter chips, column picker |
+| Alerts | ✅ | Correlations/Rules/Channels tabs, 2 active alerts |
+| Tickets | ✅ | Filters render; 2 orgs in scope dropdown |
+| Incidents | ✅ | Empty state "No incidents found" |
+| Remote Access | ✅ | Start Terminal / File Transfer / Session History cards |
+| Scripts | ✅ | Empty state "No scripts yet" + Create CTA |
+| Patches | ⚠️ | Renders (Compliance/Patches/Update Rings) BUT React hydration mismatch console error on tab nav (server 2 buttons, client 3) — see BUG-1 |
+| Vulnerabilities | ✅ | Empty "No open vulnerabilities" |
+| Fleet | ✅ | Policies/Deployments/Patches/Alerts stat tiles |
+| AI Workspace | ✅ | New Conversation, up to 5 concurrent |
+| Network Monitor | ✅ | Assets/Network Checks/SNMP Templates tabs |
+| Network Discovery | ✅ | Assets/Profiles/Jobs/Topology/Changes tabs |
+| Security | ✅ | Security Score 57/100, posture widgets |
+| DNS Security | ✅ | Provider list copy |
+| PAM | ✅ | Overview/Requests/Rules/Signer Groups/Audit tabs |
+| User Risk | ✅ | rules-v0 scores, empty at-risk list |
+| Sensitive Data | ✅ | Dashboard/Findings/Scans/Policies, all-zero |
+| Peripherals | ✅ | Policies/Activity Log, class filters |
+| AI Risk Engine | ✅ | Guardrails/Analytics/Approvals/Rate Limits/Denials; tier matrix |
+| CIS Benchmarks | ✅ | Avg score 100%, baselines |
+| Compliance Baselines | ✅ | Dashboard/Baselines/Approvals |
+
+### Quotes (#2011) — PASS
+- ✅ /billing/quotes lists draft quote, TW4 styling clean (screenshot)
+- ✅ Quote editor: Editor/Preview/Detail tabs (hash-routed #preview), block builder (Catalog/Manual/Heading/Rich text/Image/Pricing table)
+- ✅ Added manual line "QA Test Service" @ $150 → live totals aria-status announced ("One-time $150.00... due on acceptance $150.00"); auto-save persisted across full reload
+- ✅ Preview tab renders customer proposal with line + Subtotal $150 + Download PDF
+- ⚠️ UI: Quotes list NUMBER column shows only a "DRAFT" badge, no quote number for drafts (number not assigned until sent) — fine but could read as missing data
+
+
+### Invoices (#2011) — PASS (functional); see global toast finding
+- ✅ /billing/invoices list + INV-2026-0001 detail (Preview/Detail tabs, line items, Download PDF, Void/Reverse/Record payment)
+- ✅ Record payment: amount field gates the disabled submit; confirm dialog "Record a $50.00 payment (Bank transfer) dated ...?"; POST 200; invoice summary (balance/paid/total/status) AND payments list **do refresh live** (verified: $0↔$50 transitions without reload). Earlier "stale summary" suspicion was a probe-timing race — RETRACTED.
+- ✅ Reverse payment: confirm dialog, POST 200, summary + list update live.
+- ❌ See BUG-1 (global): no success toast on any of these mutations (state updates correctly though).
+
+### ⛔ BUG-1 (CRITICAL / HIGH) — Toasts never render app-wide on the dev stack
+- **Symptom:** Every `runAction` success/error toast fails to render. Confirmed on TWO independent islands: (a) Invoices Record/Reverse payment (POST 200, balance updates, NO toast), (b) Alerts Acknowledge (alert flips to "Acknowledged", ack buttons 2→1, NO toast). Polled `[data-testid=toast]` at 80-100ms for 4s immediately post-action — element never appears; `[data-testid=toast-container]` never renders.
+- **API vs UI:** API returns 200 and state mutates correctly; UI gives the user zero confirmation/feedback. Worse, *error* toasts would also be swallowed.
+- **Root cause (high confidence):** `apps/web/src/components/shared/Toast.tsx` uses a single module-level emitter slot (`let addToastFn`). `showToast` (called from each action island via `apps/web/src/lib/runAction.ts:79`) and `ToastContainer` (mounted in `apps/web/src/layouts/DashboardLayout.astro:53`, `client:load transition:persist`) must share ONE `Toast.tsx` module instance. On this Astro 7.0.3 / Vite 8 **dev** server each `astro-island` (Toast.tsx, AlertsPage.tsx, billing InvoiceDetail, etc.) loads its own module graph, so the importing island's `addToastFn` is a different instance than the one ToastContainer registered → `showToast` pushes to a `pendingToasts` array nobody drains. Toast island IS present + hydrated (confirmed via `astro-island[component-url]`).
+- **Likely dev-only — NEEDS PROD-BUILD VERIFICATION:** a production `astro build` should bundle Toast.tsx into a shared chunk (true singleton) and may restore toasts. If so, severity for shipping users drops to LOW, but it is HIGH for local dev + breaks every Playwright/e2e toast assertion. **Verify with `pnpm --filter @breeze/web build && preview` before triaging severity.** Tie to #2008 (Astro 7 + Vite 8).
+- **Sweep impact:** toast presence is NOT a reliable feedback signal on this dev stack; remaining mutation checks fall back to state-change verification.
+
+| Quotes/Invoices/Contracts/Timesheets/Catalog | ✅ | All render; 2 orgs in scopes |
+| Software Library / Software Policies | ✅ | Empty states OK |
+| Config Policies | ✅ | Breeze Defaults + New Policy |
+| Integrations | ✅ | Webhooks/Notifications/PSA/Security/Monitoring/Identity/Distributors/Accounting tabs |
+| Backup / Cloud Backup / DR | ✅ | ALPHA banners; render fine |
+| Reports / Analytics / Audit / Event Logs | ✅ | Audit 11 rows, Analytics tabs |
+| Settings: Partner | ✅ | 11 tabs incl Ticketing |
+| Settings: Organizations & Sites | ✅ | 2 orgs listed |
+| Settings: AI Usage, Custom Fields, Saved Filters | ✅ | render |
+| Settings: Users (1), Roles (6), SSO, Access Reviews, Enrollment Keys | ✅ | render |
+
+**Phase 2 verdict: PASS.** Every nav destination renders with intact TW4 styling, correct empty states, no error boundaries. Only console error across the whole crawl: the Patches tab-nav hydration mismatch (BUG-3 below). No unstyled/raw-HTML pages, no broken layouts found in light mode.
+
+### ⚠️ BUG-3 (LOW) — Patches page React hydration mismatch
+- `/patches`: console error "Hydration failed because the server rendered HTML didn't match the client" on the tab `<nav>` — server renders 2 tab buttons, client renders 3 (the extra has an onClick). React regenerates the subtree client-side so the page still works, but it's a real SSR/CSR divergence. Likely tied to hash-based tab state (#1977/#1984) reading `window.location.hash` during render. File: `apps/web/src/components/.../PatchesPage.tsx`. Dev-mode surfaced; would silently regenerate in prod. Low severity.
+
+### Theme / Dark mode (TW4 #1995/#2008) — PASS
+- ✅ Theme menu: Light/Dark/System + Interface density (Comfortable/Compact/Dense)
+- ✅ Dark mode applies html.dark, bg #0d1017, light text; Dashboard renders cleanly (dark surfaces, colored alert cards, readable) — matches baseline expectation
+- ✅ Partner Settings form in dark: field backgrounds/borders/labels all correct contrast; tabs + Save button styled
+- ✅ Corroboration: audit log shows my test mutations all persisted (Acknowledged alert, Invoice payment recorded/voided) — confirms BUG-1 is purely a toast-render failure, not action failure
+
+### Phase 5 — Reliability scores (#2005)
+- ✅ macOS device (e2e-macos.local): Reliability Score 100, trend "Stable since enroll", MTBF "—" — renders sanely, no junk/negative values
+
+### Site Detail address & contact persistence (#2001) — PASS
+- ✅ /settings/sites/:id has Details/Configuration Policies/Devices tabs; address (street/city/state/zip/country) + contact (name/email/phone) fields
+- ✅ Filled street1=742 QA Avenue, city=Austin, state=TX, contact=QA Tester, email=qa@example.com → PATCH 200 → **persisted across full reload**. The #2001 persistence fix works.
+- ⚠️ UI: the "Saved at 12:00" indicator (the save-feedback affordance, since no toast) showed "12:00" both BEFORE and AFTER the save — it does not update to the actual save time. Minor but it's the only save confirmation on this page, so it reads as stale/wrong.
+
+- ✅ Windows device (e2e-windows.local): Reliability Score 100, "Stable since enroll · 0d uptime", 100.0% MTBF — sane, no junk/NaN. **#2005 PASS for rendering.** Limitation: fixtures are offline with no history, so scores are the default 100; full classifier (SCM/DCOM→hardware misclass) not exercisable without real telemetry history. No garbage values observed.
+
+### Phase 5 — Warranty/feature cards on Effective Config (#2003) — NEEDS CLARIFICATION
+- On BOTH devices the Effective Config (#effective-config) tab shows only "No Configuration Policies" empty state — no warranty card or other feature cards. Investigating whether the warranty card should render unconditionally (device-intrinsic) or only when policies are assigned. (See report; if gated behind the empty-state early-return, the warranty card is unreachable for policy-less devices = likely a gap.)
+
+### Phase 4 — Enrollment Keys create/revoke — PASS
+- ✅ Create Key (inline form): created "QA Sweep Test Key" → row added + one-time reveal banner "Save this enrollment key now. It will not be shown again." with full key + Copy/Dismiss (good inline feedback substituting for the broken toast)
+- ✅ Delete: confirm modal "Delete Enrollment Key — Are you sure...? This action cannot be undone." → Delete Key → row removed, list back to "No enrollment keys found" empty state
+- Note: these mutations also lacked toasts (BUG-1) but the reveal banner + list-sync provide adequate feedback here.
+
+### Warranty config cards (#2003) — BLOCKED (verified by-design, fix not exercised)
+- The warranty/feature cards are policy-config-derived and gated behind the "No Configuration Policies" empty-state early-return (`apps/web/src/components/devices/DeviceEffectiveConfigTab.tsx:212-238`, `hasRealFeatures` guard). On both seed devices (zero assigned policies) the empty state correctly hides all cards. This is BY DESIGN, not a #2003 regression. To verify #2003's actual fix, assign any config policy to a device then reload #effective-config — warranty should render as an enforced card or in the "Not enforced — Breeze Defaults" strip. Not exercised this run (would require creating+assigning a policy). 
+- ⚠️ Product/UX (pre-#2003): on a policy-less device the warranty/baseline chips are entirely unreachable; an MSP can't see warranty inheritance until at least one policy is assigned.
+
+### Phase 3 — Everyday workflows (partial)
+- ✅ Cmd+K global search: palette opens focused; typing "macos" returns "E2E macOS Test Device" under DEVICES; Enter navigates to the device detail. PASS.
+- ✅ Alerts: Acknowledge flips alert to "Acknowledged", ack buttons 2→1, audit logged (no toast — BUG-1).
+- ✅ Device offline action gating (mostly good): Run Script + Remote Tools disabled with tooltip "Device is offline"; Wake enabled (WoL via peer — sensible).
+- ❌ BUG-4 (MEDIUM): On an OFFLINE device, **Connect Desktop** is enabled (unlike its disabled siblings). Clicking fires `POST /api/v1/remote/sessions` → **400 Bad Request**, and the UI shows **nothing** — no modal, no error message, no toast (error toast swallowed by BUG-1). Pure dead-end. Two contributing causes: (1) button not gated on `status==='online'` like Run Script/Remote Tools; (2) 400 feedback suppressed by the global toast bug. Fix: gate the button when offline (matches siblings) AND/OR fix BUG-1. File: device action bar in `apps/web/src/components/devices/DeviceDetails.tsx`. (Power button is also enabled when offline — same gating gap, not exercised.)
+
+### UI/UX observations (running)
+- ⚠️ Quotes list: draft rows show only a "DRAFT" badge in the NUMBER column (no number until sent) — reads as missing data.
+- ⚠️ Site Detail "Saved at 12:00" indicator is stale — doesn't update to actual save time; it's the only save confirmation on the page.
+- ⚠️ Connect Desktop / Power buttons enabled on offline devices (inconsistent with Run Script / Remote Tools which disable).
+- ⚠️ Warranty/feature cards unreachable on policy-less devices (pre-#2003 product decision).
+- ⚠️ Patches tab-nav SSR/CSR hydration mismatch (dev console error).
+- NOTE (harness artifact, not an app bug): MCP browser intermittently reports a phantom second tab whose URL mirrors recently-visited pages; ignored.
+
+### Summary table
+
+| Area / PR | Result |
+|---|---|
+| Phase 2 nav crawl (40+ destinations) | PASS |
+| TW4 light mode rendering | PASS |
+| TW4 dark mode rendering (#1995/#2008) | PASS |
+| Quotes editor (#2011) | PASS |
+| Invoices + payment/reverse (#2011) | PASS (functional) |
+| Site Detail address/contact persistence (#2001) | PASS |
+| Reliability scores rendering (#2005) | PASS |
+| Warranty config cards (#2003) | BLOCKED (by-design gate; needs assigned policy) |
+| Cmd+K search | PASS |
+| Alerts acknowledge | PASS (functional) |
+| Enrollment keys create/revoke | PASS |
+| Device offline action gating | PARTIAL (BUG-4) |
+| **Global toast feedback** | **FAIL (BUG-1)** |
+| Patches tab hydration | PASS w/ console error (BUG-3) |
+
+### Top findings (systemic)
+1. **BUG-1 (CRITICAL pending prod check): toasts never render app-wide on the dev stack.** Confirmed on Invoices, Alerts, Site save, device actions. Every runAction success/error toast is swallowed → users get no confirmation and, worse, no error feedback. Root cause = `Toast.tsx` single module-level emitter not shared across Astro islands under Vite 8 dev. MUST verify against a production build (`astro build && preview`) — likely dev-only (prod dedupes the chunk), but if it reproduces in prod it's release-blocking. Pages that pair a mutation with inline feedback (enrollment-key reveal banner, live invoice totals, site "Saved at") partially mask it.
+2. **BUG-4 (MEDIUM): silent dead-ends from ungated offline actions** (Connect Desktop / Power) compounded by BUG-1's swallowed errors.
+3. **BUG-3 (LOW): Patches tab SSR/CSR hydration mismatch** (dev console error; auto-regenerates).
+
+Phase coverage: Phase 2 COMPLETE. Phase 5 covered #2011/#2001/#2005/#2008/#1995 (PASS), #2003 BLOCKED. Phase 3 partial (search/alerts/device-gating). Phase 4 partial (enrollment keys). Oldest changed PR reached: #2001. Not yet exercised: notification channels + Test button, scripts create/run, patch approve/reject, org/site create, config policy create+assign (also unblocks #2003), partner settings save + javascript:/data: URL validation, reports generate, integrations connect flows.
+
+### Triage addendum — prod-build verification (2026-06-27, main session)
+
+Re-tested the agent's top findings against an actual **production bundle** (`pnpm build:prod && astro preview`, NODE_ENV=production) served through caddy at the same `http://localhost` origin, to settle dev-only vs release-blocking.
+
+- **BUG-1 (global toast swallow) → DEV-ONLY. NOT a release blocker.** In the prod build, clicking Alerts → Acknowledge rendered the `"Alert acknowledged"` toast (`[data-testid=toast]` present, ~3s). Root cause confirmed: `Toast.tsx` relies on a module-level singleton emitter (`addToastFn`/`pendingToasts`, lines 22-23) shared by `showToast` (runAction.ts) and `ToastContainer` (DashboardLayout.astro:53). The Astro 7 / Vite 8 **dev server** gives each `astro-island` its own module graph, so the emitter isn't shared and every toast is swallowed; a prod `astro build` dedupes `Toast.tsx` into one shared chunk, so the singleton works. Matches the documented #1301 precedent (dev-only toast quirk, absent in prod). Severity: **dev/QA-only** — but it breaks ALL manual-QA and e2e toast assertions on the dev stack, so still worth a dev-infra issue.
+
+- **BUG-4 / "Connect Desktop" offline → REAL in prod, but mischaracterized as silent.** Verified on the offline macOS device in the prod build: Run Script + Remote Tools are correctly `disabled` with title "Device is offline"; **Connect Desktop and Power are enabled with no tooltip**. Clicking Connect Desktop fires `POST /api/v1/remote/sessions` → **400 ("Device is not online")**. Feedback IS present but weak: the button turns red + label → "Connection failed" (ConnectDesktopButton.tsx:711/732), with the 400 reason only in the hover `title`. No toast (this path uses `setError` button-state, not `showToast`). The agent reported "zero UI feedback" because it looked only for a toast — corrected. **Real defect = inconsistent gating**: gate Connect Desktop + Power on `status==='online'` like their siblings (disable + "Device is offline" tooltip) instead of firing a doomed request. Severity LOW-MEDIUM (UX consistency / needless 400). File: `apps/web/src/components/remote/ConnectDesktopButton.tsx` (+ Power button in the device action bar).
+
+- **BUG-3 (Patches hydration mismatch) → DEV-ONLY.** `/patches` in the prod build logged **0 console errors/warnings**. React suppresses hydration warnings in prod; page renders clean. Low severity, dev-surfaced only.
+
+- **NEW — phantom `tailwind.config.mjs` bind mounts (dev-infra).** The TW4 migration (#1995/#1991) deleted `apps/web/tailwind.config.mjs` and `apps/portal/tailwind.config.mjs`, but four compose files still bind-mount them: `docker-compose.dev.yml:141`, `docker-compose.override.yml.dev:96,127`, `docker-compose.override.yml.worktree:65` (and the `docker-compose.override.yml` symlink). Docker auto-creates empty **directories** at those paths on every `up`/recreate, littering the working tree. Identical to the bug PR #1999 just fixed for `postcss.config.mjs`. Fix: drop those four mount lines. Removed the two phantom dirs this session; they will reappear on next container recreate until the mounts are removed.
+
+**Net for the release:** the Astro 7 / Vite 8 / TW4 upgrade is NOT broken in production — toasts, layouts (light+dark), quotes/invoices, site-detail persistence, reliability scores all pass in the prod bundle. The "critical" toast finding is a dev-server-only regression. Two real (low/medium) defects to file: offline-action gating (BUG-4) and the stale TW4 compose mounts.

@@ -34,3 +34,11 @@
 ## Verified ✓
 
 _(move items here with the date you confirmed them, e.g. `- [x] #NNNN — verified 2026-06-20 in local docker`)_
+
+## PR #2309 — linked device profiles for multi-boot (#2138) — merged 2026-07-10 (62d5032a8)
+New UI to eyeball before release:
+- Devices list: link two same-org devices (Linked Profiles tab on device detail), then with exactly one online → offline sibling renders as thin muted strip under the online row ("<OS> inactive · Expected offline · last seen · agent vX"); strip clicks through to sibling's detail page and is NOT bulk-selectable.
+- All linked profiles offline → both full rows + left-edge group bracket. 2+ online → plain full rows.
+- Toolbar toggle "Collapse linked inactive profiles" (default ON, localStorage-persisted) — verify it flips presentation live and persists across reload.
+- Check BOTH desktop table and mobile-card (ResponsiveTable) renderings of strips.
+- Pagination caveat (accepted): siblings split across pages render ungrouped.
