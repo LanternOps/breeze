@@ -160,7 +160,103 @@ docker compose -f docker/docker-compose.prod.yml exec api \
 curl http://localhost:3001/health/ready
 ```
 
-## Installer Issues
+## Windows MSI Installer
+
+Most MSI problems come down to a failed enrollment during install. The agent is
+built to leave a trail in **four places** when enrollment fails, so you almost
+never have to guess:
+
+| Sink | Where | How to read it |
+|---|---|---|
+| Installer log | `install.log` (only when you pass `/l*v`, see below) | The agent's stderr is captured here — look for `Enrollment failed:` |
+| Agent log | `C:\ProgramData\Breeze\logs\agent.log` | Full structured log of the agent, including the enroll attempt |
+| Last-error marker | `C:\ProgramData\Breeze\logs\enroll-last-error.txt` | One timestamped line with the friendly failure reason |
+| Windows Event Log | Application log, source `BreezeAgent` | `Get-EventLog` / Event Viewer |
+
+### Always install with a log
+
+`msiexec` is silent by default. Pass `/l*v` to write a **verbose** log so you (and
+whoever triages the issue) can see exactly what happened:
+
+```powershell
+# Run from an elevated (Administrator) PowerShell or cmd prompt.
+# /i = install, /qn = no UI, /l*v = verbose log to install.log
+msiexec /i "breeze-agent [ABCD1234XY@breeze.example.com].msi" /qn /l*v install.log
+```
+
+`/l*v <path>` logs everything (the `*`) verbosely (the `v`) to the file you name.
+Use an absolute path you can find afterwards, e.g. `/l*v C:\breeze-install.log`.
+
+<Aside type="tip">
+  For a **zero-config** installer downloaded from the dashboard, do **not** pass
+  `SERVER_URL`/`ENROLLMENT_KEY` — the enrollment token is embedded in the
+  `[TOKEN@HOST]` block in the filename. Keep the filename intact (see
+  [Agent Installation](/agents/installation)). Only supply the properties below
+  when using a plain, un-tokenized MSI.
+</Aside>
+
+For a plain MSI, `SERVER_URL` and `ENROLLMENT_KEY` **must be supplied together**
+(the installer aborts with `SERVER_URL and ENROLLMENT_KEY must be provided together`
+if only one is present):
+
+```powershell
+msiexec /i breeze-agent.msi /qn /l*v install.log `
+  SERVER_URL=https://breeze.yourdomain.com `
+  ENROLLMENT_KEY=YOUR_ENROLLMENT_KEY
+```
+
+Supported MSI properties: `SERVER_URL`, `ENROLLMENT_KEY`, `ENROLLMENT_SECRET`,
+`BOOTSTRAP_TOKEN`.
+
+### Reading the Breeze agent log
+
+After an install (successful or not), the agent's own log is the richest source:
+
+```powershell
+# Tail the agent log live
+Get-Content C:\ProgramData\Breeze\logs\agent.log -Wait -Tail 50
+
+# Just the enrollment outcome (one line, if the last enroll failed)
+Get-Content C:\ProgramData\Breeze\logs\enroll-last-error.txt
+
+# Enrollment errors from the Windows Event Log
+Get-EventLog -LogName Application -Source BreezeAgent -Newest 20 |
+  Format-List TimeGenerated, EntryType, Message
+```
+
+<Aside type="note">
+  `enroll-last-error.txt` is cleared at the start of every enrollment attempt, so
+  if it's absent the most recent enroll succeeded. `agent.log` is not cleared —
+  it's the place to look for ongoing (post-install) agent behavior.
+</Aside>
+
+### MSI exits non-zero / device never appears
+
+**Cause**: Enrollment failed during install (bad key, wrong server URL, network
+blocked, or a usage-limited key that's already exhausted).
+
+**Fix**:
+1. Re-run with `/l*v install.log` (above) and search the log for
+   `Enrollment failed:` — the agent surfaces the underlying reason there rather
+   than a generic Windows error.
+2. Cross-check `enroll-last-error.txt` for the same message in one line.
+3. Confirm the box can reach the server: `curl.exe -v https://breeze.yourdomain.com/health`.
+4. If the key is usage-limited, confirm it hasn't hit `maxUsage` in the dashboard.
+
+### MSI install succeeds but agent shows offline
+
+Enrollment succeeded (the row exists) but the service isn't reporting in. Check
+the service and the log:
+
+```powershell
+Get-Service BreezeAgent
+Get-Content C:\ProgramData\Breeze\logs\agent.log -Wait -Tail 50
+```
+
+See [Agent shows "offline" despite running](#agent-shows-offline-despite-running)
+for WebSocket/firewall causes.
+
+## Server-Side Installer Issues
 
 ### "Generate Link" fails with `Server URL not configured (set PUBLIC_API_URL or API_URL)`
 
@@ -195,8 +291,30 @@ api:
 
 Then `docker compose up -d api`. Same workaround unblocks **Download Installer**, which hits the same code path silently.
 
-## Getting Help
+## Reporting an Issue
 
-- Check the [GitHub Issues](https://github.com/LanternOps/breeze/issues)
-- Join the community Discord
-- Review API logs: `docker compose -f docker/docker-compose.prod.yml logs -f api`
+Before opening a [GitHub issue](https://github.com/LanternOps/breeze/issues),
+search existing issues — your problem may already be tracked. When you do file
+one, include the following so it can be triaged without a back-and-forth:
+
+- **What you were doing** and what you expected vs. what happened.
+- **Breeze version** — server (`BREEZE_VERSION` in your `.env`) and agent
+  (`breeze-agent version`).
+- **Platform** — OS and architecture of the affected machine.
+- **Relevant logs** (redact secrets — tokens, `ENROLLMENT_SECRET`, hostnames you
+  don't want public):
+
+  | Area | Log to attach |
+  |---|---|
+  | Windows MSI install | `install.log` from `msiexec /l*v`, plus `C:\ProgramData\Breeze\logs\agent.log` |
+  | Agent enrollment | `enroll-last-error.txt` and the `BreezeAgent` Event Log entries |
+  | Agent (Linux) | `sudo journalctl -u breeze-agent -n 200` |
+  | Agent (macOS) | `/Library/Application Support/Breeze/logs/agent.log` |
+  | Server / API | `docker compose -f docker/docker-compose.prod.yml logs -f api` |
+
+<Aside type="caution">
+  Scrub bearer tokens (`brz_...`), enrollment secrets, and any internal hostnames
+  or IPs before attaching logs to a **public** issue.
+</Aside>
+
+- Join the community Discord for real-time help.
