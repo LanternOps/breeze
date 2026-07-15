@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { getUserPermissions, type UserPermissions } from './permissions';
+import { canAccessOrg, getUserPermissions, type UserPermissions } from './permissions';
 import { validateApiKeyScopeDelegation } from './apiKeyScopes';
 import { db, withSystemDbAccessContext } from '../db';
 import { servicePrincipals } from '../db/schema';
@@ -59,6 +59,15 @@ export async function authorizeHumanApiKeyCreator(input: {
   }
 
   if (!permissions) {
+    return { ok: false, reason: 'no_membership' };
+  }
+
+  // A partner creator's org access can be narrowed (orgAccess/allowedOrgIds)
+  // without removing their partner_users role row — getUserPermissions still
+  // resolves a role, but the creator can no longer reach the key's org. Deny so
+  // the key does not outlive that access. (Org-scoped creators are already
+  // pinned to their own org by getUserPermissions's null return above.)
+  if (permissions.scope === 'partner' && !canAccessOrg(permissions, input.orgId)) {
     return { ok: false, reason: 'no_membership' };
   }
 
