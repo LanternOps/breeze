@@ -76,6 +76,11 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-breeze}
       # The request pool derives its breeze_app URL from DATABASE_URL and the same
       # effective password ensureAppRole uses to CREATE/ALTER that unprivileged role.
+      # DATABASE_URL_APP takes precedence and is required for multi-host/HA URLs,
+      # which cannot be derived. All three must be mapped here — compose only
+      # interpolates vars listed in this block, so omitting one makes a value set
+      # in .env silently inert.
+      DATABASE_URL_APP: ${DATABASE_URL_APP:-}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
       REDIS_HOST: redis
