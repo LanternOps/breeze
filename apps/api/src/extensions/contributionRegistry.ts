@@ -94,23 +94,35 @@ function cloneAiTool(tool: ExtensionAiTool): RegistryAiTool {
   });
 }
 
-function copyAndSealRouteApp(source: Hono | undefined): Hono | null {
+export interface PublishedExtensionRouteApp {
+  composeInto(host: Hono, mountPrefix: string): void;
+}
+
+function copyAndSealRouteApp(source: Hono | undefined): PublishedExtensionRouteApp | null {
   if (!source) return null;
-  const host = new Hono();
-  host.route('/', source);
-  for (const route of host.routes) Object.freeze(route);
-  Object.freeze(host.routes);
-  return host;
+  const copiedApp = new Hono();
+  copiedApp.route('/', source);
+  for (const route of copiedApp.routes) Object.freeze(route);
+  Object.freeze(copiedApp.routes);
+  return Object.freeze({
+    composeInto(host: Hono, mountPrefix: string): void {
+      host.route(mountPrefix, copiedApp);
+    },
+  });
 }
 
 export interface StagedExtensionContributions {
   readonly name: string;
   readonly version: string;
   readonly manifest: ExtensionManifestV1;
-  readonly routeApp: Hono | null;
+  readonly routeApp: PublishedExtensionRouteApp | null;
   readonly jobs: ReadonlyMap<string, ExtensionJobDefinition>;
   readonly aiTools: ReadonlyMap<string, RegistryAiTool>;
   readonly enabled: boolean;
+}
+
+export interface ExtensionContributionRegistryOptions {
+  readonly isReservedAiToolName?: (name: string) => boolean;
 }
 
 export class ExtensionStagingSession {
@@ -221,12 +233,30 @@ export class ExtensionStagingSession {
 
 export class ExtensionContributionRegistry {
   private readonly active = new Map<string, StagedExtensionContributions>();
+  private isReservedAiToolName: (name: string) => boolean;
+
+  constructor(options: ExtensionContributionRegistryOptions = {}) {
+    this.isReservedAiToolName = options.isReservedAiToolName ?? (() => false);
+  }
+
+  configureReservedAiToolNames(predicate: (name: string) => boolean): void {
+    if (this.active.size > 0) {
+      throw new Error('Cannot configure reserved AI tool names after registry activation');
+    }
+    const current = this.isReservedAiToolName;
+    this.isReservedAiToolName = (name) => current(name) || predicate(name);
+  }
 
   begin(manifest: ExtensionManifestV1): ExtensionStagingSession {
     return new ExtensionStagingSession(manifest);
   }
 
   activate(staged: StagedExtensionContributions): void {
+    for (const toolName of staged.aiTools.keys()) {
+      if (this.isReservedAiToolName(toolName)) {
+        throw new Error(`AI tool "${toolName}" collides with a reserved core tool name`);
+      }
+    }
     for (const current of this.active.values()) {
       if (current.name === staged.name || !current.enabled) continue;
       if (current.manifest.routeNamespace === staged.manifest.routeNamespace) {
@@ -255,10 +285,13 @@ export class ExtensionContributionRegistry {
   }
 
   getByRouteNamespace(routeNamespace: string): StagedExtensionContributions | undefined {
+    let disabledFallback: StagedExtensionContributions | undefined;
     for (const snapshot of this.active.values()) {
-      if (snapshot.manifest.routeNamespace === routeNamespace) return snapshot;
+      if (snapshot.manifest.routeNamespace !== routeNamespace) continue;
+      if (snapshot.enabled) return snapshot;
+      disabledFallback ??= snapshot;
     }
-    return undefined;
+    return disabledFallback;
   }
 
   getAiTool(name: string): RegistryAiTool | undefined {

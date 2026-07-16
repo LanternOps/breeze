@@ -312,6 +312,25 @@ describe('mountExtensionGateway', () => {
     expect(await (await app.request('/api/v1/new-alias/health')).json()).toEqual({ version: 2 });
   });
 
+  it('resolves a reused alias to the enabled owner after the prior owner withdraws', async () => {
+    const { app, registry } = makeGatewayFixture({
+      manifest: makeManifest({ routeNamespace: 'shared-alias' }),
+    });
+    registry.withdraw('demo');
+    const replacementOwner = new Hono();
+    replacementOwner.get('/health', (c) => c.json({ owner: 'replacement' }));
+    activateRoute(
+      registry,
+      replacementOwner,
+      makeManifest({ name: 'other-demo', routeNamespace: 'shared-alias' }),
+    );
+
+    const response = await app.request('/api/v1/shared-alias/health');
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ owner: 'replacement' });
+  });
+
   it('propagates wrapper errors to the outer app error handler', async () => {
     const routeApp = new Hono();
     routeApp.get('/explode', () => {

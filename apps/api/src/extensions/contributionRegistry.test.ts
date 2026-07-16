@@ -9,6 +9,7 @@ import type {
 import {
   ExtensionContributionRegistry,
   type RegistryAiTool,
+  type PublishedExtensionRouteApp,
   type StagedExtensionContributions,
 } from './contributionRegistry';
 
@@ -95,6 +96,19 @@ describe('ExtensionContributionRegistry', () => {
     expect(registry.get('demo')?.version).toBe('1.0.0');
   });
 
+  it('rejects reserved AI names before publication and keeps the prior snapshot active', () => {
+    const registry = new ExtensionContributionRegistry({
+      isReservedAiToolName: (name) => name === 'core_tool',
+    });
+    registry.activate(makeStaged('demo', '1.0.0'));
+    const session = registry.begin(makeManifest('demo', '2.0.0', { aiTools: ['core_tool'] }));
+    session.registrar.registerAiTool('core_tool', makeTool('core_tool'));
+    const rejected = session.finish();
+
+    expect(() => registry.activate(rejected)).toThrow(/reserved|core.*core_tool|core_tool.*core/i);
+    expect(registry.get('demo')?.version).toBe('1.0.0');
+  });
+
   it('swaps all contributions in one activation', () => {
     const registry = new ExtensionContributionRegistry();
     const staged = makeStaged('demo', '1.0.0', { route: true, job: true, tool: true });
@@ -102,7 +116,7 @@ describe('ExtensionContributionRegistry', () => {
     registry.activate(staged);
 
     expect(registry.get('demo')).toMatchObject({ version: '1.0.0', enabled: true });
-    expect(registry.get('demo')?.routeApp).toBeInstanceOf(Hono);
+    expect(registry.get('demo')?.routeApp).toBeDefined();
     expect(registry.get('demo')?.jobs.size).toBe(1);
     expect(registry.get('demo')?.aiTools.size).toBe(1);
   });
@@ -248,10 +262,38 @@ describe('ExtensionContributionRegistry', () => {
     const originalRoute = extensionApp.routes[0] as { handler: () => Response } | undefined;
     if (originalRoute) originalRoute.handler = () => new Response('replaced');
 
-    expect((await staged.routeApp!.request('/before')).status).toBe(200);
-    expect(await (await staged.routeApp!.request('/before')).json()).toEqual({ version: 'original' });
-    expect((await staged.routeApp!.request('/after')).status).toBe(404);
-    expect(() => staged.routeApp!.get('/snapshot-mutation', (c) => c.text('late'))).toThrow();
+    const host = new Hono();
+    staged.routeApp!.composeInto(host, '');
+    expect((await host.request('/before')).status).toBe(200);
+    expect(await (await host.request('/before')).json()).toEqual({ version: 'original' });
+    expect((await host.request('/after')).status).toBe(404);
+  });
+
+  it('publishes only a sealed composition facade with no Hono mutation surface', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const extensionApp = new Hono();
+    extensionApp.get('/before', (c) => c.json({ version: 'original' }));
+    const session = registry.begin(makeManifest());
+    session.registrar.mountRoute(extensionApp);
+    const published = session.finish().routeApp as PublishedExtensionRouteApp;
+    const exposed = published as unknown as Record<string, unknown>;
+
+    expect(Object.keys(published)).toEqual(['composeInto']);
+    for (const mutator of [
+      'get', 'post', 'put', 'delete', 'patch', 'options', 'all',
+      'on', 'use', 'route', 'notFound', 'onError',
+    ]) {
+      expect(() => (exposed[mutator] as (...args: unknown[]) => unknown)('/late', vi.fn()))
+        .toThrow();
+    }
+    expect(() => Object.assign(published, { routes: [] })).toThrow();
+    expect(exposed.router).toBeUndefined();
+
+    const host = new Hono();
+    published.composeInto(host, '/published');
+    expect(await (await host.request('/published/before')).json())
+      .toEqual({ version: 'original' });
+    expect((await host.request('/published/late')).status).toBe(404);
   });
 
   it('withdraws an active extension without removing its contributions', () => {

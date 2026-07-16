@@ -3,9 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ExtensionAiTool, ExtensionManifestV1 } from '@breeze/extension-sdk';
 import type { AuthContext } from '../middleware/auth';
 
-import { ExtensionContributionRegistry } from './contributionRegistry';
+import {
+  ExtensionContributionRegistry,
+  extensionContributionRegistry,
+} from './contributionRegistry';
 import { mountExtensionGateway } from './gateway';
-import { executeTool, getToolDefinitions, getToolTier } from '../services/aiTools';
+import {
+  executeTool,
+  getToolDefinitions,
+  getToolTier,
+} from '../services/aiTools';
 
 function makeManifest(overrides: Partial<ExtensionManifestV1> = {}): ExtensionManifestV1 {
   return {
@@ -258,5 +265,26 @@ describe('extension route and AI lifecycle', () => {
       'v2',
       v2,
     )).not.toThrow();
+  });
+
+  it.each([
+    'query_devices',
+    'm365_lookup_user',
+    'google_lookup_user',
+  ])('production registry rejects reserved AI name %s before publication', (toolName) => {
+    const manifest = makeManifest({
+      name: 'reserved-collision-probe',
+      routeNamespace: 'reserved-collision-probe',
+      aiTools: [{ name: toolName }],
+    });
+    const rejected = stage(
+      extensionContributionRegistry,
+      manifest,
+      'reserved',
+      makeTool(toolName, 'reserved'),
+    );
+
+    expect(() => extensionContributionRegistry.activate(rejected)).toThrow(/collision|reserved/i);
+    expect(extensionContributionRegistry.get('reserved-collision-probe')).toBeUndefined();
   });
 });

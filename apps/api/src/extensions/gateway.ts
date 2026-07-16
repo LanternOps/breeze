@@ -70,7 +70,7 @@ function createSnapshotWrapper(
 ): Hono {
   const wrapper = new Hono();
   wrapper.use('*', buildExtensionAuthGuard(mountPrefix, active.manifest));
-  if (active.routeApp) wrapper.route(mountPrefix, active.routeApp);
+  active.routeApp?.composeInto(wrapper, mountPrefix);
   wrapper.notFound((c) => c.json({ error: 'not found' }, 404));
   wrapper.onError((error) => {
     throw error;
@@ -100,7 +100,7 @@ function createAgentSnapshotWrapper(
     }
     await next();
   });
-  if (active.routeApp) wrapper.route(mountPrefix, active.routeApp);
+  active.routeApp?.composeInto(wrapper, mountPrefix);
   wrapper.notFound((c) => c.json({ error: 'not found' }, 404));
   wrapper.onError((error) => {
     throw error;

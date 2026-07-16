@@ -269,6 +269,8 @@ export function hasCoreAiToolName(toolName: string): boolean {
     || googleToolTiers[toolName] !== undefined;
 }
 
+extensionContributionRegistry.configureReservedAiToolNames(hasCoreAiToolName);
+
 function resolveExtensionTool(
   toolName: string,
   registry: ExtensionContributionRegistry,
