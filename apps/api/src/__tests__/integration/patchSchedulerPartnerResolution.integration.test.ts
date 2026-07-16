@@ -148,10 +148,36 @@ describe('patch scheduler SUBSET resolution — partner re-clamp (#2280 review)'
     );
     expect(before).toEqual([device.id]);
 
-    // Reparent the org to a DIFFERENT partner. The assignment row is now
-    // stale — it was only ever verified to belong to `partner` at ASSIGN
-    // time (validateAssignmentTarget), and nothing re-checks it afterwards
-    // except this resolution join.
+    // Reparenting the org while the partner policy's SUBSET assignment still
+    // targets it is rejected at the DB layer (assignment-target integrity
+    // triggers, 2026-07-28/29 migrations): the stale-assignment state the
+    // original TOCTOU exploited is unrepresentable.
+    let reparentError: unknown;
+    try {
+      await withDbAccessContext(SYSTEM_CTX, async () => {
+        await db
+          .update(organizations)
+          .set({ partnerId: otherPartner.id })
+          .where(eq(organizations.id, org!.id));
+      });
+    } catch (err) {
+      reparentError = err;
+    }
+    const rootMessage = String(
+      (reparentError as { cause?: { message?: string } } | undefined)?.cause?.message
+        ?? (reparentError as Error | undefined)?.message,
+    );
+    expect(rootMessage).toMatch(/incompatible with the policy owner/);
+
+    // Clear the assignment and reparent for real. Separate transactions: the
+    // assignment delete takes org-level partner-export locks while the
+    // reparent takes partner-level locks, and the lock hierarchy forbids
+    // partner-after-org within one transaction.
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await db
+        .delete(configPolicyAssignments)
+        .where(eq(configPolicyAssignments.targetId, org!.id));
+    });
     await withDbAccessContext(SYSTEM_CTX, async () => {
       await db
         .update(organizations)
@@ -163,7 +189,8 @@ describe('patch scheduler SUBSET resolution — partner re-clamp (#2280 review)'
       resolveDeviceIdsForAssignment('organization', org!.id, null, partner.id)
     );
 
-    // Must NOT still resolve devices for the policy's now-stale partner.
+    // The resolution join must still re-clamp by partner: no devices resolve
+    // for the policy's now-stale partner.
     expect(after).toEqual([]);
   });
 });
