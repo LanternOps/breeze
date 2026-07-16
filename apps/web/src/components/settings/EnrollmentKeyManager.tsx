@@ -37,7 +37,7 @@ type ModalMode = 'closed' | 'create' | 'delete';
 
 export default function EnrollmentKeyManager() {
   const { t } = useTranslation('settings');
-  const { currentOrgId, currentSiteId, sites: storeSites, organizations } = useOrgStore();
+  const { currentOrgId, currentSiteId, sites: storeSites, organizations, isLoading: storeLoading } = useOrgStore();
   const [keys, setKeys] = useState<EnrollmentKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -120,7 +120,12 @@ export default function EnrollmentKeyManager() {
       setFormSites(storeSites.filter((s) => s.orgId === formOrgId));
       return;
     }
+    // Cross-org: clear the previously-selected org's sites immediately so the
+    // default-site effect falls back to '' until the correct list loads. Without
+    // this, switching the Org dropdown leaves the old org's sites in place and a
+    // stale siteId could be defaulted (and submitted) for the newly-picked org.
     let cancelled = false;
+    setFormSites([]);
     setSitesLoading(true);
     fetchWithAuth(`/orgs/sites?organizationId=${formOrgId}`)
       .then((res) => (res.ok ? res.json() : Promise.reject(res)))
@@ -386,6 +391,13 @@ export default function EnrollmentKeyManager() {
       </div>
     );
   }
+
+  // Whether the create form's site list reflects a completed load. For the
+  // common same-org case we lean on the store's load flag (its sites are fetched
+  // globally by the org switcher); for a cross-org pick we track it locally.
+  // Only once resolved do we show the "no sites yet" empty state — otherwise it
+  // flashes before the async site list has actually landed.
+  const formSitesResolved = formOrgId === currentOrgId ? !storeLoading : !sitesLoading;
 
   return (
     <div className="space-y-6">
@@ -655,6 +667,7 @@ export default function EnrollmentKeyManager() {
                 <div>
                   <label className="text-sm font-medium">{t('common:labels.organization')}</label>
                   <select
+                    data-testid="enrollment-key-org-select"
                     value={formOrgId}
                     onChange={(e) => {
                       setFormOrgId(e.target.value);
@@ -671,7 +684,7 @@ export default function EnrollmentKeyManager() {
               )}
               <div>
                 <label className="text-sm font-medium">{t('common:labels.site')}</label>
-                {!sitesLoading && formSites.length === 0 ? (
+                {formSitesResolved && formSites.length === 0 ? (
                   <div className="mt-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
                     {t('enrollmentKeys.noSitesForOrg')}{' '}
                     <a
@@ -683,10 +696,11 @@ export default function EnrollmentKeyManager() {
                   </div>
                 ) : (
                   <select
+                    data-testid="enrollment-key-site-select"
                     value={formSiteId}
                     onChange={(e) => setFormSiteId(e.target.value)}
                     required
-                    disabled={sitesLoading}
+                    disabled={!formSitesResolved}
                     className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary disabled:opacity-60"
                   >
                     <option value="" disabled>{t('enrollmentKeys.selectSite')}</option>
@@ -732,7 +746,7 @@ export default function EnrollmentKeyManager() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || !formName.trim() || !formSiteId}
+                  disabled={submitting || !formName.trim() || !formSiteId || sitesLoading}
                   className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {submitting ? t('enrollmentKeys.creating') : t('enrollmentKeys.createKey')}
