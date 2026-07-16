@@ -354,6 +354,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     catalogItemId: uuid,
   }),
 
+  lookup_distributor_product: z.object({
+    query: z.string().min(1).max(40),
+  }),
+
   manage_catalog: z.object({
     action: z.enum([
       'create_item',

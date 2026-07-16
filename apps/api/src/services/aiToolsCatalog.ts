@@ -34,6 +34,7 @@ import {
   type CatalogActor
 } from './catalogService';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
+import { lookupEcExpressProducts, TdSynnexEcExpressError, type TdSynnexEcProduct } from './tdSynnexEcExpress';
 
 /**
  * Params each manage_catalog action requires, presence-checked BEFORE any
@@ -165,6 +166,19 @@ function sanitizeCatalogItemForAi(item: CatalogItemRow, auth: AuthContext): Reco
   return out;
 }
 
+/**
+ * Shape a live distributor price-&-availability product for AI/MCP output. Drops
+ * the verbose raw SOAP payload (internal), and redacts the reseller `cost` for
+ * organization-scoped callers — cost is partner-sensitive, mirroring the catalog
+ * item redaction above. Partner-scoped callers keep cost (they need it to price).
+ */
+function sanitizeDistributorProductForAi(p: TdSynnexEcProduct, auth: AuthContext): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...p };
+  delete out.raw;
+  if (auth.scope === 'organization') delete out.cost;
+  return out;
+}
+
 export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('search_catalog', {
     tier: 2 as AiToolTier,
@@ -236,6 +250,50 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
         .orderBy(asc(catalogItems.name))
         .limit(limit);
       return JSON.stringify({ items: rows, showing: rows.length });
+    }
+  });
+
+  aiTools.set('lookup_distributor_product', {
+    tier: 2 as AiToolTier,
+    deviceArgs: [],
+    definition: {
+      name: 'lookup_distributor_product',
+      description:
+        'Live TD SYNNEX (EC Express) price & availability lookup for a SINGLE distributor SKU or manufacturer part number. Returns reseller cost, MSRP, currency, total stock, and per-warehouse availability. Read-only, but makes an outbound call to the distributor (partner-scoped). Use this to price a distributor product that is NOT yet in the catalog before adding it to a quote; for items already in the catalog use search_catalog instead.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Exactly one TD SYNNEX SKU (all digits) or manufacturer part number to look up.'
+          }
+        },
+        required: ['query']
+      }
+    },
+    handler: async (input, auth) => {
+      if (input.query == null || String(input.query).trim() === '') {
+        return JSON.stringify({ error: 'Provide a SYNNEX SKU or manufacturer part number in "query"' });
+      }
+      const partnerId = auth.partnerId;
+      if (!partnerId) {
+        return JSON.stringify({ error: 'Distributor lookup is partner-scoped; no partner in context' });
+      }
+      try {
+        const products = await lookupEcExpressProducts(String(input.query), actorFromAuth(auth));
+        return JSON.stringify({
+          products: products.map((p) => sanitizeDistributorProductForAi(p, auth)),
+          showing: products.length
+        });
+      } catch (err) {
+        // Surface the typed provider/no-results error to the model instead of a
+        // generic 500, so it can retry with a different SKU or fall back to a
+        // manual line — never a blind retry loop.
+        if (err instanceof TdSynnexEcExpressError) {
+          return JSON.stringify({ error: err.message, code: err.code });
+        }
+        throw err;
+      }
     }
   });
 

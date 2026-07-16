@@ -41,8 +41,27 @@ vi.mock('../db/schema', () => ({
   },
 }));
 
+// Mock the live TD SYNNEX EC Express service so lookup_distributor_product tests
+// never make an outbound call. TdSynnexEcExpressError must be a real class so the
+// handler's `instanceof` check matches.
+vi.mock('./tdSynnexEcExpress', () => {
+  class TdSynnexEcExpressError extends Error {
+    code: string;
+    constructor(message: string, code = 'EC_PROVIDER_ERROR') { super(message); this.code = code; }
+  }
+  return { lookupEcExpressProducts: vi.fn(), TdSynnexEcExpressError };
+});
+
 import { registerCatalogTools } from './aiToolsCatalog';
 import { db } from '../db';
+import { lookupEcExpressProducts, TdSynnexEcExpressError } from './tdSynnexEcExpress';
+
+const EC_PRODUCT = {
+  source: 'td_synnex_ec_express', synnexSku: '14753620', mfgPartNo: 'PC14250', status: 'OK',
+  name: 'Dell Pro 14', description: 'Ultra 5', currency: 'USD', cost: 1120.5, msrp: 1499,
+  discount: null, totalQty: 42, warehouses: [{ code: 'CA', available: 42, onOrder: 0, bo: 0, eta: null }],
+  weight: 3.1, parcelShippable: 'Y', raw: { soap: 'internal-dump' },
+} as const;
 
 const PARTNER_ID = '22222222-2222-2222-2222-222222222222';
 const ITEM_ID = '33333333-3333-3333-3333-333333333333';
@@ -377,5 +396,49 @@ describe('aiToolsCatalog: get_catalog_item', () => {
     const conds = flattenConditions(compCapture.where);
     expect(conds).toContainEqual({ _op: 'eq', a: 'cbc.bundle_item_id', b: ITEM_ID });
     expect(conds).toContainEqual({ _op: 'eq', a: 'cbc.partner_id', b: PARTNER_ID });
+  });
+});
+
+describe('aiToolsCatalog: lookup_distributor_product', () => {
+  function orgAuth() {
+    return { user: { id: 'u1' }, partnerId: PARTNER_ID, scope: 'organization', orgId: 'o1', accessibleOrgIds: ['o1'] } as any;
+  }
+
+  it('rejects an empty query without calling the distributor', async () => {
+    const out = await tools().get('lookup_distributor_product')!.handler({ query: '   ' }, partnerAuth());
+    expect(JSON.parse(out).error).toMatch(/SKU or manufacturer part number/);
+    expect(lookupEcExpressProducts).not.toHaveBeenCalled();
+  });
+
+  it('returns a partner-scoped error (and no outbound call) when there is no partner', async () => {
+    const out = await tools().get('lookup_distributor_product')!.handler({ query: '14753620' }, noPartnerAuth());
+    expect(JSON.parse(out)).toEqual({ error: 'Distributor lookup is partner-scoped; no partner in context' });
+    expect(lookupEcExpressProducts).not.toHaveBeenCalled();
+  });
+
+  it('returns products with cost for a partner-scoped caller, dropping the raw SOAP payload', async () => {
+    vi.mocked(lookupEcExpressProducts).mockResolvedValue([EC_PRODUCT as any]);
+    const out = await tools().get('lookup_distributor_product')!.handler({ query: '14753620' }, partnerAuth());
+    expect(lookupEcExpressProducts).toHaveBeenCalledWith('14753620', expect.objectContaining({ partnerId: PARTNER_ID }));
+    const parsed = JSON.parse(out);
+    expect(parsed.showing).toBe(1);
+    expect(parsed.products[0].cost).toBe(1120.5); // partner keeps cost
+    expect(parsed.products[0].synnexSku).toBe('14753620');
+    expect(parsed.products[0].raw).toBeUndefined(); // internal SOAP dump never exposed
+  });
+
+  it('redacts reseller cost for an organization-scoped caller', async () => {
+    vi.mocked(lookupEcExpressProducts).mockResolvedValue([EC_PRODUCT as any]);
+    const out = await tools().get('lookup_distributor_product')!.handler({ query: '14753620' }, orgAuth());
+    const parsed = JSON.parse(out);
+    expect(parsed.products[0].cost).toBeUndefined(); // cost is partner-sensitive
+    expect(parsed.products[0].msrp).toBe(1499);      // customer-facing fields stay
+    expect(parsed.products[0].raw).toBeUndefined();
+  });
+
+  it('surfaces a typed provider error as JSON instead of throwing', async () => {
+    vi.mocked(lookupEcExpressProducts).mockRejectedValue(new TdSynnexEcExpressError('No results for that SKU/part #', 'EC_NO_RESULTS'));
+    const out = await tools().get('lookup_distributor_product')!.handler({ query: 'NOPE' }, partnerAuth());
+    expect(JSON.parse(out)).toEqual({ error: 'No results for that SKU/part #', code: 'EC_NO_RESULTS' });
   });
 });
