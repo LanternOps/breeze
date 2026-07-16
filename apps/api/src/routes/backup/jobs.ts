@@ -389,7 +389,20 @@ jobsRoutes.post(
   const created: string[] = [];
   const skippedOffline: string[] = [];
   const skippedRunning: string[] = [];
+  // Broken profile link, or no backup config could be resolved at all — same
+  // "refuse loudly" contract as POST /jobs/run/:deviceId. These devices get
+  // NO job (an empty job would report success while protecting nothing). Each
+  // entry carries a `reason` so an operator can tell WHY from the response
+  // alone (the single-device path distinguishes these; run-all used to fold
+  // them into one opaque bucket).
+  const skippedBrokenProfile: Array<{ deviceId: string; reason: 'broken_profile' | 'no_config' }> = [];
   const failed: string[] = [];
+  // Job creation returned null (DB error or lost idle-check race). Distinct
+  // from skippedRunning ("benign, already pending") and from created — a device
+  // with ANY spec that failed to create surfaces here so the failure is visible
+  // in the response body, not laundered into "already running" or hidden behind
+  // a sibling spec that did create. `modes` lists which selections failed.
+  const failedToCreate: Array<{ deviceId: string; modes: string[] }> = [];
   const deviceIds = Array.from(deviceConfigMap.keys());
   const onlineDevices = await db
     .select({ id: devices.id, siteId: devices.siteId })
@@ -406,38 +419,102 @@ jobsRoutes.post(
     onlineDevices.filter((device) => canAccessDeviceSite(device, permissions)).map((device) => device.id)
   );
 
-  for (const [deviceId, { configId, featureLinkId }] of deviceConfigMap) {
+  for (const [deviceId, { configId: fallbackConfigId, featureLinkId: fallbackFeatureLinkId }] of deviceConfigMap) {
     if (!onlineDeviceIds.has(deviceId)) {
       recordBackupDispatchFailure('manual_backup', 'device_offline');
       skippedOffline.push(deviceId);
       continue;
     }
 
-    const result = await createManualBackupJobIfIdle({
-      orgId,
-      configId,
-      featureLinkId,
-      deviceId,
-    });
+    // Resolve backup config + selection specs via the same configuration
+    // policy resolver the single-device run endpoint uses. deviceConfigMap's
+    // configId/featureLinkId come from resolveAllBackupAssignedDevices (used
+    // to build the eligible-device set above) and don't apply device role/OS
+    // targeting filters, so resolveBackupConfigForDevice is the source of
+    // truth here — its configId/featureLinkId/specs are used when available,
+    // falling back to the map's values only if the resolver itself returns
+    // nothing for this device.
+    const resolved = await resolveBackupConfigForDevice(deviceId);
 
-    if (result?.created) {
+    // Broken profile link — refuse loudly. Falling through to the legacy
+    // fallback would run a single empty file job and report success, so the
+    // tech would believe the device was backed up.
+    if (resolved?.selectionError) {
+      console.error(
+        `[BackupJobs] Run-all for device ${deviceId} (link ${resolved.featureLinkId}): ${resolved.selectionError}`
+      );
+      recordBackupDispatchFailure('manual_backup', 'selection_error');
+      skippedBrokenProfile.push({ deviceId, reason: 'broken_profile' });
+      continue;
+    }
+
+    const configId = resolved?.configId ?? fallbackConfigId;
+    const featureLinkId = resolved?.featureLinkId ?? fallbackFeatureLinkId;
+
+    if (!configId) {
+      console.error(`[BackupJobs] Run-all for device ${deviceId}: no backup config could be resolved`);
+      recordBackupDispatchFailure('manual_backup', 'no_config');
+      skippedBrokenProfile.push({ deviceId, reason: 'no_config' });
+      continue;
+    }
+
+    // Profile fan-out: one manual job per enabled selection (idle-checked per
+    // device+mode), mirroring POST /jobs/run/:deviceId. Legacy custom links
+    // create a single NULL-mode job as before.
+    const specs = resolved?.selectionSpecs ?? [undefined];
+    const deviceJobs: Array<NonNullable<Awaited<ReturnType<typeof createManualBackupJobIfIdle>>>['job']> = [];
+    // Selections whose job creation returned null (DB error / lost idle race).
+    const failedModes: string[] = [];
+
+    for (const spec of specs) {
+      const result = await createManualBackupJobIfIdle({
+        orgId,
+        configId,
+        featureLinkId,
+        deviceId,
+        ...(spec ? { backupMode: spec.backupMode, modeTargets: spec.targets } : {}),
+      });
+      if (!result) {
+        console.error(`[BackupJobs] Run-all: failed to create backup job for device ${deviceId}`);
+        recordBackupDispatchFailure('manual_backup', 'create_failed');
+        failedModes.push(spec?.backupMode ?? 'legacy');
+        continue;
+      }
+      if (result.created) {
+        deviceJobs.push(result.job);
+      }
+    }
+
+    // Enqueue whatever WAS created for this device — a create failure on one
+    // spec must not strand a sibling spec's real job (a created-but-unenqueued
+    // row sits `pending` forever and blocks that mode's future manual runs).
+    for (const job of deviceJobs) {
       try {
         const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
-        await enqueueBackupDispatch(result.job.id, configId, orgId, deviceId);
-        created.push(result.job.id);
+        await enqueueBackupDispatch(job.id, configId, orgId, deviceId);
+        created.push(job.id);
       } catch (err) {
         const error = err instanceof Error ? err.message : 'Failed to enqueue backup dispatch';
         console.error('[BackupJobs] Failed to enqueue dispatch:', err);
         recordBackupDispatchFailure('manual_backup', 'enqueue_failed');
-        await markBackupJobDispatchFailed(result.job.id, error);
-        failed.push(result.job.id);
+        await markBackupJobDispatchFailed(job.id, error);
+        failed.push(job.id);
       }
-    } else {
+    }
+
+    if (failedModes.length > 0) {
+      // At least one selection failed to create. Surface the device explicitly
+      // instead of laundering it into skippedRunning (if nothing created) or
+      // hiding it behind the sibling jobs that did create.
+      failedToCreate.push({ deviceId, modes: failedModes });
+    } else if (deviceJobs.length === 0) {
+      // Every spec already had an active job for this device+mode — benign,
+      // nothing new to dispatch.
       skippedRunning.push(deviceId);
     }
   }
 
-  const skipped = skippedOffline.length + skippedRunning.length;
+  const skipped = skippedOffline.length + skippedRunning.length + skippedBrokenProfile.length;
 
   writeRouteAudit(c, {
     orgId,
@@ -449,9 +526,14 @@ jobsRoutes.post(
       skipped,
       skippedOffline: skippedOffline.length,
       skippedRunning: skippedRunning.length,
+      skippedBrokenProfile: skippedBrokenProfile.length,
       failed: failed.length,
+      failedToCreate: failedToCreate.length,
     },
-    result: failed.length > 0 && created.length === 0 ? 'failure' : 'success',
+    result:
+      (failed.length > 0 || failedToCreate.length > 0) && created.length === 0
+        ? 'failure'
+        : 'success',
   });
 
   return c.json({
@@ -460,9 +542,16 @@ jobsRoutes.post(
       skipped,
       skippedOffline: skippedOffline.length,
       skippedRunning: skippedRunning.length,
+      skippedBrokenProfile: skippedBrokenProfile.length,
       failed: failed.length,
+      // Job-creation failures (DB error / lost idle race). Additive: distinct
+      // from `skippedRunning` (benign) and `failed` (enqueue failure).
+      failedToCreate: failedToCreate.length,
       jobIds: created,
       failedJobIds: failed,
+      // Per-device detail so an operator can act from the response alone.
+      failedToCreateDevices: failedToCreate,
+      skippedBrokenProfileDevices: skippedBrokenProfile,
     },
   }, 201);
 });
