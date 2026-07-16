@@ -218,9 +218,13 @@ type Heartbeat struct {
 	// drive SendInput/SetThreadDesktop against the same live consent.exe prompt
 	// concurrently (e.g. an await_remote technician approval firing
 	// actuate_elevation while a re-fired ETW event re-enters RunPamFlow).
-	pamActuateMu   sync.Mutex
-	wsDesktopStart func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
-	desktopOwners  sync.Map // desktop session ID -> helper session ID
+	pamActuateMu sync.Mutex
+	// pamDismissalUncertain is protected by pamActuateMu. It keeps later PAM
+	// input fail-closed after a broker failure until the helper's correlated
+	// response proves the old dismissal command has stopped.
+	pamDismissalUncertain bool
+	wsDesktopStart        func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
+	desktopOwners         sync.Map // desktop session ID -> helper session ID
 
 	// Resilience & observability
 	pool        *workerpool.Pool

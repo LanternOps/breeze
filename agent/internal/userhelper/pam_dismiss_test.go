@@ -15,6 +15,7 @@ import (
 
 type stubPamDismissActuator struct {
 	dismissResult pamactuator.Result
+	dismissFunc   func(context.Context) pamactuator.Result
 	panicValue    any
 	dismissCalls  atomic.Int32
 }
@@ -23,10 +24,13 @@ func (s *stubPamDismissActuator) Trigger(context.Context, pamactuator.Request) p
 	return pamactuator.Result{}
 }
 
-func (s *stubPamDismissActuator) Dismiss(context.Context) pamactuator.Result {
+func (s *stubPamDismissActuator) Dismiss(ctx context.Context) pamactuator.Result {
 	s.dismissCalls.Add(1)
 	if s.panicValue != nil {
 		panic(s.panicValue)
+	}
+	if s.dismissFunc != nil {
+		return s.dismissFunc(ctx)
 	}
 	return s.dismissResult
 }
@@ -48,7 +52,9 @@ func newPamDismissPipe(t *testing.T, role string, scopes ...string) (*Client, *i
 
 func pamDismissPayload(t *testing.T) json.RawMessage {
 	t.Helper()
-	payload, err := json.Marshal(ipc.PamDismissConsentRequest{})
+	payload, err := json.Marshal(ipc.PamDismissConsentRequest{
+		DeadlineUnixMs: time.Now().Add(2 * time.Second).UnixMilli(),
+	})
 	if err != nil {
 		t.Fatalf("marshal PAM dismiss request: %v", err)
 	}
@@ -191,6 +197,101 @@ func TestHandlePamDismissConsentRejectsInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestHandlePamDismissConsentRejectsInvalidDeadline(t *testing.T) {
+	tests := []struct {
+		name    string
+		request ipc.PamDismissConsentRequest
+	}{
+		{name: "missing deadline", request: ipc.PamDismissConsentRequest{}},
+		{
+			name: "expired deadline",
+			request: ipc.PamDismissConsentRequest{
+				DeadlineUnixMs: time.Now().Add(-time.Second).UnixMilli(),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actuator := &stubPamDismissActuator{}
+			swapPamDismissActuator(t, actuator)
+			client, peer := newPamDismissPipe(t, ipc.HelperRoleSystem, ipc.ScopePam)
+			payload, err := json.Marshal(tt.request)
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+
+			env := callPamDismissHandler(t, client, peer, payload)
+
+			assertPamDismissEnvelope(t, env)
+			if !strings.Contains(env.Error, "deadline") {
+				t.Fatalf("response error = %q, want deadline error", env.Error)
+			}
+			if got := actuator.dismissCalls.Load(); got != 0 {
+				t.Fatalf("Dismiss calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestHandlePamDismissConsentPropagatesDeadlineCancellation(t *testing.T) {
+	type observedDeadline struct {
+		value time.Time
+		ok    bool
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond).Truncate(time.Millisecond)
+	deadlineSeen := make(chan observedDeadline, 1)
+	var inputAfterDeadline atomic.Bool
+	actuator := &stubPamDismissActuator{dismissFunc: func(ctx context.Context) pamactuator.Result {
+		got, ok := ctx.Deadline()
+		deadlineSeen <- observedDeadline{value: got, ok: ok}
+		select {
+		case <-ctx.Done():
+			return pamactuator.Result{
+				Success:       false,
+				Reason:        "dismiss_cancelled",
+				DetailMessage: ctx.Err().Error(),
+			}
+		case <-time.After(2 * time.Second):
+			inputAfterDeadline.Store(true)
+			return pamactuator.Result{Success: true, Reason: "dismissed"}
+		}
+	}}
+	swapPamDismissActuator(t, actuator)
+	client, peer := newPamDismissPipe(t, ipc.HelperRoleSystem, ipc.ScopePam)
+	payload, err := json.Marshal(ipc.PamDismissConsentRequest{DeadlineUnixMs: deadline.UnixMilli()})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	env := callPamDismissHandler(t, client, peer, payload)
+
+	assertPamDismissEnvelope(t, env)
+	var seen observedDeadline
+	select {
+	case seen = <-deadlineSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("actuator did not observe the request deadline")
+	}
+	if !seen.ok {
+		t.Fatal("actuator context had no deadline")
+	}
+	if delta := seen.value.Sub(deadline); delta < -time.Millisecond || delta > time.Millisecond {
+		t.Fatalf("actuator deadline = %v, want %v", seen.value, deadline)
+	}
+	if inputAfterDeadline.Load() {
+		t.Fatal("actuator continued to simulated input after the request deadline")
+	}
+	var result ipc.PamDismissConsentResult
+	if err := json.Unmarshal(env.Payload, &result); err != nil {
+		t.Fatalf("unmarshal PAM dismiss result: %v", err)
+	}
+	if result.Success || result.Reason != "dismiss_cancelled" {
+		t.Fatalf("unexpected PAM dismiss result: %+v", result)
+	}
+}
+
 func TestCommandLoopPamDismissConsentPanicReturnsError(t *testing.T) {
 	actuator := &stubPamDismissActuator{panicValue: "simulated actuator panic"}
 	swapPamDismissActuator(t, actuator)
@@ -198,7 +299,9 @@ func TestCommandLoopPamDismissConsentPanicReturnsError(t *testing.T) {
 	loopDone := make(chan error, 1)
 	go func() { loopDone <- client.commandLoop() }()
 
-	if err := peer.SendTyped("pam-dismiss-1", ipc.TypePamDismissConsent, ipc.PamDismissConsentRequest{}); err != nil {
+	if err := peer.SendTyped("pam-dismiss-1", ipc.TypePamDismissConsent, ipc.PamDismissConsentRequest{
+		DeadlineUnixMs: time.Now().Add(2 * time.Second).UnixMilli(),
+	}); err != nil {
 		t.Fatalf("send PAM dismiss request: %v", err)
 	}
 	peer.SetReadDeadline(time.Now().Add(2 * time.Second))

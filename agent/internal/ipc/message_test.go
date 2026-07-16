@@ -110,16 +110,20 @@ func TestPamDismissConsentMessagesRoundTrip(t *testing.T) {
 		t.Fatalf("TypePamDismissConsentResult = %q, want pam_dismiss_consent_result", TypePamDismissConsentResult)
 	}
 
-	requestBytes, err := json.Marshal(PamDismissConsentRequest{})
+	request := PamDismissConsentRequest{DeadlineUnixMs: 1784221200123}
+	requestBytes, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(requestBytes) != `{}` {
-		t.Fatalf("request JSON = %s, want {}", requestBytes)
+	if string(requestBytes) != `{"deadlineUnixMs":1784221200123}` {
+		t.Fatalf("request JSON = %s", requestBytes)
 	}
 	var requestOut PamDismissConsentRequest
 	if err := json.Unmarshal(requestBytes, &requestOut); err != nil {
 		t.Fatal(err)
+	}
+	if requestOut != request {
+		t.Fatalf("request round-trip mismatch: %+v != %+v", requestOut, request)
 	}
 
 	result := PamDismissConsentResult{

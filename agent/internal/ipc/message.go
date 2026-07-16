@@ -257,7 +257,11 @@ type PamDialogResult struct {
 }
 
 // PamDismissConsentRequest asks the SYSTEM helper to dismiss consent.exe.
-type PamDismissConsentRequest struct{}
+// DeadlineUnixMs bounds input injection inside the target session and leaves
+// the broker time to receive the helper's correlated response.
+type PamDismissConsentRequest struct {
+	DeadlineUnixMs int64 `json:"deadlineUnixMs"`
+}
 
 // PamDismissConsentResult reports whether the helper dismissed consent.exe.
 type PamDismissConsentResult struct {

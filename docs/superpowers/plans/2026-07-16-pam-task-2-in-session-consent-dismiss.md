@@ -4,7 +4,7 @@
 
 **Goal:** Clear a denied UAC prompt from the interactive Windows session that owns it instead of attempting dismissal from the Session 0 agent service.
 
-**Architecture:** Add a typed `pam_dismiss_consent` IPC request/result on the existing authenticated SYSTEM-helper channel. The broker validates `HelperRoleSystem` plus `ScopePam`, the target-session helper calls `pamactuator.Dismiss`, and `RunPamFlow` reuses the exact helper session selected for the PAM dialog. The service keeps `pamActuateMu` locked across the synchronous IPC round trip so approve and deny input cannot overlap.
+**Architecture:** Add a typed `pam_dismiss_consent` IPC request/result on the existing authenticated SYSTEM-helper channel. The broker validates `HelperRoleSystem` plus `ScopePam`, sends an absolute input deadline that expires before its response timeout, and the target-session helper passes that deadline to `pamactuator.Dismiss`. `RunPamFlow` reuses the exact helper session selected for the PAM dialog. The service keeps `pamActuateMu` locked across the synchronous IPC round trip so approve and deny input cannot overlap. If the round trip becomes uncertain, the broker retains response correlation and the heartbeat remains fail-closed until the helper's late response proves dismissal is quiescent.
 
 **Tech Stack:** Go, Breeze agent IPC envelopes, Windows session-bound SYSTEM helper, `pamactuator`, Go `testing` with `-race`.
 
@@ -15,7 +15,8 @@
 - Reuse the exact selected PAM helper session after a dialog result; hard policy denials resolve the console-bound PAM helper first.
 - Preserve fail-closed behavior: missing helper, transport failure, malformed response, or helper error must never actuate elevation.
 - Preserve result semantics: `no_consent_window` is benign/already closed; other non-success reasons warn that the prompt may remain live.
-- Keep `pamActuateMu` held until the helper finishes dismissal and replies.
+- Keep `pamActuateMu` held for the synchronous helper round trip. If completion becomes uncertain, reject later PAM actuation and repeated dismissal without credential promotion or input until the authenticated late response proves quiescence.
+- Bound the target-session input window before the broker timeout: reserve response grace in the broker-generated absolute deadline, reject missing or expired deadlines in the helper, check cancellation immediately before sending Escape, and keep later input fail-closed until a late completion is proven.
 - Do not add dependencies or alter the IPC protocol version.
 
 ---
@@ -41,7 +42,9 @@
   const TypePamDismissConsent = "pam_dismiss_consent"
   const TypePamDismissConsentResult = "pam_dismiss_consent_result"
 
-  type PamDismissConsentRequest struct{}
+  type PamDismissConsentRequest struct {
+      DeadlineUnixMs int64 `json:"deadlineUnixMs"`
+  }
   type PamDismissConsentResult struct {
       Success       bool   `json:"success"`
       Reason        string `json:"reason"`
@@ -69,16 +72,15 @@
   Implement `DismissPamConsent` with the same SYSTEM-role/PAM-scope checks as `RequestPamApproval`, then:
 
   ```go
-  resp, err := b.SendCommandAndWait(
-      session,
+  resp, quiesced, err := session.sendCommandWithQuiescence(
       id,
       ipc.TypePamDismissConsent,
-      ipc.PamDismissConsentRequest{},
+      ipc.PamDismissConsentRequest{DeadlineUnixMs: deadline.UnixMilli()},
       timeout,
   )
   ```
 
-  Treat envelope errors and JSON failures as Go errors. Return a decoded non-success result without converting it to a transport error.
+  Treat envelope errors and JSON failures as Go errors. Return a decoded non-success result without converting it to a transport error. On a timeout or uncertain transport failure after dispatch, retain the pending response correlation and return a `PamDismissUncertainError` whose `Quiesced` channel closes only when the valid late helper response arrives.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -127,7 +129,7 @@
   }
   ```
 
-  Call `pamactuator.New().Dismiss(context.Background())` through the test seam, copy its fields into `ipc.PamDismissConsentResult`, and send the typed response.
+  Reject a missing or expired `DeadlineUnixMs`, derive a context with that absolute deadline, and call `pamactuator.New().Dismiss(ctx)` through the test seam. Copy its fields into `ipc.PamDismissConsentResult` and send the typed response. The Windows actuator checks cancellation immediately before sending Escape and reports the stable `dismiss_cancelled` reason when the deadline closes.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -154,7 +156,8 @@
   - user deny and dialog-round-trip error dismiss through the exact `*Session` used for the dialog;
   - missing broker or matching helper makes no dismissal attempt and never invokes the Session 0 actuator;
   - `no_consent_window`, real actuator failures, and IPC errors do not panic;
-  - `pamActuateMu` serializes `actuateElevation` against the full synchronous dismiss callback.
+  - `pamActuateMu` serializes `actuateElevation` against the full synchronous dismiss callback;
+  - uncertain dismissal completion rejects later actuation before credential promotion and skips overlapping dismissals until the helper's correlated response proves quiescence.
 
 - [ ] **Step 2: Verify RED**
 
@@ -169,7 +172,7 @@
 
 - [ ] **Step 3: Implement same-session denial routing**
 
-  Add the injectable broker-dismiss field to `Heartbeat`. Resolve the PAM session before processing hard deny. Change `denyConsent` to accept the selected session, hold `pamActuateMu`, call the injectable function or `sessionBroker.DismissPamConsent`, and retain the existing log classification.
+  Add the injectable broker-dismiss field to `Heartbeat`. Resolve the PAM session before processing hard deny. Change `denyConsent` to accept the selected session, hold `pamActuateMu`, call the injectable function or `sessionBroker.DismissPamConsent`, and retain the existing log classification. Track uncertain completion under the same mutex: later actuation returns `dismissal_uncertain` before promotion/input, repeated denials are skipped, and the state clears only after the helper's correlated response closes the quiescence channel.
 
   Use a broker timeout slightly above the actuator's internal eight-second ceiling:
 

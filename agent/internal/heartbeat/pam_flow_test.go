@@ -485,6 +485,69 @@ func TestActuateAndDenyMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestDenyConsentTimeoutKeepsGateUntilHelperQuiescent(t *testing.T) {
+	quiesced := make(chan struct{})
+	selectedSession := &sessionbroker.Session{SessionID: "selected-pam-helper"}
+	manager := &fakeElevationManager{promoteErr: errors.New("simulated promote failure")}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
+	var dismissCalls atomic.Int32
+	h := &Heartbeat{
+		pamDismissConsent: func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error) {
+			dismissCalls.Add(1)
+			return ipc.PamDismissConsentResult{}, &sessionbroker.PamDismissUncertainError{
+				Cause:    sessionbroker.ErrCommandTimeout,
+				Quiesced: quiesced,
+			}
+		},
+	}
+
+	h.denyConsent(selectedSession, "req-timeout", "policy_denied")
+
+	resultCh := make(chan pamactuator.Result, 1)
+	go func() {
+		resultCh <- h.actuateElevation(context.Background(), "req-after-timeout", defaultActuateTimeoutMs)
+	}()
+	select {
+	case result := <-resultCh:
+		if result.Reason != "dismissal_uncertain" {
+			t.Fatalf("actuation reason = %q, want dismissal_uncertain", result.Reason)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(quiesced)
+		t.Fatal("fail-closed actuation check blocked instead of returning promptly")
+	}
+	if manager.promoteSeen != 0 {
+		t.Fatalf("Promote calls while dismissal uncertain = %d, want 0", manager.promoteSeen)
+	}
+	h.denyConsent(selectedSession, "req-second-deny", "policy_denied")
+	if got := dismissCalls.Load(); got != 1 {
+		t.Fatalf("dismiss calls while previous completion uncertain = %d, want 1", got)
+	}
+
+	close(quiesced)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		h.pamActuateMu.Lock()
+		uncertain := h.pamDismissalUncertain
+		h.pamActuateMu.Unlock()
+		if !uncertain {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("PAM actuation gate stayed fail-closed after helper quiescence")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	result := h.actuateElevation(context.Background(), "req-after-quiescence", defaultActuateTimeoutMs)
+	if result.Reason == "dismissal_uncertain" {
+		t.Fatal("actuation remained fail-closed after helper quiescence")
+	}
+	if manager.promoteSeen != 1 {
+		t.Fatalf("Promote calls after helper quiescence = %d, want 1", manager.promoteSeen)
+	}
+}
+
 // TestRunPamFlowDismissPanicUnlocksPamActuateMutex proves the dismissal critical
 // section uses a deferred unlock. RunPamFlow contains the injected panic, after
 // which the mutex must remain usable by later actuation/dismissal work.

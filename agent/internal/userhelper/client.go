@@ -962,8 +962,23 @@ func (c *Client) handlePamDismissConsent(env *ipc.Envelope) {
 		}
 		return
 	}
+	if req.DeadlineUnixMs <= 0 {
+		if err := c.conn.SendError(env.ID, ipc.TypePamDismissConsentResult, "invalid PAM dismiss deadline"); err != nil {
+			log.Warn("failed to send PAM dismiss deadline error", "id", env.ID, "error", err)
+		}
+		return
+	}
+	deadline := time.UnixMilli(req.DeadlineUnixMs)
+	if !deadline.After(time.Now()) {
+		if err := c.conn.SendError(env.ID, ipc.TypePamDismissConsentResult, "PAM dismiss deadline expired"); err != nil {
+			log.Warn("failed to send expired PAM dismiss response", "id", env.ID, "error", err)
+		}
+		return
+	}
 
-	result := newPamActuator().Dismiss(context.Background())
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	result := newPamActuator().Dismiss(ctx)
 	if err := c.conn.SendTyped(env.ID, ipc.TypePamDismissConsentResult, ipc.PamDismissConsentResult{
 		Success:       result.Success,
 		Reason:        result.Reason,

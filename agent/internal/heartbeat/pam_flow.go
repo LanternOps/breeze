@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/etwlua"
@@ -147,17 +148,40 @@ func (h *Heartbeat) denyConsent(session *sessionbroker.Session, requestID, reaso
 	}
 
 	var (
-		res ipc.PamDismissConsentResult
-		err error
+		res              ipc.PamDismissConsentResult
+		err              error
+		alreadyUncertain bool
 	)
-	// Serialize the complete synchronous helper IPC round trip against any
-	// concurrent actuateElevation. The closure's deferred unlock also keeps the
-	// mutex usable if an injected test seam panics and RunPamFlow recovers it.
+	// Serialize the helper command against any concurrent actuateElevation. If
+	// the broker cannot prove completion, mark PAM input fail-closed until the
+	// helper's correlated response proves its work is quiescent. New actuation
+	// attempts return immediately without promoting credentials or sending input.
 	func() {
 		h.pamActuateMu.Lock()
 		defer h.pamActuateMu.Unlock()
+		if h.pamDismissalUncertain {
+			alreadyUncertain = true
+			return
+		}
 		res, err = dismiss(session, requestID, pamDismissTimeout)
+		var uncertain *sessionbroker.PamDismissUncertainError
+		if errors.As(err, &uncertain) && uncertain.Quiesced != nil {
+			h.pamDismissalUncertain = true
+			go func(quiesced <-chan struct{}) {
+				<-quiesced
+				h.pamActuateMu.Lock()
+				h.pamDismissalUncertain = false
+				h.pamActuateMu.Unlock()
+				log.Info("pam: uncertain dismissal quiesced; PAM actuation gate released",
+					"elevationRequestId", requestID)
+			}(uncertain.Quiesced)
+		}
 	}()
+	if alreadyUncertain {
+		log.Warn("pam: deny enforcement skipped — previous dismissal completion remains uncertain",
+			"elevationRequestId", requestID, "reason", reason)
+		return
+	}
 	if err != nil {
 		log.Warn("pam: deny enforcement FAILED — dismissal IPC error; consent.exe may still be live",
 			"elevationRequestId", requestID, "reason", reason, "error", err.Error())
