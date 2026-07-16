@@ -68,7 +68,7 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	}
 	session := find(ipc.ScopePam, "")
 	if session == nil {
-		log.Warn("pam: no capable user-helper session; cannot show dialog, consent.exe will time out",
+		log.Warn("pam: no capable SYSTEM helper session; cannot show dialog, consent.exe will time out",
 			"elevationRequestId", outcome.RequestID)
 		return
 	}

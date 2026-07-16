@@ -901,26 +901,26 @@ func TestScopesForRoleAssist(t *testing.T) {
 	}
 }
 
-func TestPamScopeBelongsOnlyToUserHelper(t *testing.T) {
-	if !containsString(userHelperScopes, ipc.ScopePam) {
-		t.Fatalf("userHelperScopes = %v, want %q", userHelperScopes, ipc.ScopePam)
+func TestPamScopeBelongsOnlyToSystemHelper(t *testing.T) {
+	if containsString(userHelperScopes, ipc.ScopePam) {
+		t.Fatalf("userHelperScopes = %v, must not contain %q", userHelperScopes, ipc.ScopePam)
 	}
-	if containsString(systemHelperScopes, ipc.ScopePam) {
-		t.Fatalf("systemHelperScopes = %v, must not contain %q", systemHelperScopes, ipc.ScopePam)
+	if !containsString(systemHelperScopes, ipc.ScopePam) {
+		t.Fatalf("systemHelperScopes = %v, want %q", systemHelperScopes, ipc.ScopePam)
 	}
 
 	b := &Broker{}
 	userScopes := b.scopesForRole(ipc.HelperRoleUser, ipc.HelperBinaryUserHelper, "windows", `C:\Program Files\Breeze\breeze-user-helper.exe`)
-	if !containsString(userScopes, ipc.ScopePam) {
-		t.Fatalf("scopesForRole(user) = %v, want %q", userScopes, ipc.ScopePam)
+	if containsString(userScopes, ipc.ScopePam) {
+		t.Fatalf("scopesForRole(user) = %v, must not contain %q", userScopes, ipc.ScopePam)
 	}
 	systemScopes := b.scopesForRole(ipc.HelperRoleSystem, ipc.HelperBinaryUserHelper, "windows", `C:\Program Files\Breeze\breeze-user-helper.exe`)
-	if containsString(systemScopes, ipc.ScopePam) {
-		t.Fatalf("scopesForRole(system) = %v, must not contain %q", systemScopes, ipc.ScopePam)
+	if !containsString(systemScopes, ipc.ScopePam) {
+		t.Fatalf("scopesForRole(system) = %v, want %q", systemScopes, ipc.ScopePam)
 	}
 }
 
-func TestFindCapableSessionPamUsesUserPamScope(t *testing.T) {
+func TestFindCapableSessionPamUsesSystemPamScope(t *testing.T) {
 	now := time.Now()
 	userSession := &Session{
 		SessionID:     "user-pam",
@@ -946,8 +946,8 @@ func TestFindCapableSessionPamUsesUserPamScope(t *testing.T) {
 	}
 
 	got := b.FindCapableSession(ipc.ScopePam, "7")
-	if got != userSession {
-		t.Fatalf("FindCapableSession(pam) = %v, want user-token session", got)
+	if got != systemSession {
+		t.Fatalf("FindCapableSession(pam) = %v, want SYSTEM session", got)
 	}
 }
 
