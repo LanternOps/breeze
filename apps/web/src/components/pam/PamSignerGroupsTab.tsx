@@ -364,7 +364,9 @@ function PamSignerGroupModal({
       className="flex max-h-[90vh] flex-col"
     >
       <DialogHeader id={titleId} title={modalTitle} />
-      <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto p-6">
+      {/* Signer rows scroll; the action footer stays pinned. */}
+      <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
         <div>
           <label htmlFor={nameId} className="mb-1 block text-sm font-medium">
             {t('pamPamSignerGroupsTab.modal.form.name', { defaultValue: 'Name' })}
@@ -445,8 +447,9 @@ function PamSignerGroupModal({
         </div>
 
         {error && <ErrorAlert>{error}</ErrorAlert>}
+        </div>
 
-        <div className="flex justify-end gap-2">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t px-6 py-4">
           <button type="button" onClick={onClose} className={btnGhostClass}>
             {t('common:actions.cancel', { defaultValue: 'Cancel' })}
           </button>

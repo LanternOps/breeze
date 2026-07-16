@@ -552,11 +552,14 @@ export default function PamRuleModal({
       onClose={onClose}
       title={modalTitle}
       labelledBy={titleId}
-      maxWidth="lg"
-      className="flex max-h-[90vh] flex-col"
+      maxWidth="2xl"
+      className="flex max-h-[85vh] flex-col"
     >
       <DialogHeader id={titleId} title={modalTitle} />
-      <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto p-6">
+      {/* Fields scroll; the header and the action footer stay pinned so
+          Cancel/Save are always visible on short viewports. */}
+      <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor={nameId} className="mb-1 block text-sm font-medium">
@@ -935,7 +938,9 @@ export default function PamRuleModal({
           )}
         </div>
 
-        <div className="flex justify-end gap-2">
+        </div>
+
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t px-6 py-4">
           <button type="button" onClick={onClose} className={btnGhostClass}>
             {t('common:actions.cancel', { defaultValue: 'Cancel' })}
           </button>
