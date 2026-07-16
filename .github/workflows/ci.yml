@@ -79,6 +79,11 @@ jobs:
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
+    env:
+      # tsc on the full apps/api project (dense Drizzle types) + astro check
+      # exceed Node's default heap on the type-heaviest branches. Give the
+      # type checker a larger old-space so it doesn't OOM. See release-prep OOM.
+      NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Checkout
         uses: actions/checkout@v7
