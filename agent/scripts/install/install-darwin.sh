@@ -75,6 +75,25 @@ elif [ -f "breeze-watchdog" ]; then
     chmod 755 /usr/local/bin/breeze-watchdog
 fi
 
+# Install backup helper. The agent spawns breeze-backup from its own directory
+# (os.Executable dir), and neither the updater nor the heartbeat delivers it, so
+# it MUST be on disk next to breeze-agent or every backup fails with
+# "backup binary not found at /usr/local/bin/breeze-backup". The production .pkg
+# (installer/macos/build-pkg.sh) already bundles it; this dev/manual install path
+# must match so `make install-service` yields a working backup setup.
+if [ -f "bin/breeze-backup" ]; then
+    echo "Installing backup helper..."
+    cp bin/breeze-backup /usr/local/bin/breeze-backup
+    chmod 755 /usr/local/bin/breeze-backup
+elif [ -f "breeze-backup" ]; then
+    echo "Installing backup helper..."
+    cp breeze-backup /usr/local/bin/breeze-backup
+    chmod 755 /usr/local/bin/breeze-backup
+else
+    echo "Warning: breeze-backup binary not found — backups will fail with" \
+         "'backup binary not found'. Run 'make build' (or 'make build-backup') first." >&2
+fi
+
 # Register watchdog service
 if [ -f "/usr/local/bin/breeze-watchdog" ]; then
     if [ ! -f "/Library/LaunchDaemons/com.breeze.watchdog.plist" ]; then
