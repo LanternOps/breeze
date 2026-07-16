@@ -29,8 +29,9 @@ func resolveRequesterSession() (username string, sessionID uint32, source string
 	if err != nil {
 		log.Debug("etwlua: consent process enumeration was incomplete", "error", err.Error())
 	}
-	return resolveRequesterSessionWith(
+	return resolveRequesterSessionAfterEnumeration(
 		candidates,
+		err,
 		trustedImagePath,
 		now,
 		consoleSessionID,

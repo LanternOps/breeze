@@ -2,6 +2,7 @@ package etwlua
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -197,6 +198,41 @@ func TestResolveRequesterSessionWith(t *testing.T) {
 				t.Fatalf("session lookups = %v, want %v", lookups, tc.wantLookups)
 			}
 		})
+	}
+}
+
+func TestResolveRequesterSessionAfterEnumerationDiscardsPartialResultsOnError(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	trustedPath := `C:\Windows\System32\consent.exe`
+	partialCandidates := []consentProcessCandidate{
+		{PID: 300, SessionID: 3, ImagePath: trustedPath, StartedAt: now.Add(-time.Second)},
+	}
+	var lookups []uint32
+
+	username, sessionID, source := resolveRequesterSessionAfterEnumeration(
+		partialCandidates,
+		errors.New("Process32Next failed"),
+		trustedPath,
+		now,
+		1,
+		func(sessionID uint32) string {
+			lookups = append(lookups, sessionID)
+			return map[uint32]string{
+				1: `DOMAIN\console`,
+				3: `DOMAIN\requester`,
+			}[sessionID]
+		},
+	)
+
+	if username != `DOMAIN\console` || sessionID != 1 || source != requesterSourceConsoleFallback {
+		t.Fatalf(
+			"resolution = (%q, %d, %q), want (%q, %d, %q)",
+			username, sessionID, source,
+			`DOMAIN\console`, 1, requesterSourceConsoleFallback,
+		)
+	}
+	if !reflect.DeepEqual(lookups, []uint32{1}) {
+		t.Fatalf("session lookups = %v, want console fallback only", lookups)
 	}
 }
 

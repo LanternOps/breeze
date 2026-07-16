@@ -77,6 +77,26 @@ func resolveRequesterSessionWith(
 	return "", 0, requesterSourceUnresolved
 }
 
+func resolveRequesterSessionAfterEnumeration(
+	candidates []consentProcessCandidate,
+	enumerationErr error,
+	trustedImagePath string,
+	now time.Time,
+	consoleSessionID uint32,
+	lookupSessionUser func(sessionID uint32) string,
+) (username string, sessionID uint32, source string) {
+	if enumerationErr != nil {
+		candidates = nil
+	}
+	return resolveRequesterSessionWith(
+		candidates,
+		trustedImagePath,
+		now,
+		consoleSessionID,
+		lookupSessionUser,
+	)
+}
+
 func normalizeWindowsPath(path string) string {
 	path = strings.TrimSpace(path)
 	if len(path) >= 4 && strings.EqualFold(path[:4], `\\?\`) {
