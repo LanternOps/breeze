@@ -62,12 +62,28 @@ vi.mock('../db/schema', () => ({
   partners: { id: 'partners.id', billingEmail: 'partners.billingEmail' },
 }));
 
+// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now calls
+// getUserPermissions via authorizeHumanApiKeyCreator to re-validate the API
+// key's stored scopes (['ai:read', 'ai:execute'] in the authed test below)
+// against the creator's live permissions before an AuthContext is ever built.
+// checkToolPermission is stubbed to always allow above, so this is the ONLY
+// getUserPermissions call in this file's flow — it must hold the full
+// devices/alerts/scripts/automations read + devices/scripts execute bundle
+// both scopes require, or the carve-out test would be denied by the re-clamp
+// before ever reaching the tools/list + tools/call dispatch under test.
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
   return {
     ...actual,
     getUserPermissions: vi.fn(async () => ({
-      permissions: [],
+      permissions: [
+        { resource: 'devices', action: 'read' },
+        { resource: 'devices', action: 'execute' },
+        { resource: 'alerts', action: 'read' },
+        { resource: 'scripts', action: 'read' },
+        { resource: 'scripts', action: 'execute' },
+        { resource: 'automations', action: 'read' },
+      ],
       partnerId: null,
       orgId: 'org-1',
       roleId: 'role-1',
