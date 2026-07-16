@@ -329,8 +329,8 @@ importers:
         specifier: ^29.1.1
         version: 29.1.1(@noble/hashes@2.2.0)
       office-addin-dev-certs:
-        specifier: ^2.0.0
-        version: 2.0.9
+        specifier: ^2.0.10
+        version: 2.0.10
       office-addin-manifest:
         specifier: ^2.0.0
         version: 2.1.5
@@ -576,8 +576,8 @@ importers:
         specifier: ^29.1.1
         version: 29.1.1(@noble/hashes@2.2.0)
       office-addin-dev-certs:
-        specifier: ^2.0.0
-        version: 2.0.9
+        specifier: ^2.0.10
+        version: 2.0.10
       office-addin-manifest:
         specifier: ^2.0.0
         version: 2.1.5
@@ -707,8 +707,8 @@ importers:
         specifier: ^29.1.1
         version: 29.1.1(@noble/hashes@2.2.0)
       office-addin-dev-certs:
-        specifier: ^2.0.0
-        version: 2.0.9
+        specifier: ^2.0.10
+        version: 2.0.10
       office-addin-manifest:
         specifier: ^2.0.0
         version: 2.1.5
@@ -977,8 +977,8 @@ importers:
         specifier: ^29.1.1
         version: 29.1.1(@noble/hashes@2.2.0)
       office-addin-dev-certs:
-        specifier: ^2.0.0
-        version: 2.0.9
+        specifier: ^2.0.10
+        version: 2.0.10
       office-addin-manifest:
         specifier: ^2.0.0
         version: 2.1.5
@@ -7041,8 +7041,8 @@ packages:
     resolution: {integrity: sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A==}
     engines: {node: '>= 0.8'}
 
-  fs-extra@11.3.5:
-    resolution: {integrity: sha512-eKpRKAovdpZtR1WopLHxlBWvAgPny3c4gX1G5Jhwmmw4XJj0ifSD5qB5TOo8hmA0wlRKDAOAhEE1yVPgs6Fgcg==}
+  fs-extra@11.3.6:
+    resolution: {integrity: sha512-w8ZNZr2mKIc7qeNaQ9AVPT1+iFaI+Avd4xudVOvdDJ8VytREi1Ft5Ih7hd9jjehod8vAM5GMsfQ/TpPf4EyoEA==}
     engines: {node: '>=14.14'}
 
   fs-extra@7.0.1:
@@ -8592,12 +8592,12 @@ packages:
   ofetch@1.5.1:
     resolution: {integrity: sha512-2W4oUZlVaqAPAil6FUg/difl6YhqhUR7x2eZY4bQCko22UXg3hptq9KLQdqFClV+Wu85UX7hNtdGTngi/1BxcA==}
 
-  office-addin-cli@2.0.9:
-    resolution: {integrity: sha512-cVAEzolJLqua+ni6H8I2qNaeXWqNeQC7SqnGkm9umpuXUMXIUsGpFcCEP2t8WNHkfP8PLKroMapRps05lw/Omg==}
+  office-addin-cli@2.0.10:
+    resolution: {integrity: sha512-SfNM7vuEGqboHd+VQpm50DqNAbpJNtfvt5wIVSXj8O0KqiA4e4Hc/vi0dOcV0XTzVZ/uLobPoV9ieqKF70N8uA==}
     hasBin: true
 
-  office-addin-dev-certs@2.0.9:
-    resolution: {integrity: sha512-/z/ozc5ij28tc2A+RnJDAadbuevyQnqQqFsFoPG+0DflKG+qu0BN57DOjjxHJ9tGUYdwfeL+ExnOy7l2LZaffw==}
+  office-addin-dev-certs@2.0.10:
+    resolution: {integrity: sha512-njHuhfhVo7+df8risRjGp7PWivdE+KhG5B57kBov8YXSt4nrBoEE+i6tYHCj0WrULcgH+aHNUzVAVig3/E2Nzw==}
     hasBin: true
 
   office-addin-manifest@2.1.5:
@@ -8606,6 +8606,10 @@ packages:
 
   office-addin-usage-data@2.1.0:
     resolution: {integrity: sha512-/0UtF9IBUU7uRxX2LuY8koiWvIxFl9+t3UyN6Qwq37OC8e22riC2rBZHH4WZbJqeADqk3jqGQJL6aoY2Vy0RTA==}
+    hasBin: true
+
+  office-addin-usage-data@2.1.1:
+    resolution: {integrity: sha512-MUbcqOodtlOUNhLKjSdqeLBHFVd7Qh5pUODqmQe2VLBKk7PuRgl4dCk6bp2dU79vl6BcDyrRERpkyVnQg6zdFg==}
     hasBin: true
 
   ohash@2.0.11:
@@ -13957,9 +13961,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.86.0': {}
 
@@ -17837,7 +17839,7 @@ snapshots:
 
   fresh@2.0.0: {}
 
-  fs-extra@11.3.5:
+  fs-extra@11.3.6:
     dependencies:
       graceful-fs: 4.2.11
       jsonfile: 6.2.1
@@ -19978,7 +19980,7 @@ snapshots:
       node-fetch-native: 1.6.7
       ufo: 1.6.4
 
-  office-addin-cli@2.0.9:
+  office-addin-cli@2.0.10:
     dependencies:
       commander: 13.1.0
       node-fetch: 2.7.0
@@ -19986,13 +19988,13 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  office-addin-dev-certs@2.0.9:
+  office-addin-dev-certs@2.0.10:
     dependencies:
       commander: 13.1.0
-      fs-extra: 11.3.5
+      fs-extra: 11.3.6
       mkcert: 3.2.0
-      office-addin-cli: 2.0.9
-      office-addin-usage-data: 2.1.0
+      office-addin-cli: 2.0.10
+      office-addin-usage-data: 2.1.1
     transitivePeerDependencies:
       - encoding
 
@@ -20011,6 +20013,10 @@ snapshots:
       - encoding
 
   office-addin-usage-data@2.1.0:
+    dependencies:
+      commander: 13.1.0
+
+  office-addin-usage-data@2.1.1:
     dependencies:
       commander: 13.1.0
 
