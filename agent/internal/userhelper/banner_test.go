@@ -19,7 +19,7 @@ func TestBannerSessionTracking(t *testing.T) {
 		bannerSessionID = ""
 		bannerOpMu.Unlock()
 	}()
-	showBannerFn = func(label string) bool { shown = append(shown, label); return true }
+	showBannerFn = func(label string, _ int64) bool { shown = append(shown, label); return true }
 	hideBannerFn = func() { hidden++ }
 
 	handleBannerShow(ipc.BannerShowRequest{SessionID: "s1", Label: "Billy from Olive Technology is connected"})
@@ -69,7 +69,7 @@ func TestBannerConcurrentShowsSerialized(t *testing.T) {
 		maxObserved int
 		calls       int
 	)
-	showBannerFn = func(label string) bool {
+	showBannerFn = func(label string, _ int64) bool {
 		fakeMu.Lock()
 		inFlight++
 		if inFlight > maxObserved {

@@ -569,9 +569,16 @@ export async function buildRemoteSessionPromptPayload(
     techEmail,
     partnerName
   );
+  // Identity fields are FLAT on the prompt block: the agent
+  // (ipc.DesktopPrompt: technicianName/technicianEmail/orgName) and the Tauri
+  // assist app (desktop.rs, ConsentDialog.tsx) all deserialize the top-level
+  // keys. The previous nested `technicianDisplay` object was read by nothing,
+  // so every end-user prompt fell back to "A technician".
   return {
     mode: promptCfg.mode,
-    technicianDisplay,
+    technicianName: technicianDisplay.name,
+    technicianEmail: technicianDisplay.email,
+    orgName: technicianDisplay.orgName,
     consentUnavailableBehavior: promptCfg.consentUnavailableBehavior,
     consentTimeoutMs: 30000,
     notifyOnEnd: promptCfg.notifyOnEnd,

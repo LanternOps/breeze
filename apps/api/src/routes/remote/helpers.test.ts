@@ -133,11 +133,10 @@ describe('buildRemoteSessionPromptPayload', () => {
       showIndicator: true,
       notifyOnEnd: true,
       consentTimeoutMs: 30000,
-      technicianDisplay: {
-        name: 'Billy Tech',
-        email: 'billy@example.com',
-        orgName: 'Olive Technology', // partner name — NOT the org name
-      },
+      // Flat identity fields — the agent and assist app read the top-level keys.
+      technicianName: 'Billy Tech',
+      technicianEmail: 'billy@example.com',
+      orgName: 'Olive Technology', // partner name — NOT the client org name
     });
   });
 
@@ -151,7 +150,9 @@ describe('buildRemoteSessionPromptPayload', () => {
     expect(prompt).toMatchObject({
       mode: 'notify',
       showIndicator: true,
-      technicianDisplay: { name: null, email: null, orgName: null },
+      technicianName: null,
+      technicianEmail: null,
+      orgName: null,
     });
     expect(captureException).toHaveBeenCalled();
   });

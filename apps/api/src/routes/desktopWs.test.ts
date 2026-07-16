@@ -342,7 +342,9 @@ describe('validateViewerSessionAccess (via /:id/viewer/offer)', () => {
     const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
     const prompt = {
       mode: 'notify',
-      technicianDisplay: { name: 'Billy Tech', email: null, orgName: 'Olive Technology' },
+      technicianName: 'Billy Tech',
+      technicianEmail: null,
+      orgName: 'Olive Technology',
       consentUnavailableBehavior: 'proceed',
       consentTimeoutMs: 30000,
       notifyOnEnd: true,

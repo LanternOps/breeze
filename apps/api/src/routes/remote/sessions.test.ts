@@ -842,7 +842,9 @@ describe('remote sessions — site-scope enforcement', () => {
 
       const prompt = {
         mode: 'notify',
-        technicianDisplay: { name: 'Billy Tech', email: 'billy@example.com', orgName: 'Olive Technology' },
+        technicianName: 'Billy Tech',
+        technicianEmail: 'billy@example.com',
+        orgName: 'Olive Technology',
         consentUnavailableBehavior: 'proceed',
         consentTimeoutMs: 30000,
         notifyOnEnd: true,

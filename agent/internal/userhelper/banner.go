@@ -7,7 +7,9 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// Platform seams (swapped in tests).
+// Platform seams (swapped in tests). showBannerFn takes the session start
+// (unix ms) so the Windows pill can render an elapsed-session clock; 0 hides
+// the clock.
 var (
 	showBannerFn = showBannerOS
 	hideBannerFn = hideBannerOS
@@ -41,7 +43,7 @@ func handleBannerShow(req ipc.BannerShowRequest) {
 	}
 	bannerOpMu.Lock()
 	defer bannerOpMu.Unlock()
-	if !showBannerFn(label) {
+	if !showBannerFn(label, req.StartedAtUnixMs) {
 		return // platform has no banner surface (macOS/Linux fallback)
 	}
 	bannerSessionID = req.SessionID
