@@ -78,6 +78,28 @@ func TestShowPamDialogOnInputDesktop(t *testing.T) {
 	}
 }
 
+func TestShowPamDialogOnInputDesktopRestoresAfterDialogPanic(t *testing.T) {
+	ops := newFakePamDesktopOps()
+	const panicValue = "MessageBoxW panic"
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		showPamDialogOnInputDesktop(ops, func(string) ipc.PamDialogResult {
+			ops.calls = append(ops.calls, "show")
+			panic(panicValue)
+		})
+	}()
+
+	if recovered != panicValue {
+		t.Fatalf("recovered panic = %v, want %q", recovered, panicValue)
+	}
+	wantCalls := []string{"lock", "current", "open", "name:2", "set:2", "show", "set:1", "close:2", "unlock"}
+	if !reflect.DeepEqual(ops.calls, wantCalls) {
+		t.Fatalf("calls after panic = %v, want %v", ops.calls, wantCalls)
+	}
+}
+
 type fakePamDesktopOps struct {
 	calls       []string
 	currentErr  error

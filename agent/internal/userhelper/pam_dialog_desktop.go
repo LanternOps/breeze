@@ -62,9 +62,11 @@ func showPamDialogOnInputDesktop(ops pamDesktopOps, show func(inputDesktopName s
 			// Returning a Winlogon-bound thread to Go's scheduler could put an
 			// unrelated goroutine on the secure desktop. Leave the goroutine
 			// locked; safeGo's short-lived handler goroutine will exit and Go will
-			// retire its OS thread. The input handle dies with that thread/process.
+			// retire its OS thread. CloseDesktop cannot close a handle still used
+			// by this thread, so this exceptional path intentionally leaves the
+			// process-owned handle open until the helper restarts or exits.
 			shouldUnlock = false
-			log.Error("pam: failed to restore original thread desktop; retiring locked OS thread",
+			log.Error("pam: failed to restore original thread desktop; retiring locked OS thread and leaving input handle open",
 				"desktop", inputDesktopName, "error", err.Error())
 			return
 		}
