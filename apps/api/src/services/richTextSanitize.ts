@@ -12,9 +12,9 @@ const ALLOWED_SCHEMES = ['http', 'https'];
 // href is still present when this transform sees it. Check the scheme
 // ourselves so we don't force rel/target onto a link we're about to strip.
 function hasAllowedScheme(href: string): boolean {
-  const match = href.trim().match(/^([a-z][a-z0-9+.-]*):/i);
-  if (!match) return true; // no scheme (relative URL) — let allowedSchemes/naughtyHref decide
-  return ALLOWED_SCHEMES.includes(match[1].toLowerCase());
+  const scheme = href.trim().match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
+  if (!scheme) return true; // no scheme (relative URL) — let allowedSchemes/naughtyHref decide
+  return ALLOWED_SCHEMES.includes(scheme.toLowerCase());
 }
 
 const OPTIONS: sanitizeHtml.IOptions = {
