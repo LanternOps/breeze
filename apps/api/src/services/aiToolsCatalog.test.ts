@@ -59,7 +59,7 @@ import { lookupEcExpressProducts, TdSynnexEcExpressError } from './tdSynnexEcExp
 const EC_PRODUCT = {
   source: 'td_synnex_ec_express', synnexSku: '14753620', mfgPartNo: 'PC14250', status: 'OK',
   name: 'Dell Pro 14', description: 'Ultra 5', currency: 'USD', cost: 1120.5, msrp: 1499,
-  discount: null, totalQty: 42, warehouses: [{ code: 'CA', available: 42, onOrder: 0, bo: 0, eta: null }],
+  discount: 12, totalQty: 42, warehouses: [{ code: 'CA', available: 42, onOrder: 0, bo: 0, eta: null }],
   weight: 3.1, parcelShippable: 'Y', raw: { soap: 'internal-dump' },
 } as const;
 
@@ -416,24 +416,25 @@ describe('aiToolsCatalog: lookup_distributor_product', () => {
     expect(lookupEcExpressProducts).not.toHaveBeenCalled();
   });
 
-  it('returns products with cost for a partner-scoped caller, dropping the raw SOAP payload', async () => {
+  it('returns products with cost AND discount for a partner-scoped caller, dropping the raw SOAP payload', async () => {
     vi.mocked(lookupEcExpressProducts).mockResolvedValue([EC_PRODUCT as any]);
     const out = await tools().get('lookup_distributor_product')!.handler({ query: '14753620' }, partnerAuth());
     expect(lookupEcExpressProducts).toHaveBeenCalledWith('14753620', expect.objectContaining({ partnerId: PARTNER_ID }));
     const parsed = JSON.parse(out);
     expect(parsed.showing).toBe(1);
     expect(parsed.products[0].cost).toBe(1120.5); // partner keeps cost
+    expect(parsed.products[0].discount).toBe(12); // …and discount (margin-derivable)
+    expect(parsed.products[0].msrp).toBe(1499);
     expect(parsed.products[0].synnexSku).toBe('14753620');
     expect(parsed.products[0].raw).toBeUndefined(); // internal SOAP dump never exposed
   });
 
-  it('redacts reseller cost for an organization-scoped caller', async () => {
-    vi.mocked(lookupEcExpressProducts).mockResolvedValue([EC_PRODUCT as any]);
+  it('refuses organization-scoped callers entirely — no outbound call, no margin data', async () => {
+    // An org MCP token carries the owning partner's partnerId, so a bare partnerId
+    // check would let it through. It must be blocked on SCOPE before any lookup.
     const out = await tools().get('lookup_distributor_product')!.handler({ query: '14753620' }, orgAuth());
-    const parsed = JSON.parse(out);
-    expect(parsed.products[0].cost).toBeUndefined(); // cost is partner-sensitive
-    expect(parsed.products[0].msrp).toBe(1499);      // customer-facing fields stay
-    expect(parsed.products[0].raw).toBeUndefined();
+    expect(JSON.parse(out)).toEqual({ error: 'Distributor lookup is not available to organization-scoped callers' });
+    expect(lookupEcExpressProducts).not.toHaveBeenCalled();
   });
 
   it('surfaces a typed provider error as JSON instead of throwing', async () => {
