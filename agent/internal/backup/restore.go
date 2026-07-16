@@ -297,14 +297,24 @@ func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 // directory structure and prevent name collisions. Otherwise the original
 // source path is used.
 func resolveTargetPath(targetBase, sourcePath string) string {
+	// Strip the volume/drive (e.g. "C:") and any leading separators so an
+	// ABSOLUTE source path maps UNDER the target base. Otherwise
+	// filepath.Join("C:\\restore", "C:\\Users\\x") yields an invalid Windows path
+	// with an embedded drive letter, and MkdirAll fails for every file — i.e.
+	// restore-to-an-alternate-location was completely broken on Windows.
+	rel := sourcePath
+	if vol := filepath.VolumeName(rel); vol != "" {
+		rel = rel[len(vol):]
+	}
+	rel = strings.TrimLeft(rel, `\/`)
 	if targetBase == "" {
 		// Use a safe temp directory instead of the original absolute path
-		return filepath.Join(os.TempDir(), "breeze-restore", sourcePath)
+		return filepath.Join(os.TempDir(), "breeze-restore", rel)
 	}
 	// Preserve full path structure under the target base
 	// e.g., targetBase="/restore", sourcePath="path_0/reports/config.json"
 	// → "/restore/path_0/reports/config.json"
-	return filepath.Join(targetBase, sourcePath)
+	return filepath.Join(targetBase, rel)
 }
 
 func restoreStagingDir(cfg RestoreConfig) (string, error) {

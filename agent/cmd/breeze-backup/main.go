@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -414,6 +415,16 @@ func handleBackupCommand(conn *ipc.Conn, env *ipc.Envelope, mgr *backup.BackupMa
 }
 
 func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn, commandCanceller *activeCommandCanceller) backupipc.BackupCommandResult {
+	if req.CommandType == "backup_run" {
+		payloadMgr, err := managerFromBackupRunPayload(req.Payload)
+		if err != nil {
+			return fail(err.Error())
+		}
+		if payloadMgr != nil {
+			mgr = payloadMgr
+		}
+	}
+
 	if mgr == nil {
 		// Some commands don't need the manager (e.g., discovery, hardware profile)
 		switch req.CommandType {
@@ -431,6 +442,14 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			ctx, cleanup := commandCanceller.track(req.CommandID)
 			defer cleanup()
 			return execBMRRecover(ctx, req.Payload, nil)
+		case "backup_verify":
+			// Verify/test-restore build their read provider from the command
+			// payload's providerConfig (restoreProviderForCommand), so they work
+			// even with no agent.yaml manager. Route them here instead of falling
+			// through to "backup not configured".
+			return execBackupVerify(req.Payload, mgr, vaultState)
+		case "backup_test_restore":
+			return execBackupTestRestore(req.Payload, mgr, vaultState)
 		default:
 			return fail("backup not configured on this device")
 		}
@@ -555,7 +574,18 @@ func sendError(conn *ipc.Conn, id, msg string) {
 }
 
 func isTimeoutError(err error) bool {
-	if netErr, ok := err.(interface{ Timeout() bool }); ok {
+	if err == nil {
+		return false
+	}
+	// The IPC layer wraps read errors (`ipc: read header: %w`), so a plain type
+	// assertion misses the net-timeout / deadline-exceeded error underneath and
+	// the command loop treats a routine 1s idle read-deadline as fatal, exiting
+	// the helper ~1s after connecting. Unwrap the chain instead.
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) {
 		return netErr.Timeout()
 	}
 	return false

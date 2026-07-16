@@ -41,17 +41,22 @@ type BackupConfig struct {
 }
 
 // BackupJob tracks the state of a backup run.
+// JSON tags matter: this struct is serialized into the backup command result's
+// `stdout`, and both the server (backupCommandResultSchema / applyBackupCommandResultToJob)
+// and the agent's own autoSyncToVault read camelCase fields (`snapshot`,
+// `bytesBackedUp`, `filesBackedUp`). Without tags Go emits PascalCase and the
+// server can't record snapshot id / size (total_size stays null).
 type BackupJob struct {
-	ID                  string
-	StartedAt           time.Time
-	CompletedAt         time.Time
-	Snapshot            *Snapshot
-	FilesBackedUp       int
-	BytesBackedUp       int64
-	Status              string
-	Error               error
-	VSSMetadata         *vss.VSSMetadata                 // nil when VSS was not used
-	SystemStateManifest *systemstate.SystemStateManifest // nil when system state was not collected
+	ID                  string                           `json:"id"`
+	StartedAt           time.Time                        `json:"startedAt"`
+	CompletedAt         time.Time                        `json:"completedAt"`
+	Snapshot            *Snapshot                        `json:"snapshot"`
+	FilesBackedUp       int                              `json:"filesBackedUp"`
+	BytesBackedUp       int64                            `json:"bytesBackedUp"`
+	Status              string                           `json:"status"`
+	Error               error                            `json:"error,omitempty"`
+	VSSMetadata         *vss.VSSMetadata                 `json:"vssMetadata,omitempty"`         // nil when VSS was not used
+	SystemStateManifest *systemstate.SystemStateManifest `json:"systemStateManifest,omitempty"` // nil when system state was not collected
 }
 
 // BackupManager orchestrates on-demand backups. Backup scheduling is owned by

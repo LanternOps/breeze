@@ -1962,6 +1962,10 @@ func (b *Broker) allowedHelperPaths() []string {
 		filepath.Join(dir, "breeze-desktop-helper.exe"),
 		filepath.Join(dir, UserHelperBinaryName),
 		filepath.Join(dir, "breeze-watchdog.exe"),
+		// Backup helper (breeze-backup / breeze-backup.exe) connects to the same
+		// IPC socket and must be allowed, else backup_run always times out.
+		filepath.Join(dir, "breeze-backup"),
+		filepath.Join(dir, "breeze-backup.exe"),
 	}
 	if runtime.GOOS != "windows" {
 		paths = append(paths,
