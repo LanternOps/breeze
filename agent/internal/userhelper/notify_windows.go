@@ -4,6 +4,7 @@ package userhelper
 
 import (
 	"encoding/xml"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -54,19 +55,28 @@ func showNotificationOS(req ipc.NotifyRequest) bool {
 		`<text id="2">` + body + `</text>` +
 		`</binding></visual></toast>`
 
-	// Pass XML as a variable to avoid PowerShell interpolation entirely.
-	// Using -EncodedCommand or single-quoted here-strings prevents injection.
-	script := `param([string]$xml)
-[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
-[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-$doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
-$doc.LoadXml($xml)
-$toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Breeze.Agent").Show($toast)`
+	// The XML travels via an environment variable: `-Command <script> <args>`
+	// does NOT bind script params — PowerShell appends the extra argv tokens to
+	// the command TEXT, which made the previous `param($xml) ... -xml <toast>`
+	// shape a parse error on every call (the toast never showed once). The env
+	// var also avoids all quoting/interpolation, so the escaped XML can't
+	// inject into the script.
+	script := `try {
+  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+  [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+  $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
+  $doc.LoadXml($env:BREEZE_TOAST_XML)
+  $toast = [Windows.UI.Notifications.ToastNotification]::new($doc)
+  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('` + notifyAUMID + `').Show($toast)
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}`
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script, "-xml", toastXML)
-	if err := cmd.Run(); err != nil {
-		log.Warn("notification failed", "error", err)
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.Env = append(os.Environ(), "BREEZE_TOAST_XML="+toastXML)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Warn("notification failed", "error", err, "output", strings.TrimSpace(string(out)))
 		return false
 	}
 	return true
