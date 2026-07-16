@@ -114,9 +114,9 @@
 
   Update the table seam to record `targetWinSession`. Add/adjust cases proving:
 
-  - a non-zero `SubjectSessionID` is passed to `pamFindSession` as an unsigned base-10 string for approve, pending, and hard-deny paths;
+  - a valid non-zero `SubjectSessionID` other than `0xFFFFFFFF` is passed to `pamFindSession` as an unsigned base-10 string for approve, pending, and hard-deny paths;
   - the exact selected session is still reused by dialog and dismissal;
-  - a zero `SubjectSessionID` passes `""`, retaining console fallback for old/fake/non-Windows events;
+  - a zero or `0xFFFFFFFF` `SubjectSessionID` passes `""`, retaining console fallback for unresolved, old, fake, and non-Windows events;
   - when no helper exists in the exact target session, no dialog, dismissal, credential promotion, or input actuation occurs.
 
 - [ ] **Step 2: Verify RED**
@@ -132,7 +132,7 @@
 
 - [ ] **Step 3: Implement exact-session targeting**
 
-  Build `targetWinSession` as `""` for zero and `strconv.FormatUint(uint64(ev.SubjectSessionID), 10)` otherwise, then call:
+  Build `targetWinSession` as `""` for zero or `0xFFFFFFFF` and `strconv.FormatUint(uint64(ev.SubjectSessionID), 10)` otherwise, then call:
 
   ```go
   session := find(ipc.ScopePam, targetWinSession)
