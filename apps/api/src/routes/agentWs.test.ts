@@ -934,7 +934,7 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
-  it('rejects malformed critical verification payloads before readiness processing', async () => {
+  it('fails the backup_verifications record when a critical verification payload is malformed (not left running)', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
 
     vi.mocked(db.select)
@@ -957,14 +957,70 @@ describe('agent websocket command results', () => {
         type: 'command_result',
         commandId: '66666666-6666-4666-8666-666666666666',
         status: 'completed',
+        // Missing the required `status` field — schema rejects, so the result is
+        // a genuine malformed payload deepJsonParse cannot rescue.
         result: {
           filesVerified: 10
         }
       })
     } as any, ws as any);
 
-    expect(vi.mocked(processBackupVerificationResult)).not.toHaveBeenCalled();
+    // device_commands still transitions to failed...
     expect(db.update).toHaveBeenCalled();
+    // ...AND the linked backup_verifications row is driven to a terminal failed
+    // state via the normal failure path (IMPORTANT #1, #2556) rather than being
+    // stranded in 'running'/'pending' until the 30-min stale-timeout sweep.
+    expect(vi.mocked(processBackupVerificationResult)).toHaveBeenCalledTimes(1);
+    const [commandId, handed] = vi.mocked(processBackupVerificationResult).mock.calls[0]! as [
+      string,
+      { status: string; error?: string }
+    ];
+    expect(commandId).toBe('66666666-6666-4666-8666-666666666666');
+    expect(handed.status).toBe('failed');
+    expect(handed.error).toContain('Rejected malformed backup_verify result');
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('fails the backup_verifications record when verification stdout exceeds the size limit', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        {
+          id: 'cmd-verify-2',
+          type: 'backup_verify',
+          payload: {},
+          deviceId: 'device-123'
+        }
+      ]) as any);
+
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-verify-2' }]) as any);
+
+    const handlers = createAgentWsHandlers('agent-123', preValidatedAgent);
+    const ws = wsMock();
+
+    // stdout beyond CRITICAL_RESULT_STDOUT_MAX_BYTES (1 MiB) trips
+    // ensureCriticalResultSizeLimits, which is the second way a critical result
+    // gets rejected.
+    const oversizeStdout = 'x'.repeat(1_048_576 + 16);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '77777777-7777-4777-8777-777777777777',
+        status: 'completed',
+        stdout: oversizeStdout,
+      })
+    } as any, ws as any);
+
+    expect(db.update).toHaveBeenCalled();
+    expect(vi.mocked(processBackupVerificationResult)).toHaveBeenCalledTimes(1);
+    const [, handed] = vi.mocked(processBackupVerificationResult).mock.calls[0]! as [
+      string,
+      { status: string; error?: string }
+    ];
+    expect(handed.status).toBe('failed');
+    expect(handed.error).toContain('exceeds');
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 

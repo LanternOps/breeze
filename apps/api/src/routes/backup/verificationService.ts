@@ -6,13 +6,16 @@ import {
   backupVerifications as backupVerificationsTable,
 } from '../../db/schema';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
+import { resolveBackupProviderConfig, resolveBackupDestinationError, type BackupProviderConfig } from '../../services/backupProviderConfig';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { publishEvent } from '../../services/eventBus';
 import {
   addBackupVerification,
+  backupConfigs as backupConfigsMemory,
   backupJobs,
   backupSnapshots,
   backupVerifications,
+  configOrgById,
   jobOrgById,
   snapshotOrgById,
   verificationOrgById
@@ -457,6 +460,37 @@ async function resolveSnapshotForBackupJob(
   return resolved;
 }
 
+// The agent needs the same provider + providerConfig the BACKUP command used
+// to write the snapshot, so it can build a storage provider to read it back
+// for backup_verify / backup_test_restore. Mirrors backupWorker.ts's
+// processDispatchBackup, with a memory-store fallback for the legacy/test
+// org path the rest of this file already supports (see resolveBackupJob).
+async function resolveVerificationProviderConfig(
+  orgId: string,
+  backupJob: BackupJob
+): Promise<BackupProviderConfig | null> {
+  if (supportsDbOrg(orgId) && isUuid(backupJob.configId)) {
+    try {
+      const resolved = await runWithSystemDbAccess(() =>
+        resolveBackupProviderConfig(backupJob.configId, orgId)
+      );
+      if (resolved) return resolved;
+    } catch (error) {
+      console.warn('[backupVerification] DB provider config lookup failed; falling back to memory:', error);
+    }
+  }
+
+  const memoryConfig = backupConfigsMemory.find(
+    (config) => config.id === backupJob.configId && configOrgById.get(config.id) === orgId
+  );
+  if (!memoryConfig) return null;
+
+  return {
+    provider: memoryConfig.provider,
+    providerConfig: (memoryConfig.details as Record<string, unknown> | undefined) ?? {},
+  };
+}
+
 // ---- Public API ----
 
 export async function listBackupVerifications(
@@ -511,11 +545,30 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
   const now = new Date().toISOString();
   const agentSnapshotId = snapshot?.providerSnapshotId ?? backupJob.snapshotId ?? snapshot?.id ?? undefined;
 
+  const providerConfig = await resolveVerificationProviderConfig(input.orgId, backupJob);
+  if (!providerConfig) {
+    // A backup job with a null configId predates destination tracking: we can't
+    // reconstruct where its snapshot was written, and reading the device's
+    // current config could point at the wrong destination. Fail with a clear,
+    // legacy-specific message instead of a misleading "not found".
+    const { message } = resolveBackupDestinationError(backupJob.configId);
+    throw new Error(
+      backupJob.configId == null
+        ? message
+        : `Backup destination configuration not found for backup job ${backupJob.id}`
+    );
+  }
+
   const commandType = input.verificationType === 'integrity' ? 'backup_verify' : 'backup_test_restore';
   const dispatchResult = await queueCommandForExecution(
     input.deviceId,
     commandType,
-    { snapshotId: agentSnapshotId, verificationType: input.verificationType },
+    {
+      snapshotId: agentSnapshotId,
+      verificationType: input.verificationType,
+      provider: providerConfig.provider,
+      providerConfig: providerConfig.providerConfig,
+    },
     { userId: input.requestedBy || undefined }
   );
 

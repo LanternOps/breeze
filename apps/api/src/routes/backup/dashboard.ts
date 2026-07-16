@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq, and, sql, gte, desc, inArray } from 'drizzle-orm';
+import { eq, and, sql, gte, lte, desc, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { requirePermission } from '../../middleware/auth';
 import {
@@ -20,6 +20,121 @@ async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions
   if (!perms?.allowedSiteIds) return null;
   const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
   return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
+}
+
+// How many of a device's most-recent backup jobs we look at to decide
+// whether it "needs attention" (last-job-failed + consecutive-failure count).
+const ATTENTION_LOOKBACK_JOBS = 5;
+const ATTENTION_MAX_ITEMS = 20;
+
+type AttentionItem = {
+  id: string;
+  title: string;
+  description: string;
+  severity: 'warning' | 'critical';
+};
+
+// Result of an attention-items computation. `error: true` means we could NOT
+// compute the list (transient DB failure), which is meaningfully different from
+// an empty list (genuinely no failing devices). Surfacing this lets the UI show
+// a degraded/error state instead of implying an all-clear — F11's whole purpose
+// is surfacing failures, so a swallowed error must never render as "healthy".
+type AttentionItemsResult = { items: AttentionItem[]; error: boolean };
+
+// A device needs attention when its most-recently created backup job
+// failed. Severity escalates to 'critical' once the two most recent jobs
+// both failed (a single blip stays 'warning'). This is intentionally
+// data-driven from real backup_jobs rows, scoped the same way the rest of
+// this route scopes org/site access (see jobDeviceScope / allowedDeviceIds).
+async function resolveAttentionItems(
+  orgId: string,
+  jobDeviceScope: ReturnType<typeof inArray> | undefined,
+  allowedDeviceIds: string[] | null,
+  noSiteAllowedDevices: boolean
+): Promise<AttentionItemsResult> {
+  if (noSiteAllowedDevices) return { items: [], error: false };
+
+  try {
+    const rankedJobs = db
+      .select({
+        deviceId: backupJobs.deviceId,
+        status: backupJobs.status,
+        errorLog: backupJobs.errorLog,
+        completedAt: backupJobs.completedAt,
+        createdAt: backupJobs.createdAt,
+        rn: sql<number>`row_number() over (partition by ${backupJobs.deviceId} order by ${backupJobs.createdAt} desc)`.as('rn'),
+      })
+      .from(backupJobs)
+      .where(and(eq(backupJobs.orgId, orgId), jobDeviceScope))
+      .as('ranked_backup_jobs_for_attention');
+
+    const rows = await db
+      .select({
+        deviceId: rankedJobs.deviceId,
+        status: rankedJobs.status,
+        errorLog: rankedJobs.errorLog,
+        completedAt: rankedJobs.completedAt,
+        createdAt: rankedJobs.createdAt,
+        rn: rankedJobs.rn,
+        deviceName: devices.displayName,
+        deviceHostname: devices.hostname,
+      })
+      .from(rankedJobs)
+      .leftJoin(devices, eq(rankedJobs.deviceId, devices.id))
+      .where(lte(rankedJobs.rn, ATTENTION_LOOKBACK_JOBS))
+      .orderBy(rankedJobs.deviceId, rankedJobs.rn);
+
+    const scopedRows = allowedDeviceIds
+      ? rows.filter((row) => allowedDeviceIds.includes(row.deviceId))
+      : rows;
+
+    const byDevice = new Map<string, typeof scopedRows>();
+    for (const row of scopedRows) {
+      const list = byDevice.get(row.deviceId) ?? [];
+      list.push(row);
+      byDevice.set(row.deviceId, list);
+    }
+
+    const items: Array<AttentionItem & { lastFailureAt: string }> = [];
+    for (const [deviceId, jobs] of byDevice) {
+      const sorted = [...jobs].sort((a, b) => a.rn - b.rn);
+      const latest = sorted[0];
+      if (!latest || latest.status !== 'failed') continue;
+
+      let consecutiveFailures = 0;
+      let reason: string | null = null;
+      for (const job of sorted) {
+        if (job.status !== 'failed') break;
+        consecutiveFailures += 1;
+        if (!reason && job.errorLog) reason = job.errorLog;
+      }
+
+      const deviceName = latest.deviceName ?? latest.deviceHostname ?? deviceId.slice(0, 8);
+      const lastFailureAt = (latest.completedAt ?? latest.createdAt).toISOString();
+
+      items.push({
+        id: `backup-failing-${deviceId}`,
+        title:
+          consecutiveFailures > 1
+            ? `${deviceName}: ${consecutiveFailures} consecutive backup failures`
+            : `${deviceName}: latest backup failed`,
+        description: [reason, `Last failed ${lastFailureAt}`].filter(Boolean).join(' · '),
+        severity: consecutiveFailures >= 2 ? 'critical' : 'warning',
+        lastFailureAt,
+      });
+    }
+
+    items.sort((a, b) => new Date(b.lastFailureAt).getTime() - new Date(a.lastFailureAt).getTime());
+    return {
+      items: items.slice(0, ATTENTION_MAX_ITEMS).map(({ lastFailureAt: _lastFailureAt, ...item }) => item),
+      error: false,
+    };
+  } catch (err) {
+    console.error('[BackupDashboard] Failed to resolve attention items:', err instanceof Error ? err.message : err);
+    // Do NOT 500 the whole dashboard for one failed sub-query, but signal the
+    // degraded state so the UI does not render an all-clear it can't vouch for.
+    return { items: [], error: true };
+  }
 }
 
 dashboardRoutes.get(
@@ -139,7 +254,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     : undefined;
 
   // Run aggregation queries in parallel
-  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevicesRaw, recentJobsRaw] =
+  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevicesRaw, recentJobsRaw, attention] =
     await Promise.all([
       db
         .select({ count: sql<number>`count(*)::int` })
@@ -197,6 +312,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         .where(and(eq(backupJobs.orgId, orgId), jobDeviceScope))
         .orderBy(desc(backupJobs.createdAt))
         .limit(5),
+      resolveAttentionItems(orgId, jobDeviceScope, allowedDeviceIds, noSiteAllowedDevices),
     ]);
 
   const assignedDevices = allowedDeviceIds
@@ -245,6 +361,11 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         protectedDevices: protectedDevices.size,
       },
       latestJobs,
+      attentionItems: attention.items,
+      // Additive, backward-compatible degraded signal: true when the
+      // attention-items sub-query failed and the list could not be computed.
+      // The UI must treat this as "unknown", not "all clear".
+      attentionError: attention.error,
     },
   });
 });
@@ -300,6 +421,7 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
       protected: Boolean(resolved),
       featureLinkId: resolved?.featureLinkId ?? null,
       configId: resolved?.configId ?? null,
+      timezone: resolved?.resolvedTimezone ?? null,
       lastJob: lastJob
         ? {
             id: lastJob.id,

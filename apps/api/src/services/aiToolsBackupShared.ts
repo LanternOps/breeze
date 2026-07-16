@@ -32,6 +32,8 @@ export type SiteScopedSnapshot = {
   providerSnapshotId: string;
   /** Source device the snapshot was captured from. */
   deviceId: string;
+  /** backup_configs.id this snapshot was written under (nullable on legacy rows). */
+  configId: string | null;
   metadata: unknown;
   size: number | null;
   hardwareProfile: unknown;
@@ -62,6 +64,7 @@ export async function loadSnapshotWithSiteAccess(
       orgId: backupSnapshots.orgId,
       providerSnapshotId: backupSnapshots.snapshotId,
       deviceId: backupSnapshots.deviceId,
+      configId: backupSnapshots.configId,
       metadata: backupSnapshots.metadata,
       size: backupSnapshots.size,
       hardwareProfile: backupSnapshots.hardwareProfile,

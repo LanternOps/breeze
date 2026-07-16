@@ -31,7 +31,7 @@ import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput, redactOptionalSecretText, redactAgentResultErrorFields } from '../services/secretRedaction';
 import { isRawStdoutArtifactCommand } from '../services/commandAudit';
-import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES } from '../services/agentCommandResultValidation';
+import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES, type CriticalResultFamily } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
@@ -487,6 +487,23 @@ const commandResultHandlers: Record<string, CommandResultHandler> = {
   cis_benchmark: handleCisResult,
   apply_cis_remediation: handleCisResult,
 };
+
+// IMPORTANT #1 (#2556): when a verify/restore result is REJECTED by validation
+// (malformed payload deepJsonParse can't rescue, or oversize stdout tripping the
+// size limits), device_commands transitions to 'failed' but the per-type handler
+// dispatch is skipped by the early return below — stranding the associated
+// backup_verifications / restore_jobs row in 'running'/'pending' until the 30-min
+// stale-timeout sweep. For these families we still run the handler on rejection
+// so it drives the linked record to a terminal 'failed' via its normal failure
+// path (normalizedResult.status === 'failed', error === the validation reason).
+// Scoped to the verify (backup_verify / backup_test_restore) and restore
+// (backup_restore) families — exactly the command types whose handlers finalize
+// a linked record. The 'dr' family is deliberately excluded: its records are
+// reconciled by the separate drExecution path above, not by a single handler.
+const TERMINAL_TRANSITION_FAMILIES_ON_VALIDATION_FAILURE = new Set<CriticalResultFamily>([
+  'verification',
+  'restore',
+]);
 
 // Store active WebSocket connections by agentId
 // Map<agentId, WSContext>
@@ -1325,7 +1342,23 @@ export async function processOrphanedCommandResult(
     }
     console.log(`[AgentWs] Processing backup result for job ${backupJob.id} from agent ${agentId}`);
     try {
-      const parsedBackup = backupCommandResultSchema.safeParse(result.result ?? {});
+      // backup_run is not a "critical family", so the WS layer does not populate
+      // result.result from the agent's stdout. Fall back to parsing stdout JSON so
+      // snapshot id / total size / file count get recorded (F13 — otherwise a
+      // completed backup shows Size "-" and Storage Used stays 0 B).
+      // The agent forwards backup stdout as a JSON *string* in result.result (or
+      // result.stdout), never a pre-parsed object. Decode it so the schema can
+      // read snapshot id / total size / file count (F13). Without this a
+      // completed backup shows Size "-" and Storage Used stays 0 B.
+      let backupStructured: unknown = result.result ?? result.stdout;
+      if (typeof backupStructured === 'string') {
+        try {
+          backupStructured = JSON.parse(backupStructured);
+        } catch {
+          backupStructured = undefined;
+        }
+      }
+      const parsedBackup = backupCommandResultSchema.safeParse(backupStructured ?? {});
       const backupData = parsedBackup.success ? parsedBackup.data : undefined;
       const malformedPayloadError = parsedBackup.success
         ? null
@@ -1598,6 +1631,23 @@ async function processCommandResult(
 
     if (validationError) {
       console.warn(`[AgentWs] ${validationError} — command ${result.commandId} rejected for agent ${agentId}`);
+      // Still dispatch to the per-type handler for verify/restore families so
+      // the linked backup_verifications / restore_jobs record transitions to a
+      // terminal 'failed' state instead of stranding until the stale-timeout
+      // sweep. normalizedResult already carries status 'failed' + the rejection
+      // reason as `error`, so the handler's normal failure path applies.
+      const rejectedFamily = detectResultValidationFamily(command.type);
+      if (rejectedFamily && TERMINAL_TRANSITION_FAMILIES_ON_VALIDATION_FAILURE.has(rejectedFamily)) {
+        const rejectedHandler = commandResultHandlers[command.type];
+        if (rejectedHandler) {
+          try {
+            await rejectedHandler({ agentId, command, result: normalizedResult, resolvedDeviceId: resolvedDeviceId!, stdout });
+          } catch (handlerErr) {
+            console.error(`[AgentWs] Failed to finalize rejected ${command.type} result ${result.commandId}:`, handlerErr);
+            captureException(handlerErr);
+          }
+        }
+      }
       return;
     }
 

@@ -8,6 +8,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { CommandTypes, queueBackupStopCommand, queueCommandForExecution } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { resolveBackupProviderConfig, resolveBackupDestinationError } from '../../services/backupProviderConfig';
 import { resolveScopedOrgId } from './helpers';
 import { restoreListSchema, restoreSchema } from './schemas';
 
@@ -229,6 +230,27 @@ restoreRoutes.post(
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
     }
 
+    // The agent needs the same provider + providerConfig the BACKUP command
+    // used to write this snapshot, so it can build a storage provider to
+    // read it back. Fail loudly rather than dispatch a config-less restore
+    // that the agent can't act on.
+    const backupProviderConfig = snapshot.configId
+      ? await resolveBackupProviderConfig(snapshot.configId, orgId)
+      : null;
+    if (!backupProviderConfig) {
+      // Distinguish a legacy snapshot (configId never recorded → cannot be
+      // auto-restored) from a genuine misconfiguration, so operators aren't
+      // misled into hunting a "missing config" that never existed. We do NOT
+      // fall back to the device's current config — the snapshot's objects may
+      // live at a different destination than the device backs up to today.
+      const { reason, message } = resolveBackupDestinationError(snapshot.configId);
+      recordBackupDispatchFailure(
+        'manual_restore',
+        reason === 'legacy_snapshot' ? 'snapshot_predates_config_tracking' : 'missing_provider_config'
+      );
+      return c.json({ error: message, reason }, 422);
+    }
+
     const [row] = await runInOrg(orgId, async () =>
       db
         .insert(restoreJobs)
@@ -263,6 +285,8 @@ restoreRoutes.post(
             snapshotId: snapshot.snapshotId,
             targetPath: row.targetPath ?? '',
             selectedPaths: payload.restoreType === 'selective' ? (payload.selectedPaths ?? []) : [],
+            provider: backupProviderConfig.provider,
+            providerConfig: backupProviderConfig.providerConfig,
           },
           { userId: auth?.user?.id ?? undefined }
         )
