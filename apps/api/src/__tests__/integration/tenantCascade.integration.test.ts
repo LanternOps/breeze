@@ -26,6 +26,15 @@ import {
 const NOT_CASCADE_SCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // agent WS path, system-scoped command queue
   'manifest_signing_keys', // per-deployment system table
+  // Partner-export watermark bookkeeping: rows are maintained exclusively by
+  // SECURITY DEFINER triggers (breeze_app has INSERT/UPDATE/DELETE revoked in
+  // ensureAppRole.ts), so the app-level cascade DELETE would fail with 42501.
+  // Erasure coverage comes from the DB instead: device/site material rows
+  // FK-cascade when their devices/sites rows are deleted earlier in the
+  // cascade, and the org-state row FK-cascades with the organizations row.
+  'partner_export_configuration_org_state',
+  'partner_export_device_material_state',
+  'partner_export_site_material_state',
   'third_party_package_catalog', // system-wide curated catalog
   'third_party_release_tests', // system-wide release test results
 ]);

@@ -119,7 +119,6 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
   'onedrive_device_state',
-  'partner_export_device_material_state',
   'peripheral_events', 'playbook_executions', 'provision_credential_handles',
   'recovery_key_access_events',
   'recovery_readiness', 'recovery_tokens', 'remediation_suggestions', 'remote_sessions', 'restore_jobs',
@@ -195,9 +194,6 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'sql_instances', 'local_vaults', 'hyperv_vms',
   // Deployment invites (FK device_id → devices.id; no cascade)
   'deployment_invites',
-  // Partner export incremental watermark bookkeeping (FK cascades at the DB
-  // too; deleted explicitly to keep the app-level cascade exhaustive)
-  'partner_export_device_material_state',
   // Core device tables
   'device_group_memberships', 'group_membership_log',
   'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
