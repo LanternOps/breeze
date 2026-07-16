@@ -5,6 +5,7 @@ import {
   Clock,
   Database,
   Loader2,
+  Play,
   RefreshCw,
   ShieldCheck,
   XCircle,
@@ -70,6 +71,7 @@ type BackupStatus = {
   lastJob?: BackupJob | null;
   lastSuccessAt?: string | null;
   nextScheduledAt?: string | null;
+  timezone?: string | null;
 };
 
 const jobStatusConfig: Record<BackupJobStatus, { icon: typeof CheckCircle2; className: string; label: string }> = {
@@ -96,13 +98,14 @@ function formatBytes(bytes: number | null | undefined): string {
   return `${formatNumber(bytes / Math.pow(k, i), { maximumFractionDigits: 1 })} ${sizes[i]}`;
 }
 
-function formatTime(iso: string | null | undefined): string {
+function formatTime(iso: string | null | undefined, timezone?: string | null): string {
   return formatDateTime(iso, {
     fallback: '-',
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    ...(timezone ? { timeZone: timezone, timeZoneName: 'short' as const } : {}),
   });
 }
 
@@ -170,6 +173,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [actionMessage, setActionMessage] = useState<string>();
+  const [runningBackup, setRunningBackup] = useState(false);
 
   const fetchData = useCallback(async () => {
     setError(undefined);
@@ -212,6 +216,33 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
     await fetchData();
     setRefreshing(false);
   }, [fetchData]);
+
+  const handleRunBackupNow = useCallback(async () => {
+    setRunningBackup(true);
+    setActionError(undefined);
+    setActionMessage(undefined);
+    try {
+      const response = await fetchWithAuth(`/backup/jobs/run/${deviceId}`, { method: 'POST' });
+
+      if (response.status === 409) {
+        setActionMessage(t('deviceBackupTab.aBackupIsAlreadyRunningForThisDevice'));
+        return;
+      }
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error((errData as { error?: string })?.error || `${response.status} ${response.statusText}`);
+      }
+
+      setActionMessage(t('deviceBackupTab.backupStartedForThisDevice'));
+      await handleRefresh();
+    } catch (err) {
+      console.error('[DeviceBackupTab] handleRunBackupNow:', err);
+      setActionError(err instanceof Error ? err.message : 'Failed to start backup');
+    } finally {
+      setRunningBackup(false);
+    }
+  }, [deviceId, handleRefresh, t]);
 
   useEffect(() => {
     fetchData();
@@ -340,6 +371,12 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
   const showVssStatus = status?.lastJob?.vssMetadata != null;
   const hasVssWarnings = latestVssWriters.some((writer) => normalizeVssState(writer.state) !== 'stable');
   const selectedSnapshot = snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? snapshots[0] ?? null;
+  const isOffline = deviceStatus != null && deviceStatus !== 'online';
+  const runBackupDisabledReason = !status?.protected
+    ? t('deviceBackupTab.assignABackupPolicyToProtectThisDevice')
+    : isOffline
+      ? t('deviceBackupTab.deviceIsOfflineBackupsRequireAConnectedAgent')
+      : undefined;
 
   return (
     <div className="space-y-6">
@@ -387,24 +424,36 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
             {status?.lastSuccessAt && (
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <CheckCircle2 className="h-3.5 w-3.5 text-success" />
-                <span>{t('deviceBackupTab.lastSuccess')} {formatTime(status.lastSuccessAt)}</span>
+                <span>{t('deviceBackupTab.lastSuccess')} {formatTime(status.lastSuccessAt, status.timezone)}</span>
               </div>
             )}
             {status?.nextScheduledAt && (
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <Clock className="h-3.5 w-3.5" />
-                <span>{t('deviceBackupTab.next')} {formatTime(status.nextScheduledAt)}</span>
+                <span>{t('deviceBackupTab.next')} {formatTime(status.nextScheduledAt, status.timezone)}</span>
               </div>
             )}
           </div>
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
-          >
-            {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-            {t('deviceBackupTab.refresh')} </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleRunBackupNow()}
+              disabled={runningBackup || !status?.protected || isOffline}
+              title={runBackupDisabledReason}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
+            >
+              {runningBackup ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+              {runningBackup ? t('deviceBackupTab.starting') : t('deviceBackupTab.runBackupNow')}
+            </button>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-60"
+            >
+              {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              {t('deviceBackupTab.refresh')} </button>
+          </div>
         </div>
       </div>
 

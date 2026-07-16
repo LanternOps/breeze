@@ -143,6 +143,120 @@ describe('DeviceBackupTab', () => {
     expect(await screen.findByText(/Legal hold applied to the selected restore point/i)).toBeTruthy();
   });
 
+  it('runs a backup now and refreshes on success', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/jobs/run/device-1' && method === 'POST') {
+        return makeJsonResponse({ data: { id: 'job-2' } });
+      }
+
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({
+          data: {
+            protected: true,
+            lastSuccessAt: '2026-03-30T01:00:00Z',
+            nextScheduledAt: '2026-04-01T01:00:00Z',
+          },
+        });
+      }
+
+      if (url === '/backup/jobs?deviceId=device-1') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" />);
+
+    const runButton = await screen.findByRole('button', { name: /Run backup now/i });
+    expect(runButton).not.toBeDisabled();
+    fireEvent.click(runButton);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/backup/jobs/run/device-1',
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    expect(await screen.findByText(/Backup started for this device/i)).toBeTruthy();
+  });
+
+  it('shows a friendly message when a backup is already running (409)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/jobs/run/device-1' && method === 'POST') {
+        return makeJsonResponse({ error: 'already running' }, false, 409);
+      }
+
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({
+          data: {
+            protected: true,
+            lastSuccessAt: '2026-03-30T01:00:00Z',
+            nextScheduledAt: '2026-04-01T01:00:00Z',
+          },
+        });
+      }
+
+      if (url === '/backup/jobs?deviceId=device-1') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" />);
+
+    const runButton = await screen.findByRole('button', { name: /Run backup now/i });
+    fireEvent.click(runButton);
+
+    expect(await screen.findByText(/A backup is already running for this device/i)).toBeTruthy();
+  });
+
+  it('disables the run-backup button when no policy is assigned', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({
+          data: {
+            protected: false,
+            lastJob: { id: 'job-1', status: 'completed' },
+          },
+        });
+      }
+
+      if (url === '/backup/jobs?deviceId=device-1') {
+        return makeJsonResponse({
+          data: [{ id: 'job-1', deviceId: 'device-1', type: 'file', status: 'completed', startedAt: '2026-03-30T00:00:00Z' }],
+        });
+      }
+
+      if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" />);
+
+    const runButton = await screen.findByRole('button', { name: /Run backup now/i });
+    expect(runButton).toBeDisabled();
+  });
+
   it('shows the provider fallback warning on a restore point', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
