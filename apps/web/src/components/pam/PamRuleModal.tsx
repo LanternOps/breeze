@@ -22,7 +22,7 @@ import {
   btnGhostClass,
   btnOutlineClass,
   btnPrimaryClass,
-  inputClass,
+  inputCompactClass as inputClass,
 } from './ui';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
@@ -559,8 +559,8 @@ export default function PamRuleModal({
       {/* Fields scroll; the header and the action footer stay pinned so
           Cancel/Save are always visible on short viewports. */}
       <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-4">
+        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
           <div>
             <label htmlFor={nameId} className="mb-1 block text-sm font-medium">
               {t('pamPamRuleModal.form.name', { defaultValue: 'Name' })}
@@ -592,20 +592,19 @@ export default function PamRuleModal({
           </div>
         </div>
 
-        <div>
-          <label htmlFor={descId} className="mb-1 block text-sm font-medium">
-            {t('pamPamRuleModal.form.descriptionOptional', { defaultValue: 'Description (optional)' })}
-          </label>
-          <input
-            id={descId}
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            maxLength={2000}
-            className={inputClass}
-          />
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+          <div>
+            <label htmlFor={descId} className="mb-1 block text-sm font-medium">
+              {t('pamPamRuleModal.form.descriptionOptional', { defaultValue: 'Description (optional)' })}
+            </label>
+            <input
+              id={descId}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              maxLength={2000}
+              className={inputClass}
+            />
+          </div>
           {orgs.length > 1 && (
             <div>
               <label htmlFor={orgSelectId} className="mb-1 block text-sm font-medium">
@@ -671,12 +670,12 @@ export default function PamRuleModal({
           </div>
         </div>
 
-        <div className="space-y-4 border-t pt-4">
+        <div className="space-y-3 border-t pt-3">
           <SectionHeading>
             {t('pamPamRuleModal.sections.criteria', { defaultValue: 'Match criteria' })}
           </SectionHeading>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
             <div>
               <label htmlFor={verdictId} className="mb-1 block text-sm font-medium">
                 {t('pamPamRuleModal.form.verdict', { defaultValue: 'Verdict' })}
@@ -727,7 +726,7 @@ export default function PamRuleModal({
           </div>
 
           {shape === 'executable' ? (
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
               <Field
                 label={t('pamPamRuleModal.fields.signer', { defaultValue: 'Signer' })}
                 value={matchSigner}
@@ -775,7 +774,7 @@ export default function PamRuleModal({
               <Field label={t('pamPamRuleModal.fields.commandLine', { defaultValue: 'Command line' })} value={matchCommandLine} onChange={setMatchCommandLine} placeholder={t('pamPamRuleModal.placeholders.printui', { defaultValue: 'printui.dll,PrintUIEntry' })} testId="pam-rule-match-command-line" negateKey="commandLine" negated={negate.has('commandLine')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
             </div>
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
               <Field label={t('pamPamRuleModal.fields.toolName', { defaultValue: 'Tool name' })} value={matchToolName} onChange={setMatchToolName} placeholder={t('pamPamRuleModal.placeholders.runScript', { defaultValue: 'run_script' })} testId="pam-rule-toolname" negateKey="toolName" negated={negate.has('toolName')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
               <Field
                 label={t('pamPamRuleModal.fields.riskTier', { defaultValue: 'Risk tier (0-4)' })}
@@ -792,18 +791,18 @@ export default function PamRuleModal({
             </div>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
             <Field label={t('pamPamRuleModal.fields.userOptional', { defaultValue: 'User (optional)' })} value={matchUser} onChange={setMatchUser} placeholder={t('pamPamRuleModal.placeholders.domainUser', { defaultValue: 'DOMAIN\\user' })} testId="pam-rule-user" negateKey="user" negated={negate.has('user')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
             <Field label={t('pamPamRuleModal.fields.adGroupOptional', { defaultValue: 'AD group (optional)' })} value={matchAdGroup} onChange={setMatchAdGroup} placeholder={t('pamPamRuleModal.placeholders.helpdeskTier1', { defaultValue: 'Helpdesk Tier 1' })} testId="pam-rule-adgroup" negateKey="adGroup" negated={negate.has('adGroup')} onToggleNegate={toggleNegate} negateLabel={t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })} />
           </div>
         </div>
 
-        <div className="space-y-4 border-t pt-4">
+        <div className="space-y-3 border-t pt-3">
           <SectionHeading>
             {t('pamPamRuleModal.sections.window', { defaultValue: 'Time window' })}
           </SectionHeading>
 
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-x-4 gap-y-3 sm:grid-cols-3">
             <Field label={t('pamPamRuleModal.fields.windowStart', { defaultValue: 'Window start (HH:MM)' })} value={windowStart} onChange={setWindowStart} placeholder={t('pamPamRuleModal.placeholders.windowStart', { defaultValue: '08:00' })} testId="pam-rule-window-start" />
             <Field label={t('pamPamRuleModal.fields.windowEnd', { defaultValue: 'Window end (HH:MM)' })} value={windowEnd} onChange={setWindowEnd} placeholder={t('pamPamRuleModal.placeholders.windowEnd', { defaultValue: '18:00' })} testId="pam-rule-window-end" />
             <Field
@@ -819,7 +818,7 @@ export default function PamRuleModal({
           </div>
 
           {(windowStart !== '' || windowEnd !== '') && (
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
               <div>
                 <span className="mb-1 block text-sm font-medium">
                   {t('pamPamRuleModal.form.daysNoneEveryDay', {
@@ -863,37 +862,13 @@ export default function PamRuleModal({
           )}
         </div>
 
-        <label className="flex items-center gap-2 border-t pt-4 text-sm font-medium">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-            data-testid="pam-rule-enabled"
-            className="rounded border-input"
-          />
-          {t('pamPamRuleModal.form.enabled', { defaultValue: 'Enabled' })}
-        </label>
-
         {error && <ErrorAlert>{error}</ErrorAlert>}
 
-        <div className="rounded-lg border bg-muted/30 p-4">
-          <div className="flex items-center justify-between gap-3">
+        {preview && (
+          <div className="rounded-lg border bg-muted/30 p-3">
             <p className="text-sm font-medium">
               {t('pamPamRuleModal.preview.title', { defaultValue: 'Preview against recent requests' })}
             </p>
-            <button
-              type="button"
-              onClick={() => void handlePreview()}
-              disabled={previewing}
-              data-testid="pam-rule-preview-btn"
-              className={btnOutlineClass}
-            >
-              {previewing
-                ? t('pamPamRuleModal.preview.previewing', { defaultValue: 'Previewing…' })
-                : t('pamPamRuleModal.preview.action', { defaultValue: 'Preview matches' })}
-            </button>
-          </div>
-          {preview && (
             <div className="mt-2 space-y-2 text-sm" data-testid="pam-rule-preview-result">
               <p>
                 {t('pamPamRuleModal.preview.matchedPrefix', { defaultValue: 'Would have matched' })}{' '}
@@ -935,12 +910,33 @@ export default function PamRuleModal({
                 </p>
               )}
             </div>
-          )}
+          </div>
+        )}
         </div>
 
-        </div>
-
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t px-6 py-4">
+        <div className="flex shrink-0 items-center gap-3 border-t px-6 py-4">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              data-testid="pam-rule-enabled"
+              className="rounded border-input"
+            />
+            {t('pamPamRuleModal.form.enabled', { defaultValue: 'Enabled' })}
+          </label>
+          <button
+            type="button"
+            onClick={() => void handlePreview()}
+            disabled={previewing}
+            data-testid="pam-rule-preview-btn"
+            className={btnOutlineClass}
+          >
+            {previewing
+              ? t('pamPamRuleModal.preview.previewing', { defaultValue: 'Previewing…' })
+              : t('pamPamRuleModal.preview.action', { defaultValue: 'Preview matches' })}
+          </button>
+          <span className="flex-1" />
           <button type="button" onClick={onClose} className={btnGhostClass}>
             {t('common:actions.cancel', { defaultValue: 'Cancel' })}
           </button>
@@ -993,9 +989,23 @@ function Field({
   const id = useId();
   return (
     <div>
-      <label htmlFor={id} className="mb-1 block text-sm font-medium">
-        {label}
-      </label>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <label htmlFor={id} className="block truncate text-sm font-medium">
+          {label}
+        </label>
+        {negateKey && onToggleNegate && (
+          <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={negated ?? false}
+              onChange={() => onToggleNegate(negateKey)}
+              data-testid={`pam-rule-negate-${negateKey}`}
+            />
+            {negateLabel ??
+              t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })}
+          </label>
+        )}
+      </div>
       <input
         id={id}
         type={type}
@@ -1006,18 +1016,6 @@ function Field({
         data-testid={testId}
         className={`${inputClass} disabled:opacity-50`}
       />
-      {negateKey && onToggleNegate && (
-        <label className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={negated ?? false}
-            onChange={() => onToggleNegate(negateKey)}
-            data-testid={`pam-rule-negate-${negateKey}`}
-          />
-          {negateLabel ??
-            t('pamPamRuleModal.form.negate', { defaultValue: 'Negate (does not match)' })}
-        </label>
-      )}
     </div>
   );
 }

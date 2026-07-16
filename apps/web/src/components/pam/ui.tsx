@@ -28,6 +28,8 @@ export const rowClass = 'transition-colors hover:bg-muted/40';
 export const tdClass = 'px-4 py-3';
 
 export const inputClass = 'w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs';
+/** Denser input for long forms (the rule modal) where vertical space is scarce. */
+export const inputCompactClass = 'w-full rounded-md border bg-background px-3 py-1.5 text-sm shadow-xs';
 export const selectClass = 'h-9 rounded-md border bg-background px-2.5 text-sm shadow-xs';
 
 export const btnPrimaryClass =
