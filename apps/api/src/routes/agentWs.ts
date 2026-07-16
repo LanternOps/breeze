@@ -1325,7 +1325,23 @@ export async function processOrphanedCommandResult(
     }
     console.log(`[AgentWs] Processing backup result for job ${backupJob.id} from agent ${agentId}`);
     try {
-      const parsedBackup = backupCommandResultSchema.safeParse(result.result ?? {});
+      // backup_run is not a "critical family", so the WS layer does not populate
+      // result.result from the agent's stdout. Fall back to parsing stdout JSON so
+      // snapshot id / total size / file count get recorded (F13 — otherwise a
+      // completed backup shows Size "-" and Storage Used stays 0 B).
+      // The agent forwards backup stdout as a JSON *string* in result.result (or
+      // result.stdout), never a pre-parsed object. Decode it so the schema can
+      // read snapshot id / total size / file count (F13). Without this a
+      // completed backup shows Size "-" and Storage Used stays 0 B.
+      let backupStructured: unknown = result.result ?? result.stdout;
+      if (typeof backupStructured === 'string') {
+        try {
+          backupStructured = JSON.parse(backupStructured);
+        } catch {
+          backupStructured = undefined;
+        }
+      }
+      const parsedBackup = backupCommandResultSchema.safeParse(backupStructured ?? {});
       const backupData = parsedBackup.success ? parsedBackup.data : undefined;
       const malformedPayloadError = parsedBackup.success
         ? null

@@ -23,7 +23,7 @@ vi.mock('../../services/backupMetrics', () => ({
 }));
 
 import { recomputeRecoveryReadinessForDevice, runBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary } from './verificationService';
-import { backupVerifications, verificationOrgById } from './store';
+import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
 import { queueCommandForExecution } from '../../services/commandQueue';
 
 describe('backup verification service', () => {
@@ -205,6 +205,66 @@ describe('backup verification service', () => {
 
     const summary = await getBackupHealthSummary(orgId);
     expect(summary.verification.coveragePercent).toBe(0);
+  });
+
+  it('includes the resolved provider + providerConfig in the dispatched verification command', async () => {
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
+      command: { id: 'cmd-verify-1', status: 'sent' } as any,
+    });
+
+    const { verification } = await runBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      backupJobId: 'job-001', // seeded with configId 'cfg-s3-primary' (provider 's3')
+      verificationType: 'integrity',
+      source: 'test'
+    });
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      'dev-001',
+      'backup_verify',
+      expect.objectContaining({
+        provider: 's3',
+        providerConfig: expect.objectContaining({ bucket: 'breeze-backups' }),
+      }),
+      expect.anything()
+    );
+
+    const idx = backupVerifications.findIndex((v) => v.id === verification.id);
+    if (idx >= 0) backupVerifications.splice(idx, 1);
+    verificationOrgById.delete(verification.id);
+  });
+
+  it('fails loudly instead of dispatching a config-less command when no backup destination can be resolved', async () => {
+    const orgId = `org-noconfig-${Date.now()}`;
+    const jobId = `job-noconfig-${Date.now()}`;
+    const deviceId = `dev-noconfig-${Date.now()}`;
+
+    backupJobs.push({
+      id: jobId,
+      type: 'manual',
+      deviceId,
+      configId: 'cfg-does-not-exist',
+      status: 'completed',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    jobOrgById.set(jobId, orgId);
+
+    try {
+      await expect(runBackupVerification({
+        orgId,
+        deviceId,
+        backupJobId: jobId,
+        verificationType: 'integrity',
+        source: 'test'
+      })).rejects.toThrow('Backup destination configuration not found');
+      expect(queueCommandForExecution).not.toHaveBeenCalled();
+    } finally {
+      const idx = backupJobs.findIndex((j) => j.id === jobId);
+      if (idx >= 0) backupJobs.splice(idx, 1);
+      jobOrgById.delete(jobId);
+    }
   });
 
   it('fails verification startup instead of fabricating a simulated result when dispatch is unavailable', async () => {

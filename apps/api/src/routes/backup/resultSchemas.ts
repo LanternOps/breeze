@@ -1,15 +1,20 @@
 import { z } from 'zod';
 
+// File/snapshot timestamps come straight from the agent's OS. File mtimes in
+// particular carry a local UTC offset (e.g. Windows: ...-07:00), not a `Z`, so
+// `.datetime()` (which requires Z) rejects them — and one bad modTime fails the
+// whole result parse, so total_size / snapshot id / file_count silently never
+// get recorded (F13). Accept an offset.
 export const backupSnapshotFileResultSchema = z.object({
   sourcePath: z.string().min(1),
   backupPath: z.string().min(1),
   size: z.number().int().nonnegative().optional(),
-  modTime: z.string().datetime().optional(),
+  modTime: z.string().datetime({ offset: true }).optional(),
 });
 
 export const backupSnapshotResultSchema = z.object({
   id: z.string().min(1),
-  timestamp: z.string().datetime().optional(),
+  timestamp: z.string().datetime({ offset: true }).optional(),
   size: z.number().int().nonnegative().optional(),
   files: z.array(backupSnapshotFileResultSchema).optional(),
 });

@@ -8,6 +8,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { CommandTypes, queueBackupStopCommand, queueCommandForExecution } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { resolveBackupProviderConfig } from '../../services/backupProviderConfig';
 import { resolveScopedOrgId } from './helpers';
 import { restoreListSchema, restoreSchema } from './schemas';
 
@@ -229,6 +230,18 @@ restoreRoutes.post(
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
     }
 
+    // The agent needs the same provider + providerConfig the BACKUP command
+    // used to write this snapshot, so it can build a storage provider to
+    // read it back. Fail loudly rather than dispatch a config-less restore
+    // that the agent can't act on.
+    const backupProviderConfig = snapshot.configId
+      ? await resolveBackupProviderConfig(snapshot.configId, orgId)
+      : null;
+    if (!backupProviderConfig) {
+      recordBackupDispatchFailure('manual_restore', 'missing_provider_config');
+      return c.json({ error: 'Backup destination configuration not found for this snapshot' }, 422);
+    }
+
     const [row] = await runInOrg(orgId, async () =>
       db
         .insert(restoreJobs)
@@ -263,6 +276,8 @@ restoreRoutes.post(
             snapshotId: snapshot.snapshotId,
             targetPath: row.targetPath ?? '',
             selectedPaths: payload.restoreType === 'selective' ? (payload.selectedPaths ?? []) : [],
+            provider: backupProviderConfig.provider,
+            providerConfig: backupProviderConfig.providerConfig,
           },
           { userId: auth?.user?.id ?? undefined }
         )

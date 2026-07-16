@@ -131,18 +131,32 @@ function ensureCriticalResultSizeLimits(envelope: GenericCommandResultEnvelope):
   }
 }
 
+// Agents encode the structured result as a JSON string (marshalResult → stdout),
+// and depending on the path it can arrive double-encoded (a JSON string whose
+// value is itself the JSON object). Parse repeatedly until we reach a non-string,
+// so critical-family validation (ensureObjectLike + the family schemas) sees an
+// object — otherwise verify/test-restore/restore results are rejected as "must be
+// a JSON object" and the record never leaves running.
+function deepJsonParse(value: unknown): unknown {
+  let current = value;
+  for (let i = 0; i < 3 && typeof current === 'string'; i++) {
+    try {
+      current = JSON.parse(current);
+    } catch {
+      return undefined;
+    }
+  }
+  return current;
+}
+
 function parseStructuredResult(envelope: GenericCommandResultEnvelope): unknown {
   if (envelope.result !== undefined) {
-    return envelope.result;
+    return deepJsonParse(envelope.result);
   }
   if (!envelope.stdout) {
     return undefined;
   }
-  try {
-    return JSON.parse(envelope.stdout);
-  } catch {
-    return undefined;
-  }
+  return deepJsonParse(envelope.stdout);
 }
 
 function ensureObjectLike(commandType: string, value: unknown): Record<string, unknown> {
