@@ -5,7 +5,6 @@ package userhelper
 import (
 	"fmt"
 	"runtime"
-	"strings"
 	"syscall"
 	"unsafe"
 
@@ -40,12 +39,19 @@ const (
 
 func showPamDialog(req ipc.PamRequestDialog) ipc.PamDialogResult {
 	return showPamDialogOnInputDesktop(windowsPamDesktopOps{}, func(_ string) ipc.PamDialogResult {
+		// The custom window is the primary rendering; the plain MessageBox
+		// stays as a fallback so a class-registration or window-creation
+		// failure can never swallow an elevation prompt.
+		if result, ok := showPamDialogWindow(req); ok {
+			return result
+		}
+		log.Warn("pam: custom elevation dialog unavailable; falling back to MessageBox")
 		return showPamMessageBox(req)
 	})
 }
 
 func showPamMessageBox(req ipc.PamRequestDialog) ipc.PamDialogResult {
-	title := syscall.StringToUTF16Ptr("Breeze — Elevation Request")
+	title := syscall.StringToUTF16Ptr(pamDialogTitle)
 	body := syscall.StringToUTF16Ptr(buildPamDialogBody(req))
 	flags := uintptr(mbYesNo | mbIconWarning | mbTopMost | mbSystemModal | mbSetForeground)
 
@@ -125,28 +131,3 @@ func (windowsPamDesktopOps) CloseDesktop(handle uintptr) error {
 	return nil
 }
 
-func buildPamDialogBody(req ipc.PamRequestDialog) string {
-	lines := []string{
-		"Breeze detected an elevation request.",
-		"",
-		fmt.Sprintf("Program: %s", pamDialogValue(req.ExePath)),
-		fmt.Sprintf("Signer: %s", pamDialogValue(req.Signer)),
-		fmt.Sprintf("User: %s", pamDialogValue(req.SubjectUser)),
-	}
-	if req.Reason != "" {
-		lines = append(lines, fmt.Sprintf("Reason: %s", pamDialogValue(req.Reason)))
-	}
-	if req.IntentSummary != "" {
-		lines = append(lines, fmt.Sprintf("Intent: %s", pamDialogValue(req.IntentSummary)))
-	}
-	lines = append(lines, "", "Approve this elevation request?")
-	return strings.Join(lines, "\r\n")
-}
-
-func pamDialogValue(value string) string {
-	value = strings.TrimSpace(strings.ReplaceAll(value, "\x00", " "))
-	if value == "" {
-		return "Unknown"
-	}
-	return value
-}
