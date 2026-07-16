@@ -117,14 +117,14 @@ importers:
         specifier: ^5.0.1
         version: 5.0.1
       '@hono/node-server':
-        specifier: ^2.0.8
-        version: 2.0.8(hono@4.12.30)
+        specifier: ^2.0.10
+        version: 2.0.10(hono@4.12.30)
       '@hono/node-ws':
         specifier: ^1.3.1
-        version: 1.3.1(@hono/node-server@2.0.8(hono@4.12.30))(hono@4.12.30)
+        version: 1.3.1(@hono/node-server@2.0.10(hono@4.12.30))(hono@4.12.30)
       '@hono/zod-validator':
-        specifier: ^0.8.0
-        version: 0.8.0(hono@4.12.30)(zod@4.4.3)
+        specifier: ^0.9.0
+        version: 0.9.0(hono@4.12.30)(zod@4.4.3)
       '@network-utils/vendor-lookup':
         specifier: ^1.0.12
         version: 1.0.12
@@ -408,8 +408,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@hono/node-server':
-        specifier: ^2.0.8
-        version: 2.0.8(hono@4.12.30)
+        specifier: ^2.0.10
+        version: 2.0.10(hono@4.12.30)
       hono:
         specifier: ^4.12.30
         version: 4.12.30
@@ -2626,8 +2626,8 @@ packages:
     peerDependencies:
       hono: ^4
 
-  '@hono/node-server@2.0.8':
-    resolution: {integrity: sha512-GuCWzLxwg218fy1JaHculFsdcuY12hxit83V+algozTPnwhNjLrRL/Alg9OYjLZLoUZ1rw/S4CdTMsnkSKCmFA==}
+  '@hono/node-server@2.0.10':
+    resolution: {integrity: sha512-ZcnNVhKTmyDJeg0UlnZjvM73JBsTAuhrH/J4fjwGOw59PwOW51r4J+p6CsKZWXdKSme4MFqU62CZMOsdDrU4CA==}
     engines: {node: '>=20'}
     peerDependencies:
       hono: ^4
@@ -2639,10 +2639,10 @@ packages:
       '@hono/node-server': ^1.19.11
       hono: ^4.6.0
 
-  '@hono/zod-validator@0.8.0':
-    resolution: {integrity: sha512-5uS4S1/LKtZQYvD4BtpPUFkOv8d1wNxHHrChm26buMiEYc1FrHWvDUaKVBwkiVtvSExHSpLGDvcnpI2Copyj9w==}
+  '@hono/zod-validator@0.9.0':
+    resolution: {integrity: sha512-n0ZSXmCiHVIp4Y5wlOOyZCeTd/rsawA/qW1cipB8QOYKZ9N8Tk0nZUZCXho9cu374AN4JpDNKioNKBJ/W+LBug==}
     peerDependencies:
-      hono: '>=4.10.0'
+      hono: '>=4.11.2'
       zod: ^3.25.0 || ^4.0.0
 
   '@hookform/resolvers@5.4.0':
@@ -2969,6 +2969,9 @@ packages:
 
   '@nodable/entities@2.2.0':
     resolution: {integrity: sha512-9uGyhaQavEUMC8AIddIjau4NsnsXhou+j5sBAGojCM1oxmQpVKTWR/9JxABD6UAv12vpIms55fPZKFQEhG6uBg==}
+
+  '@nodable/entities@3.0.0':
+    resolution: {integrity: sha512-8L9xFeTYKhm49xfIypoe2W5wV1m/3Z58kT+7kR9A8OyFxcPduI4VmxaUMQyKYrRjUoLLSXv6EKKID5Tvj9cUVw==}
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -6930,8 +6933,8 @@ packages:
   fast-xml-builder@1.3.0:
     resolution: {integrity: sha512-F74cZEdCvuw9P41GAC3rod4X04jjWGM1JPEv/GWSqFTWLsdyMSBMBMlm9Hk3GLBgLBbdBNY8yee0pQh2RBVESQ==}
 
-  fast-xml-parser@5.10.0:
-    resolution: {integrity: sha512-SLhnTEqE5QpJHq/6zl9bsmImEP2adv+y6Wy+cJa7nVTRzQh1OZfCe9k29M5xN74LWnu0xa1zrUrq3KnOKl92Fg==}
+  fast-xml-parser@5.10.1:
+    resolution: {integrity: sha512-IEMIf7298kXuZSRFoGfMYrl7is8LpavODgbNz1cwIudv7KwVFnuU+UsMporfq6PD6aXSlawZlARiA3UywCTfMw==}
     hasBin: true
 
   fast-xml-parser@5.9.3:
@@ -10856,6 +10859,18 @@ packages:
       utf-8-validate:
         optional: true
 
+  ws@7.5.12:
+    resolution: {integrity: sha512-1xGnbYN3zbog9CwuNDQULNRrTCLIn46/WmpR1f0w6PsCYQHkylZr5vkd6kfMZYV6pRnQkcPNRyiA8LsrNKyhpg==}
+    engines: {node: '>=8.3.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: ^5.0.2
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   ws@8.21.0:
     resolution: {integrity: sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==}
     engines: {node: '>=10.0.0'}
@@ -13103,20 +13118,20 @@ snapshots:
     dependencies:
       hono: 4.12.30
 
-  '@hono/node-server@2.0.8(hono@4.12.30)':
+  '@hono/node-server@2.0.10(hono@4.12.30)':
     dependencies:
       hono: 4.12.30
 
-  '@hono/node-ws@1.3.1(@hono/node-server@2.0.8(hono@4.12.30))(hono@4.12.30)':
+  '@hono/node-ws@1.3.1(@hono/node-server@2.0.10(hono@4.12.30))(hono@4.12.30)':
     dependencies:
-      '@hono/node-server': 2.0.8(hono@4.12.30)
+      '@hono/node-server': 2.0.10(hono@4.12.30)
       hono: 4.12.30
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@hono/zod-validator@0.8.0(hono@4.12.30)(zod@4.4.3)':
+  '@hono/zod-validator@0.9.0(hono@4.12.30)(zod@4.4.3)':
     dependencies:
       hono: 4.12.30
       zod: 4.4.3
@@ -13261,7 +13276,7 @@ snapshots:
     dependencies:
       '@types/istanbul-lib-coverage': 2.0.6
       '@types/istanbul-reports': 3.0.4
-      '@types/node': 26.1.0
+      '@types/node': 25.9.3
       '@types/yargs': 15.0.20
       chalk: 4.1.2
     optional: true
@@ -13432,6 +13447,9 @@ snapshots:
   '@noble/hashes@2.2.0': {}
 
   '@nodable/entities@2.2.0': {}
+
+  '@nodable/entities@3.0.0':
+    optional: true
 
   '@nodelib/fs.scandir@2.1.5':
     dependencies:
@@ -13754,7 +13772,7 @@ snapshots:
       '@react-native-community/cli-tools': 12.1.1
       chalk: 4.1.2
       execa: 5.1.1
-      fast-xml-parser: 5.10.0
+      fast-xml-parser: 5.10.1
       glob: 7.2.3
       logkitty: 0.7.1
     transitivePeerDependencies:
@@ -13766,7 +13784,7 @@ snapshots:
       '@react-native-community/cli-tools': 12.1.1
       chalk: 4.1.2
       execa: 5.1.1
-      fast-xml-parser: 5.10.0
+      fast-xml-parser: 5.10.1
       glob: 7.2.3
       ora: 5.4.1
     transitivePeerDependencies:
@@ -13786,7 +13804,7 @@ snapshots:
       nocache: 3.0.4
       pretty-format: 26.6.2
       serve-static: 1.16.3
-      ws: 7.5.11
+      ws: 7.5.12
     transitivePeerDependencies:
       - bufferutil
       - encoding
@@ -13972,9 +13990,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.86.0': {}
 
@@ -17702,9 +17718,9 @@ snapshots:
       xml-naming: 0.3.0
     optional: true
 
-  fast-xml-parser@5.10.0:
+  fast-xml-parser@5.10.1:
     dependencies:
-      '@nodable/entities': 2.2.0
+      '@nodable/entities': 3.0.0
       fast-xml-builder: 1.3.0
       is-unsafe: 2.0.0
       path-expression-matcher: 1.6.2
@@ -22619,6 +22635,9 @@ snapshots:
   wrappy@1.0.2: {}
 
   ws@7.5.11: {}
+
+  ws@7.5.12:
+    optional: true
 
   ws@8.21.0: {}
 
