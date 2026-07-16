@@ -68,16 +68,29 @@ func TestRunPamFlow(t *testing.T) {
 			wantActuated:         false,
 		},
 		{
-			name:                 "auto-approved targets requester session as unsigned decimal and actuates",
+			name:                 "auto-approved targets valid high requester session as unsigned decimal and actuates",
 			status:               "auto_approved",
-			subjectSessionID:     ^uint32(0),
-			wantTargetWinSession: "4294967295",
+			subjectSessionID:     0xFFFFFFFE,
+			wantTargetWinSession: "4294967294",
 			dialog:               approved,
 			wantFind:             true,
 			wantDialog:           true,
 			wantTriggered:        true,
 			wantDismissed:        false,
 			wantActuated:         true,
+		},
+		{
+			// 0xFFFFFFFF is Windows' invalid/unresolved session sentinel. Treat it
+			// like zero so the broker retains its physical-console fallback.
+			name:             "invalid requester session sentinel retains console fallback",
+			status:           "auto_approved",
+			subjectSessionID: 0xFFFFFFFF,
+			dialog:           approved,
+			wantFind:         true,
+			wantDialog:       true,
+			wantTriggered:    true,
+			wantDismissed:    false,
+			wantActuated:     true,
 		},
 		{
 			// Zero is the compatibility path for old/fake/non-Windows events: the

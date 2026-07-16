@@ -59,7 +59,9 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 
 	targetWinSession := ""
 	sessionTarget := "physical_console_fallback"
-	if ev.SubjectSessionID != 0 {
+	// Zero and Windows' 0xFFFFFFFF invalid-session sentinel both mean the
+	// requester session is unresolved, so retain the existing console fallback.
+	if ev.SubjectSessionID != 0 && ev.SubjectSessionID != 0xFFFFFFFF {
 		targetWinSession = strconv.FormatUint(uint64(ev.SubjectSessionID), 10)
 		sessionTarget = "requester_session"
 	}
