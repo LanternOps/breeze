@@ -39,9 +39,9 @@
  *   pnpm vitest run --config vitest.integration.config.ts \
  *     src/__tests__/integration/apiKeyPrincipals.integration.test.ts
  *
- * The integration harness (setup.ts) runs autoMigrate() off DATABASE_URL /
- * DATABASE_URL_APP, which applies 2026-07-19-service-principals.sql
- * automatically.
+ * The integration harness (globalSetup.ts) runs autoMigrate() off
+ * DATABASE_URL / DATABASE_URL_APP, which applies
+ * 2026-07-19-service-principals.sql automatically.
  */
 import './setup';
 
