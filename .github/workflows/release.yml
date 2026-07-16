@@ -2395,6 +2395,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # IMAGE_NAME is ${{ github.repository }} (e.g. LanternOps/breeze), but a
+      # container reference must be lowercase. The api/web jobs launder this
+      # through docker/metadata-action (which lowercases); this job builds the
+      # ref by hand, so lowercase it explicitly.
+      - name: Compute lowercase image base
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          BASE="${REGISTRY}/${IMAGE_NAME}"
+          echo "IMAGE_BASE=${BASE,,}" >> "$GITHUB_ENV"
+
       # Push by digest only: no release-facing tag exists until this exact
       # manifest passes the blocking vulnerability scan below.
       - name: Build and push unadvertised executor digest
@@ -2403,14 +2415,14 @@ jobs:
         with:
           context: .
           file: apps/m365-graph-read-executor/Dockerfile
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/m365-graph-read-executor,push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.IMAGE_BASE }}/m365-graph-read-executor,push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Scan exact executor digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/m365-graph-read-executor@${{ steps.push-executor-digest.outputs.digest }}
+          image-ref: ${{ env.IMAGE_BASE }}/m365-graph-read-executor@${{ steps.push-executor-digest.outputs.digest }}
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'
@@ -2419,7 +2431,7 @@ jobs:
       # references; it never rebuilds or mutates the image layers.
       - name: Promote scanned executor digest
         env:
-          EXECUTOR_REPOSITORY: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/m365-graph-read-executor
+          EXECUTOR_REPOSITORY: ${{ env.IMAGE_BASE }}/m365-graph-read-executor
           EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
           RELEASE_REF_NAME: ${{ github.ref_name }}
           RELEASE_SHA: ${{ github.sha }}
