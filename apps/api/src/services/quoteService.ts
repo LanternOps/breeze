@@ -544,15 +544,44 @@ export async function deleteBlock(quoteId: string, blockId: string, actor: Quote
 // Lines
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve the block a new line should live in. A caller-supplied blockId is used
+ * as-is; when it's omitted (the API / MCP add-line path — the web editor always
+ * passes one), the line is attached to the quote's default pricing section: the
+ * earliest existing line_items block, or a fresh one created on demand.
+ *
+ * Without this, a blockId-less line became an "orphan" — counted in the totals
+ * and drawn in the PDF's trailing table, but NEVER rendered in the editor (which
+ * only walks line_items blocks). The result was a quote showing a real dollar
+ * total while the builder said "No content yet", uneditable from the UI (#2553).
+ */
+async function resolveLineBlockId(quoteId: string, orgId: string, blockId: string | null | undefined): Promise<string> {
+  if (blockId) return blockId;
+  const [existing] = await db
+    .select({ id: quoteBlocks.id })
+    .from(quoteBlocks)
+    .where(and(eq(quoteBlocks.quoteId, quoteId), eq(quoteBlocks.blockType, 'line_items')))
+    .orderBy(quoteBlocks.sortOrder)
+    .limit(1);
+  if (existing) return existing.id;
+  const sortOrder = await nextBlockSortOrder(quoteId);
+  const [block] = await db
+    .insert(quoteBlocks)
+    .values({ quoteId, orgId, blockType: 'line_items', content: {}, sortOrder })
+    .returning({ id: quoteBlocks.id });
+  return block!.id;
+}
+
 export async function addManualLine(quoteId: string, input: QuoteLineInput, actor: QuoteActor) {
   const q = await loadDraft(quoteId, actor);
   const quantity = String(input.quantity);
   const unitPrice = Number(input.unitPrice).toFixed(2);
+  const blockId = await resolveLineBlockId(quoteId, q.orgId, input.blockId);
   const sortOrder = await nextLineSortOrder(quoteId);
   const [row] = await db.insert(quoteLines).values({
     quoteId,
     orgId: q.orgId,
-    blockId: input.blockId ?? null,
+    blockId,
     sourceType: input.sourceType,
     catalogItemId: input.catalogItemId ?? null,
     name: input.name ?? null,
@@ -610,11 +639,12 @@ export async function addCatalogLine(
     ? (item.billingFrequency === 'annual' ? 'annual' : 'monthly')
     : 'one_time';
   const qty = String(quantity);
+  const resolvedBlockId = await resolveLineBlockId(quoteId, q.orgId, blockId);
   const sortOrder = await nextLineSortOrder(quoteId);
   const [row] = await db.insert(quoteLines).values({
     quoteId,
     orgId: q.orgId,
-    blockId: blockId ?? null,
+    blockId: resolvedBlockId,
     sourceType: 'catalog',
     catalogItemId,
     // Mirror the catalog item: its name is the line title, its description the blurb.

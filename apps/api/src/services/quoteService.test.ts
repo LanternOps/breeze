@@ -106,6 +106,7 @@ describe('quoteService deposits', () => {
       billingType: 'one_time', billingFrequency: null, commitmentTermMonths: null,
       costBasis: '300.00', sku: 'SKU1', itemType: 'hardware',
     }]);
+    queueResult([{ id: 'blk1' }]); // resolveLineBlockId: existing line_items block
     queueResult([{ max: -1 }]); // nextLineSortOrder
     queueResult([{ id: 'l1', depositEligible: true, itemType: 'hardware' }]); // insert returning
     queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
@@ -125,6 +126,7 @@ describe('quoteService deposits', () => {
       billingType: 'one_time', billingFrequency: null, commitmentTermMonths: null,
       costBasis: null, sku: null, itemType: 'service',
     }]);
+    queueResult([{ id: 'blk1' }]); // resolveLineBlockId: existing line_items block
     queueResult([{ max: -1 }]); // nextLineSortOrder
     queueResult([{ id: 'l2', depositEligible: false, itemType: 'service' }]); // insert returning
     queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
@@ -135,6 +137,43 @@ describe('quoteService deposits', () => {
 
     const valuesMock = (db as unknown as Chain).values;
     expect(valuesMock.mock.calls.at(-1)![0]).toMatchObject({ depositEligible: false, itemType: 'service' });
+  });
+
+  it('addManualLine without a blockId attaches to the existing pricing section (no orphan)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ id: 'blk1' }]); // resolveLineBlockId: existing line_items block
+    queueResult([{ max: -1 }]); // nextLineSortOrder
+    queueResult([{ id: 'l1', blockId: 'blk1' }]); // insert line returning
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+
+    await svc.addManualLine('q1', { sourceType: 'manual', name: 'Widget', quantity: 2, unitPrice: 100, taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false } as never, actor);
+
+    const valuesMock = (db as unknown as Chain).values;
+    // No new block created; the line lands in the existing section, not as an orphan.
+    expect(valuesMock.mock.calls.every((c) => (c[0] as { blockType?: string }).blockType !== 'line_items')).toBe(true);
+    expect((valuesMock.mock.calls.at(-1)![0] as { blockId?: string }).blockId).toBe('blk1');
+  });
+
+  it('addManualLine without a blockId creates a default pricing section when none exists', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([]); // resolveLineBlockId: no existing line_items block
+    queueResult([{ max: -1 }]); // nextBlockSortOrder
+    queueResult([{ id: 'newblk' }]); // block insert returning
+    queueResult([{ max: -1 }]); // nextLineSortOrder
+    queueResult([{ id: 'l1', blockId: 'newblk' }]); // insert line returning
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+
+    await svc.addManualLine('q1', { sourceType: 'manual', name: 'Widget', quantity: 1, unitPrice: 50, taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false } as never, actor);
+
+    const valuesMock = (db as unknown as Chain).values;
+    // A default line_items block was created…
+    expect(valuesMock.mock.calls.some((c) => (c[0] as { blockType?: string }).blockType === 'line_items')).toBe(true);
+    // …and the line attached to it (never orphaned with a null blockId).
+    expect((valuesMock.mock.calls.at(-1)![0] as { blockId?: string }).blockId).toBe('newblk');
   });
 
   it('getQuote returns depositDueTotal and categoryBreakdown', async () => {
