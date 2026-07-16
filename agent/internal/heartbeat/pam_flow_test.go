@@ -20,9 +20,11 @@ func TestRunPamFlow(t *testing.T) {
 	dismissed := ipc.PamDialogResult{Approved: false, DismissedByUser: true}
 
 	cases := []struct {
-		name   string
-		status etwlua.ElevationStatus
-		dialog ipc.PamDialogResult
+		name                 string
+		status               etwlua.ElevationStatus
+		subjectSessionID     uint32
+		wantTargetWinSession string
+		dialog               ipc.PamDialogResult
 		// returnErr, when non-nil, is returned by the pamRequestDialog seam to
 		// simulate a broker round-trip failure. RunPamFlow must coerce that to
 		// deny+dismiss regardless of the (ignored) dialog result.
@@ -54,27 +56,33 @@ func TestRunPamFlow(t *testing.T) {
 		dismissErr error
 	}{
 		{
-			name:          "policy hard-deny dismisses without dialog",
-			status:        "denied",
-			dialog:        approved, // ignored — denied short-circuits before the dialog
-			wantFind:      true,
-			wantDialog:    false,
-			wantTriggered: false,
-			wantDismissed: true,
-			wantActuated:  false,
+			name:                 "policy hard-deny targets requester session and dismisses without dialog",
+			status:               "denied",
+			subjectSessionID:     7,
+			wantTargetWinSession: "7",
+			dialog:               approved, // ignored — denied short-circuits before the dialog
+			wantFind:             true,
+			wantDialog:           false,
+			wantTriggered:        false,
+			wantDismissed:        true,
+			wantActuated:         false,
 		},
 		{
-			name:          "auto-approved + user-approved actuates",
-			status:        "auto_approved",
-			dialog:        approved,
-			wantFind:      true,
-			wantDialog:    true,
-			wantTriggered: true,
-			wantDismissed: false,
-			wantActuated:  true,
+			name:                 "auto-approved targets requester session as unsigned decimal and actuates",
+			status:               "auto_approved",
+			subjectSessionID:     ^uint32(0),
+			wantTargetWinSession: "4294967295",
+			dialog:               approved,
+			wantFind:             true,
+			wantDialog:           true,
+			wantTriggered:        true,
+			wantDismissed:        false,
+			wantActuated:         true,
 		},
 		{
-			name:          "auto-approved + user-dismissed denies",
+			// Zero is the compatibility path for old/fake/non-Windows events: the
+			// empty target retains the broker's physical-console selection.
+			name:          "zero requester session retains console fallback and user dismissal denies",
 			status:        "auto_approved",
 			dialog:        dismissed,
 			wantFind:      true,
@@ -84,14 +92,16 @@ func TestRunPamFlow(t *testing.T) {
 			wantActuated:  false,
 		},
 		{
-			name:          "pending + user-approved awaits remote",
-			status:        "pending",
-			dialog:        approved,
-			wantFind:      true,
-			wantDialog:    true,
-			wantTriggered: false,
-			wantDismissed: false,
-			wantActuated:  false,
+			name:                 "pending targets requester session and user approval awaits remote",
+			status:               "pending",
+			subjectSessionID:     42,
+			wantTargetWinSession: "42",
+			dialog:               approved,
+			wantFind:             true,
+			wantDialog:           true,
+			wantTriggered:        false,
+			wantDismissed:        false,
+			wantActuated:         false,
 		},
 		{
 			name:          "pending + user-dismissed denies",
@@ -104,15 +114,17 @@ func TestRunPamFlow(t *testing.T) {
 			wantActuated:  false,
 		},
 		{
-			name:          "auto-approved but no capable session shows nothing",
-			status:        "auto_approved",
-			dialog:        approved,
-			noSession:     true,
-			wantFind:      true,
-			wantDialog:    false, // early return precedes the dialog round-trip
-			wantTriggered: false,
-			wantDismissed: false,
-			wantActuated:  false,
+			name:                 "exact requester session without capable helper performs no PAM action",
+			status:               "auto_approved",
+			subjectSessionID:     44,
+			wantTargetWinSession: "44",
+			dialog:               approved,
+			noSession:            true,
+			wantFind:             true,
+			wantDialog:           false, // early return precedes the dialog round-trip
+			wantTriggered:        false,
+			wantDismissed:        false,
+			wantActuated:         false,
 		},
 		{
 			// Production wiring: sessionBroker is nil (only built when
@@ -258,6 +270,7 @@ func TestRunPamFlow(t *testing.T) {
 			swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
 
 			var findCalled, dialogCalled bool
+			var gotTargetWinSession string
 			var gotDialog ipc.PamRequestDialog
 			var gotDialogTimeout time.Duration
 			var gotDialogSession, gotDismissSession *sessionbroker.Session
@@ -271,11 +284,9 @@ func TestRunPamFlow(t *testing.T) {
 			if !tc.noBroker {
 				h.pamFindSession = func(capability, targetWinSession string) *sessionbroker.Session {
 					findCalled = true
+					gotTargetWinSession = targetWinSession
 					if capability != ipc.ScopePam {
 						t.Fatalf("FindCapableSession capability = %q, want %q", capability, ipc.ScopePam)
-					}
-					if targetWinSession != "" {
-						t.Fatalf("FindCapableSession target = %q, want console selection", targetWinSession)
 					}
 					if tc.noSession {
 						return nil
@@ -305,6 +316,7 @@ func TestRunPamFlow(t *testing.T) {
 			// Signer↔Hash) in buildPamRequestDialog fails the mapping assertion.
 			ev := etwlua.Event{
 				SubjectUsername:        "CORP\\subjectuser",
+				SubjectSessionID:       tc.subjectSessionID,
 				TargetExecutablePath:   `C:\path\to\target.exe`,
 				TargetExecutableHash:   "hash-deadbeef",
 				TargetExecutableSigner: "signer-Acme Corp",
@@ -325,6 +337,9 @@ func TestRunPamFlow(t *testing.T) {
 			}
 			if findCalled != tc.wantFind {
 				t.Errorf("findCalled = %v, want %v", findCalled, tc.wantFind)
+			}
+			if findCalled && gotTargetWinSession != tc.wantTargetWinSession {
+				t.Errorf("FindCapableSession target = %q, want %q", gotTargetWinSession, tc.wantTargetWinSession)
 			}
 
 			// The dialog round-trip must only be reached when expected: denied skips

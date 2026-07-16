@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/etwlua"
@@ -48,11 +49,19 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 
 	switch outcome.Status {
 	case etwlua.ElevationDenied, etwlua.ElevationAutoApproved, etwlua.ElevationPending:
-		// All supported statuses need the console-bound SYSTEM+PAM helper. Hard
-		// deny skips the dialog only after resolving that target session.
+		// All supported statuses need the SYSTEM+PAM helper in the requester's
+		// Windows session when known. Hard deny skips the dialog only after
+		// resolving that target session.
 	default:
 		log.Debug("pam: no local flow for status", "status", string(outcome.Status), "elevationRequestId", outcome.RequestID)
 		return
+	}
+
+	targetWinSession := ""
+	sessionTarget := "physical_console_fallback"
+	if ev.SubjectSessionID != 0 {
+		targetWinSession = strconv.FormatUint(uint64(ev.SubjectSessionID), 10)
+		sessionTarget = "requester_session"
 	}
 
 	// Defensive: the PamRunner contract (see etwlua.PamRunner) says the caller
@@ -60,7 +69,8 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	// slip can't panic the ETW hot path — every supported flow needs a helper.
 	if h.pamFindSession == nil && h.sessionBroker == nil {
 		log.Warn("pam: no session broker available; skipping elevation flow",
-			"elevationRequestId", outcome.RequestID)
+			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
+			"targetWinSession", targetWinSession)
 		return
 	}
 
@@ -68,10 +78,11 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	if find == nil {
 		find = h.sessionBroker.FindCapableSession
 	}
-	session := find(ipc.ScopePam, "")
+	session := find(ipc.ScopePam, targetWinSession)
 	if session == nil {
 		log.Warn("pam: no capable SYSTEM helper session; cannot complete elevation flow, consent.exe will time out",
-			"elevationRequestId", outcome.RequestID)
+			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
+			"targetWinSession", targetWinSession)
 		return
 	}
 	if outcome.Status == etwlua.ElevationDenied {
