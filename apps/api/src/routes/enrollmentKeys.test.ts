@@ -195,7 +195,6 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
     vi.clearAllMocks();
     vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     process.env.PUBLIC_API_URL = "https://api.example.com";
-    delete process.env.MACOS_INSTALLER_FILENAME_TOKEN_COMPAT;
     app = new Hono();
     app.route("/enrollment-keys", enrollmentKeyRoutes);
   });
@@ -1406,17 +1405,21 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("application/zip");
+    // Download name stays stable and token-free (Finder names the extracted
+    // folder after it; the token must not leak into proxy/access logs).
     const cd = res.headers.get("Content-Disposition") ?? "";
     expect(cd).toBe('attachment; filename="breeze-agent-macos-installer.zip"');
     expect(cd).not.toContain("ABC1234567");
     expect(res.headers.get("Cache-Control")).toBe("no-store");
 
-    // renameAppInZip was called with correct args
+    // The token must ride in BOTH the bundle filename (survives macOS App
+    // Translocation, which strands sibling files) AND the sibling JSON (clean
+    // read for the non-translocated case). See #2544.
     expect(vi.mocked(renameAppInZip)).toHaveBeenCalledWith(
       Buffer.from("fixture-app-zip"),
       expect.objectContaining({
         oldAppName: "Breeze Installer.app",
-        newAppName: "Breeze Installer.app",
+        newAppName: "Breeze Installer [ABC1234567@api.example.com].app",
         extraFiles: [
           {
             path: "Breeze Installer.bootstrap.json",
@@ -1428,44 +1431,6 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
           },
         ],
       }),
-    );
-  });
-
-  it("uses the legacy tokenized app filename only behind the compatibility flag", async () => {
-    process.env.MACOS_INSTALLER_FILENAME_TOKEN_COMPAT = "true";
-    const parentRow = makeKeyRow();
-
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([parentRow]),
-        }),
-      }),
-    } as any);
-    vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(
-      Buffer.from("fixture-app-zip"),
-    );
-    vi.mocked(renameAppInZip).mockResolvedValueOnce(
-      Buffer.from("renamed-app-zip"),
-    );
-
-    const res = await app.request(
-      `/enrollment-keys/${KEY_ID}/installer/macos?count=1`,
-      { headers: { authorization: "Bearer jwt" } },
-    );
-
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Disposition") ?? "").toContain(
-      "Breeze Installer [ABC1234567@api.example.com].app.zip",
-    );
-    expect(vi.mocked(renameAppInZip)).toHaveBeenCalledWith(
-      Buffer.from("fixture-app-zip"),
-      expect.objectContaining({
-        newAppName: "Breeze Installer [ABC1234567@api.example.com].app",
-      }),
-    );
-    expect(vi.mocked(renameAppInZip).mock.calls[0]?.[1]).not.toHaveProperty(
-      "extraFiles",
     );
   });
 
