@@ -203,6 +203,58 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 			continue
 		}
 
+		// Verify the restored bytes against the manifest BEFORE declaring the
+		// file restored. This is the path that writes real user data, so a
+		// corrupt/truncated object must not be silently reported "restored"
+		// (VerifyIntegrity/TestRestore run this same fail-closed check, but only
+		// against throwaway dirs — the real restore needs it too). Size is
+		// always checked; the SHA-256 when the manifest carries one.
+		if info, statErr := os.Stat(targetPath); statErr != nil || info == nil {
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			slog.Warn("failed to stat restored file", "target", targetPath, "error", fmt.Sprint(statErr))
+			continue
+		} else if info.Size() != file.Size {
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("restored %s failed size check: manifest %d, restored %d", file.SourcePath, file.Size, info.Size()))
+			slog.Warn("restored file failed size check",
+				"target", targetPath, "manifestSize", file.Size, "restoredSize", info.Size())
+			continue
+		}
+		if file.Checksum != "" && !checksumMatches(targetPath, file.Checksum) {
+			result.FilesFailed++
+			result.FailedFiles = append(result.FailedFiles, file.SourcePath)
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("restored %s failed checksum check (manifest %s)", file.SourcePath, file.Checksum))
+			slog.Warn("restored file failed checksum check", "target", targetPath)
+			continue
+		}
+
+		// Reapply the original Unix permissions + modification time so a restore
+		// is faithful (executables keep +x, 0600 secrets stay private, mtimes
+		// are preserved). Both are best-effort: a chmod/chtimes failure must not
+		// fail an otherwise-good restore, but IS surfaced in result.Warnings so
+		// the caller knows fidelity was partial. Pre-checksum manifests carry
+		// Mode==0 (leave the OS default) / a zero ModTime (leave as written).
+		if file.Mode != 0 {
+			if err := os.Chmod(targetPath, os.FileMode(file.Mode).Perm()); err != nil {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("could not reapply mode %o to %s: %v", os.FileMode(file.Mode).Perm(), file.SourcePath, err))
+				slog.Warn("failed to reapply file mode on restore",
+					"target", targetPath, "mode", file.Mode, "error", err.Error())
+			}
+		}
+		if !file.ModTime.IsZero() {
+			if err := os.Chtimes(targetPath, file.ModTime, file.ModTime); err != nil {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("could not reapply mtime to %s: %v", file.SourcePath, err))
+				slog.Warn("failed to reapply mtime on restore",
+					"target", targetPath, "error", err.Error())
+			}
+		}
+
 		result.FilesRestored++
 		result.BytesRestored += file.Size
 		resumeState.CompletedFiles[file.BackupPath] = true

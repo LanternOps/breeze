@@ -326,6 +326,7 @@ type backupFile struct {
 	snapshotPath string
 	size         int64
 	modTime      time.Time
+	mode         os.FileMode
 }
 
 func (m *BackupManager) collectBackupFiles(cutoff time.Time) ([]backupFile, error) {
@@ -372,6 +373,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				snapshotPath: snapshotPath,
 				size:         info.Size(),
 				modTime:      info.ModTime(),
+				mode:         info.Mode(),
 			})
 			continue
 		}
@@ -425,6 +427,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				snapshotPath: snapshotPath,
 				size:         info.Size(),
 				modTime:      info.ModTime(),
+				mode:         info.Mode(),
 			})
 			return nil
 		})
