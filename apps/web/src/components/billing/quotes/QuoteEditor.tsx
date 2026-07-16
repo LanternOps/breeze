@@ -27,6 +27,7 @@ import type { QuoteBlockInput } from '@breeze/shared';
 import { computeQuoteTotals, computeQuoteProfit, computeLineTotal, markupPct, priceFromMarkup, toCents, fromCents, toQuoteDepositConfig, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
 import { listCatalog, createCatalogItem, catalogItemImagePath, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
+import RichTextEditor from '../../common/RichTextEditor';
 import CatalogItemPicker from '../../catalog/CatalogItemPicker';
 import CatalogEnrichButton from '../../catalog/CatalogEnrichButton';
 import PolishButton from '../../catalog/PolishButton';
@@ -1303,14 +1304,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
               />
             )}
             {addType === 'rich_text' && (
-              <textarea
-                value={richText}
-                onChange={(e) => setRichText(e.target.value)}
-                placeholder={t('quotes.editor.addSection.richTextPlaceholder')}
-                rows={4}
-                data-testid="quote-block-rich-text"
-                className="mb-3 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              />
+              <div className="mb-3" data-testid="quote-block-rich-text">
+                <RichTextEditor
+                  value={richText}
+                  onChange={setRichText}
+                  ariaLabel={t('quotes.editor.addSection.richTextPlaceholder')}
+                  testId="quote-block-rich-text-editor"
+                />
+              </div>
             )}
             {addType === 'image' && (
               <div className="mb-3 space-y-2">
@@ -1853,18 +1854,32 @@ function BlockCard({
         )}
         {block.blockType === 'rich_text' && (
           canWrite ? (
-            <textarea
-              value={richDraft}
-              aria-label={t('quotes.editor.block.richTextContentAria')}
-              onChange={(e) => setRichDraft(e.target.value)}
+            // The editor commits on blur (same as the old textarea). React's
+            // onBlur fires on focusout of the contenteditable; toolbar buttons
+            // preventDefault their mousedown so clicking them never blurs the
+            // editor and never triggers a spurious commit.
+            <div
               onBlur={() => void commitRich()}
-              disabled={blockBusy}
-              rows={4}
               data-testid={`quote-block-rich-input-${block.id}`}
-              className={`w-full resize-y rounded-md border bg-background px-2 py-1 text-sm transition-shadow disabled:opacity-60 ${fieldRing(richDraft !== html, blockSaved)}`}
-            />
+              className={`rounded-md transition-shadow ${fieldRing(richDraft !== html, blockSaved)}`}
+            >
+              <RichTextEditor
+                value={richDraft}
+                onChange={setRichDraft}
+                ariaLabel={t('quotes.editor.block.richTextContentAria')}
+                testId={`quote-block-rich-editor-${block.id}`}
+              />
+            </div>
           ) : (
-            <p className="whitespace-pre-wrap text-sm text-foreground" data-testid={`quote-block-rich-content-${block.id}`}>{html}</p>
+            // Read-only (no write permission): the API sanitizes every rich_text
+            // block to the fixed p/br/strong/em/u/h3/h4/ul/ol/li/a allowlist on
+            // read serialization (richTextSanitize.ts), so rendering it as real
+            // HTML here is safe — same pattern as QuoteDocument.
+            <div
+              className="quote-rich-text prose prose-sm max-w-none text-sm text-foreground dark:prose-invert"
+              data-testid={`quote-block-rich-content-${block.id}`}
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
           )
         )}
         {block.blockType === 'image' && (

@@ -18,7 +18,8 @@ const namespaceDuplicateBaselines = {
     'auth.json': 14,
     'backup.json': 51,
     'billing.json': 38,
-    'common.json': 89,
+    // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
+    'common.json': 90,
     'devices.json': 159,
     'discovery.json': 17,
     'integrations.json': 23,
@@ -87,7 +88,8 @@ const namespaceDuplicateBaselines = {
     'auth.json': 15,
     'backup.json': 62,
     'billing.json': 26,
-    'common.json': 90,
+    // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
+    'common.json': 91,
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,

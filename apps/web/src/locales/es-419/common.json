@@ -67,6 +67,18 @@
     "dashboard": "Panel",
     "profileSettings": "Configuración de perfil"
   },
+  "richTextEditor": {
+    "toolbarAria": "Formato",
+    "bold": "Negrita",
+    "italic": "Cursiva",
+    "underline": "Subrayado",
+    "heading3": "Título",
+    "heading4": "Subtítulo",
+    "bulletList": "Lista con viñetas",
+    "orderedList": "Lista numerada",
+    "link": "Enlace",
+    "linkPrompt": "Introduce una URL (http:// o https://)"
+  },
   "actions": {
     "save": "Guardar",
     "cancel": "Cancelar",

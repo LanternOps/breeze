@@ -67,6 +67,18 @@
     "dashboard": "Tableau de bord",
     "profileSettings": "Paramètres du profil"
   },
+  "richTextEditor": {
+    "toolbarAria": "Mise en forme",
+    "bold": "Gras",
+    "italic": "Italique",
+    "underline": "Souligné",
+    "heading3": "Titre",
+    "heading4": "Sous-titre",
+    "bulletList": "Liste à puces",
+    "orderedList": "Liste numérotée",
+    "link": "Lien",
+    "linkPrompt": "Saisissez une URL (http:// ou https://)"
+  },
   "actions": {
     "save": "Enregistrer",
     "cancel": "Annuler",

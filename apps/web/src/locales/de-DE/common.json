@@ -67,6 +67,18 @@
     "dashboard": "Dashboard",
     "profileSettings": "Profileinstellungen"
   },
+  "richTextEditor": {
+    "toolbarAria": "Formatierung",
+    "bold": "Fett",
+    "italic": "Kursiv",
+    "underline": "Unterstrichen",
+    "heading3": "Überschrift",
+    "heading4": "Zwischenüberschrift",
+    "bulletList": "Aufzählungsliste",
+    "orderedList": "Nummerierte Liste",
+    "link": "Link",
+    "linkPrompt": "Geben Sie eine URL ein (http:// oder https://)"
+  },
   "actions": {
     "save": "Speichern",
     "cancel": "Abbrechen",
