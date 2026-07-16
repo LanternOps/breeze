@@ -6,7 +6,7 @@ import {
   backupVerifications as backupVerificationsTable,
 } from '../../db/schema';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
-import { resolveBackupProviderConfig, type BackupProviderConfig } from '../../services/backupProviderConfig';
+import { resolveBackupProviderConfig, resolveBackupDestinationError, type BackupProviderConfig } from '../../services/backupProviderConfig';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { publishEvent } from '../../services/eventBus';
 import {
@@ -547,7 +547,16 @@ export async function runBackupVerification(input: RunBackupVerificationInput): 
 
   const providerConfig = await resolveVerificationProviderConfig(input.orgId, backupJob);
   if (!providerConfig) {
-    throw new Error(`Backup destination configuration not found for backup job ${backupJob.id}`);
+    // A backup job with a null configId predates destination tracking: we can't
+    // reconstruct where its snapshot was written, and reading the device's
+    // current config could point at the wrong destination. Fail with a clear,
+    // legacy-specific message instead of a misleading "not found".
+    const { message } = resolveBackupDestinationError(backupJob.configId);
+    throw new Error(
+      backupJob.configId == null
+        ? message
+        : `Backup destination configuration not found for backup job ${backupJob.id}`
+    );
   }
 
   const commandType = input.verificationType === 'integrity' ? 'backup_verify' : 'backup_test_restore';

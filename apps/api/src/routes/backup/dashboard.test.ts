@@ -220,6 +220,48 @@ describe('backup dashboard routes', () => {
     });
     expect(body.data.attentionItems[0].title).toContain('2 consecutive backup failures');
     expect(body.data.attentionItems[0].description).toContain('Disk quota exceeded');
+    // Happy path: the list computed successfully, so no degraded signal.
+    expect(body.data.attentionError).toBe(false);
+  });
+
+  it('surfaces a degraded attentionError flag when the attention-items query fails (not a silent all-clear)', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+
+    // A chain whose terminal orderBy() rejects simulates a transient DB error
+    // inside resolveAttentionItems. Intermediate builders still resolve so only
+    // the awaited select throws.
+    const failingRankedRows = (() => {
+      const chain: Record<string, any> = {};
+      for (const method of ['from', 'where', 'leftJoin', 'limit', 'as']) {
+        chain[method] = vi.fn(() => Object.assign(Promise.resolve([]), chain));
+      }
+      chain.orderBy = vi.fn(() => Promise.reject(new Error('connection terminated unexpectedly')));
+      chain.then = (f: any, r: any) => Promise.resolve([]).then(f, r);
+      chain.catch = (r: any) => Promise.resolve([]).catch(r);
+      return chain;
+    })();
+
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 1, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(failingRankedRows); // awaited ranked-jobs select rejects
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await app.request('/backup/dashboard');
+
+    // The dashboard must NOT 500 for one failed sub-query...
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // ...but it must NOT imply an all-clear either. Empty items + degraded flag.
+    expect(body.data.attentionItems).toEqual([]);
+    expect(body.data.attentionError).toBe(true);
+    errSpy.mockRestore();
   });
 
   it('does not flag a device whose latest backup succeeded even after a prior failure', async () => {

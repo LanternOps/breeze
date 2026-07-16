@@ -267,6 +267,49 @@ describe('backup verification service', () => {
     }
   });
 
+  it('reports a legacy-snapshot message (not a misleading "not found") when the backup job configId is null', async () => {
+    const orgId = `org-legacy-${Date.now()}`;
+    const jobId = `job-legacy-${Date.now()}`;
+    const deviceId = `dev-legacy-${Date.now()}`;
+
+    backupJobs.push({
+      id: jobId,
+      type: 'manual',
+      deviceId,
+      // Legacy job: destination was never recorded. The in-memory BackupJob
+      // type declares configId as string, but the schema (and real legacy rows)
+      // allow null — cast to reproduce that reality.
+      configId: null as unknown as string,
+      status: 'completed',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    jobOrgById.set(jobId, orgId);
+
+    try {
+      await expect(runBackupVerification({
+        orgId,
+        deviceId,
+        backupJobId: jobId,
+        verificationType: 'integrity',
+        source: 'test'
+      })).rejects.toThrow(/predates backup destination tracking/);
+      // Must NOT surface the generic misconfiguration message.
+      await expect(runBackupVerification({
+        orgId,
+        deviceId,
+        backupJobId: jobId,
+        verificationType: 'integrity',
+        source: 'test'
+      })).rejects.not.toThrow(/not found for backup job/);
+      expect(queueCommandForExecution).not.toHaveBeenCalled();
+    } finally {
+      const idx = backupJobs.findIndex((j) => j.id === jobId);
+      if (idx >= 0) backupJobs.splice(idx, 1);
+      jobOrgById.delete(jobId);
+    }
+  });
+
   it('fails verification startup instead of fabricating a simulated result when dispatch is unavailable', async () => {
     const priorCount = backupVerifications.length;
     vi.mocked(queueCommandForExecution).mockResolvedValueOnce({

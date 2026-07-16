@@ -8,7 +8,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { CommandTypes, queueBackupStopCommand, queueCommandForExecution } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { resolveBackupProviderConfig } from '../../services/backupProviderConfig';
+import { resolveBackupProviderConfig, resolveBackupDestinationError } from '../../services/backupProviderConfig';
 import { resolveScopedOrgId } from './helpers';
 import { restoreListSchema, restoreSchema } from './schemas';
 
@@ -238,8 +238,17 @@ restoreRoutes.post(
       ? await resolveBackupProviderConfig(snapshot.configId, orgId)
       : null;
     if (!backupProviderConfig) {
-      recordBackupDispatchFailure('manual_restore', 'missing_provider_config');
-      return c.json({ error: 'Backup destination configuration not found for this snapshot' }, 422);
+      // Distinguish a legacy snapshot (configId never recorded → cannot be
+      // auto-restored) from a genuine misconfiguration, so operators aren't
+      // misled into hunting a "missing config" that never existed. We do NOT
+      // fall back to the device's current config — the snapshot's objects may
+      // live at a different destination than the device backs up to today.
+      const { reason, message } = resolveBackupDestinationError(snapshot.configId);
+      recordBackupDispatchFailure(
+        'manual_restore',
+        reason === 'legacy_snapshot' ? 'snapshot_predates_config_tracking' : 'missing_provider_config'
+      );
+      return c.json({ error: message, reason }, 422);
     }
 
     const [row] = await runInOrg(orgId, async () =>

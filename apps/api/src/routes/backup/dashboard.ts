@@ -34,6 +34,13 @@ type AttentionItem = {
   severity: 'warning' | 'critical';
 };
 
+// Result of an attention-items computation. `error: true` means we could NOT
+// compute the list (transient DB failure), which is meaningfully different from
+// an empty list (genuinely no failing devices). Surfacing this lets the UI show
+// a degraded/error state instead of implying an all-clear — F11's whole purpose
+// is surfacing failures, so a swallowed error must never render as "healthy".
+type AttentionItemsResult = { items: AttentionItem[]; error: boolean };
+
 // A device needs attention when its most-recently created backup job
 // failed. Severity escalates to 'critical' once the two most recent jobs
 // both failed (a single blip stays 'warning'). This is intentionally
@@ -44,8 +51,8 @@ async function resolveAttentionItems(
   jobDeviceScope: ReturnType<typeof inArray> | undefined,
   allowedDeviceIds: string[] | null,
   noSiteAllowedDevices: boolean
-): Promise<AttentionItem[]> {
-  if (noSiteAllowedDevices) return [];
+): Promise<AttentionItemsResult> {
+  if (noSiteAllowedDevices) return { items: [], error: false };
 
   try {
     const rankedJobs = db
@@ -118,10 +125,15 @@ async function resolveAttentionItems(
     }
 
     items.sort((a, b) => new Date(b.lastFailureAt).getTime() - new Date(a.lastFailureAt).getTime());
-    return items.slice(0, ATTENTION_MAX_ITEMS).map(({ lastFailureAt: _lastFailureAt, ...item }) => item);
+    return {
+      items: items.slice(0, ATTENTION_MAX_ITEMS).map(({ lastFailureAt: _lastFailureAt, ...item }) => item),
+      error: false,
+    };
   } catch (err) {
     console.error('[BackupDashboard] Failed to resolve attention items:', err instanceof Error ? err.message : err);
-    return [];
+    // Do NOT 500 the whole dashboard for one failed sub-query, but signal the
+    // degraded state so the UI does not render an all-clear it can't vouch for.
+    return { items: [], error: true };
   }
 }
 
@@ -242,7 +254,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     : undefined;
 
   // Run aggregation queries in parallel
-  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevicesRaw, recentJobsRaw, attentionItems] =
+  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevicesRaw, recentJobsRaw, attention] =
     await Promise.all([
       db
         .select({ count: sql<number>`count(*)::int` })
@@ -349,7 +361,11 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         protectedDevices: protectedDevices.size,
       },
       latestJobs,
-      attentionItems,
+      attentionItems: attention.items,
+      // Additive, backward-compatible degraded signal: true when the
+      // attention-items sub-query failed and the list could not be computed.
+      // The UI must treat this as "unknown", not "all clear".
+      attentionError: attention.error,
     },
   });
 });
