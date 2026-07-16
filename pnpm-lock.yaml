@@ -54,7 +54,6 @@ overrides:
   '@astrojs/node@<10.0.5': '>=10.0.5'
   shell-quote@<1.8.4: '>=1.8.4'
   '@grpc/grpc-js@<1.14.4': '>=1.14.4'
-  websocket-driver@<0.7.5: '>=0.7.5'
 
 importers:
 
