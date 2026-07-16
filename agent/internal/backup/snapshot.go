@@ -90,6 +90,33 @@ type contextUploader interface {
 	UploadContext(ctx context.Context, localPath, remotePath string) error
 }
 
+// uploadMinThroughputBps is the deadline floor: assume >=64 KiB/s or declare
+// the link stalled.
+const uploadMinThroughputBps = 64 * 1024
+
+var uploadTimeoutFloor = 5 * time.Minute
+
+// setUploadTimeoutFloorForTest overrides uploadTimeoutFloor so tests can
+// exercise the per-file deadline path without waiting 5 minutes. Call the
+// returned restore func (typically via defer) to put the real floor back.
+func setUploadTimeoutFloorForTest(d time.Duration) (restore func()) {
+	old := uploadTimeoutFloor
+	uploadTimeoutFloor = d
+	return func() { uploadTimeoutFloor = old }
+}
+
+// uploadDeadline returns the per-file upload deadline for a file of the given
+// size, scaled to size at uploadMinThroughputBps with a floor of
+// uploadTimeoutFloor. A stalled per-file upload is treated as a per-file
+// failure (skip and continue), not a job abort — see CreateSnapshotContext.
+func uploadDeadline(size int64) time.Duration {
+	d := time.Duration(size/uploadMinThroughputBps) * time.Second
+	if d < uploadTimeoutFloor {
+		return uploadTimeoutFloor
+	}
+	return d
+}
+
 // CreateSnapshot creates a new snapshot and uploads files via the provider.
 func CreateSnapshot(provider providers.BackupProvider, files []backupFile) (*Snapshot, error) {
 	return CreateSnapshotContext(context.Background(), provider, files)
@@ -123,12 +150,19 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 		backupPath := path.Join(prefix, snapshotFilesDir, file.snapshotPath)
 		backupPath = ensureGzipExtension(backupPath)
 
-		if err := uploadSnapshotFile(ctx, provider, file.sourcePath, backupPath); err != nil {
-			if errors.Is(err, errBackupStopped) {
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(file.size))
+		uploadErr := uploadSnapshotFile(attemptCtx, provider, file.sourcePath, backupPath)
+		cancelAttempt()
+		if errors.Is(uploadErr, errBackupStopped) && ctx.Err() == nil {
+			// The per-file deadline fired, not a job cancel: skip this file, keep going.
+			uploadErr = fmt.Errorf("upload stalled: no completion within %s", uploadDeadline(file.size))
+		}
+		if uploadErr != nil {
+			if errors.Is(uploadErr, errBackupStopped) {
 				cleanupSnapshotPrefix(provider, snapshot.ID)
 				return nil, errBackupStopped
 			}
-			err = fmt.Errorf("failed to upload %s: %w", file.sourcePath, err)
+			err := fmt.Errorf("failed to upload %s: %w", file.sourcePath, uploadErr)
 			errs = append(errs, err)
 			log.Printf("[backup] upload failed: %s: %v", file.sourcePath, err)
 			continue
@@ -179,12 +213,23 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 	defer os.Remove(manifestPath)
 
 	manifestKey := path.Join(prefix, snapshotManifestKey)
-	if err := uploadSnapshotFile(ctx, provider, manifestPath, manifestKey); err != nil {
-		if errors.Is(err, errBackupStopped) {
+	manifestInfo, statErr := os.Stat(manifestPath)
+	var manifestSize int64
+	if statErr == nil {
+		manifestSize = manifestInfo.Size()
+	}
+	attemptCtx, cancelAttempt := context.WithTimeout(ctx, uploadDeadline(manifestSize))
+	manifestUploadErr := uploadSnapshotFile(attemptCtx, provider, manifestPath, manifestKey)
+	cancelAttempt()
+	if manifestUploadErr != nil {
+		if errors.Is(manifestUploadErr, errBackupStopped) {
+			// A manifest-upload deadline expiry is fatal for the snapshot too
+			// (unlike a per-file data upload): without the manifest the
+			// snapshot isn't restorable, so there's nothing to keep going for.
 			cleanupSnapshotPrefix(provider, snapshot.ID)
 			return nil, errBackupStopped
 		}
-		return snapshot, fmt.Errorf("failed to upload snapshot manifest: %w", err)
+		return snapshot, fmt.Errorf("failed to upload snapshot manifest: %w", manifestUploadErr)
 	}
 
 	return snapshot, nil

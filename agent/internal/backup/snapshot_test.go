@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -275,6 +276,90 @@ func TestCreateSnapshot_PartialUploadFailure(t *testing.T) {
 	}
 	if err != nil {
 		t.Logf("partial error (expected): %v", err)
+	}
+}
+
+// stallOnceProvider blocks its first UploadContext call until the passed
+// context is done (returning ctx.Err()), then succeeds immediately on every
+// subsequent call. It models a single stalled TCP connection on one file in
+// an otherwise-healthy upload run.
+type stallOnceProvider struct {
+	mu        sync.Mutex
+	callCount int
+}
+
+func (p *stallOnceProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+
+func (p *stallOnceProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	p.mu.Lock()
+	first := p.callCount == 0
+	p.callCount++
+	p.mu.Unlock()
+
+	if first {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+
+func (p *stallOnceProvider) Download(remotePath, localPath string) error { return nil }
+func (p *stallOnceProvider) List(prefix string) ([]string, error)        { return nil, nil }
+func (p *stallOnceProvider) Delete(remotePath string) error              { return nil }
+
+// writeTempFile writes content to a fresh temp file and returns its path.
+func writeTempFile(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := pathpkg.Join(dir, "file")
+	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	return p
+}
+
+func TestUploadDeadline(t *testing.T) {
+	restore := setUploadTimeoutFloorForTest(5 * time.Minute)
+	defer restore()
+
+	tests := []struct {
+		name string
+		size int64
+		want time.Duration
+	}{
+		{"zero size uses floor", 0, 5 * time.Minute},
+		{"small file uses floor", 1024, 5 * time.Minute},
+		{"just under floor-equivalent bytes uses floor", uploadMinThroughputBps * 299, 5 * time.Minute},
+		{"large file scales past floor", uploadMinThroughputBps * 600, 600 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := uploadDeadline(tt.size); got != tt.want {
+				t.Errorf("uploadDeadline(%d) = %v, want %v", tt.size, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPerFileUploadTimeoutDoesNotAbortJob(t *testing.T) {
+	// stallOnceProvider: first UploadContext call blocks until ctx.Done() then
+	// returns ctx.Err(); subsequent calls succeed immediately.
+	p := &stallOnceProvider{}
+	files := []backupFile{
+		{sourcePath: writeTempFile(t, "a"), snapshotPath: "a", size: 1},
+		{sourcePath: writeTempFile(t, "b"), snapshotPath: "b", size: 1},
+	}
+	restore := setUploadTimeoutFloorForTest(50 * time.Millisecond) // test seam, see Step 3
+	defer restore()
+
+	snap, err := CreateSnapshotContext(context.Background(), p, files)
+	if err != nil {
+		t.Fatalf("job aborted, want per-file skip: %v", err)
+	}
+	if len(snap.Files) != 1 {
+		t.Fatalf("want 1 uploaded file (one timed out), got %d", len(snap.Files))
 	}
 }
 
