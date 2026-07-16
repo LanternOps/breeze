@@ -306,4 +306,128 @@ describe('DeviceBackupTab', () => {
     expect(await screen.findByText(/Provider immutability was requested by policy/i)).toBeTruthy();
     expect(screen.getByText(/Bucket object lock no longer enabled/i)).toBeTruthy();
   });
+
+  it('formats status times in the timezone passed via prop', async () => {
+    // Default mock has no status.timezone, so the prop zone is used.
+    render(<DeviceBackupTab deviceId="device-1" timezone="America/New_York" />);
+
+    await screen.findByText('Job History');
+    // 2026-03-30T01:00:00Z renders in US Eastern (EDT during DST).
+    const easternLabels = await screen.findAllByText(/EDT/);
+    expect(easternLabels.length).toBeGreaterThan(0);
+  });
+
+  it('prefers status.timezone over the prop when both are present', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({
+          data: {
+            protected: true,
+            lastSuccessAt: '2026-03-30T01:00:00Z',
+            nextScheduledAt: '2026-04-01T01:00:00Z',
+            timezone: 'America/Los_Angeles',
+          },
+        });
+      }
+
+      if (url === '/backup/jobs?deviceId=device-1') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" timezone="America/New_York" />);
+
+    await screen.findByText('Job History');
+    // status.timezone (Pacific) wins over the Eastern prop.
+    const pacificLabels = await screen.findAllByText(/PDT/);
+    expect(pacificLabels.length).toBeGreaterThan(0);
+    expect(screen.queryByText(/EDT/)).toBeNull();
+  });
+
+  it('renders without crashing when the timezone is an invalid IANA id', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({
+          data: {
+            protected: true,
+            lastSuccessAt: '2026-03-30T01:00:00Z',
+            nextScheduledAt: '2026-04-01T01:00:00Z',
+            // Windows OS zone id — not a valid IANA zone, would throw RangeError.
+            timezone: 'Pacific Standard Time',
+          },
+        });
+      }
+
+      if (url === '/backup/jobs?deviceId=device-1') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" timezone="America/New_York" />);
+
+    // Tab still renders (falls back to browser-local instead of blanking).
+    await screen.findByText('Job History');
+    expect(screen.getByText(/Last success:/)).toBeTruthy();
+    expect(screen.getByText(/Next:/)).toBeTruthy();
+  });
+
+  it('disables the run-backup button when the device is offline', async () => {
+    // Default mock: protected policy assigned, but the device is offline.
+    render(<DeviceBackupTab deviceId="device-1" deviceStatus="offline" />);
+
+    const runButton = await screen.findByRole('button', { name: /Run backup now/i });
+    expect(runButton).toBeDisabled();
+  });
+
+  it('shows the "already running" 409 message in the neutral (non-success) banner', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+
+      if (url === '/backup/jobs/run/device-1' && method === 'POST') {
+        return makeJsonResponse({ error: 'already running' }, false, 409);
+      }
+
+      if (url === '/backup/status/device-1') {
+        return makeJsonResponse({ data: { protected: true } });
+      }
+
+      if (url === '/backup/jobs?deviceId=device-1') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      if (url === '/backup/snapshots?deviceId=device-1' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<DeviceBackupTab deviceId="device-1" />);
+
+    const runButton = await screen.findByRole('button', { name: /Run backup now/i });
+    fireEvent.click(runButton);
+
+    const banner = await screen.findByText(/A backup is already running for this device/i);
+    // Not styled as the emerald/success banner.
+    expect(banner.className).not.toMatch(/emerald/);
+  });
 });

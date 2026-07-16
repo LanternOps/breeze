@@ -158,7 +158,7 @@ type DeviceBackupTabProps = {
   timezone?: string;
 };
 
-export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackupTabProps) {
+export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: DeviceBackupTabProps) {
   const { t } = useTranslation('backup');
   const [status, setStatus] = useState<BackupStatus | null>(null);
   const [jobs, setJobs] = useState<BackupJob[]>([]);
@@ -173,6 +173,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [actionMessage, setActionMessage] = useState<string>();
+  const [actionInfo, setActionInfo] = useState<string>();
   const [runningBackup, setRunningBackup] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -221,11 +222,13 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
     setRunningBackup(true);
     setActionError(undefined);
     setActionMessage(undefined);
+    setActionInfo(undefined);
     try {
       const response = await fetchWithAuth(`/backup/jobs/run/${deviceId}`, { method: 'POST' });
 
       if (response.status === 409) {
-        setActionMessage(t('deviceBackupTab.aBackupIsAlreadyRunningForThisDevice'));
+        // Informational, not a success — render in the neutral banner.
+        setActionInfo(t('deviceBackupTab.aBackupIsAlreadyRunningForThisDevice'));
         return;
       }
 
@@ -306,6 +309,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
       setActionLoading(true);
       setActionError(undefined);
       setActionMessage(undefined);
+      setActionInfo(undefined);
 
       const response = await fetchWithAuth(path, {
         method,
@@ -371,6 +375,10 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
   const showVssStatus = status?.lastJob?.vssMetadata != null;
   const hasVssWarnings = latestVssWriters.some((writer) => normalizeVssState(writer.state) !== 'stable');
   const selectedSnapshot = snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? snapshots[0] ?? null;
+  // Prefer the API-reported device zone; fall back to the already-validated
+  // zone passed by the parent (never an invalid IANA id). formatDateTime
+  // tolerates a bad zone regardless, so a Windows OS zone id won't crash the tab.
+  const effectiveZone = status?.timezone ?? timezone;
   const isOffline = deviceStatus != null && deviceStatus !== 'online';
   const runBackupDisabledReason = !status?.protected
     ? t('deviceBackupTab.assignABackupPolicyToProtectThisDevice')
@@ -393,6 +401,11 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
       {actionMessage && (
         <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700">
           {actionMessage}
+        </div>
+      )}
+      {actionInfo && (
+        <div className="rounded-lg border border-border bg-muted p-3 text-sm text-foreground">
+          {actionInfo}
         </div>
       )}
 
@@ -424,13 +437,13 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
             {status?.lastSuccessAt && (
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <CheckCircle2 className="h-3.5 w-3.5 text-success" />
-                <span>{t('deviceBackupTab.lastSuccess')} {formatTime(status.lastSuccessAt, status.timezone)}</span>
+                <span>{t('deviceBackupTab.lastSuccess')} {formatTime(status.lastSuccessAt, effectiveZone)}</span>
               </div>
             )}
             {status?.nextScheduledAt && (
               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                 <Clock className="h-3.5 w-3.5" />
-                <span>{t('deviceBackupTab.next')} {formatTime(status.nextScheduledAt, status.timezone)}</span>
+                <span>{t('deviceBackupTab.next')} {formatTime(status.nextScheduledAt, effectiveZone)}</span>
               </div>
             )}
           </div>
@@ -502,7 +515,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                         </span>
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">
-                        {formatTime(job.startedAt)}
+                        {formatTime(job.startedAt, effectiveZone)}
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">
                         {formatDuration(job.startedAt, job.completedAt)}
@@ -625,9 +638,9 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                     <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       {t('deviceBackupTab.timing')} </div>
                     <div className="mt-2 space-y-1 text-foreground">
-                      <div>{t('deviceBackupTab.created')} {formatTime(selectedSnapshot.createdAt)}</div>
-                      <div>{t('deviceBackupTab.expires')} {formatTime(selectedSnapshot.expiresAt)}</div>
-                      <div>{t('deviceBackupTab.immutableUntil')} {formatTime(selectedSnapshot.immutableUntil)}</div>
+                      <div>{t('deviceBackupTab.created')} {formatTime(selectedSnapshot.createdAt, effectiveZone)}</div>
+                      <div>{t('deviceBackupTab.expires')} {formatTime(selectedSnapshot.expiresAt, effectiveZone)}</div>
+                      <div>{t('deviceBackupTab.immutableUntil')} {formatTime(selectedSnapshot.immutableUntil, effectiveZone)}</div>
                     </div>
                   </div>
                   <div className="rounded-md border bg-background p-3 text-sm">
@@ -796,9 +809,9 @@ export default function DeviceBackupTab({ deviceId, deviceStatus }: DeviceBackup
                   >
                     <td className="py-2 pr-4 text-foreground">{snap.label ?? snap.id}</td>
                     <td className="py-2 pr-4 text-muted-foreground">
-                      {formatTime(snap.createdAt)}
+                      {formatTime(snap.createdAt, effectiveZone)}
                     </td>
-                    <td className="py-2 pr-4 text-muted-foreground">{formatTime(snap.expiresAt)}</td>
+                    <td className="py-2 pr-4 text-muted-foreground">{formatTime(snap.expiresAt, effectiveZone)}</td>
                     <td className="py-2 pr-4 text-muted-foreground">
                       {formatBytes(snap.sizeBytes)}
                     </td>

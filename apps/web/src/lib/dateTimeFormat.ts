@@ -34,6 +34,31 @@ function parseDate(value: DateInput): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/**
+ * Runs an Intl-backed formatter, tolerating an invalid `timeZone`.
+ *
+ * A non-IANA zone (e.g. a Windows OS zone id like "Pacific Standard Time")
+ * makes `toLocale*String` throw `RangeError: Invalid time zone specified`,
+ * which would otherwise blank the whole caller. On failure we retry in the
+ * browser-local zone so the timestamp still renders.
+ */
+function safeLocaleFormat(
+  format: (locale: Intl.LocalesArgument, options: Intl.DateTimeFormatOptions) => string,
+  locale: Intl.LocalesArgument,
+  options: Intl.DateTimeFormatOptions
+): string {
+  try {
+    return format(locale, options);
+  } catch {
+    const { timeZone: _timeZone, timeZoneName: _timeZoneName, ...localZoneOptions } = options;
+    try {
+      return format(locale, localZoneOptions);
+    } catch {
+      return format(locale, {});
+    }
+  }
+}
+
 function fallbackFor(value: DateInput, fallback?: string): string {
   if (fallback !== undefined) return fallback;
   return typeof value === 'string' ? value : '';
@@ -77,19 +102,31 @@ export function formatDateTime(value: DateInput, options: UserDateTimeFormatOpti
   const date = parseDate(value);
   const { fallback, locale, timeFormat, intlOptions } = splitFormatOptions(options);
   if (!date) return fallbackFor(value, fallback);
-  return date.toLocaleString(locale, withUserTimeFormatOptions(intlOptions, timeFormat, 'dateTime'));
+  return safeLocaleFormat(
+    (loc, opts) => date.toLocaleString(loc, opts),
+    locale,
+    withUserTimeFormatOptions(intlOptions, timeFormat, 'dateTime')
+  );
 }
 
 export function formatTime(value: DateInput, options: UserDateTimeFormatOptions = {}): string {
   const date = parseDate(value);
   const { fallback, locale, timeFormat, intlOptions } = splitFormatOptions(options);
   if (!date) return fallbackFor(value, fallback);
-  return date.toLocaleTimeString(locale, withUserTimeFormatOptions(intlOptions, timeFormat, 'time'));
+  return safeLocaleFormat(
+    (loc, opts) => date.toLocaleTimeString(loc, opts),
+    locale,
+    withUserTimeFormatOptions(intlOptions, timeFormat, 'time')
+  );
 }
 
 export function formatDate(value: DateInput, options: UserDateTimeFormatOptions = {}): string {
   const date = parseDate(value);
   const { fallback, locale, intlOptions } = splitFormatOptions(options);
   if (!date) return fallbackFor(value, fallback);
-  return date.toLocaleDateString(locale, intlOptions);
+  return safeLocaleFormat(
+    (loc, opts) => date.toLocaleDateString(loc, opts),
+    locale,
+    intlOptions
+  );
 }
