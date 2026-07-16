@@ -74,7 +74,6 @@ type backupRunProviderConfig struct {
 	Endpoint  string `json:"endpoint"`
 	AccessKey string `json:"accessKey"`
 	SecretKey string `json:"secretKey"`
-	Prefix    string `json:"prefix"`
 	Path      string `json:"path"` // local provider destination
 }
 
@@ -110,10 +109,17 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	if len(p.Paths) == 0 {
 		return nil, fmt.Errorf("backup_run payload has no paths")
 	}
+	// Retention is owned entirely by the server: GFS tiering, legal-hold and
+	// object-immutability live in apps/api/src/jobs/backupRetention.ts, and the
+	// backup_run payload carries no retention field. The agent MUST NOT prune —
+	// BackupManager.Backup would otherwise call DeleteSnapshotContext and delete
+	// objects directly from S3/B2/local storage, racing the server's authority.
+	// Retention: 0 makes DeleteSnapshotContext a no-op (it returns early on
+	// retention <= 0), leaving the server as the sole retention authority.
 	return backup.NewBackupManager(backup.BackupConfig{
 		Provider:  provider,
 		Paths:     p.Paths,
-		Retention: 7,
+		Retention: 0,
 	}), nil
 }
 

@@ -292,21 +292,32 @@ func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 	return matched
 }
 
+// volumeName strips a leading volume/drive name (e.g. "C:") from a path. It
+// defaults to filepath.VolumeName, which is a no-op off Windows. Tests override
+// it with a Windows-style implementation so the embedded-drive case can be
+// exercised on any host (Linux/macOS CI would otherwise assert the wrong
+// behavior, since filepath.VolumeName never strips a drive letter there).
+var volumeName = filepath.VolumeName
+
+// stripVolumeAndLeadingSeparators removes the volume/drive (e.g. "C:") and any
+// leading separators so an ABSOLUTE source path maps UNDER a target base.
+// Otherwise filepath.Join("C:\\restore", "C:\\Users\\x") yields an invalid
+// Windows path with an embedded drive letter, and MkdirAll fails for every
+// file — i.e. restore-to-an-alternate-location was completely broken on Windows.
+func stripVolumeAndLeadingSeparators(sourcePath string) string {
+	rel := sourcePath
+	if vol := volumeName(rel); vol != "" {
+		rel = rel[len(vol):]
+	}
+	return strings.TrimLeft(rel, `\/`)
+}
+
 // resolveTargetPath determines where to restore a file. If targetBase is set,
 // the full relative source path is preserved under targetBase to maintain
 // directory structure and prevent name collisions. Otherwise the original
 // source path is used.
 func resolveTargetPath(targetBase, sourcePath string) string {
-	// Strip the volume/drive (e.g. "C:") and any leading separators so an
-	// ABSOLUTE source path maps UNDER the target base. Otherwise
-	// filepath.Join("C:\\restore", "C:\\Users\\x") yields an invalid Windows path
-	// with an embedded drive letter, and MkdirAll fails for every file — i.e.
-	// restore-to-an-alternate-location was completely broken on Windows.
-	rel := sourcePath
-	if vol := filepath.VolumeName(rel); vol != "" {
-		rel = rel[len(vol):]
-	}
-	rel = strings.TrimLeft(rel, `\/`)
+	rel := stripVolumeAndLeadingSeparators(sourcePath)
 	if targetBase == "" {
 		// Use a safe temp directory instead of the original absolute path
 		return filepath.Join(os.TempDir(), "breeze-restore", rel)

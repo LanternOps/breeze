@@ -250,6 +250,124 @@ func TestExecBMRRecoverUsesTokenDrivenRunner(t *testing.T) {
 	}
 }
 
+func TestManagerFromBackupRunPayload(t *testing.T) {
+	tests := []struct {
+		name         string
+		payload      string
+		wantNil      bool // manager is nil (fall back to agent.yaml manager)
+		wantErr      bool
+		wantProvider string   // "s3" | "local" | "" (skip provider assertion)
+		wantBucket   string   // for s3
+		wantBasePath string   // for local
+		wantPaths    []string // expected manager paths
+	}{
+		{
+			name:    "empty payload falls back to agent.yaml manager",
+			payload: "",
+			wantNil: true,
+		},
+		{
+			name:    "missing providerConfig falls back",
+			payload: `{"provider":"s3","paths":["/data"]}`,
+			wantNil: true,
+		},
+		{
+			name:    "missing provider falls back",
+			payload: `{"providerConfig":{"bucket":"b"},"paths":["/data"]}`,
+			wantNil: true,
+		},
+		{
+			name:         "s3 provider with paths",
+			payload:      `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"paths":["/etc","/home/user"]}`,
+			wantProvider: "s3",
+			wantBucket:   "my-bucket",
+			wantPaths:    []string{"/etc", "/home/user"},
+		},
+		{
+			name:         "local provider with path",
+			payload:      `{"provider":"local","providerConfig":{"path":"/var/backups"},"paths":["/data"]}`,
+			wantProvider: "local",
+			wantBasePath: filepath.Clean("/var/backups"),
+			wantPaths:    []string{"/data"},
+		},
+		{
+			name:    "unsupported provider errors",
+			payload: `{"provider":"dropbox","providerConfig":{"bucket":"b"},"paths":["/data"]}`,
+			wantErr: true,
+		},
+		{
+			name:    "empty paths errors",
+			payload: `{"provider":"s3","providerConfig":{"bucket":"b","region":"r"},"paths":[]}`,
+			wantErr: true,
+		},
+		{
+			name:    "malformed payload errors",
+			payload: `{"provider":`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr, err := managerFromBackupRunPayload(json.RawMessage(tt.payload))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got mgr=%v err=nil", mgr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantNil {
+				if mgr != nil {
+					t.Fatalf("expected nil manager (fallback), got %+v", mgr)
+				}
+				return
+			}
+			if mgr == nil {
+				t.Fatal("expected a manager, got nil")
+			}
+
+			// Retention MUST be 0: the server owns retention and the agent must
+			// never prune remote storage (DeleteSnapshotContext no-ops on 0).
+			if got := mgr.GetRetention(); got != 0 {
+				t.Fatalf("retention = %d, want 0 (server owns retention)", got)
+			}
+
+			gotPaths := mgr.GetPaths()
+			if len(gotPaths) != len(tt.wantPaths) {
+				t.Fatalf("paths = %v, want %v", gotPaths, tt.wantPaths)
+			}
+			for i := range tt.wantPaths {
+				if gotPaths[i] != tt.wantPaths[i] {
+					t.Errorf("paths[%d] = %q, want %q", i, gotPaths[i], tt.wantPaths[i])
+				}
+			}
+
+			provider := mgr.GetProvider()
+			switch tt.wantProvider {
+			case "s3":
+				s3p, ok := provider.(*providers.S3Provider)
+				if !ok {
+					t.Fatalf("provider type = %T, want *providers.S3Provider", provider)
+				}
+				if s3p.Bucket != tt.wantBucket {
+					t.Errorf("bucket = %q, want %q", s3p.Bucket, tt.wantBucket)
+				}
+			case "local":
+				localP, ok := provider.(*providers.LocalProvider)
+				if !ok {
+					t.Fatalf("provider type = %T, want *providers.LocalProvider", provider)
+				}
+				if localP.BasePath != tt.wantBasePath {
+					t.Errorf("basePath = %q, want %q", localP.BasePath, tt.wantBasePath)
+				}
+			}
+		})
+	}
+}
+
 func TestParseBackupRunExcludes(t *testing.T) {
 	tests := []struct {
 		name    string

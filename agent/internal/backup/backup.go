@@ -54,6 +54,13 @@ type BackupJob struct {
 	FilesBackedUp       int                              `json:"filesBackedUp"`
 	BytesBackedUp       int64                            `json:"bytesBackedUp"`
 	Status              string                           `json:"status"`
+	// Error is the agent's internal failure record. It is NOT the wire failure
+	// carrier: marshaling a non-nil `error` interface yields `{}`, and the
+	// server's backupCommandResultSchema doesn't read an `error` field anyway.
+	// On failure RunBackupWithExcludes returns the error separately, marshalResult
+	// routes it to the command result's stderr, and the server reads the reason
+	// from `result.error || result.stderr` (routes/agentWs.ts). Keep this field
+	// for in-process inspection (e.g. autoSyncToVault) only.
 	Error               error                            `json:"error,omitempty"`
 	VSSMetadata         *vss.VSSMetadata                 `json:"vssMetadata,omitempty"`         // nil when VSS was not used
 	SystemStateManifest *systemstate.SystemStateManifest `json:"systemStateManifest,omitempty"` // nil when system state was not collected
@@ -83,6 +90,18 @@ func NewBackupManager(config BackupConfig) *BackupManager {
 // GetProvider returns the configured backup provider.
 func (m *BackupManager) GetProvider() providers.BackupProvider {
 	return m.config.Provider
+}
+
+// GetPaths returns the configured backup source paths.
+func (m *BackupManager) GetPaths() []string {
+	return m.config.Paths
+}
+
+// GetRetention returns the configured retention count. On the helper's
+// backup_run path this is 0: retention is owned by the server, and 0 makes
+// DeleteSnapshotContext a no-op so the agent never prunes remote storage.
+func (m *BackupManager) GetRetention() int {
+	return m.config.Retention
 }
 
 // GetStagingDir returns the configured staging base directory, or an empty
