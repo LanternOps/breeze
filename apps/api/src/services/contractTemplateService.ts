@@ -23,7 +23,14 @@ export { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE, Partne
 
 export type TemplateRow = typeof contractTemplates.$inferSelect;
 export type VersionRow = typeof contractTemplateVersions.$inferSelect;
-export type TemplateWithLatest = TemplateRow & { latestVersion: VersionRow | null };
+// listTemplates' latestVersion omits the binary fileData column — a list
+// response has no business round-tripping a multi-MB PDF buffer per row
+// (only GET /:id/versions/:versionId/file streams that). Adjusted from the
+// original TemplateRow & { latestVersion: VersionRow | null } shape per Task
+// 9's note: "if [the list shape is] unsuitable for the UI, adjust the
+// service list function minimally."
+export type VersionSummary = Omit<VersionRow, 'fileData'>;
+export type TemplateWithLatest = TemplateRow & { latestVersion: VersionSummary | null };
 
 export class ContractTemplateServiceError extends Error {
   constructor(
@@ -77,6 +84,25 @@ function assertTemplateWriteAccess(auth: AuthContext, template: Pick<TemplateRow
   if (template.orgId === null) {
     if (!canManagePartnerWidePolicies(auth)) throw new PartnerWideWriteDeniedError();
     return;
+  }
+  if (!auth.canAccessOrg(template.orgId)) {
+    throw new ContractTemplateServiceError('Organization access denied', 403, 'ORG_DENIED');
+  }
+}
+
+/**
+ * Read-access gate for a single template fetched by id (list filtering
+ * doesn't apply here — the row is already in hand). Mirrors
+ * assertTemplateWriteAccess's ownership branches but is deliberately more
+ * permissive on the partner-wide branch: per templateAccessCondition's
+ * contract, ANY member of the owning partner can read a partner-wide
+ * template, not just partner-wide administrators.
+ */
+function assertTemplateReadAccess(auth: AuthContext, template: Pick<TemplateRow, 'orgId' | 'partnerId'>): void {
+  if (template.orgId === null) {
+    if (auth.scope === 'system') return;
+    if (auth.scope === 'partner' && auth.partnerId === template.partnerId) return;
+    throw new ContractTemplateServiceError('Organization access denied', 403, 'ORG_DENIED');
   }
   if (!auth.canAccessOrg(template.orgId)) {
     throw new ContractTemplateServiceError('Organization access denied', 403, 'ORG_DENIED');
@@ -142,18 +168,61 @@ export async function listTemplates(auth: AuthContext, opts?: { includeArchived?
   const ids = templates.map((t) => t.id);
   // Ordered desc by versionNumber so the first row seen per templateId is the
   // latest — cheaper than a per-template query or a window function the mock
-  // harness can't express.
+  // harness can't express. fileData is deliberately excluded (see
+  // VersionSummary) so a multi-MB uploaded PDF never gets pulled out of
+  // Postgres just to compute a list row's latestVersion.
   const versions = await db
-    .select()
+    .select({
+      id: contractTemplateVersions.id,
+      templateId: contractTemplateVersions.templateId,
+      orgId: contractTemplateVersions.orgId,
+      partnerId: contractTemplateVersions.partnerId,
+      versionNumber: contractTemplateVersions.versionNumber,
+      status: contractTemplateVersions.status,
+      sourceType: contractTemplateVersions.sourceType,
+      bodyHtml: contractTemplateVersions.bodyHtml,
+      mime: contractTemplateVersions.mime,
+      byteSize: contractTemplateVersions.byteSize,
+      sha256: contractTemplateVersions.sha256,
+      declaredVariables: contractTemplateVersions.declaredVariables,
+      publishedAt: contractTemplateVersions.publishedAt,
+      createdBy: contractTemplateVersions.createdBy,
+      createdAt: contractTemplateVersions.createdAt,
+    })
     .from(contractTemplateVersions)
     .where(inArray(contractTemplateVersions.templateId, ids))
     .orderBy(desc(contractTemplateVersions.versionNumber));
-  const latestByTemplate = new Map<string, VersionRow>();
+  const latestByTemplate = new Map<string, VersionSummary>();
   for (const v of versions) {
     if (!latestByTemplate.has(v.templateId)) latestByTemplate.set(v.templateId, v);
   }
 
   return templates.map((t) => ({ ...t, latestVersion: latestByTemplate.get(t.id) ?? null }));
+}
+
+/**
+ * Single-template detail fetch with all of its versions (newest first) — the
+ * routes need this for `GET /:id`; not part of the original service
+ * signature list, added here (not exported by the branch this task started
+ * from) since there is no other way for a thin route handler to serve that
+ * endpoint without reaching into the DB directly.
+ */
+export async function getTemplate(auth: AuthContext, id: string): Promise<TemplateRow & { versions: VersionRow[] }> {
+  const template = await getTemplateOr404(id);
+  assertTemplateReadAccess(auth, template);
+  const versions = await db
+    .select()
+    .from(contractTemplateVersions)
+    .where(eq(contractTemplateVersions.templateId, id))
+    .orderBy(desc(contractTemplateVersions.versionNumber));
+  return { ...template, versions };
+}
+
+/** Single-version detail fetch, gated the same way as getTemplate. Added for the same reason. */
+export async function getTemplateVersion(auth: AuthContext, templateId: string, versionId: string): Promise<VersionRow> {
+  const template = await getTemplateOr404(templateId);
+  assertTemplateReadAccess(auth, template);
+  return getVersionOr404(versionId, templateId);
 }
 
 export async function createTemplate(auth: AuthContext, input: CreateContractTemplateInput): Promise<TemplateRow> {
