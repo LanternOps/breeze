@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -91,7 +92,7 @@ func TestHandleActuateElevationUsesLocalCredentialAndDemotes(t *testing.T) {
 	}
 	var gotReq pamactuator.Request
 	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
-	swapActuatorForTest(t, func() pamactuator.Actuator {
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
 		return fakeActuator{trigger: func(_ context.Context, req pamactuator.Request) pamactuator.Result {
 			gotReq = req
 			return pamactuator.Result{Success: true, Reason: "ok", DetailMessage: "typed"}
@@ -139,7 +140,7 @@ func TestHandleActuateElevationDemotesWhenActuatorPanics(t *testing.T) {
 		cred: elevaccount.Credential{Username: "~breeze_elev", Password: "minted-local-secret"},
 	}
 	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
-	swapActuatorForTest(t, func() pamactuator.Actuator {
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
 		return fakeActuator{trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
 			panic("actuator panic")
 		}}
@@ -167,7 +168,7 @@ func TestHandleActuateElevationDemotesWhenActuatorPanics(t *testing.T) {
 func TestHandleActuateElevationPromoteFailureReturnsStructuredResult(t *testing.T) {
 	manager := &fakeElevationManager{promoteErr: elevaccount.ErrUnsupportedPlatform}
 	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
-	swapActuatorForTest(t, func() pamactuator.Actuator {
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
 		return fakeActuator{trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
 			t.Fatal("actuator should not run when Promote fails")
 			return pamactuator.Result{}
@@ -209,11 +210,97 @@ func TestPromoteFailureReason(t *testing.T) {
 	}
 }
 
-func swapActuatorForTest(t *testing.T, fn func() pamactuator.Actuator) {
+func TestActuateUsesConfiguredStrategy(t *testing.T) {
+	var gotStrategy pamactuator.Strategy
+	swapActuatorForTest(t, func(s pamactuator.Strategy) pamactuator.Actuator {
+		gotStrategy = s
+		return fakeActuator{trigger: func(_ context.Context, r pamactuator.Request) pamactuator.Result {
+			return pamactuator.Result{Success: true, Reason: "ok"}
+		}}
+	})
+	h := newTestHeartbeatWithPAMStrategy(t, "token_launch") // helper in this test file
+	h.actuateElevation(context.Background(), "req-1", 8000, pamTarget{})
+	if gotStrategy != pamactuator.StrategyTokenLaunch {
+		t.Fatalf("actuator built with strategy %q, want token_launch", gotStrategy)
+	}
+}
+
+// TestActuateElevationPassesTargetToActuator proves the pamTarget passed into
+// actuateElevation (Task 5: Path B needs to know what to launch) flows
+// through to the pamactuator.Request unmodified — the same code path serves
+// both the remote (server-echoed) and local (ETW-discovered) callers.
+func TestActuateElevationPassesTargetToActuator(t *testing.T) {
+	manager := &fakeElevationManager{
+		cred: elevaccount.Credential{Username: "~breeze_elev", Password: "x"},
+	}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
+
+	var gotReq pamactuator.Request
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
+		return fakeActuator{trigger: func(_ context.Context, req pamactuator.Request) pamactuator.Result {
+			gotReq = req
+			return pamactuator.Result{Success: true, Reason: "ok"}
+		}}
+	})
+
+	h := &Heartbeat{}
+	h.actuateElevation(context.Background(), "req-target", 8000, pamTarget{
+		Path:        `C:\Windows\System32\mmc.exe`,
+		CommandLine: `mmc.exe devmgmt.msc`,
+	})
+
+	if gotReq.TargetPath != `C:\Windows\System32\mmc.exe` {
+		t.Fatalf("actuator Request.TargetPath = %q, want mmc.exe path", gotReq.TargetPath)
+	}
+	if gotReq.CommandLine != `mmc.exe devmgmt.msc` {
+		t.Fatalf("actuator Request.CommandLine = %q, want devmgmt.msc command line", gotReq.CommandLine)
+	}
+}
+
+// TestTokenLaunchFailureStillDemotes proves the guaranteed-demote defer in
+// actuateElevation covers Path B (token_launch) failures for free: a Trigger
+// that reports Success:false (any Reason) must still Demote ~breeze_elev,
+// exactly like the sendinput path already covered by
+// TestHandleActuateElevationDemotesWhenActuatorPanics. newTestHeartbeatWithPAMStrategy
+// installs its own fakeElevationManager, so the manager swap here must happen
+// AFTER it to actually take effect (newElevationAccountManager is a single
+// package-level var, last writer wins at actuateElevation call time).
+func TestTokenLaunchFailureStillDemotes(t *testing.T) {
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
+		return fakeActuator{trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
+			return pamactuator.Result{Success: false, Reason: "create_process_failed"}
+		}}
+	})
+	h := newTestHeartbeatWithPAMStrategy(t, "token_launch")
+	manager := &fakeElevationManager{cred: elevaccount.Credential{Username: "~breeze_elev", Password: "x"}}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
+
+	h.actuateElevation(context.Background(), "req-1", 8000, pamTarget{Path: `C:\a.exe`, CommandLine: `a.exe`})
+
+	if manager.demoteSeen != 1 {
+		t.Fatalf("Demote called %d times after token_launch failure, want 1", manager.demoteSeen)
+	}
+}
+
+func swapActuatorForTest(t *testing.T, fn func(pamactuator.Strategy) pamactuator.Actuator) {
 	t.Helper()
 	orig := newActuator
 	newActuator = fn
 	t.Cleanup(func() { newActuator = orig })
+}
+
+// newTestHeartbeatWithPAMStrategy mirrors newTestHeartbeat (handlers_script_test.go)
+// but wires the config strategy field under test and a fake elevation manager
+// so actuateElevation actually reaches the actuator instead of short-circuiting
+// on the non-Windows Promote stub (elevaccount.ErrUnsupportedPlatform).
+func newTestHeartbeatWithPAMStrategy(t *testing.T, strategy string) *Heartbeat {
+	t.Helper()
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager {
+		return &fakeElevationManager{cred: elevaccount.Credential{Username: "~breeze_elev", Password: "x"}}
+	})
+	return &Heartbeat{
+		config: &config.Config{PAMActuatorStrategy: strategy},
+	}
 }
 
 func swapElevationManagerForTest(t *testing.T, fn func() elevaccount.AccountManager) {

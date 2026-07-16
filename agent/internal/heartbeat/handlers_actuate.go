@@ -22,13 +22,21 @@ import (
 //
 //	{
 //	  "elevationRequestId": "uuid",
-//	  "timeoutMs":          8000
+//	  "timeoutMs":          8000,
+//	  "targetPath":         "C:\\Windows\\System32\\mmc.exe",
+//	  "commandLine":        "mmc.exe devmgmt.msc",
+//	  "subjectUsername":    "CORP\\alice"
 //	}
 //
 // Deprecated username/password payload fields are ignored. The secret never
 // crosses the wire and is never included in CommandResult. The pamactuator's
 // Reason field is mirrored into Stdout so the server can switch on it without
 // parsing free-form text.
+//
+// targetPath/commandLine (Task 5) are the server's echo of the stored
+// elevation_requests row's target — the remote path holds no cross-request
+// state, unlike the local RunPamFlow path which already has ev's target from
+// ETW discovery. Path A (sendinput) ignores these fields.
 
 func init() {
 	handlerRegistry[tools.CmdActuateElevation] = handleActuateElevation
@@ -41,6 +49,30 @@ type actuatePayload struct {
 	Username           string `json:"username,omitempty"`
 	Password           string `json:"password,omitempty"`
 	TimeoutMs          int    `json:"timeoutMs"`
+	TargetPath         string `json:"targetPath"`
+	CommandLine        string `json:"commandLine"`
+	// SubjectUsername is the server's echo of the stored
+	// elevation_requests.subject_username — the account that requested this
+	// elevation. Path B resolves it to that user's live session so the elevated
+	// process lands in front of the requester on RDP/multi-session hosts rather
+	// than the physical console. Empty/absent → console fallback. Path A ignores it.
+	SubjectUsername string `json:"subjectUsername,omitempty"`
+}
+
+// pamTarget carries the target executable path + command line into
+// actuateElevation so the Path B token-launch actuator knows what to launch.
+// Path A (sendinput) ignores both fields. The local flow (RunPamFlow) already
+// holds these from ETW discovery (etwlua.Event); the remote flow
+// (handleActuateElevation) gets them echoed back from the server's stored
+// elevation_requests row, so the agent holds no cross-request state.
+type pamTarget struct {
+	Path        string
+	CommandLine string
+	// SubjectUsername is the account that requested the elevation, used by Path
+	// B to place the launched process in that user's live session. Local flow:
+	// from etwlua.Event.SubjectUsername. Remote flow: server-echoed
+	// elevation_requests.subject_username. Empty → console fallback.
+	SubjectUsername string
 }
 
 // actuateResult is the public CommandResult Stdout payload. Mirrors
@@ -53,9 +85,9 @@ type actuateResult struct {
 	Message            string `json:"message"`
 }
 
-// newActuator is an indirection so tests can install a fake without
-// touching package state in other tests. Set via swapActuatorForTest.
-var newActuator = pamactuator.New
+// newActuator is an indirection so tests can install a fake. Now strategy-aware
+// so Path A (sendinput) and Path B (token_launch) share one selection point.
+var newActuator = pamactuator.NewWithStrategy
 
 // newElevationAccountManager is test-swappable for handler safety tests.
 var newElevationAccountManager = elevaccount.New
@@ -78,7 +110,8 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*timeout)
 	defer cancel()
 
-	res := h.actuateElevation(ctx, payload.ElevationRequestID, payload.TimeoutMs)
+	res := h.actuateElevation(ctx, payload.ElevationRequestID, payload.TimeoutMs,
+		pamTarget{Path: payload.TargetPath, CommandLine: payload.CommandLine, SubjectUsername: payload.SubjectUsername})
 
 	out := actuateResult{
 		ElevationRequestID: payload.ElevationRequestID,
@@ -98,7 +131,7 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 // guaranteed-demote pipeline and returns the actuator result. Called by the
 // remote actuate_elevation command handler, and (Task 5) by the local
 // etwlua-driven flow — the receiver is on *Heartbeat so RunPamFlow can share it.
-func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, timeoutMs int) pamactuator.Result {
+func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, timeoutMs int, target pamTarget) pamactuator.Result {
 	// Serialize the whole promote→Trigger→demote critical section against any
 	// concurrent denyConsent (or a second actuateElevation): two goroutines
 	// driving SendInput/SetThreadDesktop against the same live consent.exe
@@ -127,12 +160,15 @@ func (h *Heartbeat) actuateElevation(ctx context.Context, requestID string, time
 	}()
 	defer zeroCredential(&cred)
 
-	act := newActuator()
+	act := newActuator(h.pamActuatorStrategy())
 	return act.Trigger(ctx, pamactuator.Request{
 		ElevationRequestID: requestID,
 		Username:           cred.Username,
 		Password:           cred.Password,
 		TimeoutMs:          timeoutMs,
+		TargetPath:         target.Path,
+		CommandLine:        target.CommandLine,
+		SubjectUsername:    target.SubjectUsername,
 	})
 }
 
@@ -152,6 +188,22 @@ func parseActuatePayload(p map[string]any) (actuatePayload, error) {
 		return actuatePayload{}, errors.New("actuate_elevation: elevationRequestId is required")
 	}
 	return out, nil
+}
+
+// pamActuatorStrategy resolves the configured Windows actuator strategy,
+// defaulting to sendinput when unset, unknown, or config is unavailable (a
+// handful of existing unit tests exercise actuateElevation/denyConsent
+// against a zero-value *Heartbeat with a nil config).
+func (h *Heartbeat) pamActuatorStrategy() pamactuator.Strategy {
+	if h == nil || h.config == nil {
+		return pamactuator.StrategySendInput
+	}
+	switch pamactuator.Strategy(h.config.PAMActuatorStrategy) {
+	case pamactuator.StrategyTokenLaunch:
+		return pamactuator.StrategyTokenLaunch
+	default:
+		return pamactuator.StrategySendInput
+	}
 }
 
 func promoteFailureReason(err error) string {

@@ -102,6 +102,13 @@ type Config struct {
 	// dormant local elevation account. Default false.
 	PAMEnabled bool `mapstructure:"pam_enabled"`
 
+	// PAMActuatorStrategy selects the Windows elevation actuator: "sendinput"
+	// (Path A — inject credentials into consent.exe) or "token_launch" (Path B —
+	// suppress consent.exe and launch the target elevated via CreateProcessAsUser
+	// as ~breeze_elev). Default "sendinput". Path B ships dark; flip per-device
+	// via agent.yaml. Ignored when PAMEnabled is false.
+	PAMActuatorStrategy string `mapstructure:"pam_actuator_strategy"`
+
 	// Concurrency limits
 	MaxConcurrentCommands int `mapstructure:"max_concurrent_commands"`
 	CommandQueueSize      int `mapstructure:"command_queue_size"`
@@ -222,6 +229,7 @@ func Default() *Config {
 		LogMaxBackups:                3,
 		LogShippingLevel:             "warn",
 		PAMEnabled:                   false,
+		PAMActuatorStrategy:          "sendinput",
 		MaxConcurrentCommands:        10,
 		CommandQueueSize:             100,
 		AuditEnabled:                 true,
@@ -515,6 +523,7 @@ func SaveTo(cfg *Config, cfgFile string) error {
 	viper.Set("log_level", cfg.LogLevel)
 	viper.Set("log_shipping_level", cfg.LogShippingLevel)
 	viper.Set("pam_enabled", cfg.PAMEnabled)
+	viper.Set("pam_actuator_strategy", cfg.PAMActuatorStrategy)
 	viper.Set("auto_update", cfg.AutoUpdate)
 	viper.Set("allow_dev_update", cfg.AllowDevUpdate)
 	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)

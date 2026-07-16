@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -805,6 +806,42 @@ func TestAssertHostnameNonEmpty(t *testing.T) {
 			err := assertHostnameNonEmpty(tc.info)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("got err=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLogPAMActuatorStrategy verifies the startup PAM-strategy log: known
+// strategies (and the empty/default case) log at INFO, and an unrecognized
+// non-empty value logs a WARN calling out the fallback to sendinput, so a
+// typo like "token-launch" is visible in agent logs instead of silently
+// falling back (the VM validation doc requires confirming from logs which
+// strategy is active).
+func TestLogPAMActuatorStrategy(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured string
+		wantLevel  string
+	}{
+		{"sendinput is INFO", "sendinput", "INFO"},
+		{"token_launch is INFO", "token_launch", "INFO"},
+		{"empty defaults to INFO", "", "INFO"},
+		{"unrecognized value is WARN", "token-launch", "WARN"},
+		{"garbage value is WARN", "not-a-strategy", "WARN"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+			logPAMActuatorStrategy(l, tc.configured)
+
+			out := buf.String()
+			if !strings.Contains(out, "level="+tc.wantLevel) {
+				t.Fatalf("configured=%q: got log %q, want level=%s", tc.configured, out, tc.wantLevel)
+			}
+			if tc.wantLevel == "WARN" && !strings.Contains(out, tc.configured) {
+				t.Fatalf("configured=%q: WARN log %q should mention the bad configured value", tc.configured, out)
 			}
 		})
 	}

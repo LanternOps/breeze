@@ -202,7 +202,7 @@ func TestRunPamFlow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var triggered, dismissed bool
 			var gotRequest pamactuator.Request
-			swapActuatorForTest(t, func() pamactuator.Actuator {
+			swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
 				return fakeActuator{
 					trigger: func(_ context.Context, req pamactuator.Request) pamactuator.Result {
 						triggered = true
@@ -324,9 +324,18 @@ func TestRunPamFlow(t *testing.T) {
 
 			// FIX 7: on the actuate path, the actuator must receive the right
 			// Request — the same elevation request ID and the default timeout.
+			// Task 5: also the ETW-discovered target (path + command line),
+			// since the local RunPamFlow path is the one caller that already
+			// holds this data going into actuateElevation.
 			if tc.wantActuated {
 				if gotRequest.ElevationRequestID != outcome.RequestID {
 					t.Errorf("actuator Request.ElevationRequestID = %q, want %q", gotRequest.ElevationRequestID, outcome.RequestID)
+				}
+				if gotRequest.TargetPath != ev.TargetExecutablePath {
+					t.Errorf("actuator Request.TargetPath = %q, want %q", gotRequest.TargetPath, ev.TargetExecutablePath)
+				}
+				if gotRequest.CommandLine != ev.CommandLine {
+					t.Errorf("actuator Request.CommandLine = %q, want %q", gotRequest.CommandLine, ev.CommandLine)
 				}
 				if gotRequest.TimeoutMs != defaultActuateTimeoutMs {
 					t.Errorf("actuator Request.TimeoutMs = %d, want %d", gotRequest.TimeoutMs, defaultActuateTimeoutMs)
@@ -356,7 +365,7 @@ func TestActuateAndDenyMutuallyExclusive(t *testing.T) {
 		inside.Store(false)
 	}
 
-	swapActuatorForTest(t, func() pamactuator.Actuator {
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
 		return fakeActuator{
 			trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
 				guarded()
@@ -380,7 +389,7 @@ func TestActuateAndDenyMutuallyExclusive(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			h.actuateElevation(context.Background(), "req-actuate", defaultActuateTimeoutMs)
+			h.actuateElevation(context.Background(), "req-actuate", defaultActuateTimeoutMs, pamTarget{})
 		}()
 		go func() {
 			defer wg.Done()
@@ -402,7 +411,7 @@ func TestActuateAndDenyMutuallyExclusive(t *testing.T) {
 func TestRunPamFlowSurvivesActuatorPanic(t *testing.T) {
 	manager := &fakeElevationManager{cred: elevaccount.Credential{Username: "~breeze_elev", Password: "x"}}
 	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return manager })
-	swapActuatorForTest(t, func() pamactuator.Actuator {
+	swapActuatorForTest(t, func(pamactuator.Strategy) pamactuator.Actuator {
 		return fakeActuator{
 			trigger: func(context.Context, pamactuator.Request) pamactuator.Result {
 				panic("simulated SendInput syscall panic")

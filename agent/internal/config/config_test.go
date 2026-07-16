@@ -482,6 +482,13 @@ func TestWorkspaceIndexDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigPAMActuatorStrategy(t *testing.T) {
+	cfg := Default()
+	if cfg.PAMActuatorStrategy != "sendinput" {
+		t.Fatalf("PAMActuatorStrategy default = %q, want \"sendinput\"", cfg.PAMActuatorStrategy)
+	}
+}
+
 // TestIsSecretYAMLKey verifies the drift-proof predicate that decides which
 // config keys belong in secrets.yaml vs agent.yaml. Finding #6.
 func TestIsSecretYAMLKey(t *testing.T) {

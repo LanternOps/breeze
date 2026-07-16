@@ -102,3 +102,18 @@ func TestRequestZeroValuesAreSafe(t *testing.T) {
 		t.Fatalf("zero Request should not succeed on no-op stub")
 	}
 }
+
+func TestNewWithStrategyReturnsNonNil(t *testing.T) {
+	for _, s := range []Strategy{StrategySendInput, StrategyTokenLaunch, "bogus"} {
+		if got := NewWithStrategy(s); got == nil {
+			t.Fatalf("NewWithStrategy(%q) = nil", s)
+		}
+	}
+}
+
+func TestRequestCarriesTarget(t *testing.T) {
+	r := Request{TargetPath: `C:\Windows\System32\mmc.exe`, CommandLine: `mmc.exe devmgmt.msc`}
+	if r.TargetPath == "" || r.CommandLine == "" {
+		t.Fatal("Request target fields not set")
+	}
+}

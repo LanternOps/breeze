@@ -124,6 +124,9 @@ actuateElevationRoutes.post(
           deviceId: elevationRequests.deviceId,
           orgId: elevationRequests.orgId,
           status: elevationRequests.status,
+          targetExecutablePath: elevationRequests.targetExecutablePath,
+          subjectUsername: elevationRequests.subjectUsername,
+          metadata: elevationRequests.metadata,
         })
         .from(elevationRequests)
         .where(
@@ -185,6 +188,14 @@ actuateElevationRoutes.post(
         return { kind: 'race_lost' as const };
       }
 
+      // Track 5 (Path B): echo the stored request's target executable path +
+      // command line into the go-signal payload so the agent's token-launch
+      // actuator knows what to launch. The agent holds no cross-request
+      // state — the server is the source of truth for what was approved.
+      // command_line is captured at ingest time into `metadata` (see
+      // routes/agents/elevationRequests.ts), not a first-class column;
+      // same extraction pattern as routes/pam.ts's `commandLine` field.
+      const metadata = (elevation.metadata ?? {}) as Record<string, unknown>;
       const [command] = await tx
         .insert(deviceCommands)
         .values({
@@ -193,6 +204,13 @@ actuateElevationRoutes.post(
           payload: {
             elevationRequestId: data.elevationRequestId,
             timeoutMs: data.timeoutMs ?? 8000,
+            targetPath: elevation.targetExecutablePath ?? '',
+            commandLine: typeof metadata.command_line === 'string' ? metadata.command_line : '',
+            // Path B places the elevated process in the requesting user's live
+            // session; the agent resolves this name to a session id (falls back
+            // to the console when absent). Path A ignores it. See
+            // pamactuator.Request.SubjectUsername.
+            subjectUsername: elevation.subjectUsername ?? '',
           },
           status: 'pending',
           createdBy: auth.user.id,

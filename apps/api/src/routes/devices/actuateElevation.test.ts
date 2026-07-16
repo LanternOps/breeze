@@ -527,6 +527,70 @@ describe('POST /devices/:id/actuate-elevation', () => {
       expect(queued.payload).not.toHaveProperty('password');
     });
 
+    it('echoes target path, command line and subject username from the elevation row into the payload', async () => {
+      const { commandValues } = rigTransaction({
+        elevationRow: {
+          ...SAMPLE_ELEVATION,
+          targetExecutablePath: 'C:\\Windows\\System32\\mmc.exe',
+          subjectUsername: 'CORP\\alice',
+          metadata: { command_line: 'mmc.exe devmgmt.msc' },
+        } as never,
+        commandRow: {
+          id: 'cmd-target',
+          deviceId: DEVICE_ID,
+          type: 'actuate_elevation',
+          status: 'pending',
+          createdAt: new Date(),
+        },
+      });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          elevationRequestId: ELEVATION_ID,
+          timeoutMs: 8000,
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(commandValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            targetPath: 'C:\\Windows\\System32\\mmc.exe',
+            commandLine: 'mmc.exe devmgmt.msc',
+            subjectUsername: 'CORP\\alice',
+          }),
+        }),
+      );
+    });
+
+    it('falls back to empty strings when the elevation row has no target metadata', async () => {
+      const { commandValues } = rigTransaction({
+        elevationRow: SAMPLE_ELEVATION,
+        commandRow: {
+          id: 'cmd-notarget',
+          deviceId: DEVICE_ID,
+          type: 'actuate_elevation',
+          status: 'pending',
+          createdAt: new Date(),
+        },
+      });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/actuate-elevation`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ elevationRequestId: ELEVATION_ID }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(commandValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({ targetPath: '', commandLine: '', subjectUsername: '' }),
+        }),
+      );
+    });
+
     it('applies the default 8000ms timeout when omitted', async () => {
       const { commandValues } = rigTransaction({
         elevationRow: SAMPLE_ELEVATION,

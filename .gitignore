@@ -108,6 +108,7 @@ monitoring/secrets/*
 
 # Docker local overrides
 docker-compose.override.yml
+docker-compose.override.pam.yml
 
 # Backups
 backups/

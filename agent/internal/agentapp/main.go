@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -29,6 +30,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/observability"
+	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/state"
@@ -287,6 +289,15 @@ func init() {
 // asInvoker (it is spawned into the interactive user's non-elevated session).
 // version is injected by each cmd wrapper via -X main.version.
 func Main(v string) {
+	// PAM Path B two-stage launch helper: when this process was re-exec'd as
+	// SYSTEM into a target interactive session (carrying the
+	// --pam-session-launch-helper sentinel), run the in-session launch stage
+	// and exit before any normal startup. In every other invocation this
+	// returns immediately. Must be first — before flag/arg parsing, Sentry, and
+	// cobra dispatch — so the helper re-exec short-circuits cleanly. No-op on
+	// non-Windows.
+	pamactuator.MaybeRunSessionLaunchHelper()
+
 	if v != "" {
 		version = v
 	}
@@ -690,6 +701,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			log.Warn("failed to provision PAM dormant elevation account, continuing",
 				"error", err.Error())
 		}
+		logPAMActuatorStrategy(log, cfg.PAMActuatorStrategy)
 	}
 
 	// On macOS, the root daemon has Full Disk Access and can write to the
@@ -848,6 +860,26 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		workspaceIndexCancel: workspaceIndexCancel,
 		workspaceIndexDone:   workspaceIndexDone,
 	}, nil
+}
+
+// logPAMActuatorStrategy logs, once at startup, which PAM elevation actuator
+// strategy is resolved for this agent — the VM validation matrix depends on
+// being able to confirm "token_launch strategy is active" from the logs
+// alone. It also warns when the configured value is a non-empty string that
+// doesn't match a known strategy (e.g. a typo like "token-launch"), since
+// pamActuatorStrategy() silently falls back to sendinput in that case and the
+// mismatch would otherwise be invisible. Deliberately minimal: called once
+// per agent start, never per-actuation.
+func logPAMActuatorStrategy(l *slog.Logger, configured string) {
+	switch pamactuator.Strategy(configured) {
+	case pamactuator.StrategySendInput, pamactuator.StrategyTokenLaunch:
+		l.Info("pam actuator strategy resolved", "strategy", configured)
+	case "":
+		l.Info("pam actuator strategy resolved", "strategy", string(pamactuator.StrategySendInput))
+	default:
+		l.Warn("pam_actuator_strategy is not a recognized strategy, falling back to sendinput",
+			"configuredStrategy", configured)
+	}
 }
 
 // attemptTCCGrant runs tcc.EnsurePermissions and logs the results.
