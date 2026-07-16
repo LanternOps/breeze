@@ -13,6 +13,7 @@ import { getEmailService } from './email';
 import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
+import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables } from './contractTemplateRender';
 
 type QuoteRow = typeof quotes.$inferSelect;
 
@@ -91,6 +92,32 @@ export async function sendQuote(
   if (quote.status !== 'draft') {
     // Phase 2 send is issue-once: a non-draft quote (already sent/viewed/etc.) cannot be re-sent.
     throw new QuoteServiceError(`Cannot send a quote in status ${quote.status}`, 409, 'INVALID_STATE');
+  }
+
+  // Send-time contract-variable gate (Task 12): a contract block's declared
+  // variables (auto or manual) can be left unresolved — sending would ship a
+  // raw `{{token}}` placeholder straight into a legal document. Read-only and
+  // MUST run before any org-scoped write below: loadContractBlockRenderData
+  // is a system-context read (contract_templates/contract_template_versions
+  // are dual-axis and invisible under this org-scoped RLS context — same
+  // contract as Task 10), and pinned version content is immutable, so this
+  // pre-transaction read can never race a template edit happening concurrently.
+  const contractRenderData = await loadContractBlockRenderData(blocks);
+  if (contractRenderData.length > 0) {
+    const autoValues = resolveAutoVariables(quote);
+    const contentByBlockId = new Map(blocks.map((b) => [b.id, b.content as { variableValues?: Record<string, string> } | null]));
+    const unresolved = new Set<string>();
+    for (const data of contractRenderData) {
+      const variableValues = contentByBlockId.get(data.blockId)?.variableValues ?? {};
+      for (const name of findUnresolvedVariables(data, variableValues, autoValues)) unresolved.add(name);
+    }
+    if (unresolved.size > 0) {
+      throw new QuoteServiceError(
+        `Contract variables unresolved: ${[...unresolved].sort().join(', ')}`,
+        422,
+        'CONTRACT_VARIABLES_UNRESOLVED',
+      );
+    }
   }
 
   // A deposit config can silently become unsatisfiable while drafting (e.g. the

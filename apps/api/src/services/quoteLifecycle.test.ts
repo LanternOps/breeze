@@ -38,12 +38,19 @@ vi.mock('../db', () => {
 let capturedPdfArgs: unknown[] | null = null;
 const sendEmailMock = vi.fn().mockResolvedValue(undefined);
 
-vi.mock('./quotePdf', () => ({
-  renderQuotePdf: vi.fn((...args: unknown[]) => {
-    capturedPdfArgs = args;
-    return Promise.resolve(Buffer.from('%PDF-fake'));
-  }),
-}));
+// Keep formatMoney/formatDate real (importOriginal) — contractTemplateRender.ts's
+// resolveAutoVariables imports them from this module for the send-time contract
+// gate (Task 12); only renderQuotePdf itself is stubbed out.
+vi.mock('./quotePdf', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./quotePdf')>();
+  return {
+    ...actual,
+    renderQuotePdf: vi.fn((...args: unknown[]) => {
+      capturedPdfArgs = args;
+      return Promise.resolve(Buffer.from('%PDF-fake'));
+    }),
+  };
+});
 
 vi.mock('./email', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./email')>();
@@ -427,5 +434,126 @@ describe('sendQuote bill-to snapshot', () => {
     expect(claimSet().billToAddress).toEqual({
       line1: null, line2: null, city: null, region: null, postalCode: null, country: null,
     });
+  });
+});
+
+/**
+ * Send-time contract-variable gate (Task 12): a `contract` block references an
+ * immutable, published template version with declared variables (auto/manual).
+ * Sending must be blocked while any declared variable has no resolved value —
+ * otherwise a raw `{{token}}` placeholder ships straight into a legal document.
+ * loadContractBlockRenderData (contractTemplateRender.ts) reads through the
+ * SAME mocked '../db' + withSystemDbAccessContext/runOutsideDbContext used
+ * throughout this file, so its selects are just more entries in the shared
+ * `results` queue, exactly like every other db read in sendQuote.
+ */
+describe('sendQuote contract-variable gate', () => {
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  const baseQuote = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: '2026-08-01',
+    title: 'Managed Services Proposal',
+    total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: 'Acme Co', billToTaxId: null, billToAddress: null,
+    oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+  };
+
+  const contractBlock = (variableValues: Record<string, string>) => ({
+    id: 'block-1',
+    blockType: 'contract',
+    content: { templateId: 'tmpl-1', templateVersionId: 'ver-1', variableValues },
+  });
+
+  const versionRow = {
+    id: 'ver-1',
+    templateId: 'tmpl-1',
+    orgId: null,
+    partnerId: 'p1',
+    versionNumber: 1,
+    status: 'published',
+    sourceType: 'authored' as const,
+    bodyHtml: '<p>{{client.name}} agrees to {{governing_state}}</p>',
+    fileData: null,
+    mime: null,
+    byteSize: null,
+    sha256: 'abc123',
+    declaredVariables: [
+      { name: 'client.name', kind: 'auto' },
+      { name: 'governing_state', kind: 'manual' },
+    ],
+    publishedAt: new Date('2026-07-01T00:00:00Z'),
+    createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'),
+  };
+  const templateRow = {
+    id: 'tmpl-1', orgId: null, partnerId: 'p1', name: 'MSA', description: null,
+    status: 'active', createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'), updatedAt: new Date('2026-07-01T00:00:00Z'),
+  };
+
+  const org = {
+    name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' },
+    billingAddressLine1: '1 Elm', billingAddressLine2: null,
+    billingAddressCity: 'Reno', billingAddressRegion: 'NV',
+    billingAddressPostalCode: '89501', billingAddressCountry: 'US',
+  };
+
+  it('blocks send with the unresolved (manual) variable name when a contract block variable is unfilled', async () => {
+    queueResult([baseQuote]);              // getQuote: quote
+    queueResult([contractBlock({})]);       // getQuote: blocks — governing_state left blank
+    queueResult([]);                        // getQuote: lines
+    queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([org]);                     // getQuote's own draft billTo org lookup
+    queueResult([versionRow]);              // loadContractBlockRenderData: version select
+    queueResult([templateRow]);             // loadContractBlockRenderData: template select
+
+    await expect(sendQuote('q1', actor)).rejects.toMatchObject({
+      status: 422,
+      code: 'CONTRACT_VARIABLES_UNRESOLVED',
+      message: expect.stringContaining('governing_state'),
+    });
+  });
+
+  it('does not gate on an auto variable — it is always resolved from the quote itself', async () => {
+    // declaredVariables includes 'client.name' (kind: auto); only the manual
+    // 'governing_state' should ever appear in the unresolved list.
+    queueResult([baseQuote]);
+    queueResult([contractBlock({})]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([org]);
+    queueResult([versionRow]);
+    queueResult([templateRow]);
+
+    await expect(sendQuote('q1', actor)).rejects.toMatchObject({
+      code: 'CONTRACT_VARIABLES_UNRESOLVED',
+      message: expect.not.stringContaining('client.name'),
+    });
+  });
+
+  it('sends successfully once every manual variable is filled in', async () => {
+    queueResult([baseQuote]);                                   // getQuote: quote
+    queueResult([contractBlock({ governing_state: 'Texas' })]); // getQuote: blocks — filled in
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([org]);                     // getQuote's own draft billTo org lookup
+    queueResult([versionRow]);              // loadContractBlockRenderData: version select
+    queueResult([templateRow]);             // loadContractBlockRenderData: template select
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow
+    queueResult([org]);                     // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]);            // update ... returning (claimed)
+    queueResult([]);                        // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+
+    const result = await sendQuote('q1', actor);
+    expect(result.quote.status).toBe('sent');
   });
 });

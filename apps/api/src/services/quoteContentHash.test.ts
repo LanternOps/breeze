@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeQuoteSha256 } from './quoteContentHash';
+import { computeQuoteSha256, type HashableContractPart } from './quoteContentHash';
 
 const quote = { id: 'q1', quoteNumber: 'Q-2026-0001', status: 'sent', currencyCode: 'USD', total: '100.00', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', taxTotal: '0.00', subtotal: '100.00' } as any;
 const blocks = [{ id: 'b1', blockType: 'heading', content: { text: 'Proposal' }, sortOrder: 0 }] as any;
@@ -44,5 +44,64 @@ describe('computeQuoteSha256', () => {
     const withFlag = computeQuoteSha256(quote as any, [], [{ ...line, depositEligible: true } as any]);
     expect(withDeposit).not.toBe(base);
     expect(withFlag).not.toBe(base);
+  });
+});
+
+describe('computeQuoteSha256 with contractParts (Task 12)', () => {
+  it('hash is BYTE-IDENTICAL to the pre-contract implementation when contractParts is omitted (frozen fixture, backward compat)', () => {
+    // Frozen fixture: the exact quote/blocks/lines from the top of this file,
+    // hashed with the pre-Task-12 computeQuoteSha256(quote, blocks, lines) (3
+    // args, no contractParts). This literal was captured from the CURRENT
+    // (pre-change) implementation before the 4th parameter was added — see
+    // task-12-report.md for provenance. Every stored quote_acceptances row was
+    // signed under the 3-arg call, so this must never change.
+    expect(computeQuoteSha256(quote, blocks, lines)).toBe(
+      '5f62cb507bcadb0033a50f14130002854fc12bd4c3a7e453f26b75483dce988a'
+    );
+  });
+
+  it('an empty contractParts array is equivalent to omitting it entirely', () => {
+    expect(computeQuoteSha256(quote, blocks, lines, [])).toBe(computeQuoteSha256(quote, blocks, lines));
+  });
+
+  it('changes the hash when a resolved contract variable value changes', () => {
+    const partA: HashableContractPart = {
+      blockId: 'block-1',
+      templateVersionSha256: 'versha-1',
+      resolvedVariables: { 'client.name': 'Acme Co', governing_state: 'Texas' },
+    };
+    const partB: HashableContractPart = { ...partA, resolvedVariables: { ...partA.resolvedVariables, governing_state: 'Nevada' } };
+
+    const hashA = computeQuoteSha256(quote, blocks, lines, [partA]);
+    const hashB = computeQuoteSha256(quote, blocks, lines, [partB]);
+
+    expect(hashA).not.toBe(hashB);
+    expect(hashA).not.toBe(computeQuoteSha256(quote, blocks, lines)); // also diverges from the no-contract hash
+  });
+
+  it('is order-independent on contractParts (blocks) and on resolvedVariables (keys)', () => {
+    const partOne: HashableContractPart = {
+      blockId: 'block-1', templateVersionSha256: 'sha-1', resolvedVariables: { b: '2', a: '1' },
+    };
+    const partTwo: HashableContractPart = {
+      blockId: 'block-2', templateVersionSha256: 'sha-2', resolvedVariables: { z: '9' },
+    };
+    const forward = computeQuoteSha256(quote, blocks, lines, [partOne, partTwo]);
+    const reversedParts = computeQuoteSha256(quote, blocks, lines, [partTwo, partOne]);
+    const reorderedVars = computeQuoteSha256(quote, blocks, lines, [
+      { ...partOne, resolvedVariables: { a: '1', b: '2' } },
+      partTwo,
+    ]);
+
+    expect(reversedParts).toBe(forward);
+    expect(reorderedVars).toBe(forward);
+  });
+
+  it('a changed templateVersionSha256 (e.g. a republished template) changes the hash', () => {
+    const part: HashableContractPart = { blockId: 'block-1', templateVersionSha256: 'sha-v1', resolvedVariables: {} };
+    const republished: HashableContractPart = { ...part, templateVersionSha256: 'sha-v2' };
+    expect(computeQuoteSha256(quote, blocks, lines, [part])).not.toBe(
+      computeQuoteSha256(quote, blocks, lines, [republished])
+    );
   });
 });

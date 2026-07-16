@@ -56,7 +56,12 @@ export type QuoteServiceErrorCode =
   // become unsatisfiable since it was set (e.g. the last one-time line was
   // deleted) blocks the send with this single code, regardless of which
   // underlying validateQuoteDeposit rule failed.
-  | 'DEPOSIT_INVALID';
+  | 'DEPOSIT_INVALID'
+  // Send-time contract-variable gate (quoteLifecycle.sendQuote, Task 12): a
+  // contract block still has one or more declared variables (auto or manual)
+  // with no resolved value — sending would ship a raw `{{token}}` placeholder
+  // into a legal document.
+  | 'CONTRACT_VARIABLES_UNRESOLVED';
 
 export class QuoteServiceError extends Error {
   constructor(
