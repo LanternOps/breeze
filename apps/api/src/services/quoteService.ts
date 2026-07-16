@@ -7,6 +7,7 @@ import { organizations, partners } from '../db/schema/orgs';
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
+import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
@@ -358,6 +359,35 @@ export async function getQuote(id: string, actor: QuoteActor) {
     q.taxRate ? parseFloat(q.taxRate) : null,
     toQuoteDepositConfig(q.depositType, q.depositPercent),
   );
+  // Resolve the customer "bill to" for display. A sent quote carries its own
+  // frozen snapshot (billTo* columns filled at send from the org's Billing
+  // settings); a draft has none, so we fall back to the SAME org columns the send
+  // path freezes. This is what makes the customer name + billing address show on
+  // a draft's PDF/preview instead of a blank block — the data always lived on the
+  // org, it just wasn't surfaced until send. A tech-entered billToName override
+  // still wins over the org name.
+  const [org] = await db
+    .select({
+      name: organizations.name,
+      taxId: organizations.taxId,
+      billingAddressLine1: organizations.billingAddressLine1,
+      billingAddressLine2: organizations.billingAddressLine2,
+      billingAddressCity: organizations.billingAddressCity,
+      billingAddressRegion: organizations.billingAddressRegion,
+      billingAddressPostalCode: organizations.billingAddressPostalCode,
+      billingAddressCountry: organizations.billingAddressCountry,
+    })
+    .from(organizations)
+    .where(eq(organizations.id, q.orgId))
+    .limit(1);
+  const frozenAddress = (q.billToAddress as BillToAddress | null) ?? null;
+  const hasFrozenAddress = !!frozenAddress
+    && Object.values(frozenAddress).some((v) => typeof v === 'string' && v.trim().length > 0);
+  const billTo = {
+    name: q.billToName?.trim() ? q.billToName : (org?.name ?? null),
+    address: hasFrozenAddress ? frozenAddress : buildBillToAddress(org),
+    taxId: q.billToTaxId ?? org?.taxId ?? null,
+  };
   return {
     quote: {
       ...q,
@@ -367,6 +397,7 @@ export async function getQuote(id: string, actor: QuoteActor) {
     },
     blocks,
     lines,
+    billTo,
     pax8OrderId: pax8OrderSummary?.pax8OrderId ?? null,
     pax8OrderLineCount: Number(pax8OrderLineSummary?.count ?? 0),
   };

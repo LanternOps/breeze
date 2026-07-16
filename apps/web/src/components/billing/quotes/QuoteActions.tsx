@@ -45,6 +45,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const { busy, downloadPdf } = useQuotePdfDownload(quote);
   const [sending, setSending] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
+  const [sendMessage, setSendMessage] = useState('');
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [cloning, setCloning] = useState(false);
@@ -66,7 +67,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setSending(true);
     try {
       await runAction({
-        request: () => sendQuote(quote.id),
+        request: () => sendQuote(quote.id, sendMessage),
         errorFallback: t('quotes.actions.sendError'),
         // Tell the seller what happens next: the quote advances to Viewed and
         // Accepted on its own as the customer engages — no further action here.
@@ -74,13 +75,14 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         onUnauthorized: UNAUTHORIZED,
       });
       setSendOpen(false);
+      setSendMessage('');
       refresh();
     } catch (err) {
       handleActionError(err, t('quotes.actions.sendError'));
     } finally {
       setSending(false);
     }
-  }, [sending, quote.id, orgName, refresh, t]);
+  }, [sending, quote.id, sendMessage, orgName, refresh, t]);
 
   const remove = useCallback(async () => {
     if (deleting) return;
@@ -228,7 +230,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
 
       <ConfirmDialog
         open={sendOpen}
-        onClose={() => setSendOpen(false)}
+        onClose={() => { setSendOpen(false); setSendMessage(''); }}
         onConfirm={() => void send()}
         isLoading={sending}
         variant="warning"
@@ -239,7 +241,23 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         })}
         confirmLabel={t('quotes.actions.sendProposal')}
         confirmTestId="quote-send-confirm"
-      />
+      >
+        <label className="block">
+          <span className="mb-1 block text-sm font-medium text-foreground">
+            {t('quotes.actions.sendConfirm.messageLabel')}
+          </span>
+          <textarea
+            value={sendMessage}
+            onChange={(e) => setSendMessage(e.target.value)}
+            rows={3}
+            maxLength={2000}
+            disabled={sending}
+            placeholder={t('quotes.actions.sendConfirm.messagePlaceholder')}
+            data-testid="quote-send-message"
+            className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+          />
+        </label>
+      </ConfirmDialog>
       <ConfirmDialog
         open={delOpen}
         onClose={() => setDelOpen(false)}

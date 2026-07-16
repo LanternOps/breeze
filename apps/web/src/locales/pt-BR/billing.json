@@ -506,6 +506,7 @@
         "qty": "Qtd.",
         "recurrence": "Recorrência",
         "scrollAria": "Tabela de preços — role lateralmente para imposto, total e ações da linha",
+        "showSubtotal": "Mostrar linha de subtotal",
         "tax": "Imposto",
         "taxTitle": "Imposto por linha. O total de imposto do cabeçalho é autoritativo e pode diferir por um centavo de arredondamento.",
         "taxable": "Tributável",
@@ -544,6 +545,8 @@
       "savingTitle": "Salvando suas alterações — o envio será liberado quando tudo estiver salvo.",
       "sendConfirm": {
         "message": "Enviaremos esta proposta por e-mail para {{orgName}} e a marcaremos como Enviada — {{amount}} devidos na aceitação. Não é possível desfazer esta ação.",
+        "messageLabel": "Adicionar uma mensagem pessoal (opcional)",
+        "messagePlaceholder": "Inclua uma breve nota — ela aparece no e-mail, acima do link de aceitação.",
         "title": "Enviar esta proposta?"
       },
       "sendError": "Não foi possível enviar a proposta.",
@@ -630,6 +633,8 @@
       "imageUnavailable": "Imagem indisponível",
       "issued": "Emitida",
       "preparedFor": "Preparado para",
+      "taxId": "Identificação fiscal: {{id}}",
+      "imageZoomAria": "Ver imagem maior",
       "preview": {
         "description": "Isto é o que o cliente vê no link da proposta.",
         "downloadPdf": "Baixar PDF",

@@ -188,9 +188,14 @@ export function quotePdfUrl(id: string): string {
 // ---- Phase 2 lifecycle / image upload -------------------------------------
 
 /** Issue + send a draft quote (POST /quotes/:id/send). Gated server-side on
- *  quotes:send. Responds with the updated quote in a `{ data }` envelope. */
-export function sendQuote(id: string): Promise<Response> {
-  return fetchWithAuth(`/quotes/${id}/send`, { method: 'POST' });
+ *  quotes:send. An optional `message` is included in the customer email above the
+ *  accept link. Responds with the updated quote in a `{ data }` envelope. */
+export function sendQuote(id: string, message?: string): Promise<Response> {
+  const note = message?.trim();
+  return fetchWithAuth(`/quotes/${id}/send`, {
+    method: 'POST',
+    ...(note ? { body: JSON.stringify({ message: note }) } : {}),
+  });
 }
 
 /** Upload an image for a quote (POST /quotes/:id/images). The body is multipart

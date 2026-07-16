@@ -34,9 +34,23 @@ function remoteImageStatus(reason: RemoteImageFailureReason): 413 | 415 | 502 | 
   }
 }
 
+// Optional sender note included in the customer email. Parsed defensively: most
+// callers (bulk-send, tests, MCP) POST no body, yet fetchWithAuth always stamps a
+// JSON content-type — so an absent/empty/invalid body degrades to "no message"
+// rather than 400-ing a send that used to work.
+const sendBodySchema = z.object({ message: z.string().trim().max(2000).optional() });
+
 // POST /:id/send — issue + email. Gated on the (previously dead) quotes:send permission.
 quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
-  try { return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c)) }); }
+  let message: string | undefined;
+  if ((c.req.header('content-type') ?? '').includes('application/json')) {
+    let json: unknown = {};
+    try { json = await c.req.json(); } catch { json = {}; }
+    const parsed = sendBodySchema.safeParse(json ?? {});
+    if (!parsed.success) return c.json({ error: 'Invalid message' }, 400);
+    message = parsed.data.message && parsed.data.message.length > 0 ? parsed.data.message : undefined;
+  }
+  try { return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c), { message }) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 

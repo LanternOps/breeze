@@ -143,12 +143,33 @@ export interface QuoteBranding {
   seller: SellerSnapshot | null;
 }
 
-/** Shape of `GET /quotes/:id` — `{ data: { quote, blocks, lines, branding } }`. */
+/** Frozen (sent) or org-resolved (draft) customer billing address. */
+export interface QuoteBillToAddress {
+  line1: string | null;
+  line2: string | null;
+  city: string | null;
+  region: string | null;
+  postalCode: string | null;
+  country: string | null;
+}
+
+/** Resolved customer "bill to" for display — server-side `getQuote` fills it from
+ *  the quote's frozen snapshot (sent) or the org's Billing settings (draft), so
+ *  the customer name + address render on the document even before the quote is
+ *  sent. Optional because list fixtures / older payloads don't carry it. */
+export interface QuoteBillTo {
+  name: string | null;
+  address: QuoteBillToAddress | null;
+  taxId: string | null;
+}
+
+/** Shape of `GET /quotes/:id` — `{ data: { quote, blocks, lines, branding, billTo } }`. */
 export interface QuoteDetail {
   quote: Quote;
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   branding?: QuoteBranding;
+  billTo?: QuoteBillTo;
   /** Persisted fulfillment staged during acceptance. Included in the detail
    * read model so technicians can discover the order after a reload. */
   pax8OrderId?: string | null;

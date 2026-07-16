@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { AlertOctagon, AlertTriangle } from 'lucide-react';
 import { Dialog } from './Dialog';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +14,8 @@ export interface ConfirmDialogProps {
   isLoading?: boolean;
   /** data-testid for the confirm button (e2e suites are testid-only). */
   confirmTestId?: string;
+  /** Optional extra content (e.g. a note field) rendered under the message. */
+  children?: ReactNode;
 }
 
 export function ConfirmDialog({
@@ -25,6 +28,7 @@ export function ConfirmDialog({
   variant = 'destructive',
   isLoading = false,
   confirmTestId,
+  children,
 }: ConfirmDialogProps) {
   const { t } = useTranslation('common');
   // Encode severity by SHAPE, not color alone: a stop-octagon for destructive
@@ -50,6 +54,7 @@ export function ConfirmDialog({
         <div className="flex-1">
           <h3 className="text-base font-semibold text-foreground">{title}</h3>
           <p className="mt-1 text-sm text-muted-foreground">{message}</p>
+          {children != null && <div className="mt-4">{children}</div>}
         </div>
       </div>
       <div className="mt-6 flex justify-end gap-3">
