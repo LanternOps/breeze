@@ -13,7 +13,13 @@
  * many in-scope devices lacked the data for that control.
  */
 
-export type PostureProductCategory = 'edr' | 'mdr' | 'dns_filtering' | 'backup' | 'identity';
+export type PostureProductCategory =
+  | 'antivirus'
+  | 'edr'
+  | 'mdr'
+  | 'dns_filtering'
+  | 'backup'
+  | 'identity';
 
 export type PostureProduct = {
   product: string;
@@ -41,6 +47,7 @@ export type PostureControls = {
   cisAssessedCount?: number;
   /** Proves an identity provider is CONNECTED, not that MFA is enforced. */
   identityProviderConnected?: boolean;
+  backupRequired?: boolean;
   backupConfigured?: boolean;
   backupEncrypted?: boolean | null;
   dnsFilteringActive?: boolean;

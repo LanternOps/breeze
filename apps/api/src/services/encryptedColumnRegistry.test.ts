@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../db', () => ({
+  db: {},
+  withSystemDbAccessContext: vi.fn(),
+}));
+
+import {
+  reencryptRegisteredSecrets,
+  transformEncryptedColumnValue,
+} from './encryptedColumnRegistry';
+import { decryptSecret, encryptSecret } from './secretCrypto';
+
 const ENV_KEYS = [
   'APP_ENCRYPTION_KEY',
   'APP_ENCRYPTION_KEY_ID',
@@ -10,25 +21,19 @@ const ENV_KEYS = [
 
 const originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
-async function loadRegistry(env: Partial<Record<(typeof ENV_KEYS)[number], string>> = {}) {
-  vi.resetModules();
+function setEncryptionEnv(env: Partial<Record<(typeof ENV_KEYS)[number], string>> = {}) {
   for (const key of ENV_KEYS) {
     delete process.env[key];
   }
   Object.assign(process.env, env);
-  return import('./encryptedColumnRegistry');
 }
 
 describe('encryptedColumnRegistry', () => {
   beforeEach(() => {
-    vi.resetModules();
-    for (const key of ENV_KEYS) {
-      delete process.env[key];
-    }
+    setEncryptionEnv();
   });
 
   afterEach(() => {
-    vi.resetModules();
     for (const key of ENV_KEYS) {
       const value = originalEnv[key];
       if (value === undefined) delete process.env[key];
@@ -36,16 +41,15 @@ describe('encryptedColumnRegistry', () => {
     }
   });
 
-  it('transforms text columns from legacy ciphertext to the active v2 key id', async () => {
-    await loadRegistry({ APP_ENCRYPTION_KEY: 'legacy-key-material' });
-    const legacyCiphertext = (await import('./secretCrypto')).encryptSecret('legacy-secret');
+  it('transforms text columns from legacy ciphertext to the active v2 key id', () => {
+    setEncryptionEnv({ APP_ENCRYPTION_KEY: 'legacy-key-material' });
+    const legacyCiphertext = encryptSecret('legacy-secret');
 
-    const { transformEncryptedColumnValue } = await loadRegistry({
+    setEncryptionEnv({
       APP_ENCRYPTION_KEY: 'legacy-key-material',
       APP_ENCRYPTION_KEY_ID: 'current',
       APP_ENCRYPTION_KEYRING: JSON.stringify({ current: 'current-key-material' }),
     });
-    const currentCrypto = await import('./secretCrypto');
 
     const transformed = transformEncryptedColumnValue({
       table: 'sso_providers',
@@ -55,25 +59,23 @@ describe('encryptedColumnRegistry', () => {
     }, legacyCiphertext);
 
     expect(transformed).toMatch(/^enc:v2:current:/);
-    expect(currentCrypto.decryptSecret(transformed as string)).toBe('legacy-secret');
+    expect(decryptSecret(transformed as string)).toBe('legacy-secret');
   });
 
-  it('recursively rotates encrypted JSON values without changing non-secret plaintext', async () => {
-    await loadRegistry({
+  it('recursively rotates encrypted JSON values without changing non-secret plaintext', () => {
+    setEncryptionEnv({
       APP_ENCRYPTION_KEY: 'old-key-material',
       APP_ENCRYPTION_KEY_ID: 'old',
     });
-    const { encryptSecret } = await import('./secretCrypto');
     const oldCiphertext = encryptSecret('old-token');
 
-    const currentRegistry = await loadRegistry({
+    setEncryptionEnv({
       APP_ENCRYPTION_KEY: 'current-key-material',
       APP_ENCRYPTION_KEY_ID: 'current',
       APP_ENCRYPTION_KEYRING: JSON.stringify({ old: 'old-key-material' }),
     });
-    const currentCrypto = await import('./secretCrypto');
 
-    const transformed = currentRegistry.transformEncryptedColumnValue({
+    const transformed = transformEncryptedColumnValue({
       table: 'notification_channels',
       column: 'config',
       kind: 'json',
@@ -85,11 +87,11 @@ describe('encryptedColumnRegistry', () => {
 
     expect(transformed.label).toBe('do-not-encrypt');
     expect(transformed.nested.authToken).toMatch(/^enc:v2:current:/);
-    expect(currentCrypto.decryptSecret(transformed.nested.authToken)).toBe('old-token');
+    expect(decryptSecret(transformed.nested.authToken)).toBe('old-token');
   });
 
   it('supports dry-run batch stats without writing updates', async () => {
-    const { reencryptRegisteredSecrets } = await loadRegistry({
+    setEncryptionEnv({
       APP_ENCRYPTION_KEY: 'current-key-material',
       APP_ENCRYPTION_KEY_ID: 'current',
     });

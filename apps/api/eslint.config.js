@@ -15,4 +15,21 @@ export default [
     linterOptions: { reportUnusedDisableDirectives: 'off' },
     rules: {},
   },
+  {
+    files: ['src/**/*.ts'],
+    ignores: ['src/**/*.test.ts', 'src/lib/validation.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@hono/zod-validator',
+              message: 'Import zValidator from src/lib/validation instead.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 ];

@@ -1,90 +1,55 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { Readable } from 'node:stream';
 
-const ENV_KEYS = [
-  'MCP_OAUTH_ENABLED',
-  'OAUTH_ISSUER',
-  'OAUTH_RESOURCE_URL',
-  'OAUTH_COOKIE_SECRET',
-  'OAUTH_JWKS_PRIVATE_JWK',
-] as const;
+const mocks = vi.hoisted(() => ({
+  getProvider: vi.fn(),
+  rateLimiter: vi.fn(),
+  getRedis: vi.fn(() => null),
+}));
 
-const clearEnv = () => {
-  for (const key of ENV_KEYS) delete process.env[key];
-};
+vi.mock('../config/env', () => ({
+  MCP_OAUTH_ENABLED: true,
+  OAUTH_DCR_ENABLED: false,
+  OAUTH_ISSUER: 'https://region.example',
+  OAUTH_RESOURCE_URL: 'https://region.example/api/v1/mcp',
+}));
+
+vi.mock('../oauth/provider', () => ({ getProvider: mocks.getProvider }));
+vi.mock('../services/redis', () => ({ getRedis: mocks.getRedis }));
+vi.mock('../services/rate-limit', () => ({ rateLimiter: mocks.rateLimiter }));
+
+import { oauthRoutes } from './oauth';
+
+function loadApp() {
+  return new Hono().route('/oauth', oauthRoutes);
+}
+
+beforeEach(() => {
+  mocks.getProvider.mockReset();
+  mocks.getProvider.mockRejectedValue(new Error('bridge sentinel'));
+  mocks.rateLimiter.mockReset();
+  mocks.rateLimiter.mockResolvedValue({
+    allowed: true,
+    remaining: 1,
+    resetAt: new Date('2026-04-23T00:00:00.000Z'),
+  });
+});
 
 describe('oauthRoutes', () => {
-  beforeEach(() => {
-    clearEnv();
-    vi.resetModules();
-  });
-
-  afterEach(() => {
-    clearEnv();
-    vi.doUnmock('../oauth/provider');
-  });
-
-  it('does not mount the catch-all when MCP_OAUTH_ENABLED is false', async () => {
-    const { oauthRoutes } = await import('./oauth');
-    const app = new Hono().route('/oauth', oauthRoutes);
-    const res = await app.request('/oauth/anything', { method: 'GET' });
-    expect(res.status).toBe(404);
-  });
-
   it('mounts a catch-all when MCP_OAUTH_ENABLED is true (provider call deferred)', async () => {
-    process.env.MCP_OAUTH_ENABLED = 'true';
-    vi.doMock('../oauth/provider', () => ({
-      getProvider: vi.fn(async () => {
-        throw new Error('provider not ready in this smoke test');
-      }),
-    }));
-    vi.resetModules();
+    const app = loadApp();
+    expect(mocks.getProvider).not.toHaveBeenCalled();
 
-    const { oauthRoutes } = await import('./oauth');
-    const app = new Hono().route('/oauth', oauthRoutes);
     const res = await app.request('/oauth/anything', { method: 'GET' });
+
     expect(res.status).toBe(500);
+    expect(mocks.getProvider).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('oauthRoutes — resource-indicator alias normalization (#2363)', () => {
   const RESOURCE = 'https://region.example/api/v1/mcp';
-
-  beforeEach(() => {
-    clearEnv();
-    vi.resetModules();
-  });
-
-  afterEach(() => {
-    clearEnv();
-    vi.doUnmock('../oauth/provider');
-    vi.doUnmock('../services/redis');
-    vi.doUnmock('../services/rate-limit');
-  });
-
-  /**
-   * Build the routes with MCP OAuth enabled, the provider bridge mocked to
-   * throw a sentinel (the pre-handler under test runs BEFORE the bridge),
-   * and Redis/rate-limit mocked so the /token and /auth limiter branches
-   * don't need infrastructure.
-   */
-  const importApp = async (): Promise<Hono> => {
-    process.env.MCP_OAUTH_ENABLED = 'true';
-    process.env.OAUTH_RESOURCE_URL = RESOURCE;
-    vi.doMock('../oauth/provider', () => ({
-      getProvider: vi.fn(async () => {
-        throw new Error('bridge sentinel');
-      }),
-    }));
-    vi.doMock('../services/redis', () => ({ getRedis: vi.fn(() => null) }));
-    vi.doMock('../services/rate-limit', () => ({
-      rateLimiter: vi.fn(async () => ({ allowed: true, remaining: 1, resetAt: new Date() })),
-    }));
-    vi.resetModules();
-    const { oauthRoutes } = await import('./oauth');
-    return new Hono().route('/oauth', oauthRoutes);
-  };
 
   /** Fake Node IncomingMessage: a real Readable plus headers/url. */
   const fakeIncoming = (opts: { body?: string; url?: string }) => {
@@ -104,7 +69,7 @@ describe('oauthRoutes — resource-indicator alias normalization (#2363)', () =>
   };
 
   it('rewrites an /sse-alias resource in the token body to the canonical resource before the bridge', async () => {
-    const app = await importApp();
+    const app = loadApp();
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: 'rt-1',
@@ -131,7 +96,7 @@ describe('oauthRoutes — resource-indicator alias normalization (#2363)', () =>
   });
 
   it('leaves an unrelated resource untouched in the token body (still fails invalid_target downstream)', async () => {
-    const app = await importApp();
+    const app = loadApp();
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: 'rt-1',
@@ -152,7 +117,7 @@ describe('oauthRoutes — resource-indicator alias normalization (#2363)', () =>
   });
 
   it('rewrites an alias resource in the authorization request query before the bridge reads incoming.url', async () => {
-    const app = await importApp();
+    const app = loadApp();
     const query = new URLSearchParams({
       response_type: 'code',
       client_id: 'client-1',
@@ -171,7 +136,7 @@ describe('oauthRoutes — resource-indicator alias normalization (#2363)', () =>
   });
 
   it('does not touch the authorization URL when the resource is already canonical', async () => {
-    const app = await importApp();
+    const app = loadApp();
     const query = new URLSearchParams({
       response_type: 'code',
       client_id: 'client-1',

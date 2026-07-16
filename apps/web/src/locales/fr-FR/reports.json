@@ -206,6 +206,12 @@
       "topMemoryUsage": "Utilisation principale de la mémoire",
       "totalDevices": "Nombre total d’appareils"
     },
+    "postureOptions": {
+      "requireBackupCoverage": "Exiger une couverture de sauvegarde",
+      "requireBackupCoverageHelp": "Lorsqu'elle est facultative, la sauvegarde reste visible comme preuve neutre et ne génère aucune recommandation.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
     "reportBuilderPage": {
       "configurationTitle": "Configuration du rapport",
       "description": "Générez un rapport unique sans le enregistrer.",

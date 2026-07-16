@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ReportBuilder, { reportTypeSurvivesBuilder, type ReportBuilderFormValues } from './ReportBuilder';
+import { PostureReportOptionsForm } from './PostureReportOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -344,6 +345,8 @@ export default function ReportTemplates() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [activeTemplate, setActiveTemplate] = useState<ReportTemplate | null>(null);
+  const [postureTemplate, setPostureTemplate] = useState<ReportTemplate | null>(null);
+  const [backupRequired, setBackupRequired] = useState(false);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -379,7 +382,7 @@ export default function ReportTemplates() {
   // Reports whose type the freeform builder would downgrade are saved directly
   // with their true type instead of being routed through it.
   const handleCreateDirect = useCallback(
-    async (template: ReportTemplate) => {
+    async (template: ReportTemplate, postureConfig: Record<string, unknown> = {}) => {
       setCreatingId(template.id);
       try {
         await runAction({
@@ -393,7 +396,8 @@ export default function ReportTemplates() {
                 format: template.defaults.format ?? 'pdf',
                 ...(currentOrgId ? { orgId: currentOrgId } : {}),
                 config: {
-                  dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' }
+                  dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' },
+                  ...postureConfig
                 }
               })
           }),
@@ -419,6 +423,11 @@ export default function ReportTemplates() {
       // would silently downgrade them) are created directly; everything the
       // builder round-trips losslessly goes through the builder for tailoring.
       const type = template.defaults.type;
+      if (type === 'security_compliance_posture') {
+        setBackupRequired(false);
+        setPostureTemplate(template);
+        return;
+      }
       if (type && !reportTypeSurvivesBuilder(type)) {
         void handleCreateDirect(template);
         return;
@@ -589,6 +598,30 @@ export default function ReportTemplates() {
                 defaultValues={builderDefaults}
                 onSubmit={handleSubmit}
                 onCancel={handleCloseBuilder}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {postureTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(postureTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <PostureReportOptionsForm
+                backupRequired={backupRequired}
+                busy={creatingId === postureTemplate.id}
+                submitLabel={t('reports.postureOptions.createReport')}
+                onBackupRequiredChange={setBackupRequired}
+                onCancel={() => setPostureTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(postureTemplate, { backupRequired });
+                }}
               />
             </div>
           </div>

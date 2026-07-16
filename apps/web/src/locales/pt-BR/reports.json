@@ -206,6 +206,12 @@
       "topMemoryUsage": "Maior Uso de Memoria",
       "totalDevices": "Total de Dispositivos"
     },
+    "postureOptions": {
+      "requireBackupCoverage": "Exigir cobertura de backup",
+      "requireBackupCoverageHelp": "Quando opcional, o backup permanece visível como evidência neutra e não gera uma recomendação.",
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório"
+    },
     "reportBuilderPage": {
       "configurationTitle": "Configuracao do Relatório",
       "description": "Gere um relatório unico sem salva-lo.",

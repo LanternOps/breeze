@@ -16,4 +16,18 @@ describe('security_compliance_posture validation', () => {
     expect(cfg.minPasswordLength).toBe(8);
     expect(cfg.maxLocalAdmins).toBe(2);
   });
+
+  it('defaults omitted backupRequired to required for legacy reports', () => {
+    expect(securityCompliancePostureConfigSchema.parse({}).backupRequired).toBe(true);
+  });
+
+  it.each([true, false])('accepts backupRequired=%s', (backupRequired) => {
+    expect(securityCompliancePostureConfigSchema.parse({ backupRequired }).backupRequired)
+      .toBe(backupRequired);
+  });
+
+  it('rejects non-boolean backupRequired', () => {
+    expect(securityCompliancePostureConfigSchema.safeParse({ backupRequired: 'false' }).success)
+      .toBe(false);
+  });
 });
