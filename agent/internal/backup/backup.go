@@ -168,8 +168,21 @@ func (m *BackupManager) RunBackup() (*BackupJob, error) {
 // slice overrides the configured exclusion patterns for this run only (an
 // empty non-nil slice disables exclusions); nil falls back to the config
 // excludes. Server-dispatched backup_run commands pass their policy excludes
-// here (#2418).
+// here (#2418). It delegates to RunBackupContext with a background context
+// (no external cancellation source, same as before RunBackupContext existed).
 func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, error) {
+	return m.RunBackupContext(context.Background(), excludes)
+}
+
+// RunBackupContext is identical to RunBackupWithExcludes except the run's
+// internal context is derived from the caller-supplied ctx (via
+// context.WithCancel) instead of context.Background(). This lets an external
+// cancellation source — e.g. the breeze-backup helper's commandCanceller,
+// tracking a server-dispatched backup_run's commandID — abort an in-flight
+// run the same way Stop() does, even for ephemeral per-command managers that
+// never go through Stop() (#2452 follow-up: backup_stop must actually cancel
+// payload-manager runs, not just agent.yaml-manager runs).
+func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string) (*BackupJob, error) {
 	if excludes == nil {
 		excludes = m.config.Excludes
 	}
@@ -183,6 +196,9 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 	if len(m.config.Paths) == 0 && !m.config.SystemStateEnabled {
 		return nil, errors.New("backup paths are required")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	m.mu.Lock()
 	if m.jobRunning {
@@ -190,7 +206,7 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 		return nil, errors.New("backup already running")
 	}
 	m.jobRunning = true
-	ctx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(ctx)
 	jobDoneCh := make(chan struct{})
 	m.jobCancel = cancel
 	m.jobDoneCh = jobDoneCh
@@ -223,12 +239,12 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 	// VSS: create shadow copy on Windows for application-consistent backup
 	var vssSession *vss.VSSSession
 	if m.config.VSSEnabled && runtime.GOOS == "windows" {
-		if err := ctx.Err(); err != nil {
+		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
 		}
 		vssStart := time.Now()
 		provider := vss.NewProvider(vss.DefaultConfig())
-		vssCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		vssCtx, cancel := context.WithTimeout(runCtx, 10*time.Minute)
 		session, vssErr := provider.CreateShadowCopy(vssCtx, extractVolumes(m.config.Paths))
 		cancel()
 		if vssErr != nil {
@@ -257,7 +273,7 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 	// System state collection: gather OS config, hardware profile, etc.
 	var systemStateErr error
 	if m.config.SystemStateEnabled {
-		if err := ctx.Err(); err != nil {
+		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
 		}
 		manifest, stagingDir, ssErr := collectSystemState()
@@ -290,11 +306,11 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 		backupPaths = rewritePathsForVSS(backupPaths, vssSession.ShadowPaths)
 	}
 
-	if err := ctx.Err(); err != nil {
+	if err := runCtx.Err(); err != nil {
 		return stopBackupRun()
 	}
 	cutoff := m.lastSnapshotTime
-	files, scanErr := m.collectBackupFilesFromPaths(ctx, backupPaths, cutoff, newExcludeMatcher(excludes))
+	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, cutoff, newExcludeMatcher(excludes))
 	if scanErr != nil {
 		if errors.Is(scanErr, errBackupStopped) {
 			return stopBackupRun()
@@ -302,7 +318,7 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 		log.Printf("[backup] backup file scan completed with errors: %v", scanErr)
 	}
 	if len(files) == 0 {
-		if err := ctx.Err(); err != nil {
+		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
 		}
 		// A system-state-only run (no configured file paths) that produced
@@ -325,7 +341,7 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 		return job, scanErr
 	}
 
-	snapshot, snapErr := CreateSnapshotContext(ctx, m.config.Provider, files)
+	snapshot, snapErr := CreateSnapshotContext(runCtx, m.config.Provider, files)
 	if errors.Is(snapErr, errBackupStopped) {
 		return stopBackupRun()
 	}
@@ -337,11 +353,11 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 	}
 
 	retentionErr := error(nil)
-	if err := ctx.Err(); err != nil {
+	if err := runCtx.Err(); err != nil {
 		return stopBackupRun()
 	}
 	if snapshot != nil && m.config.Retention > 0 {
-		retentionErr = DeleteSnapshotContext(ctx, m.config.Provider, m.config.Retention)
+		retentionErr = DeleteSnapshotContext(runCtx, m.config.Provider, m.config.Retention)
 		if retentionErr != nil {
 			if errors.Is(retentionErr, errBackupStopped) {
 				return stopBackupRun()

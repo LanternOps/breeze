@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	pathpkg "path/filepath"
@@ -127,6 +128,54 @@ func TestStop_CancelsActiveBackup(t *testing.T) {
 	// A second Stop is a no-op once the job has unwound.
 	if mgr.Stop() {
 		t.Error("Stop should report false after the active backup has already stopped")
+	}
+}
+
+// A server-dispatched backup_run builds an ephemeral BackupManager from the
+// command payload; it never goes through Stop() (the helper cancels it via
+// commandCanceller instead — see main.go's backup_run/backup_stop cases). So
+// the caller-supplied context, not just Stop(), must be able to unwind an
+// in-flight run.
+func TestRunBackupContextExternalCancel(t *testing.T) {
+	provider := newBlockingUploadProvider()
+	dir := t.TempDir()
+	createTempFile(t, dir, "f.txt", "x")
+
+	mgr := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{dir}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := mgr.RunBackupContext(ctx, nil)
+		errCh <- err
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for backup upload to start")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, errBackupStopped) {
+			t.Fatalf("want errBackupStopped, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("backup did not unwind after external cancel")
+	}
+
+	// jobRunning must be cleared after the cancelled run unwinds, or every
+	// subsequent RunBackupContext call would wrongly fail with "backup
+	// already running". Use an already-cancelled context for the follow-up
+	// call so it unwinds at the first ctx.Err() check (before touching the
+	// blocking provider again) instead of hanging — we only care whether it
+	// got past the jobRunning guard.
+	followUpCtx, followUpCancel := context.WithCancel(context.Background())
+	followUpCancel()
+	if _, err := mgr.RunBackupContext(followUpCtx, nil); err != nil && err.Error() == "backup already running" {
+		t.Fatal("jobRunning flag not cleared after cancelled run")
 	}
 }
 

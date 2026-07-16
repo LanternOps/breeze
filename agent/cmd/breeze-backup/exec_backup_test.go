@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -442,5 +443,80 @@ func TestParseBackupRunExcludes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// blockingRunProvider mirrors backup_test.go's blockingUploadProvider
+// (package backup, unreachable from here): it signals once upload has
+// started, then blocks until the context passed to UploadContext is done.
+type blockingRunProvider struct {
+	once    sync.Once
+	started chan struct{}
+}
+
+func newBlockingRunProvider() *blockingRunProvider {
+	return &blockingRunProvider{started: make(chan struct{})}
+}
+
+func (p *blockingRunProvider) Upload(localPath, remotePath string) error {
+	return p.UploadContext(context.Background(), localPath, remotePath)
+}
+
+func (p *blockingRunProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
+	p.once.Do(func() { close(p.started) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (p *blockingRunProvider) Download(remotePath, localPath string) error { return nil }
+func (p *blockingRunProvider) List(prefix string) ([]string, error)        { return []string{}, nil }
+func (p *blockingRunProvider) Delete(remotePath string) error              { return nil }
+
+// TestBackupStopCancelsPayloadDispatchedBackupRun proves the fix for the bug
+// this task addresses: executeCommand's "backup_run" case builds (or, as
+// here, is handed) an ephemeral BackupManager that never goes through
+// mgr.Stop() — only backup_stop's commandCanceller.cancelAll() can reach it.
+// Before RunBackupContext/commandCanceller.track wiring, cancelAll had
+// nothing tracked for this command and the run kept going.
+func TestBackupStopCancelsPayloadDispatchedBackupRun(t *testing.T) {
+	provider := newBlockingRunProvider()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	mgr := backup.NewBackupManager(backup.BackupConfig{Provider: provider, Paths: []string{dir}})
+	commandCanceller := newActiveCommandCanceller()
+
+	req := backupipc.BackupCommandRequest{
+		CommandID:   "run-1",
+		CommandType: "backup_run",
+	}
+
+	resultCh := make(chan backupipc.BackupCommandResult, 1)
+	go func() {
+		resultCh <- executeCommand(req, mgr, nil, nil, commandCanceller)
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for backup upload to start")
+	}
+
+	if !commandCanceller.cancelAll() {
+		t.Fatal("cancelAll should report an active command was cancelled")
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.Success {
+			t.Fatalf("expected backup_run to fail after backup_stop cancelled it, got success: %+v", result)
+		}
+		if result.Stderr != "backup stopped" {
+			t.Fatalf("stderr = %q, want %q", result.Stderr, "backup stopped")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("backup_run did not unwind after backup_stop cancelled it")
 	}
 }

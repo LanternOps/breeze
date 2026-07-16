@@ -465,7 +465,13 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		if err != nil {
 			return fail(err.Error())
 		}
-		result := marshalResult(mgr.RunBackupWithExcludes(excludes))
+		// Track this command with the canceller so backup_stop's cancelAll()
+		// can abort the run even though mgr may be an ephemeral
+		// payload-built manager that never goes through Stop() (see
+		// managerFromBackupRunPayload above).
+		ctx, cleanup := commandCanceller.track(req.CommandID)
+		defer cleanup()
+		result := marshalResult(mgr.RunBackupContext(ctx, excludes))
 		// Auto-sync to vault after successful backup (async — don't block command response)
 		if result.Success {
 			go autoSyncToVault(result.Stdout, vaultState, conn)
