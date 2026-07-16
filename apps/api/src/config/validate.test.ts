@@ -38,6 +38,7 @@ const validEnv = {
   AGENT_ENROLLMENT_SECRET: 'prod-test-agent-enrollment-secret-32-chars-min-strong-random',
   ENROLLMENT_KEY_PEPPER: 'prod-test-enrollment-pepper-32-chars-min-strong-random',
   MFA_RECOVERY_CODE_PEPPER: 'prod-test-mfa-recovery-pepper-32-chars-min-strong-random',
+  PARTNER_API_CURSOR_SIGNING_KEY: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=',
   RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'prod-test-release-manifest-public-key',
   // Production-required (#570 defense-in-depth): explicit boolean keeps the
   // many "production happy-path" tests below from tripping the new check.
@@ -71,6 +72,73 @@ describe('validateConfig', () => {
     }, () => {
       const config = validateConfig();
       expect(config.NODE_ENV).toBe('production');
+    });
+  });
+
+  it('accepts a dedicated base64-encoded 32-byte partner export cursor key in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      const config = validateConfig();
+      expect(config.PARTNER_API_CURSOR_SIGNING_KEY).toBe(validEnv.PARTNER_API_CURSOR_SIGNING_KEY);
+    });
+  });
+
+  it('rejects a missing partner export cursor signing key in production', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      PARTNER_API_CURSOR_SIGNING_KEY: '',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
+    });
+  });
+
+  it('rejects invalid or shorter-than-32-byte partner export cursor keys in production', () => {
+    for (const key of ['not valid base64***', Buffer.alloc(31, 7).toString('base64')]) {
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        PARTNER_API_CURSOR_SIGNING_KEY: key,
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'true',
+      }, () => {
+        expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
+        expect(() => validateConfig()).toThrow('32 bytes');
+      });
+    }
+  });
+
+  it('rejects reusing JWT_SECRET as the partner export cursor signing key', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      JWT_SECRET: validEnv.PARTNER_API_CURSOR_SIGNING_KEY,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('must not reuse secret material');
+      expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
+    });
+  });
+
+  it('rejects cursor bytes that equal UTF-8 JWT_SECRET despite different encodings', () => {
+    const jwtSecret = '0123456789abcdef0123456789ABCDEF';
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      JWT_SECRET: jwtSecret,
+      PARTNER_API_CURSOR_SIGNING_KEY: Buffer.from(jwtSecret, 'utf8').toString('base64'),
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
+      expect(() => validateConfig()).toThrow('JWT_SECRET key material');
     });
   });
 

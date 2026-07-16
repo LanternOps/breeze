@@ -131,13 +131,18 @@ async function seedFixture(): Promise<Fixture> {
 // tables CASCADE (which cascades through the policy FKs) before every test.
 afterAll(async () => {
   if (seededPartnerIds.length === 0) return;
+  const partnerList = sql.join(seededPartnerIds.map((id) => sql`${id}`), sql`, `);
+  // configuration_policies → feature_links → settings all cascade, so delete
+  // policies (for the seeded orgs) before the organizations they reference.
+  // Separate transactions: the policy delete takes org-level partner-export
+  // locks while the organizations delete takes partner-level locks, and the
+  // lock hierarchy forbids partner-after-org within one transaction.
   await withSystemDbAccessContext(async () => {
-    const partnerList = sql.join(seededPartnerIds.map((id) => sql`${id}`), sql`, `);
-    // configuration_policies → feature_links → settings all cascade, so delete
-    // policies (for the seeded orgs) before the organizations they reference.
     await db
       .delete(configurationPolicies)
       .where(sql`${configurationPolicies.orgId} IN (SELECT id FROM organizations WHERE partner_id IN (${partnerList}))`);
+  });
+  await withSystemDbAccessContext(async () => {
     await db.delete(organizations).where(sql`${organizations.partnerId} IN (${partnerList})`);
     await db.delete(partners).where(sql`${partners.id} IN (${partnerList})`);
   });

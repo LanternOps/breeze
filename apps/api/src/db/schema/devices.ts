@@ -125,8 +125,11 @@ export const devices = pgTable('devices', {
   // their support workflow is "remote restart" not "physical visit."
   mainAgentSilentSince: timestamp('main_agent_silent_since'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
+}, (table) => ({
+  idOrgUnique: uniqueIndex('devices_id_org_id_uniq').on(table.id, table.orgId),
+}));
 
 // Linked device profiles for multi-boot systems (#2138). One row per physical
 // machine whose OS boot profiles are surfaced as separate device records. This
@@ -171,8 +174,34 @@ export const deviceHardware = pgTable('device_hardware', {
   motherboardProduct: varchar('motherboard_product', { length: 255 }),
   motherboardVersion: varchar('motherboard_version', { length: 255 }),
   biosVersion: varchar('bios_version', { length: 100 }),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
 });
+
+// Resource-specific material fingerprints for reconstruction exports. Deferred
+// database triggers refresh these only when the final durable child state has
+// actually changed, so periodic delete/reinsert inventory collection and
+// heartbeat fields do not create false incremental changes.
+export const partnerExportDeviceMaterialState = pgTable('partner_export_device_material_state', {
+  deviceId: uuid('device_id').primaryKey().references(() => devices.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  inventoryUpdatedAt: timestamp('inventory_updated_at', { precision: 3 }).defaultNow().notNull(),
+  softwareUpdatedAt: timestamp('software_updated_at', { precision: 3 }).defaultNow().notNull(),
+  relationshipsUpdatedAt: timestamp('relationships_updated_at', { precision: 3 }).defaultNow().notNull(),
+}, (table) => ({
+  orgIdIdx: index('partner_export_device_material_state_org_id_idx').on(table.orgId),
+  orgDeviceUnique: uniqueIndex('partner_export_device_material_state_org_device_uniq').on(table.orgId, table.deviceId),
+}));
+
+export const partnerExportSiteMaterialState = pgTable('partner_export_site_material_state', {
+  siteId: uuid('site_id').primaryKey().references(() => sites.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  inventoryUpdatedAt: timestamp('inventory_updated_at', { precision: 3 }).defaultNow().notNull(),
+  relationshipsUpdatedAt: timestamp('relationships_updated_at', { precision: 3 }).defaultNow().notNull(),
+}, (table) => ({
+  orgIdIdx: index('partner_export_site_material_state_org_id_idx').on(table.orgId),
+  orgSiteUnique: uniqueIndex('partner_export_site_material_state_org_site_uniq').on(table.orgId, table.siteId),
+}));
 
 export const deviceNetwork = pgTable('device_network', {
   id: uuid('id').primaryKey().defaultRandom(),

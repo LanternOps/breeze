@@ -37,6 +37,7 @@ import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './par
 import { z } from 'zod';
 import {
   backupExcludePatternsSchema,
+  configFeatureInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
@@ -1145,6 +1146,10 @@ export async function addFeatureLink(
   featurePolicyId?: string | null,
   inlineSettings?: unknown
 ) {
+  if (inlineSettings !== undefined && inlineSettings !== null) {
+    inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
+  }
+
   if (featureType === 'pam' && inlineSettings !== undefined && inlineSettings !== null) {
     pamInlineSettingsSchema.parse(inlineSettings);
   }
@@ -1193,8 +1198,17 @@ export async function addFeatureLink(
     if (!link) return null;
 
     // Decompose inlineSettings into normalized per-feature table
-    if (featureType === 'patch' || effectiveInlineSettings) {
-      await decomposeInlineSettings(link.id, featureType, effectiveInlineSettings, tx);
+    if (
+      featureType === 'patch'
+      || effectiveInlineSettings
+      || (featureType === 'backup' && featurePolicyId)
+    ) {
+      await decomposeInlineSettings(
+        link.id,
+        featureType,
+        featureType === 'backup' ? (effectiveInlineSettings ?? {}) : effectiveInlineSettings,
+        tx
+      );
     }
 
     return link;
@@ -1206,6 +1220,10 @@ export async function updateFeatureLink(
   updates: { featurePolicyId?: string | null; inlineSettings?: unknown },
   configPolicyId?: string
 ) {
+  if (updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+    updates.inlineSettings = configFeatureInlineSettingsSchema.parse(updates.inlineSettings);
+  }
+
   return db.transaction(async (tx) => {
     // Fetch current link to get featureType, scoped to configPolicyId when provided
     const conditions = [eq(configPolicyFeatureLinks.id, linkId)];
@@ -1265,12 +1283,35 @@ export async function updateFeatureLink(
       .where(eq(configPolicyFeatureLinks.id, linkId))
       .returning();
 
-    // If inlineSettings changed, replace normalized rows (delete + re-insert)
-    if (updates.inlineSettings !== undefined) {
+    // A backup featurePolicyId selects the profile (or legacy destination)
+    // materialized into config_policy_backup_settings. Rebuild that row even
+    // when callers omit inlineSettings, otherwise the link can say profile B
+    // while runtime keeps applying the previously materialized profile A.
+    const backupReferenceChanged =
+      existing.featureType === 'backup'
+      && updates.featurePolicyId !== undefined
+      && updates.featurePolicyId !== existing.featurePolicyId;
+
+    // If settings or the backup reference changed, replace normalized rows
+    // (delete + re-insert) from the updated reference and effective mirror.
+    if (updates.inlineSettings !== undefined || backupReferenceChanged) {
       const featureType = existing.featureType as ConfigFeatureType;
+      const settingsToDecompose =
+        updates.inlineSettings !== undefined
+          ? normalizedInlineSettings
+          : existing.inlineSettings;
       await deleteNormalizedRows(linkId, featureType, tx);
-      if (featureType === 'patch' || normalizedInlineSettings) {
-        await decomposeInlineSettings(linkId, featureType, normalizedInlineSettings, tx);
+      if (
+        featureType === 'patch'
+        || settingsToDecompose
+        || (featureType === 'backup' && updates.featurePolicyId)
+      ) {
+        await decomposeInlineSettings(
+          linkId,
+          featureType,
+          featureType === 'backup' ? (settingsToDecompose ?? {}) : settingsToDecompose,
+          tx
+        );
       }
     }
 

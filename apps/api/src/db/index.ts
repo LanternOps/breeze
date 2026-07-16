@@ -298,6 +298,39 @@ export async function withSystemDbAccessContext<T>(fn: () => Promise<T>): Promis
 }
 
 /**
+ * Resolve a tenant context and run work in the same transaction that performed
+ * that resolution. The transaction begins in system scope so the resolver can
+ * discover an allowlist, then its SET LOCAL RLS context is narrowed before
+ * `fn` runs. This is intentionally different from nesting withDbAccessContext:
+ * nested calls retain the existing context and therefore cannot safely bridge
+ * a lock-protected allowlist discovery into tenant-scoped request work.
+ */
+export async function withResolvedDbAccessContext<T, R>(
+  resolve: () => Promise<{ context: DbAccessContext; value: R }>,
+  fn: (value: R) => Promise<T>,
+): Promise<T> {
+  return withSystemDbAccessContext(async () => {
+    const resolved = await resolve();
+    const activeDb = getCurrentDb();
+    const serializedOrgIds = serializeAccessibleIds(
+      resolved.context.scope,
+      resolved.context.accessibleOrgIds,
+    );
+    const serializedPartnerIds = serializeAccessibleIds(
+      resolved.context.scope,
+      resolved.context.accessiblePartnerIds,
+    );
+    await activeDb.execute(sql`select set_config('breeze.scope', ${resolved.context.scope}, true)`);
+    await activeDb.execute(sql`select set_config('breeze.org_id', ${resolved.context.orgId ?? ''}, true)`);
+    await activeDb.execute(sql`select set_config('breeze.accessible_org_ids', ${serializedOrgIds}, true)`);
+    await activeDb.execute(sql`select set_config('breeze.accessible_partner_ids', ${serializedPartnerIds}, true)`);
+    await activeDb.execute(sql`select set_config('breeze.user_id', ${resolved.context.userId ?? ''}, true)`);
+    await activeDb.execute(sql`select set_config('breeze.current_partner_id', ${resolved.context.currentPartnerId ?? ''}, true)`);
+    return dbContextMetaStorage.run(resolved.context, () => fn(resolved.value));
+  });
+}
+
+/**
  * True when the current async scope is inside an active
  * `withDbAccessContext` / `withSystemDbAccessContext` call. Use to assert
  * RLS context is established before a tenant-scoped query in code paths

@@ -123,6 +123,22 @@ describe('addFeatureLinkSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('rejects the reserved patch export marker recursively for every feature type', () => {
+    const featureTypes = [
+      'patch', 'alert_rule', 'backup', 'security', 'monitoring', 'maintenance',
+      'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data',
+      'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam',
+      'onedrive_helper', 'vulnerability',
+    ] as const;
+    for (const featureType of featureTypes) {
+      const result = addFeatureLinkSchema.safeParse({
+        featureType,
+        inlineSettings: { nested: { __breezePatchInlineMirror: 'attacker-value' } },
+      });
+      expect(result.success, featureType).toBe(false);
+    }
+  });
 });
 
 describe('updateFeatureLinkSchema', () => {
@@ -146,6 +162,23 @@ describe('updateFeatureLinkSchema', () => {
     expect(
       updateFeatureLinkSchema.safeParse({ featurePolicyId: VALID_UUID }).success
     ).toBe(true);
+  });
+
+  it('rejects the reserved patch export marker recursively on update', () => {
+    expect(updateFeatureLinkSchema.safeParse({
+      inlineSettings: { nested: [{ __breezePatchInlineMirror: 'attacker-value' }] },
+    }).success).toBe(false);
+  });
+
+  it('fails closed for non-JSON cyclic or excessively large service inputs', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(updateFeatureLinkSchema.safeParse({ inlineSettings: cyclic }).success).toBe(false);
+
+    const tooManyObjects = {
+      nested: Array.from({ length: 10_001 }, () => ({})),
+    };
+    expect(updateFeatureLinkSchema.safeParse({ inlineSettings: tooManyObjects }).success).toBe(false);
   });
 });
 

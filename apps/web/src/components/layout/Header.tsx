@@ -489,6 +489,14 @@ export default function Header() {
                   <span>{t('layout.header.apiKeys')}</span>
                 </a>
                 <a
+                  href="/settings/partner-service-principals"
+                  className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition hover:bg-muted"
+                  onClick={() => setShowUserMenu(false)}
+                >
+                  <Shield className="h-4 w-4 text-muted-foreground" />
+                  <span>{t('layout.header.partnerServicePrincipals')}</span>
+                </a>
+                <a
                   href="/account/devices"
                   className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition hover:bg-muted"
                   onClick={() => setShowUserMenu(false)}
