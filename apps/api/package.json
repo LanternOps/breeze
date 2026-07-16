@@ -39,8 +39,6 @@
     "@anthropic-ai/sdk": "^0.111.0",
     "@aws-sdk/client-s3": "^3.1076.0",
     "@aws-sdk/s3-request-presigner": "^3.1030.0",
-    "@azure/identity": "^4.6.0",
-    "@azure/keyvault-secrets": "^4.9.0",
     "@breeze/extension-api": "workspace:*",
     "@breeze/extension-sdk": "workspace:*",
     "@breeze/shared": "workspace:*",

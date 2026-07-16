@@ -20,6 +20,10 @@ import HuntressIntegration from "./HuntressIntegration";
 import MonitoringIntegration from "./MonitoringIntegration";
 import GoogleWorkspaceIntegration from "./GoogleWorkspaceIntegration";
 import M365Integration from "./M365Integration";
+import M365CustomerGraphReadCard, {
+  M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS,
+  type M365CustomerGraphReadCallbackResult,
+} from "./M365CustomerGraphReadCard";
 import Pax8Integration from "./Pax8Integration";
 import TdSynnexCatalogPanel from "../settings/TdSynnexCatalogPanel";
 import TdSynnexEcExpressPanel from "../settings/TdSynnexEcExpressPanel";
@@ -29,6 +33,7 @@ import StripePaymentsIntegration from "./StripePaymentsIntegration";
 import UnifiIntegration from "./UnifiIntegration";
 import { getJwtClaims } from "../../lib/authScope";
 import { useHelpStore, rebaseDocsUrl } from "../../stores/helpStore";
+import { useOrgStore } from "../../stores/orgStore";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 
@@ -122,9 +127,24 @@ function parseHash(fallbackTab: TabId): {
   identitySub?: IdentitySubTab;
   distributorSub?: DistributorSubTab;
   accountingSub?: AccountingSubTab;
+  customerGraphReadResult?: M365CustomerGraphReadCallbackResult;
+  consumeCustomerGraphReadResult?: boolean;
 } {
   if (typeof window === "undefined") return { tab: fallbackTab };
   const hash = window.location.hash.replace(/^#/, "");
+  const customerGraphReadPrefix = "m365/customer-graph-read/";
+  if (hash.startsWith(customerGraphReadPrefix)) {
+    const candidate = hash.slice(customerGraphReadPrefix.length);
+    const customerGraphReadResult = M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS.find(
+      (result) => result === candidate,
+    );
+    return {
+      tab: "identity",
+      identitySub: "m365",
+      customerGraphReadResult,
+      consumeCustomerGraphReadResult: true,
+    };
+  }
   if (tabs.some((t) => t.id === hash)) return { tab: hash as TabId };
   if (securitySubTabs.some((s) => s.id === hash))
     return { tab: "security", securitySub: hash as SecuritySubTab };
@@ -150,6 +170,10 @@ export default function IntegrationsPage({
   initialTab = "webhooks",
 }: IntegrationsPageProps) {
   const { t } = useTranslation("integrations");
+  const currentOrgId = useOrgStore((value) => value.currentOrgId);
+  const claims = getJwtClaims();
+  const callbackOrgId = currentOrgId
+    || (claims.scope === "organization" ? claims.orgId ?? null : null);
   // Deep-link support: the URL hash selects the initial tab — and sub-tab — on
   // load, e.g. /integrations#psa or /integrations#huntress.
   //
@@ -162,6 +186,11 @@ export default function IntegrationsPage({
   const [identitySubTab, setIdentitySubTab] = useState<IdentitySubTab>("google");
   const [distributorSubTab, setDistributorSubTab] = useState<DistributorSubTab>("pax8");
   const [accountingSubTab, setAccountingSubTab] = useState<AccountingSubTab>("quickbooks");
+  const [customerGraphReadCallback, setCustomerGraphReadCallback] = useState<{
+    result: M365CustomerGraphReadCallbackResult | null;
+    refreshKey: number;
+    orgId: string | null;
+  }>({ result: null, refreshKey: 0, orgId: null });
 
   // Adopt the hash post-commit / pre-paint (no visible flash of the fallback
   // tab), and keep following it for back/forward and externally-changed hashes.
@@ -175,11 +204,29 @@ export default function IntegrationsPage({
       if (parsed.identitySub) setIdentitySubTab(parsed.identitySub);
       if (parsed.distributorSub) setDistributorSubTab(parsed.distributorSub);
       if (parsed.accountingSub) setAccountingSubTab(parsed.accountingSub);
+      if (parsed.consumeCustomerGraphReadResult) {
+        setCustomerGraphReadCallback((current) => ({
+          result: parsed.customerGraphReadResult ?? null,
+          refreshKey: current.refreshKey + 1,
+          orgId: callbackOrgId,
+        }));
+        window.history.replaceState(
+          window.history.state,
+          "",
+          `${window.location.pathname}${window.location.search}#m365`,
+        );
+      } else {
+        setCustomerGraphReadCallback((current) =>
+          current.result === null && current.orgId === null
+            ? current
+            : { ...current, result: null, orgId: null },
+        );
+      }
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
     return () => window.removeEventListener("hashchange", applyHash);
-  }, [initialTab]);
+  }, [callbackOrgId, initialTab]);
 
   // Select a top-level tab and reflect it in the URL hash so the tab is
   // deep-linkable / shareable and survives a reload.
@@ -207,7 +254,11 @@ export default function IntegrationsPage({
   // org-scope users get a clear message instead of 403 errors. getJwtClaims returns
   // null scope on a missing/undecodable token, so only a confirmed 'organization'
   // scope is blocked; everything else falls through to the server's own check.
-  const isOrgScoped = getJwtClaims().scope === "organization";
+  const isOrgScoped = claims.scope === "organization";
+  const visibleCustomerGraphReadResult = callbackOrgId !== null
+    && customerGraphReadCallback.orgId === callbackOrgId
+    ? customerGraphReadCallback.result
+    : null;
 
   return (
     <div className="space-y-6">
@@ -383,7 +434,13 @@ export default function IntegrationsPage({
         <GoogleWorkspaceIntegration />
       )}
       {activeTab === "identity" && identitySubTab === "m365" && (
-        <M365Integration />
+        <div className="space-y-6">
+          <M365Integration />
+          <M365CustomerGraphReadCard
+            callbackResult={visibleCustomerGraphReadResult}
+            callbackRefreshKey={customerGraphReadCallback.refreshKey}
+          />
+        </div>
       )}
       {activeTab === "distributors" && isOrgScoped && (
         <p

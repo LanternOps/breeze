@@ -180,6 +180,30 @@ jobs:
       - name: Run RLS session-context contract test
         run: pnpm --filter=@breeze/api test:rls
 
+  test-m365-graph-read-executor:
+    name: Test M365 Graph Read Executor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run executor tests
+        run: pnpm --filter=@breeze/m365-graph-read-executor test:run
+
   # Real-Postgres apply of every migration against an empty database.
   # Catches ordering bugs (issue #506) and any SQL error the static
   # autoMigrate.test.ts cannot see. Cheap (~1 min) and blocking on PRs.
@@ -463,6 +487,9 @@ jobs:
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
 
+      - name: Run M365 signing secret runtime smoke
+        run: bash scripts/security/check-m365-graph-read-runtime.sh
+
       - name: Run relay/edge hardening guard
         run: bash scripts/security/check-relay-edge-hardening.sh
 
@@ -510,6 +537,37 @@ jobs:
           name: api-dist
           path: apps/api/dist
           retention-days: 7
+
+  build-m365-graph-read-executor:
+    name: Build M365 Graph Read Executor
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck executor
+        run: pnpm --filter=@breeze/m365-graph-read-executor exec tsc --noEmit
+
+      - name: Build executor
+        run: pnpm --filter=@breeze/m365-graph-read-executor build
+
+      - name: Verify executor entrypoint exists
+        run: test -s apps/m365-graph-read-executor/dist/index.cjs
 
   build-web:
     name: Build Web
@@ -1437,7 +1495,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, rust-check, smoke-test]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, rust-check, smoke-test]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -1445,6 +1503,7 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
+          TEST_M365_GRAPH_READ_EXECUTOR_RESULT: ${{ needs.test-m365-graph-read-executor.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
@@ -1454,6 +1513,7 @@ jobs:
           TEST_OUTLOOK_ADDIN_RESULT: ${{ needs.test-outlook-addin.result }}
           SECURITY_AUDIT_RESULT: ${{ needs.security-audit.result }}
           BUILD_API_RESULT: ${{ needs.build-api.result }}
+          BUILD_M365_GRAPH_READ_EXECUTOR_RESULT: ${{ needs.build-m365-graph-read-executor.result }}
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
           BUILD_PORTAL_RESULT: ${{ needs.build-portal.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
@@ -1468,6 +1528,7 @@ jobs:
           if [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \
+             [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
@@ -1477,6 +1538,7 @@ jobs:
              [[ "${TEST_OUTLOOK_ADDIN_RESULT}" != "success" ]] || \
              [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              [[ "${BUILD_API_RESULT}" != "success" ]] || \
+             [[ "${BUILD_M365_GRAPH_READ_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${BUILD_WEB_RESULT}" != "success" ]] || \
              [[ "${BUILD_PORTAL_RESULT}" != "success" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \

@@ -32,6 +32,7 @@ import {
 import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
 import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 import { setProxyTrustMetricsRecorder } from '../services/clientIp';
+import { registerM365CustomerGraphReadPrometheusCounter } from '../services/m365ControlPlane/metrics';
 
 export {
   recordBackupCommandTimeout,
@@ -86,6 +87,7 @@ let METRICS_INCLUDE_ORG_ID = resolveMetricsIncludeOrgId();
 let METRICS_SCRAPE_IP_ALLOWLIST = parseCsvSet(process.env.METRICS_SCRAPE_IP_ALLOWLIST);
 
 const register = new Registry();
+registerM365CustomerGraphReadPrometheusCounter(register);
 
 const httpRequestsTotal = new Counter({
   name: 'http_requests_total',

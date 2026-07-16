@@ -88,6 +88,12 @@ beforeEach(() => {
 });
 
 describe('m365 connection routes', () => {
+  it('scopes the M365_ENABLED middleware to the singular legacy /connection surface', () => {
+    const middleware = m365Routes.routes.filter((route) => route.method === 'ALL');
+    expect(middleware.filter((route) => route.path === '/*')).toHaveLength(1);
+    expect(middleware.some((route) => route.path === '/connection')).toBe(true);
+  });
+
   it('GET /connection with no row → connected:false', async () => {
     const res = await app().request('/m365/connection');
     expect(res.status).toBe(200);

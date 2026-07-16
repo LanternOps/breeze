@@ -2368,6 +2368,87 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  build-docker-m365-graph-read-executor:
+    name: Build & Push M365 Graph Read Executor Image
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    if: >-
+      startsWith(github.ref, 'refs/tags/v')
+      && !cancelled()
+      && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      executor-image-digest: ${{ steps.push-executor-digest.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Push by digest only: no release-facing tag exists until this exact
+      # manifest passes the blocking vulnerability scan below.
+      - name: Build and push unadvertised executor digest
+        id: push-executor-digest
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/m365-graph-read-executor/Dockerfile
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/m365-graph-read-executor,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan exact executor digest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/m365-graph-read-executor@${{ steps.push-executor-digest.outputs.digest }}
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+          exit-code: '1'
+
+      # Promote the already-scanned manifest. imagetools only creates tag
+      # references; it never rebuilds or mutates the image layers.
+      - name: Promote scanned executor digest
+        env:
+          EXECUTOR_REPOSITORY: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/m365-graph-read-executor
+          EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          VERSION="${RELEASE_REF_NAME#v}"
+          SHORT_SHA="${RELEASE_SHA::7}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Executor image promotion requires an exact semver release tag" >&2
+            exit 1
+          fi
+          docker buildx imagetools create \
+            --tag "${EXECUTOR_REPOSITORY}:${VERSION}" \
+            --tag "${EXECUTOR_REPOSITORY}:sha-${SHORT_SHA}" \
+            "${EXECUTOR_REPOSITORY}@${EXECUTOR_IMAGE_DIGEST}"
+
+      - name: Record executor digest
+        env:
+          EXECUTOR_IMAGE_DIGEST: ${{ steps.push-executor-digest.outputs.digest }}
+        run: |
+          test -n "$EXECUTOR_IMAGE_DIGEST"
+          printf '%s\n' "$EXECUTOR_IMAGE_DIGEST" > m365-graph-read-executor-image-digest.txt
+
+      - name: Upload executor digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: m365-graph-read-executor-image-digest
+          path: m365-graph-read-executor-image-digest.txt
+          retention-days: 90
+
   build-docker-web:
     name: Build & Push Web Docker Image
     runs-on: ubuntu-latest

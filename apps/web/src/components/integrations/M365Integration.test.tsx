@@ -44,7 +44,7 @@ describe("M365Integration", () => {
     );
     expect(
       screen.getByText(
-        /Microsoft 365 integration is not enabled on this instance/i,
+        /Legacy direct connection is not enabled on this instance/i,
       ),
     ).toBeInTheDocument();
     expect(screen.getByText(/M365_ENABLED/)).toBeInTheDocument();

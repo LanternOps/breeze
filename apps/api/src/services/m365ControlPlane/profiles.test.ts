@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  M365_PERMISSION_PROFILES as SHARED_M365_PERMISSION_PROFILES,
+} from '@breeze/shared/m365';
+import {
   M365_PERMISSION_PROFILES,
   connectionNeedsConsentReconciliation,
   getM365PermissionProfile,
@@ -17,7 +20,7 @@ const PROFILE_CONTRACTS = [
   },
   {
     id: 'customer-graph-read',
-    version: 1,
+    version: 2,
     ownerAxis: 'organization',
     authMode: 'application-certificate',
     credentialDomain: 'customer-graph-read',
@@ -45,6 +48,10 @@ const PROFILE_CONTRACTS = [
 ] as const;
 
 describe('M365 permission profiles', () => {
+  it('keeps the API import seam backed by the shared registry', () => {
+    expect(M365_PERMISSION_PROFILES).toBe(SHARED_M365_PERMISSION_PROFILES);
+  });
+
   it('defines only the four production profiles', () => {
     expect(Object.keys(M365_PERMISSION_PROFILES).sort()).toEqual(
       PROFILE_CONTRACTS.map(({ id }) => id).sort(),
@@ -87,8 +94,8 @@ describe('M365 permission profiles', () => {
   });
 
   it('requires reconciliation whenever stored manifest version differs', () => {
-    expect(connectionNeedsConsentReconciliation('customer-graph-read', 1)).toBe(false);
-    expect(connectionNeedsConsentReconciliation('customer-graph-read', 0)).toBe(true);
-    expect(connectionNeedsConsentReconciliation('customer-graph-read', 2)).toBe(true);
+    expect(connectionNeedsConsentReconciliation('customer-graph-read', 2)).toBe(false);
+    expect(connectionNeedsConsentReconciliation('customer-graph-read', 1)).toBe(true);
+    expect(connectionNeedsConsentReconciliation('customer-graph-read', 3)).toBe(true);
   });
 });

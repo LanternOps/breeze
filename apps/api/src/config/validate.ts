@@ -1,5 +1,6 @@
 import { isIP } from 'net';
 import { z } from 'zod';
+import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { isRecognizedSelfHostSignal } from './env';
 
 // ---------------------------------------------------------------------------
@@ -1503,6 +1504,10 @@ export function validateConfig(): AppConfig {
 
     throw new Error(message);
   }
+
+  // The Graph-read descriptor stays out of AppConfig/public config. Parse it
+  // lazily, but fail boot closed when the new-consent rollout is enabled.
+  validateM365CustomerGraphReadRuntimeConfigAtBoot(env);
 
   _config = result.data;
 

@@ -52,6 +52,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/pax8/products/prod-1/provision-details/'],
     ['GET', '/api/v1/pax8/products/prod-1/dependencies'],
     ['GET', '/api/v1/pax8/products/prod-1/dependencies/'],
+    ['GET', '/api/v1/m365/consent/callback'],
+    ['GET', '/api/v1/m365/consent/callback/'],
+    ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest'],
+    ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -105,6 +109,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/pax8/products/prod-1/dependencies', 'Pax8 product metadata routes are GET-only'],
     ['GET', '/api/v1/pax8/products//dependencies', 'Pax8 product id must not be empty'],
     ['GET', '/api/v1/pax8/products/prod-1/dependencies/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/m365/consent/callback', 'callback is GET-only'],
+    ['GET', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest', 'retest is POST-only'],
+    ['POST', '/api/v1/m365/connections//retest', 'empty connection id must not match'],
+    ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {
