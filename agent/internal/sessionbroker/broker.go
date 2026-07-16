@@ -1221,6 +1221,12 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 	if best != nil {
 		return best
 	}
+	// PAM approval is tied to the requested (normally console) Windows
+	// session. Never fall back to another active session: that would expose
+	// one user's elevation decision to a different interactive user.
+	if capability == ipc.ScopePam {
+		return nil
+	}
 
 	// Second pass: fall back to any capable session that isn't disconnected.
 	// IsSessionDisconnected makes a WTS syscall — safe outside any lock.
