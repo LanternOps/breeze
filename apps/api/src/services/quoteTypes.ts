@@ -35,6 +35,12 @@ export type QuoteServiceErrorCode =
   | 'IMAGE_NOT_FOUND'
   | 'INVALID_IMAGE'
   | 'CATALOG_ITEM_NOT_FOUND'
+  // Contract block validation (addBlock/updateBlock, blockType='contract'): the
+  // referenced template version must exist, belong to the named template, be
+  // published, the template must not be archived, and it must be visible to
+  // this quote's org/partner (org-owned → same org; partner-owned → same
+  // partner). Any violation collapses to this single 422 code.
+  | 'INVALID_CONTRACT_TEMPLATE'
   | 'INVALID_STATE'
   | 'QUOTE_EXPIRED'
   | 'NOT_CONVERTED'
@@ -55,7 +61,7 @@ export type QuoteServiceErrorCode =
 export class QuoteServiceError extends Error {
   constructor(
     message: string,
-    public status: 400 | 403 | 404 | 409 | 410 | 500 = 400,
+    public status: 400 | 403 | 404 | 409 | 410 | 422 | 500 = 400,
     public code?: QuoteServiceErrorCode
   ) {
     super(message);

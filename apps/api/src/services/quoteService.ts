@@ -4,6 +4,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
 import { organizations, partners } from '../db/schema/orgs';
+import { contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
@@ -228,6 +229,26 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
 }
 
 /**
+ * Remap a cloned quote's `coverPage.coverImageId` onto its freshly-cloned
+ * `quoteImages` id (see the `imageIds` remap map in cloneQuote below) — mirrors
+ * the image-block `content.imageId` remap in the same function. Every other
+ * cover page field (title/enabled/preparedForName/showPreparedBy) is
+ * document presentation, not customer- or image-specific, so it passes
+ * through unchanged. A `null`/absent `coverPage`, or one with no
+ * `coverImageId` set, is returned as-is.
+ */
+function remapCoverPageImageId(coverPage: unknown, imageIds: Map<string, string>): unknown {
+  if (!coverPage || typeof coverPage !== 'object' || Array.isArray(coverPage)) return coverPage;
+  const cp = coverPage as Record<string, unknown>;
+  const sourceImageId = cp.coverImageId;
+  if (typeof sourceImageId !== 'string') return coverPage;
+  // Defensive fallback to null (rather than leaving the stale id) if the image
+  // somehow isn't among the ones just cloned — a dangling reference is worse
+  // than a missing cover image.
+  return { ...cp, coverImageId: imageIds.get(sourceImageId) ?? null };
+}
+
+/**
  * Deep-copy an accessible quote into a new draft. Images and every aggregate
  * relationship receive fresh IDs because image rendering is constrained to
  * image.quote_id and line items can reference blocks, images, and parent lines.
@@ -310,6 +331,13 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
       introNotes: source.introNotes,
       terms: source.terms,
       sellerSnapshot: null,
+      // Cover page is document presentation, not customer-specific — carried
+      // over verbatim (title/enabled/preparedForName/showPreparedBy) on both a
+      // same-org and a retargeted clone. Its coverImageId is the one exception:
+      // it references a quote_images row keyed to the OLD quote, and images get
+      // fresh ids on clone (imageIds, above) — left unremapped it would point at
+      // an id that doesn't exist under the new quote at all.
+      coverPage: remapCoverPageImageId(source.coverPage, imageIds),
       termsAndConditions: source.termsAndConditions,
       declineReason: null,
       convertedInvoiceId: null,
@@ -559,6 +587,19 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
   if (input.billToName !== undefined) set.billToName = input.billToName;
   // Numeric tax_rate takes a fixed-string value; null clears it.
   if (input.taxRate !== undefined) set.taxRate = input.taxRate === null ? null : Number(input.taxRate).toFixed(5);
+  if (input.coverPage !== undefined) {
+    // Ownership check mirrors updateLine's imageId guard: coverImageId must be a
+    // quote_images row on THIS quote, or a caller could point the cover at
+    // another tenant's image and exfiltrate its bytes through the customer
+    // document/PDF. Only checked when a cover page object with a non-null
+    // coverImageId is being set — `null` (clear the whole cover page) skips it.
+    if (input.coverPage !== null && input.coverPage.coverImageId) {
+      const [img] = await db.select({ id: quoteImages.id }).from(quoteImages)
+        .where(and(eq(quoteImages.id, input.coverPage.coverImageId), eq(quoteImages.quoteId, id))).limit(1);
+      if (!img) throw new QuoteServiceError('Cover image not found on this quote', 404, 'IMAGE_NOT_FOUND');
+    }
+    set.coverPage = input.coverPage;
+  }
   if (input.depositType !== undefined || input.depositPercent !== undefined) {
     const lines = await db.select({
       quantity: quoteLines.quantity, unitPrice: quoteLines.unitPrice,
@@ -625,8 +666,51 @@ export async function deleteDraftQuote(id: string, actor: QuoteActor) {
 // Blocks
 // ---------------------------------------------------------------------------
 
+/**
+ * Validate a `contract` block's content BEFORE insert/update: the referenced
+ * template version must exist and belong to the named template, be
+ * `status='published'` (drafts are never embeddable — they can still change),
+ * the template itself must not be archived, and the template must be visible
+ * to THIS quote's org/partner — org-owned → same org as the quote; partner-
+ * owned → same partner as the quote (Partner-Wide First, epic #2135). Every
+ * violation collapses to a single 422 INVALID_CONTRACT_TEMPLATE so a caller
+ * can't distinguish "wrong template" from "not published yet" from
+ * "not yours" — none of those distinctions are actionable without also
+ * leaking the existence of another tenant's template.
+ */
+async function assertContractBlockValid(
+  content: { templateId: string; templateVersionId: string },
+  quote: { orgId: string; partnerId: string }
+): Promise<void> {
+  const [version] = await db.select({
+    templateId: contractTemplateVersions.templateId,
+    status: contractTemplateVersions.status,
+  }).from(contractTemplateVersions).where(eq(contractTemplateVersions.id, content.templateVersionId)).limit(1);
+  if (!version || version.templateId !== content.templateId || version.status !== 'published') {
+    throw new QuoteServiceError('Contract template version is not published', 422, 'INVALID_CONTRACT_TEMPLATE');
+  }
+  const [template] = await db.select({
+    status: contractTemplates.status,
+    orgId: contractTemplates.orgId,
+    partnerId: contractTemplates.partnerId,
+  }).from(contractTemplates).where(eq(contractTemplates.id, content.templateId)).limit(1);
+  if (!template || template.status === 'archived') {
+    throw new QuoteServiceError('Contract template is archived or no longer exists', 422, 'INVALID_CONTRACT_TEMPLATE');
+  }
+  // XOR ownership (contract_templates_one_owner_chk): org-owned templates are
+  // visible only to that org; partner-wide templates (orgId NULL) are visible
+  // to every org of that partner.
+  const visible = template.orgId !== null ? template.orgId === quote.orgId : template.partnerId === quote.partnerId;
+  if (!visible) {
+    throw new QuoteServiceError('Contract template is not visible to this organization', 422, 'INVALID_CONTRACT_TEMPLATE');
+  }
+}
+
 export async function addBlock(quoteId: string, input: QuoteBlockInput, actor: QuoteActor) {
   const q = await loadDraft(quoteId, actor);
+  if (input.blockType === 'contract') {
+    await assertContractBlockValid(input.content, q);
+  }
   const sortOrder = await nextBlockSortOrder(quoteId);
   const [row] = await db.insert(quoteBlocks).values({
     quoteId,
@@ -646,7 +730,7 @@ export async function addBlock(quoteId: string, input: QuoteBlockInput, actor: Q
  * lines, so no totals recompute is needed.
  */
 export async function updateBlock(quoteId: string, blockId: string, input: QuoteBlockInput, actor: QuoteActor) {
-  await loadDraft(quoteId, actor);
+  const q = await loadDraft(quoteId, actor);
   const [existing] = await db.select({ blockType: quoteBlocks.blockType })
     .from(quoteBlocks)
     .where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)))
@@ -654,6 +738,9 @@ export async function updateBlock(quoteId: string, blockId: string, input: Quote
   if (!existing) throw new QuoteServiceError('Block not found', 404, 'BLOCK_NOT_FOUND');
   if (existing.blockType !== input.blockType) {
     throw new QuoteServiceError('Block type cannot be changed', 400, 'BLOCK_TYPE_MISMATCH');
+  }
+  if (input.blockType === 'contract') {
+    await assertContractBlockValid(input.content, q);
   }
   const [row] = await db.update(quoteBlocks)
     .set({ content: sanitizeBlockContentForWrite(input) })

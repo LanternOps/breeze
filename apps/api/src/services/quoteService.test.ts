@@ -410,4 +410,120 @@ describe('quoteService deposits', () => {
       { id: 'q2', orgId: 'org1', status: 'draft', depositType: 'none', invoiceDepositDue: null, invoiceAmountPaid: null },
     ]);
   });
+
+  // -------------------------------------------------------------------------
+  // Contract blocks (Task 11): addBlock/updateBlock validate the referenced
+  // template version BEFORE insert — exists, belongs to the named template,
+  // status='published', template not archived, template visible to the
+  // quote's org/partner. Any violation is a single 422 INVALID_CONTRACT_TEMPLATE.
+  // -------------------------------------------------------------------------
+  const contractContent = { templateId: 'tpl1', templateVersionId: 'ver1', variableValues: {} };
+
+  it('addBlock rejects a contract block whose template version is a draft (not published)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'draft' }]); // version lookup
+
+    await expect(
+      svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  it('addBlock rejects a contract block whose template is archived', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'published' }]); // version lookup
+    queueResult([{ status: 'archived', orgId: 'org1', partnerId: null }]); // template lookup
+
+    await expect(
+      svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  it('addBlock rejects a partner-wide contract template belonging to a different partner', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'published' }]); // version lookup
+    queueResult([{ status: 'active', orgId: null, partnerId: 'p2' }]); // template owned by another partner
+
+    await expect(
+      svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  it('addBlock rejects an org-owned contract template belonging to a different org', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'published' }]); // version lookup
+    queueResult([{ status: 'active', orgId: 'org2', partnerId: null }]); // template owned by another org
+
+    await expect(
+      svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  it('addBlock accepts a contract block whose template version is published and visible to the quote org', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ templateId: 'tpl1', status: 'published' }]); // version lookup
+    queueResult([{ status: 'active', orgId: 'org1', partnerId: null }]); // template lookup — same org
+    queueResult([{ max: -1 }]); // nextBlockSortOrder
+    queueResult([{ id: 'blk1', blockType: 'contract', content: contractContent }]); // insert returning
+
+    const row = await svc.addBlock('q1', { blockType: 'contract', content: contractContent } as never, actor);
+    expect(row).toMatchObject({ id: 'blk1', blockType: 'contract' });
+
+    const valuesMock = (db as unknown as Chain).values;
+    expect(valuesMock.mock.calls.at(-1)![0]).toMatchObject({ blockType: 'contract', content: contractContent });
+  });
+
+  it('updateBlock rejects a contract block update whose template version is a draft', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ blockType: 'contract' }]); // existing block type check
+    queueResult([{ templateId: 'tpl1', status: 'draft' }]); // version lookup
+
+    await expect(
+      svc.updateBlock('q1', 'blk1', { blockType: 'contract', content: contractContent } as never, actor)
+    ).rejects.toMatchObject({ code: 'INVALID_CONTRACT_TEMPLATE', status: 422 });
+  });
+
+  // -------------------------------------------------------------------------
+  // Cover page (Task 11): updateQuote persists `coverPage`; a set `coverImageId`
+  // must reference a quote_images row on the SAME quote (mirrors the line
+  // imageId ownership check).
+  // -------------------------------------------------------------------------
+  it('updateQuote persists a coverPage patch verbatim', async () => {
+    const coverPage = { enabled: true, title: 'Cover', coverImageId: null, preparedForName: 'Jane', showPreparedBy: true };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([]); // updateQuote's own header update
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+    queueResult([{ id: 'q1', orgId: 'org1', coverPage }]); // final re-select
+
+    const updated = await svc.updateQuote('q1', { coverPage } as never, actor);
+    expect(updated.coverPage).toEqual(coverPage);
+
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ coverPage });
+  });
+
+  it('updateQuote rejects a coverPage.coverImageId that is not a quote_images row on this quote', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([]); // image ownership check — no row found
+
+    await expect(
+      svc.updateQuote('q1', { coverPage: { enabled: true, coverImageId: 'img-other', showPreparedBy: true } } as never, actor)
+    ).rejects.toMatchObject({ code: 'IMAGE_NOT_FOUND', status: 404 });
+  });
+
+  it('updateQuote accepts a coverPage.coverImageId that IS a quote_images row on this quote', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'img1' }]); // image ownership check — found
+    queueResult([]); // updateQuote's own header update
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+    queueResult([{ id: 'q1', orgId: 'org1', coverPage: { enabled: true, coverImageId: 'img1', showPreparedBy: true } }]); // final re-select
+
+    const updated = await svc.updateQuote(
+      'q1', { coverPage: { enabled: true, coverImageId: 'img1', showPreparedBy: true } } as never, actor
+    );
+    expect(updated.coverPage).toMatchObject({ coverImageId: 'img1' });
+  });
 });

@@ -70,6 +70,7 @@ function sourceQuote() {
     termsAndConditions: 'Terms', declineReason: null, convertedInvoiceId: 'invoice-1',
     pdfDocumentRef: 'quote.pdf', pdfSha256: 'abc', sentAt: new Date('2025-01-02'),
     firstViewedAt: new Date('2025-01-03'), viewedAt: new Date('2025-01-03'),
+    coverPage: { enabled: true, title: 'Cover', coverImageId: null, preparedForName: 'Jane', showPreparedBy: true },
     createdBy: 'user-old', createdAt: new Date('2025-01-01'), updatedAt: new Date('2025-01-10'),
   };
 }
@@ -113,6 +114,8 @@ describe('cloneQuote', () => {
       id: cloned.id, orgId: 'org-1', siteId: 'site-1', status: 'draft',
       issueDate: null, acceptedAt: null, convertedInvoiceId: null, pdfDocumentRef: null,
       sellerSnapshot: null, createdBy: 'user-1', expiryDate: null,
+      // Cover page carries over verbatim — it's not org/site-specific.
+      coverPage: { enabled: true, title: 'Cover', coverImageId: null, preparedForName: 'Jane', showPreparedBy: true },
     });
 
     const clonedImage = imageInsert[0]!;
@@ -202,6 +205,50 @@ describe('cloneQuote', () => {
     await expect(cloneQuote('quote-1', actor)).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
     expect(state.transactionCalls).toBe(0);
     expect(state.insertedValues).toEqual([]);
+  });
+
+  it('carries a contract block\'s content verbatim (template/version references, no remapping)', async () => {
+    const contractContent = { templateId: 'tpl-1', templateVersionId: 'ver-1', variableValues: { 'client.name': 'Acme' }, label: 'MSA' };
+    state.selectResults.push(
+      [sourceQuote()],
+      [{ id: 'block-contract', quoteId: 'quote-1', orgId: 'org-1', blockType: 'contract', content: contractContent, sortOrder: 0, createdAt: new Date() }],
+      [], // no lines
+      [], // no staged Pax8 order
+      [], // no images
+    );
+
+    const cloned = await cloneQuote('quote-1', actor);
+
+    // No images and no lines here, so insertedValues is just [quoteInsert, blockInsert].
+    const [, blockInsert] = state.insertedValues as [
+      Record<string, unknown>, Array<Record<string, unknown>>,
+    ];
+    const clonedContractBlock = blockInsert.find((b) => b.blockType === 'contract')!;
+    // A fresh block id, but the referenced template/version and variable fill-ins
+    // are untouched — contract templates aren't per-quote owned data to remap.
+    expect(clonedContractBlock.id).not.toBe('block-contract');
+    expect(clonedContractBlock.quoteId).toBe(cloned.id);
+    expect(clonedContractBlock.content).toEqual(contractContent);
+  });
+
+  it('remaps coverPage.coverImageId onto the freshly-cloned image id (the old id no longer exists under the new quote)', async () => {
+    state.selectResults.push(
+      [{ ...sourceQuote(), coverPage: { enabled: true, title: 'Cover', coverImageId: 'image-1', preparedForName: 'Jane', showPreparedBy: true } }],
+      [], // no blocks
+      [], // no lines
+      [], // no staged Pax8 order
+      [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
+    );
+
+    const cloned = await cloneQuote('quote-1', actor);
+
+    const [quoteInsert, imageInsert] = state.insertedValues as [
+      Record<string, unknown>, Array<Record<string, unknown>>,
+    ];
+    const clonedImageId = imageInsert[0]!.id as string;
+    expect(clonedImageId).not.toBe('image-1');
+    expect(quoteInsert.coverPage).toMatchObject({ coverImageId: clonedImageId, title: 'Cover' });
+    expect((quoteInsert.coverPage as { coverImageId: string }).coverImageId).not.toBe('image-1');
   });
 
   it('rejects a clone outside the actor site scope', async () => {
