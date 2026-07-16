@@ -207,10 +207,11 @@ func (b *Broker) maybeStartKeepalive(session *Session, role string) {
 	}
 }
 
-// Role-based scopes: SYSTEM helpers own desktop capture, user-token helpers own script execution.
+// Role-based scopes: SYSTEM helpers own desktop capture and secure-desktop PAM
+// dialogs; user-token helpers own script execution.
 var (
-	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop"}
-	userHelperScopes     = []string{"notify", "clipboard", "run_as_user", ipc.ScopePam}
+	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop", ipc.ScopePam}
+	userHelperScopes     = []string{"notify", "clipboard", "run_as_user"}
 	watchdogHelperScopes = []string{"watchdog"}
 	// assistHelperScopes is least-privilege: the Breeze Assist helper receives
 	// only the helper token and must NOT get desktop/clipboard/run_as_user/notify/tray.
@@ -1183,7 +1184,7 @@ func (b *Broker) FindCapableSession(capability string, targetWinSession string) 
 
 	hasCapability := func(s *Session) bool {
 		if capability == ipc.ScopePam {
-			return s.HelperRole == ipc.HelperRoleUser && s.HasScope(ipc.ScopePam)
+			return s.HelperRole == ipc.HelperRoleSystem && s.HasScope(ipc.ScopePam)
 		}
 		// GetCapabilities takes s.mu — required because the atomic snapshot
 		// only protects the outer map identity, not per-session fields. A
@@ -1418,6 +1419,12 @@ func (b *Broker) RequestPamApproval(session *Session, id string, req ipc.PamRequ
 	denyDismiss := ipc.PamDialogResult{Approved: false, DismissedByUser: true}
 	if session == nil {
 		return denyDismiss, fmt.Errorf("nil PAM helper session")
+	}
+	if session.HelperRole != ipc.HelperRoleSystem {
+		return denyDismiss, fmt.Errorf("PAM dialog requires a SYSTEM helper session")
+	}
+	if !session.HasScope(ipc.ScopePam) {
+		return denyDismiss, fmt.Errorf("PAM SYSTEM helper session is missing %q scope", ipc.ScopePam)
 	}
 
 	resp, err := b.SendCommandAndWait(session, id, ipc.TypePamRequestDialog, req, timeout)
