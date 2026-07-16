@@ -1,15 +1,18 @@
-import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages } from '../db/schema/quotes';
 import { invoices } from '../db/schema/invoices';
 import { organizations, partners } from '../db/schema/orgs';
 import { catalogItems } from '../db/schema/catalog';
+import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
+import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import type {
-  CreateQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery
+  CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery
 } from '@breeze/shared';
 
 // ---------------------------------------------------------------------------
@@ -75,14 +78,18 @@ export function assertQuoteAccess(actor: QuoteActor, quote: { orgId: string; sit
  * totals). Routes per-line cents through the shared
  * computeLineTotal/toCents discipline (via computeQuoteTotals) so the header
  * totals are penny-consistent with the persisted line_total and with invoices.
+ *
+ * `dbc` lets a caller run the recompute inside its own transaction (updateQuote's
+ * org reassignment) so a mid-flight failure can't commit the header move while
+ * leaving totals computed under the old tax rate.
  */
-async function recomputeAndPersist(quoteId: string): Promise<void> {
-  const [q] = await db.select({
+async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select' | 'update'> = db): Promise<void> {
+  const [q] = await dbc.select({
     taxRate: quotes.taxRate,
     depositType: quotes.depositType,
     depositPercent: quotes.depositPercent,
   }).from(quotes).where(eq(quotes.id, quoteId)).limit(1);
-  const lines = await db.select({
+  const lines = await dbc.select({
     quantity: quoteLines.quantity,
     unitPrice: quoteLines.unitPrice,
     taxable: quoteLines.taxable,
@@ -93,7 +100,7 @@ async function recomputeAndPersist(quoteId: string): Promise<void> {
   }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId));
   const deposit = toQuoteDepositConfig(q?.depositType, q?.depositPercent);
   const totals = computeQuoteTotals(lines as QuoteLineForMath[], q?.taxRate ? parseFloat(q.taxRate) : null, deposit);
-  await db.update(quotes).set({
+  await dbc.update(quotes).set({
     subtotal: totals.subtotal,
     taxTotal: totals.taxTotal,
     total: totals.total,
@@ -190,12 +197,189 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   return row!;
 }
 
+/**
+ * Deep-copy an accessible quote into a new draft. Images and every aggregate
+ * relationship receive fresh IDs because image rendering is constrained to
+ * image.quote_id and line items can reference blocks, images, and parent lines.
+ * Lifecycle, document, seller/customer snapshots, and expiry are intentionally
+ * reset so an old accepted/expired quote is safe to revise and send again.
+ *
+ * `input` optionally retargets the clone to another organization of the same
+ * partner and/or renames it. Retargeting clears the site and billToName (both
+ * belong to the OLD customer) and re-resolves the tax rate for the new org —
+ * the same precedence createQuote uses — so totals are correct for the new
+ * customer; a same-org clone keeps the source rate verbatim (it may have been
+ * hand-set via the API).
+ */
+export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuoteInput = {}) {
+  const { quote: source, blocks, lines } = await getQuote(id, actor);
+  const images = await db.select().from(quoteImages).where(eq(quoteImages.quoteId, id));
+
+  const targetOrgId = input.orgId ?? source.orgId;
+  const orgChanged = targetOrgId !== source.orgId;
+  if (orgChanged) {
+    assertOrg(actor, targetOrgId);
+    // Retargeting lands the clone with a null site (the source's site belongs to
+    // the OLD org), which a site-restricted caller can never see — deny exactly
+    // as updateQuote's reassignment path does.
+    assertSite(actor, null);
+    // Same-partner guard. RLS hides other partners' orgs from this context, so a
+    // cross-partner id resolves to "not found" rather than leaking existence.
+    const [target] = await db.select({ id: organizations.id }).from(organizations)
+      .where(and(eq(organizations.id, targetOrgId), eq(organizations.partnerId, source.partnerId)))
+      .limit(1);
+    if (!target) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+  }
+  const taxRate = orgChanged
+    ? await resolveQuoteTaxRate(targetOrgId, source.partnerId)
+    : source.taxRate;
+  const title = input.title !== undefined ? (input.title.trim() || null) : source.title;
+
+  const year = new Date().getUTCFullYear();
+  const counter = await allocateQuoteCounter(source.partnerId, year);
+  const quoteNumber = formatQuoteNumber('Q', year, counter);
+  const quoteId = randomUUID();
+
+  const imageIds = new Map(images.map((image) => [image.id, randomUUID()]));
+  const blockIds = new Map(blocks.map((block) => [block.id, randomUUID()]));
+  const lineIds = new Map(lines.map((line) => [line.id, randomUUID()]));
+  const totals = computeQuoteTotals(
+    lines as QuoteLineForMath[],
+    taxRate ? parseFloat(taxRate) : null,
+    toQuoteDepositConfig(source.depositType, source.depositPercent),
+  );
+
+  return db.transaction(async (tx) => {
+    const [cloned] = await tx.insert(quotes).values({
+      id: quoteId,
+      partnerId: source.partnerId,
+      orgId: targetOrgId,
+      siteId: orgChanged ? null : source.siteId,
+      quoteNumber,
+      title,
+      status: 'draft',
+      currencyCode: source.currencyCode,
+      issueDate: null,
+      expiryDate: null,
+      acceptedAt: null,
+      declinedAt: null,
+      convertedAt: null,
+      subtotal: totals.subtotal,
+      taxRate,
+      taxTotal: totals.taxTotal,
+      total: totals.total,
+      oneTimeTotal: totals.oneTimeTotal,
+      monthlyRecurringTotal: totals.monthlyRecurringTotal,
+      annualRecurringTotal: totals.annualRecurringTotal,
+      depositType: source.depositType,
+      depositPercent: source.depositPercent,
+      depositAmount: totals.depositDueTotal,
+      billToName: orgChanged ? null : source.billToName,
+      billToAddress: null,
+      billToTaxId: null,
+      introNotes: source.introNotes,
+      terms: source.terms,
+      sellerSnapshot: null,
+      termsAndConditions: source.termsAndConditions,
+      declineReason: null,
+      convertedInvoiceId: null,
+      pdfDocumentRef: null,
+      pdfSha256: null,
+      sentAt: null,
+      firstViewedAt: null,
+      viewedAt: null,
+      createdBy: actor.userId,
+    }).returning();
+
+    if (images.length > 0) {
+      await tx.insert(quoteImages).values(images.map((image) => ({
+        id: imageIds.get(image.id)!,
+        quoteId,
+        orgId: targetOrgId,
+        imageData: image.imageData,
+        mime: image.mime,
+        byteSize: image.byteSize,
+        sha256: image.sha256,
+      })));
+    }
+
+    if (blocks.length > 0) {
+      await tx.insert(quoteBlocks).values(blocks.map((block) => {
+        let content = block.content;
+        if (block.blockType === 'image' && content && typeof content === 'object' && !Array.isArray(content)) {
+          const sourceImageId = (content as Record<string, unknown>).imageId;
+          const clonedImageId = typeof sourceImageId === 'string' ? imageIds.get(sourceImageId) : undefined;
+          if (!clonedImageId) {
+            throw new QuoteServiceError('Quote image could not be cloned', 409, 'IMAGE_NOT_FOUND');
+          }
+          content = { ...(content as Record<string, unknown>), imageId: clonedImageId };
+        }
+        return {
+          id: blockIds.get(block.id)!,
+          quoteId,
+          orgId: targetOrgId,
+          blockType: block.blockType,
+          content,
+          sortOrder: block.sortOrder,
+        };
+      }));
+    }
+
+    if (lines.length > 0) {
+      await tx.insert(quoteLines).values(lines.map((line) => ({
+        id: lineIds.get(line.id)!,
+        quoteId,
+        blockId: line.blockId ? blockIds.get(line.blockId) ?? null : null,
+        orgId: targetOrgId,
+        sourceType: line.sourceType,
+        catalogItemId: line.catalogItemId,
+        parentLineId: line.parentLineId ? lineIds.get(line.parentLineId) ?? null : null,
+        name: line.name,
+        description: line.description,
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+        taxable: line.taxable,
+        customerVisible: line.customerVisible,
+        lineTotal: line.lineTotal,
+        recurrence: line.recurrence,
+        termMonths: line.termMonths,
+        billingFrequency: line.billingFrequency,
+        unitCost: line.unitCost,
+        depositEligible: line.depositEligible,
+        itemType: line.itemType,
+        sku: line.sku,
+        partNumber: line.partNumber,
+        imageId: line.imageId ? imageIds.get(line.imageId) ?? null : null,
+        sortOrder: line.sortOrder,
+      })));
+    }
+
+    return cloned!;
+  });
+}
+
 export async function getQuote(id: string, actor: QuoteActor) {
   const [q] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
   const lines = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder);
+  // Quote acceptance returns the staged order id once, but the technician may
+  // reload or open the converted quote later. Keep discoverability in the quote
+  // read model itself. The quote access check runs first, and the lookup repeats
+  // the partner + org axes in addition to relying on the tables' forced RLS.
+  const [pax8OrderSummary] = await db.select({ pax8OrderId: pax8Orders.id }).from(pax8Orders).where(and(
+    eq(pax8Orders.sourceQuoteId, id),
+    eq(pax8Orders.partnerId, q.partnerId),
+    eq(pax8Orders.orgId, q.orgId),
+  )).orderBy(desc(pax8Orders.createdAt)).limit(1);
+  const [pax8OrderLineSummary] = pax8OrderSummary
+    ? await db.select({ count: count(pax8OrderLines.id) }).from(pax8OrderLines).where(and(
+        eq(pax8OrderLines.orderId, pax8OrderSummary.pax8OrderId),
+        eq(pax8OrderLines.partnerId, q.partnerId),
+        eq(pax8OrderLines.orgId, q.orgId),
+      ))
+    : [];
   // dueOnAcceptanceTotal is a derived (non-persisted) figure: the amount accept
   // actually invoices (one-time lines only — recurring is deferred to the Phase 4
   // contract). Computed from the canonical quoteMath so it stays penny-consistent
@@ -206,6 +390,54 @@ export async function getQuote(id: string, actor: QuoteActor) {
     q.taxRate ? parseFloat(q.taxRate) : null,
     toQuoteDepositConfig(q.depositType, q.depositPercent),
   );
+  // Resolve the customer "bill to" for display. Keyed on quote STATUS, not on
+  // whether the frozen fields happen to be populated:
+  //  - A NON-DRAFT quote carries its own frozen snapshot, written at send time
+  //    from the org's Billing settings. Return it VERBATIM — never re-derive from
+  //    the live org — so the issued document stays immutable even if the org's
+  //    billing address is edited afterwards. (An org with no address at send time
+  //    froze an all-null block; that blank is the correct, immutable record.)
+  //  - A DRAFT has no frozen snapshot yet, so fall back to the SAME org columns
+  //    the send path will freeze, surfacing the customer name + address on the
+  //    draft's preview/PDF instead of a blank block. A tech-entered billToName
+  //    override still wins over the org name.
+  const frozenAddress = (q.billToAddress as BillToAddress | null) ?? null;
+  let billTo: { name: string | null; address: BillToAddress | null; taxId: string | null };
+  if (q.status === 'draft') {
+    const [org] = await db
+      .select({
+        name: organizations.name,
+        taxId: organizations.taxId,
+        billingAddressLine1: organizations.billingAddressLine1,
+        billingAddressLine2: organizations.billingAddressLine2,
+        billingAddressCity: organizations.billingAddressCity,
+        billingAddressRegion: organizations.billingAddressRegion,
+        billingAddressPostalCode: organizations.billingAddressPostalCode,
+        billingAddressCountry: organizations.billingAddressCountry,
+      })
+      .from(organizations)
+      .where(eq(organizations.id, q.orgId))
+      .limit(1);
+    if (!org) {
+      // getQuote just read this quote in the SAME context, so its org should be
+      // visible too — an unreadable org is anomalous. Mirror the send path's
+      // telemetry (quoteLifecycle) rather than let a blank bill-to be silent.
+      console.error(`[quoteService] org ${q.orgId} not readable while resolving draft bill-to for quote ${q.id} — showing an empty bill-to`);
+    }
+    const hasFrozenAddress = !!frozenAddress
+      && Object.values(frozenAddress).some((v) => typeof v === 'string' && v.trim().length > 0);
+    billTo = {
+      name: q.billToName?.trim() ? q.billToName : (org?.name ?? null),
+      address: hasFrozenAddress ? frozenAddress : buildBillToAddress(org),
+      taxId: q.billToTaxId ?? org?.taxId ?? null,
+    };
+  } else {
+    billTo = {
+      name: q.billToName ?? null,
+      address: frozenAddress,
+      taxId: q.billToTaxId ?? null,
+    };
+  }
   return {
     quote: {
       ...q,
@@ -213,7 +445,11 @@ export async function getQuote(id: string, actor: QuoteActor) {
       depositDueTotal: totals.depositDueTotal,
       categoryBreakdown: totals.categoryBreakdown,
     },
-    blocks, lines,
+    blocks,
+    lines,
+    billTo,
+    pax8OrderId: pax8OrderSummary?.pax8OrderId ?? null,
+    pax8OrderLineCount: Number(pax8OrderLineSummary?.count ?? 0),
   };
 }
 
@@ -251,12 +487,36 @@ export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {
 }
 
 /** Draft-only header edit. Only provided fields are written; nullable fields can be
- *  explicitly cleared with null. A tax-rate change triggers a totals recompute. */
+ *  explicitly cleared with null. A tax-rate change triggers a totals recompute.
+ *
+ *  `orgId` reassigns the draft to another organization of the same partner:
+ *  the site is cleared (it belongs to the old customer), the billToName
+ *  override is cleared and the tax rate re-resolved for the new org (each
+ *  unless the same patch sets a fresh value explicitly), and the denormalized
+ *  org_id on blocks/lines/images is moved in the same transaction so
+ *  RLS-scoped readers never see a half-moved quote. */
 export async function updateQuote(id: string, input: UpdateQuoteInput, actor: QuoteActor) {
   const q = await loadDraft(id, actor);
   // A site-restricted caller may not move the quote to a site it can't access
   // (nor clear it to null, which a restricted caller can never see).
   if (input.siteId !== undefined) assertSite(actor, input.siteId);
+  const orgChanged = input.orgId !== undefined && input.orgId !== q.orgId;
+  // Re-resolved org tax default; undefined = org unchanged (keep current rate).
+  let orgTaxRate: string | null | undefined;
+  if (orgChanged) {
+    const targetOrgId = input.orgId!;
+    assertOrg(actor, targetOrgId);
+    // Reassignment clears the site, and a site-restricted caller can never see a
+    // null-site quote — deny exactly as assertSite would for an explicit null.
+    assertSite(actor, null);
+    // Same-partner guard; RLS hides other partners' orgs so a cross-partner id
+    // resolves to "not found" rather than leaking existence.
+    const [target] = await db.select({ id: organizations.id }).from(organizations)
+      .where(and(eq(organizations.id, targetOrgId), eq(organizations.partnerId, q.partnerId)))
+      .limit(1);
+    if (!target) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    if (input.taxRate === undefined) orgTaxRate = await resolveQuoteTaxRate(targetOrgId, q.partnerId);
+  }
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (input.siteId !== undefined) set.siteId = input.siteId;
   if (input.title !== undefined) set.title = input.title === null ? null : input.title.trim() || null;
@@ -278,7 +538,13 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     // Include an in-flight taxRate change from THIS SAME patch — a deposit
     // validated against the stale persisted rate could pass here and then fail
     // (or silently mis-total) once the new tax rate lands via recomputeAndPersist.
-    const effectiveTaxRate = (input.taxRate !== undefined ? input.taxRate : (q.taxRate ? parseFloat(q.taxRate) : null));
+    // An org change re-resolves the rate too (orgTaxRate) and must be coherent
+    // the same way.
+    const effectiveTaxRate = input.taxRate !== undefined
+      ? input.taxRate
+      : orgTaxRate !== undefined
+        ? (orgTaxRate ? parseFloat(orgTaxRate) : null)
+        : (q.taxRate ? parseFloat(q.taxRate) : null);
     const check = validateQuoteDeposit(
       lines as QuoteLineForMath[],
       effectiveTaxRate === null ? null : Number(effectiveTaxRate),
@@ -288,8 +554,32 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     set.depositType = nextType;
     set.depositPercent = nextType === 'percent' && nextPercent != null ? Number(nextPercent).toFixed(2) : null;
   }
-  await db.update(quotes).set(set).where(eq(quotes.id, id));
-  await recomputeAndPersist(id);
+  if (orgChanged) {
+    const targetOrgId = input.orgId!;
+    set.orgId = targetOrgId;
+    // The site belongs to the OLD org — always cleared, even if the same patch
+    // named one (a site can't be validated against the new org here).
+    set.siteId = null;
+    // A billToName override referenced the old customer; drop it so the draft
+    // bill-to falls back to the new org's name/address, unless this same patch
+    // sets a fresh override explicitly.
+    if (input.billToName === undefined) set.billToName = null;
+    if (orgTaxRate !== undefined) set.taxRate = orgTaxRate;
+    await db.transaction(async (tx) => {
+      await tx.update(quotes).set(set).where(eq(quotes.id, id));
+      // Move the denormalized org_id on every child row in the same transaction.
+      await tx.update(quoteBlocks).set({ orgId: targetOrgId }).where(eq(quoteBlocks.quoteId, id));
+      await tx.update(quoteLines).set({ orgId: targetOrgId }).where(eq(quoteLines.quoteId, id));
+      await tx.update(quoteImages).set({ orgId: targetOrgId }).where(eq(quoteImages.quoteId, id));
+      // Recompute INSIDE the transaction: a failure here must roll back the org
+      // move too, never commit the quote onto the new org with totals still
+      // computed under the old tax rate.
+      await recomputeAndPersist(id, tx);
+    });
+  } else {
+    await db.update(quotes).set(set).where(eq(quotes.id, id));
+    await recomputeAndPersist(id);
+  }
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   return updated!;
 }
@@ -358,15 +648,44 @@ export async function deleteBlock(quoteId: string, blockId: string, actor: Quote
 // Lines
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve the block a new line should live in. A caller-supplied blockId is used
+ * as-is; when it's omitted (the API / MCP add-line path — the web editor always
+ * passes one), the line is attached to the quote's default pricing section: the
+ * earliest existing line_items block, or a fresh one created on demand.
+ *
+ * Without this, a blockId-less line became an "orphan" — counted in the totals
+ * and drawn in the PDF's trailing table, but NEVER rendered in the editor (which
+ * only walks line_items blocks). The result was a quote showing a real dollar
+ * total while the builder said "No content yet", uneditable from the UI (#2553).
+ */
+async function resolveLineBlockId(quoteId: string, orgId: string, blockId: string | null | undefined): Promise<string> {
+  if (blockId) return blockId;
+  const [existing] = await db
+    .select({ id: quoteBlocks.id })
+    .from(quoteBlocks)
+    .where(and(eq(quoteBlocks.quoteId, quoteId), eq(quoteBlocks.blockType, 'line_items')))
+    .orderBy(quoteBlocks.sortOrder)
+    .limit(1);
+  if (existing) return existing.id;
+  const sortOrder = await nextBlockSortOrder(quoteId);
+  const [block] = await db
+    .insert(quoteBlocks)
+    .values({ quoteId, orgId, blockType: 'line_items', content: {}, sortOrder })
+    .returning({ id: quoteBlocks.id });
+  return block!.id;
+}
+
 export async function addManualLine(quoteId: string, input: QuoteLineInput, actor: QuoteActor) {
   const q = await loadDraft(quoteId, actor);
   const quantity = String(input.quantity);
   const unitPrice = Number(input.unitPrice).toFixed(2);
+  const blockId = await resolveLineBlockId(quoteId, q.orgId, input.blockId);
   const sortOrder = await nextLineSortOrder(quoteId);
   const [row] = await db.insert(quoteLines).values({
     quoteId,
     orgId: q.orgId,
-    blockId: input.blockId ?? null,
+    blockId,
     sourceType: input.sourceType,
     catalogItemId: input.catalogItemId ?? null,
     name: input.name ?? null,
@@ -424,11 +743,12 @@ export async function addCatalogLine(
     ? (item.billingFrequency === 'annual' ? 'annual' : 'monthly')
     : 'one_time';
   const qty = String(quantity);
+  const resolvedBlockId = await resolveLineBlockId(quoteId, q.orgId, blockId);
   const sortOrder = await nextLineSortOrder(quoteId);
   const [row] = await db.insert(quoteLines).values({
     quoteId,
     orgId: q.orgId,
-    blockId: blockId ?? null,
+    blockId: resolvedBlockId,
     sourceType: 'catalog',
     catalogItemId,
     // Mirror the catalog item: its name is the line title, its description the blurb.

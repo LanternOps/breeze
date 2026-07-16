@@ -22,7 +22,7 @@ import {
   partnerExportSiteMaterialState,
   organizations,
   scripts,
-  servicePrincipals,
+  partnerServicePrincipals,
   sites,
   softwareInventory,
 } from '../../db/schema';
@@ -40,7 +40,7 @@ import {
   PARTNER_EXPORT_RESOURCES,
   type PartnerExportResource,
 } from '../../routes/partnerApi/schemas';
-import { issueServicePrincipalKey } from '../../services/servicePrincipalKeys';
+import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
 
@@ -899,7 +899,7 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
 
 async function issueKey(partnerId: string, userId: string): Promise<string> {
   const admin = getTestDb();
-  const [principal] = await admin.insert(servicePrincipals).values({
+  const [principal] = await admin.insert(partnerServicePrincipals).values({
     partnerId,
     name: `Reconstruction export ${crypto.randomUUID()}`,
     scopes: [...ALL_SCOPES],
@@ -907,8 +907,8 @@ async function issueKey(partnerId: string, userId: string): Promise<string> {
     updatedBy: userId,
   }).returning();
   if (!principal) throw new Error('service principal seed failed');
-  return (await issueServicePrincipalKey(admin as unknown as Database, {
-    servicePrincipalId: principal.id,
+  return (await issuePartnerServicePrincipalKey(admin as unknown as Database, {
+    partnerServicePrincipalId: principal.id,
     partnerId,
     name: 'Integration traversal key',
     actorId: userId,

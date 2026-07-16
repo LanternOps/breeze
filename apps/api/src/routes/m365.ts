@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { m365Connections } from '../db/schema/m365';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
@@ -29,13 +29,17 @@ export const m365Routes = new Hono();
 const requireOrgsRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 const requireOrgsWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
+const legacyDirectForOrg = (orgId: string) =>
+  and(eq(m365Connections.orgId, orgId), eq(m365Connections.profile, 'legacy-direct'));
+
 // Every endpoint requires an authenticated session (populates c.get('auth') for
 // the requirePermission / requireMfa guards below). Without this the guards see
 // no auth context and reject every request with 401.
 m365Routes.use('*', authMiddleware);
 
-// Whole group is dark unless the feature flag is on.
-m365Routes.use('*', async (c, next) => {
+// Only the singular legacy-direct surface is dark unless its feature flag is
+// on. The customer-graph-read routes have their own onboarding gate.
+m365Routes.use('/connection', async (c, next) => {
   if (!M365_ENABLED) return c.json({ error: 'Microsoft 365 integration is not enabled' }, 404);
   await next();
 });
@@ -69,7 +73,7 @@ m365Routes.get('/connection', requireOrgsRead, async (c) => {
   const [row] = await db
     .select()
     .from(m365Connections)
-    .where(eq(m365Connections.orgId, orgId))
+    .where(legacyDirectForOrg(orgId))
     .limit(1);
 
   if (!row) return c.json({ connected: false });
@@ -145,6 +149,13 @@ m365Routes.post(
         tenantId: payload.tenantId,
         clientId: payload.clientId,
         clientSecret: encryptedSecret,
+        profile: 'legacy-direct',
+        authMode: 'client-secret-legacy',
+        credentialDomain: 'legacy-direct',
+        vaultRef: null,
+        credentialVersion: null,
+        permissionManifestVersion: 0,
+        observedGrants: [],
         displayName,
         status: 'active',
         createdBy: auth.user?.id ?? null,
@@ -153,7 +164,7 @@ m365Routes.post(
         updatedAt: now,
       })
       .onConflictDoUpdate({
-        target: m365Connections.orgId,
+        target: [m365Connections.orgId, m365Connections.profile],
         set: {
           tenantId: payload.tenantId,
           clientId: payload.clientId,
@@ -192,7 +203,7 @@ m365Routes.delete('/connection', requireOrgsWrite, requireMfa(), async (c) => {
 
   const [row] = await db
     .delete(m365Connections)
-    .where(eq(m365Connections.orgId, orgId))
+    .where(legacyDirectForOrg(orgId))
     .returning();
 
   if (row) {

@@ -23,6 +23,7 @@ import {
 import { getRedis } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { TenantInactiveError } from '../services/tenantStatus';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import {
   auditUserLoginFailure,
@@ -159,10 +160,31 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     // totp/sms. The helper fails closed, so a probe error just hides the
     // alternate rather than blocking this CF-Access MFA challenge.
     const passkeyAvailable = await userHasUsablePasskey(user.id);
+    // SR2-06: bind the pending record to the live auth/mfa epochs + status +
+    // effective allowed methods at issuance — same shape/rationale as the
+    // password /login handler (login.ts), so the shared TOTP/SMS/passkey
+    // completion paths (mfa.ts, passkeys.ts) can validate it via
+    // parsePendingMfa/evaluatePendingMfa rather than treating it as a legacy
+    // (rejected) record.
+    const pendingEpochs = await getUserEpochs(user.id);
+    if (!pendingEpochs) throw new Error('user epochs unavailable at MFA temp-token issuance');
+    const pendingPolicy = await getEffectiveMfaPolicy({
+      scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
+    });
+    const PENDING_TTL_SECONDS = 300;
     await redis.setex(
       `mfa:pending:${tempToken}`,
-      300,
-      JSON.stringify({ userId: user.id, mfaMethod, passkeyAvailable })
+      PENDING_TTL_SECONDS,
+      JSON.stringify({
+        userId: user.id,
+        mfaMethod,
+        passkeyAvailable,
+        authEpoch: pendingEpochs.authEpoch,
+        mfaEpoch: pendingEpochs.mfaEpoch,
+        statusExpectation: user.status,
+        allowedMethods: pendingPolicy.allowedMethods,
+        expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
+      })
     );
     return c.json({
       mfaRequired: true,
@@ -175,7 +197,38 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     });
   }
 
-  const mfaSatisfied = trustsMfa || !(ENABLE_2FA && user.mfaEnabled);
+  // Parity with the password /login handler (routes/auth/login.ts). Reaching
+  // here means the user is NOT MFA-challenged: either they hold no Breeze
+  // factor, or CF_ACCESS_TRUSTS_MFA asserts the edge already did MFA.
+  //
+  // The old `trustsMfa || !(ENABLE_2FA && user.mfaEnabled)` granted VACUOUS
+  // assurance to any user with no factor — INCLUDING one whose effective
+  // policy requires MFA — so a CF Access login walked straight past forced
+  // enrollment and every hasSatisfiedMfa() gate. An unenrolled user under a
+  // required policy must get mfa=false plus a forced-enrollment response,
+  // exactly as the password path does. `trustsMfa` still satisfies MFA, but
+  // ONLY for a user who actually HAS a factor: the operator is asserting the
+  // edge performed a second factor, not that policy is irrelevant.
+  //
+  // Fail-closed on an unresolvable policy: getEffectiveMfaPolicy runs its
+  // reads under runOutsideDbContext+withSystemDbAccessContext (so this
+  // pre-auth path can never silently 0-row under RLS and mistake "no policy
+  // row" for "no policy"), and a role/membership-join failure THROWS rather
+  // than returning a permissive default — the throw aborts the request before
+  // any token is minted, which is the closed outcome. (A settings-read blip
+  // is the one deliberate fail-open, owned by the resolver and shared with
+  // /login: a transient error must not lock a whole tenant out of signing in.)
+  const policy = await getEffectiveMfaPolicy({
+    scope: context.scope,
+    userId: user.id,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+  });
+  const mfaEnrollmentRequired = ENABLE_2FA && !user.mfaEnabled && policy.required;
+  const mfaSatisfied =
+    !ENABLE_2FA ||
+    (user.mfaEnabled && trustsMfa) ||
+    (!user.mfaEnabled && !policy.required);
 
   // Mint a fresh refresh-token family for this login so the rotation chain
   // participates in OAuth 2.1 reuse-detection — same invariant as every
@@ -243,5 +296,9 @@ export async function cfAccessLoginMiddleware(c: Context, next: Next): Promise<R
     tokens: toPublicTokens(tokens),
     mfaRequired: false,
     requiresSetup: userRequiresSetup(user),
+    // Same contract the password /login handler returns, so the SPA drives the
+    // CF-Access user into enrollment instead of letting them bounce off a 428.
+    mfaEnrollmentRequired,
+    enrollUrl: mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
   });
 }

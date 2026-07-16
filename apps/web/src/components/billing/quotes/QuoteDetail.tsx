@@ -187,6 +187,24 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
             )}
           </div>
 
+          {quote.status === 'converted' && detail.pax8OrderId && (
+            <aside
+              className="rounded-lg border border-primary/25 bg-primary/5 p-4"
+              data-testid="quote-staged-pax8-order"
+            >
+              <p className="text-sm text-foreground">
+                {t('quotes.detail.pax8Order.message', { count: detail.pax8OrderLineCount ?? 0 })}
+              </p>
+              <a
+                href={`/settings/organizations/${quote.orgId}#pax8/${detail.pax8OrderId}`}
+                data-testid="quote-staged-pax8-order-link"
+                className="mt-2 inline-flex items-center gap-1 rounded-xs text-sm font-medium text-primary hover:underline focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                {t('quotes.detail.pax8Order.open')} <span aria-hidden>→</span>
+              </a>
+            </aside>
+          )}
+
           {/* Recurring + totals summary — the rail's anchor (shadow + large figure). */}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="quote-detail-totals">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.detail.totals.title')}</h3>

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // UserHelperBinaryName is the on-disk filename of the GUI-subsystem user-helper
@@ -23,7 +24,7 @@ const UserHelperBinaryName = "breeze-user-helper.exe"
 // build tags or os.Executable.
 //
 //   - sibling present → return sibling path
-//   - sibling missing with fs.ErrNotExist → log Warn + return agentExe (fallback)
+//   - sibling missing with fs.ErrNotExist → return agentExe with fallback provenance
 //   - any other stat error → wrap and return
 //
 // The fallback exists because some failure modes (failed build, AV
@@ -37,20 +38,42 @@ const UserHelperBinaryName = "breeze-user-helper.exe"
 // supported install vector (msiexec /i, /fa repair, in-place upgrade via
 // dev_update), the fs.ErrNotExist branch should be promoted to a hard
 // error so the regression surfaces loudly instead of degrading silently.
-// Without the fs.ErrNotExist branch any stat error would silently degrade —
-// the Warn provides ops telemetry for fleet-side detection in the meantime.
-func resolveUserHelperPath(agentExe string) (string, error) {
+// Without the fs.ErrNotExist branch any stat error would silently degrade.
+// The owning spawner emits the warning once for fleet-side detection.
+// ResolvedHelperExecutable records both the selected helper path and whether
+// a missing Windows companion forced selection of the main agent binary.
+type ResolvedHelperExecutable struct {
+	Path               string
+	MainBinaryFallback bool
+}
+
+func resolveUserHelperPath(agentExe string) (ResolvedHelperExecutable, error) {
 	helper := filepath.Join(filepath.Dir(agentExe), UserHelperBinaryName)
 	_, statErr := os.Stat(helper)
 	if statErr == nil {
-		return helper, nil
+		return ResolvedHelperExecutable{Path: helper}, nil
 	}
 	if errors.Is(statErr, fs.ErrNotExist) {
-		log.Warn("breeze-user-helper.exe missing — falling back to agent binary; console window will flash at user logon until the install is repaired",
-			"expectedPath", helper,
-			"fallbackPath", agentExe,
-		)
-		return agentExe, nil
+		return ResolvedHelperExecutable{Path: agentExe, MainBinaryFallback: true}, nil
 	}
-	return "", fmt.Errorf("stat %s: %w", helper, statErr)
+	return ResolvedHelperExecutable{}, fmt.Errorf("stat %s: %w", helper, statErr)
+}
+
+// helperFallbackWarningOwner limits the missing-companion warning to the
+// lifetime of its owning spawner. The lifecycle manager owns one spawner;
+// legacy standalone calls each own one private spawner.
+type helperFallbackWarningOwner struct {
+	once sync.Once
+}
+
+func (o *helperFallbackWarningOwner) WarnIfFallback(resolved ResolvedHelperExecutable) {
+	if o == nil || !resolved.MainBinaryFallback {
+		return
+	}
+	o.once.Do(func() {
+		log.Warn("breeze-user-helper.exe missing — falling back to agent binary; console window will flash at user logon until the install is repaired",
+			"expectedPath", filepath.Join(filepath.Dir(resolved.Path), UserHelperBinaryName),
+			"fallbackPath", resolved.Path,
+		)
+	})
 }

@@ -22,6 +22,7 @@ import { eq, and, desc, sql, gte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { resolveBackupProviderConfig, resolveBackupDestinationError } from './backupProviderConfig';
 import { createManualBackupJobIfIdle } from './backupJobCreation';
 import { enqueueBackupDispatch } from '../jobs/backupEnqueue';
 import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
@@ -641,6 +642,21 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: `Device is ${targetDevice.status}, cannot execute command` });
       }
 
+      // The agent needs the same provider + providerConfig the BACKUP command
+      // used to write this snapshot, so it can build a storage provider to
+      // read it back. Fail loudly rather than dispatch a config-less restore.
+      const backupProviderConfig = snapshot.configId
+        ? await resolveBackupProviderConfig(snapshot.configId, orgId)
+        : null;
+      if (!backupProviderConfig) {
+        // Legacy snapshot (null configId) predates destination tracking and
+        // can't be auto-restored — surface a distinct, non-misleading message
+        // rather than a generic "not found" (and never a current-config
+        // fallback, which could read the wrong destination).
+        const { reason, message } = resolveBackupDestinationError(snapshot.configId);
+        return JSON.stringify({ error: message, reason });
+      }
+
       // Insert restore job
       const [restoreJob] = await db.insert(restoreJobs).values({
         orgId,
@@ -666,6 +682,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
             snapshotId: snapshot.providerSnapshotId,
             targetPath: restoreJob.targetPath ?? '',
             selectedPaths: restoreType === 'selective' ? (selectedPaths ?? []) : [],
+            provider: backupProviderConfig.provider,
+            providerConfig: backupProviderConfig.providerConfig,
           },
           { userId: auth.user?.id ?? undefined }
         );

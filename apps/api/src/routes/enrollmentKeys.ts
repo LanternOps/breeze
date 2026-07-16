@@ -136,12 +136,6 @@ function parentKeyTooCloseToExpiry(expiresAt: Date | null): boolean {
   return remainingMs < INSTALLER_PARENT_MIN_REMAINING_SECONDS * 1000;
 }
 
-function allowLegacyMacosInstallerFilenameToken(): boolean {
-  const value =
-    process.env.MACOS_INSTALLER_FILENAME_TOKEN_COMPAT?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes" || value === "on";
-}
-
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? "1", 10) || 1);
   const limit = Math.min(
@@ -1102,10 +1096,19 @@ enrollmentKeyRoutes.get(
           throw err;
         }
 
-        const useLegacyFilenameToken = allowLegacyMacosInstallerFilenameToken();
-        const newAppName = useLegacyFilenameToken
-          ? `Breeze Installer [${issued.token}@${bundleApiHost}].app`
-          : "Breeze Installer.app";
+        // The bootstrap token is carried in TWO places, by design:
+        //   1. the app bundle's own filename — `Breeze Installer [TOKEN@host].app`
+        //   2. a sibling `Breeze Installer.bootstrap.json`
+        // The Swift installer prefers the JSON (FilenameTokenParser.load), but
+        // macOS App Translocation (Gatekeeper path randomization) copies ONLY
+        // the .app bundle to a read-only randomized path when a quarantined app
+        // is launched in place — stranding the sibling JSON and breaking the
+        // install ("This installer needs its original filename", #2544). The
+        // token lives INSIDE the bundle name, so it travels through
+        // translocation and the filename fallback keeps the installer working.
+        // Keeping the JSON preserves the clean, translocation-free read for the
+        // common case (app moved to /Applications, quarantine cleared, etc.).
+        const newAppName = `Breeze Installer [${issued.token}@${bundleApiHost}].app`;
         const bootstrapPayloadName = "Breeze Installer.bootstrap.json";
 
         let renamedZip: Buffer | undefined;
@@ -1113,20 +1116,16 @@ enrollmentKeyRoutes.get(
           renamedZip = await renameAppInZip(appZip, {
             oldAppName: "Breeze Installer.app",
             newAppName,
-            ...(useLegacyFilenameToken
-              ? {}
-              : {
-                  extraFiles: [
-                    {
-                      path: bootstrapPayloadName,
-                      data: JSON.stringify({
-                        token: issued.token,
-                        apiHost: bundleApiHost,
-                      }),
-                      mode: 0o600,
-                    },
-                  ],
+            extraFiles: [
+              {
+                path: bootstrapPayloadName,
+                data: JSON.stringify({
+                  token: issued.token,
+                  apiHost: bundleApiHost,
                 }),
+                mode: 0o600,
+              },
+            ],
           });
         } catch (err) {
           console.error(
@@ -1160,12 +1159,13 @@ enrollmentKeyRoutes.get(
           });
 
           c.header("Content-Type", "application/zip");
-          const downloadFilename = useLegacyFilenameToken
-            ? `${newAppName}.zip`
-            : "breeze-agent-macos-installer.zip";
+          // Stable, token-free download name. Finder names the extracted folder
+          // after this, and the single-use token stays out of the ZIP filename,
+          // Content-Disposition, and any proxy access logs — it rides inside the
+          // bundle name / bootstrap.json instead.
           c.header(
             "Content-Disposition",
-            `attachment; filename="${downloadFilename}"`,
+            `attachment; filename="breeze-agent-macos-installer.zip"`,
           );
           c.header("Content-Length", String(renamedZip.length));
           c.header("Cache-Control", "no-store");

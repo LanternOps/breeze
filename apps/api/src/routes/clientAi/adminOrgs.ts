@@ -118,7 +118,8 @@ clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
 
   const m365 = await db
     .select({ orgId: m365Connections.orgId, tenantId: m365Connections.tenantId })
-    .from(m365Connections);
+    .from(m365Connections)
+    .where(eq(m365Connections.profile, 'legacy-direct'));
 
   const delegant = await db
     .select({
@@ -149,7 +150,7 @@ clientAiAdminOrgRoutes.get('/orgs', requireOrgsRead, async (c) => {
     }
   }
   for (const row of m365) {
-    if (ENTRA_TENANT_GUID_REGEX.test(row.tenantId)) {
+    if (row.orgId && row.tenantId && ENTRA_TENANT_GUID_REGEX.test(row.tenantId)) {
       suggestedByOrg.set(row.orgId, row.tenantId.toLowerCase());
     }
   }

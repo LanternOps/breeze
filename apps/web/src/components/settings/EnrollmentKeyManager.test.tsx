@@ -5,9 +5,17 @@ const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
-vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: { getState: () => ({ currentOrgId: 'org-1' }) },
-}));
+vi.mock('../../stores/orgStore', () => {
+  const state: Record<string, unknown> = {
+    currentOrgId: 'org-1',
+    currentSiteId: null,
+    sites: [],
+    organizations: [],
+    isLoading: false,
+  };
+  const useOrgStore = Object.assign(() => state, { getState: () => state });
+  return { useOrgStore };
+});
 // Pass-through runAction so the request fn (and thus fetchWithAuth) actually runs.
 vi.mock('../../lib/runAction', () => ({
   ActionError: class ActionError extends Error {
@@ -28,6 +36,32 @@ vi.mock('../../lib/runAction', () => ({
 }));
 
 import EnrollmentKeyManager from './EnrollmentKeyManager';
+// The store is mocked above; importing it here yields the mock so tests can seed
+// currentOrgId / sites / organizations before rendering.
+import { useOrgStore } from '../../stores/orgStore';
+
+const orgState = () => (useOrgStore as unknown as { getState: () => Record<string, unknown> }).getState();
+
+function seedOrgState(partial: Record<string, unknown>) {
+  Object.assign(orgState(), partial);
+}
+
+interface StoreSite {
+  id: string;
+  orgId: string;
+  name: string;
+  address?: string;
+  deviceCount: number;
+  createdAt: string;
+}
+
+function makeSite(overrides: Partial<StoreSite> = {}): StoreSite {
+  return { id: 'site-a', orgId: 'org-1', name: 'Site A', deviceCount: 0, createdAt: new Date().toISOString(), ...overrides };
+}
+
+function makeOrg(id: string, name: string) {
+  return { id, partnerId: 'p-1', name, status: 'active' as const, createdAt: new Date().toISOString() };
+}
 
 function jsonRes(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body } as unknown as Response;
@@ -65,15 +99,23 @@ function makeRow(overrides: Partial<Row> = {}): Row {
   };
 }
 
-/** Route all fetches; returns the recorded call list for assertions. */
+/** Route all fetches; returns the recorded call list (with parsed body) for assertions. */
 function routeFetch(list: Row[]) {
-  const calls: Array<{ url: string; method: string }> = [];
-  fetchWithAuth.mockImplementation((rawUrl: unknown, opts?: { method?: string }) => {
+  const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+  fetchWithAuth.mockImplementation((rawUrl: unknown, opts?: { method?: string; body?: string }) => {
     const url = String(rawUrl ?? '');
     const method = opts?.method ?? 'GET';
-    calls.push({ url, method });
+    let body: Record<string, unknown> | undefined;
+    if (typeof opts?.body === 'string') {
+      try { body = JSON.parse(opts.body); } catch { /* non-JSON body */ }
+    }
+    calls.push({ url, method, body });
     if (url.startsWith('/enrollment-keys/purge-expired') && method === 'POST') {
       return Promise.resolve(jsonRes({ success: true, deletedCount: 2 }));
+    }
+    // Create: exact path (the list GET carries a `?...` query, so it won't match).
+    if (url === '/enrollment-keys' && method === 'POST') {
+      return Promise.resolve(jsonRes({ key: 'NEWKEY-123' }));
     }
     if (url.startsWith('/enrollment-keys?')) {
       return Promise.resolve(
@@ -85,7 +127,11 @@ function routeFetch(list: Row[]) {
   return calls;
 }
 
-beforeEach(() => fetchWithAuth.mockReset());
+beforeEach(() => {
+  fetchWithAuth.mockReset();
+  // Reset the store mock to the default single-org shape between tests.
+  seedOrgState({ currentOrgId: 'org-1', currentSiteId: null, sites: [], organizations: [], isLoading: false });
+});
 
 describe('EnrollmentKeyManager — short code column', () => {
   it('renders the short code in the row and no legacy "Hidden" text', async () => {
@@ -151,5 +197,93 @@ describe('EnrollmentKeyManager — delete expired', () => {
     // A refetch (GET) happens after the purge.
     const postIdx = calls.findIndex((c) => c.method === 'POST');
     expect(calls.slice(postIdx + 1).some((c) => c.method === 'GET')).toBe(true);
+  });
+});
+
+describe('EnrollmentKeyManager — create form site selector', () => {
+  const EMPTY = 'No enrollment keys found. Create one to get started.';
+
+  it('submits the selected siteId (and orgId) in the create POST body', async () => {
+    seedOrgState({
+      currentOrgId: 'org-1',
+      currentSiteId: null,
+      organizations: [makeOrg('org-1', 'Org One'), makeOrg('org-2', 'Org Two')],
+      sites: [makeSite({ id: 'site-a', name: 'Site A' }), makeSite({ id: 'site-b', name: 'Site B' })],
+    });
+    const calls = routeFetch([]);
+    render(<EnrollmentKeyManager />);
+    await screen.findByText(EMPTY);
+
+    fireEvent.click(screen.getByText('Create Key'));
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production servers'), {
+      target: { value: 'CI key' },
+    });
+
+    // Pick a specific site — proves the selection flows into the request body.
+    fireEvent.change(screen.getByTestId('enrollment-key-site-select'), {
+      target: { value: 'site-b' },
+    });
+
+    const submit = document.querySelector('form button[type="submit"]') as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(calls.some((c) => c.url === '/enrollment-keys' && c.method === 'POST')).toBe(true);
+    });
+    const post = calls.find((c) => c.url === '/enrollment-keys' && c.method === 'POST');
+    expect(post?.body?.siteId).toBe('site-b');
+    expect(post?.body?.orgId).toBe('org-1');
+  });
+
+  it('blocks submit and hides the site dropdown when the org has no sites', async () => {
+    seedOrgState({
+      currentOrgId: 'org-1',
+      currentSiteId: null,
+      organizations: [makeOrg('org-1', 'Org One')],
+      sites: [],
+    });
+    routeFetch([]);
+    render(<EnrollmentKeyManager />);
+    await screen.findByText(EMPTY);
+
+    fireEvent.click(screen.getByText('Create Key'));
+    // Fill the name so the only thing blocking submit is the missing site.
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production servers'), {
+      target: { value: 'CI key' },
+    });
+
+    const submit = document.querySelector('form button[type="submit"]') as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    // The amber "no sites yet" guidance replaces the dropdown.
+    expect(screen.getByText('This organization has no sites yet.')).toBeTruthy();
+    expect(screen.queryByTestId('enrollment-key-site-select')).toBeNull();
+  });
+
+  it('renders the organization select only when more than one org is visible', async () => {
+    // Single org → no org selector.
+    seedOrgState({
+      currentOrgId: 'org-1',
+      organizations: [makeOrg('org-1', 'Org One')],
+      sites: [makeSite({ id: 'site-a' })],
+    });
+    routeFetch([]);
+    const { unmount } = render(<EnrollmentKeyManager />);
+    await screen.findByText(EMPTY);
+    fireEvent.click(screen.getByText('Create Key'));
+    expect(screen.queryByTestId('enrollment-key-org-select')).toBeNull();
+    unmount();
+
+    // Multiple orgs → org selector present.
+    seedOrgState({
+      currentOrgId: 'org-1',
+      organizations: [makeOrg('org-1', 'Org One'), makeOrg('org-2', 'Org Two')],
+      sites: [makeSite({ id: 'site-a' })],
+    });
+    routeFetch([]);
+    render(<EnrollmentKeyManager />);
+    await screen.findByText(EMPTY);
+    fireEvent.click(screen.getByText('Create Key'));
+    expect(screen.getByTestId('enrollment-key-org-select')).toBeTruthy();
   });
 });

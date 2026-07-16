@@ -13,7 +13,7 @@ Principals**. A system operator must also select the partner. The equivalent
 management request is:
 
 ```http
-POST /api/v1/service-principals
+POST /api/v1/partner-service-principals
 Authorization: Bearer <operator-access-token>
 Content-Type: application/json
 
@@ -63,7 +63,7 @@ an optional expiry and a per-hour rate limit from 1 through 10,000; the default
 is 600 requests per hour.
 
 ```http
-POST /api/v1/service-principals/<service-principal-uuid>/keys
+POST /api/v1/partner-service-principals/<partner-service-principal-uuid>/keys
 Authorization: Bearer <operator-access-token>
 Content-Type: application/json
 
@@ -110,7 +110,7 @@ Use an overlap procedure for a no-downtime rotation:
 3. Run a full authenticated page traversal with the new key and confirm the
    consumer checkpoint advances successfully.
 4. Revoke the predecessor in **Settings → Service Principals**, or call
-   `DELETE /api/v1/service-principals/<principal-uuid>/keys/<old-key-uuid>`.
+   `DELETE /api/v1/partner-service-principals/<principal-uuid>/keys/<old-key-uuid>`.
 5. Confirm the old key returns `401` and retain only its non-secret audit ID.
 
 The **Rotate** action (`POST .../keys/<key-uuid>/rotate`) is atomic and revokes
@@ -179,7 +179,7 @@ delete processing downstream.
 
 ## Rate limits, retries, and failures
 
-Rate limits are per service-principal key over a one-hour window. Successful
+Rate limits are per partner-service-principal key over a one-hour window. Successful
 authentication returns `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and
 `X-RateLimit-Reset`. A `429` response includes `Retry-After`. Honor it with
 bounded backoff and jitter; do not start a second overlapping traversal to work
@@ -204,7 +204,7 @@ Protect these items in the deployment's normal encrypted backup process:
 
 - `PARTNER_API_CURSOR_SIGNING_KEY`, identical on every API replica and never
   reused as `JWT_SECRET`;
-- the consumer's encrypted service-principal plaintext key;
+- the consumer's encrypted partner-service-principal plaintext key;
 - consumer organization mappings, per-resource checkpoints, and last-known-good
   reconstructed records; and
 - the Breeze database, including principal/key IDs and audit history.
@@ -217,7 +217,7 @@ restart as source disappearance.
 If the consumer credential was lost, Breeze cannot recover it because only its
 digest is stored. Issue a new key, install and test it, then revoke the lost key.
 If compromise is suspected, revoke the affected key first, issue a replacement,
-review bounded service-principal audit events, and complete a full crawl. After
+review bounded partner-service-principal audit events, and complete a full crawl. After
 any database point-in-time recovery, run a full reconciliation before resuming
 incremental checkpoints and preserve downstream manual notes, uploads,
 password references, relations, and history throughout recovery.

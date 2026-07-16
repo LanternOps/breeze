@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from 'crypto';
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { createRemoteJWKSet, jwtVerify, customFetch } from 'jose';
 import { safeFetch, SsrfBlockedError, isPrivateIp, isAlwaysBlockedIp } from './urlSafety';
 
 // ============================================
@@ -15,6 +15,13 @@ export interface OIDCConfig {
   userInfoUrl: string;
   jwksUrl?: string;
   scopes: string;
+  /**
+   * Self-host escape hatch for an internal IdP on an RFC1918 address / plain
+   * HTTP. Resolved ONCE by getOIDCConfig from selfHostAllowsPrivateNetwork() —
+   * never from a request-supplied value. Loopback/link-local/metadata stay
+   * blocked either way (safeFetch's isAlwaysBlockedIp).
+   */
+  allowPrivateNetwork?: boolean;
 }
 
 export interface OIDCTokenResponse {
@@ -117,6 +124,12 @@ export interface TokenExchangeParams {
 export async function exchangeCodeForTokens(params: TokenExchangeParams): Promise<OIDCTokenResponse> {
   const { config, code, redirectUri, codeVerifier } = params;
 
+  // SR2-14: this request carries the DECRYPTED client_secret. A malicious or
+  // compromised discovery document could point token_endpoint at a plain-HTTP
+  // public host and exfiltrate it in cleartext. Refuse before the body is built.
+  const allowPrivateNetwork = config.allowPrivateNetwork ?? false;
+  assertSafeOidcEndpoint('token_endpoint', config.tokenUrl, allowPrivateNetwork);
+
   const body = new URLSearchParams();
   body.set('grant_type', 'authorization_code');
   body.set('client_id', config.clientId);
@@ -134,7 +147,10 @@ export async function exchangeCodeForTokens(params: TokenExchangeParams): Promis
       'Content-Type': 'application/x-www-form-urlencoded',
       'Accept': 'application/json'
     },
-    body: body.toString()
+    body: body.toString(),
+    timeoutMs: OIDC_FETCH_TIMEOUT_MS,
+    maxBytes: OIDC_MAX_RESPONSE_BYTES,
+    allowPrivateNetwork
   });
 
   if (!response.ok) {
@@ -150,12 +166,18 @@ export async function exchangeCodeForTokens(params: TokenExchangeParams): Promis
 // ============================================
 
 export async function getUserInfo(config: OIDCConfig, accessToken: string): Promise<OIDCUserInfo> {
+  const allowPrivateNetwork = config.allowPrivateNetwork ?? false;
+  assertSafeOidcEndpoint('userinfo_endpoint', config.userInfoUrl, allowPrivateNetwork);
+
   const response = await safeFetch(config.userInfoUrl, {
     method: 'GET',
     headers: {
       'Authorization': `Bearer ${accessToken}`,
       'Accept': 'application/json'
-    }
+    },
+    timeoutMs: OIDC_FETCH_TIMEOUT_MS,
+    maxBytes: OIDC_MAX_RESPONSE_BYTES,
+    allowPrivateNetwork
   });
 
   if (!response.ok) {
@@ -171,6 +193,11 @@ export async function getUserInfo(config: OIDCConfig, accessToken: string): Prom
 // ============================================
 
 export async function refreshAccessToken(config: OIDCConfig, refreshToken: string): Promise<OIDCTokenResponse> {
+  // Same client_secret cleartext concern as exchangeCodeForTokens (SR2-14).
+  // Dead code today, but guard it so it can never become a live hole.
+  const allowPrivateNetwork = config.allowPrivateNetwork ?? false;
+  assertSafeOidcEndpoint('token_endpoint', config.tokenUrl, allowPrivateNetwork);
+
   const body = new URLSearchParams();
   body.set('grant_type', 'refresh_token');
   body.set('client_id', config.clientId);
@@ -183,7 +210,10 @@ export async function refreshAccessToken(config: OIDCConfig, refreshToken: strin
       'Content-Type': 'application/x-www-form-urlencoded',
       'Accept': 'application/json'
     },
-    body: body.toString()
+    body: body.toString(),
+    timeoutMs: OIDC_FETCH_TIMEOUT_MS,
+    maxBytes: OIDC_MAX_RESPONSE_BYTES,
+    allowPrivateNetwork
   });
 
   if (!response.ok) {
@@ -264,18 +294,51 @@ export function verifyIdTokenClaims(claims: IDTokenClaims, config: OIDCConfig, n
 // ID Token Signature Verification (JWKS)
 // ============================================
 
-// Cache one remote JWKS set per jwks_uri. jose refreshes on `kid` miss and
-// caches keys internally, so this avoids re-fetching the JWKS on every login.
+// Cache one remote JWKS set per (policy, jwks_uri). jose refreshes on `kid`
+// miss and on cacheMaxAge expiry, so this avoids re-fetching on every login.
+//
+// BOUNDED (SR2-13): the key is tenant-influenced (an admin picks the issuer),
+// so an unbounded Map was a slow memory-growth vector. 500 entries is far
+// beyond any realistic provider count; the oldest is evicted first (Map
+// preserves insertion order).
+const MAX_JWKS_CACHE_ENTRIES = 500;
 const idTokenJwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
-function getIdTokenJwks(jwksUri: string): ReturnType<typeof createRemoteJWKSet> {
-  let jwks = idTokenJwksCache.get(jwksUri);
+function getIdTokenJwks(
+  jwksUri: string,
+  allowPrivateNetwork: boolean,
+): ReturnType<typeof createRemoteJWKSet> {
+  // The policy flag is part of the key: a self-host-permissive JWKS set must
+  // never be served to a strict caller.
+  const cacheKey = `${allowPrivateNetwork ? 'priv' : 'pub'}|${jwksUri}`;
+  let jwks = idTokenJwksCache.get(cacheKey);
   if (!jwks) {
     jwks = createRemoteJWKSet(new URL(jwksUri), {
       cacheMaxAge: 10 * 60 * 1000, // 10 minutes
       cooldownDuration: 30 * 1000,
+      // SR2-13: inject the SSRF-safe transport into jose itself. A URL check at
+      // construct time would NOT be enough — jose re-fetches the JWKS on its own
+      // whenever a `kid` misses or cacheMaxAge expires, using its GLOBAL fetch
+      // (undici): no scheme check, no private-IP check, no DNS pinning. Routing
+      // those refreshes through safeFetch is the only way to satisfy the design's
+      // "caching must not bypass transport validation on refresh".
+      //
+      // safeFetch(urlStr, init) is signature-compatible with jose's
+      // FetchImplementation: (url: string, options) => Promise<Response>.
+      [customFetch]: (url: string, options: Record<string, unknown>) =>
+        safeFetch(url, {
+          ...(options as object),
+          timeoutMs: OIDC_JWKS_TIMEOUT_MS,
+          maxBytes: OIDC_MAX_RESPONSE_BYTES, // unauthenticated route: cap the body
+          allowPrivateNetwork,
+        }),
     });
-    idTokenJwksCache.set(jwksUri, jwks);
+
+    if (idTokenJwksCache.size >= MAX_JWKS_CACHE_ENTRIES) {
+      const oldest = idTokenJwksCache.keys().next().value;
+      if (oldest !== undefined) idTokenJwksCache.delete(oldest);
+    }
+    idTokenJwksCache.set(cacheKey, jwks);
   }
   return jwks;
 }
@@ -304,7 +367,13 @@ export async function verifyIdTokenSignature(
     throw new Error('Cannot verify ID token signature: provider has no JWKS URL configured');
   }
 
-  const jwks = getIdTokenJwks(config.jwksUrl);
+  const allowPrivateNetwork = config.allowPrivateNetwork ?? false;
+  // Reject the URL before jose ever constructs a key set for it (SR2-13). The
+  // customFetch injection below covers every actual request, including jose's
+  // internal refreshes; this is the cheap up-front rejection.
+  assertSafeOidcEndpoint('jwks_uri', config.jwksUrl, allowPrivateNetwork);
+
+  const jwks = getIdTokenJwks(config.jwksUrl, allowPrivateNetwork);
 
   let payload: IDTokenClaims;
   try {
@@ -329,19 +398,31 @@ export async function verifyIdTokenSignature(
 }
 
 /**
- * Reject an id_token whose email is EXPLICITLY marked unverified before it is
- * trusted for user provisioning or account linking. `email_verified` may arrive
- * as a boolean or string.
+ * The three possible states of an OIDC `email_verified` claim, read from EITHER
+ * an id_token claim set OR a userinfo body. `email_verified` may legitimately
+ * arrive as a boolean or as a string (SR2-12).
  *
- * Only an explicit false/"false" blocks: many IdPs (notably Azure AD / Entra)
- * omit `email_verified` entirely even for verified mailboxes, so treating an
- * ABSENT claim as unverified would lock those tenants out. Identity ultimately
- * flows from the server-to-server userinfo call, not the id_token email, so an
- * absent claim is acceptable here.
+ * 'absent' covers missing, null, and any non-boolean junk value — an IdP that
+ * says something we cannot interpret has not asserted verification.
+ */
+export type EmailVerifiedClaim = 'true' | 'false' | 'absent';
+
+export function readEmailVerifiedClaim(
+  source: Record<string, unknown> | null | undefined,
+): EmailVerifiedClaim {
+  const ev = source?.email_verified;
+  if (ev === true || ev === 'true') return 'true';
+  if (ev === false || ev === 'false') return 'false';
+  return 'absent';
+}
+
+/**
+ * @deprecated Superseded by readEmailVerifiedClaim + the callback's axis-aware
+ * gate (SR2-12). Kept because it is the documented "explicit false only"
+ * behavior and is still unit-tested; the SSO callback no longer calls it.
  */
 export function assertEmailVerified(claims: Pick<IDTokenClaims, 'email_verified'>): void {
-  const ev = (claims as { email_verified?: unknown }).email_verified;
-  if (ev === false || ev === 'false') {
+  if (readEmailVerifiedClaim(claims as Record<string, unknown>) === 'false') {
     throw new Error('ID token email is explicitly not verified (email_verified === false)');
   }
 }
@@ -410,6 +491,56 @@ export function isInternalUrl(urlStr: string, allowPrivateNetwork = false): bool
   return allowPrivateNetwork ? isAlwaysBlockedIp(hostname) : isPrivateIp(hostname);
 }
 
+/** Wall-clock cap for provider-controlled OIDC fetches. None was set before (SR2-14). */
+export const OIDC_FETCH_TIMEOUT_MS = 10_000;
+/** JWKS cap — matches jose's own default so a healthy IdP sees no change. */
+export const OIDC_JWKS_TIMEOUT_MS = 5_000;
+/**
+ * Body ceiling for every OIDC document (discovery, token, userinfo, JWKS). All
+ * four are small; 1 MiB is orders of magnitude of headroom. safeFetch had NO
+ * size cap, and /sso/callback is UNAUTHENTICATED — so a compromised IdP
+ * returning a multi-GB JWKS would have been an unauthenticated memory-
+ * exhaustion vector the moment JWKS started flowing through safeFetch (SR2-13).
+ */
+export const OIDC_MAX_RESPONSE_BYTES = 1 * 1024 * 1024;
+
+/**
+ * One policy gate for every endpoint we will either PERSIST from a discovery
+ * document or USE at runtime (SR2-14). Enforces HTTPS (http only in self-host
+ * mode) and rejects loopback/link-local/private/metadata targets, delegating
+ * the IP predicates to urlSafety via isInternalUrl. This is the check that
+ * stops a malicious discovery document from making Breeze POST the DECRYPTED
+ * client_secret in cleartext.
+ */
+export function assertSafeOidcEndpoint(
+  label: string,
+  urlStr: string | null | undefined,
+  allowPrivateNetwork = false,
+): void {
+  if (!urlStr) {
+    throw new Error(`OIDC endpoint missing: ${label}`);
+  }
+  if (isInternalUrl(urlStr, allowPrivateNetwork)) {
+    throw new Error(`OIDC endpoint rejected (must be HTTPS and publicly routable): ${label}`);
+  }
+}
+
+/**
+ * Validate every endpoint a discovery document would cause us to persist,
+ * BEFORE it is persisted. Discovery output was written verbatim with zero
+ * validation — no scheme check, no private-IP check. Throws on the first bad
+ * one.
+ */
+export function validateDiscoveredEndpoints(
+  doc: OIDCDiscoveryDocument,
+  allowPrivateNetwork = false,
+): void {
+  assertSafeOidcEndpoint('authorization_endpoint', doc.authorization_endpoint, allowPrivateNetwork);
+  assertSafeOidcEndpoint('token_endpoint', doc.token_endpoint, allowPrivateNetwork);
+  assertSafeOidcEndpoint('userinfo_endpoint', doc.userinfo_endpoint, allowPrivateNetwork);
+  assertSafeOidcEndpoint('jwks_uri', doc.jwks_uri, allowPrivateNetwork);
+}
+
 export interface DiscoverOIDCConfigOptions {
   /**
    * Self-hosted opt-in for an internal IdP (Authentik/Keycloak) whose issuer
@@ -437,7 +568,9 @@ export async function discoverOIDCConfig(
     response = await safeFetch(wellKnownUrl, {
       method: 'GET',
       headers: { 'Accept': 'application/json' },
-      allowPrivateNetwork
+      allowPrivateNetwork,
+      timeoutMs: OIDC_FETCH_TIMEOUT_MS,
+      maxBytes: OIDC_MAX_RESPONSE_BYTES
     });
   } catch (err) {
     if (err instanceof SsrfBlockedError) {
@@ -456,7 +589,11 @@ export async function discoverOIDCConfig(
     throw new Error(`OIDC discovery failed: ${response.status}`);
   }
 
-  return response.json() as Promise<OIDCDiscoveryDocument>;
+  const doc = (await response.json()) as OIDCDiscoveryDocument;
+  // SR2-14: validate BEFORE the caller persists these. Discovery output was
+  // written to sso_providers verbatim with zero validation.
+  validateDiscoveredEndpoints(doc, allowPrivateNetwork);
+  return doc;
 }
 
 // ============================================

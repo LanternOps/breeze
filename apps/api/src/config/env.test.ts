@@ -14,6 +14,7 @@ const OAUTH_ENV_KEYS = [
   'OAUTH_COOKIE_SECRET',
   'NODE_ENV',
   'MFA_FORCE_FOR_PARTNER_ADMIN',
+  'M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED',
 ] as const;
 
 const clearOauthEnv = () => {
@@ -48,6 +49,19 @@ describe('config env', () => {
     process.env.MCP_OAUTH_ENABLED = 'foo';
     const mod = await loadEnv();
     expect(mod.MCP_OAUTH_ENABLED).toBe(false);
+  });
+
+  it('defaults M365 customer Graph-read onboarding to false', async () => {
+    const mod = await loadEnv();
+    expect(mod.m365CustomerGraphReadOnboardingEnabled()).toBe(false);
+  });
+
+  it('reads M365 customer Graph-read onboarding at call time', async () => {
+    const mod = await loadEnv();
+    process.env.M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED = 'true';
+    expect(mod.m365CustomerGraphReadOnboardingEnabled()).toBe(true);
+    process.env.M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED = 'false';
+    expect(mod.m365CustomerGraphReadOnboardingEnabled()).toBe(false);
   });
 
   // Task 21 (May 2026): DCR now defaults OFF in every environment.

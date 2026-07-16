@@ -13,7 +13,7 @@ export const partnerApiRoutes = new Hono();
 // auth middleware has released the held partner-RLS request context.
 partnerApiRoutes.use('*', partnerExportAuditMiddleware);
 // All versioned partner-export endpoints added beneath this router inherit the
-// dedicated service-principal authentication and partner RLS context.
+// dedicated partner-service-principal authentication and partner RLS context.
 partnerApiRoutes.use('*', partnerApiAuthMiddleware);
 partnerApiRoutes.route('/', partnerOrganizationRoutes);
 partnerApiRoutes.route('/', partnerDeviceRoutes);

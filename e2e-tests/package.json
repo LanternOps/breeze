@@ -15,17 +15,17 @@
     "monitor": "tsx live-signup/monitor.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.110.0",
+    "@anthropic-ai/sdk": "^0.111.0",
     "dotenv": "^17.4.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
-    "@types/node": "^26.1.0",
+    "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",
     "pg": "^8.22.0",
     "playwright": "^1.61.1",
-    "tsx": "^4.23.0",
-    "typescript": "^6.0.3",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.10",
     "werift": "^0.23.0"
   },

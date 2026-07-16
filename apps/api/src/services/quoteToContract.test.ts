@@ -12,6 +12,7 @@ const quote: QuoteForContract = {
 
 function line(over: Partial<QuoteLineForContract>): QuoteLineForContract {
   return {
+    sourceQuoteLineId: 'quote-line-1',
     recurrence: 'monthly',
     customerVisible: true,
     name: null,
@@ -182,7 +183,7 @@ describe('buildContractSpecsFromQuote', () => {
     expect(specs[0]!.currencyCode).toBe('USD');
   });
 
-  it('drops catalogItemId so the contract bills the frozen quote price, not the live catalog price', () => {
+  it('drops catalogItemId to keep the frozen quote price and carries an in-memory source reference', () => {
     const specs = buildContractSpecsFromQuote(
       quote,
       [line({ recurrence: 'monthly', catalogItemId: 'cat-123', unitPrice: '42.00' })],
@@ -191,6 +192,7 @@ describe('buildContractSpecsFromQuote', () => {
     );
     expect(specs[0]!.lines[0]!.catalogItemId).toBeNull();
     expect(specs[0]!.lines[0]!.unitPrice).toBe('42.00');
+    expect(specs[0]!.lines[0]!.sourceQuoteLineId).toBe('quote-line-1');
   });
 
   it('annual line with termMonths=12 gets endDate; monthly line with termMonths=null gets endDate===null', () => {

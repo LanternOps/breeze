@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const { stagePax8OrderFromQuoteMock } = vi.hoisted(() => ({
+  stagePax8OrderFromQuoteMock: vi.fn(),
+}));
+
+vi.mock('./quoteToPax8Order', () => ({
+  stagePax8OrderFromQuote: stagePax8OrderFromQuoteMock,
+}));
+
 // Controllable Drizzle chain mock (same pattern as quoteService.test.ts /
 // invoiceService.test.ts): every builder method returns the same chain; a
 // query resolves when awaited (the chain is a thenable that yields the next
@@ -97,7 +105,11 @@ function queueAcceptHappyPath(quoteOverrides: Record<string, unknown> = {}) {
 }
 
 describe('acceptQuote deposit snapshot', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+  });
 
   it('snapshots quote.depositAmount onto the issued invoice as depositDue when a deposit is configured', async () => {
     queueAcceptHappyPath({ depositType: 'percent', depositPercent: '30.00', depositAmount: '300.00' });
@@ -117,5 +129,29 @@ describe('acceptQuote deposit snapshot', () => {
 
     const setMock = (db as unknown as Chain).set;
     expect(setMock.mock.calls[0]![0]).not.toHaveProperty('depositDue');
+  });
+
+  it('stages Phase 5 before the final quote read and exposes the order id', async () => {
+    const { quote, line } = queueAcceptHappyPath();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: 'pax8-order-1', lineCount: 1 });
+
+    const result = await acceptQuote(baseParams);
+
+    expect(stagePax8OrderFromQuoteMock).toHaveBeenCalledWith({
+      quoteId: quote.id,
+      orgId: quote.orgId,
+      partnerId: quote.partnerId,
+      contractIds: [],
+      contractLineLinks: [],
+      lines: [{
+        id: line.id,
+        catalogItemId: null,
+        quantity: line.quantity,
+        recurrence: line.recurrence,
+        customerVisible: line.customerVisible,
+      }],
+      actorUserId: null,
+    });
+    expect(result.pax8OrderId).toBe('pax8-order-1');
   });
 });

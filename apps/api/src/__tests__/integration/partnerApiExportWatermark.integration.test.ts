@@ -603,7 +603,7 @@ function exportAppFor(partnerId: string, orgIds: string[]): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('partnerApiPrincipal', {
-      servicePrincipalId: crypto.randomUUID(),
+      partnerServicePrincipalId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
       partnerId,
       name: 'Watermark integration test',

@@ -92,6 +92,14 @@ type ReportBuilderProps = {
   mode?: 'create' | 'edit' | 'adhoc' | 'builder';
   defaultValues?: Partial<ReportBuilderFormValues>;
   reportId?: string;
+  /**
+   * The report's stored `config`. PUT /reports/:id replaces `config` wholesale,
+   * so anything the builder doesn't reconstruct is dropped on save. Report types
+   * that carry their own config — `security_compliance_posture`,
+   * `executive_summary` — must pass it here or their settings are silently reset
+   * to schema defaults on the next edit.
+   */
+  baseConfig?: Record<string, unknown>;
   onSubmit?: (values: ReportBuilderFormValues) => void | Promise<void>;
   onPreview?: (values: ReportBuilderFormValues) => void | Promise<void>;
   onCancel?: () => void;
@@ -680,6 +688,7 @@ export default function ReportBuilder({
   mode = 'create',
   defaultValues,
   reportId,
+  baseConfig,
   onSubmit,
   onPreview,
   onCancel
@@ -1243,6 +1252,9 @@ export default function ReportBuilder({
       format: primaryFormat,
       ...(currentOrgId ? { orgId: currentOrgId } : {}),
       config: {
+        // Keys the builder doesn't own (posture thresholds, executive-summary
+        // settings) come first so live builder state below still wins.
+        ...baseConfig,
         builderType,
         dataSource,
         columns: selectedFields,
@@ -2083,6 +2095,7 @@ export default function ReportBuilder({
           )}
 
           <button
+            data-testid="report-builder-submit"
             type="submit"
             disabled={saving}
             className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-60 sm:w-auto sm:px-6"

@@ -48,6 +48,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
   // like partner_abuse_signals, DO have a tenant column but are
   // operator-only by design, not tenant-column-less).
   'manifest_signing_keys',
+  'm365_consent_sessions',
   'partner_abuse_signals',
 ]);
 
@@ -68,6 +69,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
+  'm365_consent_sessions', // OAuth consent state: forced RLS, system-only policies; tenant scopes must never read verifier/nonce material.
   'vulnerability_sources', // Global vulnerability-source sync metadata. Forced RLS, no tenant policies → only system context.
   'vulnerabilities', // Global vulnerability catalog. Forced RLS, no tenant policies → only system context.
   'software_products', // Global normalized software dimension. Forced RLS, no tenant policies → only system context.
@@ -77,6 +79,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'partner_abuse_signals', // Operator abuse signals ABOUT partners. Forced RLS, system-only policy — partners must never see their own risk signals.
+  'sso_sessions', // Pre-auth SSO CSRF/PKCE transaction store (state/nonce/code_verifier + link binding). No tenant column; written/consumed only by unauthenticated callback + system-context routes. Forced RLS, system-only policy → only system context.
 ]);
 
 // Tables with org_id metadata that are intentionally not generic org-tenant
@@ -115,6 +118,11 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   'pax8_company_mappings',
   'pax8_subscription_snapshots',
   'pax8_contract_line_links',
+  // pax8_orders / pax8_order_lines (2026-07-13, ordering): same shape — org_id
+  // is the customer the order is FOR, not the tenancy axis. Ordering is an
+  // MSP-side act; an org-scoped token must never see one.
+  'pax8_orders',
+  'pax8_order_lines',
   // customer_email_domains (Phase 5): partner-axis (Shape 3) carrying a
   // denormalized org_id (the routing target). RLS axis is partner_id; the
   // org_id is for routing + cascade only. Functional cross-partner/cross-org
@@ -164,6 +172,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['pax8_subscription_snapshots', 'partner_id'],
   ['pax8_product_mappings', 'partner_id'],
   ['pax8_contract_line_links', 'partner_id'],
+  ['pax8_orders', 'partner_id'],
+  ['pax8_order_lines', 'partner_id'],
   ['accounting_connections', 'partner_id'],
   ['scripts', 'partner_id'],
   ['script_categories', 'partner_id'],
@@ -180,6 +190,12 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['catalog_bundle_components', 'partner_id'],
   ['td_synnex_digital_bridge_integrations', 'partner_id'],
   ['td_synnex_ec_express_integrations', 'partner_id'],
+  // Nightly SFTP P&A file ingest (2026-07-16): partner-axis (Shape 3).
+  // td_synnex_price_availability holds the ingested rows and is written by the
+  // nightly worker under a system context; both carry a flat partner_id.
+  // Functional cross-partner forge proof: tdSynnexSftpRls.integration.test.ts.
+  ['td_synnex_sftp_integrations', 'partner_id'],
+  ['td_synnex_price_availability', 'partner_id'],
   // Phase 4 email-to-ticket ingest (Shape 3). partner_id is nullable on
   // ticket_email_inbound (only system scope may write null-partner rows);
   // NOT NULL on partner_inbound_domains. Policy:
@@ -226,9 +242,9 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Partner service principals and independently rotatable keys are both
   // partner-axis (Shape 3). The key table denormalizes partner_id and also
   // enforces composite ownership against its principal and rotation lineage.
-  // Functional forge proof: servicePrincipalRls.integration.test.ts.
-  ['service_principals', 'partner_id'],
-  ['service_principal_keys', 'partner_id'],
+  // Functional forge proof: partnerServicePrincipalRls.integration.test.ts.
+  ['partner_service_principals', 'partner_id'],
+  ['partner_service_principal_keys', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -613,6 +629,69 @@ describe('RLS coverage contract', () => {
     expect(`${authCodes?.qual}\n${authCodes?.with_check}`).toContain('user_id = breeze_current_user_id()');
     expect(`${grants?.qual}\n${grants?.with_check}`).toContain('account_id = breeze_current_user_id()');
     expect(`${refreshTokens?.qual}\n${refreshTokens?.with_check}`).toContain('user_id = breeze_current_user_id()');
+  });
+
+  it('sso_sessions is forced-RLS and reachable only from system scope', async () => {
+    const [cls] = (await db.execute(sql`
+      SELECT c.relrowsecurity AS rls_on, c.relforcerowsecurity AS force_on
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = 'sso_sessions';
+    `)) as unknown as Array<{ rls_on: boolean; force_on: boolean }>;
+
+    expect(cls?.rls_on).toBe(true);
+    expect(cls?.force_on).toBe(true);
+
+    const policies = (await db.execute(sql`
+      SELECT policyname, cmd, COALESCE(qual, '') AS qual, COALESCE(with_check, '') AS with_check
+      FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'sso_sessions'
+      ORDER BY policyname;
+    `)) as unknown as Array<{ policyname: string; cmd: string; qual: string; with_check: string }>;
+
+    // Exactly one ALL-command system-only policy. sso_sessions is a pre-auth
+    // CSRF/PKCE transaction store with no tenant column — no tenant axis may
+    // read or write it, only withSystemDbAccessContext.
+    expect(policies).toHaveLength(1);
+    expect(policies[0]?.policyname).toBe('sso_sessions_system_only');
+    expect(policies[0]?.cmd).toBe('ALL');
+    const predicate = `${policies[0]?.qual}\n${policies[0]?.with_check}`;
+    expect(predicate).toContain("current_setting('breeze.scope'");
+    expect(predicate).not.toContain('breeze_has_org_access');
+    expect(predicate).not.toContain('breeze_has_partner_access');
+  });
+
+  it('sso_sessions carries the provider-version and link-binding columns', async () => {
+    const cols = (await db.execute(sql`
+      SELECT column_name, is_nullable, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'sso_sessions'
+        AND column_name IN ('provider_version', 'initiating_auth_epoch', 'initiating_mfa_epoch', 'initiating_session_id')
+      ORDER BY column_name;
+    `)) as unknown as Array<{ column_name: string; is_nullable: string; data_type: string }>;
+
+    expect(cols.map((c) => c.column_name)).toEqual([
+      'initiating_auth_epoch', 'initiating_mfa_epoch', 'initiating_session_id', 'provider_version',
+    ]);
+    // All nullable: login sessions have no initiating user; provider_version is
+    // NULL only for pre-deploy in-flight rows (which the callback rejects).
+    for (const c of cols) expect(c.is_nullable).toBe('YES');
+
+    const [pv] = (await db.execute(sql`
+      SELECT is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'sso_providers' AND column_name = 'config_version';
+    `)) as unknown as Array<{ is_nullable: string; column_default: string }>;
+    expect(pv?.is_nullable).toBe('NO');
+    expect(pv?.column_default).toContain('1');
+
+    const [drcb] = (await db.execute(sql`
+      SELECT is_nullable, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'sso_providers' AND column_name = 'default_role_configured_by';
+    `)) as unknown as Array<{ is_nullable: string; data_type: string }>;
+    expect(drcb?.is_nullable).toBe('YES');
+    expect(drcb?.data_type).toBe('uuid');
   });
 
   it('every tenant-scoped public table has FORCE ROW LEVEL SECURITY enabled', async () => {

@@ -12,7 +12,7 @@ export type PartnerType = 'msp' | 'enterprise' | 'internal';
 export type PlanType = 'free' | 'pro' | 'enterprise' | 'unlimited';
 export type OrgType = 'customer' | 'internal';
 export type OrgStatus = 'active' | 'suspended' | 'trial' | 'churned';
-export type SupportedLocale = 'en' | 'pt-BR';
+export type SupportedLocale = 'en' | 'pt-BR' | 'es-419' | 'fr-FR' | 'de-DE';
 
 export interface Partner {
   id: string;
@@ -759,6 +759,7 @@ export * from './ai';
 // ============================================
 
 export * from './billing-enums';
+export * from './pax8-enums';
 
 // ============================================
 // Vulnerability fleet-triage SSOT

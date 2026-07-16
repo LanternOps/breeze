@@ -166,6 +166,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   search_catalog: { resource: 'catalog', action: 'read' },
   get_catalog_item: { resource: 'catalog', action: 'read' },
+  lookup_distributor_product: { resource: 'catalog', action: 'read' },
   manage_catalog: {
     create_item: { resource: 'catalog', action: 'write' },
     update_item: { resource: 'catalog', action: 'write' },

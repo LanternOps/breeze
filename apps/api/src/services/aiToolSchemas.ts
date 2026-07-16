@@ -354,6 +354,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     catalogItemId: uuid,
   }),
 
+  lookup_distributor_product: z.object({
+    query: z.string().min(1).max(40),
+  }),
+
   manage_catalog: z.object({
     action: z.enum([
       'create_item',
@@ -846,7 +850,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     deviceId: uuid.optional(),
     startTime: z.string().datetime({ offset: true }).optional(),
     endTime: z.string().datetime({ offset: true }).optional(),
-    changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account']).optional(),
+    changeType: z.enum(['software', 'service', 'startup', 'network', 'scheduled_task', 'user_account', 'hardware', 'os_version']).optional(),
     changeAction: z.enum(['added', 'removed', 'modified', 'updated']).optional(),
     limit: z.number().int().min(1).max(500).optional(),
   }),

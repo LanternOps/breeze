@@ -45,7 +45,7 @@ process environment or a secret manager:
 | `AGENT_TOKEN` | (empty) | Bearer token for agent endpoints |
 | `DEVICE_ID` | (empty) | A known device ID for single-device tests |
 | `DEVICE_IDS` | (empty) | Comma-separated device IDs for command tests |
-| `PARTNER_API_KEY` | (empty) | Dedicated `brz_sp_...` service-principal key for partner exports |
+| `PARTNER_API_KEY` | (empty) | Dedicated `brz_sp_...` partner-service-principal key for partner exports |
 | `PARTNER_API_MODE` | `both` | `full`, `incremental`, or `both` traversal phases |
 | `PARTNER_API_PAGE_LIMIT` | `500` | Export page size (clamped to the API maximum of 500) |
 | `INCREMENTAL_PAGE_LIMIT` | `500` | Incremental-only page size; set to `1` for the changed-row cursor gate |
@@ -143,7 +143,7 @@ k6 run -e BASE_URL=http://localhost:3001 \
 ### Partner reconstruction export
 
 Run this against a partner fixture containing at least 10,000 devices. Use a
-dedicated service-principal key with all eight partner read scopes; a human JWT
+dedicated partner-service-principal key with all eight partner read scopes; a human JWT
 or ordinary organization API key cannot authenticate this route.
 
 ```bash

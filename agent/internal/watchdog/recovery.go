@@ -1,7 +1,9 @@
 package watchdog
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"sort"
@@ -20,14 +22,163 @@ type realClock struct{}
 
 func (realClock) Now() time.Time { return time.Now() }
 
+// RecoveryAction names the side effect a recovery attempt selected.
+type RecoveryAction string
+
+const (
+	RecoveryActionObserve  RecoveryAction = "observe"
+	RecoveryActionGraceful RecoveryAction = "graceful_restart"
+	RecoveryActionForced   RecoveryAction = "forced_restart"
+	RecoveryActionStart    RecoveryAction = "ensure_started"
+)
+
+// RecoveryIntent is what the caller asked for. Controllers must select their
+// behavior from the intent — never infer it from the attempt count alone —
+// so an operator "start_agent" command can never escalate to forced
+// termination just because the escalation ladder happens to sit at attempt 2.
+type RecoveryIntent string
+
+const (
+	RecoveryIntentUnhealthy   RecoveryIntent = "recover_unhealthy"
+	RecoveryIntentEnsureStart RecoveryIntent = "ensure_started"
+	RecoveryIntentRestart     RecoveryIntent = "restart"
+)
+
+// RecoveryDisposition tells the caller what to do next. It is deliberately
+// explicit rather than a bool: the zero value normalizes to
+// RecoveryDispositionNone, so an uninitialized or partially populated result
+// can never be misread as "the agent recovered".
+type RecoveryDisposition string
+
+const (
+	RecoveryDispositionNone            RecoveryDisposition = "none"
+	RecoveryDispositionVerifyHeartbeat RecoveryDisposition = "verify_heartbeat"
+	RecoveryDispositionFailover        RecoveryDisposition = "failover"
+)
+
+// RecoveryFailureClass categorizes a RecoveryError for journaling and for
+// deciding whether a failure is retryable or terminal.
+type RecoveryFailureClass string
+
+const (
+	RecoveryFailureQuery              RecoveryFailureClass = "query_failed"
+	RecoveryFailureControl            RecoveryFailureClass = "control_failed"
+	RecoveryFailureStopTimeout        RecoveryFailureClass = "stop_timeout"
+	RecoveryFailureTransitionTimeout  RecoveryFailureClass = "transition_timeout"
+	RecoveryFailureIdentityMismatch   RecoveryFailureClass = "identity_mismatch"
+	RecoveryFailureProcessExitTimeout RecoveryFailureClass = "process_exit_timeout"
+	RecoveryFailureStartTimeout       RecoveryFailureClass = "start_timeout"
+	RecoveryFailureCanceled           RecoveryFailureClass = "canceled"
+)
+
+// RecoveryRequest is the input to a recovery attempt. StateFilePID is only a
+// hint read from the agent's state file — a controller that takes destructive
+// action must establish process identity from the service manager itself.
+type RecoveryRequest struct {
+	StateFilePID int
+	Intent       RecoveryIntent
+	Context      context.Context
+}
+
+// RecoveryResult is the structured outcome of a recovery attempt.
+//
+// ActionTaken means "a side effect was issued", not "it worked" — a failed
+// control call still sets it so the attempt is charged against the escalation
+// budget. Callers deciding whether the agent is coming back must look at
+// Disposition (and a nil error), never at ActionTaken.
+type RecoveryResult struct {
+	Intent       RecoveryIntent
+	Action       RecoveryAction
+	Phase        string
+	InitialState string
+	FinalState   string
+	StateFilePID int
+	OldPID       int
+	NewPID       int
+	Elapsed      time.Duration
+	ActionTaken  bool
+	Disposition  RecoveryDisposition
+}
+
+// RecoveryError is the typed failure returned by a serviceController.
+type RecoveryError struct {
+	Class RecoveryFailureClass
+	Phase string
+	State string
+	PID   int
+	Err   error
+}
+
+func (e *RecoveryError) Error() string {
+	if e.Err == nil {
+		return fmt.Sprintf("recovery %s failed during %s", e.Class, e.Phase)
+	}
+	return fmt.Sprintf("recovery %s failed during %s: %v", e.Class, e.Phase, e.Err)
+}
+
+func (e *RecoveryError) Unwrap() error { return e.Err }
+
 // serviceController is the OS-specific surface RecoveryManager.Attempt depends
 // on. Production builds inject osServiceController (one impl per GOOS).
-// Tests inject a fake. Method names match the existing package-level
-// functions so platform files only need to wrap them.
+// Tests inject a fake. attempt is the 1-based number of the attempt about to
+// be performed, used only to select the escalation rung for
+// RecoveryIntentUnhealthy.
 type serviceController interface {
-	RestartAgentService() error
-	StartAgentService() error
-	ForceKillProcess(pid int)
+	Recover(attempt int, req RecoveryRequest) (RecoveryResult, error)
+}
+
+// escalatingServiceRecover adapts the unix service helpers
+// (restartAgentService / startAgentService / forceKillProcess) to the
+// structured contract, preserving the historical escalation ladder:
+//
+//	Attempt 1: graceful restart via the service manager.
+//	Attempt 2: force-kill the state-file PID then start via the service manager.
+//	Attempt 3+: just start (the process may already be gone).
+//
+// RecoveryIntentEnsureStart and RecoveryIntentRestart pin a single behavior
+// regardless of the attempt number.
+func escalatingServiceRecover(attempt int, req RecoveryRequest) (RecoveryResult, error) {
+	result := RecoveryResult{Intent: req.Intent, StateFilePID: req.StateFilePID}
+
+	var err error
+	switch {
+	case req.Intent == RecoveryIntentEnsureStart:
+		result.Action = RecoveryActionStart
+		result.Phase = "start_service"
+		result.ActionTaken = true
+		err = startAgentService()
+	case req.Intent == RecoveryIntentRestart, attempt <= 1:
+		result.Action = RecoveryActionGraceful
+		result.Phase = "restart_service"
+		result.ActionTaken = true
+		err = restartAgentService()
+	case attempt == 2:
+		result.Action = RecoveryActionForced
+		result.Phase = "force_kill"
+		result.ActionTaken = true
+		forceKillProcess(req.StateFilePID)
+		result.Phase = "start_service"
+		err = startAgentService()
+	default:
+		result.Action = RecoveryActionStart
+		result.Phase = "start_service"
+		result.ActionTaken = true
+		err = startAgentService()
+	}
+
+	if err != nil {
+		return result, &RecoveryError{
+			Class: RecoveryFailureControl,
+			Phase: result.Phase,
+			PID:   req.StateFilePID,
+			Err:   err,
+		}
+	}
+	// These service managers report only that the control call was accepted,
+	// so success here means "restart dispatched" — the heartbeat check is
+	// still what proves the agent actually came back.
+	result.Disposition = RecoveryDispositionVerifyHeartbeat
+	return result, nil
 }
 
 // RecoveryManager tracks escalating recovery attempts for an unhealthy agent.
@@ -36,15 +187,16 @@ type serviceController interface {
 // heartbeat goroutine reading Count24h while Attempt runs), guard with a
 // mutex.
 type RecoveryManager struct {
-	maxAttempts    int
-	cooldown       time.Duration
-	attempts       int
-	lastAttempt    time.Time
-	windowStart    time.Time
-	svc            serviceController
-	clk            Clock
-	restartHistory []time.Time
-	historyPath    string
+	maxAttempts       int
+	cooldown          time.Duration
+	attempts          int
+	lastAttempt       time.Time
+	windowStart       time.Time
+	svc               serviceController
+	clk               Clock
+	restartHistory    []time.Time
+	historyPath       string
+	terminalExhausted bool
 }
 
 // NewRecoveryManager creates a RecoveryManager with the given limits and the
@@ -67,7 +219,15 @@ func newRecoveryManagerWithDeps(maxAttempts int, cooldown time.Duration, svc ser
 
 // CanAttempt returns true if another recovery attempt is allowed. If the
 // cooldown window has passed since windowStart, the counter is reset first.
+//
+// A terminal failure (identity/ownership uncertainty) is checked first and is
+// never cleared by the passage of time: retrying a forced restart against a
+// process we could not identify is exactly the action that could kill the
+// wrong process. Only an explicit Reset clears it.
 func (r *RecoveryManager) CanAttempt() bool {
+	if r.terminalExhausted {
+		return false
+	}
 	now := r.clk.Now()
 	if now.Sub(r.windowStart) >= r.cooldown {
 		r.attempts = 0
@@ -76,53 +236,56 @@ func (r *RecoveryManager) CanAttempt() bool {
 	return r.attempts < r.maxAttempts
 }
 
-// Attempt increments the counter and executes an escalating recovery action
-// based on how many attempts have been made:
+// Attempt dispatches one recovery attempt to the OS controller and accounts
+// for it.
 //
-//	Attempt 1: Graceful restart via service manager.
-//	Attempt 2: Force-kill the process then start via service manager.
-//	Attempt 3+: Just try starting the service (process may already be gone).
+// Only an attempt that actually issued a side effect (result.ActionTaken)
+// consumes an escalation slot and a 24h restart-history entry. A controller
+// that merely observed an in-progress service transition costs nothing — it
+// did not restart anything, so charging it would burn the recovery budget and
+// trip the flap detector while the service manager was already recovering on
+// its own.
 //
-// Returns (true, nil) on success, (false, err) on failure.
-func (r *RecoveryManager) Attempt(pid int) (bool, error) {
-	r.attempts++
-	r.lastAttempt = r.clk.Now()
-	r.recordRestart(r.lastAttempt)
-
-	var err error
-	switch r.attempts {
-	case 1:
-		err = r.svc.RestartAgentService()
-	case 2:
-		r.svc.ForceKillProcess(pid)
-		err = r.svc.StartAgentService()
-	default:
-		err = r.svc.StartAgentService()
+// A RecoveryDispositionFailover result is terminal: recovery is exhausted
+// immediately rather than retried.
+func (r *RecoveryManager) Attempt(req RecoveryRequest) (RecoveryResult, error) {
+	if req.Intent == "" {
+		req.Intent = RecoveryIntentUnhealthy
+	}
+	if req.Context == nil {
+		req.Context = context.Background()
 	}
 
-	if err != nil {
-		return false, err
+	nextAttempt := r.attempts + 1
+	result, err := r.svc.Recover(nextAttempt, req)
+	result.StateFilePID = req.StateFilePID
+	result.Intent = req.Intent
+	if result.Disposition == "" {
+		result.Disposition = RecoveryDispositionNone
 	}
-	return true, nil
+
+	if result.ActionTaken {
+		r.attempts++
+		r.lastAttempt = r.clk.Now()
+		r.recordRestart(r.lastAttempt)
+	}
+	if result.Disposition == RecoveryDispositionFailover {
+		r.attempts = r.maxAttempts
+		r.terminalExhausted = true
+	}
+	return result, err
 }
 
 // Attempts returns the current attempt count within the active window.
 func (r *RecoveryManager) Attempts() int { return r.attempts }
 
-// Reset clears the attempt counter and resets the window start time.
+// Reset clears the attempt counter, the terminal-failure latch, and resets the
+// window start time.
 func (r *RecoveryManager) Reset() {
 	r.attempts = 0
+	r.terminalExhausted = false
 	r.windowStart = r.clk.Now()
 }
-
-// osServiceController is the production serviceController. Each GOOS file
-// supplies RestartAgentService and StartAgentService via the package-level
-// helpers; ForceKillProcess is the same SIGKILL on every platform.
-type osServiceController struct{}
-
-func (osServiceController) RestartAgentService() error { return restartAgentService() }
-func (osServiceController) StartAgentService() error   { return startAgentService() }
-func (osServiceController) ForceKillProcess(pid int)   { forceKillProcess(pid) }
 
 // forceKillProcess sends SIGKILL to the process identified by pid.
 // Errors are silently ignored — the process may already be gone.

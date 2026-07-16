@@ -25,7 +25,7 @@ const RECORD_ID = '44444444-4444-4444-8444-444444444444';
 const ORG_ID = '55555555-5555-4555-8555-555555555555';
 
 const principal: PartnerExportAuditPrincipal = {
-  servicePrincipalId: SERVICE_PRINCIPAL_ID,
+  partnerServicePrincipalId: SERVICE_PRINCIPAL_ID,
   keyId: KEY_ID,
   partnerId: PARTNER_ID,
 };
@@ -100,7 +100,7 @@ describe('partner export audit middleware', () => {
       resourceId: SERVICE_PRINCIPAL_ID,
       result: 'success',
       details: {
-        servicePrincipalId: SERVICE_PRINCIPAL_ID,
+        partnerServicePrincipalId: SERVICE_PRINCIPAL_ID,
         keyId: KEY_ID,
         partnerId: PARTNER_ID,
         route: `GET /api/v1/partner-api/${resource}`,
@@ -122,7 +122,7 @@ describe('partner export audit middleware', () => {
       'result',
       'route',
       'schemaVersion',
-      'servicePrincipalId',
+      'partnerServicePrincipalId',
     ]);
 
     const serialized = JSON.stringify(mocks.writeAuditEventAsync.mock.calls);

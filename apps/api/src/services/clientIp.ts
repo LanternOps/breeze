@@ -20,6 +20,16 @@ function shouldTrustProxyHeaders(): boolean {
   return isTruthy(mode);
 }
 
+function trustCloudflareConnectingIp(): boolean {
+  // CF-Connecting-IP is only trustworthy when the deployment is genuinely
+  // behind Cloudflare: CF's edge overwrites the header on every request, but a
+  // reverse proxy like the bundled Caddy does NOT strip it. A self-hoster not
+  // behind Cloudflare who trusts it lets a client spoof CF-Connecting-IP to
+  // choose its own per-IP rate-limit bucket and defeat IP allowlists. Off
+  // unless the operator explicitly declares a Cloudflare front.
+  return isTruthy(process.env.TRUST_CF_CONNECTING_IP);
+}
+
 function trustedProxyCidrs(): string[] {
   const configured = (process.env.TRUSTED_PROXY_CIDRS ?? '')
     .split(',')
@@ -218,16 +228,20 @@ export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string
 
   // Precedence rationale:
   // 1. CF-Connecting-IP — set directly by Cloudflare's edge for every tunneled
-  //    request. It is a single canonical IP (not a chain) and cannot be
-  //    appended-to by intermediaries the way XFF can, so when present it is
-  //    the most trustworthy source. Our prod stack is always behind CF.
+  //    request; a single canonical IP that intermediaries cannot append to the
+  //    way they can XFF. Trusted ONLY when TRUST_CF_CONNECTING_IP is set,
+  //    because a reverse proxy that is not Cloudflare does not strip this
+  //    header, so trusting it unconditionally would let a client spoof it.
+  //    Enable only when the deployment is genuinely fronted by Cloudflare.
   // 2. X-Forwarded-For — emitted by Caddy with the real client at the head of
   //    the chain (now that `trusted_proxies` + `client_ip_headers` is set,
   //    see docker/Caddyfile.prod). Fallback for non-CF deployments / dev.
   // 3. X-Real-IP — single-IP variant some proxies emit instead of XFF.
-  const cloudflare = normalizeIpCandidate(c.req.header('cf-connecting-ip') ?? c.req.header('CF-Connecting-IP') ?? '');
-  if (cloudflare) {
-    return cloudflare;
+  if (trustCloudflareConnectingIp()) {
+    const cloudflare = normalizeIpCandidate(c.req.header('cf-connecting-ip') ?? c.req.header('CF-Connecting-IP') ?? '');
+    if (cloudflare) {
+      return cloudflare;
+    }
   }
 
   const forwarded = firstValidIpFromCsv(c.req.header('x-forwarded-for') ?? c.req.header('X-Forwarded-For'));
@@ -246,4 +260,13 @@ export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string
 export function getTrustedClientIpOrUndefined(c: RequestLike): string | undefined {
   const ip = getTrustedClientIp(c, '');
   return ip || undefined;
+}
+
+// The immediate TCP peer, socket-only — NEVER consults forwarded headers, so
+// it cannot be spoofed at L7. Used as a rate-limit key of last resort when no
+// trusted client IP is available. Unlike getTrustedClientIp this does NOT gate
+// on TRUST_PROXY_HEADERS: the socket address is always the real peer.
+export function getImmediatePeerIpOrUndefined(c: RequestLike): string | undefined {
+  const ctx = c as RequestLike & { env?: { incoming?: { socket?: { remoteAddress?: string } } } };
+  return normalizeIpCandidate(ctx.env?.incoming?.socket?.remoteAddress ?? '') ?? undefined;
 }

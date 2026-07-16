@@ -15,6 +15,7 @@ import {
   Globe,
   Monitor,
   Paintbrush,
+  PackageOpen,
   ScrollText,
   Shield,
   Ticket
@@ -38,10 +39,11 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { formatDate, formatTime as formatUserTime } from '@/lib/dateTimeFormat';
+import Pax8OrgTab from '../organizations/Pax8OrgTab';
 
 type TabKey =
   | 'general' | 'branding' | 'portal' | 'notifications' | 'security'
-  | 'approval-security' | 'event-logs' | 'remote-access' | 'ticketing' | 'contracts' | 'billing';
+  | 'approval-security' | 'event-logs' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8';
 
 // Grouped sidebar definition — same anatomy as PartnerSettingsPage (shared
 // SettingsSectionNav). Hashes are the section keys (already kebab-case).
@@ -52,6 +54,7 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
       { key: 'general', hash: 'general', label: 'orgSettingsPage.nav.general', description: 'orgSettingsPage.nav.generalDescription', icon: Building2 },
       { key: 'contracts', hash: 'contracts', label: 'orgSettingsPage.nav.contracts', description: 'orgSettingsPage.nav.contractsDescription', icon: FileSignature },
       { key: 'billing', hash: 'billing', label: 'orgSettingsPage.nav.billing', description: 'orgSettingsPage.nav.billingDescription', icon: CreditCard },
+      { key: 'pax8', hash: 'pax8', label: 'orgSettingsPage.nav.pax8', description: 'orgSettingsPage.nav.pax8Description', icon: PackageOpen },
     ],
   },
   {
@@ -85,7 +88,8 @@ const TAB_BY_KEY = Object.fromEntries(ALL_TABS.map(t => [t.key, t])) as Record<T
 function getTabFromHash(): TabKey | null {
   if (typeof window === 'undefined') return null;
   const hash = window.location.hash.replace('#', '');
-  return hash in TAB_BY_KEY ? (hash as TabKey) : null;
+  const key = hash.split('/')[0] ?? '';
+  return key in TAB_BY_KEY ? (key as TabKey) : null;
 }
 
 type SaveState = {
@@ -554,6 +558,12 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         return effectiveOrgId ? (
           <div data-testid="org-tab-billing">
             <OrgBillingSettings orgId={effectiveOrgId} />
+          </div>
+        ) : null;
+      case 'pax8':
+        return effectiveOrgId ? (
+          <div data-testid="org-tab-pax8">
+            <Pax8OrgTab orgId={effectiveOrgId} />
           </div>
         ) : null;
       case 'general':

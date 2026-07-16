@@ -47,6 +47,23 @@ import { Steps, Aside } from '@astrojs/starlight/components';
   The `binaries-init` container uses `pull_policy: always`, so `docker compose up -d` automatically pulls the latest binaries image and refreshes the volume — no manual steps needed.
 </Aside>
 
+## Version-specific notes
+
+### v0.95.0 — authentication & tenancy hardening
+
+This release resets the authentication surface. Plan for a short low-traffic window and expect the following the first time the new API boots:
+
+- **Everyone is signed out once.** Existing web and mobile sessions are invalidated and everyone signs in again — there is no silent-refresh recovery and no kill switch. **Confirm you and your admins have a working multi-factor device or recovery codes before upgrading**, since signing in is the only way back in. Agents, the Helper, the portal, and installers are unaffected.
+- **Connected AI / automation apps must re-authorize.** Legacy OAuth refresh tokens are removed; any MCP/OAuth client reconnects and re-consents once.
+- **Microsoft 365 ticket mailboxes need re-consent.** Non-disabled mailboxes drop to a re-auth state; a Partner Admin re-approves each one. Mail arriving during the gap is picked up after re-consent, not lost.
+- **New required database credential.** Production now runs request handlers as an unprivileged, RLS-enforced role and **will not start** unless one of `DATABASE_URL_APP`, `BREEZE_APP_DB_PASSWORD`, or `POSTGRES_PASSWORD` is set, and it refuses to run as a `SUPERUSER`/`BYPASSRLS` role. See [Environment Variables → Database](/deploy/environment/#database). This check runs even when `AUTO_MIGRATE=false`.
+- **Behind Cloudflare?** Set `TRUST_CF_CONNECTING_IP=true` (see [Environment Variables](/deploy/environment/#authentication--security)).
+- **Migrations.** 26 idempotent migrations auto-apply on boot. Most are metadata-only, but one backfills the `refresh_token_families` table — on a large, long-running deployment, check that table's size first and expect a slightly longer boot while it applies.
+
+<Aside type="caution">
+  Any value you set in `.env` only takes effect if it is also mapped in the `api` service's `environment:` block of your compose file. The shipped compose files map the database-credential variables; if you maintain your own compose file, add them there too.
+</Aside>
+
 ## Agent Updates
 
 Agents update themselves automatically. On each heartbeat (~60s), the API checks if a newer version is available and signals the agent to upgrade. The agent:

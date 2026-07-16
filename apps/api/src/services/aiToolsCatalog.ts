@@ -34,6 +34,7 @@ import {
   type CatalogActor
 } from './catalogService';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
+import { lookupEcExpressProducts, TdSynnexEcExpressError, type TdSynnexEcProduct } from './tdSynnexEcExpress';
 
 /**
  * Params each manage_catalog action requires, presence-checked BEFORE any
@@ -165,6 +166,34 @@ function sanitizeCatalogItemForAi(item: CatalogItemRow, auth: AuthContext): Reco
   return out;
 }
 
+// Allowlist for AI/MCP distributor-lookup output. Public fields (list price,
+// availability, identifiers) are always safe. Margin-sensitive fields (reseller
+// cost + the discount it derives from) are added only for seller scopes.
+const AI_DISTRIBUTOR_PRODUCT_PUBLIC_FIELDS = [
+  'source', 'synnexSku', 'mfgPartNo', 'status', 'name', 'description',
+  'currency', 'msrp', 'totalQty', 'warehouses', 'weight', 'parcelShippable',
+] as const;
+const AI_DISTRIBUTOR_PRODUCT_MARGIN_FIELDS = ['cost', 'discount'] as const;
+
+/**
+ * Allowlist-project a live distributor product for AI/MCP output — never a
+ * blocklist, so a field TD SYNNEX or an importer adds later can't auto-leak. The
+ * raw SOAP payload is dropped by construction (not in the allowlist). The
+ * margin-sensitive fields (`cost` AND the `discount` it's derivable from) are
+ * included only for seller scopes (partner/system); the tool's handler already
+ * refuses organization scope, so this is defense-in-depth if that gate loosens.
+ */
+function sanitizeDistributorProductForAi(p: TdSynnexEcProduct, auth: AuthContext): Record<string, unknown> {
+  const src = p as unknown as Record<string, unknown>;
+  const out = pickAllowed(src, AI_DISTRIBUTOR_PRODUCT_PUBLIC_FIELDS);
+  if (auth.scope === 'partner' || auth.scope === 'system') {
+    for (const key of AI_DISTRIBUTOR_PRODUCT_MARGIN_FIELDS) {
+      if (key in src) out[key] = src[key];
+    }
+  }
+  return out;
+}
+
 export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('search_catalog', {
     tier: 2 as AiToolTier,
@@ -236,6 +265,61 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
         .orderBy(asc(catalogItems.name))
         .limit(limit);
       return JSON.stringify({ items: rows, showing: rows.length });
+    }
+  });
+
+  aiTools.set('lookup_distributor_product', {
+    tier: 2 as AiToolTier,
+    deviceArgs: [],
+    definition: {
+      name: 'lookup_distributor_product',
+      description:
+        'Live TD SYNNEX (EC Express) price & availability lookup for a SINGLE distributor SKU or manufacturer part number. Returns reseller cost, MSRP, currency, total stock, and per-warehouse availability. Read-only, but makes an outbound call to the distributor (partner-scoped). Use this to price a distributor product that is NOT yet in the catalog before adding it to a quote; for items already in the catalog use search_catalog instead.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          query: {
+            type: 'string',
+            maxLength: 40,
+            description: 'Exactly one TD SYNNEX SKU (all digits) or manufacturer part number to look up.'
+          }
+        },
+        required: ['query']
+      }
+    },
+    handler: async (input, auth) => {
+      if (input.query == null || String(input.query).trim() === '') {
+        return JSON.stringify({ error: 'Provide a SYNNEX SKU or manufacturer part number in "query"' });
+      }
+      // Seller-side tool: it calls the PARTNER's TD SYNNEX contract (a billed
+      // outbound call) and returns margin data. Organization-scoped callers (an
+      // MSP's customers) must not reach it — and an org MCP token carries the
+      // owning partner's partnerId, so a bare partnerId-presence check is NOT
+      // enough. Gate on scope, matching the web route's requireScope('partner',
+      // 'system'). This also makes the margin redaction in the sanitizer moot for
+      // org (they never get a product back at all).
+      if (auth.scope === 'organization') {
+        return JSON.stringify({ error: 'Distributor lookup is not available to organization-scoped callers' });
+      }
+      const partnerId = auth.partnerId;
+      if (!partnerId) {
+        return JSON.stringify({ error: 'Distributor lookup is partner-scoped; no partner in context' });
+      }
+      try {
+        const products = await lookupEcExpressProducts(String(input.query), actorFromAuth(auth));
+        return JSON.stringify({
+          products: products.map((p) => sanitizeDistributorProductForAi(p, auth)),
+          showing: products.length
+        });
+      } catch (err) {
+        // Surface the typed provider/no-results error to the model instead of a
+        // generic 500, so it can retry with a different SKU or fall back to a
+        // manual line — never a blind retry loop.
+        if (err instanceof TdSynnexEcExpressError) {
+          return JSON.stringify({ error: err.message, code: err.code });
+        }
+        throw err;
+      }
     }
   });
 

@@ -33,6 +33,7 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 import { siteAccessCheck } from '../middleware/auth';
 import { getUserPermissions } from '../services/permissions';
+import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from '../services/apiKeyAuthorization';
 import { getActiveOrgTenant } from '../services/tenantStatus';
 import { resolveServerUrl } from '../services/recoveryBootstrap';
 import { resolveSiteAllowedDeviceIds, deviceSiteDenied } from '../services/aiToolsSiteScope';
@@ -255,6 +256,12 @@ type McpApiKeyWithAuthFields = McpApiKeyContext & {
   scopes: string[];
   name: string;
   createdBy: string;
+  // SR2-15: 'human' (default, or absent for OAuth-bearer callers) | 'service'.
+  // Set by apiKeyAuthMiddleware's `c.set('apiKey', ...)` for X-API-Key
+  // callers; OAuth bearer tokens never carry it (they're always human) so
+  // buildAuthFromApiKey treats an absent/undefined value as 'human'.
+  principalType?: string;
+  principalId?: string | null;
 };
 
 function buildMcpAuditAction(method: string): string {
@@ -327,6 +334,18 @@ mcpServerRoutes.get(
     sseSessionQueues.set(sessionId, { queue: [], principalKey, createdAt: Date.now() });
 
     return streamSSE(c, async (stream) => {
+      let alive = true;
+      let keepalive: ReturnType<typeof setInterval> | undefined;
+      const cleanup = () => {
+        alive = false;
+        sseSessionQueues.delete(sessionId);
+        if (keepalive) {
+          clearInterval(keepalive);
+          keepalive = undefined;
+        }
+      };
+      stream.onAbort(cleanup);
+
       // Send endpoint event so client knows where to POST messages.
       //
       // The scheme/host come from the configured public base URL
@@ -346,15 +365,8 @@ mcpServerRoutes.get(
         data: messageUrl
       });
 
-      // Poll for messages to send back to the client
-      let alive = true;
-      const cleanup = () => {
-        alive = false;
-        sseSessionQueues.delete(sessionId);
-      };
-
       // Send keepalive pings
-      const keepalive = setInterval(async () => {
+      keepalive = setInterval(async () => {
         try {
           await stream.writeSSE({ event: 'ping', data: '' });
         } catch (err) {
@@ -381,7 +393,6 @@ mcpServerRoutes.get(
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       } finally {
-        clearInterval(keepalive);
         cleanup();
       }
     });
@@ -463,7 +474,24 @@ async function buildCheckedAuthFromApiKey(
     partnerId: apiKey.partnerId ?? null,
     name: apiKey.name,
     createdBy: apiKey.createdBy,
+    scopes: apiKey.scopes,
+    principalType: apiKey.principalType,
+    principalId: apiKey.principalId ?? null,
   });
+
+  // SR2-15 fail-closed: buildAuthFromApiKey returns null when the key's creator
+  // has no resolvable authority for the owning org. Deny the request rather than
+  // fabricate an all-sites org auth context.
+  if (!auth) {
+    return c.json(
+      {
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32001, message: 'API key creator has no access to this organization' },
+      },
+      403,
+    );
+  }
 
   if (auth.scope === 'partner' && auth.partnerId) {
     let decision;
@@ -1823,7 +1851,10 @@ async function buildAuthFromApiKey(apiKey: {
   partnerId: string | null;
   name: string;
   createdBy: string;
-}): Promise<AuthContext> {
+  scopes: string[];
+  principalType?: string;
+  principalId?: string | null;
+}): Promise<AuthContext | null> {
   const user = {
     id: apiKey.createdBy,
     email: `apikey-${apiKey.name}@breeze.local`,
@@ -1849,11 +1880,45 @@ async function buildAuthFromApiKey(apiKey: {
     // unreadable. The key remains org-scoped (orgCondition pins to this org).
     const partnerId =
       apiKey.partnerId ?? (await getActiveOrgTenant(apiKey.orgId))?.partnerId ?? null;
-    const creatorPerms = await getUserPermissions(apiKey.createdBy, {
-      partnerId: partnerId || undefined,
-      orgId: apiKey.orgId,
-    });
-    const allowedSiteIds = creatorPerms?.allowedSiteIds;
+
+    // SR2-15 (PR 5): a service-principal key (principalType === 'service')
+    // is authorized against the PRINCIPAL, never the human who last rotated
+    // it — `createdBy` on a service key is an audit trail (who minted the
+    // current key), not an acting identity to delegate from. Human keys (the
+    // default; also every OAuth-bearer caller, which never carries
+    // principalType) take the unchanged authorizeHumanApiKeyCreator path.
+    const isServicePrincipalKey = apiKey.principalType === 'service' && !!apiKey.principalId;
+
+    // SR2-15: LIVE-authorize the human creator via the shared resolver — it does
+    // BOTH the null-perms fail-closed deny (#2510) AND the scope re-clamp this
+    // task adds. The old code read `creatorPerms?.allowedSiteIds` off a raw
+    // getUserPermissions() call: a null read collapsed to `undefined`, and
+    // siteAccessCheck(undefined) means "full access to EVERY site in the org" —
+    // the same value a legitimate full-access admin gets. #2510 already closed
+    // that hole with an explicit null-check. What #2510 did NOT do: re-validate
+    // that the key's STORED scopes are still backed by the creator's CURRENT
+    // permissions. A creator whose role was downgraded after the key was minted
+    // (e.g. admin -> read-only) would still have their key served with the
+    // original, now-stale, broader scopes — the MCP path never re-clamped. A
+    // key delegates its creator's authority; it must never outlive a reduction
+    // in that authority, any more than it may outlive its total loss.
+    const authz = isServicePrincipalKey
+      ? await authorizeServicePrincipalKey({
+          principalId: apiKey.principalId as string,
+          scopes: apiKey.scopes ?? [],
+        })
+      : await authorizeHumanApiKeyCreator({
+          createdBy: apiKey.createdBy,
+          orgId: apiKey.orgId,
+          partnerId,
+          scopes: apiKey.scopes ?? [],
+        });
+    if (!authz.ok) {
+      // buildCheckedAuthFromApiKey maps null -> 403 (creator/principal has no
+      // access, or the key's scopes exceed the current permission/scope ceiling).
+      return null;
+    }
+    const allowedSiteIds = authz.allowedSiteIds;
     return {
       user,
       token: {} as AuthContext['token'],
@@ -1869,6 +1934,28 @@ async function buildAuthFromApiKey(apiKey: {
   }
 
   // Partner-scope caller (OAuth bearer token, or API key with no orgId).
+  //
+  // SR2-15: this branch had no explicit null-perms deny — an off-boarded
+  // partner admin's bearer key was only "data-starved" (accessibleOrgIds
+  // resolves to [] via resolvePartnerAccessibleOrgIds, which reads
+  // partner_users fresh and returns [] when the membership row is gone),
+  // never outright rejected. That's an unsatisfiable org filter, not a
+  // denial: tools/list still succeeds and the caller looks authenticated.
+  // Add an explicit reject so an off-boarded partner admin's key is denied,
+  // matching the org-scope branch's fail-closed behavior above.
+  if (apiKey.partnerId) {
+    let partnerPerms: Awaited<ReturnType<typeof getUserPermissions>>;
+    try {
+      partnerPerms = await getUserPermissions(apiKey.createdBy, { partnerId: apiKey.partnerId });
+    } catch {
+      // FAIL CLOSED: a DB/RLS error is indistinguishable from "no access".
+      return null;
+    }
+    if (!partnerPerms) {
+      return null;
+    }
+  }
+
   // Resolve the concrete org allowlist so orgCondition / canAccessOrg are
   // consistent and defense-in-depth filtering works alongside RLS.
   const accessibleOrgIds = apiKey.partnerId

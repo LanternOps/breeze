@@ -7,19 +7,6 @@ export function generateMFASecret(): string {
   return generateSecret({ length: 20 });
 }
 
-export async function verifyMFAToken(secret: string, token: string): Promise<boolean> {
-  try {
-    const result = await verify({
-      secret,
-      token,
-      epochTolerance: 30 // Allow ~30 seconds tolerance for clock drift
-    });
-    return result.valid;
-  } catch {
-    return false;
-  }
-}
-
 // A used time-step record must outlive the real-time window in which any code
 // for that step is still acceptable. With period=30s and ±1 step of tolerance,
 // a code is valid for roughly 90s; 120s is a comfortable upper bound.

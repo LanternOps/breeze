@@ -437,7 +437,7 @@ function configurationExportApp(partnerId: string, orgId: string): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('partnerApiPrincipal', {
-      servicePrincipalId: crypto.randomUUID(),
+      partnerServicePrincipalId: crypto.randomUUID(),
       keyId: crypto.randomUUID(),
       partnerId,
       name: 'Patch export parity integration test',

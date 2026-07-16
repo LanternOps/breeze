@@ -7,12 +7,13 @@ const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const OTHER_DEVICE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const SITE_A = '11111111-1111-4111-8111-111111111111';
 const SITE_B = '22222222-2222-4222-8222-222222222222';
+const FAILING_DEVICE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'leftJoin', 'orderBy', 'limit']) {
+  for (const method of ['from', 'where', 'leftJoin', 'orderBy', 'limit', 'as']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   chain.then = (onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -79,9 +80,15 @@ vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ op: 'and', conditions }),
   eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
   gte: (column: unknown, value: unknown) => ({ op: 'gte', column, value }),
+  lte: (column: unknown, value: unknown) => ({ op: 'lte', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
   desc: (value: unknown) => ({ op: 'desc', value }),
-  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+    op: 'sql',
+    strings,
+    values,
+    as: (alias: string) => ({ op: 'sql', strings, values, alias }),
+  }),
 }));
 
 describe('backup dashboard routes', () => {
@@ -163,7 +170,138 @@ describe('backup dashboard routes', () => {
     const body = await res.json();
     expect(body.data.totals.policies).toBe(2);
     expect(body.data.latestJobs).toHaveLength(2);
-    expect(selectMock).toHaveBeenCalledTimes(6);
+    // 6 base aggregation queries + 2 for the attention-items ranked-jobs lookup
+    // (subquery build + the awaited select over it).
+    expect(selectMock).toHaveBeenCalledTimes(8);
+    expect(body.data.attentionItems).toEqual([]);
+  });
+
+  it('flags a device whose recent backups are failing in attentionItems', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 2 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 2, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'failed',
+          errorLog: 'Disk quota exceeded',
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'failed',
+          errorLog: null,
+          completedAt: new Date('2026-07-13T10:00:00.000Z'),
+          createdAt: new Date('2026-07-13T09:55:00.000Z'),
+          rn: 2,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems).toHaveLength(1);
+    expect(body.data.attentionItems[0]).toMatchObject({
+      id: `backup-failing-${FAILING_DEVICE_ID}`,
+      severity: 'critical',
+    });
+    expect(body.data.attentionItems[0].title).toContain('2 consecutive backup failures');
+    expect(body.data.attentionItems[0].description).toContain('Disk quota exceeded');
+    // Happy path: the list computed successfully, so no degraded signal.
+    expect(body.data.attentionError).toBe(false);
+  });
+
+  it('surfaces a degraded attentionError flag when the attention-items query fails (not a silent all-clear)', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+
+    // A chain whose terminal orderBy() rejects simulates a transient DB error
+    // inside resolveAttentionItems. Intermediate builders still resolve so only
+    // the awaited select throws.
+    const failingRankedRows = (() => {
+      const chain: Record<string, any> = {};
+      for (const method of ['from', 'where', 'leftJoin', 'limit', 'as']) {
+        chain[method] = vi.fn(() => Object.assign(Promise.resolve([]), chain));
+      }
+      chain.orderBy = vi.fn(() => Promise.reject(new Error('connection terminated unexpectedly')));
+      chain.then = (f: any, r: any) => Promise.resolve([]).then(f, r);
+      chain.catch = (r: any) => Promise.resolve([]).catch(r);
+      return chain;
+    })();
+
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 1 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 1, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(failingRankedRows); // awaited ranked-jobs select rejects
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await app.request('/backup/dashboard');
+
+    // The dashboard must NOT 500 for one failed sub-query...
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // ...but it must NOT imply an all-clear either. Empty items + degraded flag.
+    expect(body.data.attentionItems).toEqual([]);
+    expect(body.data.attentionError).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('does not flag a device whose latest backup succeeded even after a prior failure', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 2 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([{ totalBytes: 0, count: 0 }])) // storageStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'completed',
+          errorLog: null,
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'failed',
+          errorLog: 'Disk quota exceeded',
+          completedAt: new Date('2026-07-13T10:00:00.000Z'),
+          createdAt: new Date('2026-07-13T09:55:00.000Z'),
+          rn: 2,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems).toEqual([]);
   });
 });
 

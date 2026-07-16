@@ -9,12 +9,12 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
-import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
 import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 
 import { securityMiddleware } from './middleware/security';
+import { requestPathLogger } from './middleware/requestPathLogger';
 import { bodyLimitForPath } from './middleware/bodyLimit';
 import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
@@ -63,6 +63,7 @@ import { logsRoutes } from './routes/logs';
 import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
 import { servicePrincipalRoutes } from './routes/servicePrincipals';
+import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals';
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
@@ -139,6 +140,7 @@ import { sentinelOneRoutes } from './routes/sentinelOne';
 import { softwareInventoryRoutes } from './routes/softwareInventory';
 import { huntressRoutes } from './routes/huntress';
 import { pax8Routes } from './routes/pax8';
+import { pax8OrderRoutes } from './routes/pax8Orders';
 import { unifiRoutes } from './routes/unifi';
 import { accountingRoutes } from './routes/accounting';
 import { sensitiveDataRoutes } from './routes/sensitiveData';
@@ -146,6 +148,8 @@ import { peripheralControlRoutes } from './routes/peripheralControl';
 import { browserSecurityRoutes } from './routes/browserSecurity';
 import { c2cRoutes, m365CallbackRoute } from './routes/c2c';
 import { googleRoutes } from './routes/google';
+import { m365ConsentCallbackRoutes } from './routes/m365ConsentCallback';
+import { m365CustomerGraphReadRoutes } from './routes/m365CustomerGraphRead';
 import { m365Routes } from './routes/m365';
 import { onedriveRoutes } from './routes/onedrive';
 import { drRoutes } from './routes/dr';
@@ -177,6 +181,7 @@ import { initializeMlOutputRetention, shutdownMlOutputRetention } from './jobs/m
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
 import { initializeOauthCleanupWorker, shutdownOauthCleanupWorker } from './jobs/oauthCleanup';
+import { initializeAuthEmailWorker, shutdownAuthEmailWorker } from './jobs/authEmailWorker';
 import {
   initializeEnrollmentKeyCleanupWorker,
   shutdownEnrollmentKeyCleanupWorker,
@@ -227,6 +232,7 @@ import { initializeBackupWorker, shutdownBackupWorker } from './jobs/backupWorke
 import { initializeCisJobs, shutdownCisJobs } from './jobs/cisJobs';
 import { initializeHuntressSyncJob, shutdownHuntressSyncJob } from './jobs/huntressSync';
 import { initializePax8SyncWorkers, shutdownPax8SyncWorkers } from './jobs/pax8SyncWorker';
+import { initializeTdSynnexSftpWorkers, shutdownTdSynnexSftpWorkers } from './jobs/tdSynnexSftpSyncWorker';
 import { initializeSensitiveDataWorkers, shutdownSensitiveDataWorkers } from './jobs/sensitiveDataJobs';
 import { initializePeripheralJobs, shutdownPeripheralJobs } from './jobs/peripheralJobs';
 import { initializeBrowserSecurityJobs, shutdownBrowserSecurityJobs } from './jobs/browserSecurityJobs';
@@ -267,8 +273,10 @@ import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
-import { autoMigrate } from './db/autoMigrate';
-import { mountExtensions } from './extensions/loader';
+import { initializeDatabaseForStartup } from './db/databaseStartup';
+import { loadSourceExtensions } from './extensions/loader';
+import { extensionContributionRegistry } from './extensions/contributionRegistry';
+import { mountExtensionGateway } from './extensions/gateway';
 import { syncBinaries } from './services/binarySync';
 import * as dbModule from './db';
 import { deviceGroups, devices, securityThreats, webhookDeliveries, webhooks as webhooksTable } from './db/schema';
@@ -321,7 +329,7 @@ const resolveCorsOrigin = createCorsOriginResolver({
 });
 
 // Global middleware
-app.use('*', logger());
+app.use('*', requestPathLogger());
 app.use(
   '*',
   secureHeaders({
@@ -831,6 +839,7 @@ api.route('/vnc-viewer', vncViewerRoutes); // Viewer-token auth (purpose='viewer
 api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/service-principals', servicePrincipalRoutes);
+api.route('/partner-service-principals', partnerServicePrincipalRoutes);
 api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -921,6 +930,7 @@ api.route('/dns-security', dnsSecurityRoutes);
 api.route('/s1', sentinelOneRoutes);
 api.route('/huntress', huntressRoutes);
 api.route('/pax8', pax8Routes);
+api.route('/pax8', pax8OrderRoutes);
 api.route('/unifi', unifiRoutes);
 api.route('/accounting', accountingRoutes);
 api.route('/software-inventory', softwareInventoryRoutes);
@@ -930,11 +940,15 @@ api.route('/browser-security', browserSecurityRoutes);
 api.route('/', m365CallbackRoute); // Public callback (no auth) — must precede c2c group
 api.route('/c2c', c2cRoutes);
 api.route('/google', googleRoutes);
+api.route('/m365', m365ConsentCallbackRoutes); // Public two-phase consent callback; mount before authenticated M365 routes
+api.route('/m365', m365CustomerGraphReadRoutes);
 api.route('/m365', m365Routes);
 api.route('/onedrive', onedriveRoutes);
 api.route('/dr', drRoutes);
 api.route('/admin', adminRoutes);
 api.route('/admin', accountDeletionAdminRoutes);
+
+mountExtensionGateway(app, extensionContributionRegistry, async () => true);
 
 app.route('/api/v1', api);
 
@@ -1169,6 +1183,9 @@ async function initializeWorkers(): Promise<void> {
     ['processSampleRetention', initializeProcessSampleRetention],
     ['changeLogRetention', initializeChangeLogRetention],
     ['oauthCleanup', initializeOauthCleanupWorker],
+    // SR2-22: out-of-band auth-email worker (forgot-password issuance/send).
+    // initializeAuthEmailWorker is synchronous (returns void), so wrap it.
+    ['authEmailWorker', async () => { initializeAuthEmailWorker(); }],
     ['enrollmentKeyCleanup', initializeEnrollmentKeyCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
@@ -1191,6 +1208,7 @@ async function initializeWorkers(): Promise<void> {
     ['s1SyncWorker', initializeS1SyncJob],
     ['huntressSyncWorker', initializeHuntressSyncJob],
     ['pax8SyncWorker', initializePax8SyncWorkers],
+    ['tdSynnexSftpSyncWorker', initializeTdSynnexSftpWorkers],
     ['logForwardingWorker', initializeLogForwardingWorker],
     ['patchJobWorker', initializePatchJobWorkers],
     ['patchSchedulerWorker', initializePatchSchedulerWorker],
@@ -1345,6 +1363,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownS1SyncJob,
     shutdownHuntressSyncJob,
     shutdownPax8SyncWorkers,
+    shutdownTdSynnexSftpWorkers,
     shutdownBackupVerificationJobs,
     shutdownSnmpRetention,
     shutdownMonitorWorker,
@@ -1360,6 +1379,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownProcessSampleRetention,
     shutdownChangeLogRetention,
     shutdownOauthCleanupWorker,
+    shutdownAuthEmailWorker,
     shutdownEnrollmentKeyCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownAuditChainVerifyWorker,
@@ -1510,22 +1530,16 @@ async function bootstrap(): Promise<void> {
   // Validate configuration before anything else — fail fast on missing/insecure secrets.
   // The validated config is stored as a singleton; retrieve later via getConfig().
   const config = validateConfig();
+  await initializeDatabaseForStartup({
+    autoMigrateEnabled: process.env.AUTO_MIGRATE !== 'false',
+    production: config.NODE_ENV === 'production',
+  });
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
   }
 
-  // Auto-migrate schema and seed on first boot (set AUTO_MIGRATE=false to
-  // disable). Runs BEFORE runStartupChecks because ensureAppRole() — called
-  // from autoMigrate — is what creates the unprivileged breeze_app role that
-  // DATABASE_URL_APP points at. On a fresh database the role doesn't exist
-  // until this runs, and the connectivity check (which uses the proxied
-  // `db`) would fail first.
-  if (process.env.AUTO_MIGRATE !== 'false') {
-    await autoMigrate();
-  }
-
-  await mountExtensions(app);
+  await loadSourceExtensions(extensionContributionRegistry);
 
   try {
     await bootstrapPlatformAdmins();

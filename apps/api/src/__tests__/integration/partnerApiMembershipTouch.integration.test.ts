@@ -148,7 +148,7 @@ describe('partner device membership incremental change contract', () => {
     const app = new Hono();
     app.use('*', async (c, next) => {
       c.set('partnerApiPrincipal', {
-        servicePrincipalId: crypto.randomUUID(),
+        partnerServicePrincipalId: crypto.randomUUID(),
         keyId: crypto.randomUUID(),
         partnerId: partner.id,
         name: 'Integration test',

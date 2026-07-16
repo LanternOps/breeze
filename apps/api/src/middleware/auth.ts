@@ -4,14 +4,14 @@ import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
-import { users, partnerUsers, organizationUsers, organizations, roles } from '../db/schema';
+import { users, partnerUsers, organizations } from '../db/schema';
 import { and, eq, inArray, isNull, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
 import { withSentryRequestScope } from '../services/sentry';
-import { mfaForcePartnerAdmin } from '../config/env';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
 import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 
@@ -116,59 +116,6 @@ export function siteAccessCheck(
 }
 
 /**
- * Resolve whether the user's effective role for the current request has
- * `force_mfa=true`. Returns false for system scope (platform admin is a
- * user flag, not a role) and for any user whose membership row is missing.
- *
- * Runs under system scope because the request's RLS context isn't set yet.
- */
-async function userRoleRequiresMfa(
-  scope: 'system' | 'partner' | 'organization',
-  partnerId: string | null,
-  orgId: string | null,
-  userId: string
-): Promise<boolean> {
-  if (scope === 'system') return false;
-  // Kill-switch: when off, skip the role lookup entirely so an enrollment
-  // outage can be relieved by ops with an env flag (no code deploy).
-  if (!mfaForcePartnerAdmin()) return false;
-
-  return withSystemDbAccessContext(async () => {
-    if (scope === 'organization' && orgId) {
-      const [row] = await db
-        .select({ forceMfa: roles.forceMfa })
-        .from(organizationUsers)
-        .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
-        .where(
-          and(
-            eq(organizationUsers.userId, userId),
-            eq(organizationUsers.orgId, orgId)
-          )
-        )
-        .limit(1);
-      return row?.forceMfa === true;
-    }
-
-    if (scope === 'partner' && partnerId) {
-      const [row] = await db
-        .select({ forceMfa: roles.forceMfa })
-        .from(partnerUsers)
-        .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
-        .where(
-          and(
-            eq(partnerUsers.userId, userId),
-            eq(partnerUsers.partnerId, partnerId)
-          )
-        )
-        .limit(1);
-      return row?.forceMfa === true;
-    }
-
-    return false;
-  });
-}
-
-/**
  * Paths the user is permitted to hit while in the mfa_enrollment_required
  * state. Without this they couldn't enroll MFA — the same gate would
  * bounce them off the setup endpoints. Kept intentionally tight.
@@ -181,10 +128,20 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
   const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
 
   if (rel === '/auth/logout') return true;
+  // /users/me is exempted WHOLESALE so an unenrolled user can load their profile
+  // (GET) and finish enrolling. This path-level exemption cannot see the body,
+  // so the narrower rule — that it must NOT admit a RECOVERY-ADDRESS change
+  // (SR2-18) — is enforced in the PATCH /users/me handler (routes/users.ts),
+  // which re-checks getEffectiveMfaPolicy + userIsMfaProtected before recording
+  // a pending email.
   if (rel === '/users/me') return true;
   if (rel.startsWith('/auth/mfa/')) return true;
   // Phone verification is part of the MFA setup flow (SMS factor).
   if (rel.startsWith('/auth/phone/')) return true;
+  // Passkey registration is an enrollment action (passkey is the always-allowed,
+  // phishing-resistant factor). Without this, a policy-required-but-unenrolled
+  // user is 428'd on /auth/passkeys/register/* and can never enroll a passkey.
+  if (rel.startsWith('/auth/passkeys/')) return true;
   return false;
 }
 
@@ -475,22 +432,29 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     throw err;
   }
 
-  // Role-level MFA gate. If the user's role requires MFA and they
-  // haven't enabled it, short-circuit to 428 Precondition Required.
-  // Allow a tight set of routes through (logout, the user's own
-  // profile, MFA setup endpoints) so they can complete enrollment.
-  if (ENABLE_2FA && !user.mfaEnabled) {
-    const requiresMfa = await userRoleRequiresMfa(
-      payload.scope,
-      payload.partnerId,
-      payload.orgId,
-      user.id
-    );
+  // Enrollment gate via the effective-policy resolver. If org/partner
+  // settings (or a force_mfa role, resolved inside getEffectiveMfaPolicy)
+  // require MFA and the user hasn't enrolled, short-circuit to 428
+  // Precondition Required. Allow a tight set of routes through (logout,
+  // the user's own profile, MFA setup endpoints) so they can complete
+  // enrollment.
+  //
+  // Check the exempt path FIRST — the resolver runs an extra
+  // getEffectiveOrgSettings query, and hot polled exempt routes
+  // (/users/me, /auth/mfa/*) must not pay that DB cost on every request
+  // (the US DB has a ~25-connection ceiling).
+  if (ENABLE_2FA && !user.mfaEnabled && !isMfaEnrollmentExemptPath(c.req.path)) {
+    const policy = await getEffectiveMfaPolicy({
+      scope: payload.scope,
+      userId: user.id,
+      orgId: payload.orgId,
+      partnerId: payload.partnerId,
+    });
 
-    if (requiresMfa && !isMfaEnrollmentExemptPath(c.req.path)) {
+    if (policy.required) {
       // Fire-and-forget audit. Lets ops see when forced-enrollment is
       // bouncing users — useful for diagnosing onboarding friction or
-      // a misconfigured role flag.
+      // a misconfigured role flag / org policy.
       writeAuditEvent(c, {
         orgId: payload.orgId ?? null,
         action: 'auth.mfa.enrollment.required',
@@ -500,7 +464,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
         actorId: user.id,
         actorEmail: user.email,
         result: 'denied',
-        details: { path: c.req.path, scope: payload.scope }
+        details: { path: c.req.path, scope: payload.scope, source: policy.source }
       });
 
       return c.json(

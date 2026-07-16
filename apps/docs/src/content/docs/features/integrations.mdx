@@ -338,13 +338,13 @@ Each subscription row offers these actions:
 
 | Action | Description | Requires MFA |
 |--------|-------------|:------------:|
-| **Link** | Connect the subscription to an existing contract line, or create a new manual line on the spot | Yes |
+| **Link for observation** | Connect the subscription to an existing contract line, or create a new manual line on the spot, so Pax8-reported quantities can be compared with Breeze billing | Yes |
 | **Change** | Re-point the subscription to a different contract line | Yes |
-| **Pause** | Stop automatic quantity sync while keeping the link intact | No |
-| **Resume** | Re-enable automatic quantity sync | No |
+| **Pause observations** | Stop recording new Pax8 quantity observations while keeping the link intact | Yes |
+| **Resume observations** | Resume recording Pax8 quantity observations and surfacing drift | Yes |
 | **Unlink** | Remove the connection between the subscription and the contract line | Yes |
 
-When **Keep quantity in sync** is enabled on a link, Pax8 subscription quantities are pushed to the linked contract line on each Pax8 sync. Pausing stops future syncs but leaves the last-synced quantity in place so billing is not affected unexpectedly.
+When **Track Pax8 reported quantity for drift** is enabled on a link, each Pax8 sync records the latest known quantity as an observation and surfaces any difference from the linked manual contract-line quantity. Breeze's order ledger and linked manual quantity remain authoritative for billing; observation sync never overwrites that billing quantity. Pausing stops new observations and drift updates while leaving the link and billing quantity intact.
 
 Beyond subscription sync, you can also search the Pax8 catalog and import individual products into your [Product Catalog](/features/product-catalog/#pax8) -- see Product Catalog for that workflow.
 

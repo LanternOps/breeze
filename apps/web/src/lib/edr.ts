@@ -1,4 +1,5 @@
 import { fetchWithAuth } from '../stores/auth';
+import { throwIfNotOk } from './httpError';
 import { runAction } from './runAction';
 
 export type S1ThreatActionType = 'kill' | 'quarantine' | 'rollback';
@@ -76,7 +77,9 @@ function toParams(filters: Record<string, string | number | undefined>): string 
 export async function fetchS1Threats(filters: S1ThreatFilters = {}): Promise<{ rows: S1Threat[]; total: number }> {
   const qs = toParams({ limit: 100, ...filters });
   const res = await fetchWithAuth(`/s1/threats?${qs}`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  // HttpError (not a bare Error) so a 403 survives the throw and callers can tell
+  // "you may not see this" from "this broke, try again" (#2472).
+  throwIfNotOk(res);
   const body = await res.json();
   if (!Array.isArray(body?.data)) {
     console.warn('[edr] /s1/threats returned non-array data');
@@ -91,7 +94,9 @@ export async function fetchHuntressIncidents(
 ): Promise<{ rows: HuntressIncident[]; total: number }> {
   const qs = toParams({ limit: 100, ...filters });
   const res = await fetchWithAuth(`/huntress/incidents?${qs}`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  // HttpError (not a bare Error) so a 403 survives the throw and callers can tell
+  // "you may not see this" from "this broke, try again" (#2472).
+  throwIfNotOk(res);
   const body = await res.json();
   if (!Array.isArray(body?.data)) {
     console.warn('[edr] /huntress/incidents returned non-array data');

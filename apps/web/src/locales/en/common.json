@@ -563,7 +563,7 @@
       "account": "Account",
       "profile": "Profile",
       "apiKeys": "API Keys",
-      "servicePrincipals": "Service Principals",
+      "partnerServicePrincipals": "Service Principals",
       "billingSupport": "Billing & support",
       "opening": "Opening…",
       "billing": "Billing",

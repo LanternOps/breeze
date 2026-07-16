@@ -7,6 +7,18 @@ const mocks = vi.hoisted(() => ({
   executeTool: vi.fn(),
   getToolDefinitions: vi.fn(() => []),
   getToolTier: vi.fn((_: string): number | undefined => undefined),
+  writeAuditEvent: vi.fn(),
+  rateLimiter: vi.fn(),
+}));
+
+const envState = vi.hoisted(() => ({
+  oauthEnabled: true,
+  oauthIssuer: 'https://us.example.com',
+}));
+
+vi.mock('../config/env', () => ({
+  get MCP_OAUTH_ENABLED() { return envState.oauthEnabled; },
+  get OAUTH_ISSUER() { return envState.oauthIssuer; },
 }));
 
 const setApiKeyContext = (c: any, scopes: string[] = ['ai:read']) => {
@@ -68,12 +80,25 @@ vi.mock('../db/schema', () => ({
 // buildAuthFromApiKey now calls getUserPermissions for org keys (to inherit the
 // creator's site allowlist). Stub it to an unrestricted org perms object so the
 // transport tests don't need to model the permissions DB queries.
+//
+// SR2-15 (Task 3, scope re-clamp): buildAuthFromApiKey's org branch now
+// re-validates the mocked key's stored scopes (default ['ai:read']) against
+// these permissions via authorizeHumanApiKeyCreator. These are pure transport
+// tests, not scope-delegation tests, so the creator here must actually hold
+// the devices/alerts/scripts/automations read grants 'ai:read' requires —
+// otherwise every request in this file would be denied by the NEW re-clamp
+// before ever reaching the transport behavior under test.
 vi.mock('../services/permissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/permissions')>();
   return {
     ...actual,
     getUserPermissions: vi.fn(async () => ({
-      permissions: [],
+      permissions: [
+        { resource: 'devices', action: 'read' },
+        { resource: 'alerts', action: 'read' },
+        { resource: 'scripts', action: 'read' },
+        { resource: 'automations', action: 'read' },
+      ],
       partnerId: null,
       orgId: 'org-1',
       roleId: 'role-1',
@@ -95,7 +120,7 @@ vi.mock('../services/aiGuardrails', () => ({
 }));
 
 vi.mock('../services/auditEvents', () => ({
-  writeAuditEvent: vi.fn(),
+  writeAuditEvent: mocks.writeAuditEvent,
   requestLikeFromSnapshot: vi.fn(),
 }));
 // Session ownership store used by the in-memory Redis mock — shared across
@@ -111,37 +136,43 @@ vi.mock('../services/redis', () => ({
   }),
 }));
 vi.mock('../services/rate-limit', () => ({
-  rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60000) })),
+  rateLimiter: (...args: any[]) => mocks.rateLimiter(...args),
 }));
 vi.mock('../modules/mcpInvites', () => ({
   initMcpBootstrap: () => ({ unauthTools: [], authTools: [] }),
 }));
 
-async function appWithMcpRoutes() {
-  const mod = await import('./mcpServer');
-  return { app: new Hono().route('/mcp', mod.mcpServerRoutes), mod };
+import { mcpServerRoutes } from './mcpServer';
+
+function appWithMcpRoutes() {
+  return new Hono().route('/mcp', mcpServerRoutes);
 }
 
 describe('Streamable HTTP transport (POST /sse)', () => {
   beforeEach(() => {
-    process.env.MCP_OAUTH_ENABLED = 'true';
-    process.env.IS_HOSTED = 'true';
-    process.env.OAUTH_ISSUER = 'https://us.example.com';
-    vi.resetModules();
-    vi.clearAllMocks();
+    envState.oauthEnabled = true;
+    envState.oauthIssuer = 'https://us.example.com';
     __sessionStore.clear();
-    mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+    mocks.executeTool.mockReset();
+    mocks.getToolDefinitions.mockReset().mockReturnValue([]);
+    mocks.getToolTier.mockReset().mockReturnValue(undefined);
+    mocks.writeAuditEvent.mockReset();
+    mocks.rateLimiter.mockReset().mockResolvedValue({
+      allowed: true,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    mocks.apiKeyAuthMiddleware.mockReset().mockImplementation(async (c: any, next: any) => {
       setApiKeyContext(c);
       return next();
     });
-    mocks.bearerTokenAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+    mocks.bearerTokenAuthMiddleware.mockReset().mockImplementation(async (c: any, next: any) => {
       setApiKeyContext(c);
       return next();
     });
   });
 
   it('returns inline JSON-RPC response with 200 application/json', async () => {
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const res = await app.request('/mcp/sse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
@@ -154,7 +185,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
   });
 
   it('mints server-prefixed Mcp-Session-Id header on initialize', async () => {
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const res = await app.request('/mcp/sse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
@@ -166,7 +197,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
   });
 
   it('ignores client-supplied Mcp-Session-Id on initialize and mints a server-prefixed value', async () => {
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const res = await app.request('/mcp/sse', {
       method: 'POST',
       headers: {
@@ -183,7 +214,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
   });
 
   it('returns 202 with empty body for notifications (no id) when carrying a valid session', async () => {
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     // Initialize first so we have a server-minted session id to present.
     const init = await app.request('/mcp/sse', {
       method: 'POST',
@@ -212,7 +243,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
       setApiKeyContext(c, []); // no scopes
       return next();
     });
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const res = await app.request('/mcp/sse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
@@ -224,7 +255,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
   });
 
   it('returns 400 for malformed JSON-RPC request', async () => {
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const res = await app.request('/mcp/sse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
@@ -236,7 +267,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
   });
 
   it('returns 400 for invalid JSON body', async () => {
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const res = await app.request('/mcp/sse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
@@ -248,7 +279,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
   });
 
   it('DELETE /sse returns 204', async () => {
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const res = await app.request('/mcp/sse', {
       method: 'DELETE',
       headers: { 'X-API-Key': 'k' },
@@ -259,7 +290,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
   });
 
   it('legacy POST /message still returns inline JSON without sessionId', async () => {
-    const { app } = await appWithMcpRoutes();
+    const app = appWithMcpRoutes();
     const res = await app.request('/mcp/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },

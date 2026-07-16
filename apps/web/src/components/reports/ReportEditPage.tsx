@@ -5,6 +5,7 @@ import type { Report, ReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
+import { PostureBackupRequiredField } from './PostureReportOptionsForm';
 import { useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -20,6 +21,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [backupRequired, setBackupRequired] = useState(true);
 
   const fetchReport = useCallback(async () => {
     try {
@@ -29,8 +31,10 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       if (!response.ok) {
         throw new Error(t('reports.reportEditPage.errors.fetchReport'));
       }
-      const data = await response.json();
+      const data = await response.json() as Report;
       setReport(data);
+      const config = data.config as Record<string, unknown>;
+      setBackupRequired(config.backupRequired !== false);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('reports.reportEditPage.errors.generic'));
     } finally {
@@ -90,6 +94,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
 
   // Convert report config to form values
   const config = report.config as Record<string, unknown>;
+  const isPosture = report.type === 'security_compliance_posture';
   const defaultValues: Partial<ReportBuilderFormValues> = {
     name: report.name,
     type: report.type as ReportType,
@@ -122,10 +127,20 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
         </div>
       </div>
 
+      {isPosture && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <PostureBackupRequiredField
+            backupRequired={backupRequired}
+            onBackupRequiredChange={setBackupRequired}
+          />
+        </div>
+      )}
+
       <ReportBuilder
         mode="edit"
         reportId={reportId}
         defaultValues={defaultValues}
+        baseConfig={isPosture ? { ...config, backupRequired } : config}
         onSubmit={handleSubmit}
         onCancel={handleCancel}
       />

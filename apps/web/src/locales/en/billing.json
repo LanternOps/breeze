@@ -386,6 +386,11 @@
         "thisLine": "this line",
         "removeSectionWithLines": "This removes the pricing table and its lines. This can't be undone."
       },
+      "customer": {
+        "help": "Moving a draft to another company clears the site assignment and applies that company’s tax rate.",
+        "label": "Customer",
+        "success": "Quote moved to {{name}}."
+      },
       "deposit": {
         "due": "Deposit due",
         "eligibleAria": "Deposit eligible",
@@ -420,6 +425,7 @@
         "reorderBlocks": "Could not reorder blocks.",
         "reorderLines": "Could not reorder lines.",
         "reorderSections": "Could not reorder sections.",
+        "saveCustomer": "Could not change the customer.",
         "saveTerms": "Could not save terms.",
         "saveTitle": "Could not save the title.",
         "unitPriceZeroOrMore": "Enter a unit price of 0 or more.",
@@ -506,6 +512,7 @@
         "qty": "Qty",
         "recurrence": "Recurrence",
         "scrollAria": "Pricing table — scroll sideways for tax, total and row actions",
+        "showSubtotal": "Show subtotal row",
         "tax": "Tax",
         "taxTitle": "Per-line tax. The header Tax total is authoritative and may differ by a rounding cent.",
         "taxable": "Taxable",
@@ -526,6 +533,20 @@
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Company",
+        "confirm": "Create clone",
+        "defaultTitle": "Clone of {{name}}",
+        "message": "Creates a new draft with the same content. Pick the company it’s for and give it a title.",
+        "retargetHint": "The new draft will use this company’s billing details and tax rate; the site assignment is cleared.",
+        "title": "Clone quote",
+        "titleLabel": "Title"
+      },
+      "cloneError": "Could not clone the quote.",
+      "cloneQuote": "Clone quote",
+      "cloneSavingTitle": "Wait for changes to finish saving before cloning.",
+      "cloneSuccess": "Quote cloned.",
+      "cloning": "Cloning…",
       "deleteConfirm": {
         "message": "This permanently deletes the draft quote. This can't be undone.",
         "title": "Delete draft quote"
@@ -535,10 +556,13 @@
       "deleteSuccess": "Draft deleted",
       "downloadPdf": "Download PDF",
       "emptyHint": "Add at least one item before sending.",
+      "moreActions": "More actions",
       "savingHint": "Saving changes… Send unlocks when everything is saved.",
       "savingTitle": "Saving your changes — Send unlocks when everything is saved.",
       "sendConfirm": {
         "message": "We'll email this proposal to {{orgName}} and mark it Sent — {{amount}} due on acceptance. This can't be undone.",
+        "messageLabel": "Add a personal message (optional)",
+        "messagePlaceholder": "Include a short note — it appears in the email above the accept link.",
         "title": "Send this proposal?"
       },
       "sendError": "Could not send the proposal.",
@@ -560,6 +584,11 @@
         "declined": "Declined",
         "sent": "Sent",
         "viewed": "Viewed"
+      },
+      "pax8Order": {
+        "message_one": "This quote staged a Pax8 order ({{count}} item) awaiting provisioning details",
+        "message_other": "This quote staged a Pax8 order ({{count}} items) awaiting provisioning details",
+        "open": "Open Pax8 order"
       },
       "pricing": "Pricing",
       "proposalImageAlt": "Proposal image",
@@ -588,13 +617,30 @@
     "distributorLookup": {
       "available": "{{count}} avail",
       "cost": "cost {{currency}} {{amount}}",
+      "endOfLife": "End of life",
       "importAndAdd": "Import & add",
+      "inStockOnly": "In stock only",
       "lookupFailed": "Lookup failed.",
+      "mfgPart": "Mfg part {{part}}",
       "msrp": "MSRP {{amount}}",
+      "nightlyHint": "Type at least {{count}} characters to search the nightly catalog.",
+      "nightlyPlaceholder": "Search by name, SKU, mfg part # or manufacturer",
+      "noResults": "No matching products.",
+      "outOfStock": "Out of stock",
       "placeholder": "SYNNEX SKU or mfg part #",
       "searching": "Searching…",
       "sellPrice": "Sell price",
-      "sku": "SKU {{sku}}"
+      "sku": "SKU {{sku}}",
+      "source": "Source",
+      "sourceEcExpress": "EC Express (exact SKU / part #)",
+      "sourceNightly": "TD SYNNEX catalog (nightly file)",
+      "syncedDaysAgo": "synced {{count}}d ago",
+      "syncedHoursAgo": "synced {{count}}h ago",
+      "syncedJustNow": "synced just now",
+      "syncedMinutesAgo": "synced {{count}}m ago",
+      "syncedUnknown": "sync time unknown",
+      "toBeDiscontinued": "To be discontinued",
+      "warehouses": "Warehouses: {{list}}"
     },
     "document": {
       "additionalItems": "Additional items",
@@ -603,6 +649,8 @@
       "imageUnavailable": "Image unavailable",
       "issued": "Issued",
       "preparedFor": "Prepared for",
+      "taxId": "Tax ID: {{id}}",
+      "imageZoomAria": "View larger image",
       "preview": {
         "description": "This is what your customer sees on their proposal link.",
         "downloadPdf": "Download PDF",
@@ -865,9 +913,9 @@
     "unapprovedTime_other": "{{count}} lines reference unapproved time. Review before issuing."
   },
   "invoiceActions": {
-      "deleteConfirm": {
-        "message": "This permanently deletes the draft invoice. This cannot be undone.",
-        "title": "Delete draft invoice"
+    "deleteConfirm": {
+      "message": "This permanently deletes the draft invoice. This cannot be undone.",
+      "title": "Delete draft invoice"
     },
     "deleteDraft": "Delete draft",
     "deleteError": "Could not delete the draft.",

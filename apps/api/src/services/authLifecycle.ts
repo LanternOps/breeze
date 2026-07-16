@@ -23,6 +23,26 @@ interface EpochRow {
  * token is exactly the committed one — no read-after-write race. Callers pass
  * the SAME `tx` that carries their business mutation so a rollback undoes the
  * epoch bump too (invariant: atomic or nothing).
+ *
+ * Which mutation advances which epoch, and what actually READS each one — keep
+ * this table honest, an epoch nothing reads is a decoration, not a control
+ * (#2428). The `2026-07-15-auth-epochs-and-family-expiry.sql` header claimed
+ * all five classes from day one; MFA landed later (#2385) and email later still
+ * (#2428), so treat this table — not that comment — as the current truth.
+ *
+ * | epoch                 | advanced by                                              | enforced by                                                        |
+ * |-----------------------|----------------------------------------------------------|--------------------------------------------------------------------|
+ * | `auth_epoch`          | status change, password change/reset, membership removal, | `aep` claim vs live row (middleware/auth.ts, /refresh)             |
+ * |                       | abuse action, access review, email change                 |                                                                    |
+ * | `mfa_epoch`           | any MFA factor add/remove/replace/rotate, via             | `mep` claim vs live row (middleware/auth.ts, /refresh)             |
+ * |                       | `invalidateMfaAssuranceAfterFactorChange` (#2385)         |                                                                    |
+ * | `email_epoch`         | committed email change (#2428)                            | `email_verification_tokens.email_epoch` vs live row at consume     |
+ * | `password_reset_epoch`| forgot-password issue, password change/reset              | reset-token envelope vs live row (routes/auth/password.ts)         |
+ *
+ * `email_epoch` and `password_reset_epoch` are deliberately NOT JWT claims:
+ * they gate purpose-specific artifacts (verification links, reset tokens), and
+ * the session cutoff those changes need comes from `auth_epoch`, which every
+ * caller advancing them also advances.
  */
 export async function advanceUserEpochs(
   tx: Tx,

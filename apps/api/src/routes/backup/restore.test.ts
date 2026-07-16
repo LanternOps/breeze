@@ -48,6 +48,12 @@ vi.mock('../../db/schema', () => ({
     deviceId: 'backup_snapshots.device_id',
     snapshotId: 'backup_snapshots.snapshot_id',
   },
+  backupConfigs: {
+    id: 'backup_configs.id',
+    orgId: 'backup_configs.org_id',
+    provider: 'backup_configs.provider',
+    providerConfig: 'backup_configs.provider_config',
+  },
   restoreJobs: {
     id: 'restore_jobs.id',
     orgId: 'restore_jobs.org_id',
@@ -210,9 +216,10 @@ describe('restore routes', () => {
   it('creates a restore job and persists the queued command id', async () => {
     selectMock
       .mockReturnValueOnce(
-        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1' }])
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
       )
-      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]));
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+      .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
     insertMock.mockReturnValueOnce(
       chainMock([{
         id: 'restore-1',
@@ -273,9 +280,56 @@ describe('restore routes', () => {
         snapshotId: 'provider-snap-1',
         targetPath: '',
         selectedPaths: [],
+        provider: 's3',
+        providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' },
       },
       { userId: 'user-1' }
     );
+  });
+
+  it('fails the restore request when no backup destination config can be resolved for the snapshot', async () => {
+    selectMock
+      .mockReturnValueOnce(
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-missing' }])
+      )
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+      .mockReturnValueOnce(chainMock([]));
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'full' }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a legacy-snapshot message (not a misleading "not found") when configId is null', async () => {
+    // Legacy snapshot: configId was never recorded, so there is no destination
+    // to resolve. Only two selects run (snapshot + device) — the provider-config
+    // lookup is skipped entirely because snapshot.configId is null.
+    selectMock
+      .mockReturnValueOnce(
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: null }])
+      )
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]));
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'full' }),
+    });
+
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.reason).toBe('legacy_snapshot');
+    expect(body.error).toContain('predates backup destination tracking');
+    // Must NOT masquerade as a genuine misconfiguration.
+    expect(body.error).not.toBe('Backup destination configuration not found for this snapshot');
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 
   it('returns a restore job by id', async () => {
@@ -384,9 +438,10 @@ describe('restore routes', () => {
   it('marks the restore failed and returns 502 when command dispatch fails after row creation', async () => {
     selectMock
       .mockReturnValueOnce(
-        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1' }])
+        chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
       )
-      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]));
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+      .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
     insertMock.mockReturnValueOnce(
       chainMock([{
         id: 'restore-1',

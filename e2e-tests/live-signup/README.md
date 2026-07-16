@@ -1,8 +1,16 @@
 # Live Sign-up Monitor
 
 On-demand synthetic monitor for the hosted partner sign-up flow. Per region it:
-preflight → API register → UI register (Playwright) → email verify (via Resend) →
-simulate payment → assert pending→active → purge every account it created.
+preflight → API register (email-first smoke) → UI register + email verify
+(Playwright submits the form, asserts the "check your email" panel, then reads
+the verification link via Resend and drives /auth/verify-email to the dashboard)
+→ simulate payment → assert pending→active → purge every account it created.
+
+SR2-21: sign-up is now two-step. `register-partner` creates nothing and returns
+a uniform `{ success, message }`; the partner/user/session are minted only when
+the verification link is opened (`/auth/verify-email`). The UI phase therefore
+owns both steps and captures the `(partnerId, accessToken)` used for payment and
+cleanup from the verify-email completion response.
 
 ## Setup
 ```bash

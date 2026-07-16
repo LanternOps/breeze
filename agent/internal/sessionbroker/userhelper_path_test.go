@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -30,8 +31,8 @@ func TestResolveUserHelperPath_PicksGUIBinaryWhenAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveUserHelperPath returned unexpected error: %v", err)
 	}
-	if got != helperExe {
-		t.Fatalf("resolveUserHelperPath = %q, want %q (sibling helper)", got, helperExe)
+	if got.Path != helperExe || got.MainBinaryFallback {
+		t.Fatalf("resolveUserHelperPath = %#v, want path %q without fallback", got, helperExe)
 	}
 }
 
@@ -41,8 +42,8 @@ func TestResolveUserHelperPath_PicksGUIBinaryWhenAvailable(t *testing.T) {
 // XML points at breeze-user-helper.exe but the binary itself is missing
 // (failed build, AV quarantine, tamper). The fallback returns the agent
 // path so run_as_user functionality keeps working at the cost of a visible
-// console window — and the log.Warn provides the ops telemetry without
-// which the silent fallback would reintroduce the bug this PR fixes.
+// console window. The owning spawner uses the returned provenance to emit
+// bounded ops telemetry rather than warning on every reconciliation.
 func TestUserHelperExePath_FallsBackToAgentWhenSiblingMissing(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentExe := filepath.Join(tmpDir, "breeze-agent.exe")
@@ -55,8 +56,42 @@ func TestUserHelperExePath_FallsBackToAgentWhenSiblingMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveUserHelperPath returned error on missing sibling, want nil + agent fallback: %v", err)
 	}
-	if got != agentExe {
-		t.Fatalf("resolveUserHelperPath fallback = %q, want %q (agent path)", got, agentExe)
+	if got.Path != agentExe || !got.MainBinaryFallback {
+		t.Fatalf("resolveUserHelperPath fallback = %#v, want path %q with fallback", got, agentExe)
+	}
+}
+
+func TestHelperFallbackWarningOwnerWarnsOncePerOwner(t *testing.T) {
+	buf := captureLogs(t)
+	resolved := ResolvedHelperExecutable{
+		Path:               filepath.Join(t.TempDir(), "breeze-agent.exe"),
+		MainBinaryFallback: true,
+	}
+
+	owners := []*helperFallbackWarningOwner{{}, {}}
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var calls sync.WaitGroup
+	const callsPerOwner = 32
+	ready.Add(len(owners) * callsPerOwner)
+	calls.Add(len(owners) * callsPerOwner)
+	for _, owner := range owners {
+		for range callsPerOwner {
+			go func(owner *helperFallbackWarningOwner) {
+				defer calls.Done()
+				ready.Done()
+				<-start
+				owner.WarnIfFallback(resolved)
+			}(owner)
+		}
+	}
+	ready.Wait()
+	close(start)
+	calls.Wait()
+
+	const warning = "breeze-user-helper.exe missing"
+	if got := strings.Count(buf.String(), warning); got != 2 {
+		t.Fatalf("warning count = %d, want one for each of two concurrent owners; logs: %s", got, buf.String())
 	}
 }
 

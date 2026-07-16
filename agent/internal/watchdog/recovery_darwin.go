@@ -10,6 +10,15 @@ import (
 
 const agentServiceLabel = "com.breeze.agent"
 
+// osServiceController is the production serviceController on macOS. launchd
+// owns the daemon lifecycle, so the historical escalation ladder is kept as-is
+// and only adapted to the structured contract.
+type osServiceController struct{}
+
+func (osServiceController) Recover(attempt int, req RecoveryRequest) (RecoveryResult, error) {
+	return escalatingServiceRecover(attempt, req)
+}
+
 // restartAgentService restarts the launchd service for the agent.
 // It tries "launchctl kickstart -k" first (modern), then falls back to
 // bootout + bootstrap (also modern) if kickstart is not available.

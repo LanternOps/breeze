@@ -3,16 +3,28 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the row lookup, secret decryption, and token acquisition so the test
 // focuses on invokeDirect's Graph endpoint/method/body mapping.
 const mockRow = { tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1', clientSecret: 'enc-secret' };
+let selectRows: unknown[] = [mockRow];
+let wherePredicate: unknown;
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(async () => [mockRow]),
+        where: vi.fn((predicate: unknown) => ({
+          limit: vi.fn(async () => {
+            wherePredicate = predicate;
+            return selectRows;
+          }),
         })),
       })),
     })),
   },
+}));
+vi.mock('../db/schema/m365', () => ({
+  m365Connections: { id: 'id', orgId: 'org_id', profile: 'profile', status: 'status' },
+}));
+vi.mock('drizzle-orm', () => ({
+  eq: vi.fn((column: unknown, value: unknown) => `${String(column)}=${String(value)}`),
+  and: vi.fn((...conditions: unknown[]) => conditions),
 }));
 vi.mock('./secretCrypto', () => ({ decryptForColumn: vi.fn(() => 'plaintext-secret') }));
 vi.mock('./c2cM365', () => ({
@@ -20,8 +32,15 @@ vi.mock('./c2cM365', () => ({
   isM365TenantId: (x: string) => /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(x),
 }));
 
-import { invokeDirect, getToken, clearTokenCache, TOKEN_CACHE_MAX } from './m365DirectGraph';
+import {
+  TOKEN_CACHE_MAX,
+  clearTokenCache,
+  getToken,
+  hasDirectM365Connection,
+  invokeDirect,
+} from './m365DirectGraph';
 import { acquireClientCredentialsToken } from './c2cM365';
+import { decryptForColumn } from './secretCrypto';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 
@@ -39,6 +58,42 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   clearTokenCache();
+  selectRows = [mockRow];
+  wherePredicate = undefined;
+});
+
+describe('m365DirectGraph legacy connection selection', () => {
+  it('selects only the legacy-direct profile when checking direct availability', async () => {
+    await hasDirectM365Connection('org-1');
+    expect(wherePredicate).toEqual([
+      'org_id=org-1',
+      'profile=legacy-direct',
+    ]);
+  });
+
+  it('requires an active legacy-direct row for token acquisition', async () => {
+    await getToken('org-1');
+    expect(wherePredicate).toEqual([
+      'org_id=org-1',
+      'profile=legacy-direct',
+      'status=active',
+    ]);
+  });
+
+  it('fails closed before decryption when a legacy row has no stored secret', async () => {
+    selectRows = [{ ...mockRow, clientSecret: null }];
+    const result = await getToken('org-1');
+    expect(result).toMatchObject({ kind: 'error', code: 'connection_key_error' });
+    expect(decryptForColumn).not.toHaveBeenCalled();
+    expect(acquireClientCredentialsToken).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before token acquisition when a legacy row has no tenant id', async () => {
+    selectRows = [{ ...mockRow, tenantId: null }];
+    const result = await getToken('org-1');
+    expect(result).toMatchObject({ kind: 'error', code: 'connection_key_error' });
+    expect(acquireClientCredentialsToken).not.toHaveBeenCalled();
+  });
 });
 
 describe('m365DirectGraph.invokeDirect endpoint mapping', () => {

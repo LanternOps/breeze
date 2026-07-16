@@ -1,6 +1,31 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { createHash } from 'crypto';
-import { getAllowedOrigins, hashRecoveryCode, userRequiresSetup } from './helpers';
+import {
+  getAllowedOrigins,
+  hashRecoveryCode,
+  userRequiresSetup,
+  parsePendingMfa,
+  evaluatePendingMfa,
+  getClientRateLimitKey,
+  type PendingMfaRecord,
+} from './helpers';
+import type { RequestLike } from '../../services/auditEvents';
+
+// Mirrors the canonical shim in services/clientIp.test.ts.
+function makeContext(headers: Record<string, string | undefined>, remoteAddress?: string): RequestLike {
+  const normalized: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (v !== undefined) normalized[k.toLowerCase()] = v;
+  }
+  return {
+    req: {
+      header: (name: string) => normalized[name.toLowerCase()],
+    },
+    ...(remoteAddress
+      ? { env: { incoming: { socket: { remoteAddress } } } }
+      : {}),
+  } as RequestLike;
+}
 
 describe('getAllowedOrigins (G5 — dev-origin gating)', () => {
   const originalNodeEnv = process.env.NODE_ENV;
@@ -130,5 +155,145 @@ describe('MFA recovery code peppering', () => {
     process.env.JWT_SECRET = 'jwt-key-must-not-be-used';
 
     expect(() => hashRecoveryCode('abcd-1234')).toThrow('MFA_RECOVERY_CODE_PEPPER');
+  });
+});
+
+// SR2-06: the pending MFA record now carries an epoch/status binding so every
+// completion path can detect a factor/status change that happened during the
+// 5-minute MFA window and reject rather than mint stale assurance.
+describe('parsePendingMfa (SR2-06 strict parse)', () => {
+  const fullRecord: PendingMfaRecord = {
+    userId: 'user-1',
+    mfaMethod: 'totp',
+    passkeyAvailable: false,
+    authEpoch: 3,
+    mfaEpoch: 5,
+    statusExpectation: 'active',
+    allowedMethods: { totp: true, sms: false, passkey: true },
+    expiresAt: Date.now() + 300_000,
+  };
+
+  it('round-trips a full JSON record', () => {
+    expect(parsePendingMfa(JSON.stringify(fullRecord))).toEqual(fullRecord);
+  });
+
+  it('returns null for the legacy bare-userId string form', () => {
+    expect(parsePendingMfa('user-1')).toBeNull();
+  });
+
+  it('returns null for JSON missing authEpoch (pre-SR2-06 record)', () => {
+    const { authEpoch, ...rest } = fullRecord;
+    expect(parsePendingMfa(JSON.stringify(rest))).toBeNull();
+  });
+
+  it('returns null for JSON missing mfaEpoch', () => {
+    const { mfaEpoch, ...rest } = fullRecord;
+    expect(parsePendingMfa(JSON.stringify(rest))).toBeNull();
+  });
+
+  it('returns null for JSON missing allowedMethods', () => {
+    const { allowedMethods, ...rest } = fullRecord;
+    expect(parsePendingMfa(JSON.stringify(rest))).toBeNull();
+  });
+
+  it('returns null for an invalid mfaMethod value', () => {
+    expect(parsePendingMfa(JSON.stringify({ ...fullRecord, mfaMethod: 'sms-code' }))).toBeNull();
+  });
+
+  it('returns null for malformed (non-JSON) input', () => {
+    expect(parsePendingMfa('{not json')).toBeNull();
+  });
+
+  it('defaults a missing per-method allowedMethods flag to true (only explicit false disables)', () => {
+    const parsed = parsePendingMfa(JSON.stringify({ ...fullRecord, allowedMethods: {} }));
+    expect(parsed?.allowedMethods).toEqual({ totp: true, sms: true, passkey: true });
+  });
+});
+
+describe('evaluatePendingMfa (SR2-06)', () => {
+  const record: PendingMfaRecord = {
+    userId: 'user-1',
+    mfaMethod: 'totp',
+    passkeyAvailable: false,
+    authEpoch: 3,
+    mfaEpoch: 5,
+    statusExpectation: 'active',
+    allowedMethods: { totp: true, sms: true, passkey: true },
+    expiresAt: Date.now() + 300_000,
+  };
+
+  it('returns ok:true when live epochs and status match the pending record', () => {
+    expect(evaluatePendingMfa(record, { status: 'active', authEpoch: 3, mfaEpoch: 5 })).toEqual({ ok: true });
+  });
+
+  it('returns epoch_mismatch when the live mfaEpoch has advanced past the pending record', () => {
+    expect(evaluatePendingMfa(record, { status: 'active', authEpoch: 3, mfaEpoch: 6 })).toEqual({
+      ok: false,
+      reason: 'epoch_mismatch',
+    });
+  });
+
+  it('returns epoch_mismatch when the live authEpoch has advanced past the pending record', () => {
+    expect(evaluatePendingMfa(record, { status: 'active', authEpoch: 4, mfaEpoch: 5 })).toEqual({
+      ok: false,
+      reason: 'epoch_mismatch',
+    });
+  });
+
+  it('returns status_changed when the live status is no longer active', () => {
+    expect(evaluatePendingMfa(record, { status: 'suspended', authEpoch: 3, mfaEpoch: 5 })).toEqual({
+      ok: false,
+      reason: 'status_changed',
+    });
+  });
+
+  it('returns status_changed when the live status differs from the recorded expectation', () => {
+    const pendingCapturedInactive: PendingMfaRecord = { ...record, statusExpectation: 'invited' };
+    // live.status is forced to 'active' here specifically to isolate the
+    // statusExpectation-mismatch branch from the "not active" branch above.
+    expect(evaluatePendingMfa(pendingCapturedInactive, { status: 'active', authEpoch: 3, mfaEpoch: 5 })).toEqual({
+      ok: false,
+      reason: 'status_changed',
+    });
+  });
+
+  it('returns expired when expiresAt is in the past', () => {
+    const expiredRecord: PendingMfaRecord = { ...record, expiresAt: Date.now() - 1 };
+    expect(evaluatePendingMfa(expiredRecord, { status: 'active', authEpoch: 3, mfaEpoch: 5 })).toEqual({
+      ok: false,
+      reason: 'expired',
+    });
+  });
+});
+
+describe('getClientRateLimitKey — spoof-proof per-IP key (SR2-16)', () => {
+  const origTrust = process.env.TRUST_PROXY_HEADERS;
+  beforeEach(() => { process.env.TRUST_PROXY_HEADERS = 'false'; }); // untrusted / no proxy trust
+  afterEach(() => { if (origTrust === undefined) delete process.env.TRUST_PROXY_HEADERS; else process.env.TRUST_PROXY_HEADERS = origTrust; delete process.env.TRUST_CF_CONNECTING_IP; });
+
+  it('keys on the SOCKET peer, so a rotating spoofed X-Forwarded-For from the same peer yields the SAME key (cannot evade the per-IP limit)', () => {
+    // GUARD-BITE: RED today — the fingerprint hashes x-forwarded-for, so the two
+    // keys differ and an attacker mints a fresh bucket per request.
+    const a = getClientRateLimitKey(makeContext({ 'x-forwarded-for': '1.2.3.4' }, '198.51.100.77'));
+    const b = getClientRateLimitKey(makeContext({ 'x-forwarded-for': '5.6.7.8' }, '198.51.100.77'));
+    expect(a).toBe('socket:198.51.100.77');
+    expect(b).toBe('socket:198.51.100.77');
+    expect(a).toBe(b);
+  });
+
+  it('never includes spoofable IP headers in the fingerprint fallback (no socket, no trusted IP)', () => {
+    const withHdr = getClientRateLimitKey(makeContext({ 'x-forwarded-for': '9.9.9.9', 'user-agent': 'UA' }));
+    const noHdr = getClientRateLimitKey(makeContext({ 'user-agent': 'UA' }));
+    expect(withHdr.startsWith('fp:')).toBe(true);
+    expect(withHdr).toBe(noHdr); // x-forwarded-for must NOT change the fingerprint
+  });
+
+  it('prefers the trusted client IP when proxy trust is properly configured', () => {
+    process.env.TRUST_PROXY_HEADERS = 'true';
+    process.env.TRUSTED_PROXY_CIDRS = '198.51.100.77/32';
+    process.env.TRUST_CF_CONNECTING_IP = 'true';
+    const key = getClientRateLimitKey(makeContext({ 'cf-connecting-ip': '203.0.113.5' }, '198.51.100.77'));
+    expect(key).toBe('ip:203.0.113.5');
+    delete process.env.TRUSTED_PROXY_CIDRS;
   });
 });

@@ -1,0 +1,463 @@
+{
+  "patchApprovalModal": {
+    "title": "Patch prüfen",
+    "close": "Schließen",
+    "cancel": "Abbrechen",
+    "deferUntil": "Zurückstellen bis",
+    "actions": {
+      "approve": {
+        "label": "Freigeben",
+        "description": "Zulassen, dass dieser Patch automatisch oder im nächsten Wartungsfenster bereitgestellt wird."
+      },
+      "decline": {
+        "label": "Ablehnen",
+        "description": "Die Bereitstellung dieses Patches bis zur erneuten Prüfung blockieren."
+      },
+      "defer": {
+        "label": "Zurückstellen",
+        "description": "Die Entscheidung vertagen und später erneut prüfen."
+      }
+    },
+    "notes": {
+      "label": "Anmerkungen",
+      "placeholder": "Kontext oder Begründung für die Entscheidung hinzufügen..."
+    },
+    "errors": {
+      "partnerLevel": "Patch-Freigaben werden auf Partnerebene verwaltet",
+      "chooseDeferUntil": "Zeitpunkt auswählen, bis zu dem der Patch zurückgestellt werden soll",
+      "updateFailed": "Patch-Freigabe konnte nicht aktualisiert werden"
+    },
+    "toast": {
+      "approved": "Patch freigegeben",
+      "declined": "Patch abgelehnt",
+      "deferred": "Patch zurückgestellt"
+    },
+    "confirm": {
+      "title": "Patch-Freigabe bestätigen",
+      "selectedOrganization": "der ausgewählten Organisation",
+      "messageOne": "Patch auf {{count}} Gerät in {{org}} freigeben?",
+      "messageMany": "Patch auf {{count}} Geräten in {{org}} freigeben?"
+    }
+  },
+  "patchComplianceView": {
+    "unknownDevice": "Unbekannt",
+    "emptyValue": "—",
+    "searchPlaceholder": "Geräte suchen...",
+    "showing": "{{shown}} von {{total}} angezeigt",
+    "empty": "Keine Geräte gefunden.",
+    "emptyFiltered": "Keine Geräte entsprechen den Filtern.",
+    "errors": {
+      "fetchData": "Patch-Daten konnten nicht abgerufen werden",
+      "loadPendingPatches": "Ausstehende Patches für Gerät {{deviceId}} konnten nicht geladen werden"
+    },
+    "actions": {
+      "tryAgain": "Erneut versuchen",
+      "export": "Exportieren",
+      "refreshCompliance": "Compliance-Daten aktualisieren",
+      "clear": "Zurücksetzen",
+      "scan": "Scannen",
+      "install": "Installieren",
+      "installCount": "Installieren ({{count}})",
+      "view": "Anzeigen"
+    },
+    "export": {
+      "selectOrganization": "Organisation auswählen, um einen Compliance-Bericht zu exportieren",
+      "generateFailed": "Bericht konnte nicht erstellt werden",
+      "queued": "Compliance-Bericht {{reportId}} wurde in die Warteschlange eingereiht. Download wird vorbereitet...",
+      "ready": "Compliance-Bericht {{reportId}} ist bereit. Download wird gestartet...",
+      "failed": "Compliance-Bericht {{reportId}} ist fehlgeschlagen",
+      "checkFailed": "Berichtsstatus konnte nicht geprüft werden",
+      "noReportId": "Der Bericht wurde in die Warteschlange eingereiht, aber es wurde keine Berichts-ID zurückgegeben"
+    },
+    "summary": {
+      "compliantPercent": "{{percent}} % konform",
+      "devices": "{{compliant}} von {{total}} Geräten",
+      "pendingDevices": "Bei {{count}} Geräten stehen Patches aus",
+      "approved": "{{count}} freigegeben",
+      "pendingApproval": "{{count}} Freigaben ausstehend",
+      "critical": "{{count}} kritisch",
+      "reboot": "{{count}} mit ausstehendem Neustart"
+    },
+    "filters": {
+      "allDevices": "Alle Geräte ({{count}})",
+      "pendingPatches": "Ausstehende Patches ({{count}})",
+      "critical": "Kritisch ({{count}})",
+      "pendingReboot": "Ausstehender Neustart ({{count}})",
+      "thirdPartyPending": "Ausstehende Drittanbieter-Patches ({{count}})",
+      "compliant": "Konform ({{count}})"
+    },
+    "selection": {
+      "selected": "{{count}} ausgewählt",
+      "selectAll": "Alle auswählen",
+      "deselectAll": "Auswahl für alle aufheben",
+      "selectDevice": "{{name}} auswählen",
+      "deselectDevice": "Auswahl für {{name}} aufheben"
+    },
+    "table": {
+      "device": "Gerät",
+      "status": "Status",
+      "approved": "Freigegeben",
+      "approvedTitle": "Ausstehende Patches, die zur Installation freigegeben sind",
+      "pendingApproval": "Freigabe ausstehend",
+      "pendingApprovalTitle": "Ausstehende Patches, deren Freigabe noch aussteht",
+      "osPatches": "OS-Patches",
+      "osPatchesTitle": "Ausstehende Updates von Windows Update, Apple oder Linux-Paketmanagern",
+      "thirdParty": "Drittanbieter",
+      "thirdPartyTitle": "Ausstehende Updates aus Drittanbieter- oder benutzerdefinierten Quellen",
+      "critical": "Kritisch",
+      "criticalTitle": "Ausstehende Patches mit kritischem Schweregrad",
+      "lastActivity": "Letzte Aktivität",
+      "lastActivityTitle": "Letzte Patch-Installations- oder Scanaktivität",
+      "reboot": "Neustart",
+      "rebootTitle": "Das Betriebssystem meldet einen ausstehenden Neustart – unabhängig von der Ursache (Windows-Updates, CBS, ausstehende Dateiumbenennungen); vom Agenten gemeldet. Bei Offline-Geräten entspricht dies dem Stand bei der letzten Rückmeldung.",
+      "actions": "Aktionen"
+    },
+    "status": {
+      "ok": "Okay",
+      "outstanding": "{{count}} ausstehend"
+    },
+    "reboot": {
+      "offlineTitle": "Das Gerät ist offline – dies entspricht dem Betriebssystemstatus bei der letzten Rückmeldung und ist möglicherweise veraltet.",
+      "yes": "Ja",
+      "yesAsOf": "Ja · Stand {{time}}"
+    },
+    "relative": {
+      "justNow": "gerade eben",
+      "minutesAgo": "vor {{count}} Min.",
+      "hoursAgo": "vor {{count}} Std.",
+      "daysAgo": "vor {{count}} T."
+    },
+    "activity": {
+      "noActivity": "Keine Aktivität erfasst",
+      "installed": "Installiert {{time}}",
+      "scanned": "Gescannt {{time}}",
+      "lastScanned": "Zuletzt gescannt: {{time}}",
+      "lastInstalled": "Zuletzt installiert: {{time}}",
+      "noScan": "Kein Scan erfasst",
+      "noInstall": "Keine Installation erfasst"
+    },
+    "confirm": {
+      "title": "Flottenaktion bestätigen",
+      "selectedOrganization": "der ausgewählten Organisation",
+      "scanAction": "Nach Patches suchen",
+      "installAction": "Patches installieren",
+      "messageOne": "Aktion „{{action}}“ auf {{count}} Gerät in {{org}} ausführen?",
+      "messageMany": "Aktion „{{action}}“ auf {{count}} Geräten in {{org}} ausführen?",
+      "messageMultiOrg": "Aktion „{{action}}“ auf {{count}} Geräten in {{orgCount}} Organisationen ({{orgNames}}) ausführen?"
+    }
+  },
+  "patchInstallHistory": {
+    "title": "Verlauf der Patch-Vorgänge",
+    "loading": "Patch-Verlauf wird geladen...",
+    "empty": "Keine Patch-Vorgänge gefunden.",
+    "emptyValue": "--",
+    "unknownPatch": "Unbekannter Patch",
+    "operationCountOne": "{{count}} Vorgang",
+    "operationCountMany": "{{count}} Vorgänge",
+    "errors": {
+      "fetchHistory": "Patch-Verlauf konnte nicht abgerufen werden"
+    },
+    "actions": {
+      "retry": "Erneut versuchen",
+      "refresh": "Aktualisieren",
+      "refreshing": "Wird aktualisiert...",
+      "clearFilters": "Filter zurücksetzen"
+    },
+    "filters": {
+      "allTypes": "Alle Typen",
+      "allStatus": "Alle Statuswerte"
+    },
+    "operationTypes": {
+      "install": "Installation",
+      "scan": "Scannen",
+      "rollback": "Rollback",
+      "download": "Herunterladen"
+    },
+    "status": {
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "pending": "Ausstehend",
+      "running": "Wird ausgeführt",
+      "timeout": "Zeitüberschreitung",
+      "unknown": "Unbekannt"
+    },
+    "table": {
+      "operation": "Vorgang",
+      "status": "Status",
+      "patches": "Patches",
+      "duration": "Dauer",
+      "date": "Datum"
+    },
+    "pagination": {
+      "showing": "{{start}} bis {{end}} von {{total}} angezeigt",
+      "pageStatus": "Seite {{current}} von {{total}}"
+    },
+    "duration": {
+      "lessThanSecond": "<1s",
+      "seconds": "{{count}} s",
+      "minutesSeconds": "{{minutes}} Min. {{seconds}} Sek."
+    },
+    "relative": {
+      "justNow": "Gerade eben",
+      "minutesAgo": "vor {{count}} Min.",
+      "hoursAgo": "vor {{count}} Std.",
+      "daysAgo": "vor {{count}} T."
+    },
+    "detail": {
+      "installed": "Installiert",
+      "failed": "Fehlgeschlagen",
+      "pending": "Ausstehend",
+      "scanned": "Gescannt",
+      "rebootRequired": "Neustart erforderlich",
+      "yes": "Ja",
+      "started": "Gestartet",
+      "completed": "Abgeschlossen",
+      "error": "Fehler",
+      "patchResults": "Patch-Ergebnisse",
+      "reboot": "Neustart",
+      "empty": "Keine detaillierten Patch-Ergebnisse verfügbar.",
+      "table": {
+        "patch": "Patch",
+        "kb": "KB",
+        "status": "Status",
+        "error": "Fehler"
+      }
+    }
+  },
+  "patchList": {
+    "title": "Patches",
+    "summary": "{{shown}} von {{total}} Patches",
+    "searchPlaceholder": "Patches suchen...",
+    "loading": "Patches werden geladen...",
+    "empty": "Keine Patches gefunden. Suchbegriff oder Filter anpassen.",
+    "vendorBy": "von {{vendor}}",
+    "moreCves": "+{{count}} weitere",
+    "sortBy": "Nach {{label}} sortieren",
+    "errors": {
+      "approvePatches": "Patches konnten nicht freigegeben werden",
+      "declinePatches": "Patches konnten nicht abgelehnt werden"
+    },
+    "severity": {
+      "critical": "Kritisch",
+      "important": "Wichtig",
+      "moderate": "Moderat",
+      "low": "Niedrig"
+    },
+    "approval": {
+      "pending": "Ausstehend",
+      "approved": "Freigegeben",
+      "declined": "Abgelehnt",
+      "deferred": "Zurückgestellt"
+    },
+    "filters": {
+      "allSeverities": "Alle Schweregrade",
+      "allStatus": "Alle Statuswerte",
+      "moreFilters": "Weitere Filter",
+      "lessFilters": "Weniger Filter",
+      "allSources": "Alle Quellen",
+      "allOs": "Alle Betriebssysteme"
+    },
+    "actions": {
+      "deploy": "Bereitstellen",
+      "review": "Prüfen",
+      "details": "Details",
+      "approveCount": "{{count}} freigeben",
+      "declineCount": "{{count}} ablehnen",
+      "deployCount": "{{count}} bereitstellen",
+      "clearSelection": "Auswahl aufheben",
+      "tryAgain": "Erneut versuchen"
+    },
+    "selection": {
+      "selected": "{{count}} ausgewählt",
+      "selectAll": "Alle auswählen",
+      "deselectAll": "Auswahl für alle aufheben",
+      "selectAllPatches": "Alle Patches auswählen",
+      "deselectAllPatches": "Auswahl für alle Patches aufheben",
+      "selectPatch": "{{title}} auswählen",
+      "deselectPatch": "Auswahl für {{title}} aufheben"
+    },
+    "table": {
+      "patch": "Patch",
+      "severity": "Schweregrad",
+      "source": "Quelle",
+      "os": "Betriebssystem",
+      "release": "Veröffentlichung",
+      "approval": "Freigabe",
+      "actions": "Aktionen"
+    },
+    "pagination": {
+      "rowsPerPage": "Zeilen pro Seite",
+      "pageStatus": "Seite {{current}} von {{total}}"
+    }
+  },
+  "patchesPage": {
+    "title": "Patch-Management",
+    "description": "Updateringe, Freigaben, Compliance und Patch-Bereitstellungen verwalten.",
+    "ringScopeHint": "Updateringe werden auf Partnerebene verwaltet",
+    "loadingRings": "Updateringe werden geladen...",
+    "tabs": {
+      "compliance": "Compliance",
+      "patches": "Patches",
+      "updateRings": "Updateringe"
+    },
+    "actions": {
+      "runScan": "Scan ausführen",
+      "scanning": "Scan läuft...",
+      "newRing": "Neuer Ring",
+      "tryAgain": "Erneut versuchen",
+      "scan": "Scannen",
+      "close": "Schließen",
+      "saving": "Wird gespeichert...",
+      "creating": "Wird erstellt...",
+      "saveChanges": "Änderungen speichern",
+      "createRing": "Ring erstellen"
+    },
+    "errors": {
+      "fetchRings": "Updateringe konnten nicht abgerufen werden",
+      "fetchPatches": "Patches konnten nicht abgerufen werden",
+      "partnerLevel": "Patch-Freigaben werden auf Partnerebene verwaltet",
+      "approvePatches": "Patches konnten nicht freigegeben werden",
+      "approveCountOne": "{{count}} Patch konnte nicht freigegeben werden",
+      "approveCountMany": "{{count}} Patches konnten nicht freigegeben werden",
+      "declineCount": "{{count}} Patches konnten nicht abgelehnt werden",
+      "loadDevicesForScan": "Geräte für den Scan konnten nicht geladen werden",
+      "noDevicesForScan": "Keine Geräte zum Scannen verfügbar",
+      "updateRing": "Ring konnte nicht aktualisiert werden",
+      "createRing": "Updatering konnte nicht erstellt werden",
+      "deleteRing": "Ring konnte nicht gelöscht werden"
+    },
+    "toast": {
+      "ringSaved": "Updatering gespeichert",
+      "ringCreated": "Updatering erstellt",
+      "ringDeleted": "Updatering gelöscht",
+      "chooseDevicesForInstall": "Auf der Registerkarte „Compliance“ die Geräte auswählen, auf denen dieser Patch installiert werden soll."
+    },
+    "scan": {
+      "confirmTitle": "Patch-Scan bestätigen",
+      "selectedOrganization": "der ausgewählten Organisation",
+      "confirmMessageOne": "Auf {{count}} Gerät in {{org}} nach Patches suchen?",
+      "confirmMessageMany": "Auf {{count}} Geräten in {{org}} nach Patches suchen?",
+      "confirmMessageMultiOrg": "Auf {{count}} Geräten in {{orgCount}} Organisationen ({{orgNames}}) nach Patches suchen?",
+      "failedFallback": "Patch-Scan fehlgeschlagen",
+      "deviceOne": "Gerät",
+      "deviceMany": "Geräte",
+      "failedToQueue": "{{count}} konnten nicht in die Warteschlange eingereiht werden",
+      "skipped": "{{count}} übersprungen (kein Zugriff / nicht gefunden)",
+      "failedZero": "Patch-Scan fehlgeschlagen: 0/{{requested}} {{noun}} in die Warteschlange eingereiht.",
+      "failedZeroWithShortfall": "Patch-Scan fehlgeschlagen: 0/{{requested}} {{noun}} in die Warteschlange eingereiht ({{shortfall}}).",
+      "queuedPartial": "Patch-Scan teilweise in die Warteschlange eingereiht: {{queued}}/{{requested}} {{noun}} – {{shortfall}}.",
+      "dispatchedSuffix": ", {{count}} sofort gesendet",
+      "queuedSuccess": "Patch-Scan für {{queued}} {{noun}}{{dispatchSuffix}} in die Warteschlange eingereiht."
+    },
+    "ringModal": {
+      "editTitle": "Updatering bearbeiten",
+      "createTitle": "Updatering erstellen"
+    }
+  },
+  "ringSelector": {
+    "label": "Updatering:",
+    "allRings": "Alle Ringe",
+    "ringOption": "{{name}} (Reihenfolge {{order}}, +{{days}} T.)"
+  },
+  "sourceFilterChips": {
+    "sources": {
+      "all": "Alle",
+      "microsoft": "Microsoft",
+      "apple": "Apple",
+      "linux": "Linux",
+      "thirdParty": "Drittanbieter"
+    }
+  },
+  "updateRingForm": {
+    "validation": {
+      "selectCategory": "Kategorie auswählen",
+      "selectSeverity": "Mindestens einen Schweregrad für die automatische Freigabe auswählen.",
+      "nameRequired": "Ringname ist erforderlich"
+    },
+    "categories": {
+      "security": "Sicherheitsupdates",
+      "feature": "Funktionsupdates",
+      "firmware": "Firmware",
+      "driver": "Treiber",
+      "thirdPartyApp": "Drittanbieter-Apps",
+      "definitions": "Definitionsupdates"
+    },
+    "severities": {
+      "critical": "Kritisch",
+      "important": "Wichtig",
+      "moderate": "Moderat",
+      "low": "Niedrig"
+    },
+    "approveToggle": {
+      "ariaLabel": "Patches automatisch freigeben",
+      "autoApprove": "Automatisch freigeben",
+      "manual": "Manuell"
+    },
+    "holdAfterRelease": "Nach Veröffentlichung zurückhalten",
+    "days": "Tage",
+    "fields": {
+      "name": "Name",
+      "rolloutOrder": "Rollout-Reihenfolge",
+      "description": "Beschreibung",
+      "deadlineDays": "Frist (Tage)",
+      "rebootGraceHours": "Neustart-Karenzzeit (Stunden)",
+      "autoApproveSeverities": "Schweregrade für automatische Freigabe",
+      "category": "Kategorie"
+    },
+    "placeholders": {
+      "name": "z. B. Pilot, breite Bereitstellung",
+      "description": "Optional – Zweck dieses Rings",
+      "noDeadline": "Keine Frist"
+    },
+    "help": {
+      "rolloutOrder": "Niedrigere Zahlen werden zuerst ausgerollt."
+    },
+    "installEnforcement": {
+      "title": "Durchsetzung der Installation",
+      "description": "Legt fest, wie lange Geräte freigegebene Patches installieren müssen und wie lange Benutzer den Neustart zurückstellen können. Das Neustartverhalten selbst wird pro Richtlinie auf der Registerkarte „Patch“ festgelegt."
+    },
+    "approvalPolicy": {
+      "title": "Freigaberichtlinie",
+      "description": "Legt fest, welche Patches in diesem Ring automatisch freigegeben und wie lange sie nach der Veröffentlichung durch den Anbieter zurückgehalten werden. Der Standard gilt für jede Kategorie; mit einer Überschreibung kann eine Kategorie abweichend behandelt werden.",
+      "allCategories": "Alle Kategorien",
+      "default": "Standard",
+      "severityNote": "Schweregrade gelten für Betriebssystemupdates. Updates von Drittanbieter-Apps (winget, Homebrew) haben keinen vom Anbieter festgelegten Schweregrad – wenn eine Richtlinie andere Softwarequellen aktiviert, werden sie unabhängig von den hier ausgewählten Schweregraden nach dem Zeitplan dieses Rings automatisch freigegeben.",
+      "manualDefault": "Jeder Patch in diesem Ring muss manuell freigegeben werden.",
+      "manualCategory": "Patches in dieser Kategorie müssen manuell freigegeben werden.",
+      "noOverrides": "Alle Kategorien verwenden den Standard. Mit einer Überschreibung kann eine Kategorie abweichend behandelt werden."
+    },
+    "usage": {
+      "messageOne": "Dieser Ring gilt für {{count}} Gerät. Änderungen werden bei dessen nächster Rückmeldung wirksam.",
+      "messageMany": "Dieser Ring gilt für {{count}} Geräte. Änderungen werden bei deren nächster Rückmeldung wirksam."
+    },
+    "actions": {
+      "addOverride": "Überschreibung hinzufügen",
+      "removeOverride": "Überschreibung entfernen",
+      "cancel": "Abbrechen",
+      "saving": "Wird gespeichert...",
+      "saveRing": "Ring speichern"
+    }
+  },
+  "updateRingList": {
+    "title": "Updateringe",
+    "summary": "{{shown}} von {{total}} Ringen",
+    "searchPlaceholder": "Ringe suchen...",
+    "empty": "Keine Updateringe gefunden.",
+    "emptyValue": "—",
+    "none": "Keine",
+    "days": "{{count}} Tage",
+    "editRing": "{{name}} bearbeiten",
+    "deleteRing": "{{name}} löschen",
+    "pageStatus": "Seite {{current}} von {{total}}",
+    "table": {
+      "order": "Reihenfolge",
+      "ring": "Updatering",
+      "deferral": "Zurückstellung",
+      "deadline": "Frist",
+      "devices": "Geräte",
+      "compliance": "Compliance",
+      "updated": "Aktualisiert",
+      "actions": "Aktionen"
+    }
+  }
+}

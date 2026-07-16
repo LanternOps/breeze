@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { eq, and, gt, ne, isNull } from 'drizzle-orm';
+import { eq, and, gt, ne, isNull, inArray, sql } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
 import {
   ssoProviders,
   ssoSessions,
@@ -16,8 +16,8 @@ import {
   partnerUsers,
   roles
 } from '../db/schema';
-import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor, isSsoProvisioningBlocked } from '../services/ssoDomainVerification';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor, isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../services/ssoDomainVerification';
+import { authMiddleware, dbAccessContextFromAuth, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import {
   generateState,
   generateNonce,
@@ -26,20 +26,29 @@ import {
   exchangeCodeForTokens,
   getUserInfo,
   verifyIdTokenSignature,
-  assertEmailVerified,
+  readEmailVerifiedClaim,
   idpAssertedMfa,
   mapUserAttributes,
   discoverOIDCConfig,
+  assertSafeOidcEndpoint,
   PROVIDER_PRESETS,
-  type OIDCConfig
+  type OIDCConfig,
+  type EmailVerifiedClaim
 } from '../services/sso';
-import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, getUserEpochs, rateLimiter, getRedis } from '../services';
+import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, getUserEpochs, getRefreshFamily, rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getTrustedClientIp } from '../services/clientIp';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { captureException } from '../services/sentry';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, getUserPermissions } from '../services/permissions';
+import {
+  getProviderAxisRole,
+  validateAssignableRole,
+  checkRolePermissionCeiling,
+  type ScopeContext,
+} from '../services/roleAssignment';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { envFlag } from '../utils/envFlag';
 import { setRefreshTokenCookie, getCookieValue, auditLogin } from './auth/helpers';
@@ -126,13 +135,34 @@ function isValidSsoStateCookie(state: string, cookieHeader: string | undefined):
 // Schemas
 // ============================================
 
+// Nullable-optional field helper for genuinely-nullable DB columns (issuer,
+// defaultRoleId — see schema/sso.ts). Three distinct wire states must map to
+// three distinct outcomes:
+//   - key absent from the JSON body    -> parsed value is `undefined`, the
+//     key is dropped from the parsed object entirely -> PATCH leaves the
+//     column untouched ("unchanged").
+//   - key present as `''` or `null`    -> parsed value is `null` -> PATCH
+//     writes SQL NULL ("explicitly cleared"; e.g. a <select> reset to its
+//     blank "no role" option, or a text input the admin backspaced out).
+//   - key present with a valid value   -> validated and passed through.
+// Collapsing '' into "leave unchanged" (e.g. via `.or(z.literal(''))`
+// stripped to undefined) would make a previously-set defaultRoleId
+// impossible to ever clear again once set — the form always resubmits the
+// full current value, so blank must mean "clear", not "skip".
+function nullableOptional<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess(
+    (v) => (v === '' ? null : v),
+    schema.nullable().optional()
+  );
+}
+
 const createProviderSchema = z.object({
   ownerScope: z.enum(['organization', 'partner']).default('organization'),
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['oidc', 'saml']),
   preset: z.string().optional(),
-  issuer: z.string().url().optional(),
+  issuer: nullableOptional(z.string().url()),
   clientId: z.string().optional(),
   clientSecret: z.string().optional(),
   scopes: z.string().optional(),
@@ -144,16 +174,84 @@ const createProviderSchema = z.object({
     groups: z.string().optional()
   }).optional(),
   autoProvision: z.boolean().optional(),
-  defaultRoleId: z.string().guid().optional(),
+  defaultRoleId: nullableOptional(z.string().guid()),
   allowedDomains: z.string().optional(),
   enforceSSO: z.boolean().optional(),
   trustsIdpMfa: z.boolean().optional()
 });
 
-const updateProviderSchema = createProviderSchema.omit({ orgId: true, ownerScope: true }).partial();
+// `preset` is NOT a column on sso_providers — it is a create-time convenience
+// that POST /providers expands into scopes + attributeMapping. PATCH spreads
+// `...body` straight into db.update().set(), so leaving `preset` in the update
+// schema means `PATCH { preset: 'okta' }` reaches Drizzle's mapUpdateSet with a
+// key that has no column and throws at runtime. PATCH never applied a preset
+// anyway — omit it. (Same class as the ownerScope omit above.)
+const updateProviderSchema = createProviderSchema
+  .omit({ orgId: true, ownerScope: true, preset: true })
+  .partial();
 const tokenExchangeSchema = z.object({
   code: z.string().min(1)
 });
+
+/**
+ * Run one short DB access context in the CALLER's exact tenant scope.
+ *
+ * The three provider routes that perform OIDC discovery (POST /providers,
+ * PATCH /providers/:id, POST /providers/:id/test) are registered in
+ * SELF_MANAGED_DB_CONTEXT_ROUTES, so `authMiddleware` does NOT open the ambient
+ * request transaction for them: `discoverOIDCConfig` → `safeFetch` is a
+ * 10-second-timeout call to a TENANT-CONTROLLED issuer host, and holding a
+ * pooled `breeze_app` connection idle-in-transaction across it is
+ * tenant-triggerable pool starvation (#1105 class — 25 connections in prod, and
+ * these routes have no rate limit). `safeFetch`'s `assertOutsideHeldDbContext`
+ * tripwire exists precisely to catch this.
+ *
+ * `runOutsideDbContext` alone does NOT fix it — it only swaps the ALS `db`
+ * reference; the middleware's outer `baseDb.transaction` stays held. The route
+ * must not open that transaction at all, which is what the allowlist buys.
+ *
+ * Consequence: these handlers run with NO ambient context, so EVERY db op needs
+ * an explicit short context or it hits the bare pool (RLS-denied → silent 0-row
+ * read / contextless-write guard). `dbAccessContextFromAuth` rebuilds the exact
+ * context authMiddleware would have opened, so RLS is byte-identical to every
+ * other route; the discovery call happens BETWEEN these blocks, holding nothing.
+ * The `runOutsideDbContext` wrap is a defensive no-op here (there is no ambient
+ * context to exit) that keeps this correct if the route is ever removed from the
+ * allowlist. Pattern: services/accounting/quickbooksCustomerImport.ts.
+ */
+function withProviderDbContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
+}
+
+/**
+ * Operator-facing reason a discovery attempt failed. discoverOIDCConfig already
+ * shapes these for human eyes ("OIDC discovery blocked: no DNS records for …",
+ * "OIDC discovery failed: 404", "OIDC discovery returned an endpoint that is not
+ * HTTPS …"), and POST /providers/:id/test has always relayed them verbatim to
+ * the UI — the caller supplied the issuer, so this leaks nothing they don't know.
+ */
+function discoveryErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The mailbox domain of an address, or null when it has none.
+ *
+ * `email.split('@')[1]` is UNSOUND for a multi-`@` address: for
+ * `victim@corp.example@evil.com` it yields `corp.example` — a domain the org may
+ * well have DNS-verified — while the real mailbox domain is `evil.com`. Both the
+ * allowedDomains gate and the SR2-12 absent-claim domain proof key off this, so
+ * take the LAST `@` (RFC 5321: only the final one separates local-part from
+ * domain) and treat "no domain at all" as null, which every caller must fail
+ * closed on.
+ */
+function emailDomainOf(email: string): string | null {
+  const at = email.lastIndexOf('@');
+  if (at <= 0 || at === email.length - 1) {
+    return null;
+  }
+  return email.slice(at + 1).toLowerCase();
+}
 
 // ============================================
 // Helper Functions
@@ -287,6 +385,350 @@ function buildSsoCallbackUri(): string {
   return `${getCanonicalPublicBaseUrl()}/api/v1/sso/callback`;
 }
 
+// ============================================
+// SR2-10 — SSO default-role delegation ceiling
+// ============================================
+//
+// An SSO provider's `defaultRoleId` is a STANDING DELEGATION: every future
+// JIT-provisioned user gets that role. Before this, nobody checked that the
+// admin who configured it was entitled to grant it — so an admin who could edit
+// an SSO provider could mint users more privileged than themselves. The same
+// permission-subset ceiling the user-invite path enforces (routes/users.ts, via
+// services/roleAssignment) now applies HERE, twice:
+//
+//   1. CONFIG TIME  — against the LIVE, authenticated caller (both axes: their
+//      permission set is whatever authMiddleware/requirePermission resolved for
+//      their real membership, org OR partner).
+//   2. JIT TIME     — against the LIVE permissions of the admin who last SET the
+//      role (`default_role_configured_by`, falling back to `created_by`). A
+//      delegation must not outlive its configurer's authority: config time may
+//      have been months ago, and that admin may since have been demoted or
+//      offboarded.
+//
+// FAIL CLOSED. A caller-independent STRUCTURAL check is deliberately NOT used
+// as a fallback ceiling anywhere in this file (an earlier `checkRoleStructure`
+// helper that did exactly this — return null/"assignable" for a SYSTEM role
+// carrying `*:*` — was deleted (SR2-10 Fix 3) once it had no remaining
+// caller): a provider whose default role is the built-in super-admin role
+// would JIT every user at FULL WILDCARD — the exact vulnerability this code
+// exists to close. If a ceiling cannot be established
+// against a real principal's live permissions, the role is NOT assignable and
+// JIT provisioning is refused.
+
+/**
+ * The ScopeContext a provider's defaultRoleId must satisfy — the PROVIDER's own
+ * axis, never the caller's. (a) These routes admit system scope, for which
+ * getScopeContext(auth) throws 403; (b) the role must belong to the tenant the
+ * provider provisions INTO, which is the provider's axis by definition.
+ */
+function providerScopeContext(p: { orgId: string | null; partnerId: string | null }): ScopeContext | null {
+  if (p.partnerId) return { scope: 'partner', partnerId: p.partnerId };
+  if (p.orgId) return { scope: 'organization', orgId: p.orgId };
+  return null;
+}
+
+/**
+ * CONFIG-TIME gate, shared by POST /providers and PATCH /providers/:id.
+ * Returns an error message (caller returns 400) or null.
+ *
+ * The ceiling principal is the authenticated caller. `validateAssignableRole`
+ * resolves them from `c.get('permissions')` — the set requirePermission already
+ * resolved on whichever axis they actually hold (org_users OR partner_users), so
+ * an MSP partner admin with no organization_users row is measured against their
+ * real partner permissions, not a null set. Every scope goes through the ceiling:
+ * a caller who reaches this route body provably HAS a resolved permission set
+ * (requirePermission 403s "No permissions found" otherwise), so there is no
+ * principal here for whom a structural-only check would be the only option.
+ *
+ * ROLE RESOLUTION: uses `getProviderAxisRole` (services/roleAssignment), the
+ * SAME strict resolver the JIT re-validation below and the pre-JIT axis check
+ * in the callback use — never `getScopedRole`. `getScopedRole` waves through
+ * ANY `isSystem` role regardless of its org/partner columns (correct for
+ * routes/users.ts's ordinary role assignment, where that's the point of
+ * `isSystem`); seeded system roles carry `org_id`/`partner_id` = NULL
+ * (db/seed.ts), so a role admitted here via that escape hatch could NEVER be
+ * resolved by the JIT axis-equality check — every future SSO sign-in on the
+ * provider would 201 at config time and then die forever at
+ * `invalid_provider_configuration`. Tightening this to `getProviderAxisRole`
+ * closes that gap; it does not loosen anything JIT-side.
+ */
+async function validateProviderDefaultRole(
+  c: any,
+  auth: AuthContext,
+  defaultRoleId: string,
+  scopeContext: ScopeContext,
+): Promise<string | null> {
+  const role = await getProviderAxisRole(defaultRoleId, scopeContext);
+  if (!role) {
+    return scopeContext.scope === 'partner'
+      ? 'defaultRoleId must be a partner-scoped role belonging to your partner'
+      : 'defaultRoleId must be an organization-scoped role belonging to this organization';
+  }
+  return validateAssignableRole(c, auth, role);
+}
+
+/**
+ * JIT-TIME gate. Runs immediately before the SSO callback provisions a NEW user
+ * with the provider's defaultRoleId. Re-checks, against LIVE state:
+ *   (a) the role still exists on the provider's axis;
+ *   (b) the configurer is still a real, ACTIVE account; and
+ *   (c) the role's effective permissions are still within that configurer's
+ *       live permission ceiling.
+ *
+ * PRINCIPAL PRECEDENCE: `default_role_configured_by` (stamped by every write
+ * that SETS defaultRoleId) → `created_by` (rows predating that column) → FAIL
+ * CLOSED. Neither resolving is NOT a licence to fall back to a structural check
+ * (see the wildcard trap above); the sign-in is refused and the repair is to
+ * re-save the default role as a current admin, which re-stamps the column.
+ *
+ * BOTH AXES are handed to getUserPermissions. Passing only { orgId } would run
+ * only resolveOrgAxis (services/permissions.ts), which needs an
+ * organization_users row — and an MSP PARTNER ADMIN configuring SSO for a
+ * customer org has none (they act via partner_users + orgAccess). That would
+ * return null → fail closed → every JIT sign-in on that provider would fail
+ * forever, on the most normal MSP topology there is. Supplying the provider
+ * org's owning partner as well lets getUserPermissions' own org→partner
+ * fall-through resolve them correctly.
+ *
+ * DB CONTEXT: MUST be called inside withSystemDbAccessContext. /sso/callback is
+ * unauthenticated — it has no request context at all, so a bare read here is
+ * denied by forced RLS and silently returns 0 rows. On this path a 0-row read
+ * means "role not found" / "configurer has no permissions", i.e. it fails closed
+ * rather than open — but it would brick every SSO login, so the wrap is
+ * mandatory, not cosmetic.
+ *
+ * INVARIANT (SR2-10 Fix 2): the paragraph above is a doc comment, not an
+ * enforcement mechanism — a future refactor could drop the wrap and no unit
+ * test would catch it (the db mock makes `withSystemDbAccessContext` a
+ * pass-through, so a missing wrap is invisible there). What a dropped wrap
+ * actually does today: `getProviderAxisRole` runs FIRST, `roles` is FORCE-RLS,
+ * so it 0-rows under `breeze_app` with no system context and we return
+ * `default_role_not_on_provider_axis` — i.e. it currently fails CLOSED, and it
+ * bricks EVERY SSO sign-in on the provider rather than escalating privilege.
+ * That is a lucky ordering, not a guarantee: the ceiling itself is the
+ * fail-open shape (`applyCeiling` in services/roleAssignment treats an empty
+ * effective-permission set as "no permissions to exceed" → assignable), so if
+ * the role read is ever reordered, cached, or moved behind a system-context
+ * helper, an un-wrapped `role_permissions` read would 0-row and greenlight ANY
+ * role. Assert the ambient context is really `'system'` at entry and throw
+ * otherwise, so neither failure (the brick or the escalation) can arrive
+ * silently.
+ */
+async function revalidateSsoDefaultRole(params: {
+  roleId: string;
+  scopeContext: ScopeContext;
+  configuredByUserId: string | null;
+}): Promise<
+  | { ok: true; roleId: string; orgPartnerId: string | null }
+  | { ok: false; reason: string }
+> {
+  const ambientContext = getCurrentDbAccessContext();
+  if (ambientContext?.scope !== 'system') {
+    throw new Error(
+      'revalidateSsoDefaultRole must run inside withSystemDbAccessContext — the '
+      + 'permission-subset ceiling reads role_permissions (FORCE RLS); outside a '
+      + 'system context it 0-rows and the ceiling fails OPEN instead of refusing.'
+    );
+  }
+
+  // SR2-10 Fix 1: getProviderAxisRole, not getScopedRole — the strict resolver
+  // shared with config time (validateProviderDefaultRole above) and the
+  // pre-JIT axis check in the callback. See getProviderAxisRole's docstring
+  // (services/roleAssignment) for why getScopedRole's isSystem escape hatch
+  // must never be used on this path.
+  const role = await getProviderAxisRole(params.roleId, params.scopeContext);
+  if (!role) {
+    return { ok: false, reason: 'default_role_not_on_provider_axis' };
+  }
+
+  // No resolvable principal → no ceiling → refuse. (Never a structural check.)
+  if (!params.configuredByUserId) {
+    return { ok: false, reason: 'default_role_configurer_unknown' };
+  }
+
+  const [configurer] = await db
+    .select({ id: users.id, status: users.status })
+    .from(users)
+    .where(eq(users.id, params.configuredByUserId))
+    .limit(1);
+
+  // Deleted or deactivated configurer: their authority is gone, so the standing
+  // delegation goes with it. getUserPermissions does NOT look at users.status,
+  // so without this an offboarded-but-still-role-bearing admin would keep
+  // minting privileged users indefinitely.
+  if (!configurer || configurer.status !== 'active') {
+    return { ok: false, reason: 'default_role_configurer_inactive' };
+  }
+
+  let orgId: string | undefined;
+  let partnerId: string | undefined;
+  // Also handed back to the caller as `orgPartnerId` (Fix 4) so the
+  // provisioning block ~40 lines below doesn't re-run the identical
+  // `organizations` select for the same org id.
+  let orgPartnerId: string | null = null;
+  if (params.scopeContext.scope === 'organization') {
+    orgId = params.scopeContext.orgId;
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    partnerId = org?.partnerId ?? undefined;
+    orgPartnerId = org?.partnerId ?? null;
+  } else {
+    partnerId = params.scopeContext.partnerId;
+  }
+
+  const configurerPermissions = await getUserPermissions(configurer.id, { orgId, partnerId });
+  if (!configurerPermissions) {
+    return { ok: false, reason: 'default_role_configurer_no_permissions' };
+  }
+
+  const ceilingError = await checkRolePermissionCeiling(configurerPermissions, role);
+  return ceilingError
+    ? { ok: false, reason: 'default_role_exceeds_configurer_permissions' }
+    : { ok: true, roleId: role.id, orgPartnerId };
+}
+
+type SsoCallbackMode = 'login' | 'link';
+
+/**
+ * SR2-11: a pending SSO transaction is valid only against the provider
+ * GENERATION it was created under, and only while the provider is still usable
+ * for its own mode.
+ *
+ * Status per mode mirrors each mode's INIT gate: /login/* requires
+ * status='active', /link/start requires status!=='inactive' (a `testing`
+ * provider may be linked). Neither was checked at the callback before this
+ * change — a provider disabled inside the <=10-minute state TTL still completed
+ * a full login or link.
+ *
+ * A NULL providerVersion (a row written before the column existed) is a REJECT,
+ * not a pass: those are exactly the unbound sessions this change invalidates.
+ *
+ * PURE function over already-fetched rows — adds NO db access. Called from the
+ * callback right after the org-XOR-partner axis guard and before any
+ * default-role work, so a stale/disabled transaction never reaches JIT logic.
+ */
+function checkProviderGeneration(
+  provider: typeof ssoProviders.$inferSelect,
+  session: typeof ssoSessions.$inferSelect,
+  mode: SsoCallbackMode,
+):
+  | { ok: true }
+  | { ok: false; reason: 'provider_inactive' | 'provider_not_usable' | 'provider_version_missing' | 'provider_version_mismatch' } {
+  if (provider.status === 'inactive') {
+    return { ok: false, reason: 'provider_inactive' };
+  }
+  if (mode === 'login' && provider.status !== 'active') {
+    return { ok: false, reason: 'provider_not_usable' };
+  }
+  if (session.providerVersion == null) {
+    return { ok: false, reason: 'provider_version_missing' };
+  }
+  if (session.providerVersion !== provider.configVersion) {
+    return { ok: false, reason: 'provider_version_mismatch' };
+  }
+  return { ok: true };
+}
+
+type LinkRejectReason =
+  | 'link_binding_missing'
+  | 'link_user_gone'
+  | 'link_user_inactive'
+  | 'link_epochs_unavailable'
+  | 'link_auth_epoch_mismatch'
+  | 'link_mfa_epoch_mismatch'
+  | 'link_family_missing'
+  | 'link_family_revoked'
+  | 'link_family_expired'
+  | 'link_axis_membership_lost';
+
+/**
+ * SR2-11b: re-check a pending LINK session against LIVE state before it is
+ * allowed to bind an external identity to a Breeze account.
+ *
+ * The session snapshotted {authEpoch, mfaEpoch, sid} at /link/start. Any of the
+ * following since then must kill it:
+ *   - the user was suspended/deleted            -> status / user_gone
+ *   - password reset, email change, membership
+ *     change, platform-privilege change         -> auth_epoch bump
+ *   - any MFA factor change                     -> mfa_epoch bump
+ *   - logout, or a global session revocation    -> the bound refresh family is
+ *                                                  revoked (or gone/expired)
+ *   - removal from the provider's org/partner   -> axis membership lost
+ *
+ * A pre-deploy row (any binding column NULL) is a REJECT, not a pass.
+ *
+ * MUST be called inside withSystemDbAccessContext (/sso/callback is
+ * unauthenticated; getRefreshFamily establishes its own system context).
+ */
+async function validateLinkBinding(
+  session: typeof ssoSessions.$inferSelect,
+  provider: typeof ssoProviders.$inferSelect,
+): Promise<{ ok: true; user: typeof users.$inferSelect } | { ok: false; reason: LinkRejectReason }> {
+  if (
+    session.initiatingAuthEpoch == null ||
+    session.initiatingMfaEpoch == null ||
+    session.initiatingSessionId == null
+  ) {
+    return { ok: false, reason: 'link_binding_missing' };
+  }
+
+  const [linkingUser] = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, session.linkUserId!))
+    .limit(1);
+  if (!linkingUser) return { ok: false, reason: 'link_user_gone' };
+  if (linkingUser.status !== 'active') return { ok: false, reason: 'link_user_inactive' };
+
+  const liveEpochs = await getUserEpochs(linkingUser.id);
+  if (!liveEpochs) return { ok: false, reason: 'link_epochs_unavailable' };
+  if (liveEpochs.authEpoch !== session.initiatingAuthEpoch) {
+    return { ok: false, reason: 'link_auth_epoch_mismatch' };
+  }
+  if (liveEpochs.mfaEpoch !== session.initiatingMfaEpoch) {
+    return { ok: false, reason: 'link_mfa_epoch_mismatch' };
+  }
+
+  const family = await getRefreshFamily(session.initiatingSessionId);
+  if (!family) return { ok: false, reason: 'link_family_missing' };
+  if (family.revokedAt) return { ok: false, reason: 'link_family_revoked' };
+  if (family.absoluteExpiresAt.getTime() <= Date.now()) {
+    return { ok: false, reason: 'link_family_expired' };
+  }
+
+  // Axis membership must STILL be held (the /link/start pool check is a
+  // snapshot, not a guarantee).
+  if (provider.orgId) {
+    const [membership] = await db
+      .select({ userId: organizationUsers.userId })
+      .from(organizationUsers)
+      .where(and(
+        eq(organizationUsers.userId, linkingUser.id),
+        eq(organizationUsers.orgId, provider.orgId),
+      ))
+      .limit(1);
+    if (!membership) return { ok: false, reason: 'link_axis_membership_lost' };
+  } else if (provider.partnerId) {
+    if (linkingUser.orgId != null) return { ok: false, reason: 'link_axis_membership_lost' };
+    const [membership] = await db
+      .select({ userId: partnerUsers.userId })
+      .from(partnerUsers)
+      .where(and(
+        eq(partnerUsers.userId, linkingUser.id),
+        eq(partnerUsers.partnerId, provider.partnerId),
+      ))
+      .limit(1);
+    if (!membership) return { ok: false, reason: 'link_axis_membership_lost' };
+  } else {
+    return { ok: false, reason: 'link_axis_membership_lost' };
+  }
+
+  return { ok: true, user: linkingUser };
+}
+
 function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
   const decryptedClientSecret = decryptForColumn('sso_providers', 'client_secret', provider.clientSecret);
 
@@ -294,7 +736,10 @@ function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
     throw new Error('Provider is not fully configured');
   }
 
-  return {
+  // Resolved ONCE here, from deployment config — never from a request value.
+  const allowPrivateNetwork = selfHostAllowsPrivateNetwork();
+
+  const config: OIDCConfig = {
     issuer: provider.issuer,
     clientId: provider.clientId,
     clientSecret: decryptedClientSecret,
@@ -302,8 +747,23 @@ function getOIDCConfig(provider: typeof ssoProviders.$inferSelect): OIDCConfig {
     tokenUrl: provider.tokenUrl || `${provider.issuer}/oauth/token`,
     userInfoUrl: provider.userInfoUrl || `${provider.issuer}/userinfo`,
     jwksUrl: provider.jwksUrl || undefined,
-    scopes: provider.scopes || 'openid profile email'
+    scopes: provider.scopes || 'openid profile email',
+    allowPrivateNetwork
   };
+
+  // SR2-14: RE-VALIDATE persisted endpoints at runtime. They were trusted
+  // blindly: discovery wrote them verbatim, and PATCH can change `issuer`
+  // WITHOUT re-running discovery, so tokenUrl/jwksUrl could still point at the
+  // previous (or an attacker's) IdP. The `${issuer}/…` string-concat fallbacks
+  // above are validated by the same gate.
+  assertSafeOidcEndpoint('authorization_endpoint', config.authorizationUrl, allowPrivateNetwork);
+  assertSafeOidcEndpoint('token_endpoint', config.tokenUrl, allowPrivateNetwork);
+  assertSafeOidcEndpoint('userinfo_endpoint', config.userInfoUrl, allowPrivateNetwork);
+  if (config.jwksUrl) {
+    assertSafeOidcEndpoint('jwks_uri', config.jwksUrl, allowPrivateNetwork);
+  }
+
+  return config;
 }
 
 function getClientIP(c: any): string {
@@ -488,18 +948,14 @@ ssoRoutes.post(
     if (!canManagePartnerWidePolicies(auth)) {
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
+    // SR2-10: existence + scope + tenant (as before) AND the permission-subset
+    // ceiling against the configuring admin.
     if (body.defaultRoleId) {
-      const [role] = await db
-        .select({ id: roles.id })
-        .from(roles)
-        .where(and(
-          eq(roles.id, body.defaultRoleId),
-          eq(roles.scope, 'partner'),
-          eq(roles.partnerId, auth.partnerId)
-        ))
-        .limit(1);
-      if (!role) {
-        return c.json({ error: 'defaultRoleId must be a partner-scoped role belonging to your partner' }, 400);
+      const roleError = await withProviderDbContext(auth, () => validateProviderDefaultRole(
+        c, auth, body.defaultRoleId!, { scope: 'partner', partnerId: auth.partnerId! },
+      ));
+      if (roleError) {
+        return c.json({ error: roleError }, 400);
       }
     }
     ownerColumns = { orgId: null, partnerId: auth.partnerId };
@@ -507,6 +963,17 @@ ssoRoutes.post(
     const orgResult = resolveOrgIdForProviderRoute(auth, body.orgId);
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
+    }
+    // SR2-10: the org axis validated NOTHING here — and it is the ONLY axis that
+    // JIT-provisions, so an org admin could delegate a role broader than their
+    // own authority to every future SSO sign-in.
+    if (body.defaultRoleId) {
+      const roleError = await withProviderDbContext(auth, () => validateProviderDefaultRole(
+        c, auth, body.defaultRoleId!, { scope: 'organization', orgId: orgResult.orgId },
+      ));
+      if (roleError) {
+        return c.json({ error: roleError }, 400);
+      }
     }
     ownerColumns = { orgId: orgResult.orgId, partnerId: null };
   }
@@ -523,7 +990,9 @@ ssoRoutes.post(
     }
   }
 
-  // If issuer provided, try to discover endpoints
+  // If issuer provided, discover endpoints. NOTE: this outbound call runs with
+  // NO ambient DB context (see withProviderDbContext) — do not add a db op to
+  // this block or move it inside one.
   if (body.issuer && body.type === 'oidc') {
     try {
       // Self-hosted deployments (IS_HOSTED affirmatively false) may point at an
@@ -536,12 +1005,27 @@ ssoRoutes.post(
       config.userInfoUrl = discovery.userinfo_endpoint;
       config.jwksUrl = discovery.jwks_uri;
     } catch (error) {
-      // Discovery failed, user will need to provide URLs manually
-      console.warn('OIDC discovery failed:', error);
+      // Discovery failed OR returned endpoints that failed SSRF/HTTPS validation
+      // (SR2-14). FAIL LOUDLY — do not create the provider.
+      //
+      // This used to console.warn and then persist the row with all four
+      // endpoint columns NULL, returning 201. That provider can never complete a
+      // login (getOIDCConfig's runtime assertSafeOidcEndpoint throws on the
+      // NULLs / on the `${issuer}/authorize` fallbacks) and there is no API field
+      // to repair the endpoints — they are only ever written by discovery. So a
+      // 201 announced success for a provider that was dead on arrival, with the
+      // reason available nowhere but the API logs. Refusing the write is both
+      // honest and strictly safer: nothing is persisted, nothing to clean up.
+      console.warn('OIDC discovery failed or was rejected:', error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      return c.json({
+        error: `OIDC discovery failed for issuer "${body.issuer}": ${discoveryErrorMessage(error)}`,
+        code: 'oidc_discovery_failed',
+      }, 400);
     }
   }
 
-  const [provider] = await db
+  const [provider] = await withProviderDbContext(auth, () => db
     .insert(ssoProviders)
     .values({
       ...ownerColumns,
@@ -558,13 +1042,17 @@ ssoRoutes.post(
       jwksUrl: config.jwksUrl,
       autoProvision: body.autoProvision ?? true,
       defaultRoleId: body.defaultRoleId,
+      // SR2-10: the admin whose LIVE permission ceiling the callback re-checks
+      // this delegation against before JIT. Stamped only when a role is actually
+      // delegated. Never client-settable (not in createProviderSchema).
+      defaultRoleConfiguredBy: body.defaultRoleId ? auth.user.id : null,
       allowedDomains: body.allowedDomains,
       enforceSSO: body.enforceSSO ?? false,
       trustsIdpMfa: body.trustsIdpMfa ?? false,
       createdBy: auth.user.id,
       status: 'inactive'
     })
-    .returning();
+    .returning());
 
   if (!provider) {
     return c.json({ error: 'Failed to create provider' }, 500);
@@ -598,11 +1086,20 @@ ssoRoutes.patch(
   const { id: providerId } = c.req.valid('param');
   const body = c.req.valid('json');
 
-  const [existing] = await db
-    .select({ id: ssoProviders.id, orgId: ssoProviders.orgId, partnerId: ssoProviders.partnerId })
-    .from(ssoProviders)
-    .where(eq(ssoProviders.id, providerId))
-    .limit(1);
+  const existing = await withProviderDbContext(auth, async () => {
+    const [row] = await db
+      .select({
+        id: ssoProviders.id,
+        orgId: ssoProviders.orgId,
+        partnerId: ssoProviders.partnerId,
+        issuer: ssoProviders.issuer,
+        type: ssoProviders.type
+      })
+      .from(ssoProviders)
+      .where(eq(ssoProviders.id, providerId))
+      .limit(1);
+    return row;
+  });
 
   if (!existing) {
     return c.json({ error: 'Provider not found' }, 404);
@@ -612,35 +1109,124 @@ ssoRoutes.patch(
     return c.json({ error: 'Access denied' }, 403);
   }
 
-  if (existing.partnerId && body.defaultRoleId) {
-    const [role] = await db
-      .select({ id: roles.id })
-      .from(roles)
-      .where(and(
-        eq(roles.id, body.defaultRoleId),
-        eq(roles.scope, 'partner'),
-        eq(roles.partnerId, existing.partnerId)
-      ))
-      .limit(1);
-    if (!role) {
-      return c.json({ error: 'defaultRoleId must be a partner-scoped role belonging to your partner' }, 400);
+  // SR2-10: axis-aware. This was partner-only (`existing.partnerId && ...`), so
+  // a PATCH could set ANY defaultRoleId on an org-axis provider — the axis that
+  // actually JIT-provisions — with no existence, tenant, or ceiling check.
+  if (body.defaultRoleId) {
+    const scopeContext = providerScopeContext(existing);
+    if (!scopeContext) {
+      return c.json({ error: 'Provider has no owning organization or partner' }, 400);
+    }
+    const roleError = await withProviderDbContext(auth, () =>
+      validateProviderDefaultRole(c, auth, body.defaultRoleId!, scopeContext));
+    if (roleError) {
+      return c.json({ error: roleError }, 400);
+    }
+  }
+
+  // SR2-14: repointing the issuer WITHOUT re-discovery leaves tokenUrl/jwksUrl
+  // aimed at the OLD IdP (or, with a crafted discovery doc, an attacker's). So
+  // an issuer change REQUIRES a successful re-discovery.
+  //
+  // This block used to swallow the failure, NULL all four endpoint columns, bump
+  // configVersion (killing every in-flight session) and return 200 with the
+  // updated row. An admin fixing a typo in a WORKING provider's issuer — and
+  // typo'ing it again — would take the org's SSO offline, see a success toast,
+  // and get no signal anywhere as to why nobody can sign in. The endpoints are
+  // only ever written by discovery, so there was no API path back either.
+  //
+  // Fail LOUDLY instead: 400, and persist NOTHING. The old (working) endpoints,
+  // the old issuer and the old configVersion all survive untouched, so a failed
+  // re-discovery is a no-op rather than an outage. Fail-closed is preserved —
+  // the endpoints never end up pointing at an IdP the issuer no longer names,
+  // because the issuer never changes without them.
+  //
+  // NOTE: the discovery call below runs with NO ambient DB context (see
+  // withProviderDbContext) — do not add a db op to this block.
+  const issuerChanged = body.issuer !== undefined && body.issuer !== existing.issuer;
+  const rediscovered: Partial<typeof ssoProviders.$inferInsert> = {};
+  if (issuerChanged && (body.type ?? existing.type) === 'oidc') {
+    // The web form resubmits every field, so a blanked Issuer arrives as
+    // issuer:'' → null (nullableOptional). An OIDC provider cannot function
+    // without an issuer, and discoverOIDCConfig(null) would null-deref into an
+    // opaque `issuer "null"` 400. Reject clearly before attempting discovery.
+    if (!body.issuer) {
+      writeRouteAudit(c, {
+        orgId: existing.orgId,
+        action: 'sso.provider.update.rejected',
+        resourceType: 'sso_provider',
+        resourceId: existing.id,
+        details: {
+          reason: 'oidc_issuer_cleared',
+          partnerId: existing.partnerId,
+        },
+      });
+      return c.json({
+        error: 'An OIDC provider requires an Issuer URL; it cannot be cleared. '
+          + 'To remove this provider, delete it instead.',
+        code: 'oidc_issuer_required',
+      }, 400);
+    }
+    try {
+      const discovery = await discoverOIDCConfig(body.issuer!, {
+        allowPrivateNetwork: selfHostAllowsPrivateNetwork()
+      });
+      rediscovered.authorizationUrl = discovery.authorization_endpoint;
+      rediscovered.tokenUrl = discovery.token_endpoint;
+      rediscovered.userInfoUrl = discovery.userinfo_endpoint;
+      rediscovered.jwksUrl = discovery.jwks_uri;
+    } catch (error) {
+      console.warn(`[sso] re-discovery failed for provider ${providerId} after issuer change:`, error);
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      writeRouteAudit(c, {
+        orgId: existing.orgId,
+        action: 'sso.provider.update.rejected',
+        resourceType: 'sso_provider',
+        resourceId: existing.id,
+        details: {
+          reason: 'oidc_discovery_failed',
+          attemptedIssuer: body.issuer,
+          partnerId: existing.partnerId,
+        }
+      });
+      return c.json({
+        error: `OIDC discovery failed for issuer "${body.issuer}": ${discoveryErrorMessage(error)}. `
+          + 'No changes were saved — the provider still uses its previous issuer and endpoints.',
+        code: 'oidc_discovery_failed',
+      }, 400);
     }
   }
 
   const updates: Partial<typeof ssoProviders.$inferInsert> = {
     ...body,
-    updatedAt: new Date()
+    // SR2-14 (Task 7): must come AFTER ...body. `body` cannot carry endpoint
+    // columns (they are not in createProviderSchema), so this is belt-and-braces
+    // against a future schema addition, not a live override.
+    ...rediscovered,
+    updatedAt: new Date(),
+    // SR2-10: re-stamp the JIT principal whenever the delegation is (re-)set.
+    // This is the repair path when the previous configurer offboards: re-saving
+    // the default role as a current admin re-points the ceiling at a live
+    // account. Untouched by a PATCH that doesn't carry defaultRoleId, so an
+    // unrelated edit (rename, secret rotation) can never clobber it to null.
+    ...(body.defaultRoleId !== undefined
+      ? { defaultRoleConfiguredBy: body.defaultRoleId ? auth.user.id : null }
+      : {}),
+    // SR2-11: any config change starts a new generation. Every pending
+    // sso_session snapshotted the OLD version and is now dead at the callback.
+    // Bumped in the same UPDATE as the change, so the two can never diverge.
+    configVersion: sql`${ssoProviders.configVersion} + 1` as unknown as number,
   };
 
   if (body.clientSecret !== undefined) {
     updates.clientSecret = encryptSecret(body.clientSecret);
   }
 
-  const [updated] = await db
+  const [updated] = await withProviderDbContext(auth, () => db
     .update(ssoProviders)
     .set(updates)
     .where(eq(ssoProviders.id, providerId))
-    .returning();
+    .returning());
 
   if (!updated) {
     return c.json({ error: 'Provider not found' }, 404);
@@ -686,14 +1272,38 @@ ssoRoutes.delete(
     return c.json({ error: 'Access denied' }, 403);
   }
 
-  // Delete related records first
-  await db.delete(ssoSessions).where(eq(ssoSessions.providerId, providerId));
-  await db.delete(userSsoIdentities).where(eq(userSsoIdentities.providerId, providerId));
-
-  const [deleted] = await db
-    .delete(ssoProviders)
-    .where(eq(ssoProviders.id, providerId))
-    .returning();
+  // sso_sessions is system-scope-only and user_sso_identities is user-id-scoped
+  // (breeze_current_user_id()) under RLS. On the bare pool, from an admin's
+  // tenant-scoped context, BOTH of these silently delete 0 rows — and neither FK
+  // cascades, so the sso_providers delete below then dies with FK violation
+  // 23503. Provider cleanup is a legitimate system operation: run it as one.
+  //
+  // All three deletes — sessions, identities, and the provider row itself —
+  // must run inside this SAME system-context invocation (not just the same
+  // request handler). This route's handler already runs inside one request
+  // transaction (see middleware/auth.ts), but that transaction lives on a
+  // different pooled connection than a nested withSystemDbAccessContext call.
+  // If the provider delete were left outside this wrap (in the request
+  // transaction) while the cleanup deletes ran here, a rollback of the
+  // request transaction (e.g. the `!deleted` 404 below, a deadlock, or a
+  // statement timeout) would leave the already-committed cleanup deletes
+  // unrecoverable while the provider row survived — orphaning every user's
+  // SSO identity link for a provider that never actually got deleted. Doing
+  // the provider delete here also means it no longer gets RLS as a second
+  // line of defense — that's acceptable because the row's visibility AND the
+  // caller's authority over it were already proven under RLS above (the
+  // select + canWriteProviderRow check).
+  const deleted = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      await db.delete(ssoSessions).where(eq(ssoSessions.providerId, providerId));
+      await db.delete(userSsoIdentities).where(eq(userSsoIdentities.providerId, providerId));
+      const [row] = await db
+        .delete(ssoProviders)
+        .where(eq(ssoProviders.id, providerId))
+        .returning();
+      return row;
+    })
+  );
 
   if (!deleted) {
     return c.json({ error: 'Provider not found' }, 404);
@@ -742,7 +1352,14 @@ ssoRoutes.post(
 
   const [updated] = await db
     .update(ssoProviders)
-    .set({ status, updatedAt: new Date() })
+    .set({
+      status,
+      updatedAt: new Date(),
+      // SR2-11: a status change is a config change. Disabling a provider must
+      // kill its outstanding sessions, and re-enabling must not resurrect them
+      // (two writes, two bumps).
+      configVersion: sql`${ssoProviders.configVersion} + 1` as unknown as number,
+    })
     .where(eq(ssoProviders.id, providerId))
     .returning();
 
@@ -775,11 +1392,17 @@ ssoRoutes.post(
   const auth = c.get('auth') as AuthContext;
   const { id: providerId } = c.req.valid('param');
 
-  const [provider] = await db
-    .select()
-    .from(ssoProviders)
-    .where(eq(ssoProviders.id, providerId))
-    .limit(1);
+  // Short, explicit DB context — this route is in SELF_MANAGED_DB_CONTEXT_ROUTES
+  // (the discovery call below is tenant-controlled and 10s-bounded), so there is
+  // no ambient request transaction to read under.
+  const provider = await withProviderDbContext(auth, async () => {
+    const [row] = await db
+      .select()
+      .from(ssoProviders)
+      .where(eq(ssoProviders.id, providerId))
+      .limit(1);
+    return row;
+  });
 
   if (!provider) {
     return c.json({ error: 'Provider not found' }, 404);
@@ -798,7 +1421,8 @@ ssoRoutes.post(
   }
 
   try {
-    // Test discovery
+    // Test discovery. Runs with NO ambient DB context (see above) — the only DB
+    // work left in this handler is writeRouteAudit, which opens its own.
     if (provider.issuer) {
       // Self-hosted deployments (IS_HOSTED affirmatively false) may point at an
       // internal IdP on an RFC1918 address; hosted SaaS stays strict.
@@ -1090,20 +1714,56 @@ ssoRoutes.post(
       return c.json({ error: 'Only OIDC linking is currently supported' }, 400);
     }
 
-    const config = getOIDCConfig(provider);
+    let config: OIDCConfig;
+    try {
+      config = getOIDCConfig(provider);
+    } catch (err) {
+      console.warn(`[sso] provider ${provider.id} has an invalid configuration:`, err);
+      return c.json({ error: 'SSO provider configuration is invalid' }, 400);
+    }
     const pkce = generatePKCEChallenge();
     const state = generateState();
     const nonce = generateNonce();
 
-    await db.insert(ssoSessions).values({
-      providerId: provider.id,
-      state,
-      nonce,
-      codeVerifier: pkce.codeVerifier,
-      redirectUrl: '/settings/profile',
-      linkUserId: auth.user.id,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000)
-    });
+    // SR2-11b: bind the pending link to the CURRENT security generation of the
+    // initiating session. Mirrors PR 2's enforceExistingFactorStepUp
+    // (routes/auth/helpers.ts:252-281): capture {authEpoch, mfaEpoch, sid} at
+    // mint, re-check against the LIVE row at consume. This is what makes a
+    // logout / password reset / MFA reset / suspension / global revocation
+    // between start and callback invalidate the pending link.
+    //
+    // Fail closed: without epochs or a sid there is nothing to bind to, so we
+    // refuse to create the session rather than create an unbindable one.
+    const initiatorEpochs = await getUserEpochs(auth.user.id);
+    const initiatingSid = auth.token?.sid;
+    if (!initiatorEpochs || !initiatingSid) {
+      return c.json({ error: 'Service temporarily unavailable' }, 503);
+    }
+
+    // sso_sessions is system-scope-only under RLS (2026-07-16 migration): this
+    // insert ran on the bare pool and only worked because the table had no
+    // policies. The row is a pre-auth transaction record, not tenant data — it
+    // is consumed by the unauthenticated callback, which also runs in system
+    // context. runOutsideDbContext first: we are inside the authenticated
+    // request's org/partner-scoped context here.
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () =>
+        db.insert(ssoSessions).values({
+          providerId: provider.id,
+          state,
+          nonce,
+          codeVerifier: pkce.codeVerifier,
+          redirectUrl: '/settings/profile',
+          linkUserId: auth.user.id,
+          // SR2-11: snapshot the generation this session was created under.
+          providerVersion: provider.configVersion,
+          initiatingAuthEpoch: initiatorEpochs.authEpoch,
+          initiatingMfaEpoch: initiatorEpochs.mfaEpoch,
+          initiatingSessionId: initiatingSid,
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000)
+        })
+      )
+    );
 
     const authUrl = buildAuthorizationUrl({
       config,
@@ -1215,7 +1875,13 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
     return c.json({ error: 'Only OIDC login is currently supported' }, 400);
   }
 
-  const config = getOIDCConfig(provider);
+  let config: OIDCConfig;
+  try {
+    config = getOIDCConfig(provider);
+  } catch (err) {
+    console.warn(`[sso] provider ${provider.id} has an invalid configuration:`, err);
+    return c.json({ error: 'SSO provider configuration is invalid' }, 400);
+  }
   const pkce = generatePKCEChallenge();
   const state = generateState();
   const nonce = generateNonce();
@@ -1228,6 +1894,8 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
       nonce,
       codeVerifier: pkce.codeVerifier,
       redirectUrl,
+      // SR2-11: snapshot the generation this session was created under.
+      providerVersion: provider.configVersion,
       expiresAt
     })
   );
@@ -1307,7 +1975,13 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
     return c.json({ error: 'Only OIDC login is currently supported' }, 400);
   }
 
-  const config = getOIDCConfig(provider);
+  let config: OIDCConfig;
+  try {
+    config = getOIDCConfig(provider);
+  } catch (err) {
+    console.warn(`[sso] provider ${provider.id} has an invalid configuration:`, err);
+    return c.json({ error: 'SSO provider configuration is invalid' }, 400);
+  }
 
   // Generate PKCE challenge
   const pkce = generatePKCEChallenge();
@@ -1323,6 +1997,8 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
       nonce,
       codeVerifier: pkce.codeVerifier,
       redirectUrl,
+      // SR2-11: snapshot the generation this session was created under.
+      providerVersion: provider.configVersion,
       expiresAt
     })
   );
@@ -1437,28 +2113,63 @@ ssoRoutes.get('/callback', async (c) => {
     return c.redirect('/login?error=provider_not_found');
   }
 
+  // SR2-11: reject a transaction whose provider is no longer usable for THIS
+  // mode, or whose snapshot no longer matches the provider's live generation.
+  // Runs BEFORE any default-role/ceiling work below — a stale or disabled
+  // transaction must never reach JIT logic at all.
+  const callbackMode: SsoCallbackMode = session.linkUserId ? 'link' : 'login';
+
+  const generation = checkProviderGeneration(provider, session, callbackMode);
+  if (!generation.ok) {
+    writeRouteAudit(c, {
+      orgId: provider.orgId,
+      action: 'sso.callback.rejected',
+      resourceType: 'sso_provider',
+      resourceId: provider.id,
+      resourceName: provider.name,
+      result: 'denied',
+      details: {
+        mode: callbackMode,
+        phase: 'provider_generation',
+        reason: generation.reason,
+        partnerId: provider.partnerId,
+        sessionVersion: session.providerVersion,
+        providerVersion: provider.configVersion,
+      },
+    });
+    clearStateCookie();
+    if (callbackMode === 'link') {
+      return c.redirect(
+        generation.reason === 'provider_inactive' || generation.reason === 'provider_not_usable'
+          ? '/settings/profile?ssoLinkError=provider_inactive'
+          : '/settings/profile?ssoLinkError=config_changed',
+      );
+    }
+    return c.redirect(
+      generation.reason === 'provider_inactive' || generation.reason === 'provider_not_usable'
+        ? '/login?error=sso_provider_inactive'
+        : '/login?error=sso_config_changed',
+    );
+  }
+
   // Default-role validation is axis-aware: partner-axis providers require a
   // partner-scoped role in the provider's OWN partner; org-axis providers an
   // organization-scoped role in the provider's org. NOTE: on the partner axis
   // this is config validation ONLY — v1 never APPLIES a default role at login
   // (identity-first, membership-required), so a defaultRoleId can never grant
   // access to a membershipless user.
+  //
+  // SR2-10 Fix 1: uses `getProviderAxisRole` (services/roleAssignment) — the
+  // SAME strict resolver `validateProviderDefaultRole` (config time) and
+  // `revalidateSsoDefaultRole` (below) use, via the shared `providerScopeContext`
+  // axis helper. Keeping this one call site means config time, this pre-check,
+  // and the JIT ceiling can never resolve a defaultRoleId differently again.
   let validatedDefaultRoleId: string | null = null;
   if (provider.defaultRoleId) {
-    const roleCondition = provider.partnerId
-      ? and(
-          eq(roles.id, provider.defaultRoleId),
-          eq(roles.scope, 'partner'),
-          eq(roles.partnerId, provider.partnerId)
-        )
-      : and(
-          eq(roles.id, provider.defaultRoleId),
-          eq(roles.scope, 'organization'),
-          eq(roles.orgId, provider.orgId!)
-        );
-    const [defaultRole] = await withSystemDbAccessContext(async () =>
-      db.select({ id: roles.id }).from(roles).where(roleCondition).limit(1)
-    );
+    const defaultRoleScope = providerScopeContext(provider);
+    const defaultRole = defaultRoleScope
+      ? await withSystemDbAccessContext(() => getProviderAxisRole(provider.defaultRoleId!, defaultRoleScope))
+      : null;
 
     if (!defaultRole) {
       clearStateCookie();
@@ -1499,9 +2210,6 @@ ssoRoutes.get('/callback', async (c) => {
       return c.redirect('/login?error=sso_provider_unverified');
     }
     const idClaims = await verifyIdTokenSignature(tokens.id_token, config, session.nonce);
-    if (idClaims.email) {
-      assertEmailVerified(idClaims);
-    }
 
     // Get user info (display attributes). Bind it to the signed token: per OIDC
     // Core §5.3.2 the userinfo `sub` MUST equal the id_token `sub`; otherwise
@@ -1529,11 +2237,68 @@ ssoRoutes.get('/callback', async (c) => {
       attrs.email = String(idClaims.email).toLowerCase();
     }
 
-    // Check allowed domains
+    // ── SR2-12: verified identity claims ─────────────────────────────────────
+    // The `email_verified` decision must ride the SAME source that supplied the
+    // final email. Previously it was read ONLY from the id_token and ONLY when
+    // the id_token carried an email — so an IdP that omits `email` from the
+    // id_token had its userinfo email accepted with the userinfo
+    // `email_verified` NEVER read (OIDCUserInfo.email_verified had zero
+    // readers). That unverified email then drove the domain check, the
+    // auto-link, and JIT.
+    // …and it must be bound to the address we ACTUALLY use. On the userinfo path
+    // `attrs.email` comes from mapUserAttributes(userInfo, mapping) with an
+    // ADMIN-SET mapping key — which may be `upn` / `preferred_username` / … —
+    // while userinfo's `email_verified` attests userinfo.`email`. Trusting the
+    // claim across that gap would let attributeMapping.email='preferred_username'
+    // launder an unattested address behind email_verified:true. So on the
+    // userinfo path the claim only counts when it demonstrably describes the same
+    // address; otherwise it is 'absent' and falls into the domain-ownership gate.
+    const usingIdTokenEmail = Boolean(idClaims.email);
+    const userInfoRecord = userInfo as unknown as Record<string, unknown>;
+    const userInfoEmail =
+      typeof userInfoRecord.email === 'string' ? userInfoRecord.email.toLowerCase() : null;
+    const mappedKeyIsEmail = (mapping?.email ?? 'email') === 'email';
+    const claimDescribesMappedEmail =
+      mappedKeyIsEmail || (userInfoEmail !== null && userInfoEmail === attrs.email.toLowerCase());
+
+    const emailVerifiedClaim: EmailVerifiedClaim = usingIdTokenEmail
+      ? readEmailVerifiedClaim(idClaims as unknown as Record<string, unknown>)
+      : claimDescribesMappedEmail
+        ? readEmailVerifiedClaim(userInfoRecord)
+        : 'absent';
+
+    // Explicit false is ALWAYS fatal, on both axes, on every path (including an
+    // already-linked identity): the IdP is affirmatively telling us the mailbox
+    // is not proven.
+    if (emailVerifiedClaim === 'false') {
+      writeRouteAudit(c, {
+        orgId: provider.orgId,
+        action: 'sso.callback.rejected',
+        resourceType: 'sso_provider',
+        resourceId: provider.id,
+        resourceName: provider.name,
+        result: 'denied',
+        details: {
+          mode: callbackMode,
+          phase: 'email_verification',
+          reason: 'email_verified_false',
+          claimSource: idClaims.email ? 'id_token' : 'userinfo',
+          partnerId: provider.partnerId,
+        },
+      });
+      clearStateCookie();
+      return callbackMode === 'link'
+        ? c.redirect('/settings/profile?ssoLinkError=email_unverified')
+        : c.redirect('/login?error=sso_email_unverified');
+    }
+
+    // Check allowed domains. An address whose mailbox domain cannot be parsed is
+    // REJECTED, not waved through: the old `if (emailDomain && …)` skipped the
+    // whole gate for such an address, which is exactly backwards for an allowlist.
     if (provider.allowedDomains) {
       const domains = provider.allowedDomains.split(',').map(d => d.trim().toLowerCase());
-      const emailDomain = attrs.email.split('@')[1]?.toLowerCase();
-      if (emailDomain && !domains.includes(emailDomain)) {
+      const emailDomain = emailDomainOf(attrs.email);
+      if (!emailDomain || !domains.includes(emailDomain)) {
         clearStateCookie();
         return c.redirect('/login?error=domain_not_allowed');
       }
@@ -1560,12 +2325,12 @@ ssoRoutes.get('/callback', async (c) => {
     // NEVER creates users, and NEVER touches login's identity resolution.
     if (session.linkUserId) {
       const outcome = await withSystemDbAccessContext(async () => {
-        const [linkingUser] = await db
-          .select()
-          .from(users)
-          .where(eq(users.id, session.linkUserId!))
-          .limit(1);
-        if (!linkingUser) return { error: 'user_gone' as const };
+        // SR2-11b: live re-check of the binding captured at /link/start.
+        const binding = await validateLinkBinding(session, provider);
+        if (!binding.ok) {
+          return { error: 'session_invalid' as const, auditReason: binding.reason };
+        }
+        const linkingUser = binding.user;
 
         // The verified assertion must be for the SAME person: the asserted
         // email must equal the linking user's email. Without this a user could
@@ -1608,6 +2373,24 @@ ssoRoutes.get('/callback', async (c) => {
 
       clearStateCookie();
       if ('error' in outcome) {
+        writeRouteAudit(c, {
+          orgId: provider.orgId,
+          action: 'sso.identity.link_rejected',
+          resourceType: 'sso_provider',
+          resourceId: provider.id,
+          resourceName: provider.name,
+          result: 'denied',
+          details: {
+            // The PUBLIC code is deliberately coarse (session_invalid). The
+            // precise reason lives here only — distinguishing "suspended" from
+            // "session revoked" from "removed from org" in the URL would leak
+            // account state to whoever holds the browser.
+            reason: (outcome as { auditReason?: string }).auditReason ?? outcome.error,
+            publicCode: outcome.error,
+            partnerId: provider.partnerId,
+            userId: session.linkUserId,
+          },
+        });
         return c.redirect(`/settings/profile?ssoLinkError=${outcome.error}`);
       }
       writeRouteAudit(c, {
@@ -1648,7 +2431,52 @@ ssoRoutes.get('/callback', async (c) => {
     // restricted to the partner's own staff pool (partnerId + orgId IS NULL)
     // below, so it doesn't consult verified org domains.
     if (!user && provider.orgId) {
-      const assertedEmailDomain = attrs.email.split('@')[1]?.toLowerCase() ?? null;
+      const assertedEmailDomain = emailDomainOf(attrs.email);
+
+      // SR2-12: an ABSENT `email_verified` claim is acceptable ONLY when Breeze
+      // itself has proven the domain (DNS TXT, sso_verified_domains). This is
+      // the "documented and enforced equivalent guarantee" the design requires:
+      // we stop taking the IdP's silence on faith and substitute our own proof.
+      //
+      // Reached only when the identity is being resolved BY EMAIL (auto-link) or
+      // provisioned fresh (JIT) — an already-linked (provider, sub) identity is
+      // deliberately exempt, so enabling this never locks out an existing user.
+      //
+      // ORG AXIS ONLY. sso_verified_domains.org_id is NOT NULL: there is no
+      // partner-axis domain machinery, so applying this to the partner axis
+      // would reject EVERY partner-axis Entra login (Entra omits the claim). The
+      // partner axis is materially lower-risk — no JIT at all, and its email
+      // match already clamps to (same partner, orgId IS NULL, passwordless, no
+      // conflicting provider link). KNOWN GAP; follow-up is to make
+      // sso_verified_domains dual-axis (PARTNER-WIDE FIRST) and then gate here.
+      if (emailVerifiedClaim === 'absent') {
+        const domainProven = assertedEmailDomain
+          ? await withSystemDbAccessContext(() =>
+              isDomainVerifiedForOrg(provider.orgId!, assertedEmailDomain),
+            )
+          : false;
+        if (!domainProven) {
+          writeRouteAudit(c, {
+            orgId: provider.orgId,
+            action: 'sso.callback.rejected',
+            resourceType: 'sso_provider',
+            resourceId: provider.id,
+            resourceName: provider.name,
+            result: 'denied',
+            details: {
+              mode: callbackMode,
+              phase: 'email_verification',
+              reason: 'email_verified_absent_domain_unverified',
+              claimSource: idClaims.email ? 'id_token' : 'userinfo',
+              emailDomain: assertedEmailDomain,
+              partnerId: provider.partnerId,
+            },
+          });
+          clearStateCookie();
+          return c.redirect('/login?error=sso_email_unverified');
+        }
+      }
+
       const domainBlocked = await withSystemDbAccessContext(() =>
         isSsoProvisioningBlocked(provider.orgId!, assertedEmailDomain)
       );
@@ -1656,6 +2484,23 @@ ssoRoutes.get('/callback', async (c) => {
         console.warn(
           `[sso/callback] domain verification blocked link/provision: org=${provider.orgId} provider=${provider.id} emailDomain=${assertedEmailDomain ?? 'none'}`
         );
+        // Same structured audit event as every sibling callback rejection
+        // (SR2-11 / SR2-12) — a console line is not an audit trail.
+        writeRouteAudit(c, {
+          orgId: provider.orgId,
+          action: 'sso.callback.rejected',
+          resourceType: 'sso_provider',
+          resourceId: provider.id,
+          resourceName: provider.name,
+          result: 'denied',
+          details: {
+            mode: callbackMode,
+            phase: 'domain_verification',
+            reason: 'sso_domain_unverified',
+            emailDomain: assertedEmailDomain,
+            partnerId: provider.partnerId,
+          },
+        });
         clearStateCookie();
         return c.redirect('/login?error=sso_domain_unverified');
       }
@@ -1672,13 +2517,32 @@ ssoRoutes.get('/callback', async (c) => {
       // (partnerId match AND orgId IS NULL). This is what guarantees an
       // org-bound user (orgId set) can NEVER be resolved through a partner
       // provider — the row is filtered out at the DB layer, never matched.
+      // Org-axis clamp (SR2-12 / defense in depth). The org branch previously
+      // matched `eq(users.email, …)` GLOBALLY — any user in any tenant. Login
+      // was still blocked one gate deeper (the org-axis mint requires an
+      // organization_users row for provider.orgId, else no_org_access), so this
+      // was NOT exploitable — it is debt, and it is closed here.
+      //
+      // Clamp on MEMBERSHIP, not on users.org_id: a legitimate multi-org user's
+      // users.org_id may name a different org while they hold a valid membership
+      // in the provider's org, and a naive column clamp would lock them out.
+      // This subquery is exactly the population the mint gate would accept.
       const emailCondition = provider.partnerId
         ? and(
             eq(users.email, attrs.email.toLowerCase()),
             eq(users.partnerId, provider.partnerId),
             isNull(users.orgId)
           )
-        : eq(users.email, attrs.email.toLowerCase());
+        : and(
+            eq(users.email, attrs.email.toLowerCase()),
+            inArray(
+              users.id,
+              db
+                .select({ userId: organizationUsers.userId })
+                .from(organizationUsers)
+                .where(eq(organizationUsers.orgId, provider.orgId!))
+            )
+          );
       const [byEmail] = await withSystemDbAccessContext(async () =>
         db.select().from(users).where(emailCondition).limit(1)
       );
@@ -1724,6 +2588,49 @@ ssoRoutes.get('/callback', async (c) => {
         return c.redirect('/login?error=default_role_required');
       }
 
+      // SR2-10: re-validate the standing delegation against LIVE state at the
+      // moment of provisioning. The config-time ceiling ran when the provider was
+      // saved — possibly months ago, by an admin who has since been demoted or
+      // offboarded. Fails CLOSED: no resolvable configurer ⇒ no ceiling ⇒ no
+      // provisioning (a structural check would wave a SYSTEM wildcard role
+      // straight through — see revalidateSsoDefaultRole).
+      //
+      // System DB context: the callback is unauthenticated and has no request
+      // context, so these reads would otherwise be denied by forced RLS.
+      const jitScope = providerScopeContext(provider);
+      const jitRole = jitScope
+        ? await withSystemDbAccessContext(() =>
+            revalidateSsoDefaultRole({
+              roleId: validatedDefaultRoleId!,
+              scopeContext: jitScope,
+              // The admin who last SET the delegated role; fall back to the
+              // original creator for rows predating that column.
+              configuredByUserId: provider.defaultRoleConfiguredBy ?? provider.createdBy ?? null,
+            }),
+          )
+        : ({ ok: false, reason: 'provider_axis_missing' } as const);
+
+      if (!jitRole.ok) {
+        writeRouteAudit(c, {
+          orgId: provider.orgId,
+          action: 'sso.callback.rejected',
+          resourceType: 'sso_provider',
+          resourceId: provider.id,
+          resourceName: provider.name,
+          result: 'denied',
+          details: {
+            mode: 'login',
+            phase: 'jit_default_role',
+            reason: jitRole.reason,
+            roleId: validatedDefaultRoleId,
+            partnerId: provider.partnerId,
+            remediation: 're-save the provider defaultRoleId as a current admin entitled to grant it',
+          },
+        });
+        clearStateCookie();
+        return c.redirect('/login?error=invalid_provider_configuration');
+      }
+
       // Reachable on the ORG axis ONLY — the partner axis returned
       // invite_required above. The org XOR partner invariant guarantees
       // org_id is set here.
@@ -1734,20 +2641,19 @@ ssoRoutes.get('/callback', async (c) => {
       // SSO-provisioned users are customer-org members: partner_id is
       // inherited from the provider's org's owning partner, org_id is
       // the provider's org.
-      const newUser = await withSystemDbAccessContext(async () => {
-        const [providerOrg] = await db
-          .select({ partnerId: organizations.partnerId })
-          .from(organizations)
-          .where(eq(organizations.id, provisionOrgId))
-          .limit(1);
-        if (!providerOrg) {
-          return null;
-        }
-
+      //
+      // SR2-10 Fix 4: `provisionOrgPartnerId` is the SAME `organizations.partnerId`
+      // for this SAME provisionOrgId that revalidateSsoDefaultRole already fetched
+      // a few lines up — reused here instead of round-tripping the identical select
+      // again. `null` there means the org row didn't exist at that read (the
+      // NOT NULL `organizations.partner_id` column guarantees a real row is never
+      // null), so it fails closed exactly like the old re-query's `!providerOrg` did.
+      const provisionOrgPartnerId: string | null = jitRole.orgPartnerId;
+      const newUser = provisionOrgPartnerId === null ? null : await withSystemDbAccessContext(async () => {
         const [created] = await db
           .insert(users)
           .values({
-            partnerId: providerOrg.partnerId,
+            partnerId: provisionOrgPartnerId,
             orgId: provisionOrgId,
             email: attrs.email.toLowerCase(),
             name: attrs.name,
@@ -1785,7 +2691,27 @@ ssoRoutes.get('/callback', async (c) => {
     // IdP. Fail-safe: any provider that hasn't opted in, or an assertion
     // without the `mfa` amr, yields mfa:false. This claim never satisfies the
     // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
-    const ssoMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
+    //
+    // BUT: trusting an IdP's MFA assertion is NOT the same as the user holding
+    // a factor under OUR policy (the adjudicated rule the CF-Access mint sites
+    // already follow). An UNENROLLED user whose effective policy REQUIRES MFA
+    // must not get mfa:true, however loudly the IdP asserts `amr:mfa` — that
+    // would walk them straight past authMiddleware's forced-enrollment gate and
+    // every hasSatisfiedMfa() route, permanently, through refresh rotation.
+    // `trustsIdpMfa` still satisfies MFA for a user who actually HAS a factor,
+    // and still does so for an unenrolled user under a policy that does not
+    // require one. The callback is unauthenticated (no ambient DB context), so
+    // getEffectiveMfaPolicy's own runOutsideDbContext+withSystemDbAccessContext
+    // read is correct here: `user` is COMMITTED (linked, matched, or provisioned
+    // in its own committed tx above), so this resolves against real rows.
+    const idpMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
+    const ssoPolicy = await getEffectiveMfaPolicy({
+      scope: provider.partnerId ? 'partner' : 'organization',
+      userId: user.id,
+      orgId: provider.partnerId ? null : provider.orgId,
+      partnerId: provider.partnerId ?? null,
+    });
+    const ssoMfa = idpMfa && (user.mfaEnabled === true || !ssoPolicy.required);
 
     // Membership resolution + token payload, keyed on the provider's axis.
     let tokenPayload: Parameters<typeof createTokenPair>[0];

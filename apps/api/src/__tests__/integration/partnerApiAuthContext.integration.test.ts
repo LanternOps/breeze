@@ -3,13 +3,13 @@ import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import type { Database } from '../../db';
-import { organizations, servicePrincipals } from '../../db/schema';
+import { organizations, partnerServicePrincipals } from '../../db/schema';
 import {
   partnerApiAuthMiddleware,
   type PartnerApiPrincipalContext,
 } from '../../middleware/partnerApiAuth';
 import { partnerOrganizationRoutes } from '../../routes/partnerApi/organizations';
-import { issueServicePrincipalKey } from '../../services/servicePrincipalKeys';
+import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -116,7 +116,7 @@ function actualAuthApp(
 
 async function issueKey(partnerId: string, userId: string): Promise<string> {
   const db = getTestDb();
-  const [principal] = await db.insert(servicePrincipals).values({
+  const [principal] = await db.insert(partnerServicePrincipals).values({
     partnerId,
     name: `Partner export integration ${crypto.randomUUID()}`,
     scopes: ['organizations:read'],
@@ -124,8 +124,8 @@ async function issueKey(partnerId: string, userId: string): Promise<string> {
     updatedBy: userId,
   }).returning();
   if (!principal) throw new Error('service principal insert failed');
-  const issued = await issueServicePrincipalKey(db as unknown as Database, {
-    servicePrincipalId: principal.id,
+  const issued = await issuePartnerServicePrincipalKey(db as unknown as Database, {
+    partnerServicePrincipalId: principal.id,
     partnerId,
     name: 'Integration key',
     actorId: userId,

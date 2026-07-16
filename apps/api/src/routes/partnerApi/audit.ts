@@ -14,7 +14,7 @@ const MAX_AUDIT_DURATION_MS = 24 * 60 * 60 * 1000;
 const PARTNER_EXPORT_ROUTE_PREFIX = '/api/v1/partner-api/';
 
 export interface PartnerExportAuditPrincipal {
-  servicePrincipalId: string;
+  partnerServicePrincipalId: string;
   keyId: string;
   partnerId: string;
 }
@@ -42,7 +42,7 @@ function routeResource(path: string): PartnerExportResource | null {
 function isAuditPrincipal(value: unknown): value is PartnerExportAuditPrincipal {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const principal = value as Record<string, unknown>;
-  return UUID_PATTERN.test(String(principal.servicePrincipalId ?? ''))
+  return UUID_PATTERN.test(String(principal.partnerServicePrincipalId ?? ''))
     && UUID_PATTERN.test(String(principal.keyId ?? ''))
     && UUID_PATTERN.test(String(principal.partnerId ?? ''));
 }
@@ -118,10 +118,10 @@ async function writePartnerExportAudit(
       actorId: principal.keyId,
       action: 'partner_api.export',
       resourceType: 'partner_export',
-      resourceId: principal.servicePrincipalId,
+      resourceId: principal.partnerServicePrincipalId,
       result,
       details: {
-        servicePrincipalId: principal.servicePrincipalId,
+        partnerServicePrincipalId: principal.partnerServicePrincipalId,
         keyId: principal.keyId,
         partnerId: principal.partnerId,
         route: `GET /api/v1/partner-api/${resource}`,

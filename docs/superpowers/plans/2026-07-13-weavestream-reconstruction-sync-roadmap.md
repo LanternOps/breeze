@@ -53,7 +53,7 @@ The repository review found source-model details that the implementation must ha
 
 ### Gate 1 — Breeze machine contract
 
-- [ ] Partner service-principal tables have forced partner-axis RLS and pass the real-PostgreSQL cross-partner forge test.
+- [ ] Partner partner-service-principal tables have forced partner-axis RLS and pass the real-PostgreSQL cross-partner forge test.
 - [ ] A one-time key can be issued, rotated, expired, disabled, and revoked without changing existing human `api_keys` behavior.
 - [ ] Every partner API route requires exactly its documented read scope.
 - [ ] Cursor tampering, resource/partner mismatch, expiry, and schema mismatch fail closed.
@@ -108,7 +108,7 @@ The fixture must also contain one manual Weavestream field edit, one manual arti
 
 ## Recommended Pull-Request Sequence
 
-1. Breeze service-principal schema, RLS, issuance service, and lifecycle API/UI.
+1. Breeze partner-service-principal schema, RLS, issuance service, and lifecycle API/UI.
 2. Breeze partner authentication, stable envelope/cursor, organizations/sites/devices.
 3. Breeze inventory/software/relationship DTOs and safety tests.
 4. Breeze configuration/scripts/automations/backups/custom-fields DTOs, audit, RLS integration, and load scenario.

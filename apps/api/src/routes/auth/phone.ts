@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { users, organizations } from '../../db/schema';
+import { users } from '../../db/schema';
 import {
   generateRecoveryCodes,
   rateLimiter,
@@ -14,6 +14,9 @@ import {
   phoneConfirmLimiter
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
+import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { authMiddleware } from '../../middleware/auth';
 import { ENABLE_2FA, phoneVerifySchema, phoneConfirmSchema, smsSendSchema, smsMfaEnableSchema } from './schemas';
 import {
@@ -21,7 +24,8 @@ import {
   hashRecoveryCodes,
   resolveUserAuditOrgId,
   writeAuthAudit,
-  requireCurrentPasswordStepUp
+  requireCurrentPasswordStepUp,
+  enforceExistingFactorStepUp
 } from './helpers';
 
 const { db, withSystemDbAccessContext } = dbModule;
@@ -100,10 +104,24 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
   }
 
   const auth = c.get('auth');
-  const { phoneNumber, code, currentPassword } = c.req.valid('json');
+  const { phoneNumber, code, currentPassword, stepUpGrantId } = c.req.valid('json');
 
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
+
+  // SR2-20/C1: replacing/verifying the phone on an ALREADY-PROTECTED account is
+  // a factor-affecting change and must additionally prove an existing factor —
+  // otherwise a stolen access token + phished password could swap in the
+  // attacker's number (which then satisfies the SMS step-up). No-op for initial
+  // enrollment (no factor yet → password-only, per enforceExistingFactorStepUp).
+  //
+  // Two-phase, same idiom as passkeys register/options + register/verify:
+  // validate (non-consuming) HERE so a missing/bogus/stale grant 403s before
+  // the SMS code is even checked; consume BELOW, only once the code has proven
+  // valid, so a fat-fingered code (or a 429/502 on the Twilio check) does not
+  // destroy the user's single-use grant. (PR3 carry-forward.)
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
+  if (stepUpError) return stepUpError;
 
   const twilio = getTwilioService();
   if (!twilio) {
@@ -146,15 +164,41 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     return c.json({ error: 'Invalid verification code' }, 401);
   }
 
-  // Update user with verified phone
-  await db
-    .update(users)
-    .set({
-      phoneNumber,
-      phoneVerified: true,
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  // Terminal phone write: NOW consume the grant (single-use). Re-checks the
+  // binding against the LIVE epochs, so a factor change or session switch
+  // between validate and consume invalidates it. A loss here (concurrent
+  // consume of the same grant) fails CLOSED with the same 403 — the phone
+  // number is not written.
+  const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpConsumeError) return stepUpConsumeError;
+
+  // Replacement-only invalidation: initial SMS phone verification (before
+  // /mfa/sms/enable has ever run) must NOT sign the user out mid-flow — they
+  // still need to complete enrollment. Only a phone number REPLACEMENT behind
+  // an already-ACTIVE SMS factor is a security-relevant factor change (the
+  // old number could otherwise keep receiving MFA codes for a session that
+  // predates the swap), so only that case invalidates assurance.
+  const [cur] = await db
+    .select({ mfaEnabled: users.mfaEnabled, mfaMethod: users.mfaMethod })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+  const isSmsFactorReplacement = cur?.mfaEnabled === true && cur.mfaMethod === 'sms';
+
+  let assuranceResult: Awaited<ReturnType<typeof invalidateMfaAssuranceAfterFactorChange>> | null = null;
+  if (isSmsFactorReplacement) {
+    assuranceResult = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'phone-replacement', async (tx) => {
+      await tx
+        .update(users)
+        .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
+        .where(eq(users.id, auth.user.id));
+    });
+  } else {
+    await db
+      .update(users)
+      .set({ phoneNumber, phoneVerified: true, updatedAt: new Date() })
+      .where(eq(users.id, auth.user.id));
+  }
 
   writeAuthAudit(c, {
     orgId: orgId ?? undefined,
@@ -162,7 +206,16 @@ phoneRoutes.post('/phone/confirm', authMiddleware, zValidator('json', phoneConfi
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { phoneLast4: phoneNumber.slice(-4) }
+    details: {
+      phoneLast4: phoneNumber.slice(-4),
+      ...(assuranceResult
+        ? {
+            smsFactorReplacement: true,
+            mfaEpoch: assuranceResult.mfaEpoch,
+            teardownFailed: assuranceResult.remoteSessionsTerminated === TEARDOWN_FAILED
+          }
+        : {})
+    }
   });
 
   return c.json({ success: true, message: 'Phone number verified' });
@@ -175,10 +228,21 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
   }
 
   const auth = c.get('auth');
-  const { currentPassword } = c.req.valid('json');
+  const { currentPassword, stepUpGrantId } = c.req.valid('json');
 
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
   if (passwordError) return passwordError;
+
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor proof (no-op for initial enrollment).
+  //
+  // Two-phase (PR3 carry-forward): validate (non-consuming) HERE so a
+  // missing/bogus/stale grant 403s before anything else runs; consume BELOW,
+  // immediately before the terminal factor write, so a benign 400/403
+  // (unverified phone, MFA already enabled, policy disallows SMS) does not
+  // burn the user's single-use grant.
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
+  if (stepUpError) return stepUpError;
 
   const [user] = await db
     .select({
@@ -202,34 +266,44 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
     return c.json({ error: 'MFA is already enabled. Disable it first to switch methods.' }, 400);
   }
 
-  // Check org policy — is SMS allowed?
-  if (auth.orgId) {
-    const [org] = await db
-      .select({ settings: organizations.settings })
-      .from(organizations)
-      .where(eq(organizations.id, auth.orgId))
-      .limit(1);
-
-    const orgSettings = org?.settings as { security?: { allowedMfaMethods?: { sms?: boolean } } } | null;
-    if (orgSettings?.security?.allowedMfaMethods && !orgSettings.security.allowedMfaMethods.sms) {
-      return c.json({ error: 'Your organization does not allow SMS MFA' }, 403);
-    }
+  // Enforce the CANONICAL allowlist through the resolver (partner-inherited).
+  // The old reader consulted `security.allowedMfaMethods`, a spelling that is
+  // written nowhere → the SMS restriction silently no-opped. Passkey is always
+  // allowed; only totp/sms are gated by effective settings.
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId: auth.user.id,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  });
+  if (!policy.allowedMethods.sms) {
+    return c.json({ error: 'Your organization does not allow SMS MFA' }, 403);
   }
+
+  // Terminal factor write: NOW consume the grant (single-use). Re-checks the
+  // binding against the LIVE epochs, so a factor change or session switch
+  // between validate and consume invalidates it. A loss here (concurrent
+  // consume of the same grant) fails CLOSED with the same 403 — the factor is
+  // not written.
+  const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpConsumeError) return stepUpConsumeError;
 
   // Generate recovery codes
   const recoveryCodes = generateRecoveryCodes();
 
   // Enable SMS MFA
-  await db
-    .update(users)
-    .set({
-      mfaEnabled: true,
-      mfaMethod: 'sms',
-      mfaSecret: null,
-      mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'sms-mfa-enable', async (tx) => {
+    await tx
+      .update(users)
+      .set({
+        mfaEnabled: true,
+        mfaMethod: 'sms',
+        mfaSecret: null,
+        mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, auth.user.id));
+  });
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -238,7 +312,7 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'sms' }
+    details: { method: 'sms', mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
   return c.json({ success: true, recoveryCodes, message: 'SMS MFA enabled successfully' });

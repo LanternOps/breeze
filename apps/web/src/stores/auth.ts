@@ -806,27 +806,20 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
   }
 }
 
-export interface Partner {
-  id: string;
-  name: string;
-  slug: string;
-  status?: string;
-}
-
+// SR2-21: register-partner is now email-first. The endpoint creates NOTHING and
+// returns a uniform `{ success: true, message }` whether or not the address
+// already has an account (anti-enumeration). No `user`/`partner`/`tokens`/
+// `redirectUrl` — the account is created and the session minted only at
+// verify-email time (see apiVerifyEmail). Callers must not branch on the body.
 export async function apiRegisterPartner(
   companyName: string,
   email: string,
   password: string,
   name: string
-): Promise<{
-  success: boolean;
-  user?: User;
-  partner?: Partner;
-  tokens?: Tokens;
-  redirectUrl?: string;
-  message?: string;
-  error?: string;
-}> {
+): Promise<
+  | { success: true; message: string }
+  | { success: false; error: string }
+> {
   try {
     const response = await fetch(buildApiUrl('/auth/register-partner'), {
       method: 'POST',
@@ -841,14 +834,7 @@ export async function apiRegisterPartner(
       return { success: false, error: extractApiError(data, 'Registration failed') };
     }
 
-    return {
-      success: true,
-      user: data.user,
-      partner: data.partner,
-      tokens: data.tokens,
-      redirectUrl: data.redirectUrl,
-      message: data.message,
-    };
+    return { success: true, message: data.message };
   } catch {
     return { success: false, error: 'Network error' };
   }
@@ -976,11 +962,21 @@ export async function apiVerifyEmail(token: string): Promise<{
   partnerId?: string;
   email?: string;
   autoActivated?: boolean;
+  // SR2-21 step 2: when the token belongs to a PENDING REGISTRATION, verify-email
+  // is the account-creation + session-mint site. A successful completion carries
+  // the auto-login `user` + `tokens` (the page calls login() with them). When the
+  // address was registered while the link sat in the mailbox, the server returns
+  // `{ verified: false, status: 'sign_in' }` — no account is created, direct the
+  // holder to sign in.
+  user?: User;
+  tokens?: Tokens;
+  status?: 'sign_in';
 }> {
   try {
     const response = await fetch(buildApiUrl('/auth/verify-email'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ token })
     });
 
@@ -989,11 +985,19 @@ export async function apiVerifyEmail(token: string): Promise<{
       return { success: false, error: data.error };
     }
 
+    // Registration-completion path bounced to sign-in (address already taken).
+    // 200 body but `verified: false` — surface the status, not success.
+    if (data.verified === false && data.status === 'sign_in') {
+      return { success: false, error: 'already_registered', status: 'sign_in' };
+    }
+
     return {
       success: true,
       partnerId: data.partnerId,
       email: data.email,
       autoActivated: data.autoActivated,
+      user: data.user,
+      tokens: data.tokens,
     };
   } catch {
     return { success: false, error: 'Network error' };

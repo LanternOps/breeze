@@ -36,7 +36,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -44,8 +44,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run pnpm audit
-        run: pnpm audit --audit-level=critical
+      - name: Install osv-scanner
+        run: bash scripts/security/install-osv-scanner.sh
+
+      - name: Run dependency audit
+        run: bash scripts/security/check-npm-audit.sh
 
   go-vuln:
     name: Go Vulnerability Check
@@ -155,6 +158,9 @@ jobs:
       - name: Build Portal image
         run: docker build -f apps/portal/Dockerfile -t breeze-portal:security-scan .
 
+      - name: Build M365 Graph Read Executor image
+        run: docker build -f apps/m365-graph-read-executor/Dockerfile -t breeze-m365-graph-read-executor:security-scan .
+
       - name: Scan API image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -175,6 +181,14 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: 'breeze-portal:security-scan'
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+          exit-code: '1'
+
+      - name: Scan M365 Graph Read Executor image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 'breeze-m365-graph-read-executor:security-scan'
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'

@@ -61,8 +61,21 @@ export default defineConfig({
       // Forever-suppression exclusion — SQL predicates the mocked unit tests
       // (which ignore the WHERE clause) can't verify.
       'src/services/warrantyAlertEvaluator.integration.test.ts',
+      // Co-located real-DB integration test for #2502 Phase 2 (hardware +
+      // os_version change types): a pg enum constraint can't be validated by
+      // the mocked `changes.test.ts` unit suite, so this drives the real
+      // `changesRoutes` handler + RLS insert/select policies against Postgres.
+      'src/routes/agents/changes.integration.test.ts',
+      // Co-located real-DB integration test for the SR2-22 auth-email worker:
+      // proves the OUT-OF-REQUEST worker's withSystemDbAccessContext wrap lets
+      // it FIND a FORCE-RLS `users` row (a contextless read would be 0 rows =
+      // "no such user" = silent password-reset breakage for everyone).
+      'src/jobs/authEmailWorker.integration.test.ts',
     ],
     exclude: [
+      // Uses fresh request-pool modules and manages its own temporary role;
+      // never attach the shared integration TRUNCATE hooks.
+      'src/db/requestDatabaseRole.integration.test.ts',
       // rls.integration.test.ts is a mocked unit test in integration's
       // clothing — it stubs the postgres/drizzle layer at the module
       // level and cannot coexist with setup.ts opening a real postgres
@@ -87,6 +100,10 @@ export default defineConfig({
       // file needs a dedicated audit against current auth route shapes.
       'src/__tests__/integration/auth.integration.test.ts',
     ],
+    // Migrations run ONCE per invocation here (not in setup.ts's per-file
+    // beforeAll): re-verifying 400+ migration checksums for every test file
+    // was ~4 min of pure no-op work per CI run.
+    globalSetup: ['src/__tests__/integration/globalSetup.ts'],
     setupFiles: ['src/__tests__/integration/setup.ts'],
     // Integration tests run sequentially to avoid database conflicts.
     // `fileParallelism: false` forces vitest to run test files one at a
@@ -99,7 +116,7 @@ export default defineConfig({
     // Longer timeouts for database operations
     testTimeout: 30000,
     hookTimeout: 30000,
-    // No `bail` here on purpose: the suite is ~90s, and bail:1 masks
+    // No `bail` here on purpose: bail:1 masks
     // stacked breakages — in June 2026 it hid #1092's org-scope lockout
     // behind #1042's RBAC 403 for a day because each CI run only ever
     // surfaced the first failure. Always report every failure.

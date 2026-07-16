@@ -1,397 +1,358 @@
-import { and, asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
-import { z } from 'zod';
-import { db, type Database } from '../db';
-import { servicePrincipalKeys, servicePrincipals } from '../db/schema';
 import { zValidator } from '../lib/validation';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { writeRouteAudit } from '../services/auditEvents';
-import { isValidIpOrCidr } from '../services/ipMatch';
-import { PERMISSIONS } from '../services/permissions';
+import { z } from 'zod';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { db } from '../db';
+import { servicePrincipals } from '../db/schema';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
 import {
-  ServicePrincipalKeyError,
-  issueServicePrincipalKey,
+  createServicePrincipal,
   rotateServicePrincipalKey,
-} from '../services/servicePrincipalKeys';
-import {
-  DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES,
-  type PartnerServicePrincipalScope,
-  validatePartnerServicePrincipalScopes,
-} from '../services/servicePrincipalScopes';
+  disableServicePrincipal,
+  migrateHumanKeyToServicePrincipal,
+  ServicePrincipalNotFoundError,
+  ApiKeyNotFoundError,
+} from '../services/servicePrincipals';
 
+// SR2-15: service-principal management. Mounted behind `authMiddleware` ONLY
+// (never `apiKeyAuthMiddleware`) — these routes are JWT-user-only by design.
+// A service-principal key itself has no interactive-login / MFA / recovery
+// surface, so it must never be able to reach its own management surface;
+// authMiddleware requires a `Bearer` JWT and rejects an X-API-Key-only
+// request outright, which is what enforces that here.
 export const servicePrincipalRoutes = new Hono();
 
-const PRINCIPAL_NAME_UNIQUE_CONSTRAINT = 'service_principals_partner_name_unique';
+// ============================================
+// Helpers
+// ============================================
 
-const partnerIdSchema = z.string().guid().optional();
-const listSchema = z.object({ partnerId: partnerIdSchema });
-const idSchema = z.object({ id: z.string().guid() });
-const keyParamsSchema = z.object({ id: z.string().guid(), keyId: z.string().guid() });
-const createSchema = z.object({
-  partnerId: partnerIdSchema,
-  name: z.string().trim().min(1).max(255),
-  description: z.string().trim().max(2000).nullable().optional(),
-  scopes: z.array(z.string()).default([...DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES]),
-  expiresAt: z.string().datetime().nullable().optional(),
-  sourceCidrs: z.array(z.string()).default([]),
-});
-const updateSchema = z.object({
-  partnerId: partnerIdSchema,
-  name: z.string().trim().min(1).max(255).optional(),
-  description: z.string().trim().max(2000).nullable().optional(),
-  status: z.enum(['active', 'disabled']).optional(),
-  scopes: z.array(z.string()).optional(),
-  expiresAt: z.string().datetime().nullable().optional(),
-  sourceCidrs: z.array(z.string()).optional(),
-});
-const issueKeySchema = z.object({
-  partnerId: partnerIdSchema,
-  name: z.string().trim().min(1).max(255),
-  expiresAt: z.string().datetime().nullable().optional(),
-  rateLimit: z.number().int().min(1).max(10000).optional(),
-});
-
-type ManagementAuth = {
-  scope: 'partner' | 'system' | 'organization';
-  partnerId?: string | null;
-  user: { id: string; email?: string };
-};
-
-function resolvePartnerId(
-  c: any,
-  requestedPartnerId?: string,
-): { partnerId: string } | { response: Response } {
-  const auth = c.get('auth') as ManagementAuth;
+async function ensureOrgAccess(
+  orgId: string,
+  auth: Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+) {
+  if (auth.scope === 'organization') {
+    return auth.orgId === orgId;
+  }
   if (auth.scope === 'partner') {
-    if (!auth.partnerId) return { response: c.json({ error: 'Partner context required' }, 403) };
-    if (requestedPartnerId && requestedPartnerId !== auth.partnerId) {
-      return { response: c.json({ error: 'Access to this partner denied' }, 403) };
-    }
-    return { partnerId: auth.partnerId };
+    return auth.canAccessOrg(orgId);
   }
-  if (auth.scope === 'system' && requestedPartnerId) return { partnerId: requestedPartnerId };
-  return { response: c.json({ error: 'Partner context required' }, 403) };
+  // system scope has access to all
+  return true;
 }
 
-function validatePrincipalFields(
-  c: any,
-  input: { scopes?: string[]; sourceCidrs?: string[]; expiresAt?: string | null },
-): { scopes?: PartnerServicePrincipalScope[]; expiresAt?: Date | null } | { response: Response } {
-  let scopes: PartnerServicePrincipalScope[] | undefined;
-  if (input.scopes) {
-    const validated = validatePartnerServicePrincipalScopes(input.scopes);
-    if (!validated.ok) return { response: c.json({ error: validated.error, details: validated.details }, validated.status) };
-    scopes = validated.scopes;
-  }
-  if (input.sourceCidrs?.some((entry) => !isValidIpOrCidr(entry))) {
-    return { response: c.json({ error: 'Source CIDRs must contain valid IP addresses or CIDRs' }, 400) };
-  }
-  const expiresAt = input.expiresAt === undefined
-    ? undefined
-    : input.expiresAt === null ? null : new Date(input.expiresAt);
-  if (expiresAt && expiresAt.getTime() <= Date.now()) {
-    return { response: c.json({ error: 'Expiry must be in the future' }, 400) };
-  }
-  return { scopes, expiresAt };
+function getPagination(query: { page?: string; limit?: string }) {
+  const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit ?? '50', 10) || 50));
+  return { page, limit, offset: (page - 1) * limit };
 }
 
-function keyError(c: any, error: unknown): Response {
-  if (error instanceof ServicePrincipalKeyError) {
-    return c.json({ error: error.message, code: error.code }, error.status as 400 | 404 | 409);
+function mapServicePrincipalError(err: unknown): { status: 404 | 400; error: string } | null {
+  if (err instanceof ServicePrincipalNotFoundError) {
+    return { status: 404, error: 'Service principal not found' };
   }
-  throw error;
+  if (err instanceof ApiKeyNotFoundError) {
+    return { status: 404, error: 'API key not found' };
+  }
+  if (err instanceof Error && err.message.includes('different organization')) {
+    return { status: 400, error: err.message };
+  }
+  return null;
 }
 
-function isPrincipalNameUniqueViolation(error: unknown): boolean {
-  let candidate: unknown = error;
-  for (let depth = 0; candidate && depth < 5; depth += 1) {
-    if (typeof candidate !== 'object') break;
-    const pg = candidate as {
-      code?: unknown;
-      constraint?: unknown;
-      constraint_name?: unknown;
-      message?: unknown;
-      cause?: unknown;
-    };
-    const constraint = pg.constraint_name ?? pg.constraint;
-    if (pg.code === '23505' && constraint === PRINCIPAL_NAME_UNIQUE_CONSTRAINT) return true;
-    if (typeof pg.message === 'string' && pg.message.includes(PRINCIPAL_NAME_UNIQUE_CONSTRAINT)) return true;
-    candidate = pg.cause;
-  }
-  return false;
-}
+// ============================================
+// Validation schemas
+// ============================================
+
+const listServicePrincipalsSchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  orgId: z.string().guid().optional(),
+  status: z.enum(['active', 'disabled']).optional(),
+});
+
+const createServicePrincipalSchema = z.object({
+  orgId: z.string().guid(),
+  name: z.string().min(1).max(255),
+  scopes: z.array(z.string()).default([]),
+});
+
+const migrateKeySchema = z.object({
+  keyId: z.string().guid(),
+});
+
+const principalIdParamSchema = z.object({ id: z.string().guid() });
+
+// ============================================
+// Routes
+// ============================================
 
 servicePrincipalRoutes.use('*', authMiddleware);
 
+// GET /service-principals - list for org
 servicePrincipalRoutes.get(
   '/',
-  requireScope('partner', 'system'),
+  requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
-  zValidator('query', listSchema),
+  zValidator('query', listServicePrincipalsSchema),
   async (c) => {
-    const resolved = resolvePartnerId(c, c.req.valid('query').partnerId);
-    if ('response' in resolved) return resolved.response;
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+    const { page, limit, offset } = getPagination(query);
 
-    const principals = await db
-      .select({
-        id: servicePrincipals.id,
-        partnerId: servicePrincipals.partnerId,
-        name: servicePrincipals.name,
-        description: servicePrincipals.description,
-        status: servicePrincipals.status,
-        scopes: servicePrincipals.scopes,
-        expiresAt: servicePrincipals.expiresAt,
-        sourceCidrs: servicePrincipals.sourceCidrs,
-        createdAt: servicePrincipals.createdAt,
-        updatedAt: servicePrincipals.updatedAt,
-      })
-      .from(servicePrincipals)
-      .where(eq(servicePrincipals.partnerId, resolved.partnerId))
-      .orderBy(asc(servicePrincipals.name));
+    const conditions: ReturnType<typeof eq>[] = [];
 
-    const keys = await db
-      .select({
-        id: servicePrincipalKeys.id,
-        servicePrincipalId: servicePrincipalKeys.servicePrincipalId,
-        name: servicePrincipalKeys.name,
-        keyPrefix: servicePrincipalKeys.keyPrefix,
-        status: servicePrincipalKeys.status,
-        expiresAt: servicePrincipalKeys.expiresAt,
-        rateLimit: servicePrincipalKeys.rateLimit,
-        lastUsedAt: servicePrincipalKeys.lastUsedAt,
-        revokedAt: servicePrincipalKeys.revokedAt,
-        rotatedFromId: servicePrincipalKeys.rotatedFromId,
-        createdAt: servicePrincipalKeys.createdAt,
-      })
-      .from(servicePrincipalKeys)
-      .where(eq(servicePrincipalKeys.partnerId, resolved.partnerId))
-      .orderBy(asc(servicePrincipalKeys.createdAt));
-
-    const keysByPrincipal = new Map<string, typeof keys>();
-    for (const key of keys) {
-      const list = keysByPrincipal.get(key.servicePrincipalId) ?? [];
-      list.push(key);
-      keysByPrincipal.set(key.servicePrincipalId, list);
+    if (auth.scope === 'organization') {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
+      }
+      conditions.push(eq(servicePrincipals.orgId, auth.orgId));
+    } else if (auth.scope === 'partner') {
+      if (query.orgId) {
+        const hasAccess = await ensureOrgAccess(query.orgId, auth);
+        if (!hasAccess) {
+          return c.json({ error: 'Access to this organization denied' }, 403);
+        }
+        conditions.push(eq(servicePrincipals.orgId, query.orgId));
+      } else {
+        const orgIds = auth.accessibleOrgIds ?? [];
+        if (orgIds.length === 0) {
+          return c.json({ data: [], pagination: { page, limit, total: 0 } });
+        }
+        conditions.push(inArray(servicePrincipals.orgId, orgIds) as ReturnType<typeof eq>);
+      }
+    } else if (auth.scope === 'system' && query.orgId) {
+      conditions.push(eq(servicePrincipals.orgId, query.orgId));
     }
-    return c.json({ data: principals.map((principal) => ({
-      ...principal,
-      keys: keysByPrincipal.get(principal.id) ?? [],
-    })) });
-  },
+
+    if (query.status) {
+      conditions.push(eq(servicePrincipals.status, query.status));
+    }
+
+    const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const countResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(servicePrincipals)
+      .where(whereCondition);
+    const total = Number(countResult[0]?.count ?? 0);
+
+    const list = await db
+      .select()
+      .from(servicePrincipals)
+      .where(whereCondition)
+      .orderBy(desc(servicePrincipals.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    return c.json({ data: list, pagination: { page, limit, total } });
+  }
 );
 
+// POST /service-principals - create
 servicePrincipalRoutes.post(
   '/',
-  requireScope('partner', 'system'),
+  requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('json', createSchema),
+  zValidator('json', createServicePrincipalSchema),
   async (c) => {
-    const auth = c.get('auth') as ManagementAuth;
-    const input = c.req.valid('json');
-    const resolved = resolvePartnerId(c, input.partnerId);
-    if ('response' in resolved) return resolved.response;
-    const validated = validatePrincipalFields(c, input);
-    if ('response' in validated) return validated.response;
+    const auth = c.get('auth');
+    const data = c.req.valid('json');
 
-    const [duplicate] = await db
-      .select({ id: servicePrincipals.id })
-      .from(servicePrincipals)
-      .where(and(
-        eq(servicePrincipals.partnerId, resolved.partnerId),
-        eq(servicePrincipals.name, input.name),
-      ))
-      .limit(1);
-    if (duplicate) return c.json({ error: 'A service principal with this name already exists' }, 409);
-
-    // Avoid raising 23505 inside authMiddleware's ambient transaction: a
-    // statement-level error aborts that transaction even if caught by the
-    // handler. Zero returned rows is the race-safe duplicate signal.
-    const [created] = await db.insert(servicePrincipals)
-      .values({
-        partnerId: resolved.partnerId,
-        name: input.name,
-        description: input.description ?? null,
-        scopes: validated.scopes!,
-        expiresAt: validated.expiresAt ?? null,
-        sourceCidrs: input.sourceCidrs,
-        createdBy: auth.user.id,
-        updatedBy: auth.user.id,
-      })
-      .onConflictDoNothing({ target: [servicePrincipals.partnerId, servicePrincipals.name] })
-      .returning();
-    if (!created) return c.json({ error: 'A service principal with this name already exists' }, 409);
-
-    writeRouteAudit(c as any, {
-      orgId: null,
-      action: 'service_principal.create',
-      resourceType: 'service_principal',
-      resourceId: created.id,
-      resourceName: created.name,
-      details: { principalType: 'service_principal', partnerId: resolved.partnerId, scopes: created.scopes },
-    });
-    return c.json({ data: created }, 201);
-  },
-);
-
-servicePrincipalRoutes.patch(
-  '/:id',
-  requireScope('partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  requireMfa(),
-  zValidator('param', idSchema),
-  zValidator('json', updateSchema),
-  async (c) => {
-    const auth = c.get('auth') as ManagementAuth;
-    const { id } = c.req.valid('param');
-    const input = c.req.valid('json');
-    const resolved = resolvePartnerId(c, input.partnerId);
-    if ('response' in resolved) return resolved.response;
-    const changed = Object.keys(input).filter((key) => key !== 'partnerId');
-    if (changed.length === 0) return c.json({ error: 'No updates provided' }, 400);
-    const validated = validatePrincipalFields(c, input);
-    if ('response' in validated) return validated.response;
-
-    if (input.name) {
-      const [duplicate] = await db.select({ id: servicePrincipals.id }).from(servicePrincipals)
-        .where(and(
-          eq(servicePrincipals.partnerId, resolved.partnerId),
-          eq(servicePrincipals.name, input.name),
-        )).limit(1);
-      if (duplicate && duplicate.id !== id) return c.json({ error: 'A service principal with this name already exists' }, 409);
-    }
-
-    const values: Record<string, unknown> = { updatedAt: new Date(), updatedBy: auth.user.id };
-    if (input.name !== undefined) values.name = input.name;
-    if (input.description !== undefined) values.description = input.description;
-    if (input.status !== undefined) values.status = input.status;
-    if (validated.scopes !== undefined) values.scopes = validated.scopes;
-    if (validated.expiresAt !== undefined) values.expiresAt = validated.expiresAt;
-    if (input.sourceCidrs !== undefined) values.sourceCidrs = input.sourceCidrs;
-
-    let updated: typeof servicePrincipals.$inferSelect | undefined;
-    try {
-      // Under the ambient request transaction this nested transaction is a
-      // savepoint. A concurrent rename collision can therefore roll back the
-      // failed statement before we translate it, leaving the outer request
-      // transaction usable for the 409 response.
-      updated = await db.transaction(async (tx) => {
-        const [row] = await tx.update(servicePrincipals).set(values).where(and(
-          eq(servicePrincipals.id, id), eq(servicePrincipals.partnerId, resolved.partnerId),
-        )).returning();
-        return row;
-      });
-    } catch (error) {
-      if (isPrincipalNameUniqueViolation(error)) {
-        return c.json({ error: 'A service principal with this name already exists' }, 409);
+    if (auth.scope === 'organization') {
+      if (!auth.orgId) {
+        return c.json({ error: 'Organization context required' }, 403);
       }
-      throw error;
+      if (data.orgId !== auth.orgId) {
+        return c.json({ error: 'Can only create service principals for your organization' }, 403);
+      }
+    } else if (auth.scope === 'partner') {
+      const hasAccess = await ensureOrgAccess(data.orgId, auth);
+      if (!hasAccess) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
     }
-    if (!updated) return c.json({ error: 'Service principal not found' }, 404);
-    writeRouteAudit(c as any, {
-      orgId: null, action: 'service_principal.update', resourceType: 'service_principal',
-      resourceId: id, resourceName: updated.name,
-      details: { principalType: 'service_principal', partnerId: resolved.partnerId, changedFields: changed },
+
+    const denied = enforceScopeDelegation(c, data.scopes);
+    if (denied) return denied;
+
+    const principal = await createServicePrincipal({
+      orgId: data.orgId,
+      name: data.name,
+      scopes: data.scopes,
+      createdBy: auth.user.id,
     });
-    return c.json({ data: updated });
-  },
+
+    return c.json(principal, 201);
+  }
 );
 
-servicePrincipalRoutes.post(
-  '/:id/keys',
-  requireScope('partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
-  requireMfa(),
-  zValidator('param', idSchema),
-  zValidator('json', issueKeySchema),
+// GET /service-principals/:id
+servicePrincipalRoutes.get(
+  '/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  zValidator('param', principalIdParamSchema),
   async (c) => {
-    const auth = c.get('auth') as ManagementAuth;
+    const auth = c.get('auth');
     const { id } = c.req.valid('param');
-    const input = c.req.valid('json');
-    const resolved = resolvePartnerId(c, input.partnerId);
-    if ('response' in resolved) return resolved.response;
-    const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
-    if (expiresAt && expiresAt.getTime() <= Date.now()) return c.json({ error: 'Expiry must be in the future' }, 400);
-    try {
-      const issued = await issueServicePrincipalKey(db, {
-        servicePrincipalId: id, partnerId: resolved.partnerId, name: input.name,
-        actorId: auth.user.id, expiresAt, rateLimit: input.rateLimit,
-      });
-      writeRouteAudit(c as any, {
-        orgId: null, action: 'service_principal_key.issue', resourceType: 'service_principal_key',
-        resourceId: issued.keyId, resourceName: input.name,
-        details: { principalType: 'service_principal', partnerId: resolved.partnerId, servicePrincipalId: id, keyId: issued.keyId, keyPrefix: issued.keyPrefix },
-      });
-      return c.json({ keyId: issued.keyId, key: issued.rawKey, keyPrefix: issued.keyPrefix }, 201);
-    } catch (error) {
-      return keyError(c, error);
+
+    const [principal] = await db
+      .select()
+      .from(servicePrincipals)
+      .where(eq(servicePrincipals.id, id))
+      .limit(1);
+
+    if (!principal) {
+      return c.json({ error: 'Service principal not found' }, 404);
     }
-  },
+
+    const hasAccess = await ensureOrgAccess(principal.orgId, auth);
+    if (!hasAccess) {
+      return c.json({ error: 'Access denied' }, 403);
+    }
+
+    return c.json(principal);
+  }
 );
 
+async function requirePrincipalOrgAccess(c: any, id: string) {
+  const auth = c.get('auth') as AuthContext;
+  const [principal] = await db
+    .select()
+    .from(servicePrincipals)
+    .where(eq(servicePrincipals.id, id))
+    .limit(1);
+
+  if (!principal) {
+    return { response: c.json({ error: 'Service principal not found' }, 404) };
+  }
+
+  const hasAccess = await ensureOrgAccess(principal.orgId, auth);
+  if (!hasAccess) {
+    return { response: c.json({ error: 'Access denied' }, 403) };
+  }
+
+  return { principal, auth };
+}
+
+// SR2-15 delegation ceiling. A service-principal key must never carry a scope
+// its human actor does not currently hold, and a site-restricted actor cannot
+// manage an org-wide principal. Enforced on create AND on every path that hands
+// out or re-points a live key (rotate, migrate-key) — guarding create alone is a
+// front-door-only check: rotate would still let a sub-ceiling actor capture a
+// full-scope credential from an over-scoped principal. Returns a 403 Response to
+// short-circuit, or null when the actor is within their ceiling.
+function enforceScopeDelegation(c: any, scopes: string[]) {
+  const permissions = c.get('permissions') as UserPermissions | undefined;
+
+  // A service principal is organization-wide — service_principals has no site
+  // axis — so a site-restricted actor must not manage one, or the principal
+  // reaches every site in the org and escapes their restriction.
+  if (permissions?.allowedSiteIds) {
+    return c.json(
+      { error: 'Site-restricted users cannot manage service principals, which are organization-wide' },
+      403,
+    );
+  }
+
+  const delegation = validateApiKeyScopeDelegation(scopes, permissions);
+  if (!delegation.ok) {
+    return c.json(
+      { error: delegation.error, ...(delegation.details ? { details: delegation.details } : {}) },
+      delegation.status,
+    );
+  }
+
+  return null;
+}
+
+// POST /service-principals/:id/rotate - mint a new key, revoke the prior one
 servicePrincipalRoutes.post(
-  '/:id/keys/:keyId/rotate',
-  requireScope('partner', 'system'),
+  '/:id/rotate',
+  requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('param', keyParamsSchema),
-  zValidator('query', listSchema),
+  zValidator('param', principalIdParamSchema),
   async (c) => {
-    const auth = c.get('auth') as ManagementAuth;
-    const { id, keyId } = c.req.valid('param');
-    const resolved = resolvePartnerId(c, c.req.valid('query').partnerId);
-    if ('response' in resolved) return resolved.response;
+    const { id } = c.req.valid('param');
+    const gate = await requirePrincipalOrgAccess(c, id);
+    if ('response' in gate) return gate.response;
+
+    // Rotate hands the caller a fresh live key carrying the principal's scopes,
+    // so the actor must currently hold every one of them — otherwise a
+    // sub-ceiling actor could capture a full-scope credential from a principal
+    // an over-privileged colleague created.
+    const denied = enforceScopeDelegation(c, gate.principal.scopes ?? []);
+    if (denied) return denied;
+
     try {
-      const rotated = await db.transaction((tx) => rotateServicePrincipalKey(tx as unknown as Database, {
-        servicePrincipalId: id, keyId, partnerId: resolved.partnerId, actorId: auth.user.id,
-      }));
-      writeRouteAudit(c as any, {
-        orgId: null, action: 'service_principal_key.rotate', resourceType: 'service_principal_key',
-        resourceId: rotated.keyId,
-        details: { principalType: 'service_principal', partnerId: resolved.partnerId, servicePrincipalId: id, keyId: rotated.keyId, rotatedFromId: keyId, keyPrefix: rotated.keyPrefix },
+      const rotated = await rotateServicePrincipalKey(id, gate.auth.user.id);
+      return c.json({
+        ...rotated,
+        warning: 'Store this new API key securely. The old key has been revoked and this new key will not be shown again.',
       });
-      return c.json({ keyId: rotated.keyId, key: rotated.rawKey, keyPrefix: rotated.keyPrefix });
-    } catch (error) {
-      return keyError(c, error);
+    } catch (err) {
+      const mapped = mapServicePrincipalError(err);
+      if (mapped) return c.json({ error: mapped.error }, mapped.status);
+      throw err;
     }
-  },
+  }
 );
 
-servicePrincipalRoutes.delete(
-  '/:id/keys/:keyId',
-  requireScope('partner', 'system'),
+// POST /service-principals/:id/disable - disable and cascade-revoke keys
+servicePrincipalRoutes.post(
+  '/:id/disable',
+  requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
-  zValidator('param', keyParamsSchema),
-  zValidator('query', listSchema),
+  zValidator('param', principalIdParamSchema),
   async (c) => {
-    const { id, keyId } = c.req.valid('param');
-    const resolved = resolvePartnerId(c, c.req.valid('query').partnerId);
-    if ('response' in resolved) return resolved.response;
-    const [existing] = await db.select({
-      id: servicePrincipalKeys.id, name: servicePrincipalKeys.name,
-      status: servicePrincipalKeys.status, keyPrefix: servicePrincipalKeys.keyPrefix,
-    }).from(servicePrincipalKeys).where(and(
-      eq(servicePrincipalKeys.id, keyId),
-      eq(servicePrincipalKeys.servicePrincipalId, id),
-      eq(servicePrincipalKeys.partnerId, resolved.partnerId),
-    )).limit(1);
-    if (!existing) return c.json({ error: 'Service principal key not found' }, 404);
-    if (existing.status === 'revoked') return c.json({ success: true, alreadyRevoked: true });
+    const { id } = c.req.valid('param');
+    const gate = await requirePrincipalOrgAccess(c, id);
+    if ('response' in gate) return gate.response;
 
-    const [revoked] = await db.update(servicePrincipalKeys).set({ status: 'revoked', revokedAt: new Date() })
-      .where(and(
-        eq(servicePrincipalKeys.id, keyId),
-        eq(servicePrincipalKeys.servicePrincipalId, id),
-        eq(servicePrincipalKeys.partnerId, resolved.partnerId),
-        eq(servicePrincipalKeys.status, 'active'),
-      )).returning({ id: servicePrincipalKeys.id });
-    if (!revoked) return c.json({ success: true, alreadyRevoked: true });
-    writeRouteAudit(c as any, {
-      orgId: null, action: 'service_principal_key.revoke', resourceType: 'service_principal_key',
-      resourceId: keyId, resourceName: existing.name,
-      details: { principalType: 'service_principal', partnerId: resolved.partnerId, servicePrincipalId: id, keyId, keyPrefix: existing.keyPrefix },
-    });
-    return c.json({ success: true, alreadyRevoked: false });
-  },
+    try {
+      const disabled = await disableServicePrincipal(id, gate.auth.user.id);
+      return c.json(disabled);
+    } catch (err) {
+      const mapped = mapServicePrincipalError(err);
+      if (mapped) return c.json({ error: mapped.error }, mapped.status);
+      throw err;
+    }
+  }
+);
+
+// POST /service-principals/:id/migrate-key - re-point an existing human key
+// onto this principal. The ONLY path that flips api_keys.principal_type.
+servicePrincipalRoutes.post(
+  '/:id/migrate-key',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  zValidator('param', principalIdParamSchema),
+  zValidator('json', migrateKeySchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const { keyId } = c.req.valid('json');
+    const gate = await requirePrincipalOrgAccess(c, id);
+    if ('response' in gate) return gate.response;
+
+    // Re-pointing a human key onto this principal makes it outlive its human
+    // creator's off-boarding gate, so the actor must hold the principal's
+    // scopes — the same ceiling as create/rotate.
+    const denied = enforceScopeDelegation(c, gate.principal.scopes ?? []);
+    if (denied) return denied;
+
+    try {
+      const migrated = await migrateHumanKeyToServicePrincipal(keyId, id, gate.auth.user.id);
+      return c.json(migrated);
+    } catch (err) {
+      const mapped = mapServicePrincipalError(err);
+      if (mapped) return c.json({ error: mapped.error }, mapped.status);
+      throw err;
+    }
+  }
 );

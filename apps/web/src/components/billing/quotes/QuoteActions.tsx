@@ -1,12 +1,14 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
-import { deleteQuote, sendQuote } from '../../../lib/api/quotes';
+import { cloneQuote, deleteQuote, sendQuote } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
+import { Dialog } from '../../shared/Dialog';
 import { useQuotePdfDownload } from './useQuoteImage';
 import { type QuoteDetail as QuoteDetailData, formatMoney } from './quoteTypes';
 
@@ -45,9 +47,32 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const { busy, downloadPdf } = useQuotePdfDownload(quote);
   const [sending, setSending] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
+  const [sendMessage, setSendMessage] = useState('');
   const [delOpen, setDelOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [cloning, setCloning] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
+  const [cloneOrgId, setCloneOrgId] = useState(quote.orgId);
+  const [cloneTitle, setCloneTitle] = useState('');
+  // Header-variant overflow menu (Clone / Delete) so the header cluster stays a
+  // stable two-buttons-plus-kebab instead of a wrapping four-button row.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const refresh = useCallback(() => onChanged?.(), [onChanged]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [menuOpen]);
 
   // An empty quote (no blocks, no lines) can't be sent.
   const isEmpty = blocks.length === 0 && lines.length === 0;
@@ -60,12 +85,23 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     return resolved || quote.orgId.slice(0, 8);
   }, [quote.billToName, quote.orgId, organizations]);
 
+  // Company choices for the clone dialog: the partner's org list, with the
+  // quote's own org prepended if it isn't loaded (e.g. All-orgs scope) so the
+  // select always has a valid default.
+  const orgOptions = useMemo(() => {
+    const sorted = [...organizations].sort((a, b) => a.name.localeCompare(b.name));
+    if (!sorted.some((o) => o.id === quote.orgId)) {
+      sorted.unshift({ id: quote.orgId, name: orgName } as (typeof sorted)[number]);
+    }
+    return sorted;
+  }, [organizations, quote.orgId, orgName]);
+
   const send = useCallback(async () => {
     if (sending) return;
     setSending(true);
     try {
       await runAction({
-        request: () => sendQuote(quote.id),
+        request: () => sendQuote(quote.id, sendMessage),
         errorFallback: t('quotes.actions.sendError'),
         // Tell the seller what happens next: the quote advances to Viewed and
         // Accepted on its own as the customer engages — no further action here.
@@ -73,13 +109,14 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         onUnauthorized: UNAUTHORIZED,
       });
       setSendOpen(false);
+      setSendMessage('');
       refresh();
     } catch (err) {
       handleActionError(err, t('quotes.actions.sendError'));
     } finally {
       setSending(false);
     }
-  }, [sending, quote.id, orgName, refresh, t]);
+  }, [sending, quote.id, sendMessage, orgName, refresh, t]);
 
   const remove = useCallback(async () => {
     if (deleting) return;
@@ -100,6 +137,40 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     }
   }, [deleting, quote.id, t]);
 
+  // Prime the dialog with the current company and a "Clone of …" title the user
+  // can overwrite. maxLength mirrors the API's 200-char title cap.
+  const openClone = useCallback(() => {
+    setMenuOpen(false);
+    setCloneOrgId(quote.orgId);
+    setCloneTitle(
+      t('quotes.actions.cloneDialog.defaultTitle', {
+        name: quote.title?.trim() || quote.quoteNumber || '',
+      }).slice(0, 200),
+    );
+    setCloneOpen(true);
+  }, [quote.orgId, quote.title, quote.quoteNumber, t]);
+
+  const clone = useCallback(async () => {
+    if (cloning || savePending) return;
+    setCloning(true);
+    try {
+      // Always send the title — an emptied field means "untitled clone" (the API
+      // nulls a blank), not "inherit the source title".
+      const result = await runAction<{ data: { id: string } }>({
+        request: () => cloneQuote(quote.id, { orgId: cloneOrgId, title: cloneTitle.trim() }),
+        errorFallback: t('quotes.actions.cloneError'),
+        successMessage: t('quotes.actions.cloneSuccess'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setCloneOpen(false);
+      if (result?.data?.id) void navigateTo(`/billing/quotes/${result.data.id}`);
+    } catch (err) {
+      handleActionError(err, t('quotes.actions.cloneError'));
+    } finally {
+      setCloning(false);
+    }
+  }, [cloning, quote.id, cloneOrgId, cloneTitle, savePending, t]);
+
   const header = variant === 'header';
   // Rail buttons stretch full-width and stack; header buttons size to content and
   // sit in a row. The class fragments below are the only thing the variant changes.
@@ -109,10 +180,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     : 'inline-flex w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium';
 
   const canSend = can('quotes', 'send') && isDraft;
+  const canClone = can('quotes', 'write');
   const canDelete = can('quotes', 'write') && isDraft;
 
   // Nothing to show (e.g. a viewer on an issued quote) — render no empty container.
-  if (!canSend && !can('quotes', 'read') && !canDelete) return null;
+  if (!canSend && !can('quotes', 'read') && !canClone && !canDelete) return null;
 
   return (
     <>
@@ -143,6 +215,21 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             {sending ? t('quotes.actions.sending') : savePending ? t('common:states.saving') : t('quotes.actions.sendProposal')}
           </button>
         )}
+        {/* In the rail the secondary actions stack as full-width buttons; in the
+            header they fold into the kebab menu below so the cluster stays a
+            stable Send + Download + ⋯ row that doesn't wrap awkwardly. */}
+        {!header && canClone && (
+          <button
+            type="button"
+            onClick={openClone}
+            disabled={cloning || savePending}
+            title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
+            data-testid="quote-clone"
+            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+          >
+            {cloning ? t('quotes.actions.cloning') : t('quotes.actions.cloneQuote')}
+          </button>
+        )}
         {/* PDF download is a read affordance (quotes has no dedicated export
             permission), so it's gated on quotes:read. */}
         {can('quotes', 'read') && (
@@ -156,7 +243,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             {t('quotes.actions.downloadPdf')}
           </button>
         )}
-        {canDelete && (
+        {!header && canDelete && (
           <button
             type="button"
             onClick={() => setDelOpen(true)}
@@ -165,6 +252,54 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           >
             {t('quotes.actions.deleteDraft')}
           </button>
+        )}
+        {header && (canClone || canDelete) && (
+          <div className="relative" ref={menuRef}>
+            <button
+              type="button"
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label={t('quotes.actions.moreActions')}
+              title={t('quotes.actions.moreActions')}
+              data-testid="quote-actions-menu"
+              className="inline-flex items-center justify-center rounded-md border px-2.5 py-2 text-sm font-medium hover:bg-muted"
+            >
+              <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+            </button>
+            {menuOpen && (
+              <div
+                role="menu"
+                data-testid="quote-actions-menu-list"
+                className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border bg-card py-1 shadow-lg"
+              >
+                {canClone && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={openClone}
+                    disabled={cloning || savePending}
+                    title={savePending ? t('quotes.actions.cloneSavingTitle') : undefined}
+                    data-testid="quote-clone"
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-muted disabled:opacity-50"
+                  >
+                    {cloning ? t('quotes.actions.cloning') : t('quotes.actions.cloneQuote')}
+                  </button>
+                )}
+                {canDelete && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setMenuOpen(false); setDelOpen(true); }}
+                    data-testid="quote-delete-open"
+                    className="block w-full px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+                  >
+                    {t('quotes.actions.deleteDraft')}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         )}
         {canSend && isEmpty && (
           // Visible in BOTH variants — a sighted keyboard user (or anyone not
@@ -196,7 +331,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
 
       <ConfirmDialog
         open={sendOpen}
-        onClose={() => setSendOpen(false)}
+        onClose={() => { setSendOpen(false); setSendMessage(''); }}
         onConfirm={() => void send()}
         isLoading={sending}
         variant="warning"
@@ -207,7 +342,23 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         })}
         confirmLabel={t('quotes.actions.sendProposal')}
         confirmTestId="quote-send-confirm"
-      />
+      >
+        <label className="block">
+          <span className="mb-1 block text-sm font-medium text-foreground">
+            {t('quotes.actions.sendConfirm.messageLabel')}
+          </span>
+          <textarea
+            value={sendMessage}
+            onChange={(e) => setSendMessage(e.target.value)}
+            rows={3}
+            maxLength={2000}
+            disabled={sending}
+            placeholder={t('quotes.actions.sendConfirm.messagePlaceholder')}
+            data-testid="quote-send-message"
+            className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+          />
+        </label>
+      </ConfirmDialog>
       <ConfirmDialog
         open={delOpen}
         onClose={() => setDelOpen(false)}
@@ -218,6 +369,78 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         confirmLabel={t('quotes.actions.deleteDraft')}
         confirmTestId="quote-delete-confirm"
       />
+      {/* Clone dialog: pick the company the new draft is for (defaults to the
+          source quote's company) and a title (defaults to "Clone of …"). */}
+      <Dialog
+        open={cloneOpen}
+        onClose={() => { if (!cloning) setCloneOpen(false); }}
+        title={t('quotes.actions.cloneDialog.title')}
+        labelledBy="quote-clone-dialog-title"
+        maxWidth="md"
+        className="p-6"
+      >
+        <h3 id="quote-clone-dialog-title" className="text-base font-semibold text-foreground">
+          {t('quotes.actions.cloneDialog.title')}
+        </h3>
+        <p className="mt-1 text-sm text-muted-foreground">{t('quotes.actions.cloneDialog.message')}</p>
+        <div className="mt-4 space-y-3">
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-foreground">
+              {t('quotes.actions.cloneDialog.companyLabel')}
+            </span>
+            <select
+              value={cloneOrgId}
+              onChange={(e) => setCloneOrgId(e.target.value)}
+              disabled={cloning}
+              data-testid="quote-clone-org"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+            >
+              {orgOptions.map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+          </label>
+          {cloneOrgId !== quote.orgId && (
+            <p className="text-xs text-muted-foreground" data-testid="quote-clone-retarget-hint">
+              {t('quotes.actions.cloneDialog.retargetHint')}
+            </p>
+          )}
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-foreground">
+              {t('quotes.actions.cloneDialog.titleLabel')}
+            </span>
+            <input
+              type="text"
+              value={cloneTitle}
+              maxLength={200}
+              onChange={(e) => setCloneTitle(e.target.value)}
+              disabled={cloning}
+              placeholder={t('quotes.editor.title.placeholder')}
+              data-testid="quote-clone-title"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+            />
+          </label>
+        </div>
+        <div className="mt-6 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => setCloneOpen(false)}
+            disabled={cloning}
+            className="rounded-md border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            {t('common:actions.cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={() => void clone()}
+            disabled={cloning || savePending}
+            data-testid="quote-clone-confirm"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:opacity-90 disabled:opacity-50"
+          >
+            {cloning ? t('quotes.actions.cloning') : t('quotes.actions.cloneDialog.confirm')}
+          </button>
+        </div>
+      </Dialog>
     </>
   );
 }

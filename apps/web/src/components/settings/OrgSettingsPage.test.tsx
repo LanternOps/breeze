@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -32,6 +32,7 @@ vi.mock('./OrgSecuritySettings', () => ({ default: () => <div data-testid="secur
 vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event-logs" /> }));
 vi.mock('./OrgRemoteAccessSettings', () => ({ default: () => <div data-testid="remote-access" /> }));
 vi.mock('./OrgTicketSettingsEditor', () => ({ default: () => <div data-testid="org-ticket-settings" /> }));
+vi.mock('../organizations/Pax8OrgTab', () => ({ default: ({ orgId }: { orgId: string }) => <div data-testid="pax8-org-tab">{orgId}</div> }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
@@ -334,6 +335,27 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     const link = await screen.findByRole('link', { name: /^remote access$/i });
     expect(link.getAttribute('aria-current')).toBe('page');
     expect(screen.getByTestId('remote-access')).not.toBeNull();
+  });
+
+  it('keeps a selected Pax8 order deep link active through hashchange and back navigation', async () => {
+    window.location.hash = '#pax8/44444444-4444-4444-8444-444444444444';
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    const link = await screen.findByRole('link', { name: /^pax8$/i });
+    expect(link.getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('pax8-org-tab')).toHaveTextContent('org-1');
+
+    act(() => {
+      window.location.hash = '#general';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await screen.findByTestId('org-name-input');
+
+    act(() => {
+      window.location.hash = '#pax8/55555555-5555-4555-8555-555555555555';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByTestId('pax8-org-tab')).toBeInTheDocument();
   });
 
   it('offers the compact section select for narrow viewports', async () => {

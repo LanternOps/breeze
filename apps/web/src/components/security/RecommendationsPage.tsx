@@ -11,7 +11,9 @@ import {
   X,
 } from "lucide-react";
 import { cn, formatNumber, friendlyFetchError } from "@/lib/utils";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
+import AccessDenied from "../shared/AccessDenied";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 type Recommendation = {
@@ -73,6 +75,9 @@ export default function RecommendationsPage() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
+  // Separate from `error`: a refetch clears the load error, not the action error.
+  const [actionError, setActionError] = useState<string>();
   const [priorityFilter, setPriorityFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -90,6 +95,7 @@ export default function RecommendationsPage() {
   const fetchData = useCallback(
     async (page = 1) => {
       setError(undefined);
+      setErrorKind("none");
       setLoading(true);
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -102,7 +108,9 @@ export default function RecommendationsPage() {
         const res = await fetchWithAuth(`/security/recommendations?${params}`, {
           signal: controller.signal,
         });
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        // HttpError (not a bare Error) so a 403 survives the throw and the render
+        // can tell "you may not see this" from "this broke, try again" (#2472).
+        throwIfNotOk(res);
         const json = await res.json();
         if (!Array.isArray(json.data))
           throw new Error(
@@ -114,7 +122,10 @@ export default function RecommendationsPage() {
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         console.error("[RecommendationsPage] fetch error:", err);
-        setError(friendlyFetchError(err));
+        const kind = errorKindOf(err);
+        setErrorKind(kind);
+        // 'denied' renders AccessDenied, which supplies its own copy.
+        if (kind === "other") setError(friendlyFetchError(err));
       } finally {
         setLoading(false);
       }
@@ -126,15 +137,21 @@ export default function RecommendationsPage() {
     return () => abortRef.current?.abort();
   }, [fetchData]);
   const handleAction = async (id: string, action: "complete" | "dismiss") => {
+    setActionError(undefined);
     try {
       const res = await fetchWithAuth(
         `/security/recommendations/${id}/${action}`,
         { method: "POST" },
       );
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      throwIfNotOk(res);
     } catch (err) {
       console.error(`[RecommendationsPage] ${action} error:`, err);
-      setError(friendlyFetchError(err));
+      // NOT `setError`: the unconditional `fetchData` below opens with
+      // `setError(undefined)`, and React batches both writes into one render — so
+      // a failed complete/dismiss was wiped before it ever painted and the user
+      // saw NOTHING. Keep action failures in their own state, which the refetch
+      // does not clear. (#2472)
+      setActionError(friendlyFetchError(err));
     }
     fetchData(pagination.page);
   };
@@ -158,6 +175,23 @@ export default function RecommendationsPage() {
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
+      </div>
+    );
+  }
+  // A 403 is terminal for this user — a retry hits the same permission gate. Stop
+  // before the summary tiles: falling through would paint the zeroed `summary`
+  // default and tell someone who may not see the data that 0 recommendations
+  // are open. Fabricated zeros are worse than an error. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div className="space-y-6">
+        <SecurityPageHeader
+          title={t("securityRecommendationsPage.securityRecommendations")}
+          subtitle={t(
+            "securityRecommendationsPage.prioritizedRemediationGuidance",
+          )}
+        />
+        <AccessDenied testId="security-recommendations-denied" />
       </div>
     );
   }
@@ -201,6 +235,16 @@ export default function RecommendationsPage() {
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
           <p className="text-sm text-destructive">{error}</p>
+        </div>
+      )}
+
+      {actionError && (
+        <div
+          className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center"
+          data-testid="recommendations-action-error"
+          role="alert"
+        >
+          <p className="text-sm text-destructive">{actionError}</p>
         </div>
       )}
 

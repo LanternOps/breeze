@@ -3,7 +3,13 @@ import { Hono } from 'hono';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-vi.mock('../services/aiTools', () => ({ aiTools: new Map() }));
+vi.mock('../services/aiTools', () => {
+  const aiTools = new Map();
+  return {
+    aiTools,
+    hasCoreAiToolName: (name: string) => aiTools.has(name),
+  };
+});
 // Auth mocks stamp a response header so tests can observe WHICH guard the
 // loader's default-deny wrapper applied to each route.
 vi.mock('../middleware/auth', () => ({
@@ -40,8 +46,16 @@ vi.mock('../db', () => ({ db: { execute: vi.fn().mockResolvedValue([]) } }));
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
 vi.mock('../services/clientIp', () => ({ getTrustedClientIp: () => 'extension-loader-test' }));
 
-import { mountExtensions } from './loader';
+import { loadSourceExtensions } from './loader';
+import { ExtensionContributionRegistry } from './contributionRegistry';
+import { mountExtensionGateway } from './gateway';
 import { __resetSkipPrefixesForTests, globalRateLimit } from '../middleware/globalRateLimit';
+
+async function mountExtensions(app: Hono, root: string): Promise<void> {
+  const registry = new ExtensionContributionRegistry();
+  mountExtensionGateway(app, registry, async () => true);
+  await loadSourceExtensions(registry, root);
+}
 
 function scaffoldRuntimeExtension(
   root: string,
@@ -113,26 +127,103 @@ describe('mountExtensions', () => {
   });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
+  it('stages and activates legacy route and AI contributions under the stable namespace', async () => {
+    scaffoldRuntimeExtension(root, { routeNamespace: 'legacy-alias' });
+    const registry = new ExtensionContributionRegistry();
+    const app = new Hono();
+    mountExtensionGateway(app, registry, async () => true);
+
+    await loadSourceExtensions(registry, root);
+
+    const active = registry.get('demo');
+    expect(active).toMatchObject({
+      name: 'demo',
+      version: '0.0.0',
+      enabled: true,
+      manifest: {
+        apiVersion: 'breeze.extensions/v1',
+        routeNamespace: 'legacy-alias',
+        aiTools: [{ name: 'demo_tool' }],
+      },
+    });
+    expect(active?.aiTools.has('demo_tool')).toBe(true);
+    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(200);
+    expect((await app.request('/api/v1/legacy-alias/health')).status).toBe(200);
+  });
+
+  it('does not activate or publish staged contributions when registration fails', async () => {
+    scaffoldRuntimeExtension(
+      root,
+      {},
+      `import { Hono } from 'hono';
+       const ext = {
+         register(ctx) {
+           const app = new Hono();
+           app.get('/health', (c) => c.json({ ok: true }));
+           ctx.mountRoute(app);
+           ctx.aiTools.set('demo_tool', { definition: { name: 'demo_tool', description: 'x', input_schema: { type: 'object' } }, tier: 1, handler: async () => 'ok' });
+           throw new Error('registration failed');
+         },
+       };
+       export default ext;`,
+    );
+    const registry = new ExtensionContributionRegistry();
+    const { aiTools } = await import('../services/aiTools');
+
+    await expect(loadSourceExtensions(registry, root)).rejects.toThrow(/registration failed/);
+
+    expect(registry.get('demo')).toBeUndefined();
+    expect(aiTools.has('demo_tool')).toBe(false);
+  });
+
+  it('does not activate staged contributions when the repo-wide tenancy check fails', async () => {
+    scaffoldRuntimeExtension(root);
+    const { db } = await import('../db');
+    (db.execute as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          table_name: 'documents',
+          relkind: 'r',
+          rls_enabled: true,
+          rls_forced: true,
+          policy_count: 1,
+          tenant_column_count: 1,
+          tenant_fk_count: 1,
+        },
+      ]);
+    const registry = new ExtensionContributionRegistry();
+    const { aiTools } = await import('../services/aiTools');
+
+    await expect(loadSourceExtensions(registry, root)).rejects.toThrow(/belong to no core schema/);
+
+    expect(registry.get('demo')).toBeUndefined();
+    expect(aiTools.has('demo_tool')).toBe(false);
+  });
+
   it('is a no-op with an empty extensions root', async () => {
     const app = new Hono();
     await mountExtensions(app, root);
-    const res = await app.request('/api/v1/demo/health');
-    expect(res.status).toBe(404);
+    const res = await app.request('/api/v1/ext/demo/health');
+    expect(res.status).toBe(503);
   });
 
-  it('mounts a discovered extension at /api/v1/<routeNamespace> and registers its tools', async () => {
+  it('activates a discovered extension at /api/v1/ext/<name> and registers its tools', async () => {
     scaffoldRuntimeExtension(root);
     const app = new Hono();
-    await mountExtensions(app, root);
-    const res = await app.request('/api/v1/demo/health');
+    const registry = new ExtensionContributionRegistry();
+    mountExtensionGateway(app, registry, async () => true);
+    await loadSourceExtensions(registry, root);
+    const res = await app.request('/api/v1/ext/demo/health');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ext: 'demo', initialAiToolCount: 0 });
     const { aiTools } = await import('../services/aiTools');
-    expect(aiTools.has('demo_tool')).toBe(true);
+    expect(aiTools.has('demo_tool')).toBe(false);
+    expect(registry.getAiTool('demo_tool')).toBeDefined();
   });
 
   it('provides seam-v2 context members and registers the agent skip prefix', async () => {
-    scaffoldRuntimeExtension(root, { agentRoutes: true });
+    scaffoldRuntimeExtension(root, { agentRoutes: true, routeNamespace: 'legacy-agent' });
     const app = new Hono();
     app.use('*', globalRateLimit({ limit: 1, windowSeconds: 60 }));
 
@@ -153,15 +244,17 @@ describe('mountExtensions', () => {
       result: 'success',
     }));
 
-    expect((await app.request('/api/v1/demo/agent/health')).status).toBe(200);
-    expect((await app.request('/api/v1/demo/agent/health')).status).toBe(200);
+    expect((await app.request('/api/v1/ext/demo/agent/health')).status).toBe(200);
+    expect((await app.request('/api/v1/ext/demo/agent/health')).status).toBe(200);
+    expect((await app.request('/api/v1/legacy-agent/agent/health')).status).toBe(200);
+    expect((await app.request('/api/v1/legacy-agent/agent/health')).status).toBe(200);
   });
 
   it('loads the dist CJS default export when present', async () => {
     scaffoldCjsRuntimeExtension(root);
     const app = new Hono();
     await mountExtensions(app, root);
-    const res = await app.request('/api/v1/cjs-demo/health');
+    const res = await app.request('/api/v1/ext/cjs-demo/health');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
   });
@@ -172,7 +265,7 @@ describe('mountExtensions', () => {
     vi.stubEnv('NODE_ENV', 'development');
     const app = new Hono();
     await mountExtensions(app, root);
-    const res = await app.request('/api/v1/demo/health');
+    const res = await app.request('/api/v1/ext/demo/health');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ext: 'demo', initialAiToolCount: 0 });
     vi.unstubAllEnvs();
@@ -184,7 +277,7 @@ describe('mountExtensions', () => {
     vi.stubEnv('NODE_ENV', 'production');
     const app = new Hono();
     await mountExtensions(app, root);
-    const res = await app.request('/api/v1/demo/health');
+    const res = await app.request('/api/v1/ext/demo/health');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ext: 'stale-dist' });
     vi.unstubAllEnvs();
@@ -195,7 +288,7 @@ describe('mountExtensions', () => {
     vi.stubEnv('BREEZE_EXTENSIONS_ENABLED', 'false');
     const app = new Hono();
     await mountExtensions(app, root);
-    expect((await app.request('/api/v1/demo/health')).status).toBe(404);
+    expect((await app.request('/api/v1/ext/demo/health')).status).toBe(503);
     vi.unstubAllEnvs();
   });
 
@@ -213,11 +306,11 @@ describe('mountExtensions', () => {
       const app = new Hono();
       await mountExtensions(app, root);
 
-      const userRoute = await app.request('/api/v1/demo/health');
+      const userRoute = await app.request('/api/v1/ext/demo/health');
       expect(userRoute.status).toBe(200);
       expect(userRoute.headers.get('x-guard')).toBe('user');
 
-      const agentRoute = await app.request('/api/v1/demo/agent/health');
+      const agentRoute = await app.request('/api/v1/ext/demo/agent/health');
       expect(agentRoute.status).toBe(200);
       expect(agentRoute.headers.get('x-guard')).toBe('agent');
     });
@@ -227,14 +320,14 @@ describe('mountExtensions', () => {
       const app = new Hono();
       await mountExtensions(app, root);
 
-      const publicRoute = await app.request('/api/v1/demo/health');
+      const publicRoute = await app.request('/api/v1/ext/demo/health');
       expect(publicRoute.status).toBe(200);
       expect(publicRoute.headers.get('x-guard')).toBeNull();
 
       // Everything not listed stays behind core auth.
-      const guarded = await app.request('/api/v1/demo/pub/thing');
+      const guarded = await app.request('/api/v1/ext/demo/pub/thing');
       expect(guarded.headers.get('x-guard')).toBe('user');
-      const agentRoute = await app.request('/api/v1/demo/agent/health');
+      const agentRoute = await app.request('/api/v1/ext/demo/agent/health');
       expect(agentRoute.headers.get('x-guard')).toBe('agent');
     });
 
@@ -243,11 +336,11 @@ describe('mountExtensions', () => {
       const app = new Hono();
       await mountExtensions(app, root);
 
-      const pub = await app.request('/api/v1/demo/pub/thing');
+      const pub = await app.request('/api/v1/ext/demo/pub/thing');
       expect(pub.status).toBe(200);
       expect(pub.headers.get('x-guard')).toBeNull();
 
-      const guarded = await app.request('/api/v1/demo/health');
+      const guarded = await app.request('/api/v1/ext/demo/health');
       expect(guarded.headers.get('x-guard')).toBe('user');
     });
 
@@ -276,7 +369,7 @@ describe('mountExtensions', () => {
       const app = new Hono();
       await mountExtensions(app, root);
 
-      const res = await app.request('/api/v1/demo/telemetry');
+      const res = await app.request('/api/v1/ext/demo/telemetry');
       expect(res.status).toBe(200);
       // The loader's user guard ran AND the extension's agent middleware ran —
       // the header is overwritten by whichever ran last, so 'agent' proves the
@@ -304,7 +397,7 @@ describe('mountExtensions', () => {
       await mountExtensions(app, root);
 
       const { authMiddleware } = await import('../middleware/auth');
-      const res = await app.request('/api/v1/demo/thing');
+      const res = await app.request('/api/v1/ext/demo/thing');
       expect(res.status).toBe(200);
       // Core user auth ran exactly ONCE (the loader's) — the extension's
       // redundant call was skipped, so the per-IP/per-agent rate counters
@@ -329,7 +422,7 @@ describe('mountExtensions', () => {
          };
          export default ext;`,
       );
-      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(/mountRoute more than once/);
+      await expect(mountExtensions(new Hono(), root)).rejects.toThrow(/more than one route app/);
     });
 
     it('does not register the rate-limit skip prefix when the extension never mounts routes', async () => {
@@ -340,14 +433,14 @@ describe('mountExtensions', () => {
       );
       const app = new Hono();
       app.use('*', globalRateLimit({ limit: 1, windowSeconds: 60 }));
-      app.get('/api/v1/demo/agent/ping', (c) => c.json({ ok: true }));
+      app.get('/api/v1/ext/demo/agent/ping', (c) => c.json({ ok: true }));
 
       await mountExtensions(app, root);
 
       // No loader-wrapped /agent/ prefix exists, so the exemption was never
       // granted — the global limiter still applies to the namespace.
-      expect((await app.request('/api/v1/demo/agent/ping')).status).toBe(200);
-      expect((await app.request('/api/v1/demo/agent/ping')).status).toBe(429);
+      expect((await app.request('/api/v1/ext/demo/agent/ping')).status).toBe(200);
+      expect((await app.request('/api/v1/ext/demo/agent/ping')).status).toBe(429);
     });
   });
 
@@ -366,7 +459,7 @@ describe('mountExtensions', () => {
       ]);
       const app = new Hono();
       await mountExtensions(app, root);
-      expect((await app.request('/api/v1/demo/health')).status).toBe(200);
+      expect((await app.request('/api/v1/ext/demo/health')).status).toBe(200);
     });
 
     it('fails the boot when a declared table does not exist', async () => {
@@ -468,7 +561,7 @@ describe('mountExtensions', () => {
       ]);
       const app = new Hono();
       await mountExtensions(app, root);
-      expect((await app.request('/api/v1/demo/health')).status).toBe(200);
+      expect((await app.request('/api/v1/ext/demo/health')).status).toBe(200);
     });
 
     // The opt-out must be VERIFIED, not trusted — otherwise it is a hole exactly

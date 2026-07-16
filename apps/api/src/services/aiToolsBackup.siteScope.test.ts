@@ -127,8 +127,9 @@ describe('restore_snapshot — cross-site snapshot authorization (source device 
 
   const snapshotRow = {
     id: 's1', orgId: 'org-1', providerSnapshotId: 'provider-xyz', deviceId: 'src-dev',
-    metadata: {}, size: 1024, hardwareProfile: {},
+    configId: 'cfg-1', metadata: {}, size: 1024, hardwareProfile: {},
   };
+  const providerConfigRow = { provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } };
 
   // Return the queued selects in order.
   function seqSelect(results: Array<unknown[]>) {
@@ -156,6 +157,7 @@ describe('restore_snapshot — cross-site snapshot authorization (source device 
       [snapshotRow],                      // snapshot row
       [{ siteId: 'site-A' }],             // snapshot source device → same site, allowed
       [{ id: 'd1', status: 'online' }],   // target device online check
+      [providerConfigRow],                // backup destination config lookup
     ]);
     const now = new Date();
     const rj = {
@@ -177,6 +179,7 @@ describe('restore_snapshot — cross-site snapshot authorization (source device 
       [{ id: 'd1', siteId: 'site-Z' }], // target device
       [snapshotRow],                    // snapshot row
       [{ id: 'd1', status: 'online' }], // target device online check
+      [providerConfigRow],              // backup destination config lookup
     ]);
     const now = new Date();
     const rj = {

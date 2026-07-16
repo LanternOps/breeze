@@ -1,0 +1,2000 @@
+{
+  "aiRiskAiRiskDashboard": {
+    "aiRiskEngine": "AI Motor de riesgos",
+    "analytics": "Analítica",
+    "approvals": "Aprobaciones",
+    "denials": "Denegaciones",
+    "failedToLoadData": "No se pudieron cargar los datos",
+    "failedToLoadToolExecutions": "No se pudieron cargar las ejecuciones de herramientas",
+    "guardrails": "Protecciones",
+    "rateLimits": "Límites de tarifas",
+    "refresh": "Actualizar",
+    "securityEventsCouldNotBeLoadedDenialData": "No se pudieron cargar los eventos de seguridad. Los datos de denegación pueden estar incompletos.",
+    "tabs": "Pestañas",
+    "toolExecutionGuardrailsApprovalHistoryAndAnalytics": "Barreras de ejecución de herramientas, historial de aprobaciones y análisis",
+    "updated": "Actualizado",
+    "value24h": "24h",
+    "value30d": "30d",
+    "value7d": "7d"
+  },
+  "aiRiskApprovalHistoryFeed": {
+    "all2": "Todo",
+    "approved": "Aprobado",
+    "error": "Error",
+    "exec": "Ejecución:",
+    "noTier3ToolExecutionsFound": "No se encontraron ejecuciones de herramientas de nivel 3.",
+    "pending": "Pendiente",
+    "rejected": "Rechazado",
+    "session": "Sesión:",
+    "tier3ApprovalHistory": "Historial de aprobación de nivel 3",
+    "toolInput": "Entrada de herramienta",
+    "wait": "Esperar:"
+  },
+  "aiRiskRateLimitStatus": {
+    "filterRateLimits": "Límites de tasa de filtrado...",
+    "limit": "Límite",
+    "noRateLimitsMatchYourSearch": "No hay límites de tarifas que coincidan con su búsqueda.",
+    "permission": "Permiso",
+    "rateLimitConfiguration": "Configuración del límite de velocidad",
+    "requestCount": "{{count}} req",
+    "ruleCount": "reglas {{count}}",
+    "ruleCount_one": "regla {{count}}",
+    "ruleCount_other": "reglas {{count}}",
+    "t": "t",
+    "tier": "Nivel",
+    "tool": "Herramienta",
+    "window": "Ventana"
+  },
+  "aiRiskRejectionDenialLog": {
+    "all2": "Todo",
+    "denied": "Denegado",
+    "error": "Error",
+    "failed": "Fallido",
+    "noRejectionsOrDenialsFound": "No se encontraron rechazos ni negaciones.",
+    "rejected": "Rechazado",
+    "rejectionsAndDenials": "Rechazos y negaciones",
+    "search": "Buscar...",
+    "session": "Sesión",
+    "status": "Estado",
+    "timestamp": "Marca de tiempo",
+    "tool": "Herramienta"
+  },
+  "aiRiskTierOverviewMatrix": {
+    "filterTools": "Herramientas de filtrado...",
+    "guardrailTierMatrix": "Matriz de niveles de barandilla",
+    "tier": "Nivel",
+    "toolCount": "herramientas {{count}}",
+    "toolCount_one": "herramienta {{count}}",
+    "toolCount_other": "herramientas {{count}}"
+  },
+  "aiRiskToolExecutionAnalytics": {
+    "avgDurationByToolMs": "Duración promedio por herramienta (ms)",
+    "avgMs": "ms promedio",
+    "executionsOverTime": "Ejecuciones a lo largo del tiempo",
+    "mostUsedToolsTop10": "Herramientas más utilizadas (Top 10)",
+    "noDurationDataAvailable": "No hay datos de duración disponibles",
+    "noToolExecutionsInThisTimePeriod": "No se han ejecutado herramientas en este período de tiempo.",
+    "statusDistribution": "Distribución de estado",
+    "toolExecutionAnalytics": "Análisis de ejecución de herramientas"
+  },
+  "securityAdminAuditPage": {
+    "adminAccountAudit": "Auditoría de cuenta de administrador",
+    "admins": "Administradores",
+    "all": "Todo",
+    "allOS": "Todo OS",
+    "builtIn": "Incorporado",
+    "custom": "Personalizado",
+    "default": "Por defecto",
+    "defaultAccounts": "Cuentas predeterminadas",
+    "defaultAccts": "Cuentas predeterminadas",
+    "device": "Dispositivo",
+    "enabled": "Activado",
+    "invalidResponseFromServer": "Respuesta no válida del servidor",
+    "issues": "Incidencias",
+    "lastLogin": "Último inicio de sesión",
+    "linux": "Linux",
+    "macos": "macOS",
+    "next": "Siguiente",
+    "no": "No",
+    "noDevicesFound": "No se encontraron dispositivos.",
+    "noIssues": "Sin problemas",
+    "none": "Ninguno",
+    "os": "OS",
+    "pageOf": "Página {{page}} de {{totalPages}}",
+    "passwordAge": "Edad de la contraseña",
+    "previous": "Anterior",
+    "privilegedAccountReviewAcrossAllDevices": "Revisión de cuenta privilegiada en todos los dispositivos",
+    "searchDevicesOrUsers": "Buscar dispositivos o usuarios...",
+    "stale": "Desactualizado",
+    "staleAccounts": "Cuentas obsoletas",
+    "staleAccts": "Cuentas obsoletas",
+    "totalAdmins": "Administradores totales",
+    "totalDevices": "Dispositivos totales",
+    "type": "Tipo",
+    "username": "Nombre de usuario",
+    "weakPassword": "Contraseña débil",
+    "weakPasswords": "Contraseñas débiles",
+    "windows": "Windows",
+    "withIssues": "Con problemas",
+    "yes": "Sí"
+  },
+  "securityAntivirusPage": {
+    "active": "Activo",
+    "allOS": "Todo OS",
+    "allStatuses": "Todos los estados",
+    "antivirusCoverage": "Cobertura antivirus",
+    "atRisk": "En riesgo",
+    "coverage": "Cobertura",
+    "device": "Dispositivo",
+    "endpointProtectionStatusAcrossAllDevices": "Estado de protección de endpoints en todos los dispositivos",
+    "inactive": "Inactivo",
+    "invalidResponseFromServer": "Respuesta no válida del servidor",
+    "linux": "Linux",
+    "macos": "macOS",
+    "next": "Siguiente",
+    "noDevicesFound": "No se encontraron dispositivos.",
+    "offline": "Desconectado",
+    "os": "OS",
+    "pageOf": "Página {{page}} de {{totalPages}}",
+    "previous": "Anterior",
+    "protected": "Protegido",
+    "provider": "Proveedor",
+    "providerDistribution": "Distribución de proveedores",
+    "realTime": "En tiempo real",
+    "searchDevices": "Buscar dispositivos...",
+    "status": "Estado",
+    "totalDevices": "Dispositivos totales",
+    "unknown": "Desconocido",
+    "unprotected": "Desprotegido",
+    "windows": "Windows"
+  },
+  "securityDeviceSecurityStatus": {
+    "agentDefinitions": "Agente/Definiciones",
+    "definitionsUpdated": "Definiciones actualizadas {{time}}",
+    "detectedAV": "Detectado AV",
+    "deviceSecurityStatus": "Estado de seguridad del dispositivo",
+    "disabled": "Desactivado",
+    "diskEncryption": "Cifrado de disco",
+    "enabled": "Activado",
+    "firewall": "Cortafuegos",
+    "guardianGatekeeper": "Protección (Gatekeeper)",
+    "lastScan": "Último escaneo",
+    "loadingSecurityStatus": "Cargando estado de seguridad...",
+    "noDeviceSecurityDataAvailable": "No hay datos de seguridad del dispositivo disponibles.",
+    "policyEnforced": "Política aplicada",
+    "quickScan": "Escaneo rápido",
+    "realTimeProtection": "Protección en tiempo real",
+    "reviewThreats": "Revisar amenazas",
+    "running": "En ejecución",
+    "threatsDetectedCount": "amenazas {{count}}",
+    "unknownProvider": "Proveedor desconocido",
+    "unknownVendor": "Proveedor desconocido"
+  },
+  "securityEdrPage": {
+    "endpointDetectionAndAmpResponse": "Detección y respuesta de terminales",
+    "huntressIncidents": "Huntress Incidentes",
+    "sentineloneThreats": "SentinelOne Amenazas",
+    "threatsAndIncidentsAcrossYourFleetFrom": "Amenazas e incidentes en toda su flota desde SentinelOne y Huntress."
+  },
+  "securityEdrSummaryPanel": {
+    "edrStatusUnavailable": "No se pudo cargar el estado de EDR. Actualice para intentarlo de nuevo.",
+    "endpointDetectionAndAmpResponse": "Detección y respuesta de terminales",
+    "huntressAgents": "Agentes Huntress",
+    "huntressOpenIncidents": "Huntress Incidentes abiertos",
+    "loadingEDRPosture": "Cargando postura EDR...",
+    "sentineloneActiveThreats": "SentinelOne Amenazas activas",
+    "sentineloneAgents": "Agentes SentinelOne"
+  },
+  "securityEncryptionPage": {
+    "allEscrowStates": "Todos los estados de custodia",
+    "allOS": "Todo OS",
+    "allStatuses": "Todos los estados",
+    "bitlocker": "BitLocker",
+    "device": "Dispositivo",
+    "diskEncryptionAcrossAllDevices": "Cifrado de disco en todos los dispositivos",
+    "encrypted": "cifrado",
+    "encryptionStatus": "Estado de cifrado",
+    "escrowed": "En depósito en garantía",
+    "filevault": "FileVault",
+    "fullyEncrypted": "Totalmente cifrado",
+    "invalidResponseFromServer": "Respuesta no válida del servidor",
+    "keyEscrowed": "Clave custodiada",
+    "keyMissing": "Falta la llave",
+    "linux": "Linux",
+    "luks": "LUKS",
+    "macos": "macOS",
+    "method": "Método",
+    "missing": "Faltante",
+    "next": "Siguiente",
+    "no": "No",
+    "noDevicesFound": "No se encontraron dispositivos.",
+    "none": "Ninguno",
+    "os": "OS",
+    "pageOf": "Página {{page}} de {{totalPages}}",
+    "partial": "Parcial",
+    "previous": "Anterior",
+    "recoveryKey": "Clave de recuperación",
+    "searchDevices": "Buscar dispositivos...",
+    "status": "Estado",
+    "totalDevices": "Dispositivos totales",
+    "tpm": "TPM",
+    "unencrypted": "Sin cifrar",
+    "volume": "Volumen",
+    "windows": "Windows",
+    "yes": "Sí"
+  },
+  "securityFirewallPage": {
+    "active": "Activo",
+    "allOS": "Todo OS",
+    "allStatuses": "Todos los estados",
+    "coverage": "Cobertura",
+    "device": "Dispositivo",
+    "disabled": "Desactivado",
+    "enabled": "Activado",
+    "firewall": "Cortafuegos",
+    "firewallStatus": "Estado del cortafuegos",
+    "inactive": "Inactivo",
+    "inbound": "Entrante",
+    "invalidResponseFromServer": "Respuesta no válida del servidor",
+    "linux": "Linux",
+    "macos": "macOS",
+    "networkProtectionAcrossAllDevices": "Protección de red en todos los dispositivos",
+    "next": "Siguiente",
+    "noDevicesFound": "No se encontraron dispositivos.",
+    "os": "OS",
+    "outbound": "saliente",
+    "pageOf": "Página {{page}} de {{totalPages}}",
+    "previous": "Anterior",
+    "profile": "Perfil",
+    "rules": "Reglas",
+    "searchDevices": "Buscar dispositivos...",
+    "status": "Estado",
+    "totalDevices": "Dispositivos totales",
+    "windows": "Windows"
+  },
+  "securityHuntressIncidentList": {
+    "actions": "Acciones",
+    "all": "todo",
+    "allSeverities": "Todas las gravedades",
+    "allStatuses": "Todos los estados",
+    "category": "Categoría",
+    "critical": "Crítico",
+    "device": "Dispositivo",
+    "dismissed": "Descartado",
+    "failedToCreateIncident": "No se pudo crear el incidente",
+    "high": "Alto",
+    "huntressIncidents": "Huntress Incidentes",
+    "inProgress": "En curso",
+    "incidentsMatchYourFilters": "Los incidentes {{count}} coinciden con sus filtros.",
+    "loadingFleetIncidents": "Cargando incidencias de flota...",
+    "loadingHuntressIncidents": "Cargando incidentes Huntress...",
+    "low": "Bajo",
+    "medium": "Medio",
+    "noHuntressIncidentsFound": "No se encontraron incidentes Huntress.",
+    "open": "Abierto",
+    "promoteToIncident": "Promocionar a incidente",
+    "refresh": "Actualizar",
+    "reported": "Reportado",
+    "resolved": "Resuelto",
+    "searchIncidents": "Buscar incidentes",
+    "severity": "Gravedad",
+    "status": "Estado",
+    "title": "Título"
+  },
+  "securityPasswordPolicyPage": {
+    "adminAccts": "Cuentas de administrador",
+    "all": "Todo",
+    "allOS": "Todo OS",
+    "commonFailures": "Fallos comunes",
+    "compliance": "Cumplimiento",
+    "compliant": "Conforme",
+    "current": "Actual",
+    "device": "Dispositivo",
+    "fail": "No cumple",
+    "invalidResponseFromServer": "Respuesta no válida del servidor",
+    "linux": "Linux",
+    "localAccts": "Cuentas Locales",
+    "macos": "macOS",
+    "next": "Siguiente",
+    "noDevicesFound": "No se encontraron dispositivos.",
+    "nonCompliant": "No conforme",
+    "os": "OS",
+    "pageOf": "Página {{page}} de {{totalPages}}",
+    "pass": "Cumple",
+    "passwordComplianceAcrossAllDevices": "Cumplimiento de contraseñas en todos los dispositivos",
+    "passwordPolicy": "Política de contraseñas",
+    "previous": "Anterior",
+    "required": "Requerido",
+    "result": "Resultado",
+    "rule": "Regla",
+    "searchDevices": "Buscar dispositivos...",
+    "status": "Estado",
+    "totalDevices": "Dispositivos totales",
+    "windows": "Windows"
+  },
+  "securityRecommendationsPage": {
+    "adminAccounts": "Cuentas de administrador",
+    "allCategories": "Todas las categorias",
+    "allPriorities": "Todas las prioridades",
+    "allStatuses": "Todos los estados",
+    "antivirus": "antivirus",
+    "completed": "Terminado",
+    "critical": "Crítico",
+    "criticalHigh": "Crítico + Alto",
+    "devices": "Dispositivos:",
+    "dismiss": "Descartar",
+    "dismissed": "Descartado",
+    "effort": "Esfuerzo:",
+    "encryption": "Cifrado",
+    "firewall": "Cortafuegos",
+    "hideSteps": "Ocultar pasos",
+    "high": "Alto",
+    "impact": "Impacto:",
+    "invalidResponseFromServer": "Respuesta no válida del servidor",
+    "low": "Bajo",
+    "markComplete": "Marcar completo",
+    "medium": "Medio",
+    "next": "Siguiente",
+    "noRecommendationsMatchYourFilters": "Ninguna recomendación coincide con sus filtros.",
+    "open": "Abierto",
+    "pageOf": "Página {{page}} de {{totalPages}}",
+    "passwordPolicy": "Política de contraseñas",
+    "patchCompliance": "Cumplimiento de parches",
+    "previous": "Anterior",
+    "prioritizedRemediationGuidance": "Orientación de remediación priorizada",
+    "securityRecommendations": "Recomendaciones de seguridad",
+    "total": "Total",
+    "vulnMgmt": "Vuln. gestión"
+  },
+  "securityRecoveryKeysPanel": {
+    "aNewBitLockerRecoveryPasswordWillBe": "Se generará y custodiará una nueva contraseña de recuperación de BitLocker; la antigua se retira una vez colocada la nueva.",
+    "bitlocker": "BitLocker",
+    "cancel": "Cancelar",
+    "collectNow": "Recopilar ahora",
+    "copy": "Copiar",
+    "currentRecoveryKey": "Clave de recuperación actual",
+    "escrowed": "En custodia {{time}}",
+    "failedToQueueKeyCollection": "No se pudo poner en cola la recopilación de claves",
+    "failedToQueueKeyRotation": "No se pudo poner en cola la rotación de claves",
+    "failedToRevealRecoveryKey": "No se pudo revelar la clave de recuperación",
+    "filevault": "FileVault",
+    "filevaultKeysCanOnlyBeCapturedBy": "Las claves de FileVault solo se pueden capturar rotándolas; utilice \"Rotar clave\" con las credenciales de un usuario de FileVault.",
+    "filevaultUsername": "Nombre de usuario de FileVault",
+    "keyCollectionQueued": "Recogida de llaves en cola",
+    "keyRotationQueuedTheNewKeyWill": "Rotación de claves en cola: la nueva clave se guardará en custodia cuando el agente la complete",
+    "macosOnlyRevealsTheFileVaultPersonalRecovery": "macOS solo revela la clave de recuperación personal de FileVault cuando se rota, y la rotación debe ser autorizada por un usuario habilitado para FileVault (o la clave de recuperación actual). Las credenciales se utilizan una vez y no se almacenan.",
+    "noRecoveryKeysEscrowed": "No hay claves de recuperación guardadas en custodia.",
+    "or": "- o -",
+    "password": "Contraseña",
+    "recentAccess": "Acceso reciente",
+    "recoveryKeyEscrowIsNotSupportedOn": "El depósito de claves de recuperación no es compatible con Linux.",
+    "recoveryKeys": "Claves de recuperación",
+    "reveal": "Revelar",
+    "rotate": "Rotar",
+    "rotateKey": "Rotar clave",
+    "rotateRecoveryKey": "Rotar clave de recuperación",
+    "thisAccessHasBeenRecordedInThe": "Este acceso ha quedado registrado en el registro de auditoría."
+  },
+  "securityS1ThreatList": {
+    "actions": "Acciones",
+    "active": "Activo",
+    "all": "todo",
+    "allSeverities": "Todas las gravedades",
+    "allStatuses": "Todos los estados",
+    "critical": "Crítico",
+    "detected": "Detectado",
+    "device": "Dispositivo",
+    "endDate": "Fecha de finalización",
+    "failedToCreateIncident": "No se pudo crear el incidente",
+    "high": "Alto",
+    "inProgress": "En curso",
+    "loadingFleetThreats": "Cargando amenazas de flota...",
+    "loadingSentinelOneThreats": "Cargando amenazas SentinelOne...",
+    "low": "Bajo",
+    "medium": "Medio",
+    "noSentinelOneThreatsFound": "No se encontraron amenazas SentinelOne.",
+    "promoteToIncident": "Promocionar a incidente",
+    "quarantined": "En cuarentena",
+    "refresh": "Actualizar",
+    "resolved": "Resuelto",
+    "searchThreats": "Buscar amenazas",
+    "sentineloneThreats": "SentinelOne Amenazas",
+    "severity": "Gravedad",
+    "startDate": "Fecha de inicio",
+    "status": "Estado",
+    "threat": "Amenaza",
+    "threatsMatchYourFilters": "Las amenazas {{count}} coinciden con sus filtros.",
+    "unknownThreat": "Amenaza desconocida"
+  },
+  "securityScoreDetailPage": {
+    "a": "A",
+    "a2": "A+",
+    "a3": "A-",
+    "affected": "Afectado",
+    "b": "B",
+    "b2": "B+",
+    "b3": "B-",
+    "c": "C",
+    "c2": "C+",
+    "c3": "C-",
+    "category": "Categoría",
+    "dataMayBeOutdated": "Los datos pueden estar desactualizados — {{error}}",
+    "devicesAudited": "Dispositivos auditados",
+    "grade": "Calificación",
+    "invalidResponseFromServer": "Respuesta no válida del servidor",
+    "overallScore": "Puntuación general",
+    "retry": "Reintentar",
+    "score": "Puntaje",
+    "scoreBreakdownByCategory": "Desglose de puntuación por categoría",
+    "securityScore": "Puntuación de seguridad",
+    "status": "Estado",
+    "unableToLoadScoreData": "No se pueden cargar los datos de puntuación.",
+    "weight": "Peso",
+    "weighted": "Ponderado"
+  },
+  "securitySecurityDashboard": {
+    "acrossAllAssets": "En todos los activos",
+    "actionsPrioritized": "{{count}} acciones priorizadas",
+    "adminAccountAudit": "Auditoría de cuenta de administrador",
+    "antivirusCoverage": "Cobertura antivirus",
+    "bitlockerEnabled": "BitLocker habilitado",
+    "complianceRate": "Tasa de cumplimiento",
+    "compliant": "conforme",
+    "critical": "Crítico",
+    "dataUnavailable": "Datos no disponibles",
+    "defaultAdmins": "Administradores predeterminados",
+    "devicesAudited": "Dispositivos {{count}} auditados",
+    "devicesFlagged": "Dispositivos {{count}} marcados",
+    "devicesReviewed": "Dispositivos {{count}} revisados",
+    "devicesTracked": "Dispositivos {{count}} rastreados",
+    "disabled": "Desactivado",
+    "diskProtection": "Protección de disco",
+    "elevated": "Elevado",
+    "enabled": "Activado",
+    "encryptionStatus": "Estado de cifrado",
+    "filevaultEnabled": "FileVault habilitado",
+    "firewallStatus": "Estado del cortafuegos",
+    "goToDevices": "Ir a dispositivos",
+    "high": "Alto",
+    "highRisk": "Alto riesgo",
+    "low": "Bajo",
+    "medium": "Medio",
+    "moreDevices": "+{{count}} más",
+    "networkDefense": "Defensa de la red",
+    "noDataAvailable": "No hay datos disponibles",
+    "noDevicesReportingYet": "Aún no hay informes de dispositivos",
+    "noRecommendationsRightNowKeepMonitoringFor": "No hay recomendaciones en este momento. Siga monitoreando para obtener nuevas orientaciones.",
+    "noWeakAdminAccountsDetected": "No se detectaron cuentas de administrador débiles.",
+    "openItems": "{{count}} elementos abiertos",
+    "overallPosture": "Postura general",
+    "passwordPolicy": "Política de contraseñas",
+    "policyAdherence": "Cumplimiento de la política",
+    "privilegedAccess": "Acceso privilegiado",
+    "protected": "Protegido",
+    "realTimeProtection": "Protección en tiempo real",
+    "refresh": "Actualizar",
+    "remediationGuidance": "Guía de remediación",
+    "retry": "Reintentar",
+    "scoreMovementOverTime": "Movimiento de puntuación a lo largo del tiempo",
+    "security": "Seguridad",
+    "securityDataCouldNotBeLoaded": "No se pudieron cargar los datos de seguridad. Verifique su conexión y vuelva a intentarlo.",
+    "securityPostureAppearsOnceDevicesReport": "La postura de seguridad aparece aquí una vez que los dispositivos están inscritos y comienzan a generar informes.",
+    "securityRecommendations": "Recomendaciones de seguridad",
+    "securityScore": "Puntuación de seguridad",
+    "securityScoreTrend": "Tendencia de puntuación de seguridad",
+    "someSecurityDataCouldNotBeLoaded": "No se pudieron cargar algunos datos de seguridad. Los valores mostrados pueden estar incompletos.",
+    "strong": "Fuerte",
+    "trackProtectionCoverageVulnerabilitiesAndPolicyCompliance": "Realice un seguimiento de la cobertura de protección, las vulnerabilidades y el cumplimiento de las políticas.",
+    "trendInsights": "Información sobre tendencias",
+    "unprotected": "Desprotegido",
+    "updated": "Actualizado {{time}}",
+    "viewDetails": "Ver detalles",
+    "vulnerabilities": "Vulnerabilidades",
+    "weakAdmins": "Administradores débiles",
+    "accessDeniedMessage": "No tienes permiso para ver los datos de seguridad de esta organización.",
+    "someSecurityDataPermissionDenied": "Algunos datos de seguridad no son visibles para ti. Consulta a un administrador si necesitas acceso."
+  },
+  "securitySecurityPageHeader": {
+    "refresh": "Actualizar",
+    "security": "Seguridad"
+  },
+  "securitySecurityPolicyEditor": {
+    "actions": "Acciones",
+    "add": "Agregar",
+    "addPathOrProcess": "Agregar ruta o proceso",
+    "allOrganizations": "Todas las organizaciones",
+    "autoQuarantine": "Cuarentena automática",
+    "behavioralMonitoring": "Monitoreo del comportamiento",
+    "blockUntrustedUSBDevices": "Bloquear dispositivos USB que no sean de confianza",
+    "cloudThreatLookup": "Búsqueda de amenazas en la nube",
+    "cron": "Cron:",
+    "dayOfMonth": "Día del mes",
+    "dayOfWeek": "dia de la semana",
+    "description": "Descripción",
+    "detectSuspiciousProcessBehaviorAndScripts": "Detectar scripts y comportamientos de procesos sospechosos.",
+    "disabled": "Desactivado",
+    "enabled": "Activado",
+    "exclusions": "Exclusiones",
+    "failedToLoadPolicy": "No se pudo cargar la política",
+    "failedToSavePolicy": "No se pudo guardar la política",
+    "fri": "Vie",
+    "hour": "Hora",
+    "minute": "Minuto",
+    "mon": "Lun",
+    "moveThreatsToQuarantineImmediately": "Mueva las amenazas a cuarentena inmediatamente.",
+    "notifyUserOnDetection": "Notificar al usuario en caso de detección",
+    "partnerWideTemplate": "(plantilla en todo el socio)",
+    "policyName": "Nombre de la política",
+    "preventUnknownRemovableMedia": "Evite medios extraíbles desconocidos.",
+    "realTimeFileMonitoring": "Monitoreo de archivos en tiempo real",
+    "realTimeProtection": "Protección en tiempo real",
+    "sat": "Sáb",
+    "savePolicy": "Guardar política",
+    "saving": "Guardando...",
+    "scanNewAndModifiedFilesContinuously": "Escanee archivos nuevos y modificados continuamente.",
+    "scheduledScans": "Escaneos programados",
+    "scope": "Alcance",
+    "securityPolicyEditor": "Editor de políticas de seguridad",
+    "sendDeviceNotificationsWhenThreatsAreFound": "Envíe notificaciones al dispositivo cuando se encuentren amenazas.",
+    "skipTrustedLocationsDuringScans": "Omita ubicaciones confiables durante los análisis.",
+    "sun": "Dom",
+    "thisOrganizationOnly": "Esta organización sólo",
+    "thu": "Jue",
+    "tue": "Mar",
+    "tuneProtectionSettingsForDeviceGroups": "Ajuste la configuración de protección para grupos de dispositivos.",
+    "useCloudReputationForNewIndicators": "Utilice la reputación de la nube para obtener nuevos indicadores.",
+    "wed": "Mié"
+  },
+  "securitySecurityScanManager": {
+    "activeScans": "Escaneos activos",
+    "allScanRequestsFailed": "Todas las solicitudes de escaneo {{count}} fallaron",
+    "cData": "C:\\\\Data\\\\",
+    "customPath": "Ruta personalizada",
+    "customScan": "Escaneo personalizado",
+    "device": "Dispositivo",
+    "devices": "Dispositivos",
+    "devicesSelected": "dispositivos {{count}} seleccionados",
+    "devicesSelected_one": "dispositivo {{count}} seleccionado",
+    "devicesSelected_other": "dispositivos {{count}} seleccionados",
+    "duration": "Duración",
+    "failed": "Fallido",
+    "fullScan": "escaneo completo",
+    "historyShowsTheLatestCompletedAndFailed": "El historial muestra los últimos análisis completados y fallidos.",
+    "loadingDevices": "Cargando dispositivos...",
+    "multiSelect": "Selección múltiple",
+    "noActiveScans": "No hay escaneos activos.",
+    "noScanHistoryYet": "Aún no hay historial de escaneo.",
+    "quickScan": "Escaneo rápido",
+    "scanHistory": "Historial de escaneo",
+    "scanType": "Tipo de escaneo",
+    "scanTypeLabel": "escaneo {{type}}",
+    "scansAreQueuedImmediatelyOnSelectedDevices": "Los análisis se ponen en cola inmediatamente en los dispositivos seleccionados.",
+    "securityScanManager": "Administrador de escaneo de seguridad",
+    "singleSelect": "selección única",
+    "someScanRequestsFailed": "{{failed}} de las solicitudes de escaneo {{total}} fallaron",
+    "startAScan": "Iniciar un escaneo",
+    "startScan": "Iniciar escaneo",
+    "startScansWatchProgressAndReviewScan": "Inicie análisis, observe el progreso y revise el historial de análisis en todos los dispositivos.",
+    "started": "Iniciado {{time}}",
+    "status": "Estado: {{status}}",
+    "status2": "Estado",
+    "type": "Tipo",
+    "scanHistoryPartiallyUnavailable": "No se pudo cargar el historial de escaneos de {{failed}} de {{total}} dispositivos: esta lista está incompleta.",
+    "scanHistoryUnavailable": "No se pudo cargar el historial de escaneos."
+  },
+  "securityThreatDetail": {
+    "analystReview": "Revisión del analista",
+    "detected": "Detectado",
+    "device": "Dispositivo",
+    "deviceInfo": "Información del dispositivo",
+    "filePath": "Ruta del archivo",
+    "investigateContainAndResolveThisDetection": "Investigar, contener y resolver esta detección.",
+    "loadingThreatDetails": "Cargando detalles de la amenaza...",
+    "noRelatedThreats": "No hay amenazas relacionadas.",
+    "noThreatSelected": "No se seleccionó ninguna amenaza.",
+    "otherDetectionsOnThisDevice": "Otras detecciones en este dispositivo.",
+    "provider": "Proveedor",
+    "quarantine": "Cuarentena",
+    "relatedThreats": "Amenazas relacionadas",
+    "remove": "Eliminar",
+    "restore": "Restaurar",
+    "reviewRemediationCompletenessAndEndpointHealth": "Revise la integridad de la corrección y el estado del endpoint.",
+    "severity": "Gravedad",
+    "status": "Estado",
+    "threatDetail": "Detalle de la amenaza",
+    "threatDetected": "Amenaza detectada",
+    "threatFileWasRemovedFromEndpointStorage": "El archivo de amenaza se eliminó del almacenamiento del terminal.",
+    "threatID": "Amenaza ID",
+    "threatQuarantined": "Amenaza en cuarentena",
+    "threatRemoved": "Amenaza eliminada",
+    "threatStatus": "Estado de amenaza",
+    "threatWasMovedToQuarantineByPolicy": "La amenaza se movió a cuarentena por política o acción del operador.",
+    "timeline": "Línea de tiempo"
+  },
+  "securityThreatList": {
+    "active": "Activo",
+    "all": "todo",
+    "allDevices": "Todos los dispositivos",
+    "allSeverities": "Todas las gravedades",
+    "allStatuses": "Todos los estados",
+    "clearSelection": "Borrar selección",
+    "critical": "Crítico",
+    "detected": "Detectado",
+    "device": "Dispositivo",
+    "high": "Alto",
+    "loadingThreats": "Cargando amenazas...",
+    "low": "Bajo",
+    "medium": "Medio",
+    "noThreatsFound": "No se encontraron amenazas.",
+    "quarantineSelected": "Cuarentena seleccionada",
+    "quarantined": "En cuarentena",
+    "refresh": "Actualizar",
+    "removeSelected": "Eliminar seleccionado",
+    "removed": "Eliminado",
+    "searchByThreatName": "Buscar por nombre de amenaza",
+    "selectedCount": "{{count}} seleccionado",
+    "severity": "Gravedad",
+    "status": "Estado",
+    "threat": "Amenaza",
+    "threats": "Amenazas",
+    "threatsMatchYourFilters": "Las amenazas {{count}} coinciden con sus filtros.",
+    "type": "Tipo"
+  },
+  "securityTrendsPage": {
+    "adminAccounts": "Cuentas de administrador",
+    "antivirus": "antivirus",
+    "change": "Cambiar",
+    "currentScore": "Puntuación actual",
+    "dataMayBeOutdated": "Los datos pueden estar desactualizados — {{error}}",
+    "encryption": "Cifrado",
+    "firewall": "Cortafuegos",
+    "invalidResponseFromServer": "Respuesta no válida del servidor",
+    "overall": "En general",
+    "passwordPolicy": "Política de contraseñas",
+    "patchCompliance": "Cumplimiento de parches",
+    "previousScore": "Puntuación anterior",
+    "retry": "Reintentar",
+    "scoreMovementOverTime": "Movimiento de puntuación a lo largo del tiempo",
+    "securityTrends": "Tendencias de seguridad",
+    "trend": "Tendencia",
+    "unableToLoadTrendsData": "No se pueden cargar datos de tendencias.",
+    "value30Days": "30 dias",
+    "value7Days": "7 dias",
+    "value90Days": "90 días",
+    "vulnMgmt": "Vuln. gestión"
+  },
+  "securityUserRiskPage": {
+    "atRiskUsers": "Usuarios en riesgo",
+    "couldNotSaveUserRiskFeedback": "No se pudieron guardar los comentarios sobre riesgos del usuario",
+    "failedToLoadUserRisk": "No se pudo cargar el riesgo del usuario",
+    "failedToLoadUserRiskDetail": "No se pudieron cargar los detalles de riesgo del usuario",
+    "failedToLoadUserRiskEvaluation": "No se pudo cargar la evaluación de riesgos del usuario",
+    "failedToLoadUserRiskScores": "No se pudieron cargar las puntuaciones de riesgo del usuario",
+    "falsePositive": "falso positivo",
+    "falsePositiveLabelSaved": "Etiqueta de falso positivo guardada",
+    "labels": "Etiquetas",
+    "loadingEvidence": "Cargando evidencia",
+    "noRecentEvidenceFoundForThisScore": "No se ha encontrado evidencia reciente para esta puntuación.",
+    "noUsersAreAboveTheCurrentRisk": "Ningún usuario supera el umbral de riesgo actual.",
+    "precision": "Precisión",
+    "recentEvidence": "Evidencia reciente",
+    "refresh": "Actualizar",
+    "repeatSignalUsers": "Usuarios repetidos de señal",
+    "retry": "Reintentar",
+    "reviewRulesV0RiskScoresEvidenceAnd": "Revise las puntuaciones de riesgo, la evidencia y las etiquetas de evaluación de las reglas v0.",
+    "scoreImpact": "impacto {{value}}",
+    "scoresEvidenceAndLabelsWillAppearHere": "Las puntuaciones, la evidencia y las etiquetas aparecerán aquí cuando el productor v0 de riesgo de usuario esté habilitado.",
+    "selectAUserToInspectRiskEvidence": "Seleccione un usuario para inspeccionar la evidencia de riesgo.",
+    "topDrivers": "Mejores conductores",
+    "trainingCompletion": "Finalización de la formación",
+    "truePositive": "Verdadero positivo",
+    "truePositiveLabelSaved": "Etiqueta positiva verdadera guardada",
+    "userRisk": "Riesgo del usuario",
+    "userRiskScoringIsDisabledForThis": "La puntuación de riesgo del usuario está deshabilitada para esta organización."
+  },
+  "securityVulnerabilitiesPage": {
+    "active": "Activo",
+    "allCategories": "Todas las categorias",
+    "allSeverities": "Todas las gravedades",
+    "allStatuses": "Todos los estados",
+    "category": "Categoría",
+    "clear": "Limpiar",
+    "critical": "Crítico",
+    "detected": "Detectado",
+    "detectedThreatsAcrossAllDevices": "Amenazas detectadas en todos los dispositivos",
+    "device": "Dispositivo",
+    "high": "Alto",
+    "invalidResponseFromServer": "Respuesta no válida del servidor",
+    "low": "Bajo",
+    "malware": "malware",
+    "medium": "Medio",
+    "next": "Siguiente",
+    "noThreatsFound": "No se encontraron amenazas.",
+    "pageOfTotal": "Página {{page}} de {{totalPages}} ({{total}} total)",
+    "previous": "Anterior",
+    "pup": "PUP",
+    "quarantine": "Cuarentena",
+    "quarantined": "En cuarentena",
+    "ransomware": "ransomware",
+    "remove": "Eliminar",
+    "removed": "Eliminado",
+    "searchThreats": "Buscar amenazas...",
+    "selectThreat": "Seleccionar amenaza {{name}}",
+    "selectedCount": "{{count}} seleccionado",
+    "severity": "Gravedad",
+    "spyware": "software espía",
+    "status": "Estado",
+    "threat": "Amenaza",
+    "total": "Total",
+    "trojan": "troyano",
+    "vulnerabilities": "Vulnerabilidades"
+  },
+  "pamPamAuditTab": {
+    "errors": {
+      "loadWithStatus": "No se pudo cargar el historial de auditoría (HTTP {{status}})",
+      "load": "No se pudo cargar el historial de auditoría",
+      "exportWithStatus": "Error al exportar (HTTP {{status}})",
+      "export": "Exportación fallida"
+    },
+    "filters": {
+      "status": "Estado",
+      "allStatuses": "Todos los estados",
+      "flow": "Flujo",
+      "allFlows": "Todos los flujos",
+      "from": "De",
+      "to": "A"
+    },
+    "actions": {
+      "exporting": "Exportando…",
+      "exportCsv": "Exportar CSV"
+    },
+    "loading": "Cargando historial de auditoría…",
+    "empty": {
+      "title": "No hay historial coincidente",
+      "description": "Ajuste los filtros para ver el historial de solicitudes de elevación."
+    },
+    "table": {
+      "requested": "Solicitado",
+      "device": "Dispositivo",
+      "user": "Usuario",
+      "target": "Objetivo",
+      "flow": "Flujo",
+      "status": "Estado",
+      "riskTierTitle": "Nivel de riesgo {{tier}}"
+    },
+    "pagination": {
+      "previous": "Anterior",
+      "pageOf": "Página {{page}} de {{totalPages}}"
+    }
+  },
+  "pamPamOverviewTab": {
+    "errors": {
+      "loadWithStatus": "No se pudo cargar la descripción general (HTTP {{status}})",
+      "load": "No se pudo cargar la descripción general"
+    },
+    "loading": "Cargando descripción general…",
+    "setup": {
+      "title": "Comenzando con el acceso privilegiado",
+      "step1BeforeLink": "La captura de mensajes UAC está activada de forma predeterminada. Alcancelo por dispositivo con un",
+      "configurationPolicyLink": "Política de configuración → Acceso privilegiado",
+      "step1AfterLink": "enlace de función.",
+      "step2": "Las indicaciones de elevación, las solicitudes de administrador JIT y las acciones de la herramienta AI se ponen en cola en la pestaña Solicitudes.",
+      "step3": "Apruebe o rechace cada solicitud, o cree una regla a partir de ella para que la decisión sea automática la próxima vez."
+    },
+    "stats": {
+      "activeElevations": "Elevaciones activas",
+      "pendingRequests": "Solicitudes pendientes",
+      "recentDecisions": "Decisiones recientes"
+    },
+    "active": {
+      "title": "Elevaciones activas",
+      "emptyTitle": "Sin elevaciones activas",
+      "emptyDescription": "Las ventanas de elevación aprobadas aparecerán aquí hasta que caduquen o sean revocadas."
+    },
+    "table": {
+      "device": "Dispositivo",
+      "user": "Usuario",
+      "target": "Objetivo",
+      "flow": "Flujo",
+      "status": "Estado",
+      "expires": "Vence"
+    },
+    "recent": {
+      "title": "Decisiones recientes",
+      "empty": "Aún no hay solicitudes decididas."
+    },
+    "expires": {
+      "expired": "venció"
+    }
+  },
+  "pamPamPage": {
+    "heading": "Acceso privilegiado",
+    "description": "Solicitudes de elevación, reglas de aprobación e historial de auditorías en toda la flota.",
+    "liveStatus": {
+      "live": "En vivo",
+      "offline": "Desconectado"
+    },
+    "tabs": {
+      "overview": "Descripción general",
+      "requests": "Solicitudes",
+      "rules": "Reglas",
+      "signerGroups": "Grupos de firmantes",
+      "audit": "Auditoría"
+    }
+  },
+  "pamPamRequestsTab": {
+    "errors": {
+      "loadWithStatus": "No se pudieron cargar las solicitudes (HTTP {{status}})",
+      "load": "No se pudieron cargar las solicitudes"
+    },
+    "filters": {
+      "status": "Estado",
+      "allStatuses": "Todos los estados",
+      "flow": "Flujo",
+      "allFlows": "Todos los flujos"
+    },
+    "summary": {
+      "requestCount": "solicitudes {{count}}",
+      "requestCount_one": "solicitud {{count}}",
+      "requestCount_other": "solicitudes {{count}}"
+    },
+    "loading": "Cargando solicitudes…",
+    "empty": {
+      "title": "No hay solicitudes de elevación",
+      "pendingDescription": "Nada esperándote. Aquí se ponen en cola nuevas indicaciones de UAC, solicitudes de administrador de JIT y acciones de la herramienta AI.",
+      "filteredDescription": "Las solicitudes que coincidan con los filtros actuales aparecerán aquí.",
+      "policyPrefix": "¿No ves las solicitudes esperadas? La captura UAC se controla por dispositivo mediante",
+      "policyLink": "Políticas de configuración → Acceso privilegiado"
+    },
+    "table": {
+      "requested": "Solicitado",
+      "device": "Dispositivo",
+      "user": "Usuario",
+      "target": "Objetivo",
+      "flow": "Flujo",
+      "status": "Estado",
+      "riskTierTitle": "Nivel de riesgo {{tier}}",
+      "signer": "Firmante: {{signer}}"
+    },
+    "actions": {
+      "respond": "Responder",
+      "revoke": "Revocar",
+      "ruleTitle": "Cree una regla PAM precompletada a partir de esta solicitud",
+      "rule": "Regla…"
+    },
+    "pagination": {
+      "previous": "Anterior",
+      "pageOf": "Página {{page}} de {{totalPages}}"
+    }
+  },
+  "pamPamRespondModal": {
+    "errors": {
+      "windowsHello": "Falló la verificación de Windows Hello",
+      "actionFailed": "No se pudo realizar la solicitud {{decision}}",
+      "network": "error de red"
+    },
+    "toasts": {
+      "approved": "Elevación aprobada",
+      "denied": "Elevación denegada"
+    },
+    "title": "Responder a la solicitud de elevación",
+    "summary": {
+      "reason": "Razón: {{reason}}"
+    },
+    "decisions": {
+      "approve": "Aprobar",
+      "deny": "Denegar"
+    },
+    "form": {
+      "approvalWindow": "Ventana de aprobación (minutos)",
+      "durationHelp": "1 a 1440 minutos (24h máx.).",
+      "reasonRecommended": "Razón (recomendado)",
+      "reasonOptional": "Razón (opcional)",
+      "reasonPlaceholder": "Registrado en la pista de auditoría"
+    },
+    "actions": {
+      "createRule": "Crear regla a partir de esta solicitud...",
+      "submitting": "Enviando…",
+      "approveElevation": "Aprobar elevación",
+      "denyRequest": "Denegar solicitud"
+    }
+  },
+  "pamPamRevokeModal": {
+    "errors": {
+      "revokeFailed": "No se pudo revocar la elevación",
+      "network": "error de red"
+    },
+    "toasts": {
+      "revoked": "Elevación revocada"
+    },
+    "title": "Revocar elevación activa",
+    "description": "Finaliza la ventana de elevación para <target>{{target}}</target> en <device>{{device}}</device> inmediatamente.",
+    "form": {
+      "reasonRequired": "Razón (requerido)",
+      "reasonPlaceholder": "Registrado en la pista de auditoría"
+    },
+    "actions": {
+      "revoking": "Revocando…",
+      "revokeElevation": "Revocar elevación"
+    }
+  },
+  "pamPamRuleModal": {
+    "days": {
+      "sun": "Dom",
+      "mon": "Lun",
+      "tue": "Mar",
+      "wed": "Mié",
+      "thu": "Jue",
+      "fri": "Vie",
+      "sat": "Sáb"
+    },
+    "notices": {
+      "siteScopeReset": "El sitio de la solicitud original no está disponible en la organización seleccionada: el alcance se restablece a toda la organización."
+    },
+    "errors": {
+      "matchCriterionRequired": "Se requiere al menos un criterio de coincidencia.",
+      "timeWindowPairRequired": "Se deben configurar el inicio y el final de la ventana de tiempo (o dejar ambos vacíos).",
+      "previewWithStatus": "Error en la vista previa (HTTP {{status}})",
+      "preview": "Error en la vista previa",
+      "toolIgnoreVerdict": "Las reglas de acción de herramienta no pueden utilizar el veredicto Ignorar.",
+      "updateRule": "No se pudo actualizar la regla",
+      "createRule": "No se pudo crear la regla",
+      "network": "error de red"
+    },
+    "toasts": {
+      "ruleSaved": "Regla \"{{name}}\" {{action}}",
+      "updated": "actualizado",
+      "created": "creado"
+    },
+    "title": {
+      "edit": "Editar regla PAM",
+      "new": "Nueva regla PAM"
+    },
+    "form": {
+      "name": "Nombre",
+      "priority": "Prioridad",
+      "descriptionOptional": "Descripción (opcional)",
+      "organization": "Organización",
+      "scope": "Alcance",
+      "orgWideAllSites": "En toda la organización (todos los sitios)",
+      "verdict": "Veredicto",
+      "ruleShape": "Forma de regla",
+      "executable": "Ejecutable",
+      "aiToolAction": "acción de la herramienta AI",
+      "negate": "Negar (no coincide)",
+      "none": "- ninguno -",
+      "daysNoneEveryDay": "Días (ninguno = todos los días)",
+      "timezoneOptional": "Zona horaria (opcional)",
+      "enabled": "Activado"
+    },
+    "fields": {
+      "signer": "Firmante",
+      "signerGroup": "Grupo firmante",
+      "sha256Hash": "hash SHA-256",
+      "pathGlob": "Globo de ruta",
+      "parentImage": "Imagen principal",
+      "commandLine": "línea de comando",
+      "toolName": "Nombre de la herramienta",
+      "riskTier": "Nivel de riesgo (0-4)",
+      "userOptional": "Usuario (opcional)",
+      "adGroupOptional": "Grupo AD (opcional)",
+      "windowStart": "Inicio de ventana (HH:MM)",
+      "windowEnd": "Fin de ventana (HH:MM)",
+      "approvalMinsOptional": "Minutos de aprobación (opcional)"
+    },
+    "placeholders": {
+      "microsoftCorporation": "p.ej. Corporación Microsoft",
+      "hexChars": "64 caracteres hexadecimales",
+      "programFilesGlob": "C:\\Program Files\\**",
+      "explorer": "explorer.exe",
+      "printui": "printui.dll,PrintUIEntry",
+      "runScript": "run_script",
+      "riskTier": "2",
+      "domainUser": "DOMAIN\\user",
+      "helpdeskTier1": "Servicio de asistencia técnica de nivel 1",
+      "windowStart": "08:00",
+      "windowEnd": "18:00",
+      "approvalMins": "15",
+      "utc": "UTC"
+    },
+    "preview": {
+      "title": "Vista previa de solicitudes recientes",
+      "previewing": "Generando vista previa…",
+      "action": "Vista previa de partidos",
+      "matchedPrefix": "habría coincidido",
+      "matchedSuffix": "de solicitudes {{totalScanned}} en los últimos días {{windowDays}}",
+      "truncated": "(5000 más recientes escaneados)",
+      "adGroupNote": "Nota: las solicitudes históricas no registran grupos AD, por lo que cualquier borrador que incluya un criterio de grupo AD se previsualiza como 0 coincidencias."
+    },
+    "actions": {
+      "saveChanges": "Guardar cambios",
+      "createRule": "Crear regla"
+    }
+  },
+  "pamPamRulesTab": {
+    "errors": {
+      "updateDefaultVerdict": "No se pudo actualizar el veredicto predeterminado",
+      "loadWithStatus": "No se pudieron cargar las reglas (HTTP {{status}})",
+      "load": "No se pudieron cargar las reglas",
+      "updateRule": "No se pudo actualizar la regla",
+      "deleteRule": "No se pudo eliminar la regla"
+    },
+    "toasts": {
+      "defaultVerdictSet": "Veredicto predeterminado establecido en {{verdict}}",
+      "ruleToggled": "Regla \"{{name}}\" {{state}}",
+      "ruleDeleted": "Regla \"{{name}}\" eliminada"
+    },
+    "states": {
+      "disabled": "desactivado",
+      "enabled": "activado"
+    },
+    "description": "Las políticas de software se evalúan primero: una coincidencia entre la lista permitida y la lista bloqueada decide antes que estas reglas. Luego, las reglas se ejecutan en orden de prioridad (las más bajas primero); el primer partido decide.",
+    "actions": {
+      "addRule": "Agregar regla"
+    },
+    "defaultVerdict": {
+      "label": "Veredicto predeterminado",
+      "requireApproval": "Requerir aprobación",
+      "autoDeny": "Denegación automática",
+      "help": "Veredicto cuando una elevación no coincide con ninguna política o regla."
+    },
+    "loading": "Cargando reglas…",
+    "empty": {
+      "title": "Aún no hay reglas PAM",
+      "description": "Sin reglas, cada solicitud de elevación espera una decisión manual."
+    },
+    "table": {
+      "priority": "Prioridad",
+      "name": "Nombre",
+      "criteria": "Criterios",
+      "scope": "Alcance",
+      "verdict": "Veredicto",
+      "enabled": "Activado",
+      "orgWide": "En toda la organización"
+    },
+    "deleteDialog": {
+      "title": "Eliminar regla PAM",
+      "message": "¿Eliminar la regla \"{{name}}\"? Las solicitudes de elevación ya no coincidirán con él.",
+      "confirm": "Eliminar regla"
+    }
+  },
+  "pamPamSignerGroupsTab": {
+    "errors": {
+      "loadWithStatus": "No se pudieron cargar los grupos de firmantes (HTTP {{status}})",
+      "load": "No se pudieron cargar los grupos de firmantes",
+      "deleteGroup": "No se pudo eliminar el grupo de firmantes"
+    },
+    "toasts": {
+      "groupDeleted": "Se eliminó el grupo de firmantes \"{{name}}\""
+    },
+    "description": "Un grupo de firmantes es una lista con nombre de firmantes de Authenticode confiables. Haga referencia a uno de una regla en lugar de repetir el mismo editor en muchas reglas.",
+    "actions": {
+      "addSignerGroup": "Agregar grupo de firmantes"
+    },
+    "loading": "Cargando grupos de firmantes…",
+    "empty": {
+      "title": "Aún no hay grupos de firmantes",
+      "description": "Cree uno para reutilizar una lista de editores de confianza en varias reglas."
+    },
+    "table": {
+      "name": "Nombre",
+      "signers": "Firmantes"
+    },
+    "deleteDialog": {
+      "title": "Eliminar grupo de firmantes",
+      "message": "¿Eliminar el grupo de firmantes \"{{name}}\"? Las reglas que hacen referencia a él deben actualizarse primero.",
+      "confirm": "Eliminar grupo"
+    },
+    "modal": {
+      "errors": {
+        "update": "No se pudo actualizar el grupo de firmantes",
+        "create": "No se pudo crear el grupo de firmantes",
+        "network": "error de red"
+      },
+      "toasts": {
+        "saved": "Grupo de firmantes \"{{name}}\" {{action}}",
+        "updated": "actualizado",
+        "created": "creado"
+      },
+      "title": {
+        "edit": "Editar grupo de firmantes",
+        "new": "Nuevo grupo de firmantes"
+      },
+      "form": {
+        "name": "Nombre",
+        "descriptionOptional": "Descripción (opcional)",
+        "signers": "Firmantes",
+        "signersHelp": "Un firmante de Authenticode (asunto CN) por fila; coincide sin distinguir entre mayúsculas y minúsculas.",
+        "signerPlaceholder": "p.ej. Corporación Microsoft"
+      },
+      "actions": {
+        "removeSigner": "Quitar firmante",
+        "addSigner": "Agregar firmante",
+        "saveChanges": "Guardar cambios",
+        "createGroup": "Crear grupo"
+      }
+    }
+  },
+  "sensitiveDataCreateScanModal": {
+    "errors": {
+      "deviceRequired": "Ingrese al menos un dispositivo ID",
+      "createScan": "No se pudo crear el escaneo"
+    },
+    "title": "Crear escaneo",
+    "form": {
+      "policyOptional": "Política (opcional)",
+      "noPolicy": "Sin política (configuración manual)",
+      "deviceIds": "ID de dispositivo",
+      "deviceIdsHelp": "Un UUID por línea o separados por comas.",
+      "deviceIdsPlaceholder": "device-uuid-1&#10;device-uuid-2",
+      "detectionClasses": "Clases de detección"
+    },
+    "actions": {
+      "creating": "Creando...",
+      "createScan": "Crear escaneo"
+    }
+  },
+  "sensitiveDataDashboardTab": {
+    "empty": {
+      "noDataYet": "Aún no hay datos"
+    },
+    "errors": {
+      "fetchDashboard": "No se pudo recuperar el panel",
+      "generic": "Se produjo un error"
+    },
+    "stats": {
+      "totalFindings": "Hallazgos totales",
+      "criticalOpen": "Abierto crítico",
+      "remediated24h": "Remediado (24h)",
+      "openFindings": "Hallazgos abiertos"
+    },
+    "charts": {
+      "findingsByDataType": "Hallazgos por tipo de datos",
+      "riskDistribution": "Distribución de riesgos"
+    }
+  },
+  "sensitiveDataFindingsTab": {
+    "errors": {
+      "fetchFindings": "No se han podido recuperar los resultados",
+      "generic": "Se produjo un error",
+      "updateFinding": "No se pudo actualizar el hallazgo",
+      "actionFailed": "La acción falló"
+    },
+    "filters": {
+      "allTypes": "Todos los tipos",
+      "allRisks": "Todos los riesgos",
+      "allStatuses": "Todos los estados",
+      "searchPlaceholder": "Buscar rutas de archivos..."
+    },
+    "actions": {
+      "remediateSelected": "Remediar ({{count}})",
+      "acceptRiskTitle": "Aceptar el riesgo",
+      "accept": "Aceptar",
+      "markFalsePositiveTitle": "Marcar falso positivo",
+      "fp": "FP"
+    },
+    "table": {
+      "filePath": "Ruta del archivo",
+      "type": "Tipo",
+      "pattern": "Patrón",
+      "risk": "Riesgo",
+      "confidence": "Confianza",
+      "status": "Estado",
+      "device": "Dispositivo",
+      "found": "Encontrado",
+      "actions": "Acciones"
+    },
+    "empty": {
+      "noFilterMatches": "Ningún resultado coincide con los filtros actuales.",
+      "noSearchMatches": "Ningún resultado en esta página coincide con su búsqueda."
+    },
+    "pagination": {
+      "showingSearch": "Mostrando {{visible}} de {{pageCount}} en esta página ({{total}} en total)",
+      "showingTotal": "Mostrando {{visible}} de los hallazgos de {{total}}",
+      "pageOf": "Página {{page}} de {{totalPages}}"
+    }
+  },
+  "sensitiveDataPoliciesTab": {
+    "errors": {
+      "fetchPolicies": "No se pudieron recuperar las políticas",
+      "generic": "Se produjo un error",
+      "savePolicy": "No se pudo guardar la política",
+      "saveFailed": "Error al guardar",
+      "deletePolicy": "No se pudo eliminar la política",
+      "deleteFailed": "Error al eliminar",
+      "updatePolicy": "No se pudo actualizar la política",
+      "updateFailed": "La actualización falló"
+    },
+    "toasts": {
+      "policyUpdated": "Política actualizada",
+      "policyCreated": "Política creada",
+      "policyDeleted": "Política \"{{name}}\" eliminada"
+    },
+    "heading": "Políticas de escaneo",
+    "descriptionPrefix": "Administre políticas de escaneo de datos confidenciales. Para asignación jerárquica, utilice",
+    "configurationPoliciesLink": "Políticas de configuración",
+    "actions": {
+      "newPolicy": "Nueva política",
+      "saving": "Guardando...",
+      "update": "Actualizar"
+    },
+    "form": {
+      "editPolicy": "Editar política",
+      "createPolicy": "Crear política",
+      "scope": "Alcance",
+      "allOrganizations": "Todas las organizaciones",
+      "partnerWidePolicyParenthetical": "(política en todo el socio)",
+      "thisOrganizationOnly": "Esta organización sólo",
+      "name": "Nombre",
+      "policyNamePlaceholder": "Nombre de la política",
+      "detectionClasses": "Clases de detección",
+      "scheduleType": "Tipo de horario",
+      "intervalMinutes": "Intervalo (minutos)",
+      "cronExpression": "Expresión cron",
+      "cronPlaceholder": "0 2 * * *"
+    },
+    "schedule": {
+      "manual": "Manual",
+      "interval": "Intervalo",
+      "cron": "Cron",
+      "everyMinutes": "Cada {{minutes}}m"
+    },
+    "table": {
+      "name": "Nombre",
+      "detectionClasses": "Clases de detección",
+      "schedule": "Cronograma",
+      "active": "Activo",
+      "actions": "Acciones"
+    },
+    "empty": "Aún no hay políticas. Cree uno para comenzar.",
+    "badges": {
+      "partnerWideTitle": "Política en todo el socio: analiza dispositivos en cada organización",
+      "allOrgs": "Todas las organizaciones"
+    },
+    "deleteDialog": {
+      "title": "Eliminar política de escaneo",
+      "message": "¿Está seguro de que desea eliminar \"{{name}}\"? Esta acción no se puede deshacer y se detendrán todos los análisis programados según esta política.",
+      "confirm": "Eliminar política"
+    }
+  },
+  "sensitiveDataRemediationModal": {
+    "errors": {
+      "remediationFailed": "La corrección falló"
+    },
+    "title": "Remediar hallazgos",
+    "selectedCount": "hallazgos {{count}} seleccionados",
+    "selectedCount_one": "{{count}} hallazgo seleccionado",
+    "selectedCount_other": "hallazgos {{count}} seleccionados",
+    "badges": {
+      "destructive": "Destructivo"
+    },
+    "actions": {
+      "processing": "Procesando...",
+      "continue": "Continuar",
+      "confirmSecureDelete": "Confirmar eliminación segura"
+    },
+    "confirm": {
+      "title": "Acción destructiva",
+      "beforeAction": "Estas a punto de",
+      "findingCount": "Hallazgos de {{count}}.",
+      "findingCount_one": "hallazgo {{count}}.",
+      "findingCount_other": "Hallazgos de {{count}}.",
+      "afterCount": "Esta acción puede modificar o eliminar archivos en los dispositivos de destino."
+    },
+    "secondApproval": {
+      "notice": "La eliminación segura requiere un segundo token de aprobación.",
+      "approvalToken": "Token de aprobación",
+      "placeholder": "Ingrese el segundo token de aprobación"
+    },
+    "result": {
+      "success": "La corrección se inició correctamente.",
+      "updated": "Hallazgos {{count}} actualizados",
+      "queued": "Comando(s) {{count}} en cola",
+      "failed": "{{count}} falló"
+    }
+  },
+  "sensitiveDataScansTab": {
+    "errors": {
+      "fetchScans": "No se pudieron recuperar los escaneos",
+      "generic": "Se produjo un error"
+    },
+    "duration": {
+      "running": "En ejecución..."
+    },
+    "heading": "Escaneos",
+    "actions": {
+      "newScan": "Nuevo escaneo"
+    },
+    "table": {
+      "scanId": "Escanear ID",
+      "device": "Dispositivo",
+      "status": "Estado",
+      "findings": "Hallazgos",
+      "started": "Iniciado",
+      "duration": "Duración"
+    },
+    "empty": "Aún no hay escaneos. Cree un nuevo escaneo para comenzar."
+  },
+  "sensitiveDataSensitiveDataPage": {
+    "tabs": {
+      "dashboard": "Panel",
+      "findings": "Hallazgos",
+      "scans": "Escaneos",
+      "policies": "Políticas"
+    },
+    "heading": "Datos confidenciales"
+  },
+  "dnsSecurityAddDnsIntegrationModal": {
+    "title": "Agregar integración DNS",
+    "description": "Conecte un proveedor de filtrado DNS para ingerir registros de consultas y eventos de amenazas.",
+    "providers": {
+      "umbrella": {
+        "label": "Cisco Umbrella",
+        "helpText": "clave API + secreto del Informe General API; OrganizationId de su panel de Umbrella URL.",
+        "apiKeyPlaceholder": "reporting-api-key",
+        "apiSecretPlaceholder": "reporting-api-secret",
+        "organizationIdPlaceholder": "1234567"
+      },
+      "cloudflare": {
+        "label": "Cloudflare Gateway",
+        "helpText": "Token API con Zero Trust → Puerta de enlace → Alcance de lectura.",
+        "apiTokenPlaceholder": "cf-api-token",
+        "accountIdPlaceholder": "Hexadecimal de 32 caracteres del tablero Cloudflare"
+      },
+      "dnsfilter": {
+        "label": "DNSFilter",
+        "helpText": "clave API desde la configuración de su cuenta DNSFilter; La cuenta ID se requiere solo para ámbitos multiinquilino.",
+        "apiKeyPlaceholder": "dnsfilter-api-key",
+        "accountIdPlaceholder": "dejar en blanco para un solo inquilino"
+      },
+      "pihole": {
+        "label": "Pi-hole",
+        "helpText": "Punto final Pi-hole API + clave API. Utilice el nombre de host enrutable LAN-.",
+        "apiKeyPlaceholder": "clave api pihole de /admin",
+        "apiEndpointPlaceholder": "http://pihole.local"
+      },
+      "adguardHome": {
+        "label": "AdGuard Home",
+        "helpText": "Punto final API + HTTP Nombre de usuario de autenticación básica (apiKey) + contraseña (apiSecret).",
+        "usernamePlaceholder": "administración",
+        "passwordPlaceholder": "contraseña",
+        "apiEndpointPlaceholder": "https://adguard.client.local"
+      }
+    },
+    "fields": {
+      "provider": "Proveedor",
+      "displayName": "Nombre para mostrar",
+      "descriptionOptional": "Descripción (opcional)",
+      "apiKey": "clave API",
+      "apiSecret": "API secreto",
+      "apiToken": "ficha API",
+      "organizationId": "Organización ID",
+      "accountId": "Cuenta ID",
+      "accountIdOptional": "Cuenta ID (opcional)",
+      "apiEndpoint": "punto final API",
+      "httpBasicUsername": "HTTP Nombre de usuario básico",
+      "httpBasicPassword": "HTTP Contraseña básica"
+    },
+    "placeholders": {
+      "displayName": "p.ej. Puerta de enlace Acme HQ",
+      "description": "Qué cubre esta integración"
+    },
+    "actions": {
+      "cancel": "Cancelar",
+      "adding": "Añadiendo…",
+      "addIntegration": "Agregar integración"
+    },
+    "messages": {
+      "createFailed": "No se pudo crear la integración",
+      "createSuccess": "Integración {{provider}} \"{{name}}\" agregada",
+      "networkError": "error de red"
+    }
+  },
+  "dnsSecurityAddDnsPolicyModal": {
+    "title": "Nueva política DNS",
+    "description": "Dominios de lista negra o permitida enviados a su proveedor DNS en el siguiente ciclo de sincronización.",
+    "fields": {
+      "integration": "Integración",
+      "policyName": "Nombre de la política",
+      "type": "Tipo",
+      "descriptionOptional": "Descripción (opcional)",
+      "initialDomainsOptional": "Dominios iniciales (opcional)"
+    },
+    "policyTypes": {
+      "blocklist": "Lista de bloqueo (negar)",
+      "allowlist": "Lista de permitidos (permiso)"
+    },
+    "placeholders": {
+      "policyName": "p.ej. Lista de bloqueo de amenazas",
+      "domains": "malware.example.com\nphish.example.com\nc2.example.org"
+    },
+    "initialDomainsHelp": "(uno por línea, separado por comas o pegue una lista, hasta 500)",
+    "loadingIntegrations": "Cargando integraciones…",
+    "noIntegrations": "No hay integraciones configuradas. Primero agregue uno en la pestaña Integraciones.",
+    "actions": {
+      "cancel": "Cancelar",
+      "creating": "Creando…",
+      "createPolicy": "Crear política"
+    },
+    "messages": {
+      "loadIntegrationsHttpError": "No se pudieron cargar las integraciones (HTTP {{status}})",
+      "loadIntegrationsFailed": "No se pudieron cargar las integraciones",
+      "pickIntegrationFirst": "Elija una integración primero",
+      "createFailed": "No se pudo crear la política",
+      "createSuccess": "Política \"{{name}}\" creada",
+      "networkError": "error de red"
+    }
+  },
+  "dnsSecurityDnsSecurityPage": {
+    "title": "DNS Seguridad",
+    "description": "Integraciones de filtrado DNS, políticas de listas de bloqueo/listas permitidas y eventos de amenazas en Umbrella, Cloudflare Gateway, DNSFilter, Pi-hole, OpenDNS, Quad9 y AdGuard Home.",
+    "tabs": {
+      "overview": "Descripción general",
+      "integrations": "Integraciones",
+      "policies": "Políticas",
+      "events": "Eventos"
+    }
+  },
+  "dnsSecurityDnsSecurityOverviewTab": {
+    "messages": {
+      "loadFailed": "No se pudo cargar la descripción general"
+    },
+    "stats": {
+      "totalQueries": "Consultas totales",
+      "blocked": "Bloqueado",
+      "allowed": "Permitido",
+      "redirected": "Redirigido"
+    },
+    "topBlocked": {
+      "title": "Principales dominios bloqueados",
+      "empty": "No hay dominios bloqueados en la ventana actual."
+    },
+    "loading": "Cargando…"
+  },
+  "dnsSecurityDnsSecurityIntegrationsTab": {
+    "title": "Integraciones configuradas",
+    "providers": {
+      "umbrella": "Cisco Umbrella",
+      "cloudflare": "Cloudflare Gateway",
+      "dnsfilter": "DNSFilter",
+      "pihole": "Pi-hole",
+      "opendns": "OpenDNS",
+      "quad9": "Quad9",
+      "adguardHome": "AdGuard Home"
+    },
+    "actions": {
+      "addIntegration": "Agregar integración",
+      "syncNow": "Sincronizar ahora",
+      "deleteIntegration": "Eliminar integración"
+    },
+    "messages": {
+      "loadHttpError": "No se pudieron cargar las integraciones (HTTP {{status}})",
+      "loadFailed": "No se pudieron cargar las integraciones",
+      "syncFailed": "No se pudo activar la sincronización para {{name}}",
+      "syncQueued": "Sincronización en cola para {{name}}",
+      "deleteConfirm": "¿Eliminar {{name}}? Los eventos almacenados se conservan según la política de retención.",
+      "deleteFailed": "No se pudo eliminar {{name}}",
+      "deleteSuccess": "Eliminado {{name}}"
+    },
+    "loading": "Cargando integraciones…",
+    "empty": {
+      "title": "No hay integraciones DNS configuradas",
+      "description": "Conecte uno de los 7 proveedores admitidos para comenzar a ingerir registros de consultas DNS."
+    },
+    "table": {
+      "name": "Nombre",
+      "provider": "Proveedor",
+      "lastSync": "Última sincronización",
+      "events": "Eventos",
+      "actions": "Acciones"
+    },
+    "lastSyncFailedSuffix": "- fallido",
+    "never": "Nunca"
+  },
+  "dnsSecurityDnsSecurityPoliciesTab": {
+    "title": "Bloquear/Permitir políticas",
+    "actions": {
+      "newPolicy": "Nueva politica",
+      "hide": "Esconder",
+      "editDomains": "Editar dominios",
+      "removeDomain": "Quitar {{domain}}",
+      "add": "Agregar"
+    },
+    "messages": {
+      "loadHttpError": "No se pudieron cargar las políticas (HTTP {{status}})",
+      "loadFailed": "No se pudieron cargar las políticas",
+      "updateDomainsFailed": "No se pudieron actualizar los dominios",
+      "domainsUpdated": "Dominios actualizados"
+    },
+    "loading": "Cargando políticas…",
+    "empty": {
+      "title": "No hay políticas DNS configuradas",
+      "description": "Cree una lista de bloqueo o lista de permitidos vinculada a una de sus integraciones DNS."
+    },
+    "policyTypes": {
+      "blocklist": "lista de bloqueo",
+      "allowlist": "lista de permitidos"
+    },
+    "domainCount": "dominios {{integrationName}} · {{count}}",
+    "domainCount_one": "dominio {{integrationName}} · {{count}}",
+    "domainCount_other": "dominios {{integrationName}} · {{count}}",
+    "noDomains": "Aún no hay dominios.",
+    "fields": {
+      "addDomains": "Agregar dominios"
+    },
+    "addDomainsHelp": "(uno por línea, separado por comas o pegue una lista)",
+    "placeholders": {
+      "domains": "malware.example.com\nphish.example.com"
+    }
+  },
+  "dnsSecurityDnsSecurityEventsTab": {
+    "title": "eventos de consulta DNS",
+    "messages": {
+      "loadHttpError": "No se pudieron cargar eventos (HTTP {{status}})",
+      "loadFailed": "No se pudieron cargar eventos"
+    },
+    "loading": "Cargando…",
+    "eventCount_one": "{{shown}} del evento {{total}} (los 100 más recientes)",
+    "eventCount_other": "{{shown}} de eventos {{total}} (los 100 más recientes)",
+    "blockedEventCount_one": "{{shown}} del evento bloqueado {{total}} (los 100 más recientes)",
+    "blockedEventCount_other": "{{shown}} de {{total}} eventos bloqueados (los 100 más recientes)",
+    "showAll": "Mostrar todo (no solo bloqueado)",
+    "actions": {
+      "refresh": "Actualizar",
+      "allowed": "permitido",
+      "blocked": "bloqueado",
+      "redirected": "redirigido"
+    },
+    "loadingEvents": "Cargando eventos…",
+    "empty": {
+      "allTitle": "No se registraron eventos DNS",
+      "blockedTitle": "No hay eventos DNS bloqueados",
+      "allDescription": "Configure una integración y espere a que se complete la primera sincronización de 15 minutos.",
+      "blockedDescription": "No hay amenazas bloqueadas en la ventana reciente. Intente alternar \"Mostrar todo\" para ver el tráfico permitido."
+    },
+    "table": {
+      "when": "Cuando",
+      "device": "Dispositivo",
+      "domain": "Dominio",
+      "category": "Categoría",
+      "action": "Acción"
+    },
+    "unknown": "desconocido"
+  },
+  "cisHardeningCisHardeningPage": {
+    "title": "CIS Endurecimiento",
+    "description": "Líneas base de configuración, puntuación de cumplimiento y seguimiento de soluciones.",
+    "messages": {
+      "loadFailed": "No se pudieron cargar los datos de CIS"
+    },
+    "actions": {
+      "refresh": "Actualizar"
+    },
+    "tabs": {
+      "compliance": "Cumplimiento",
+      "baselines": "Líneas de base",
+      "remediations": "Remediaciones"
+    }
+  },
+  "cisHardeningCisSummaryCards": {
+    "averageScore": "Puntuación promedio",
+    "averageScoreTooltip": "Porcentaje de controles aprobados en todos los dispositivos y líneas de base. Cuanto más alto es mejor.",
+    "failingDevices": "Dispositivos defectuosos",
+    "activeBaselines": "Líneas de base activas",
+    "pendingRemediations": "Remediaciones pendientes",
+    "pendingRemediationsTooltip": "Correcciones automatizadas en espera de aprobación. Revise antes de aplicar: algunos cambios pueden afectar el comportamiento del sistema."
+  },
+  "cisHardeningCisComplianceTab": {
+    "searchPlaceholder": "Buscar nombre de host o línea de base...",
+    "os": {
+      "all": "Todos los tipos OS",
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "table": {
+      "device": "Dispositivo",
+      "baseline": "Base",
+      "os": "OS",
+      "score": "Puntaje",
+      "failedChecks": "Comprobaciones fallidas",
+      "lastScanned": "Último escaneado"
+    },
+    "loading": "Cargando datos de cumplimiento...",
+    "empty": "No se encontraron resultados de cumplimiento."
+  },
+  "cisHardeningCisComplianceRow": {
+    "severity": {
+      "low": "bajo",
+      "medium": "medio",
+      "high": "alto",
+      "critical": "crítico"
+    },
+    "noFailedFindings": "No hay resultados fallidos."
+  },
+  "cisHardeningCisBaselinesTab": {
+    "title": "Líneas de base",
+    "actions": {
+      "newBaseline": "Nueva línea de base",
+      "edit": "Editar",
+      "triggerScan": "Escaneo de activación"
+    },
+    "messages": {
+      "triggerScanFailed": "No se pudo activar el escaneo"
+    },
+    "table": {
+      "name": "Nombre",
+      "os": "OS",
+      "level": "Nivel",
+      "version": "Versión",
+      "schedule": "Cronograma",
+      "status": "Estado",
+      "actions": "Acciones"
+    },
+    "loading": "Cargando líneas base...",
+    "empty": "No hay líneas base configuradas.",
+    "levels": {
+      "l1": "l1",
+      "l2": "l2",
+      "custom": "personalizado"
+    },
+    "schedule": {
+      "everyHours": "Cada {{hours}}h",
+      "manual": "Manual"
+    },
+    "status": {
+      "active": "Activo",
+      "inactive": "Inactivo"
+    }
+  },
+  "cisHardeningCisBaselineForm": {
+    "title": {
+      "edit": "Editar línea base",
+      "new": "Nueva línea de base"
+    },
+    "messages": {
+      "saveFailed": "No se pudo guardar la línea base"
+    },
+    "fields": {
+      "name": "Nombre",
+      "osType": "OS Tipo",
+      "level": "Nivel",
+      "benchmarkVersion": "Versión de referencia",
+      "enableScheduledScans": "Habilitar análisis programados",
+      "active": "Activo"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "levels": {
+      "l1": "L1",
+      "l2": "L2",
+      "custom": "Personalizado"
+    },
+    "tooltips": {
+      "level": "Las comprobaciones L1 son prácticas para la mayoría de los entornos. L2 agrega profundidad de seguridad pero puede afectar la funcionalidad."
+    },
+    "placeholders": {
+      "benchmarkVersion": "p.ej. 3.0.0"
+    },
+    "hours": "horas",
+    "actions": {
+      "cancel": "Cancelar",
+      "saving": "Guardando...",
+      "save": "Guardar"
+    }
+  },
+  "cisHardeningCisRemediationsTab": {
+    "title": "Remediaciones",
+    "tooltip": "Correcciones automatizadas para comprobaciones fallidas de CIS. Cada uno debe aprobarse antes de su ejecución en el dispositivo de destino.",
+    "filters": {
+      "allStatuses": "Todos los estados"
+    },
+    "status": {
+      "pendingApproval": "Pendiente de aprobación",
+      "pending_approval": "pendiente de aprobación",
+      "queued": "en cola",
+      "inProgress": "En curso",
+      "in_progress": "en curso",
+      "completed": "terminado",
+      "failed": "fallido",
+      "cancelled": "cancelado"
+    },
+    "approval": {
+      "pending": "pendiente",
+      "approved": "aprobado",
+      "rejected": "rechazado"
+    },
+    "actions": {
+      "apply": "aplicar",
+      "rollback": "revertir"
+    },
+    "table": {
+      "checkId": "Comprobar ID",
+      "device": "Dispositivo",
+      "baseline": "Base",
+      "action": "Acción",
+      "status": "Estado",
+      "approval": "Aprobación",
+      "requested": "Solicitado",
+      "completed": "Terminado"
+    },
+    "loading": "Cargando soluciones...",
+    "empty": "No se encontraron soluciones."
+  },
+  "auditBaselinesAuditBaselinesPage": {
+    "title": "Líneas base de auditoría",
+    "description": "Defina líneas de base de cumplimiento, evalúe la desviación de dispositivos y corrija con flujos de trabajo controlados por aprobación.",
+    "tabs": {
+      "dashboard": "Panel",
+      "baselines": "Líneas de base",
+      "approvals": "Aprobaciones"
+    }
+  },
+  "auditBaselinesBaselineFormModal": {
+    "title": {
+      "edit": "Editar línea base",
+      "new": "Nueva línea de base"
+    },
+    "messages": {
+      "invalidJson": "JSON no válido en la configuración",
+      "saveFailed": "No se pudo guardar la línea base",
+      "genericError": "Se produjo un error"
+    },
+    "fields": {
+      "name": "Nombre",
+      "osType": "OS Tipo",
+      "profile": "Perfil",
+      "active": "Activo",
+      "settingsJson": "Configuración (JSON)"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "profiles": {
+      "cisL1": "CIS Nivel 1",
+      "cisL2": "CIS Nivel 2",
+      "custom": "Personalizado"
+    },
+    "placeholders": {
+      "name": "p.ej. Windows CIS L1 Línea base",
+      "customSettings": "{\n  \"clave\": \"valor\"\n}",
+      "templateSettings": "Opcional: se utilizarán los valores predeterminados de la plantilla"
+    },
+    "activeHelp": "(Solo puede estar activa una línea base por tipo OS)",
+    "templateDefaultsHelp": "Déjelo vacío para usar los valores predeterminados de la plantilla.",
+    "actions": {
+      "cancel": "Cancelar",
+      "update": "Actualizar",
+      "create": "Crear"
+    }
+  },
+  "auditBaselinesBaselineList": {
+    "messages": {
+      "fetchFailed": "No se pudieron recuperar las líneas de base",
+      "deleteFailed": "No se pudo eliminar la línea base",
+      "toggleFailed": "No se pudo alternar la línea base",
+      "genericError": "Se produjo un error"
+    },
+    "loading": "Cargando líneas base...",
+    "actions": {
+      "tryAgain": "Intentar otra vez",
+      "newBaseline": "Nueva línea de base",
+      "edit": "Editar",
+      "delete": "Eliminar",
+      "cancel": "Cancelar",
+      "deleting": "Eliminando..."
+    },
+    "baselineCount": "líneas base {{count}}",
+    "baselineCount_one": "línea base {{count}}",
+    "baselineCount_other": "líneas base {{count}}",
+    "table": {
+      "name": "Nombre",
+      "os": "OS",
+      "profile": "Perfil",
+      "active": "Activo",
+      "updated": "Actualizado",
+      "actions": "Acciones"
+    },
+    "empty": "No se encontraron líneas de base. Cree uno para comenzar.",
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "profiles": {
+      "cisL1": "CIS L1",
+      "cisL2": "CIS L2",
+      "custom": "Personalizado"
+    },
+    "status": {
+      "active": "Activo",
+      "inactive": "Inactivo"
+    },
+    "deleteModal": {
+      "title": "Eliminar línea base",
+      "confirmPrefix": "¿Está seguro de que desea eliminar?",
+      "confirmSuffix": "? Esto también eliminará todos los resultados de cumplimiento. Esta acción no se puede deshacer."
+    }
+  },
+  "auditBaselinesBaselineDetailPage": {
+    "tabs": {
+      "overview": "Descripción general",
+      "compliance": "Cumplimiento",
+      "apply": "Aplicar"
+    },
+    "messages": {
+      "fetchFailed": "No se pudo recuperar la línea de base",
+      "notFound": "Línea base no encontrada",
+      "genericError": "Se produjo un error"
+    },
+    "loading": "Cargando línea base...",
+    "backToAuditBaselines": "Volver a las líneas base de auditoría",
+    "actions": {
+      "tryAgain": "Intentar otra vez"
+    },
+    "breadcrumbs": {
+      "auditBaselines": "Líneas base de auditoría",
+      "baseline": "Base"
+    },
+    "status": {
+      "active": "Activo",
+      "inactive": "Inactivo"
+    }
+  },
+  "auditBaselinesBaselineOverviewTab": {
+    "title": "Detalles de referencia",
+    "actions": {
+      "edit": "Editar"
+    },
+    "fields": {
+      "name": "Nombre",
+      "osType": "OS Tipo",
+      "profile": "Perfil",
+      "status": "Estado",
+      "created": "Creado",
+      "lastUpdated": "Última actualización"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "profiles": {
+      "cisL1": "CIS Nivel 1",
+      "cisL2": "CIS Nivel 2",
+      "custom": "Personalizado"
+    },
+    "status": {
+      "active": "Activo",
+      "inactive": "Inactivo"
+    },
+    "settings": "Configuración"
+  },
+  "auditBaselinesBaselineComplianceTab": {
+    "messages": {
+      "fetchFailed": "No se pudieron recuperar los datos de cumplimiento",
+      "genericError": "Se produjo un error"
+    },
+    "loading": "Cargando resultados de cumplimiento...",
+    "actions": {
+      "tryAgain": "Intentar otra vez"
+    },
+    "empty": {
+      "title": "Sin resultados de cumplimiento",
+      "description": "Aún no se ha evaluado ningún dispositivo con respecto a esta línea de base.",
+      "inactiveSuffix": "Active esta línea de base para comenzar la evaluación de la deriva."
+    },
+    "cards": {
+      "devicesEvaluated": "Dispositivos evaluados",
+      "compliant": "Conforme",
+      "averageScore": "Puntuación promedio"
+    },
+    "deviceResults": "Resultados del dispositivo",
+    "filters": {
+      "all": "Todo",
+      "compliant": "Conforme",
+      "nonCompliant": "No conforme"
+    },
+    "summary": "El resumen muestra los dispositivos compatibles con {{compliant}} y los no compatibles con {{nonCompliant}}. Haga clic en un dispositivo en la página Dispositivos para ver los detalles de referencia de la auditoría por dispositivo."
+  },
+  "auditBaselinesComplianceDashboard": {
+    "messages": {
+      "fetchFailed": "No se pudo recuperar el resumen de cumplimiento",
+      "genericError": "Se produjo un error"
+    },
+    "loading": "Cargando datos de cumplimiento...",
+    "actions": {
+      "tryAgain": "Intentar otra vez"
+    },
+    "empty": {
+      "title": "Aún no hay datos de cumplimiento",
+      "description": "Active una línea de base y espere el siguiente ciclo de evaluación de deriva para ver los resultados aquí."
+    },
+    "cards": {
+      "devicesEvaluated": "Dispositivos evaluados",
+      "compliant": "Conforme",
+      "nonCompliant": "No conforme",
+      "averageScore": "Puntuación promedio"
+    },
+    "byBaseline": "Cumplimiento por línea de base",
+    "table": {
+      "baseline": "Base",
+      "os": "OS",
+      "devices": "Dispositivos",
+      "avgScore": "Puntuación promedio",
+      "status": "Estado"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "compliantRatio": "Compatible con {{compliant}}/{{total}}"
+  },
+  "auditBaselinesBaselineApplyTab": {
+    "status": {
+      "pending": "Pendiente",
+      "approved": "Aprobado",
+      "rejected": "Rechazado",
+      "expired": "Vencido",
+      "consumed": "Consumido"
+    },
+    "messages": {
+      "fetchApprovalsFailed": "No se pudieron recuperar las solicitudes de aprobación",
+      "fetchDevicesFailed": "No se pudieron recuperar los dispositivos",
+      "dryRunFailed": "Error en el ensayo",
+      "createApprovalFailed": "No se pudo crear la solicitud de aprobación",
+      "processDecisionFailed": "No se pudo procesar la decisión",
+      "applyFailed": "No se pudo aplicar la línea de base",
+      "genericError": "Se produjo un error"
+    },
+    "steps": {
+      "select": "1. Seleccionar dispositivos",
+      "preview": "2. Vista previa",
+      "requested": "3. Aprobación"
+    },
+    "noDevices": "No se encontraron dispositivos {{osType}} en esta organización.",
+    "table": {
+      "hostname": "Nombre de host",
+      "os": "OS",
+      "status": "Estado"
+    },
+    "selectedDevices": "{{selected}} de dispositivos {{total}} seleccionados",
+    "actions": {
+      "previewChanges": "Vista previa de cambios",
+      "back": "Atrás",
+      "requestApproval": "Solicitar aprobación",
+      "approve": "Aprobar",
+      "reject": "Rechazar",
+      "execute": "Ejecutar"
+    },
+    "dryRun": {
+      "title": "Resultados del ensayo",
+      "eligibleDevices": "Dispositivos elegibles",
+      "skipped": "Saltado",
+      "skippedDevices": "Dispositivos omitidos"
+    },
+    "approvalRequired": {
+      "title": "Aprobación requerida",
+      "description": "La aplicación de una línea base requiere la aprobación de otro usuario antes de la ejecución."
+    },
+    "emptyApprovals": {
+      "title": "Sin solicitudes de aprobación",
+      "withBaselineDescription": "Seleccione dispositivos y ejecute un ensayo para crear una solicitud de aprobación.",
+      "description": "Aún no se han creado solicitudes de solicitud de referencia."
+    },
+    "approvalsTable": {
+      "baseline": "Base",
+      "status": "Estado",
+      "devices": "Dispositivos",
+      "created": "Creado",
+      "expires": "Vence",
+      "actions": "Acciones"
+    }
+  }
+}

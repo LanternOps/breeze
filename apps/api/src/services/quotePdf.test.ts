@@ -286,6 +286,24 @@ describe('renderQuotePdf', () => {
     expect(summaryStream).not.toContain('Item ');
   });
 
+  it('renders a per-table Subtotal row only when the block opts in', async () => {
+    const lines = [
+      { id: 'l1', blockId: 'b1', description: 'Widget', quantity: '2', unitPrice: '100', lineTotal: '200.00', recurrence: 'one_time' as const },
+      { id: 'l2', blockId: 'b1', description: 'Service', quantity: '1', unitPrice: '50', lineTotal: '50.00', recurrence: 'monthly' as const },
+    ];
+    const base = { id: 'q1', quoteNumber: 'Q-SUB', currencyCode: 'USD', oneTimeTotal: '200.00', monthlyRecurringTotal: '50.00', total: '250.00', dueOnAcceptanceTotal: '200.00' };
+
+    const off = await renderQuotePdf(base as never, [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }], lines, async () => null, {});
+    expect(extractPdfText(off)).not.toContain('Subtotal');
+
+    const on = await renderQuotePdf(base as never, [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: { showSubtotal: true } }], lines, async () => null, {});
+    const text = extractPdfText(on);
+    expect(text).toContain('Subtotal');
+    // Split by recurrence: one-time $200 and $50/mo.
+    expect(text).toContain('200.00');
+    expect(text).toContain('50.00/mo');
+  });
+
   it('renderQuotePdf includes the From block and T&C', async () => {
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-1', currencyCode: 'USD', billToName: 'Cust',

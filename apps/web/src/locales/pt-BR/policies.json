@@ -565,7 +565,7 @@
         "retentionReadback": "Mantenha backups por {{days}} dias com até {{versions}} versões por dispositivo.",
         "sourceUseProfile": "Usar um perfil",
         "sourceUseCustom": "Seleção personalizada",
-        "sourceProfileHint": "Perfis são seleções reutilizáveis de \"o que proteger\" gerenciadas em Backup → Perfis. Um perfil pode proteger arquivos, System State, SQL e Hyper-V juntos.",
+        "sourceProfileHint": "Perfis são seleções reutilizáveis de \"o que proteger\" gerenciadas em Backup → Perfis. Um perfil pode proteger arquivos, Estado do sistema, SQL e Hyper-V juntos.",
         "noProfilesYet": "Nenhum perfil de backup ainda.",
         "manageProfiles": "Gerenciar perfis",
         "createProfilesFirst": "Crie um em Backup → Perfis ou mude para uma seleção personalizada.",

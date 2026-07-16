@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { selectAppRolePassword } from './requestDatabaseConfig';
 
 /**
  * Ensures a non-superuser, non-BYPASSRLS role `breeze_app` exists and has the
@@ -17,8 +18,7 @@ export async function ensureAppRole(): Promise<void> {
 
   // The password the breeze_app role should be (re)set to. In dev we fall back
   // to POSTGRES_PASSWORD so the same password works for both admin and app.
-  const password =
-    process.env.BREEZE_APP_DB_PASSWORD || process.env.POSTGRES_PASSWORD || '';
+  const password = selectAppRolePassword() ?? '';
 
   if (!password) {
     console.warn(
@@ -41,9 +41,9 @@ export async function ensureAppRole(): Promise<void> {
     //    "ERROR: permission denied to alter role / Only roles with the
     //    SUPERUSER attribute may change the SUPERUSER attribute."
     //    The role was created with the right attributes on first run;
-    //    there is nothing to reconcile on subsequent runs. The probe in
-    //    autoMigrate already verifies rolsuper=false / rolbypassrls=false
-    //    and hard-fails startup if either has drifted.
+    //    there is nothing to reconcile on subsequent runs. Production startup
+    //    enforcement probes the effective request pool role and hard-fails if
+    //    rolsuper or rolbypassrls has drifted (see databaseStartup.ts).
     await client.unsafe(`
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'breeze_app') THEN

@@ -8,7 +8,7 @@
 
 **Direction:** One-way, Breeze to Weavestream
 
-**Primary implementation location:** Weavestream, with a reusable partner API and service-principal foundation in Breeze
+**Primary implementation location:** Weavestream, with a reusable partner API and partner-service-principal foundation in Breeze
 
 ## Objective
 
@@ -311,7 +311,7 @@ Run history records start/end time, partner and mapped company, resource, mode, 
 
 ## Audit and observability
 
-Breeze audits service-principal creation, scope changes, key rotation/revocation, authentication failures, and export requests. Request audit includes principal ID, partner, route/resource, result, record count, and duration, never credentials or response bodies.
+Breeze audits partner-service-principal creation, scope changes, key rotation/revocation, authentication failures, and export requests. Request audit includes principal ID, partner, route/resource, result, record count, and duration, never credentials or response bodies.
 
 Weavestream audits integration credential changes, organization mapping changes, manual and scheduled runs, field conflicts, archive transitions, relationship changes, and completeness changes. Metrics cover run duration, lag, pages, records, retry counts, quarantines, stale transitions, and consecutive failures.
 
@@ -329,7 +329,7 @@ All implementation follows red-green-refactor TDD. New tests are placed alongsid
 
 ### Breeze unit and route tests
 
-- Partner service-principal issuance, one-time reveal, hashing, rotation, expiry, disablement, revocation, and audit.
+- Partner partner-service-principal issuance, one-time reveal, hashing, rotation, expiry, disablement, revocation, and audit.
 - Each read scope independently permits its intended routes and denies every other scope.
 - Unauthenticated, human-key, wrong-partner, inactive-partner, invalid-scope, and revoked-key requests fail closed.
 - Cursor binding, pagination boundaries, `updatedSince`, `snapshotAt`, invalid cursor, rate limit, and schema-version behavior.
@@ -341,7 +341,7 @@ All implementation follows red-green-refactor TDD. New tests are placed alongsid
 
 - Real-Postgres tests prove a partner principal can read only organizations owned by its partner.
 - Cross-partner reads and forged organization filters return no data or fail authorization as specified.
-- Every new service-principal table declares its tenancy shape, enables and forces RLS in its creating migration, and joins the RLS coverage contract in the same change.
+- Every new partner-service-principal table declares its tenancy shape, enables and forces RLS in its creating migration, and joins the RLS coverage contract in the same change.
 - Export queries run under the unprivileged application role and never require bare/system database access after authentication.
 
 ### Weavestream driver and sync tests
@@ -430,4 +430,4 @@ The design is successfully implemented when:
 - Breeze API-key scopes: `apps/api/src/services/apiKeyScopes.ts`
 - Breeze device routes: `apps/api/src/routes/devices/`
 - Breeze extension/RLS contract: `extensions/README.md`
-- Breeze service-principal design foundation: `docs/superpowers/specs/2026-07-11-core-authentication-hardening-design.md`
+- Breeze partner-service-principal design foundation: `docs/superpowers/specs/2026-07-11-core-authentication-hardening-design.md`

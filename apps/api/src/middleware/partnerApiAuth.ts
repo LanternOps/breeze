@@ -11,8 +11,8 @@ import {
 import {
   organizations,
   partners,
-  servicePrincipalKeys,
-  servicePrincipals,
+  partnerServicePrincipalKeys,
+  partnerServicePrincipals,
 } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { writeAuditEventAsync } from '../services/auditEvents';
@@ -21,11 +21,11 @@ import { ipMatchesAny, isValidIpOrCidr } from '../services/ipMatch';
 import {
   type PartnerServicePrincipalScope,
   validatePartnerServicePrincipalScopes,
-} from '../services/servicePrincipalScopes';
+} from '../services/partnerServicePrincipalScopes';
 import { enforcePreLookupProbeRateLimit } from './apiKeyAuth';
 
 export interface PartnerApiPrincipalContext {
-  servicePrincipalId: string;
+  partnerServicePrincipalId: string;
   keyId: string;
   partnerId: string;
   name: string;
@@ -71,30 +71,30 @@ async function bootstrapCredential(
   return withSystemDbAccessContext(async () => {
     const [credential] = await db
       .select({
-        keyId: servicePrincipalKeys.id,
-        keyStatus: servicePrincipalKeys.status,
-        keyExpiresAt: servicePrincipalKeys.expiresAt,
-        rateLimit: servicePrincipalKeys.rateLimit,
-        servicePrincipalId: servicePrincipals.id,
-        partnerId: servicePrincipals.partnerId,
-        name: servicePrincipals.name,
-        principalStatus: servicePrincipals.status,
-        principalExpiresAt: servicePrincipals.expiresAt,
-        scopes: servicePrincipals.scopes,
-        sourceCidrs: servicePrincipals.sourceCidrs,
+        keyId: partnerServicePrincipalKeys.id,
+        keyStatus: partnerServicePrincipalKeys.status,
+        keyExpiresAt: partnerServicePrincipalKeys.expiresAt,
+        rateLimit: partnerServicePrincipalKeys.rateLimit,
+        partnerServicePrincipalId: partnerServicePrincipals.id,
+        partnerId: partnerServicePrincipals.partnerId,
+        name: partnerServicePrincipals.name,
+        principalStatus: partnerServicePrincipals.status,
+        principalExpiresAt: partnerServicePrincipals.expiresAt,
+        scopes: partnerServicePrincipals.scopes,
+        sourceCidrs: partnerServicePrincipals.sourceCidrs,
         partnerStatus: partners.status,
         partnerDeletedAt: partners.deletedAt,
       })
-      .from(servicePrincipalKeys)
+      .from(partnerServicePrincipalKeys)
       .innerJoin(
-        servicePrincipals,
+        partnerServicePrincipals,
         and(
-          eq(servicePrincipals.id, servicePrincipalKeys.servicePrincipalId),
-          eq(servicePrincipals.partnerId, servicePrincipalKeys.partnerId),
+          eq(partnerServicePrincipals.id, partnerServicePrincipalKeys.partnerServicePrincipalId),
+          eq(partnerServicePrincipals.partnerId, partnerServicePrincipalKeys.partnerId),
         ),
       )
-      .innerJoin(partners, eq(partners.id, servicePrincipals.partnerId))
-      .where(eq(servicePrincipalKeys.keyHash, keyHash))
+      .innerJoin(partners, eq(partners.id, partnerServicePrincipals.partnerId))
+      .where(eq(partnerServicePrincipalKeys.keyHash, keyHash))
       .limit(1);
 
     const now = Date.now();
@@ -129,7 +129,7 @@ async function bootstrapCredential(
     }
 
     return {
-      servicePrincipalId: credential.servicePrincipalId,
+      partnerServicePrincipalId: credential.partnerServicePrincipalId,
       keyId: credential.keyId,
       partnerId: credential.partnerId,
       name: credential.name,
@@ -174,9 +174,9 @@ async function recordMachineUse(
       () => runOutsideDbContext(() =>
         withSystemDbAccessContext(async () => {
           await db
-            .update(servicePrincipalKeys)
+            .update(partnerServicePrincipalKeys)
             .set({ lastUsedAt: new Date() })
-            .where(eq(servicePrincipalKeys.id, principal.keyId));
+            .where(eq(partnerServicePrincipalKeys.id, principal.keyId));
         }),
       ),
       'Failed to update partner API key usage timestamp',
@@ -192,11 +192,11 @@ async function recordMachineUse(
         actorType: 'api_key',
         actorId: principal.keyId,
         action: 'partner_api.request',
-        resourceType: 'service_principal',
-        resourceId: principal.servicePrincipalId,
+        resourceType: 'partner_service_principal',
+        resourceId: principal.partnerServicePrincipalId,
         result,
         details: {
-          principalType: 'service_principal',
+          principalType: 'partner_service_principal',
           partnerId: principal.partnerId,
           keyId: principal.keyId,
           method: c.req.method.slice(0, 16),
@@ -246,7 +246,7 @@ export async function partnerApiAuthMiddleware(c: Context, next: Next): Promise<
   // Redis work must happen after the short system transaction has closed.
   const rateCheck = await rateLimiter(
     getRedis(),
-    `partner_api_rate:${bootstrap.servicePrincipalId}:${bootstrap.keyId}`,
+    `partner_api_rate:${bootstrap.partnerServicePrincipalId}:${bootstrap.keyId}`,
     bootstrap.rateLimit,
     3600,
   );

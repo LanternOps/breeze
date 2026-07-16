@@ -35,9 +35,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { decodeJwt } from 'jose';
 import { and, eq } from 'drizzle-orm';
-import { createHmac } from 'crypto';
+import { createHmac, randomUUID } from 'crypto';
 import { getTestDb } from './setup';
-import { ssoProviders, ssoSessions, userSsoIdentities, users } from '../../db/schema';
+import { ssoProviders, ssoSessions, userSsoIdentities, users, refreshTokenFamilies } from '../../db/schema';
 import {
   createPartner,
   createOrganization,
@@ -401,6 +401,15 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
 
     // (b) Authenticated POST /sso/link/start/:providerId as V (mfa:true in
     // the test token, since requireMfa() gates the link-start route).
+    // PR 3's SR2-11b link binding stores the initiating token's `sid` on the
+    // link session and requires that refresh family to still be LIVE at the
+    // callback. Mint one so /link/start's snapshot binds to a real family.
+    const vFamilyId = randomUUID();
+    await db.insert(refreshTokenFamilies).values({
+      familyId: vFamilyId,
+      userId: passwordUser.id,
+      absoluteExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    });
     const vToken = await createAccessToken({
       sub: passwordUser.id,
       email: passwordUser.email,
@@ -411,9 +420,11 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       mfa: true,
       // Epoch claims (core-auth PR 1): authMiddleware rejects access tokens
       // missing aep/mep/sid or stale vs users.auth_epoch/mfa_epoch (DB default 1).
+      // sid must be the LIVE family id, not a placeholder, so the SR2-11b link
+      // binding can resolve it back to a refresh_token_family.
       aep: 1,
       mep: 1,
-      sid: 'it-session',
+      sid: vFamilyId,
     });
 
     const linkStartRes = await app.request(`/sso/link/start/${provider.id}`, {
@@ -538,6 +549,9 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       codeVerifier: null,
       redirectUrl: '/',
       linkUserId: null,
+      // Task 4's generation gate rejects a callback whose session provider_version
+      // doesn't match the provider's config_version (NULL → provider_version_missing).
+      providerVersion: orgProvider.configVersion,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
 

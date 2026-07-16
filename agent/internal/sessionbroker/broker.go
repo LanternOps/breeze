@@ -1,6 +1,7 @@
 package sessionbroker
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -250,13 +251,30 @@ type Broker struct {
 	rateLimiter *ipc.RateLimiter
 	startTime   time.Time // broker creation time, used for watchdog uptime
 
-	mu           timedRWMutex
-	sessions     map[string]*Session   // sessionID -> Session
-	byIdentity   map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
-	staleHelpers map[string][]int      // winSessionID -> PIDs of disconnected helpers
-	consoleUser  string                // macOS: current console user ("loginwindow" at login screen)
-	backup       *backupHelper         // backup helper process and session
-	closed       bool
+	mu                      timedRWMutex
+	sessions                map[string]*Session   // sessionID -> Session
+	byIdentity              map[string][]*Session // identity key -> Sessions (UID string on Unix, SID on Windows)
+	desiredHelperKeys       map[HelperKey]struct{}
+	helperByKey             map[HelperKey]*Session
+	helperByAuthKey         map[AuthenticatedHelperKey]*Session
+	helperReservations      map[uint64]*helperAuthReservation
+	helperKeyReservations   map[HelperKey]uint64
+	helperAuthReservations  map[AuthenticatedHelperKey]uint64
+	identityReservations    map[string]int
+	helperReservedVictims   map[*Session]uint64
+	nextHelperReservationID uint64
+	lifecycleObservers      map[uint64]sessionLifecycleObserver
+	nextLifecycleObserverID uint64
+	consoleUser             string        // macOS: current console user ("loginwindow" at login screen)
+	backup                  *backupHelper // backup helper process and session
+	closed                  bool
+
+	acceptMu               sync.Mutex
+	acceptStopped          bool
+	preAuthConns           map[net.Conn]bool // true once verified auth is being published
+	preAuthHandlers        sync.WaitGroup
+	beforePreAuthRead      func() // test barrier; set before Listen/startAcceptedConnection
+	afterListenerPublished func() // test barrier; set before Listen
 
 	// snap is an atomically updated snapshot of sessions/byIdentity/consoleUser.
 	// Updated under b.mu.Lock() on every mutation. Read-only hot paths use
@@ -291,19 +309,69 @@ type Broker struct {
 // New creates a new session broker.
 func New(socketPath string, onMessage MessageHandler) *Broker {
 	b := &Broker{
-		socketPath:         socketPath,
-		rateLimiter:        ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
-		startTime:          time.Now(),
-		sessions:           make(map[string]*Session),
-		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
-		onMessage:          onMessage,
-		consoleSessionIDFn: GetConsoleSessionID,
-		goos:               runtime.GOOS,
+		socketPath:             socketPath,
+		rateLimiter:            ipc.NewRateLimiter(RateLimitAttempts, RateLimitWindow),
+		startTime:              time.Now(),
+		sessions:               make(map[string]*Session),
+		byIdentity:             make(map[string][]*Session),
+		desiredHelperKeys:      make(map[HelperKey]struct{}),
+		helperByKey:            make(map[HelperKey]*Session),
+		helperByAuthKey:        make(map[AuthenticatedHelperKey]*Session),
+		helperReservations:     make(map[uint64]*helperAuthReservation),
+		helperKeyReservations:  make(map[HelperKey]uint64),
+		helperAuthReservations: make(map[AuthenticatedHelperKey]uint64),
+		identityReservations:   make(map[string]int),
+		helperReservedVictims:  make(map[*Session]uint64),
+		lifecycleObservers:     make(map[uint64]sessionLifecycleObserver),
+		preAuthConns:           make(map[net.Conn]bool),
+		onMessage:              onMessage,
+		consoleSessionIDFn:     GetConsoleSessionID,
+		goos:                   runtime.GOOS,
 	}
 	b.selfHashes = b.computeAllowedHashes()
 	b.publishSnapshotLocked() // initialise with empty maps
 	return b
+}
+
+type sessionLifecycleObserver struct {
+	authenticated func(*Session)
+	closed        func(*Session)
+}
+
+func (b *Broker) AddSessionLifecycleObserver(authenticated, closed func(*Session)) (remove func()) {
+	b.mu.Lock()
+	b.nextLifecycleObserverID++
+	id := b.nextLifecycleObserverID
+	b.lifecycleObservers[id] = sessionLifecycleObserver{authenticated: authenticated, closed: closed}
+	b.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			b.mu.Lock()
+			delete(b.lifecycleObservers, id)
+			b.mu.Unlock()
+		})
+	}
+}
+
+func (b *Broker) lifecycleAuthenticatedCallbacksLocked() []func(*Session) {
+	callbacks := make([]func(*Session), 0, len(b.lifecycleObservers))
+	for _, observer := range b.lifecycleObservers {
+		if observer.authenticated != nil {
+			callbacks = append(callbacks, observer.authenticated)
+		}
+	}
+	return callbacks
+}
+
+func (b *Broker) lifecycleClosedCallbacksLocked() []func(*Session) {
+	callbacks := make([]func(*Session), 0, len(b.lifecycleObservers))
+	for _, observer := range b.lifecycleObservers {
+		if observer.closed != nil {
+			callbacks = append(callbacks, observer.closed)
+		}
+	}
+	return callbacks
 }
 
 // snapshotSessions returns the sessions map and consoleUser via the atomic
@@ -368,11 +436,25 @@ func (b *Broker) SetSessionAuthenticatedHandler(handler SessionAuthenticatedHand
 
 // fireSessionAuthenticated invokes the on-authenticated handler if set.
 func (b *Broker) fireSessionAuthenticated(session *Session) {
+	b.firePrimarySessionAuthenticated(session)
+	b.fireLifecycleSessionAuthenticated(session)
+}
+
+func (b *Broker) firePrimarySessionAuthenticated(session *Session) {
 	b.mu.RLock()
 	handler := b.onSessionAuthed
 	b.mu.RUnlock()
 	if handler != nil {
 		handler(session)
+	}
+}
+
+func (b *Broker) fireLifecycleSessionAuthenticated(session *Session) {
+	b.mu.RLock()
+	callbacks := b.lifecycleAuthenticatedCallbacksLocked()
+	b.mu.RUnlock()
+	for _, callback := range callbacks {
+		callback(session)
 	}
 }
 
@@ -391,8 +473,19 @@ func (b *Broker) SetConsoleUser(username string) {
 
 // Listen starts the IPC listener. Blocks until stopChan is closed.
 func (b *Broker) Listen(stopChan <-chan struct{}) error {
-	if err := b.setupSocket(); err != nil {
+	listener, err := b.setupSocket()
+	if err != nil {
 		return fmt.Errorf("sessionbroker: setup socket: %w", err)
+	}
+	return b.listenOn(listener, stopChan)
+}
+
+func (b *Broker) listenOn(listener net.Listener, stopChan <-chan struct{}) error {
+	if !b.publishListener(listener) {
+		return nil
+	}
+	if b.afterListenerPublished != nil {
+		b.afterListenerPublished()
 	}
 
 	log.Info("session broker listening", "path", b.socketPath)
@@ -403,18 +496,15 @@ func (b *Broker) Listen(stopChan <-chan struct{}) error {
 	// Accept loop
 	go func() {
 		for {
-			conn, err := b.listener.Accept()
+			conn, err := listener.Accept()
 			if err != nil {
-				b.mu.RLock()
-				closed := b.closed
-				b.mu.RUnlock()
-				if closed {
+				if b.acceptingStopped() {
 					return
 				}
 				log.Warn("accept error", "error", err.Error())
 				continue
 			}
-			go b.handleConnection(conn)
+			b.startAcceptedConnection(conn)
 		}
 	}()
 
@@ -425,6 +515,10 @@ func (b *Broker) Listen(stopChan <-chan struct{}) error {
 
 // Close shuts down the broker and all sessions.
 func (b *Broker) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), HandshakeTimeout)
+	_ = b.StopAcceptingAndWait(ctx)
+	cancel()
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -441,16 +535,188 @@ func (b *Broker) Close() {
 		s.Close()
 	}
 
-	if b.listener != nil {
-		b.listener.Close()
-	}
-
 	// Clean up socket file on Unix
 	if runtime.GOOS != "windows" {
 		os.Remove(b.socketPath)
 	}
 
 	log.Info("session broker closed")
+}
+
+func (b *Broker) LifecycleHelperKeys() []HelperKey {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	keys := make([]HelperKey, 0, len(b.helperByKey))
+	for key := range b.helperByKey {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+// HasHelperKeyOwner reports whether an authenticated helper currently owns the
+// logical Windows session/role key. Scheduled helpers may own a key without a
+// proactive lifecycle registry entry.
+func (b *Broker) HasHelperKeyOwner(key HelperKey) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.helperByKey[key] != nil
+}
+
+func (b *Broker) helperKeyOwnerPID(key HelperKey) (uint32, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	owner := b.helperByKey[key]
+	if owner == nil || owner.PID <= 0 {
+		return 0, owner != nil
+	}
+	return uint32(owner.PID), true
+}
+
+func (b *Broker) whileHelperKeyOwnedBy(key HelperKey, session *Session, fn func()) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if session == nil || b.helperByKey[key] != session {
+		return false
+	}
+	fn()
+	return true
+}
+
+func (b *Broker) currentListener() net.Listener {
+	b.acceptMu.Lock()
+	defer b.acceptMu.Unlock()
+	return b.listener
+}
+
+func (b *Broker) publishListener(listener net.Listener) bool {
+	if listener == nil {
+		return false
+	}
+	b.acceptMu.Lock()
+	if b.acceptStopped {
+		b.acceptMu.Unlock()
+		_ = listener.Close()
+		return false
+	}
+	b.listener = listener
+	b.acceptMu.Unlock()
+	return true
+}
+
+func (b *Broker) acceptingStopped() bool {
+	b.acceptMu.Lock()
+	defer b.acceptMu.Unlock()
+	return b.acceptStopped
+}
+
+func (b *Broker) startAcceptedConnection(conn net.Conn) bool {
+	b.acceptMu.Lock()
+	if b.acceptStopped {
+		b.acceptMu.Unlock()
+		_ = conn.Close()
+		return false
+	}
+	b.preAuthConns[conn] = false
+	b.preAuthHandlers.Add(1)
+	b.acceptMu.Unlock()
+	go func() {
+		defer b.finishPreAuth(conn)
+		b.handleConnection(conn)
+	}()
+	return true
+}
+
+func (b *Broker) beginConnectionPublication(conn net.Conn) bool {
+	b.acceptMu.Lock()
+	defer b.acceptMu.Unlock()
+	if b.acceptStopped {
+		return false
+	}
+	if _, tracked := b.preAuthConns[conn]; !tracked {
+		return false
+	}
+	b.preAuthConns[conn] = true
+	return true
+}
+
+func (b *Broker) finishPreAuth(conn net.Conn) {
+	b.acceptMu.Lock()
+	if _, tracked := b.preAuthConns[conn]; tracked {
+		delete(b.preAuthConns, conn)
+		b.preAuthHandlers.Done()
+	}
+	b.acceptMu.Unlock()
+}
+
+// aLongTimeAgo is a deadline far enough in the past that setting it cancels any
+// pending IO immediately. Mirrors the net/http idiom.
+var aLongTimeAgo = time.Unix(1, 0)
+
+// armHandshakeDeadline gives rawConn its handshake deadline, unless the broker
+// has already stopped accepting — in which case the caller must close and give
+// up.
+//
+// This runs under acceptMu to order it against StopAcceptingAndWait, which
+// cancels unpublished connections by setting a deadline in the past. Without
+// that ordering a handler could re-arm a future deadline immediately after
+// shutdown cancelled it, silently undoing the cancellation and stalling
+// shutdown for a full HandshakeTimeout. A deadline, unlike a closed handle, can
+// be overwritten — so the two must not interleave.
+func (b *Broker) armHandshakeDeadline(rawConn net.Conn) bool {
+	b.acceptMu.Lock()
+	defer b.acceptMu.Unlock()
+	if b.acceptStopped {
+		return false
+	}
+	_ = rawConn.SetDeadline(time.Now().Add(HandshakeTimeout))
+	return true
+}
+
+// StopAcceptingAndWait stops admitting new connections and waits for in-flight
+// pre-auth handlers to finish.
+//
+// Unpublished connections are cancelled with a past deadline rather than closed
+// here. handleConnection reads the raw pipe handle via ipc.GetPeerCredentials,
+// and go-winio's Fd() reads win32File.handle with no synchronization while
+// Close() writes it — closing from this goroutine is a real data race, caught by
+// -race on windows. The consequence is worse than a torn read: a handle closed
+// mid-call can be reused by the OS for an unrelated object, so
+// GetNamedPipeClientProcessId could report a different process's PID and the
+// broker would derive that peer's SID. This is the authentication path.
+//
+// A past deadline cancels pending IO immediately (go-winio special-cases it),
+// never touches the handle, and leaves the handler as the sole owner of closing
+// the connection — every early-exit path in handleConnection closes it.
+//
+// Published connections are excluded: acceptStopped is set under acceptMu here,
+// so beginConnectionPublication returns false afterwards. Nothing cancelled here
+// can later become a live session and inherit a dead deadline, and a connection
+// that already published clears the handshake deadline itself.
+func (b *Broker) StopAcceptingAndWait(ctx context.Context) error {
+	b.acceptMu.Lock()
+	b.acceptStopped = true
+	listener := b.listener
+	b.listener = nil
+	for conn, publishing := range b.preAuthConns {
+		if !publishing {
+			_ = conn.SetDeadline(aLongTimeAgo)
+		}
+	}
+	b.acceptMu.Unlock()
+	if listener != nil {
+		_ = listener.Close()
+	}
+	done := make(chan struct{})
+	go func() {
+		b.preAuthHandlers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // SessionForUser returns the first active session for the given username.
@@ -990,6 +1256,11 @@ func (b *Broker) HasHelperForWinSession(winSessionID string) bool {
 func (b *Broker) HasHelperForWinSessionRole(winSessionID, role string) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	if id, err := strconv.ParseUint(winSessionID, 10, 32); err == nil {
+		if owner := b.helperByKey[HelperKey{WindowsSessionID: uint32(id), Role: role}]; owner != nil {
+			return true
+		}
+	}
 	for _, s := range b.sessions {
 		if s.WinSessionID == winSessionID && s.HelperRole == role {
 			return true
@@ -1245,6 +1516,7 @@ func (b *Broker) admitOrEvict(identityKey string) bool {
 		b.publishSnapshotLocked()
 	}
 	onClosed := b.onSessionClosed
+	callbacks := b.lifecycleClosedCallbacksLocked()
 	b.mu.Unlock()
 
 	if victim != nil {
@@ -1257,13 +1529,23 @@ func (b *Broker) admitOrEvict(identityKey string) bool {
 		if onClosed != nil {
 			onClosed(victim)
 		}
+		for _, callback := range callbacks {
+			callback(victim)
+		}
 	}
 	return admitted
 }
 
 func (b *Broker) handleConnection(rawConn net.Conn) {
-	// Set handshake deadline
-	rawConn.SetDeadline(time.Now().Add(HandshakeTimeout))
+	if b.beforePreAuthRead != nil {
+		b.beforePreAuthRead()
+	}
+	// Set handshake deadline. Fails closed if shutdown began first, so we never
+	// re-arm a connection StopAcceptingAndWait just cancelled.
+	if !b.armHandshakeDeadline(rawConn) {
+		rawConn.Close()
+		return
+	}
 
 	// Step 1: Get peer credentials (kernel-enforced)
 	creds, err := ipc.GetPeerCredentials(rawConn)
@@ -1273,41 +1555,20 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	identityKey := creds.IdentityKey()
-
-	// Step 2: Rate limit check (per identity: UID on Unix, SID on Windows)
-	if !b.rateLimiter.Allow(identityKey) {
-		log.Warn("connection rate limited", "identity", identityKey, "pid", creds.PID)
-		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeRateLimited, "connection rate limited", false)
-		return
-	}
-
-	// Step 3: Check max connections per identity. If the cap is hit, try to
-	// evict a single stranded session (idle > EvictIdleThreshold) so a
-	// reconnecting helper isn't permanently locked out by a dead predecessor.
-	// This is the cheap pre-auth reject path; the register step below
-	// re-runs the same check under a held write lock as the authoritative
-	// decision. See issue #443.
-	if !b.admitOrEvict(identityKey) {
-		b.mu.RLock()
-		identityCount := len(b.byIdentity[identityKey])
-		b.mu.RUnlock()
-		log.Warn("max connections exceeded", "identity", identityKey, "count", identityCount)
-		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeMaxConnsExceeded, "too many connections for identity", false)
-		return
-	}
+	verifiedWinSessionID := peerWinSessionID(creds.PID)
+	baseIdentityKey := creds.IdentityKey()
 
 	// Wrap connection
 	conn := ipc.NewConn(rawConn)
 
-	// Step 4: Read auth request
+	// Step 2: Read auth request
 	// (Moved ahead of binary-path verification so the hash from the auth
 	// request can serve as the authoritative binary identity signal —
 	// Windows cross-session spawns produce process paths that don't always
 	// match our allowlist after path normalization. See issue #387 part D.)
 	env, err := conn.Recv()
 	if err != nil {
-		log.Warn("auth request read failed", "identity", identityKey, "error", err.Error())
+		log.Warn("auth request read failed", "identity", baseIdentityKey, "error", err.Error())
 		conn.Close()
 		return
 	}
@@ -1325,7 +1586,46 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 5: Verify protocol version
+	// Determine helper role before selecting the admission identity. Windows
+	// system/user helpers are scoped by kernel SID + Windows session; assist,
+	// watchdog, and backup retain the legacy SID bucket. Unknown roles use the
+	// legacy bucket for rate/cap enforcement before permanent rejection.
+	helperRole := authReq.HelperRole
+	if helperRole == "" {
+		helperRole = ipc.HelperRoleSystem
+	}
+	roleKnown := true
+	switch helperRole {
+	case ipc.HelperRoleSystem, ipc.HelperRoleUser, ipc.HelperRoleWatchdog, ipc.HelperRoleAssist, backupipc.HelperRoleBackup:
+	default:
+		roleKnown = false
+	}
+	identityKey := helperAdmissionIdentityKey(baseIdentityKey, verifiedWinSessionID, b.goos, helperRole)
+
+	// Step 3: Rate and connection quotas are authoritative after the bounded auth
+	// request reveals the role. Lifecycle roles reserve without pre-auth
+	// eviction; every other role keeps the previous admit-or-evict behavior.
+	if !b.rateLimiter.Allow(identityKey) {
+		log.Warn("connection rate limited", "identity", identityKey, "pid", creds.PID)
+		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeRateLimited, "connection rate limited", false)
+		return
+	}
+	var preAuthAdmitted bool
+	if isWindowsLifecycleRole(b.goos, helperRole) {
+		preAuthAdmitted = b.canAdmitWithoutEviction(identityKey)
+	} else {
+		preAuthAdmitted = b.admitOrEvict(identityKey)
+	}
+	if !preAuthAdmitted {
+		b.mu.RLock()
+		identityCount := len(b.byIdentity[identityKey])
+		b.mu.RUnlock()
+		log.Warn("max connections exceeded", "identity", identityKey, "count", identityCount)
+		sendPreAuthRejectAndClose(rawConn, ipc.PreAuthCodeMaxConnsExceeded, "too many connections for identity", false)
+		return
+	}
+
+	// Step 4: Verify protocol version
 	if authReq.ProtocolVersion != ipc.ProtocolVersion {
 		log.Warn("protocol version mismatch", "got", authReq.ProtocolVersion, "want", ipc.ProtocolVersion)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
@@ -1336,14 +1636,24 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		conn.Close()
 		return
 	}
+	if !roleKnown {
+		log.Warn("unknown helper role", "role", helperRole, "identity", identityKey, "pid", creds.PID)
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "unknown helper role",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
 
-	// Step 6: Verify identity — SID on Windows, UID on Unix.
+	// Step 5: Verify identity — SID on Windows, UID on Unix.
 	// The watchdog role is exempt from identity claim validation: it runs
 	// as SYSTEM but its IPCClient doesn't self-report a SID or a usable
 	// UID (Go's os.Getuid() returns -1 on Windows → uint32 overflow).
 	// The kernel-verified creds from GetPeerCredentials (step 1) are
 	// sufficient — a caller can't fake them on a named pipe / Unix socket.
-	if authReq.HelperRole != ipc.HelperRoleWatchdog {
+	if helperRole != ipc.HelperRoleWatchdog {
 		if runtime.GOOS == "windows" {
 			if authReq.SID == "" {
 				log.Warn("auth missing SID on Windows", "pid", creds.PID)
@@ -1379,7 +1689,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		}
 	}
 
-	// Step 7: Verify binary path and hash from kernel-resolved peer metadata.
+	// Step 6: Verify binary path and hash from kernel-resolved peer metadata.
 	// Do not trust authReq.BinaryHash: any local peer can self-report it.
 	if strings.TrimSpace(creds.BinaryPath) == "" {
 		log.Warn("rejecting helper connection: peer binary path unresolved",
@@ -1410,7 +1720,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 8: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
+	// Step 7: Verify binary hash — reject helpers if no allowed helper hash could be loaded.
 	if len(b.selfHashes) == 0 {
 		log.Error("rejecting helper connection: helper binary hash allowlist unavailable",
 			"identity", identityKey,
@@ -1460,7 +1770,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Step 9: Reject duplicate session IDs
+	// Step 8: Reject duplicate session IDs
 	b.mu.RLock()
 	if _, exists := b.sessions[authReq.SessionID]; exists {
 		b.mu.RUnlock()
@@ -1482,49 +1792,31 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		return
 	}
 
-	// Determine helper role and scopes. Default to "system" for backward compat
-	// with helpers that don't send the role field.
-	helperRole := authReq.HelperRole
-	if helperRole == "" {
-		helperRole = ipc.HelperRoleSystem
-	}
-	switch helperRole {
-	case ipc.HelperRoleSystem, ipc.HelperRoleUser, ipc.HelperRoleWatchdog, ipc.HelperRoleAssist, backupipc.HelperRoleBackup:
-	default:
-		log.Warn("unknown helper role", "role", helperRole, "identity", identityKey, "pid", creds.PID)
-		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
-			Accepted:  false,
-			Reason:    "unknown helper role",
-			Permanent: true,
-		})
-		conn.Close()
-		return
-	}
-
 	// Kernel-verify the peer's Windows session id (from peer PID, via
-	// ProcessIdToSessionId) BEFORE the role gate so the gate can bind the
-	// assist/user roles to the active console session. On non-Windows / failure
-	// this is "" and the console binding is inert (Unix path returns early).
+	// ProcessIdToSessionId) before the role gate. System/user helpers must claim
+	// that exact interactive session; assist remains bound to the active console.
+	// On non-Windows this session gate is inert.
 	verifiedWinSession := ""
-	if vsid := peerWinSessionID(creds.PID); vsid != 0 {
-		verifiedWinSession = fmt.Sprintf("%d", vsid)
+	if verifiedWinSessionID != 0 {
+		verifiedWinSession = fmt.Sprintf("%d", verifiedWinSessionID)
 	}
+	claimedWinSession := fmt.Sprintf("%d", authReq.WinSessionID)
 	consoleWinSession := b.ConsoleSessionID()
 
-	// Step 10: Validate role matches peer identity to prevent privilege escalation.
+	// Step 9: Validate role matches peer identity to prevent privilege escalation.
 	// On Windows, SYSTEM helpers must run as SYSTEM (S-1-5-18), and user/assist
 	// helpers must NOT run as SYSTEM. This prevents a non-SYSTEM process from
 	// claiming system role to get desktop scopes, or SYSTEM from claiming user
-	// role. The watchdog must also run as root/SYSTEM. Additionally, assist/user
-	// are bound to the active console session so a co-logged-in user on a
-	// multi-user host can't register them from another session (#1009). The
-	// decision is factored into roleIdentityRejection so the gate can be
+	// role. The watchdog must also run as root/SYSTEM. System/user claims must
+	// equal the kernel-derived interactive session, while assist stays bound to
+	// the active console session (#1009). The decision is factored into
+	// roleIdentityRejection so the gate can be
 	// unit-tested with an injected peer-cred SID/UID and session ids (none of
 	// which can be faked over a pipe).
-	if reason, rejected := roleIdentityRejection(helperRole, creds.SID, creds.UID, verifiedWinSession, consoleWinSession, runtime.GOOS); rejected {
+	if reason, rejected := roleIdentityRejection(helperRole, creds.SID, creds.UID, verifiedWinSession, claimedWinSession, consoleWinSession, runtime.GOOS); rejected {
 		log.Warn("role/identity mismatch",
 			"reason", reason, "role", helperRole, "sid", creds.SID, "uid", creds.UID,
-			"peerWinSession", verifiedWinSession, "consoleWinSession", consoleWinSession,
+			"peerWinSession", verifiedWinSession, "claimedWinSession", claimedWinSession, "consoleWinSession", consoleWinSession,
 			"pid", creds.PID, "binaryKind", authReq.BinaryKind)
 		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
 			Accepted:  false,
@@ -1536,6 +1828,50 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	scopes := b.grantScopes(helperRole, authReq, runtime.GOOS, creds.BinaryPath)
+	ownedProcess, err := openOwnedPeerProcess(uint32(creds.PID))
+	if err != nil {
+		log.Warn("failed to retain authenticated peer process handle", "pid", creds.PID, "error", err.Error())
+		_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+			Accepted:  false,
+			Reason:    "peer process handle unavailable",
+			Permanent: true,
+		})
+		conn.Close()
+		return
+	}
+	peerProcessRef := newOwnedPeerProcessRef(ownedProcess)
+	peerProcessPublished := false
+	defer func() {
+		if !peerProcessPublished {
+			_ = peerProcessRef.close()
+		}
+	}()
+
+	var helperReservation *helperAuthReservation
+	if isWindowsLifecycleRole(b.goos, helperRole) {
+		helperKey := HelperKey{WindowsSessionID: verifiedWinSessionID, Role: helperRole}
+		helperReservation, err = b.reserveWindowsHelper(identityKey, creds.SID, helperKey)
+		if err != nil {
+			log.Warn("Windows helper admission rejected",
+				"identity", identityKey,
+				"sessionId", authReq.SessionID,
+				"helperKey", helperKey.String(),
+				"error", err.Error(),
+			)
+			_ = conn.SendTyped(env.ID, ipc.TypeAuthResponse, ipc.AuthResponse{
+				Accepted:  false,
+				Reason:    err.Error(),
+				Permanent: errors.Is(err, errDuplicateHelperKey) || errors.Is(err, errHelperKeyNotDesired),
+			})
+			conn.Close()
+			return
+		}
+		defer func() {
+			if helperReservation != nil {
+				b.releaseWindowsHelper(helperReservation)
+			}
+		}()
+	}
 
 	// Send auth response
 	authResp := ipc.AuthResponse{
@@ -1545,6 +1881,10 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 	if err := conn.SendTyped(env.ID, ipc.TypeAuthResponse, authResp); err != nil {
 		log.Warn("failed to send auth response", "error", err.Error())
+		conn.Close()
+		return
+	}
+	if !b.beginConnectionPublication(rawConn) {
 		conn.Close()
 		return
 	}
@@ -1564,14 +1904,16 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.BinaryKind = ipc.HelperBinaryUserHelper
 	}
 	session.DesktopContext = authReq.DesktopContext
+	session.peerProcess = peerProcessRef
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
 	// PID) instead of trusting the self-reported value, preventing
-	// session-jumping attacks. Falls back to the self-reported value only when
-	// the kernel lookup failed (verifiedWinSession == "").
+	// session-jumping attacks. System/user helpers cannot reach this point when
+	// the kernel lookup failed or disagrees with the authenticated claim. Other
+	// roles retain the legacy fallback when no kernel session is available.
 	if verifiedWinSession != "" {
 		session.WinSessionID = verifiedWinSession
-		if verifiedWinSession != fmt.Sprintf("%d", authReq.WinSessionID) {
+		if verifiedWinSession != claimedWinSession {
 			log.Warn("WinSessionID mismatch — using kernel-verified value",
 				"reported", authReq.WinSessionID,
 				"verified", verifiedWinSession,
@@ -1579,50 +1921,32 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 			)
 		}
 	} else {
-		session.WinSessionID = fmt.Sprintf("%d", authReq.WinSessionID)
+		session.WinSessionID = claimedWinSession
 	}
 
-	// Register session. Re-run tryAdmitLocked under the write lock: this
-	// is the authoritative cap check. Without it, two concurrent admits
-	// for the same identity could both pass admitOrEvict (or both see
-	// room after one of them evicted), then both append here and push the
-	// count past MaxConnectionsPerIdentity. Also captures any victim so we
-	// can Close() it outside the lock below.
-	b.mu.Lock()
-	admitted, victim := b.tryAdmitLocked(identityKey)
-	if !admitted {
-		b.mu.Unlock()
-		log.Warn("max connections exceeded at register (admit race)",
-			"identity", identityKey,
-			"sessionId", authReq.SessionID,
-		)
-		conn.Close()
-		return
-	}
-	b.sessions[authReq.SessionID] = session
-	b.byIdentity[identityKey] = append(b.byIdentity[identityKey], session)
-	// Track backup helper session for direct access
-	if helperRole == backupipc.HelperRoleBackup {
-		if b.backup == nil {
-			b.backup = &backupHelper{}
-		}
-		b.backup.session = session
-	}
-	b.publishSnapshotLocked()
-	registerOnClosed := b.onSessionClosed
-	b.mu.Unlock()
-
-	if victim != nil {
-		if err := victim.Close(); err != nil {
-			log.Error("error closing evicted session at register",
-				"sessionId", victim.SessionID,
+	if helperReservation != nil {
+		if err := b.commitWindowsHelper(helperReservation, session); err != nil {
+			log.Warn("Windows helper admission changed before commit",
+				"identity", identityKey,
+				"sessionId", authReq.SessionID,
 				"error", err.Error(),
 			)
+			conn.Close()
+			return
 		}
-		if registerOnClosed != nil {
-			registerOnClosed(victim)
+		helperReservation = nil
+	} else {
+		if err := b.registerNonLifecycleSession(identityKey, helperRole, session); err != nil {
+			log.Warn("max connections exceeded at register (admit race)",
+				"identity", identityKey,
+				"sessionId", authReq.SessionID,
+			)
+			conn.Close()
+			return
 		}
 	}
+	peerProcessPublished = true
+	b.finishPreAuth(rawConn)
 
 	log.Info("user helper connected",
 		"identity", identityKey,
@@ -1635,11 +1959,11 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		"desktopContext", session.DesktopContext,
 	)
 
-	// Notify the on-authenticated handler now that the session is fully
-	// registered (admitted, appended, scopes assigned). Fired outside the
-	// broker mutex and in a goroutine so a slow handler (e.g. one that pushes
-	// the helper token over IPC) can't block the accept loop or hold b.mu.
-	go b.fireSessionAuthenticated(session)
+	// Lifecycle ownership must be published synchronously before RecvLoop can
+	// fail and emit the corresponding close callback. The primary application
+	// handler remains asynchronous because it may perform slow IPC work.
+	b.fireLifecycleSessionAuthenticated(session)
+	go b.firePrimarySessionAuthenticated(session)
 
 	// Keepalive: send periodic pings and close the session if pongs stop
 	// arriving. Without this, a wedged helper (e.g. a capture process killed
@@ -1659,11 +1983,13 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	log.Info("user helper disconnected", "uid", session.UID, "sessionId", session.SessionID)
 }
 
-// removeSessionMapsLocked removes session from b.sessions and b.byIdentity
-// and records the PID as stale. Caller must hold b.mu.Lock(). Does NOT
-// Close() the session, publish a snapshot, or fire onSessionClosed; the
-// caller is responsible for those.
-func (b *Broker) removeSessionMapsLocked(session *Session) {
+// removeSessionMapsLocked removes session from b.sessions and b.byIdentity.
+// Caller must hold b.mu.Lock(). Does NOT Close() the session, publish a
+// snapshot, or fire onSessionClosed; the caller is responsible for those.
+func (b *Broker) removeSessionMapsLocked(session *Session) bool {
+	if b.sessions[session.SessionID] != session {
+		return false
+	}
 	delete(b.sessions, session.SessionID)
 
 	key := session.IdentityKey
@@ -1677,69 +2003,88 @@ func (b *Broker) removeSessionMapsLocked(session *Session) {
 	if len(b.byIdentity[key]) == 0 {
 		delete(b.byIdentity, key)
 	}
-
-	// Track the PID so it can be killed before spawning a replacement
-	// (Windows only — see trackStaleHelper; elsewhere this is a deliberate
-	// no-op). Don't kill here — the process may still be serving an active
-	// desktop session. Key includes role so SYSTEM and user helper stale
-	// PIDs are tracked separately.
-	if session.PID > 0 {
-		staleKey := session.WinSessionID + "-" + session.HelperRole
-		b.trackStaleHelper(staleKey, session.PID)
+	for helperKey, owner := range b.helperByKey {
+		if owner == session {
+			delete(b.helperByKey, helperKey)
+		}
 	}
+	for authKey, owner := range b.helperByAuthKey {
+		if owner == session {
+			delete(b.helperByAuthKey, authKey)
+		}
+	}
+	return true
 }
 
 func (b *Broker) removeSession(session *Session) {
-	b.mu.Lock()
-	b.removeSessionMapsLocked(session)
-	b.publishSnapshotLocked()
-	onSessionClosed := b.onSessionClosed
-	b.mu.Unlock()
-
-	if onSessionClosed != nil {
-		onSessionClosed(session)
-	}
+	_ = b.closeSession(session)
 }
 
-// trackStaleHelper records a disconnected helper PID for later cleanup.
-// Called under b.mu lock.
-//
-// Windows-only: the sole drain path is KillStaleHelpers, whose callers are all
-// Windows-gated (it exists to release DXGI Desktop Duplication locks before
-// respawning a helper). On macOS/Linux nothing ever drains this map, so
-// tracking there grows unbounded for the life of the daemon (issue #2387).
-// macOS handles helper teardown differently: live sessions are closed at
-// logout via CloseSessionsByDesktopContext, and launchd `kickstart -k` kills
-// any lingering instance on respawn.
-func (b *Broker) trackStaleHelper(winSessionID string, pid int) {
-	if runtime.GOOS != "windows" {
+func (b *Broker) closeSession(session *Session) error {
+	b.mu.Lock()
+	removed := b.removeSessionMapsLocked(session)
+	if removed {
+		b.publishSnapshotLocked()
+	}
+	onSessionClosed := b.onSessionClosed
+	callbacks := b.lifecycleClosedCallbacksLocked()
+	b.mu.Unlock()
+
+	closeErr := session.closeTransportAndPeer()
+	if removed {
+		if onSessionClosed != nil {
+			onSessionClosed(session)
+		}
+		for _, callback := range callbacks {
+			callback(session)
+		}
+	}
+	return closeErr
+}
+
+func (b *Broker) TerminateHelperKey(key HelperKey) {
+	b.mu.Lock()
+	session := b.helperByKey[key]
+	if session == nil {
+		b.mu.Unlock()
 		return
 	}
-	b.staleHelpers[winSessionID] = append(b.staleHelpers[winSessionID], pid)
-}
-
-// KillStaleHelpers kills any disconnected helper processes for the given
-// Windows session. Call this before spawning a new helper to release DXGI
-// Desktop Duplication locks held by orphaned processes.
-//
-// Windows-only contract: trackStaleHelper only records PIDs on Windows, so on
-// any other platform this is always a no-op against an empty map — do not add
-// non-Windows callers expecting it to find anything.
-func (b *Broker) KillStaleHelpers(winSessionID string) {
-	b.mu.Lock()
-	pids := b.staleHelpers[winSessionID]
-	delete(b.staleHelpers, winSessionID)
+	claim := session.peerProcess.claimTermination()
+	removed := b.removeSessionMapsLocked(session)
+	if removed {
+		b.publishSnapshotLocked()
+	}
+	onSessionClosed := b.onSessionClosed
+	callbacks := b.lifecycleClosedCallbacksLocked()
 	b.mu.Unlock()
 
-	for _, pid := range pids {
-		if proc, err := os.FindProcess(pid); err == nil {
-			if err := proc.Kill(); err != nil {
-				log.Debug("failed to kill stale userhelper (may have already exited)",
-					"pid", pid, "error", err.Error())
-			} else {
-				log.Info("killed stale userhelper before respawn",
-					"pid", pid, "winSessionID", winSessionID)
-			}
+	if claim != nil {
+		if err := claim.terminateAndClose(); err != nil {
+			// Warn, not Debug: the default level is info (config.go), so the
+			// previous Debug line meant a failed kill left NO evidence at all.
+			// This is the enforcement path, not best-effort cleanup.
+			//
+			// The maps are already cleared at this point, which is safe for
+			// lifecycle-tracked helpers: helperRegistry.reserve refuses to
+			// respawn while the tracked process is alive OR its liveness is
+			// unknown. A scheduled helper has no registry entry, so a failed
+			// kill there can still be followed by a proactive spawn — tracked
+			// in #2530 (needs bounded ownership retention). Do NOT "fix" that by
+			// re-registering this session in helperByKey: the session is closed
+			// immediately below, HasHelperKeyOwner does not filter closed
+			// owners, and nothing would ever clear the entry, so the key would
+			// be wedged for the process lifetime.
+			log.Warn("failed to terminate helper process",
+				"helperKey", key.String(), "pid", session.PID, "error", err.Error())
+		}
+	}
+	_ = session.closeTransportAndPeer()
+	if removed {
+		if onSessionClosed != nil {
+			onSessionClosed(session)
+		}
+		for _, callback := range callbacks {
+			callback(session)
 		}
 	}
 }
@@ -1818,22 +2163,19 @@ const systemSID = "S-1-5-18"
 // permanent. It returns ("", false) when the role/identity pairing is allowed.
 //
 // peerWinSession is the kernel-verified Windows session id of the peer (from
-// ProcessIdToSessionId) and consoleWinSession is the active console session id.
-// On Windows the assist/user roles are additionally bound to the active console
-// session: a co-logged-in non-SYSTEM user on a multi-user host (RDS/terminal
-// server) running the genuine allowlisted Helper from a NON-console session must
-// not be able to register as assist/user — otherwise it would obtain the device
-// helper token and intercept run_as_user scripts meant for the console operator
-// (#1009). The SYSTEM-capture gate is unchanged (still SID-only). The console
-// binding does not apply on Unix (single interactive session; the macOS desktop
-// helper authenticates as user-role from the GUI/loginwindow session).
+// ProcessIdToSessionId), claimedWinSession is the authenticated numeric claim,
+// and consoleWinSession is the active console session id. Windows system/user
+// helpers require a nonzero peer session that exactly matches their claim, so
+// legitimate RDP helpers are admitted without trusting self-reported routing.
+// Assist remains console-bound for its cross-user token capability (#1009).
+// Session binding does not apply on Unix.
 //
 // Pure and OS-parameterized so the privilege-escalation gate can be unit-tested
 // with an injected SID/UID and session ids — a real peer-cred SID and
 // kernel-verified session id can't be forged over a named pipe / Unix socket,
 // so end-to-end pipe tests can only exercise the current test process's own
 // identity.
-func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, consoleWinSession, goos string) (reason string, rejected bool) {
+func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, claimedWinSession, consoleWinSession, goos string) (reason string, rejected bool) {
 	if goos == "windows" {
 		switch {
 		case role == ipc.HelperRoleSystem && sid != systemSID:
@@ -1845,22 +2187,16 @@ func roleIdentityRejection(role, sid string, uid uint32, peerWinSession, console
 		case role == ipc.HelperRoleWatchdog && sid != systemSID:
 			return "watchdog role requires SYSTEM identity", true
 		}
-		// Positive console-session assertion for the cross-user roles. An unknown
-		// console session — "" (lookup failed) or "0" (the Session-0 services
-		// sentinel / WTS-failure value; Broker.ConsoleSessionID normalizes it to
-		// "", but the raw value is rejected here too so this pure gate is correct
-		// in isolation) — is treated as "no match" so we fail closed rather than
-		// admit an arbitrary session.
-		consoleUnknown := consoleWinSession == "" || consoleWinSession == "0"
-		switch role {
-		case ipc.HelperRoleAssist:
-			if consoleUnknown || peerWinSession != consoleWinSession {
-				return "assist role requires the active console session", true
+		if role == ipc.HelperRoleUser || role == ipc.HelperRoleSystem {
+			if peerWinSession == "" || peerWinSession == "0" {
+				return role + " role requires an interactive peer session", true
 			}
-		case ipc.HelperRoleUser:
-			if consoleUnknown || peerWinSession != consoleWinSession {
-				return "user role requires the active console session", true
+			if peerWinSession != claimedWinSession {
+				return role + " role session claim does not match peer token", true
 			}
+		}
+		if role == ipc.HelperRoleAssist && (consoleWinSession == "" || consoleWinSession == "0" || peerWinSession != consoleWinSession) {
+			return "assist role requires the active console session", true
 		}
 		return "", false
 	}
@@ -1962,6 +2298,10 @@ func (b *Broker) allowedHelperPaths() []string {
 		filepath.Join(dir, "breeze-desktop-helper.exe"),
 		filepath.Join(dir, UserHelperBinaryName),
 		filepath.Join(dir, "breeze-watchdog.exe"),
+		// Backup helper (breeze-backup / breeze-backup.exe) connects to the same
+		// IPC socket and must be allowed, else backup_run always times out.
+		filepath.Join(dir, "breeze-backup"),
+		filepath.Join(dir, "breeze-backup.exe"),
 	}
 	if runtime.GOOS != "windows" {
 		paths = append(paths,

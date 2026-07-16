@@ -6,6 +6,7 @@ import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
+import { useOrgStore } from '../../../stores/orgStore';
 import { formatPercent } from '@/lib/i18n/format';
 import {
   addBlock,
@@ -340,6 +341,57 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     }, t('quotes.editor.errors.saveTitle'));
     if (ok) flashTitleSaved();
   }, [titleDirty, title, quote.id, refresh, runScoped, flashTitleSaved, t]);
+
+  // ---- customer (organization) reassignment --------------------------------
+  // Company choices for the customer select: the partner's org list, with the
+  // quote's own org prepended if it isn't loaded (e.g. All-orgs scope) so the
+  // select always shows a valid current value.
+  const organizations = useOrgStore((s) => s.organizations);
+  const orgOptions = useMemo(() => {
+    const sorted = [...organizations].sort((a, b) => a.name.localeCompare(b.name));
+    if (!sorted.some((o) => o.id === quote.orgId)) {
+      sorted.unshift({
+        id: quote.orgId,
+        name: detail.billTo?.name?.trim() || quote.orgId.slice(0, 8),
+      } as (typeof sorted)[number]);
+    }
+    return sorted;
+  }, [organizations, quote.orgId, detail.billTo?.name]);
+
+  // Local mirror so the select shows the chosen company instantly instead of
+  // snapping back to the prop value while the PATCH is in flight (same pattern
+  // as the deposit controls); resyncs from the server after each refresh().
+  const [customerOrgId, setCustomerOrgId] = useState(quote.orgId);
+  useEffect(() => { setCustomerOrgId(quote.orgId); }, [quote.orgId]);
+
+  // Reassign the draft to another company. The server clears the site + bill-to
+  // override and re-resolves the org's tax rate, so refresh() re-pulls the whole
+  // detail to land the recomputed totals and the new bill-to in one hop.
+  const saveCustomer = useCallback((orgId: string) => {
+    if (orgId === quote.orgId) return;
+    const name = orgOptions.find((o) => o.id === orgId)?.name ?? '';
+    setCustomerOrgId(orgId);
+    void runScoped('customer', async () => {
+      try {
+        await runAction({
+          request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+            method: 'PATCH', body: JSON.stringify({ orgId }),
+          }),
+          errorFallback: t('quotes.editor.errors.saveCustomer'),
+          successMessage: t('quotes.editor.customer.success', { name }),
+          onUnauthorized: UNAUTHORIZED,
+        });
+      } catch (err) {
+        // Snap back to the last-known server value, then re-pull: on an error
+        // the client can't know whether the move landed, so re-converge on
+        // server truth instead of asserting a rollback.
+        setCustomerOrgId(quote.orgId);
+        refresh();
+        throw err;
+      }
+      refresh();
+    }, t('quotes.editor.errors.saveCustomer'));
+  }, [quote.id, quote.orgId, orgOptions, refresh, runScoped, t]);
 
   // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
   // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
@@ -1125,21 +1177,42 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         </button>
       </div>
       {canWrite && (
-        <div className="max-w-xl">
-          <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
-          <input
-            id="quote-title"
-            type="text"
-            value={title}
-            maxLength={200}
-            placeholder={t('quotes.editor.title.placeholder')}
-            onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
-            onBlur={() => void saveTitle()}
-            disabled={isPending('title')}
-            data-testid="quote-title"
-            className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
-          />
-          <SrSaved show={titleSaved} testId="quote-title-saved" />
+        <div className="flex max-w-3xl flex-wrap items-start gap-3">
+          <div className="min-w-64 flex-1">
+            <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
+            <input
+              id="quote-title"
+              type="text"
+              value={title}
+              maxLength={200}
+              placeholder={t('quotes.editor.title.placeholder')}
+              onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
+              onBlur={() => void saveTitle()}
+              disabled={isPending('title')}
+              data-testid="quote-title"
+              className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
+            />
+            <SrSaved show={titleSaved} testId="quote-title-saved" />
+          </div>
+          {/* Customer reassignment (drafts only — this editor only mounts for
+              drafts). Selecting a company saves immediately; the server clears
+              the site + bill-to override and applies the new org's tax rate. */}
+          <div className="w-64 max-w-full">
+            <label htmlFor="quote-customer" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.customer.label')}</label>
+            <select
+              id="quote-customer"
+              value={customerOrgId}
+              onChange={(e) => saveCustomer(e.target.value)}
+              disabled={isPending('customer')}
+              title={t('quotes.editor.customer.help')}
+              data-testid="quote-customer"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+            >
+              {orgOptions.map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+          </div>
         </div>
       )}
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
@@ -1650,6 +1723,7 @@ function BlockCard({
   const heading = (block.content?.text as string | undefined) ?? '';
   const html = (block.content?.html as string | undefined) ?? '';
   const tableLabel = (block.content?.label as string | undefined) ?? '';
+  const showSubtotal = (block.content?.showSubtotal as boolean | undefined) === true;
   const imageId = (block.content?.imageId as string | undefined) ?? '';
   const imageCaption = (block.content?.caption as string | undefined) ?? '';
 
@@ -1701,10 +1775,20 @@ function BlockCard({
   // Rename a pricing table. An empty label is a valid clear (the document falls
   // back to its "Pricing" default), so — unlike heading — we commit the trimmed
   // value even when blank, only skipping when nothing actually changed.
+  // Both the label and the subtotal toggle live in the SAME line_items content
+  // object, and onEditBlock REPLACES content wholesale — so each edit must carry
+  // the other's current value forward or it gets dropped.
+  const lineItemsContent = (nextLabel: string, nextSubtotal: boolean) => ({
+    ...(nextLabel.trim() ? { label: nextLabel.trim() } : {}),
+    ...(nextSubtotal ? { showSubtotal: true } : {}),
+  });
   const commitLabel = async () => {
     const label = labelDraft.trim();
     if (label === tableLabel.trim()) { setLabelDraft(tableLabel); return; }
-    if (await onEditBlock(block, label ? { label } : {})) flashSaved();
+    if (await onEditBlock(block, lineItemsContent(label, showSubtotal))) flashSaved();
+  };
+  const toggleSubtotal = async (next: boolean) => {
+    if (await onEditBlock(block, lineItemsContent(tableLabel, next))) flashSaved();
   };
 
   const submitManual = async () => {
@@ -1809,14 +1893,26 @@ function BlockCard({
                 className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-semibold transition-shadow disabled:opacity-60 ${fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved)}`}
               />
             )}
+            {canWrite && (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={showSubtotal}
+                  onChange={(e) => void toggleSubtotal(e.target.checked)}
+                  disabled={blockBusy}
+                  data-testid={`quote-block-subtotal-toggle-${block.id}`}
+                />
+                {t('quotes.editor.table.showSubtotal')}
+              </label>
+            )}
             {/* The 7-column row (description + 4 inline controls + total + actions)
                 can't compress gracefully on a tablet, so the table keeps a sensible
                 min width and the wrapper scrolls horizontally below that. */}
             <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
-            <table className="w-full min-w-[640px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
+            <table className="w-full min-w-[800px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-2 py-2 font-medium">{t('quotes.editor.table.item')}</th>
+                  <th className="min-w-[13rem] px-2 py-2 font-medium">{t('quotes.editor.table.item')}</th>
                   <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
                   <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
                   <th className="px-2 py-2 font-medium">{t('quotes.editor.table.recurrence')}</th>
@@ -1872,8 +1968,8 @@ function BlockCard({
 
             {/* Add line to this pricing table */}
             {canWrite && (
-            <div className="rounded-md border bg-background/40 p-3" data-testid={`quote-block-add-line-${block.id}`}>
-              <div className="mb-2 flex gap-2">
+            <div className="mt-3 rounded-md border bg-background/40 p-4" data-testid={`quote-block-add-line-${block.id}`}>
+              <div className="mb-3 flex gap-2">
                 {(['catalog', 'manual', ...(ecActive ? ['distributor'] as const : []), ...(pax8Active ? ['pax8'] as const : [])] as const).map((m) => (
                   <button
                     key={m}
@@ -1931,7 +2027,7 @@ function BlockCard({
                   />
                 )
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <CatalogEnrichButton
                       idSuffix={`quote-${block.id}`}
@@ -2036,8 +2132,10 @@ function BlockCard({
                       </select>
                     </label>
                   </div>
-                  {/* Internal-only cost & identity fields (never shown to the customer). */}
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.internal.full')}</p>
+                  {/* Internal-only cost & identity fields (never shown to the customer).
+                      Divider + top padding sets them apart from the customer-facing
+                      fields above so the two groups don't read as one dense block. */}
+                  <p className="mt-1 border-t pt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.internal.full')}</p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_110px_100px]">
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.skuOptional')}</span>
@@ -2526,9 +2624,10 @@ function EditableLineRow({
   return (
     <>
     <tr className="border-t align-top [&>td]:pt-4" data-testid={`quote-line-${line.id}`}>
-      <td className="px-2 py-2">
-        {/* min-w-0 lets the name input honour its own min-w-[12rem] floor rather
-            than the flex row's min-content, so a catalog thumbnail can't crush it. */}
+      {/* Column min-width (min-w-[13rem]) is declared on the cell so table
+          auto-layout reserves the name column instead of squeezing it below the
+          input's width (which used to overflow into the qty cell). */}
+      <td className="min-w-[13rem] px-2 py-2">
         <div className="flex min-w-0 items-start gap-2">
           {line.imageId
             ? <LineImageThumb quoteId={quoteId} imageId={line.imageId} />
@@ -2543,7 +2642,7 @@ function EditableLineRow({
               onBlur={commitName}
               disabled={fieldBusy('name')}
               data-testid={`quote-line-name-${line.id}`}
-              className={`h-9 w-full min-w-[12rem] rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
+              className={`h-9 w-full rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
             />
           </div>
         </div>

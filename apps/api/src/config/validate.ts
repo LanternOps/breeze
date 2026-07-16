@@ -1,5 +1,6 @@
 import { isIP } from 'net';
 import { z } from 'zod';
+import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { decodePartnerApiCursorSigningKey, isRecognizedSelfHostSignal } from './env';
 
 // ---------------------------------------------------------------------------
@@ -341,12 +342,19 @@ const envSchema = z
         (v) => !v || v.startsWith('postgres://') || v.startsWith('postgresql://'),
         { message: 'DATABASE_URL_APP must be a valid postgres:// or postgresql:// URL' },
       )
-      .describe('Optional unprivileged application DB connection. If unset, falls back to DATABASE_URL.'),
+      .describe(
+        'Explicit unprivileged request DB connection. If unset, Breeze derives the breeze_app URL using BREEZE_APP_DB_PASSWORD or POSTGRES_PASSWORD; production refuses direct DATABASE_URL fallback.',
+      ),
 
     BREEZE_APP_DB_PASSWORD: z
       .string()
       .optional()
       .describe('Password for the breeze_app role. If unset, ensureAppRole falls back to POSTGRES_PASSWORD.'),
+
+    POSTGRES_PASSWORD: z
+      .string()
+      .optional()
+      .describe('Standard Compose PostgreSQL password and fallback breeze_app derivation credential.'),
 
     // Issue #915: dedicated connection string for the `breeze_audit_admin`
     // login role used ONLY by the audit-log retention worker. When set,
@@ -519,7 +527,15 @@ const envSchema = z
     APNS_KEY_ID: z.string().optional(),
     APNS_TEAM_ID: z.string().optional(),
     APNS_BUNDLE_ID: z.string().optional(),
-    APNS_ENVIRONMENT: z.enum(['sandbox', 'production']).optional(),
+    // Empty string means "unset", matching the trim() semantics the all-or-none
+    // block uses. Compose maps this as `${APNS_ENVIRONMENT:-}`, which always
+    // injects the key — as "" when the operator hasn't set it — and a bare
+    // `.optional()` enum rejects "" and refuses to boot. The string fields above
+    // tolerate "" natively; only the enum needs this.
+    APNS_ENVIRONMENT: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z.enum(['sandbox', 'production']).optional()
+    ),
 
     // -- Optional with defaults -----------------------------------------------
     API_PORT: portSchema,
@@ -562,6 +578,20 @@ const envSchema = z
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
     const isProduction = data.NODE_ENV === 'production';
+
+    if (
+      isProduction
+      && !data.DATABASE_URL_APP?.trim()
+      && !data.BREEZE_APP_DB_PASSWORD?.trim()
+      && !data.POSTGRES_PASSWORD?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['DATABASE_URL_APP'],
+        message:
+          'Production requires DATABASE_URL_APP, BREEZE_APP_DB_PASSWORD, or POSTGRES_PASSWORD to configure the unprivileged request database role.',
+      });
+    }
 
     // #2288 — instance-level backup control-plane URL pushed to agents.
     // Malformed value = refuse to boot; a silently-dropped backup URL would
@@ -1291,6 +1321,28 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     // (AGENT_ENROLLMENT_SECRET is now a hard error in production — see the
     // schema superRefine. No warning needed here; the validator throws if
     // it's missing or weak.)
+
+    // SR2-16: a prod deploy that trusts proxy headers but leaves
+    // TRUST_CF_CONNECTING_IP off resolves client IPs from X-Forwarded-For only.
+    // That is correct for a non-Cloudflare front, but a Cloudflare-fronted
+    // deploy that forgets the flag silently loses CF-Connecting-IP attribution —
+    // rate limits, audit-log IPs and partner IP allowlists then key off XFF (or
+    // the proxy hop if XFF isn't populated). Warn so the flag is a conscious
+    // choice; hard-failing would break legitimate non-Cloudflare self-hosters.
+    const trustProxy = (env.TRUST_PROXY_HEADERS ?? '').trim().toLowerCase();
+    const proxyTrustOn = ['1', 'true', 'yes', 'on'].includes(trustProxy);
+    const trustCf = (env.TRUST_CF_CONNECTING_IP ?? '').trim().toLowerCase();
+    const cfTrustOff = !['1', 'true', 'yes', 'on'].includes(trustCf);
+    if (proxyTrustOn && cfTrustOff) {
+      warnings.push({
+        key: 'TRUST_CF_CONNECTING_IP',
+        message:
+          'Proxy header trust is enabled but TRUST_CF_CONNECTING_IP is off, so CF-Connecting-IP is ignored. ' +
+          'This is correct for a non-Cloudflare front. If this deployment IS behind Cloudflare, set ' +
+          'TRUST_CF_CONNECTING_IP=true — otherwise client IPs (rate limits, audit logs, IP allowlists) resolve ' +
+          'from X-Forwarded-For instead of the Cloudflare edge IP.',
+      });
+    }
   }
 
   // Warn when 2FA is globally disabled: this neuters ALL requireMfa() step-up
@@ -1365,6 +1417,7 @@ export function validateConfig(): AppConfig {
     DATABASE_URL: env.DATABASE_URL,
     DATABASE_URL_APP: env.DATABASE_URL_APP,
     BREEZE_APP_DB_PASSWORD: env.BREEZE_APP_DB_PASSWORD,
+    POSTGRES_PASSWORD: env.POSTGRES_PASSWORD,
     AUDIT_ADMIN_DATABASE_URL: env.AUDIT_ADMIN_DATABASE_URL,
     JWT_SECRET: env.JWT_SECRET,
     JWT_SIGNING_KEYRING: env.JWT_SIGNING_KEYRING,
@@ -1473,6 +1526,10 @@ export function validateConfig(): AppConfig {
 
     throw new Error(message);
   }
+
+  // The Graph-read descriptor stays out of AppConfig/public config. Parse it
+  // lazily, but fail boot closed when the new-consent rollout is enabled.
+  validateM365CustomerGraphReadRuntimeConfigAtBoot(env);
 
   _config = result.data;
 

@@ -771,6 +771,7 @@ Selected catalog and billing operations. Resource CRUD follows the standard REST
 | `POST` | `/invoices/bulk-delete` | Delete multiple draft invoices |
 | `POST` | `/quotes/bulk-send` | Send multiple draft quotes |
 | `POST` | `/quotes/bulk-delete` | Delete multiple draft quotes |
+| `GET` | `/quotes/:id` | Get quote detail, blocks, lines, branding, and any staged Pax8 order summary (`pax8OrderId`, `pax8OrderLineCount`) |
 | `POST` | `/contracts/bulk-cancel` | Cancel multiple contracts |
 | `POST` | `/contracts/bulk-delete` | Delete multiple draft contracts |
 
@@ -778,11 +779,210 @@ Bulk endpoints accept a list of IDs and return per-item results, so partial succ
 
 ### Distributor Integrations
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/pax8/subscriptions` | List Pax8 subscriptions |
-| `POST` | `/pax8/subscriptions/link` | Link (or re-point) a Pax8 subscription to a contract line — requires MFA |
-| `DELETE` | `/pax8/subscriptions/link` | Unlink a Pax8 subscription from its contract line (idempotent) — requires MFA |
+Pax8 integration and ordering routes require partner or system scope plus `billing:manage`. An organization-scoped token is refused even when it can access the target organization. Partner-scoped callers use the partner from their token. System-scoped callers supply `partnerId` only on routes that accept it and require it for system scope. Company map and subscription link/unlink routes instead derive the partner from their tenant-scoped `integrationId`. Every mutation is MFA-gated and audited.
+
+| Method | Path | MFA | Description |
+|---|---|---|---|
+| `GET` | `/pax8/integration` | No | Get the active integration and credential-presence/sync-status fields |
+| `POST` | `/pax8/integration` | Yes | Create or update the integration; queues an initial sync when active |
+| `POST` | `/pax8/integration/test` | Yes | Test the active integration; returns `{ success, data? | error? }` |
+| `POST` | `/pax8/sync` | Yes | Queue a company, subscription, and product sync; returns `{ queued, jobId, integrationId }` |
+| `GET` | `/pax8/companies` | No | List company mappings and non-PII ordering-readiness flags |
+| `POST` | `/pax8/companies/map` | Yes | Map, unmap, or ignore a Pax8 company |
+| `GET` | `/pax8/subscriptions` | No | List subscription observations, contract-line linkage, and Breeze billing quantities |
+| `POST` | `/pax8/subscriptions/link` | Yes | Link or re-point a subscription snapshot to a manual contract line |
+| `DELETE` | `/pax8/subscriptions/link` | Yes | Unlink a subscription snapshot (idempotent) |
+| `GET` | `/pax8/products` | No | List up to 200 active catalog items mapped to Pax8 products |
+| `GET` | `/pax8/products/:productId/provision-details` | No | Read live Pax8 provisioning-field metadata for a product |
+| `GET` | `/pax8/products/:productId/dependencies` | No | Read live Pax8 commitment/dependency rules for a product |
+| `GET` | `/pax8/orders` | No | List orders; optional `orgId` returns that organization's history |
+| `GET` | `/pax8/orders/:id` | No | Get `{ order, lines }` for an accessible order |
+| `POST` | `/pax8/orders` | Yes | Create or reuse the organization's mutable direct order |
+| `POST` | `/pax8/orders/:id/lines` | Yes | Stage a new subscription, quantity change, or cancellation on a mutable direct order |
+| `PATCH` | `/pax8/orders/:id/lines/:lineId` | Yes | Update commitment/provisioning values on a mutable new-subscription line, including a quote-staged line |
+| `DELETE` | `/pax8/orders/:id/lines/:lineId` | Yes | Remove a line from a mutable direct order |
+| `POST` | `/pax8/orders/:id/preflight` | Yes | Mock-validate new-subscription lines with Pax8; returns the raw Pax8 body on `422` |
+| `POST` | `/pax8/orders/:id/submit` | Yes | Claim and execute the order once; returns per-line outcomes |
+| `POST` | `/pax8/orders/:id/reconcile` | Yes | Read Pax8 state to classify uncertain writes; never issues a Pax8 write |
+| `GET` | `/pax8/drift?integrationId=:id` | No | List known Pax8 quantity observations that differ from linked Breeze manual quantities |
+
+#### Company mapping and subscription quantities
+
+`GET /pax8/companies` returns `{ data, integrationId }`. Each row includes the mapping fields plus these readiness booleans:
+
+```json
+{
+  "statusActive": true,
+  "primaryAdminReady": true,
+  "primaryBillingReady": true,
+  "primaryTechnicalReady": true,
+  "orderReady": true
+}
+```
+
+`orderReady` is true only when the company is Active and the synchronized metadata contains primary Admin, Billing, and Technical contacts. Contact PII is not returned. `POST /pax8/companies/map` accepts:
+
+```json
+{
+  "integrationId": "11111111-1111-4111-8111-111111111111",
+  "pax8CompanyId": "pax8-company-id",
+  "orgId": "22222222-2222-4222-8222-222222222222",
+  "ignored": false
+}
+```
+
+Set `orgId` to `null` to unmap it. A direct order requires exactly one non-ignored, order-ready mapping. Quote acceptance can stage an order without a mapping; preflight and submit resolve and validate the mapping later.
+
+`GET /pax8/subscriptions` supports `integrationId`, `orgId`, `unmappedOnly`, and `limit` (1–500, default 100). Important quantity and linkage fields are:
+
+| Field | Meaning |
+|---|---|
+| `breezeQuantity` | The linked manual contract line's billing quantity, or `null` when not linked/available |
+| `quantity` | Pax8's latest reported quantity string; inspect `quantityKnown` before using it |
+| `quantityKnown` | `false` when Pax8 did not provide credible quantity evidence; an unknown value is not zero |
+| `contractLineId` | The linked Breeze contract line, when present |
+| `syncEnabled` | Whether scheduled sync records quantity observations for this link; it does not authorize overwriting billing quantity |
+| `lastObservedQuantity`, `lastObservedAt` | Last recorded known Pax8 observation for a sync-enabled link |
+| `activeCommitmentId`, `activeCommitmentAmbiguous` | Evidence used to select the commitment that governs quantity and cancellation actions |
+
+<Aside type="caution" title="Breaking quantity-sync behavior">
+  `sync_enabled` Pax8 links no longer copy `quantity` into `contract_lines.manual_quantity`. The Breeze order ledger and linked manual quantity are billing truth; Pax8's reported quantity is observation-only because it does not reliably match what Pax8 invoices. Use the drift endpoint to surface disagreements rather than silently applying them.
+</Aside>
+
+`GET /pax8/drift` requires `integrationId` and returns `{ data }`, where each row contains `contractLineId`, `orgId`, `pax8SubscriptionId`, `productName`, `breezeQuantity`, and `pax8Quantity`. Results are limited to sync-enabled links on manual contract lines whose Pax8 quantity is known and differs from Breeze. The endpoint performs no Pax8 call and no write.
+
+#### Product metadata
+
+`GET /pax8/products` returns local, active mappings as `{ data: [{ pax8ProductId, catalogItemId, catalogName, catalogSku, catalogDescription, productName, vendorSkuId, billingFrequency, commitmentTermMonths }] }`. It does not call Pax8. Provisioning details and dependencies do call the configured Pax8 API.
+
+`GET /pax8/products/:productId/provision-details`:
+
+```json
+{
+  "data": [{
+    "key": "msDomain",
+    "label": "Microsoft domain",
+    "description": null,
+    "valueType": "Input",
+    "possibleValues": null
+  }]
+}
+```
+
+`GET /pax8/products/:productId/dependencies`:
+
+```json
+{
+  "data": {
+    "commitments": [{
+      "id": "commitment-id",
+      "term": "Annual",
+      "allowForQuantityIncrease": true,
+      "allowForQuantityDecrease": false,
+      "allowForEarlyCancellation": false,
+      "cancellationFeeApplied": false
+    }]
+  }
+}
+```
+
+Provision fields may have `valueType` `Input`, `Single-Value`, or `Multi-Value`. Their submitted representation is `{ "key": "...", "values": ["..."] }`. Pax8 does not expose reliable requiredness metadata, so clients should not invent required fields; preflight is authoritative.
+
+#### Order authoring
+
+`POST /pax8/orders` accepts `{ "orgId": "<uuid>" }` and returns the order in `{ data }` with `201`. If that organization already has a mutable direct order, the same order is returned. Quote-originated orders are created by quote acceptance, not this endpoint.
+
+Order status is one of `draft`, `awaiting_details`, `ready`, `submitting`, `completed`, `partially_failed`, `failed`, or `cancelled`. Each line has a `submitState` of `pending`, `in_flight`, `succeeded`, `failed`, or `needs_reconcile`. `GET /pax8/orders?orgId=<uuid>` returns the organization's complete, newest-first history (up to 100); without `orgId`, it returns the accessible non-terminal partner queue. `GET /pax8/orders/:id` returns `{ data: { order, lines } }`.
+
+Stage lines on a mutable **direct** order with `POST /pax8/orders/:id/lines`. The body is strict—unknown fields are rejected—and depends on `action`. Public callers cannot add lines to a quote-staged order.
+
+New subscription—`pax8ProductId`, `catalogItemId`, `billingTerm`, and a quantity greater than zero are required:
+
+```json
+{
+  "action": "new_subscription",
+  "pax8ProductId": "product-id",
+  "catalogItemId": "33333333-3333-4333-8333-333333333333",
+  "billingTerm": "Monthly",
+  "commitmentTermId": "commitment-id",
+  "quantity": "12",
+  "provisioningDetails": [{ "key": "msDomain", "values": ["example"] }]
+}
+```
+
+The `pax8ProductId` and `catalogItemId` must be the exact active tuple returned by `GET /pax8/products`; both the Pax8 integration and catalog item must still be active when the line is staged and again when it is submitted. Do not mix a Pax8 product ID with a different catalog item. A direct new-subscription request cannot supply `contractLineId`.
+
+Existing subscription quantity—`targetSubscriptionId` and a quantity of zero or greater are required:
+
+```json
+{
+  "action": "change_quantity",
+  "targetSubscriptionId": "subscription-id",
+  "quantity": "15"
+}
+```
+
+Cancellation—`targetSubscriptionId` is required. Cancellation is immediate, not scheduled:
+
+```json
+{
+  "action": "cancel",
+  "targetSubscriptionId": "subscription-id"
+}
+```
+
+For immediate cancellation, omit `cancelDate` as shown. If a caller includes it, use the current UTC calendar date (`YYYY-MM-DD`); future-dated cancellation is unsupported and rejected with `422` so Breeze cannot set the billing quantity to zero before Pax8 cancellation takes effect.
+
+For `change_quantity` and `cancel`, do **not** send `contractLineId`. The strict public schema rejects caller-controlled linkage. Breeze derives exactly one linked manual contract line from `targetSubscriptionId`, uses its manual quantity as billing truth, and fails closed if the link or quantity is missing or changes during authorization.
+
+Valid billing terms are `Monthly`, `Annual`, `2-Year`, `3-Year`, `One-Time`, `Trial`, and `Activation`. Quantity changes and cancellations are rejected with `422` when the active commitment cannot be determined or does not allow that action. A target subscription must belong to the order's organization. Only one change or cancellation may target a given subscription in an order.
+
+The line-create response is `{ data: <line> }` with `201`. `PATCH /pax8/orders/:id/lines/:lineId` accepts at least one of `commitmentTermId` (string or `null`) and `provisioningDetails`; it applies only to a mutable `new_subscription` line and deliberately preserves its quote/catalog/contract linkage. Public add and delete operations are direct-order-only. Quote-staged lines are immutable in membership: clients cannot add or delete them, and may only complete their commitment/provisioning values through this PATCH. Deleting a mutable direct-order line returns `{ "removed": true }`.
+
+#### Preflight, submit, and reconciliation
+
+`POST /pax8/orders/:id/preflight` sends a Pax8 mock order for the order's `new_subscription` lines. An order containing only quantity changes/cancellations returns `{ "ok": true }` without a mock call because those actions were dependency-checked while staged. Success is `{ "ok": true }`; validation failure is HTTP `422` with Pax8's raw JSON or text body so clients can associate `details[]` with the relevant line.
+
+`POST /pax8/orders/:id/submit` claims the order and its pending lines before making any external write. A concurrent submit loses the claim with `409`. The response is HTTP `200` even when some work needs attention:
+
+```json
+{
+  "orderId": "55555555-5555-4555-8555-555555555555",
+  "status": "partially_failed",
+  "lines": [{
+    "lineId": "66666666-6666-4666-8666-666666666666",
+    "submitState": "needs_reconcile",
+    "error": "Pax8 outcome was uncertain"
+  }]
+}
+```
+
+Treat the returned `status` and every line's `submitState` as the result—not HTTP `200` alone. Successful linked actions update only manual contract-line quantities; cancellation records `0`. A definitive Pax8 rejection becomes `failed`. A timeout, transport error, or server response whose write outcome is uncertain becomes `needs_reconcile`.
+
+<Aside type="caution">
+  Never blindly retry `submit` for an `in_flight` or `needs_reconcile` line. Pax8 does not accept an idempotency key, so a retry could duplicate a purchase or mutation.
+</Aside>
+
+Call `POST /pax8/orders/:id/reconcile` instead. It performs read-only Pax8 order/subscription lookups and returns `{ "resolved": <number>, "stillUnknown": <number> }`. It never repeats the write. When `stillUnknown` is nonzero, leave the order for manual investigation.
+
+#### Quote-staged orders
+
+Accepting a Pax8-backed quote stages its order transactionally without sending anything to Pax8. The authenticated `GET /quotes/:id` response persists discoverability across reloads:
+
+```json
+{
+  "data": {
+    "quote": { "id": "...", "status": "converted" },
+    "blocks": [],
+    "lines": [],
+    "branding": {},
+    "pax8OrderId": "55555555-5555-4555-8555-555555555555",
+    "pax8OrderLineCount": 2
+  }
+}
+```
+
+`pax8OrderId` is `null` and `pax8OrderLineCount` is `0` when no Pax8-backed order was staged. Use the ID with `GET /pax8/orders/:id`, then complete provisioning and submit through the normal endpoints.
 
 ## Tickets
 

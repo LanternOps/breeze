@@ -386,7 +386,7 @@ function exportApp(partnerId: string, orgId: string) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('partnerApiPrincipal', {
-      servicePrincipalId: crypto.randomUUID(), keyId: crypto.randomUUID(), partnerId,
+      partnerServicePrincipalId: crypto.randomUUID(), keyId: crypto.randomUUID(), partnerId,
       name: 'Task 6 integration test', scopes: ['inventory:read'], accessibleOrgIds: [orgId], rateLimit: 600,
     });
     await withDbAccessContext({

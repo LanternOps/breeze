@@ -27,6 +27,35 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/catalog/distributors/pax8/import'],
     ['POST', '/api/v1/catalog/distributors/pax8/import/'],
     ['post', '/api/v1/catalog/distributors/pax8/import'], // method is case-insensitive
+    // PR3 — the three SSO provider routes that run OIDC discovery against a
+    // tenant-controlled issuer (10s timeout) inside the handler.
+    ['POST', '/api/v1/sso/providers'],
+    ['POST', '/api/v1/sso/providers/'],
+    ['PATCH', '/api/v1/sso/providers/abc-123'],
+    ['PATCH', '/api/v1/sso/providers/abc-123/'],
+    ['patch', '/api/v1/sso/providers/abc-123'], // method is case-insensitive
+    ['POST', '/api/v1/sso/providers/abc-123/test'],
+    ['POST', '/api/v1/sso/providers/abc-123/test/'],
+    // Pax8 line authoring may fetch commitment dependencies from Pax8.
+    ['POST', '/api/v1/pax8/orders/ord-1/lines'],
+    ['POST', '/api/v1/pax8/orders/ord-1/lines/'],
+    ['post', '/api/v1/pax8/orders/ord-1/lines'], // method is case-insensitive
+    // Pax8 submit/reconcile phases make outbound calls between short DB txns.
+    ['POST', '/api/v1/pax8/orders/ord-1/preflight'],
+    ['POST', '/api/v1/pax8/orders/ord-1/preflight/'],
+    ['POST', '/api/v1/pax8/orders/ord-1/submit'],
+    ['POST', '/api/v1/pax8/orders/ord-1/submit/'],
+    ['POST', '/api/v1/pax8/orders/ord-1/reconcile'],
+    ['POST', '/api/v1/pax8/orders/ord-1/reconcile/'],
+    // Product form metadata proxies Pax8 HTTP after a short credential read.
+    ['GET', '/api/v1/pax8/products/prod-1/provision-details'],
+    ['GET', '/api/v1/pax8/products/prod-1/provision-details/'],
+    ['GET', '/api/v1/pax8/products/prod-1/dependencies'],
+    ['GET', '/api/v1/pax8/products/prod-1/dependencies/'],
+    ['GET', '/api/v1/m365/consent/callback'],
+    ['GET', '/api/v1/m365/consent/callback/'],
+    ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest'],
+    ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -58,6 +87,32 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/catalog/distributors/pax8/pricing', 'pricing is DB-only'],
     ['POST', '/api/v1/catalog/distributors/pax8/import/extra', 'extra segment must not match'],
     ['GET', '/api/v1/catalog/distributors/pax8/import', 'import is POST-only'],
+    // PR3 — every OTHER sso route does only DB work and MUST keep the ambient
+    // RLS transaction. A wrong match here silently drops tenant scoping.
+    ['GET', '/api/v1/sso/providers', 'list is DB-only'],
+    ['GET', '/api/v1/sso/providers/abc-123', 'detail read is DB-only'],
+    ['DELETE', '/api/v1/sso/providers/abc-123', 'delete is DB-only (system-context cascade)'],
+    ['POST', '/api/v1/sso/providers/abc-123/status', 'status flip is DB-only'],
+    ['PATCH', '/api/v1/sso/providers/abc-123/test', 'no such route; PATCH only opts out on the bare provider path'],
+    ['GET', '/api/v1/sso/providers/abc-123/test', 'test is POST-only'],
+    ['POST', '/api/v1/sso/providers/abc-123/test/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/sso/domains', 'domain routes are DB-only'],
+    ['POST', '/api/v1/sso/link/start/abc-123', 'link start is DB-only'],
+    ['GET', '/api/v1/pax8/orders/ord-1/lines', 'Pax8 line authoring is POST-only'],
+    ['POST', '/api/v1/pax8/orders//lines', 'Pax8 order id must not be empty'],
+    ['POST', '/api/v1/pax8/orders/ord-1/lines/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/pax8/orders/ord-1/preflight', 'Pax8 preflight is POST-only'],
+    ['GET', '/api/v1/pax8/orders/ord-1/submit', 'Pax8 submit is POST-only'],
+    ['GET', '/api/v1/pax8/orders/ord-1/reconcile', 'Pax8 reconcile is POST-only'],
+    ['POST', '/api/v1/pax8/orders//submit', 'Pax8 order id must not be empty'],
+    ['POST', '/api/v1/pax8/orders/ord-1/submit/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/pax8/products/prod-1/dependencies', 'Pax8 product metadata routes are GET-only'],
+    ['GET', '/api/v1/pax8/products//dependencies', 'Pax8 product id must not be empty'],
+    ['GET', '/api/v1/pax8/products/prod-1/dependencies/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/m365/consent/callback', 'callback is GET-only'],
+    ['GET', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest', 'retest is POST-only'],
+    ['POST', '/api/v1/m365/connections//retest', 'empty connection id must not match'],
+    ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

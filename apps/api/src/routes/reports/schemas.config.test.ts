@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createReportSchema, updateReportSchema } from './schemas';
+import {
+  createReportSchema,
+  securityCompliancePostureConfigFields,
+  securityCompliancePostureConfigSchema,
+  updateReportSchema,
+} from './schemas';
 
 const builderConfig = {
   builderType: 'device_inventory',
@@ -75,5 +80,31 @@ describe('report config schema', () => {
 
     const updated = updateReportSchema.parse({ config: { schedule: { date: 1 } } });
     expect(updated.config?.schedule).toEqual({ date: '1' });
+  });
+
+  // The generation schema (with defaults) and the persistence field map are
+  // maintained by hand. Drift is silent and one-directional: a key added to the
+  // former but not the latter is stripped on save, then silently reappears at
+  // generation as its default — the user's setting quietly ignored.
+  it('keeps the posture persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(securityCompliancePostureConfigFields).sort()).toEqual(
+      Object.keys(securityCompliancePostureConfigSchema.shape).sort(),
+    );
+  });
+
+  it('preserves posture backupRequired on create and update', () => {
+    const created = createReportSchema.parse({
+      name: 'Workstation posture',
+      type: 'security_compliance_posture',
+      schedule: 'one_time',
+      format: 'pdf',
+      config: { backupRequired: false },
+    });
+    expect(created.config.backupRequired).toBe(false);
+
+    const updated = updateReportSchema.parse({
+      config: { backupRequired: true },
+    });
+    expect(updated.config?.backupRequired).toBe(true);
   });
 });

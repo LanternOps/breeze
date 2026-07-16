@@ -67,23 +67,23 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   apiKeys: {},
   users: {},
-  servicePrincipalKeys: {
-    id: 'servicePrincipalKeys.id',
-    partnerId: 'servicePrincipalKeys.partnerId',
-    servicePrincipalId: 'servicePrincipalKeys.servicePrincipalId',
-    keyHash: 'servicePrincipalKeys.keyHash',
-    status: 'servicePrincipalKeys.status',
-    expiresAt: 'servicePrincipalKeys.expiresAt',
-    rateLimit: 'servicePrincipalKeys.rateLimit',
+  partnerServicePrincipalKeys: {
+    id: 'partnerServicePrincipalKeys.id',
+    partnerId: 'partnerServicePrincipalKeys.partnerId',
+    partnerServicePrincipalId: 'partnerServicePrincipalKeys.partnerServicePrincipalId',
+    keyHash: 'partnerServicePrincipalKeys.keyHash',
+    status: 'partnerServicePrincipalKeys.status',
+    expiresAt: 'partnerServicePrincipalKeys.expiresAt',
+    rateLimit: 'partnerServicePrincipalKeys.rateLimit',
   },
-  servicePrincipals: {
-    id: 'servicePrincipals.id',
-    partnerId: 'servicePrincipals.partnerId',
-    name: 'servicePrincipals.name',
-    status: 'servicePrincipals.status',
-    scopes: 'servicePrincipals.scopes',
-    expiresAt: 'servicePrincipals.expiresAt',
-    sourceCidrs: 'servicePrincipals.sourceCidrs',
+  partnerServicePrincipals: {
+    id: 'partnerServicePrincipals.id',
+    partnerId: 'partnerServicePrincipals.partnerId',
+    name: 'partnerServicePrincipals.name',
+    status: 'partnerServicePrincipals.status',
+    scopes: 'partnerServicePrincipals.scopes',
+    expiresAt: 'partnerServicePrincipals.expiresAt',
+    sourceCidrs: 'partnerServicePrincipals.sourceCidrs',
   },
   partners: {
     id: 'partners.id',
@@ -167,7 +167,7 @@ function credential(overrides: Record<string, unknown> = {}) {
     keyStatus: 'active',
     keyExpiresAt: null,
     rateLimit: 600,
-    servicePrincipalId: PRINCIPAL_ID,
+    partnerServicePrincipalId: PRINCIPAL_ID,
     partnerId: PARTNER_ID,
     name: 'Weavestream export',
     principalStatus: 'active',
@@ -184,7 +184,7 @@ function principalContext(
   scopes: PartnerApiPrincipalContext['scopes'],
 ): PartnerApiPrincipalContext {
   return {
-    servicePrincipalId: PRINCIPAL_ID,
+    partnerServicePrincipalId: PRINCIPAL_ID,
     keyId: KEY_ID,
     partnerId: PARTNER_ID,
     name: 'Weavestream export',
@@ -331,7 +331,7 @@ describe('partnerApiAuthMiddleware', () => {
       message: 'Invalid partner API credentials',
     });
     expect(mocks.eq).toHaveBeenCalledWith(
-      'servicePrincipalKeys.keyHash',
+      'partnerServicePrincipalKeys.keyHash',
       createHash('sha256').update(RAW_KEY).digest('hex'),
     );
   });
@@ -390,7 +390,7 @@ describe('partnerApiAuthMiddleware', () => {
       expect.arrayContaining(['trial']),
     );
     expect(context.get('partnerApiPrincipal')).toEqual({
-      servicePrincipalId: PRINCIPAL_ID,
+      partnerServicePrincipalId: PRINCIPAL_ID,
       keyId: KEY_ID,
       partnerId: PARTNER_ID,
       name: 'Weavestream export',
@@ -438,11 +438,11 @@ describe('partnerApiAuthMiddleware', () => {
         actorType: 'api_key',
         actorId: KEY_ID,
         action: 'partner_api.request',
-        resourceType: 'service_principal',
+        resourceType: 'partner_service_principal',
         resourceId: PRINCIPAL_ID,
         result: 'success',
         details: expect.objectContaining({
-          principalType: 'service_principal',
+          principalType: 'partner_service_principal',
           partnerId: PARTNER_ID,
           keyId: KEY_ID,
           status: 200,
@@ -720,7 +720,7 @@ describe('partnerApiAuthMiddleware', () => {
     expect(withResolvedDbAccessContext).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
     expect(context.get('partnerApiPrincipal')).toMatchObject({
-      servicePrincipalId: PRINCIPAL_ID,
+      partnerServicePrincipalId: PRINCIPAL_ID,
       keyId: KEY_ID,
       partnerId: PARTNER_ID,
       accessibleOrgIds: [],

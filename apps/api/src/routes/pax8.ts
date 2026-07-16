@@ -19,6 +19,8 @@ import { DEFAULT_PAX8_API_BASE_URL, DEFAULT_PAX8_TOKEN_URL } from '../services/p
 import { createPax8ClientForIntegration, linkPax8SubscriptionToContractLine, mapPax8Company, unlinkPax8Subscription } from '../services/pax8SyncService';
 import { enqueuePax8Sync } from '../jobs/pax8SyncWorker';
 import { captureException } from '../services/sentry';
+import { pax8CompanyOrderReadiness } from '../services/pax8CompanyReadiness';
+import { snapshotActiveCommitmentEvidence } from '../services/pax8OrderService';
 
 export const pax8Routes = new Hono();
 
@@ -301,12 +303,19 @@ pax8Routes.get('/companies', partnerScopes, readPerm, zValidator('query', compan
       ignored: pax8CompanyMappings.ignored,
       lastSeenAt: pax8CompanyMappings.lastSeenAt,
       updatedAt: pax8CompanyMappings.updatedAt,
+      metadata: pax8CompanyMappings.metadata,
     })
     .from(pax8CompanyMappings)
     .leftJoin(organizations, eq(pax8CompanyMappings.orgId, organizations.id))
     .where(eq(pax8CompanyMappings.integrationId, integration.id))
     .orderBy(pax8CompanyMappings.pax8CompanyName, pax8CompanyMappings.pax8CompanyId);
-  return c.json({ data: rows, integrationId: integration.id });
+  return c.json({
+    data: rows.map(({ metadata, ...row }) => ({
+      ...row,
+      ...pax8CompanyOrderReadiness(row.status, metadata),
+    })),
+    integrationId: integration.id,
+  });
 });
 
 pax8Routes.post('/companies/map', partnerScopes, writePerm, requireMfa(), zValidator('json', companyMapSchema), async (c) => {
@@ -380,14 +389,17 @@ pax8Routes.get('/subscriptions', partnerScopes, readPerm, zValidator('query', su
       status: pax8SubscriptionSnapshots.status,
       billingTerm: pax8SubscriptionSnapshots.billingTerm,
       quantity: pax8SubscriptionSnapshots.quantity,
+      quantityKnown: pax8SubscriptionSnapshots.quantityKnown,
       unitPrice: pax8SubscriptionSnapshots.unitPrice,
       unitCost: pax8SubscriptionSnapshots.unitCost,
       currencyCode: pax8SubscriptionSnapshots.currencyCode,
       lastSeenAt: pax8SubscriptionSnapshots.lastSeenAt,
       contractLineId: pax8ContractLineLinks.contractLineId,
+      breezeQuantity: contractLines.manualQuantity,
       syncEnabled: pax8ContractLineLinks.syncEnabled,
-      lastAppliedQuantity: pax8ContractLineLinks.lastAppliedQuantity,
-      lastAppliedAt: pax8ContractLineLinks.lastAppliedAt,
+      lastObservedQuantity: pax8ContractLineLinks.lastObservedQuantity,
+      lastObservedAt: pax8ContractLineLinks.lastObservedAt,
+      raw: pax8SubscriptionSnapshots.raw,
     })
     .from(pax8SubscriptionSnapshots)
     .leftJoin(pax8CompanyMappings, and(
@@ -395,11 +407,22 @@ pax8Routes.get('/subscriptions', partnerScopes, readPerm, zValidator('query', su
       eq(pax8SubscriptionSnapshots.pax8CompanyId, pax8CompanyMappings.pax8CompanyId),
     ))
     .leftJoin(pax8ContractLineLinks, eq(pax8SubscriptionSnapshots.id, pax8ContractLineLinks.subscriptionSnapshotId))
+    .leftJoin(contractLines, and(
+      eq(pax8ContractLineLinks.contractLineId, contractLines.id),
+      eq(pax8ContractLineLinks.orgId, contractLines.orgId),
+      eq(pax8SubscriptionSnapshots.orgId, contractLines.orgId),
+    ))
     .where(and(...conditions))
     .orderBy(desc(pax8SubscriptionSnapshots.lastSeenAt))
     .limit(query.limit);
 
-  return c.json({ data: rows, integrationId: integration.id });
+  return c.json({
+    data: rows.map(({ raw, ...row }) => ({
+      ...row,
+      ...snapshotActiveCommitmentEvidence(raw),
+    })),
+    integrationId: integration.id,
+  });
 });
 
 pax8Routes.post('/subscriptions/link', partnerScopes, writePerm, requireMfa(), zValidator('json', linkSchema), async (c) => {

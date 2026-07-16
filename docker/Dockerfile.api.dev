@@ -15,6 +15,7 @@ COPY turbo.json tsconfig.json ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-api/package.json ./packages/extension-api/
+COPY packages/extension-sdk/package.json ./packages/extension-sdk/
 
 # Install all dependencies (including devDependencies for development)
 RUN pnpm install
@@ -23,6 +24,7 @@ RUN pnpm install
 COPY apps/api ./apps/api
 COPY packages/shared ./packages/shared
 COPY packages/extension-api ./packages/extension-api
+COPY packages/extension-sdk ./packages/extension-sdk
 
 # Set working directory to api
 WORKDIR /app/apps/api

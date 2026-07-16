@@ -1,0 +1,50 @@
+name: Update community README
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-community-readme
+  cancel-in-progress: false
+
+jobs:
+  update-community-readme:
+    name: Refresh sponsors and contributors
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Test community README automation
+        run: node --test .github/scripts/update-community-readme.test.mjs
+
+      - name: Update community README
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/update-community-readme.mjs
+
+      - name: Commit and push README changes
+        run: |
+          if git diff --quiet -- README.md; then
+            echo "README.md is already current"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit --only -m "docs: refresh sponsors and contributors [skip ci]" -- README.md
+          git push origin HEAD:main

@@ -12,7 +12,8 @@ import { isQuoteExpired } from './quoteExpiry';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { buildContractSpecsFromQuote } from './quoteToContract';
-import { createContractWithLines } from './contractService';
+import { createContractWithLinesDetailed } from './contractService';
+import { stagePax8OrderFromQuote } from './quoteToPax8Order';
 
 export interface AcceptQuoteParams {
   quoteId: string;
@@ -25,6 +26,15 @@ export interface AcceptQuoteParams {
 }
 
 type QuoteRow = typeof quotes.$inferSelect;
+
+export interface AcceptQuoteResult {
+  quote: QuoteRow;
+  acceptanceId: string;
+  invoiceId: string;
+  invoiceIssued: boolean;
+  contractIds: string[];
+  pax8OrderId: string | null;
+}
 
 /**
  * Shared accept pipeline for both the portal and public paths. The CALLER is
@@ -45,7 +55,7 @@ type QuoteRow = typeof quotes.$inferSelect;
  */
 export async function acceptQuote(
   params: AcceptQuoteParams
-): Promise<{ quote: QuoteRow; acceptanceId: string; invoiceId: string; invoiceIssued: boolean; contractIds: string[] }> {
+): Promise<AcceptQuoteResult> {
   // FOR UPDATE: serialize concurrent accepts on the same quote (we're already in
   // the caller's transaction). Without the row lock two READ COMMITTED accepts
   // both pass the status guard and each create an invoice (atom-1/C2).
@@ -234,6 +244,7 @@ export async function acceptQuote(
       terms: quote.terms ?? null,
     },
     lines.map((l) => ({
+      sourceQuoteLineId: l.id,
       recurrence: l.recurrence,
       customerVisible: l.customerVisible,
       name: l.name ?? null,
@@ -249,16 +260,52 @@ export async function acceptQuote(
   );
 
   const contractIds: string[] = [];
+  const contractLineLinks: Array<{ quoteLineId: string; contractLineId: string }> = [];
   for (const spec of contractSpecs) {
-    const contract = await createContractWithLines(spec);
-    contractIds.push(contract.id);
+    const created = await createContractWithLinesDetailed(spec);
+    contractIds.push(created.contract.id);
+    for (const line of created.lines) {
+      if (line.sourceQuoteLineId) {
+        contractLineLinks.push({
+          quoteLineId: line.sourceQuoteLineId,
+          contractLineId: line.id,
+        });
+      }
+    }
   }
+
+  // Phase 5: stage any Pax8-backed fulfillment in this exact transaction,
+  // alongside the Phase 4 contracts it references. Nothing is sent to Pax8
+  // here: customer acceptance records intent; a technician supplies the
+  // provisioning details and explicitly submits it later.
+  const pax8Staged = await stagePax8OrderFromQuote({
+    quoteId: quote.id,
+    orgId: quote.orgId,
+    partnerId: quote.partnerId,
+    contractIds,
+    contractLineLinks,
+    lines: lines.map((line) => ({
+      id: line.id,
+      catalogItemId: line.catalogItemId ?? null,
+      quantity: line.quantity,
+      recurrence: line.recurrence,
+      customerVisible: line.customerVisible,
+    })),
+    actorUserId: params.actorUserId ?? null,
+  });
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, quote.id)).limit(1);
   // invoiceIssued mirrors the `oneTime.length > 0` branch above that flips the
   // invoice to status='sent' with a real number; a $0/no-one-time accept leaves
   // the invoice unissued. The caller emits lifecycle side effects post-commit.
-  return { quote: updated!, acceptanceId: acceptance!.id, invoiceId: invoice!.id, invoiceIssued: oneTime.length > 0, contractIds };
+  return {
+    quote: updated!,
+    acceptanceId: acceptance!.id,
+    invoiceId: invoice!.id,
+    invoiceIssued: oneTime.length > 0,
+    contractIds,
+    pax8OrderId: pax8Staged.orderId,
+  };
 }
 
 /**

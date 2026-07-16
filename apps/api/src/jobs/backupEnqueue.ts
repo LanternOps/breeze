@@ -47,6 +47,10 @@ export interface ProcessResultsResult {
   filesBackedUp?: number;
   bytesBackedUp?: number;
   warning?: string;
+  // system_image (system-state) backups carry these; the WS handler must
+  // forward them or the snapshot loses its type label + BMR restore manifest.
+  backupType?: 'file' | 'system_image' | 'database' | 'application';
+  systemStateManifest?: Record<string, unknown> | null;
   snapshot?: {
     id: string;
     timestamp?: string;

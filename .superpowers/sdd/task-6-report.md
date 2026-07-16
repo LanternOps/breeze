@@ -25,7 +25,7 @@
 
 ## Verification
 
-- Partner API/auth/service-principal regression set: 167/167 passed.
+- Partner API/auth/partner-service-principal regression set: 167/167 passed.
 - TypeScript `tsc --noEmit`: passed.
 - Focused ESLint: passed.
 - API production build: passed.

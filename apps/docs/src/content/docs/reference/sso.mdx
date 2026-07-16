@@ -256,6 +256,40 @@ Browser          Breeze API          Identity Provider
 
 ---
 
+## Sign-In Hardening
+
+Breeze applies several defenses to the SSO sign-in path. They are on by default and require no configuration; the notes below are for security reviewers and administrators assessing the platform.
+
+### Verified Email Required
+
+A sign-in is only accepted when the identity provider attests that the user's email address is **verified**. If the IdP affirmatively reports the mailbox as unverified, the sign-in is rejected -- on every path, including a user whose identity is **already linked** to Breeze. This prevents a provider (or a mis-scoped attribute mapping) from asserting an address the IdP has not actually proven.
+
+When an IdP simply omits the verification claim (some enterprise providers do), Breeze does not take the silence on faith. For first-time account matching or just-in-time creation on an organization provider, it instead requires that the email's domain has been **proven to belong to the organization** through Breeze's own DNS domain-verification. A user whose identity is already linked is exempt, so turning this on never locks out an existing user.
+
+<Aside type="note">
+  A rejected sign-in redirects to the login page with an `sso_email_unverified` (or, during identity linking, `email_unverified`) error, and the rejection is written to the audit log with the reason and the claim's source.
+</Aside>
+
+### Tighter Session Binding
+
+Each login round-trip is bound to the browser that started it (see [SSO Login Flow](#sso-login-flow) for the signed state cookie) **and** to the exact configuration generation of the provider it began under. If a provider is disabled or reconfigured while a sign-in is still in flight -- even within the short session window -- that in-flight attempt is invalidated at the callback rather than completing against stale settings. Login sessions that predate this binding are treated as invalid, not trusted.
+
+### Gated Just-in-Time Provisioning
+
+When a provider auto-creates users on first sign-in, the **default role** it assigns is a standing delegation: every future new user inherits it. Breeze verifies that the administrator configuring that default role is actually entitled to grant it -- both when the role is saved and again, against that administrator's **current** permissions, each time a brand-new user is about to be provisioned. A delegation can no longer outlive the authority of the person who set it.
+
+A consequence for existing deployments: a provider that was configured **before this gate existed**, or whose configuring administrator has since been deactivated, stops provisioning **brand-new** users until an entitled administrator re-saves the default role (which re-anchors the check to a live account). **Existing users are unaffected** -- this only governs first-time creation, never sign-ins for users who already have an account.
+
+### Discovery Protected Against Unsafe Endpoints
+
+When Breeze auto-discovers a provider's endpoints from its issuer URL, it refuses any endpoint that is not HTTPS or that resolves to an internal / private-network address, so a configured issuer cannot be used to make the server reach into your private network. These persisted endpoints are re-validated at every login, and changing a provider's issuer requires a fresh, successful discovery -- a provider's token and key endpoints can never be left pointing at an IdP the issuer no longer names.
+
+<Aside type="note">
+  Self-hosted deployments that legitimately run an internal IdP on a private address can permit it; hosted, multi-tenant deployments always enforce the strict public-endpoint rule. A discovery that is blocked returns an operator-facing reason (for example, "OIDC discovery returned an endpoint that is not HTTPS") and no provider is created or updated.
+</Aside>
+
+---
+
 ## Provider Configuration
 
 ### Create Provider Schema

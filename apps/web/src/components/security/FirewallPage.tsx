@@ -14,7 +14,9 @@ import {
   friendlyFetchError,
   widthPercentClass,
 } from "@/lib/utils";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
+import AccessDenied from "../shared/AccessDenied";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 type FirewallProfile = {
@@ -60,6 +62,7 @@ export default function FirewallPage() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -73,6 +76,7 @@ export default function FirewallPage() {
   const fetchData = useCallback(
     async (page = 1) => {
       setError(undefined);
+      setErrorKind("none");
       setLoading(true);
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -85,7 +89,9 @@ export default function FirewallPage() {
         const res = await fetchWithAuth(`/security/firewall?${params}`, {
           signal: controller.signal,
         });
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        // HttpError (not a bare Error) so a 403 survives the throw and the render
+        // can tell "you may not see this" from "this broke, try again" (#2472).
+        throwIfNotOk(res);
         const json = await res.json();
         if (!Array.isArray(json.data))
           throw new Error(t("securityFirewallPage.invalidResponseFromServer"));
@@ -95,7 +101,10 @@ export default function FirewallPage() {
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         console.error("[FirewallPage] fetch error:", err);
-        setError(friendlyFetchError(err));
+        const kind = errorKindOf(err);
+        setErrorKind(kind);
+        // 'denied' renders AccessDenied, which supplies its own copy.
+        if (kind === "other") setError(friendlyFetchError(err));
       } finally {
         setLoading(false);
       }
@@ -124,6 +133,21 @@ export default function FirewallPage() {
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
+      </div>
+    );
+  }
+  // A 403 is terminal for this user — a retry hits the same permission gate. Stop
+  // before the summary tiles: falling through would paint the zeroed `summary`
+  // default and tell someone who may not see the data that 0 devices are
+  // covered. Fabricated zeros are worse than an error. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div className="space-y-6">
+        <SecurityPageHeader
+          title={t("securityFirewallPage.firewallStatus")}
+          subtitle={t("securityFirewallPage.networkProtectionAcrossAllDevices")}
+        />
+        <AccessDenied testId="security-firewall-denied" />
       </div>
     );
   }

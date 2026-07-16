@@ -31,6 +31,15 @@ import {
   importPax8CatalogItem,
   Pax8CatalogError,
 } from '../../services/pax8CatalogService';
+import {
+  getSftpStatus,
+  saveSftpConfig,
+  testSftpConnection,
+  listSftpPriceRows,
+  getSftpIntegrationId,
+  TdSynnexSftpError,
+} from '../../services/tdSynnexSftpSync';
+import { enqueueTdSynnexSftpSync } from '../../jobs/tdSynnexSftpSyncWorker';
 
 export const catalogDistributorRoutes = new Hono();
 
@@ -248,7 +257,11 @@ const ecLookupSchema = z.object({ q: z.string().min(1).max(40) });
 // productSchema above. Replaces the prior `z.record(z.string(), z.unknown())`
 // so the import endpoint validates shape and bounds the inbound payload size.
 const ecProductSchema = z.object({
-  source: z.literal('td_synnex_ec_express'),
+  // The nightly SFTP file carries the same product shape, so it reuses this
+  // import path — but it must record its OWN provenance. A catalog item sourced
+  // from a nightly snapshot must not claim it came from a live EC Express
+  // lookup: that is the field you check when a price looks stale.
+  source: z.enum(['td_synnex_ec_express', 'td_synnex_price_file']),
   synnexSku: z.string().min(1).max(64),
   mfgPartNo: z.string().max(255).nullable(),
   status: z.string().max(64).nullable(),
@@ -319,6 +332,64 @@ catalogDistributorRoutes.post('/distributors/td-synnex-ec/import', scopes, write
     const data = await importEcExpressCatalogItem({ product: body.product, item: body.item, aiCleanup: body.aiCleanup }, catalogActorFrom(c), catalogDbContextFrom(c));
     return c.json({ data });
   } catch (err) { return handleEcError(c, err); }
+});
+
+// ─── TD SYNNEX nightly SFTP P&A file ──────────────────────────────────────────
+
+const sftpConfigSchema = z.object({
+  region: z.enum(['US', 'CA']).optional(),
+  // Numeric-only: the username ('u'/'c' + account) and remote filename
+  // (<account>.zip) are derived from it, so a stray character breaks both.
+  accountNumber: z.string().regex(/^\d{1,32}$/).nullable().optional(),
+  password: z.string().max(200).nullable().optional(),
+  enabled: z.boolean().optional(),
+});
+
+const sftpListSchema = z.object({
+  q: z.string().max(120).optional(),
+  inStockOnly: z.coerce.boolean().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+function handleSftpError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  if (err instanceof TdSynnexSftpError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof CatalogServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  console.error('[td-synnex-sftp] unexpected error', err);
+  throw err;
+}
+
+catalogDistributorRoutes.get('/distributors/td-synnex-sftp/status', scopes, readPerm, async (c) => {
+  try { return c.json({ data: await getSftpStatus(catalogActorFrom(c)) }); } catch (err) { return handleSftpError(c, err); }
+});
+
+catalogDistributorRoutes.put('/distributors/td-synnex-sftp/config', scopes, writePerm, requireMfa(), zValidator('json', sftpConfigSchema), async (c) => {
+  try { return c.json({ data: await saveSftpConfig(catalogActorFrom(c), c.req.valid('json')) }); } catch (err) { return handleSftpError(c, err); }
+});
+
+// Registered in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient transaction is open
+// for this handler, so the SSH handshake never pins a pooled connection (#1448).
+catalogDistributorRoutes.post('/distributors/td-synnex-sftp/test', scopes, writePerm, requireMfa(), async (c) => {
+  try {
+    return c.json({ data: await testSftpConnection(catalogActorFrom(c), catalogDbContextFrom(c)) });
+  } catch (err) { return handleSftpError(c, err); }
+});
+
+// Manual "sync now". Enqueues rather than running inline: the download+parse can
+// take minutes and must not hold the request's DB connection open (#1105).
+catalogDistributorRoutes.post('/distributors/td-synnex-sftp/sync', scopes, writePerm, requireMfa(), async (c) => {
+  try {
+    const integrationId = await getSftpIntegrationId(catalogActorFrom(c));
+    const jobId = await enqueueTdSynnexSftpSync(integrationId);
+    return c.json({ data: { queued: true, jobId } });
+  } catch (err) { return handleSftpError(c, err); }
+});
+
+catalogDistributorRoutes.get('/distributors/td-synnex-sftp/products', scopes, readPerm, zValidator('query', sftpListSchema), async (c) => {
+  try {
+    const { q, limit, offset, inStockOnly } = c.req.valid('query');
+    return c.json({ data: await listSftpPriceRows(catalogActorFrom(c), { q, limit, offset, inStockOnly }) });
+  } catch (err) { return handleSftpError(c, err); }
 });
 
 // ─── Pax8 product catalog ─────────────────────────────────────────────────────

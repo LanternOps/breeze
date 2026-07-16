@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const vulnerabilityMocks = vi.hoisted(() => ({
+  loadOpenVulnerabilityCounts: vi.fn(),
+}));
+
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
 vi.mock('./reportGenerationService', () => ({
   resolveSiteAllowedDeviceIds: vi.fn(async () => null)
 }));
+vi.mock('./securityComplianceReportVulnerabilities', () => vulnerabilityMocks);
 
 import { db } from '../db';
 import { generateSecurityCompliancePostureReport } from './securityComplianceReport';
@@ -22,11 +27,11 @@ const ORG = '00000000-0000-0000-0000-000000000001';
 /**
  * The generator issues selects in this fixed order:
  *  1 organizations   2 devices   3 security_status   4 s1_agents
- *  5 huntress_agents   6 device_patches+severity   7 device_vulns
- *  8 dns_filter   9 backup_configs   10 c2c_connections   11 m365
- * 12 google   13 pam_org_config   14 pam_rules   15 elevation_requests
- * 16 authenticator_policies (only if org has partnerId)   17 latest org posture snapshot
- * 18 cis_baseline_results (only if includeCis)   19 device_patches scanned-set (any status)
+ *  5 huntress_agents   6 device_patches+severity   7 dns_filter
+ *  8 backup_configs   9 c2c_connections   10 m365   11 google
+ * 12 pam_org_config   13 pam_rules   14 elevation_requests
+ * 15 authenticator_policies (only if org has partnerId)   16 latest org posture snapshot
+ * 17 cis_baseline_results (only if includeCis)   18 device_patches scanned-set (any status)
  */
 function mockGeneratorQueries(over: Partial<Record<number, any[]>> = {}, opts: { noPartner?: boolean } = {}) {
   const seq: any[][] = [
@@ -43,34 +48,55 @@ function mockGeneratorQueries(over: Partial<Record<number, any[]>> = {}, opts: {
     /* 4 s1_agents */          [],
     /* 5 huntress_agents */    [{ deviceId: 'dev-1' }],
     /* 6 device_patches */     [{ deviceId: 'dev-2', severity: 'critical' }],
-    /* 7 device_vulns */       [{ deviceId: 'dev-1', severity: 'high' }],
-    /* 8 dns_filter */         [{ isActive: true, provider: 'umbrella', lastSyncStatus: 'success' }],
-    /* 9 backup_configs */     [{ isActive: true, provider: 's3', encryption: true }],
-    /* 10 c2c */               [],
-    /* 11 m365 */              [{ status: 'active' }],
-    /* 12 google */            [],
-    /* 13 pam_org_config */    [{ uacInterceptionEnabled: true }],
-    /* 14 pam_rules */         [{ id: 'r1' }, { id: 'r2' }],
-    /* 15 elevation_requests*/ [{ approvedAt: new Date(), deniedByUserId: null }, { approvedAt: null, deniedByUserId: 'u1' }],
-    /* 16 authenticator */     [{ requireEnrollment: true, enforceFrom: new Date(Date.now() - 86400000) }],
-    /* 17 posture snapshot */  [{ overallScore: 82 }]
+    /* 7 dns_filter */         [{ isActive: true, provider: 'umbrella', lastSyncStatus: 'success' }],
+    /* 8 backup_configs */     [{ isActive: true, provider: 's3', encryption: true }],
+    /* 9 c2c */                [],
+    /* 10 m365 */              [{ status: 'active' }],
+    /* 11 google */            [],
+    /* 12 pam_org_config */    [{ uacInterceptionEnabled: true }],
+    /* 13 pam_rules */         [{ id: 'r1' }, { id: 'r2' }],
+    /* 14 elevation_requests*/ [{ approvedAt: new Date(), deniedByUserId: null }, { approvedAt: null, deniedByUserId: 'u1' }],
+    /* 15 authenticator */     [{ requireEnrollment: true, enforceFrom: new Date(Date.now() - 86400000) }],
+    /* 16 posture snapshot */  [{ overallScore: 82 }]
   ];
   for (const [i, rows] of Object.entries(over)) {
     if (rows) seq[Number(i) - 1] = rows;
   }
-  // No-partner orgs skip the authenticator_policies query (#16), so drop that slot
+  // No-partner orgs skip the authenticator_policies query (#15), so drop that slot
   // to keep the remaining queries aligned with the generator's actual call order.
-  if (opts.noPartner) seq.splice(15, 1);
+  if (opts.noPartner) seq.splice(14, 1);
   const m = vi.mocked(db.select);
   m.mockReset();
-  // Fill any sparse holes (e.g. overriding #19 without #18) with [] so every
+  // Fill any sparse holes (e.g. overriding #18 without #17) with [] so every
   // queued query resolves to an iterable, not undefined.
   for (let i = 0; i < seq.length; i++) m.mockReturnValueOnce(selectChain(seq[i] ?? []));
   m.mockReturnValue(selectChain([]));
 }
 
 describe('generateSecurityCompliancePostureReport', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vulnerabilityMocks.loadOpenVulnerabilityCounts.mockResolvedValue(
+      new Map([
+        ['dev-1', { high: 2, critical: 1 }],
+        ['dev-2', { high: 1, critical: 0 }],
+      ]),
+    );
+  });
+
+  it('places tenant-safe open vulnerability counts into per-device rows', async () => {
+    mockGeneratorQueries();
+    const result = await generateSecurityCompliancePostureReport(ORG, {});
+    const rows = Object.fromEntries((result.rows as any[]).map((row) => [row.hostname, row]));
+
+    expect(vulnerabilityMocks.loadOpenVulnerabilityCounts).toHaveBeenCalledWith([
+      'dev-1',
+      'dev-2',
+      'dev-3',
+    ]);
+    expect(rows['pc-1']).toMatchObject({ openVulnHigh: 2, openVulnCritical: 1 });
+    expect(rows['pc-2']).toMatchObject({ openVulnHigh: 1, openVulnCritical: 0 });
+  });
 
   it('merges managed EDR with native AV and flags unprotected devices', async () => {
     mockGeneratorQueries();
@@ -112,6 +138,19 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(c.passwordComplexityPct).toBe(50);
   });
 
+  it('carries the backup requirement without changing posture score', async () => {
+    mockGeneratorQueries();
+    const summary = (await generateSecurityCompliancePostureReport(ORG, {
+      backupRequired: false,
+    })).summary as any;
+    expect(summary.controls.backupRequired).toBe(false);
+    expect(summary.controls.backupConfigured).toBe(true);
+    expect(summary.securityProducts).toContainEqual(
+      expect.objectContaining({ category: 'backup' }),
+    );
+    expect(summary.postureScore).toBe(82);
+  });
+
   it('summarizes privileged access from PAM tables', async () => {
     mockGeneratorQueries();
     const r = await generateSecurityCompliancePostureReport(ORG, {});
@@ -131,9 +170,9 @@ describe('generateSecurityCompliancePostureReport', () => {
   });
 
   it('aggregates CIS pass-rate per device when included and scans exist', async () => {
-    // CIS is query #18 (after posture); provide latest-scan rows per device.
+    // CIS is query #17 (after posture); provide latest-scan rows per device.
     mockGeneratorQueries({
-      18: [
+      17: [
         { deviceId: 'dev-1', passedChecks: 80, totalChecks: 100 },
         { deviceId: 'dev-2', passedChecks: 60, totalChecks: 100 }
       ]
@@ -155,7 +194,7 @@ describe('generateSecurityCompliancePostureReport', () => {
   });
 
   it('reports identity-connected (not MFA) and AV-definitions currency, with patch unknowns', async () => {
-    mockGeneratorQueries(); // patch-scanned (#19) defaults empty → nothing patch-assessed
+    mockGeneratorQueries(); // patch-scanned (#18) defaults empty → nothing patch-assessed
     const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
     // C2: the control says only what's proven — identity connected, NOT MFA enforced.
     expect(c.identityProviderConnected).toBe(true);
@@ -170,8 +209,8 @@ describe('generateSecurityCompliancePostureReport', () => {
   });
 
   it('computes patch currency only over patch-scanned devices (H1)', async () => {
-    // #6 pending = dev-2 critical; #19 scanned-set = dev-1 + dev-2 (dev-3 never scanned)
-    mockGeneratorQueries({ 19: [{ deviceId: 'dev-1' }, { deviceId: 'dev-2' }] });
+    // #6 pending = dev-2 critical; #18 scanned-set = dev-1 + dev-2 (dev-3 never scanned)
+    mockGeneratorQueries({ 18: [{ deviceId: 'dev-1' }, { deviceId: 'dev-2' }] });
     const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
     expect(c.patchCurrentPct).toBe(50); // dev-1 current, dev-2 has critical pending
     expect(c.patchUnknownCount).toBe(1); // dev-3 unscanned
@@ -195,7 +234,7 @@ describe('generateSecurityCompliancePostureReport', () => {
   });
 
   it('marks a failing-sync DNS integration as degraded, not active (H3)', async () => {
-    mockGeneratorQueries({ 8: [{ isActive: true, provider: 'umbrella', lastSyncStatus: 'error' }] });
+    mockGeneratorQueries({ 7: [{ isActive: true, provider: 'umbrella', lastSyncStatus: 'error' }] });
     const summary = (await generateSecurityCompliancePostureReport(ORG, {})).summary as any;
     expect(summary.controls.dnsFilteringActive).toBe(false);
     expect(summary.controls.dnsFilteringSyncStatus).toBe('error');
@@ -204,7 +243,7 @@ describe('generateSecurityCompliancePostureReport', () => {
   });
 
   it('reports CIS coverage (assessed count) alongside the average (H4)', async () => {
-    mockGeneratorQueries({ 18: [{ deviceId: 'dev-1', passedChecks: 90, totalChecks: 100 }] });
+    mockGeneratorQueries({ 17: [{ deviceId: 'dev-1', passedChecks: 90, totalChecks: 100 }] });
     const c = (await generateSecurityCompliancePostureReport(ORG, {})).summary!.controls as any;
     expect(c.cisAvgPassRate).toBe(90);
     expect(c.cisAssessedCount).toBe(1); // 1 of 3 devices scanned — coverage is visible
@@ -271,14 +310,62 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(names.join(' ')).toMatch(/umbrella|dns/);
   });
 
+  it('keeps the unidentified "other" provider off a client-facing inventory', async () => {
+    // The base fixture has a provider:'other' row. There is no pretty name for
+    // it, so dropping the guard in the generator would ship a green-dotted
+    // product literally called "other" on an insurance attestation PDF.
+    mockGeneratorQueries();
+    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const names = (r.summary as any).securityProducts.map((p: any) => p.product.toLowerCase());
+    expect(names).not.toContain('other');
+  });
+
+  it('lists native and managed products once with unique scoped coverage', async () => {
+    mockGeneratorQueries({
+      2: [
+        { id: 'dev-1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ' },
+        { id: 'dev-2', hostname: 'pc-2', osType: 'windows', siteName: 'HQ' },
+        { id: 'dev-3', hostname: 'pc-3', osType: 'windows', siteName: 'Remote' },
+        { id: 'dev-4', hostname: 'pc-4', osType: 'windows', siteName: 'Remote' },
+        { id: 'dev-5', hostname: 'pc-5', osType: 'windows', siteName: 'HQ' },
+        { id: 'dev-6', hostname: 'pc-6', osType: 'windows', siteName: 'Remote' },
+      ],
+      3: [
+        { deviceId: 'dev-1', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-2', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-3', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-4', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-5', provider: 'sentinelone', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        { deviceId: 'dev-6', provider: 'sentinelone', realTimeProtection: false, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+      ],
+      4: [{ deviceId: 'dev-5' }, { deviceId: 'dev-6' }],
+    });
+
+    const summary = (await generateSecurityCompliancePostureReport(ORG, {})).summary as any;
+    expect(summary.securityProducts.filter((p: any) => p.product === 'Defender')).toEqual([
+      expect.objectContaining({ category: 'antivirus', deviceCoverage: 4, active: true }),
+    ]);
+    expect(summary.securityProducts.filter((p: any) => p.product === 'SentinelOne')).toEqual([
+      expect.objectContaining({ category: 'edr', deviceCoverage: 2, active: true }),
+    ]);
+  });
+
   it('returns empty rows but a valid summary when no devices in scope', async () => {
     const svc = await import('./reportGenerationService');
     vi.mocked(svc.resolveSiteAllowedDeviceIds).mockResolvedValueOnce([]);
     mockGeneratorQueries();
-    const r = await generateSecurityCompliancePostureReport(ORG, {});
+    const r = await generateSecurityCompliancePostureReport(ORG, { backupRequired: false });
     expect(r.rows).toEqual([]);
     expect((r.summary as any).deviceCount).toBe(0);
+    expect((r.summary as any).controls.backupRequired).toBe(false);
     // No devices assessed → null ("N/A"), never a misleading 0%.
     expect((r.summary as any).controls.edrCoveragePct).toBeNull();
+  });
+
+  it('carries backupRequired when the device query returns no rows', async () => {
+    mockGeneratorQueries({ 2: [] });
+    const r = await generateSecurityCompliancePostureReport(ORG, { backupRequired: false });
+    expect(r.rows).toEqual([]);
+    expect((r.summary as any).controls.backupRequired).toBe(false);
   });
 });

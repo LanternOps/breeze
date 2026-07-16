@@ -19,16 +19,28 @@ the shared instance is initialized.
 ## Adding a locale
 
 1. Create `src/locales/<tag>/` and copy every namespace file from `en/`; translate values while keeping keys identical.
-2. Add the tag to `LOCALE_OPTIONS` in `apps/web/src/lib/appearance.ts`.
-3. Add the tag to the locale allowlists in
-   `apps/api/src/routes/users.ts` (PATCH /users/me).
-4. Add an option to the user and partner Language controls in
-   `apps/web/src/components/settings/ThemingSettings.tsx`.
-5. Locale parity tests will fail until namespace files and keys match `en/` exactly.
+2. Add the tag to the shared `SupportedLocale` union in
+   `packages/shared/src/types/index.ts`.
+3. Add the tag to `LOCALE_OPTIONS` in `apps/web/src/lib/appearance.ts`.
+4. Add the tag to the locale allowlists in
+   `apps/api/src/routes/users.ts` (PATCH /users/me and partner-default filtering)
+   and `apps/api/src/routes/orgs.ts` (partner settings validation).
+5. Add an option to both Language controls:
+   `apps/web/src/components/settings/ThemingSettings.tsx` for the user preference
+   and `apps/web/src/components/settings/PartnerRegionalTab.tsx` for the partner default.
+6. Add the tag to `translatedLocales` and record all reviewed per-namespace
+   duplicate caps in `apps/web/src/lib/i18n/translationCoverage.test.ts`.
+7. Locale parity tests will fail until namespace files and keys match `en/` exactly.
+
+Language labels are written as self-names, while their descriptions are translated into the active UI language.
 
 Every extraction PR containing machine-drafted Portuguese must include:
 
 `pt-BR strings are machine-drafted pending native review`
+
+The Spanish, French, and German catalogs are also machine drafts awaiting native review:
+
+`es-419, fr-FR, and de-DE strings are machine-drafted pending native review`
 
 Do NOT translate `data-testid` values, log messages, or API payload values.
 
@@ -39,4 +51,4 @@ Do NOT translate `data-testid` values, log messages, or API payload values.
 - **Rich text:** embedded markup uses `<Trans i18nKey="ns:key">plain <strong>bold</strong> text</Trans>` from `react-i18next`. Never split a sentence across multiple `t()` calls.
 - **Reuse:** check `common:actions`, `common:states`, and `common:labels` before minting a key. A plain Save button is always `t('common:actions.save')`.
 - **Scope:** translate visible text plus `placeholder`, `title`, `aria-label`, toast, and message strings. Do not translate `data-testid`, React keys, structural test fields, or API values.
-- **Review flag:** every extraction PR with machine-drafted Portuguese includes the exact line `pt-BR strings are machine-drafted pending native review` in its description.
+- **Review flag:** every extraction PR with machine-drafted Portuguese includes the exact line `pt-BR strings are machine-drafted pending native review` in its description. PRs that add or substantially revise the Spanish, French, or German catalogs include `es-419, fr-FR, and de-DE strings are machine-drafted pending native review`.

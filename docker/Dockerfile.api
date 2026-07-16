@@ -7,6 +7,7 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-api/package.json ./packages/extension-api/
+COPY packages/extension-sdk/package.json ./packages/extension-sdk/
 RUN pnpm install --frozen-lockfile
 
 FROM base AS builder
@@ -14,6 +15,8 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY --from=deps /app/packages/extension-api/node_modules ./packages/extension-api/node_modules
+COPY --from=deps /app/packages/extension-sdk/node_modules ./packages/extension-sdk/node_modules
 COPY . .
 RUN pnpm --filter @breeze/api build
 # Build any extension packages present in the build context (gitignored dir —

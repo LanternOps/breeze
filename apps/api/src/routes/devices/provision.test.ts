@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // ---------- hoisted mocks (vi.mock factories run BEFORE imports) ----------
@@ -568,6 +568,88 @@ describe('POST /devices/provision', () => {
       const res = await fetchReq('not-a-valid-token');
       expect(res.status).toBe(400);
       expect(db.select).not.toHaveBeenCalled();
+    });
+
+    describe('trusted client IP (SR2-16)', () => {
+      const origTrust = process.env.TRUST_PROXY_HEADERS;
+      const origCidrs = process.env.TRUSTED_PROXY_CIDRS;
+
+      afterEach(() => {
+        if (origTrust === undefined) delete process.env.TRUST_PROXY_HEADERS;
+        else process.env.TRUST_PROXY_HEADERS = origTrust;
+        if (origCidrs === undefined) delete process.env.TRUSTED_PROXY_CIDRS;
+        else process.env.TRUSTED_PROXY_CIDRS = origCidrs;
+        delete process.env.TRUST_CF_CONNECTING_IP;
+      });
+
+      function fetchReqWithPeer(headers: Record<string, string>, remoteAddress?: string) {
+        return app.request(
+          `/devices/provision/fetch/${TOKEN}`,
+          { method: 'GET', headers: { Authorization: 'Bearer t', ...headers } },
+          remoteAddress ? { incoming: { socket: { remoteAddress } } } : undefined,
+        );
+      }
+
+      it('records the fallback (null), not a spoofed cf-connecting-ip, when the peer is untrusted (SR2-16)', async () => {
+        process.env.TRUST_PROXY_HEADERS = 'false';
+        delete process.env.TRUSTED_PROXY_CIDRS;
+
+        mockHandleSelect([
+          {
+            id: 'handle-ip1',
+            orgId: ORG_ID,
+            deviceId: 'device-prov-id',
+            credentials: CONFIG,
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt: null,
+          },
+        ]);
+
+        let capturedSet: Record<string, unknown> | null = null;
+        vi.mocked(db.update).mockReturnValue({
+          set: (vals: Record<string, unknown>) => {
+            capturedSet = vals;
+            return { where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'handle-ip1' }]) })) };
+          },
+        } as any);
+
+        const res = await fetchReqWithPeer({ 'cf-connecting-ip': '203.0.113.5' }, '198.51.100.77');
+        expect(res.status).toBe(200);
+        expect(capturedSet).not.toBeNull();
+        // GUARD-BITE: RED today — provision.ts reads the header raw, so the
+        // persisted consumedFromIp is the spoof '203.0.113.5' instead of null.
+        expect((capturedSet as any).consumedFromIp).not.toBe('203.0.113.5');
+        expect((capturedSet as any).consumedFromIp).toBeNull();
+      });
+
+      it('records the real cf-connecting-ip when the peer is a trusted proxy (SR2-16)', async () => {
+        process.env.TRUST_PROXY_HEADERS = 'true';
+        process.env.TRUSTED_PROXY_CIDRS = '198.51.100.77/32';
+        process.env.TRUST_CF_CONNECTING_IP = 'true';
+
+        mockHandleSelect([
+          {
+            id: 'handle-ip2',
+            orgId: ORG_ID,
+            deviceId: 'device-prov-id',
+            credentials: CONFIG,
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt: null,
+          },
+        ]);
+
+        let capturedSet: Record<string, unknown> | null = null;
+        vi.mocked(db.update).mockReturnValue({
+          set: (vals: Record<string, unknown>) => {
+            capturedSet = vals;
+            return { where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'handle-ip2' }]) })) };
+          },
+        } as any);
+
+        const res = await fetchReqWithPeer({ 'cf-connecting-ip': '203.0.113.5' }, '198.51.100.77');
+        expect(res.status).toBe(200);
+        expect((capturedSet as any).consumedFromIp).toBe('203.0.113.5');
+      });
     });
   });
 });

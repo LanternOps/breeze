@@ -5,12 +5,12 @@ import { and, eq } from 'drizzle-orm';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import {
-  createQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
+  createQuoteSchema, cloneQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
-  reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema,
+  reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema, type CloneQuoteInput,
 } from '@breeze/shared';
 import {
-  createQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
+  createQuote, cloneQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
   reorderBlocks, reorderLines, moveLineToBlock,
 } from '../../services/quoteService';
@@ -47,6 +47,26 @@ quoteCrudRoutes.get('/', scopes, readPerm, zValidator('query', listQuotesQuerySc
 });
 quoteCrudRoutes.post('/', scopes, writePerm, zValidator('json', createQuoteSchema), async (c) => {
   try { return c.json({ data: await createQuote(c.req.valid('json'), quoteActorFrom(c)) }); }
+  catch (err) { return handleServiceError(c, err); }
+});
+quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idParam), async (c) => {
+  // Optional retarget/rename body. Distinguish an ABSENT body (legacy callers
+  // POST nothing) from a PRESENT-but-broken one: an empty body degrades to a
+  // plain same-org clone; ANY non-empty body that fails to read, parse, or
+  // validate is a 400 — never a silent same-org clone of a retarget the caller
+  // intended. Read unconditionally (no content-type gate): a JSON body sent
+  // without the header must still be honored, and a non-JSON body must 400.
+  let input: CloneQuoteInput = {};
+  let raw: string;
+  try { raw = await c.req.text(); } catch { return c.json({ error: 'Failed to read request body' }, 400); }
+  if (raw.trim()) {
+    let json: unknown;
+    try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+    const parsed = cloneQuoteSchema.safeParse(json);
+    if (!parsed.success) return c.json({ error: 'Invalid clone options' }, 400);
+    input = parsed.data;
+  }
+  try { return c.json({ data: await cloneQuote(c.req.valid('param').id, quoteActorFrom(c), input) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
@@ -118,7 +138,7 @@ quoteCrudRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('para
 quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
-    const { quote, blocks, lines } = await getQuote(id, quoteActorFrom(c));
+    const { quote, blocks, lines, billTo } = await getQuote(id, quoteActorFrom(c));
 
     const branding = await resolveQuoteBranding(quote);
 
@@ -127,6 +147,13 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
       // Legacy/draft docs have no frozen snapshot; resolveQuoteBranding synthesizes
       // one from the live partner so the From block still renders.
       sellerSnapshot: branding.seller,
+      // Overlay the resolved customer bill-to so a DRAFT (whose billTo* columns are
+      // still null) renders the org's billing address in the "Prepared for" block,
+      // matching what the customer will get once sent. Falls back to the quote's
+      // own frozen fields if a caller supplies no resolved billTo.
+      billToName: billTo?.name ?? quote.billToName,
+      billToAddress: billTo?.address ?? quote.billToAddress,
+      billToTaxId: billTo?.taxId ?? quote.billToTaxId,
     };
 
     // Real image loader: pull bytes from quote_images, constrained to BOTH the

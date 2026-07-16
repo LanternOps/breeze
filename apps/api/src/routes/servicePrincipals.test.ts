@@ -1,264 +1,455 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { servicePrincipalRoutes } from './servicePrincipals';
 
-const mocks = vi.hoisted(() => ({
-  gateOrder: [] as string[],
-  authMiddleware: vi.fn(),
-  requireScope: vi.fn((...scopes: string[]) => async (_c: any, next: any) => {
-    mocks.gateOrder.push(`scope:${scopes.join(',')}`);
-    return next();
-  }),
-  permissionAllowed: { value: true },
-  mfaAllowed: { value: true },
-  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
-    mocks.gateOrder.push(`permission:${resource}:${action}`);
-    return mocks.permissionAllowed.value ? next() : c.json({ error: 'Insufficient permissions' }, 403);
-  }),
-  requireMfa: vi.fn(() => async (c: any, next: any) => {
-    mocks.gateOrder.push('mfa');
-    return mocks.mfaAllowed.value ? next() : c.json({ error: 'MFA required' }, 403);
-  }),
-  issue: vi.fn(),
-  rotate: vi.fn(),
-  audit: vi.fn(),
-}));
+const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const OTHER_ORG_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const PRINCIPAL_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const KEY_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+vi.mock('../services', () => ({}));
 
 vi.mock('../db', () => ({
-  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), transaction: vi.fn() },
+  db: {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => Promise.resolve([]))
+        }))
+      }))
+    }))
+  }
 }));
+
 vi.mock('../db/schema', () => ({
-  servicePrincipals: {
-    id: 'id', partnerId: 'partnerId', name: 'name', description: 'description',
-    status: 'status', scopes: 'scopes', expiresAt: 'expiresAt', sourceCidrs: 'sourceCidrs',
-    createdBy: 'createdBy', updatedBy: 'updatedBy', createdAt: 'createdAt', updatedAt: 'updatedAt',
-  },
-  servicePrincipalKeys: {
-    id: 'id', partnerId: 'partnerId', servicePrincipalId: 'servicePrincipalId', name: 'name',
-    keyPrefix: 'keyPrefix', status: 'status', expiresAt: 'expiresAt', rateLimit: 'rateLimit',
-    lastUsedAt: 'lastUsedAt', revokedAt: 'revokedAt', rotatedFromId: 'rotatedFromId', createdAt: 'createdAt',
-  },
+  servicePrincipals: { id: 'id', orgId: 'orgId', status: 'status', createdAt: 'createdAt' }
 }));
+
+vi.mock('../services/servicePrincipals', () => {
+  class ServicePrincipalNotFoundError extends Error {}
+  class ApiKeyNotFoundError extends Error {}
+  return {
+    createServicePrincipal: vi.fn(),
+    rotateServicePrincipalKey: vi.fn(),
+    disableServicePrincipal: vi.fn(),
+    migrateHumanKeyToServicePrincipal: vi.fn(),
+    ServicePrincipalNotFoundError,
+    ApiKeyNotFoundError
+  };
+});
+
+// Mutable switch for the requirePermission mock so individual tests can
+// simulate a caller whose role LACKS the gated permission (the real
+// middleware 403s). Hoisted because the vi.mock factory below references it.
+// Reset to granted in beforeEach. This is what proves guard-bite (c): the
+// migrate-key route actually runs through requirePermission, not a rubber
+// stamp — flip this to false and the 403 assertion goes RED.
+// `permissions` mirrors what the real requirePermission sets via
+// c.set('permissions', ...). Default is an all-permissions caller (wildcard)
+// with no site restriction, so the scope-delegation ceiling passes for the
+// happy path; individual tests narrow it to exercise the ceiling.
+const permissionMockState = vi.hoisted(() => ({
+  granted: true,
+  permissions: {
+    permissions: [{ resource: '*', action: '*' }],
+    partnerId: null,
+    orgId: null,
+    roleId: 'role-1',
+    scope: 'organization',
+    allowedSiteIds: undefined,
+  } as any,
+}));
+
 vi.mock('../middleware/auth', () => ({
-  authMiddleware: mocks.authMiddleware,
-  requireScope: mocks.requireScope,
-  requirePermission: mocks.requirePermission,
-  requireMfa: mocks.requireMfa,
-}));
-vi.mock('../services/servicePrincipalKeys', () => ({
-  issueServicePrincipalKey: mocks.issue,
-  rotateServicePrincipalKey: mocks.rotate,
-  ServicePrincipalKeyError: class ServicePrincipalKeyError extends Error {
-    code: string; status: number;
-    constructor(code: string, message: string, status = 400) { super(message); this.code = code; this.status = status; }
-  },
-}));
-vi.mock('../services/auditEvents', () => ({ writeRouteAudit: mocks.audit }));
-vi.mock('../services/permissions', () => ({
-  PERMISSIONS: {
-    ORGS_READ: { resource: 'organizations', action: 'read' },
-    ORGS_WRITE: { resource: 'organizations', action: 'write' },
-  },
+  authMiddleware: vi.fn((c: any, next: any) => next()),
+  requireScope: vi.fn((...scopes: string[]) => (c: any, next: any) => {
+    const auth = c.get('auth');
+    if (!auth || !scopes.includes(auth.scope)) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+    return next();
+  }),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (!permissionMockState.granted) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    c.set('permissions', permissionMockState.permissions);
+    return next();
+  }),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next())
 }));
 
 import { db } from '../db';
-import { servicePrincipalRoutes } from './servicePrincipals';
+import { authMiddleware } from '../middleware/auth';
+import {
+  createServicePrincipal,
+  rotateServicePrincipalKey,
+  disableServicePrincipal,
+  migrateHumanKeyToServicePrincipal,
+  ServicePrincipalNotFoundError,
+  ApiKeyNotFoundError
+} from '../services/servicePrincipals';
 
-const registeredScopeCalls: string[][] = mocks.requireScope.mock.calls.map((call) => call.map(String));
-const registeredPermissionCalls: string[][] = mocks.requirePermission.mock.calls.map((call) => call.map(String));
-const registeredMfaCount = mocks.requireMfa.mock.calls.length;
-
-const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
-const OTHER_PARTNER_ID = '99999999-9999-4999-8999-999999999999';
-const PRINCIPAL_ID = '22222222-2222-4222-8222-222222222222';
-const KEY_ID = '33333333-3333-4333-8333-333333333333';
-const USER_ID = '44444444-4444-4444-8444-444444444444';
-
-function auth(partnerId: string | null = PARTNER_ID, scope = 'partner') {
-  mocks.authMiddleware.mockImplementation((c: any, next: any) => {
-    mocks.gateOrder.push('auth');
-    c.set('auth', { scope, partnerId, user: { id: USER_ID, email: 'admin@example.com' }, token: { mfa: true } });
-    c.set('permissions', { permissions: [{ resource: '*', action: '*' }] });
-    return next();
-  });
-}
-
-function selectRows(...rows: unknown[][]) {
-  for (const result of rows) {
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn(() => ({
-        where: vi.fn(() => {
-          const promise: any = Promise.resolve(result);
-          promise.limit = vi.fn(async () => result);
-          promise.orderBy = vi.fn(async () => result);
-          return promise;
-        }),
-      })),
-    } as any);
-  }
-}
-
-describe('service principal management routes', () => {
+describe('service principal routes', () => {
   let app: Hono;
+
+  const setAuth = (overrides: Partial<{ scope: 'system' | 'partner' | 'organization'; orgId: string | null }> = {}) => {
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: overrides.scope ?? 'organization',
+        partnerId: null,
+        orgId: 'orgId' in overrides ? overrides.orgId : ORG_ID,
+        user: { id: 'user-123', email: 'test@example.com' },
+        accessibleOrgIds: [ORG_ID],
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      return next();
+    });
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.gateOrder.length = 0;
-    mocks.permissionAllowed.value = true;
-    mocks.mfaAllowed.value = true;
-    auth();
+    permissionMockState.granted = true;
+    permissionMockState.permissions = {
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: null,
+      roleId: 'role-1',
+      scope: 'organization',
+      allowedSiteIds: undefined,
+    } as any;
+    setAuth();
     app = new Hono();
     app.route('/service-principals', servicePrincipalRoutes);
   });
 
-  it('registers partner/system, administrator permission, and MFA gates', () => {
-    expect(registeredScopeCalls.some((call) => call.includes('partner') && call.includes('system'))).toBe(true);
-    expect(registeredPermissionCalls.some((call) => call.join(':') === 'organizations:read')).toBe(true);
-    expect(registeredPermissionCalls.some((call) => call.join(':') === 'organizations:write')).toBe(true);
-    expect(registeredMfaCount).toBeGreaterThan(0);
-  });
+  describe('GET /service-principals', () => {
+    it('lists principals scoped to the caller org', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  offset: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID, status: 'active' }])
+                })
+              })
+            })
+          })
+        } as any);
 
-  it('lists principals and masked keys without hashes or plaintext', async () => {
-    selectRows(
-      [{ id: PRINCIPAL_ID, partnerId: PARTNER_ID, name: 'Weavestream', status: 'active', scopes: ['devices:read'] }],
-      [{ id: KEY_ID, servicePrincipalId: PRINCIPAL_ID, keyPrefix: 'brz_sp_abc123', status: 'active' }],
-    );
-    const res = await app.request('/service-principals');
-    const body = await res.json();
-    expect(res.status).toBe(200);
-    expect(body.data[0].keys[0].keyPrefix).toBe('brz_sp_abc123');
-    expect(JSON.stringify(body)).not.toMatch(/keyHash|rawKey|"key":/);
-  });
+      const res = await app.request('/service-principals?page=1&limit=50');
 
-  it('rejects duplicate principal names for a partner', async () => {
-    selectRows([{ id: PRINCIPAL_ID }]);
-    const res = await app.request('/service-principals', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Weavestream', scopes: ['devices:read'], sourceCidrs: [] }),
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+      expect(body.pagination.total).toBe(1);
     });
-    expect(res.status).toBe(409);
   });
 
-  it('maps a create race suppressed by the database unique constraint to 409', async () => {
-    selectRows([]);
-    const returning = vi.fn().mockResolvedValue([]);
-    const onConflictDoNothing = vi.fn(() => ({ returning }));
-    vi.mocked(db.insert).mockReturnValue({
-      values: vi.fn(() => ({ onConflictDoNothing })),
-    } as any);
+  describe('POST /service-principals', () => {
+    it('creates a principal for the caller org', async () => {
+      vi.mocked(createServicePrincipal).mockResolvedValue({
+        id: PRINCIPAL_ID,
+        orgId: ORG_ID,
+        name: 'CI bot',
+        status: 'active',
+        scopes: ['ai:read'],
+        createdBy: 'user-123',
+        lastUpdatedBy: null,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      } as any);
 
-    const res = await app.request('/service-principals', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Concurrent', scopes: ['devices:read'], sourceCidrs: [] }),
-    });
+      const res = await app.request('/service-principals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: ORG_ID, name: 'CI bot', scopes: ['ai:read'] })
+      });
 
-    expect(res.status).toBe(409);
-    expect(onConflictDoNothing).toHaveBeenCalledOnce();
-  });
-
-  it('maps a wrapped name unique violation during rename to 409', async () => {
-    selectRows([]);
-    const pgError = Object.assign(new Error('duplicate'), {
-      code: '23505',
-      constraint_name: 'service_principals_partner_name_unique',
-    });
-    vi.mocked(db.update).mockReturnValue({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({ returning: vi.fn().mockRejectedValue({ cause: pgError }) })),
-      })),
-    } as any);
-    vi.mocked(db.transaction).mockImplementation(async (callback: any) => callback({ update: db.update }));
-
-    const res = await app.request(`/service-principals/${PRINCIPAL_ID}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Concurrent rename' }),
+      expect(res.status).toBe(201);
+      expect(createServicePrincipal).toHaveBeenCalledWith({
+        orgId: ORG_ID,
+        name: 'CI bot',
+        scopes: ['ai:read'],
+        createdBy: 'user-123'
+      });
     });
 
-    expect(res.status).toBe(409);
-  });
+    it('rejects creating a principal for a different org (organization scope)', async () => {
+      const res = await app.request('/service-principals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: OTHER_ORG_ID, name: 'CI bot', scopes: [] })
+      });
 
-  it.each([
-    [{ name: 'Bad scope', scopes: ['devices:write'], sourceCidrs: [] }, 'scope'],
-    [{ name: 'Bad CIDR', scopes: ['devices:read'], sourceCidrs: ['10.0.0.0/99'] }, 'CIDR'],
-  ])('rejects invalid principal input', async (payload, message) => {
-    const res = await app.request('/service-principals', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+      expect(res.status).toBe(403);
+      expect(createServicePrincipal).not.toHaveBeenCalled();
     });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toMatch(new RegExp(message, 'i'));
-  });
 
-  it('issues a key and audits only sanitized identifiers', async () => {
-    mocks.issue.mockResolvedValue({ keyId: KEY_ID, rawKey: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
-    const res = await app.request(`/service-principals/${PRINCIPAL_ID}/keys`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Production' }),
+    // SR2-15 ceiling: a principal must never carry a scope its creator lacks.
+    // Without this, an org admin holding only orgs:write could mint a principal
+    // with devices:execute and reach /dev/push (arbitrary binary → fleet).
+    it('rejects a scope the creator does not hold (delegation ceiling) and never creates', async () => {
+      permissionMockState.permissions = {
+        permissions: [{ resource: 'organizations', action: 'write' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: undefined,
+      } as any;
+
+      const res = await app.request('/service-principals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: ORG_ID, name: 'escalate', scopes: ['devices:execute'] })
+      });
+
+      expect(res.status).toBe(403);
+      expect(createServicePrincipal).not.toHaveBeenCalled();
     });
-    expect(res.status).toBe(201);
-    expect(await res.json()).toMatchObject({ key: 'brz_sp_ONETIME', keyPrefix: 'brz_sp_ONE' });
-    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      resourceId: KEY_ID,
-      details: expect.objectContaining({ principalType: 'service_principal', partnerId: PARTNER_ID, keyId: KEY_ID }),
-    }));
-    expect(JSON.stringify(mocks.audit.mock.calls)).not.toMatch(/ONETIME|keyHash/);
-  });
 
-  it('rotates atomically and reveals only the successor plaintext', async () => {
-    mocks.rotate.mockResolvedValue({ keyId: '55555555-5555-4555-8555-555555555555', rawKey: 'brz_sp_NEW', keyPrefix: 'brz_sp_NEW' });
-    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({}));
-    const res = await app.request(`/service-principals/${PRINCIPAL_ID}/keys/${KEY_ID}/rotate`, { method: 'POST' });
-    expect(res.status).toBe(200);
-    expect((await res.json()).key).toBe('brz_sp_NEW');
-    expect(db.transaction).toHaveBeenCalledOnce();
-  });
+    // A service principal is organization-wide (no site axis). A site-restricted
+    // creator must not mint one, or they escape their own restriction across
+    // every site in the org.
+    it('rejects creation by a site-restricted caller and never creates', async () => {
+      permissionMockState.permissions = {
+        permissions: [{ resource: '*', action: '*' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: ['site-a'],
+      } as any;
 
-  it('revokes idempotently and scopes lookup to the current partner', async () => {
-    selectRows([{ id: KEY_ID, name: 'Production', status: 'revoked', keyPrefix: 'brz_sp_abc' }]);
-    const res = await app.request(`/service-principals/${PRINCIPAL_ID}/keys/${KEY_ID}`, { method: 'DELETE' });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ success: true, alreadyRevoked: true });
-    expect(db.update).not.toHaveBeenCalled();
-  });
+      const res = await app.request('/service-principals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: ORG_ID, name: 'CI bot', scopes: ['ai:read'] })
+      });
 
-  it('does not accept another partner identifier from a partner-scoped caller', async () => {
-    const res = await app.request(`/service-principals?partnerId=${OTHER_PARTNER_ID}`);
-    expect(res.status).toBe(403);
-    expect(db.select).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['administrator permission', () => { mocks.permissionAllowed.value = false; }],
-    ['MFA', () => { mocks.mfaAllowed.value = false; }],
-  ])('rejects mutation without %s', async (_gate, deny) => {
-    deny();
-    const res = await app.request('/service-principals', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Denied', scopes: ['devices:read'], sourceCidrs: [] }),
+      expect(res.status).toBe(403);
+      expect(createServicePrincipal).not.toHaveBeenCalled();
     });
-    expect(res.status).toBe(403);
-    expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['POST principal', '', { method: 'POST', body: JSON.stringify({ name: 'Stack', scopes: ['devices:read'] }) }],
-    ['PATCH principal', `/${PRINCIPAL_ID}`, { method: 'PATCH', body: JSON.stringify({ status: 'disabled' }) }],
-    ['POST key', `/${PRINCIPAL_ID}/keys`, { method: 'POST', body: JSON.stringify({ name: 'Stack key' }) }],
-    ['POST rotation', `/${PRINCIPAL_ID}/keys/${KEY_ID}/rotate`, { method: 'POST' }],
-    ['DELETE key', `/${PRINCIPAL_ID}/keys/${KEY_ID}`, { method: 'DELETE' }],
-  ])('runs auth, partner/system scope, write permission, and MFA in order for %s', async (_label, path, init) => {
-    mocks.mfaAllowed.value = false;
-    const res = await app.request(`/service-principals${path}`, {
-      ...init,
-      headers: { 'content-type': 'application/json' },
+  describe('POST /service-principals/:id/rotate', () => {
+    it('404s when the principal does not exist (org-access gate query returns nothing)', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/rotate`, { method: 'POST' });
+
+      expect(res.status).toBe(404);
+      expect(rotateServicePrincipalKey).not.toHaveBeenCalled();
     });
-    expect(res.status).toBe(403);
-    expect(mocks.gateOrder).toEqual([
-      'auth',
-      'scope:partner,system',
-      'permission:organizations:write',
-      'mfa',
-    ]);
+
+    it('rotates the key and returns the raw key once', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID }]) })
+        })
+      } as any);
+      vi.mocked(rotateServicePrincipalKey).mockResolvedValue({
+        apiKeyId: 'key-new',
+        key: 'brz_newkey',
+        keyPrefix: 'brz_newkey'
+      });
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/rotate`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.key).toBe('brz_newkey');
+      expect(rotateServicePrincipalKey).toHaveBeenCalledWith(PRINCIPAL_ID, 'user-123');
+    });
+
+    it('denies cross-org rotate (org-access gate)', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: OTHER_ORG_ID }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/rotate`, { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(rotateServicePrincipalKey).not.toHaveBeenCalled();
+    });
+
+    // Ceiling bypass guard: rotate hands out a fresh live key with the
+    // principal's scopes. A caller who does NOT hold those scopes must not be
+    // able to capture that credential from an over-scoped principal — the same
+    // fleet-RCE escalation the create ceiling closes, via the rotate door.
+    it('denies rotate by a sub-ceiling caller on an over-scoped principal', async () => {
+      permissionMockState.permissions = {
+        permissions: [{ resource: 'organizations', action: 'write' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: undefined,
+      } as any;
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID, scopes: ['devices:execute'] }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/rotate`, { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(rotateServicePrincipalKey).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /service-principals/:id/disable', () => {
+    it('disables the principal (cascade revoke happens in the service layer)', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID }]) })
+        })
+      } as any);
+      vi.mocked(disableServicePrincipal).mockResolvedValue({
+        id: PRINCIPAL_ID,
+        orgId: ORG_ID,
+        name: 'CI bot',
+        status: 'disabled',
+        scopes: [],
+        createdBy: 'user-123',
+        lastUpdatedBy: 'user-123',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/disable`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(disableServicePrincipal).toHaveBeenCalledWith(PRINCIPAL_ID, 'user-123');
+    });
+
+    it('maps ServicePrincipalNotFoundError from the service layer to 404', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID }]) })
+        })
+      } as any);
+      vi.mocked(disableServicePrincipal).mockRejectedValue(new ServicePrincipalNotFoundError(PRINCIPAL_ID));
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/disable`, { method: 'POST' });
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('POST /service-principals/:id/migrate-key', () => {
+    // Guard-bite (c): migrateHumanKeyToServicePrincipal requires org-admin —
+    // a non-admin actor gets 403. This is the only route that flips
+    // api_keys.principal_type; if requirePermission were ever removed from
+    // this route's middleware chain, this test goes RED.
+    it('403s a non-admin caller (requirePermission gate) and never calls the service', async () => {
+      permissionMockState.granted = false;
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/migrate-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId: KEY_ID })
+      });
+
+      expect(res.status).toBe(403);
+      expect(migrateHumanKeyToServicePrincipal).not.toHaveBeenCalled();
+    });
+
+    it('migrates the key for an authorized org-admin caller', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID }]) })
+        })
+      } as any);
+      vi.mocked(migrateHumanKeyToServicePrincipal).mockResolvedValue({
+        id: KEY_ID,
+        orgId: ORG_ID,
+        principalType: 'service',
+        principalId: PRINCIPAL_ID,
+        scopes: ['ai:read']
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/migrate-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId: KEY_ID })
+      });
+
+      expect(res.status).toBe(200);
+      expect(migrateHumanKeyToServicePrincipal).toHaveBeenCalledWith(KEY_ID, PRINCIPAL_ID, 'user-123');
+    });
+
+    it('denies migrate-key by a sub-ceiling caller on an over-scoped principal', async () => {
+      permissionMockState.permissions = {
+        permissions: [{ resource: 'organizations', action: 'write' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: undefined,
+      } as any;
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID, scopes: ['devices:execute'] }])
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/migrate-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId: KEY_ID })
+      });
+
+      expect(res.status).toBe(403);
+      expect(migrateHumanKeyToServicePrincipal).not.toHaveBeenCalled();
+    });
+
+    it('maps ApiKeyNotFoundError from the service layer to 404', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID }]) })
+        })
+      } as any);
+      vi.mocked(migrateHumanKeyToServicePrincipal).mockRejectedValue(new ApiKeyNotFoundError(KEY_ID));
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/migrate-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId: KEY_ID })
+      });
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('JWT-only surface', () => {
+    it('never imports apiKeyAuthMiddleware — a service-principal key has no management surface (SR2-15)', async () => {
+      // Structural guard: an API-key-authed request can never reach these
+      // routes because they are mounted behind authMiddleware (JWT) only.
+      // Assert the source itself never wires in the API-key auth path, so a
+      // future edit that adds `apiKeyAuthMiddleware` to this file's
+      // middleware chain fails loudly instead of silently opening a
+      // management surface to service-account credentials.
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const source = fs.readFileSync(path.join(__dirname, 'servicePrincipals.ts'), 'utf8');
+      expect(source).not.toContain("from '../middleware/apiKeyAuth'");
+    });
   });
 });

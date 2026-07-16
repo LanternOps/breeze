@@ -1,0 +1,506 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Hono } from 'hono';
+
+// Task 7: `db.transaction` runs its callback with `db` itself as `tx` — the
+// factor-mutating routes fold their write into
+// `invalidateMfaAssuranceAfterFactorChange`'s `mutate(tx)`, and `tx.update`
+// needs the same mock behaviour as the top-level `db.update` this suite
+// already asserts against. The epoch-bump's own
+// `tx.update(users)...returning(...)` gets a valid row by default so
+// `advanceUserEpochs` doesn't throw "user not found" in tests that don't care
+// about the epoch value.
+vi.mock('../../db', () => {
+  const dbMock: any = {
+    select: vi.fn(),
+    update: vi.fn(() => ({
+      set: vi.fn(() => {
+        const whereResult: any = Promise.resolve();
+        whereResult.returning = vi.fn(() =>
+          Promise.resolve([{ authEpoch: 1, mfaEpoch: 2, emailEpoch: 1, passwordResetEpoch: 1 }])
+        );
+        return {
+          where: vi.fn(() => whereResult)
+        };
+      })
+    })),
+  };
+  dbMock.transaction = vi.fn((fn: (tx: unknown) => Promise<unknown>) => fn(dbMock));
+  return {
+    db: dbMock,
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
+
+// Keep advanceUserEpochs/revokeAllRefreshFamilies REAL; only
+// runPostCommitCleanup (Redis/permission-cache/OAuth fan-out) is mocked.
+vi.mock('../../services/authLifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/authLifecycle')>();
+  return {
+    ...actual,
+    runPostCommitCleanup: vi.fn().mockResolvedValue({
+      redisOk: true,
+      permissionCacheOk: true,
+      oauthOk: true,
+      oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
+    }),
+  };
+});
+
+// Mocked (rather than left real) because the real module pulls in agentWs →
+// configurationPolicy → a much bigger `db/schema` surface than this suite's
+// schema mock provides.
+vi.mock('../../services/remoteSessionTeardown', () => ({
+  TEARDOWN_FAILED: -1,
+  terminateUserRemoteSessions: vi.fn().mockResolvedValue(0),
+}));
+
+vi.mock('../../db/schema', () => ({
+  users: {
+    id: 'users.id',
+    phoneNumber: 'users.phoneNumber',
+    phoneVerified: 'users.phoneVerified',
+    mfaEnabled: 'users.mfaEnabled',
+    mfaMethod: 'users.mfaMethod',
+    mfaSecret: 'users.mfaSecret',
+    mfaRecoveryCodes: 'users.mfaRecoveryCodes',
+  },
+  organizations: {
+    id: 'organizations.id',
+    settings: 'organizations.settings',
+  },
+}));
+
+vi.mock('../../services', () => ({
+  generateRecoveryCodes: vi.fn(() => ['CODE-1', 'CODE-2']),
+  rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60_000) })),
+  getRedis: vi.fn(() => ({})),
+  smsPhoneVerifyLimiter: { limit: 5, windowSeconds: 300 },
+  smsPhoneVerifyUserLimiter: { limit: 5, windowSeconds: 300 },
+  smsLoginSendLimiter: { limit: 5, windowSeconds: 300 },
+  smsLoginGlobalLimiter: { limit: 100, windowSeconds: 300 },
+  phoneConfirmLimiter: { limit: 5, windowSeconds: 300 },
+}));
+
+vi.mock('../../services/twilio', () => ({
+  getTwilioService: vi.fn(() => ({
+    sendVerificationCode: vi.fn(),
+    checkVerificationCode: vi.fn(),
+  })),
+}));
+
+// The boundary under test: phone.ts must consult the resolver for the
+// canonical allowedMethods.sms flag rather than reading the dead
+// `security.allowedMfaMethods` key directly off the org row.
+vi.mock('../../services/mfaPolicy', () => ({
+  getEffectiveMfaPolicy: vi.fn(),
+}));
+
+vi.mock('../../middleware/auth', () => ({
+  authMiddleware: vi.fn((c: any, next: () => unknown) => {
+    c.set('auth', {
+      scope: 'organization',
+      partnerId: null,
+      orgId: 'org-1',
+      user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
+      token: { sid: 'family-1' },
+    });
+    return next();
+  }),
+}));
+
+vi.mock('./helpers', () => ({
+  mfaDisabledResponse: vi.fn((c: any) => c.json({ error: 'Not Found' }, 404)),
+  hashRecoveryCodes: vi.fn((codes: string[]) => codes.map((code) => `hashed-${code}`)),
+  resolveUserAuditOrgId: vi.fn(async () => 'org-1'),
+  writeAuthAudit: vi.fn(),
+  requireCurrentPasswordStepUp: vi.fn(async () => null),
+  // SR2-20: default = "not already protected" (initial enrollment), matching
+  // this suite's default account state. Individual tests override via
+  // mockResolvedValueOnce to exercise the already-protected gate.
+  enforceExistingFactorStepUp: vi.fn(async () => null),
+}));
+
+import { phoneRoutes } from './phone';
+import { db } from '../../db';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { getTwilioService } from '../../services/twilio';
+import { writeAuthAudit, enforceExistingFactorStepUp } from './helpers';
+
+function selectChain(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows),
+      }),
+    }),
+  };
+}
+
+describe('phone routes', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/auth', phoneRoutes);
+  });
+
+  describe('POST /auth/mfa/sms/enable', () => {
+    function mockVerifiedUnenrolledUser() {
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ phoneNumber: '+15555550100', phoneVerified: true, mfaEnabled: false }]) as any
+      );
+    }
+
+    it('rejects with 403 when the resolved policy disallows SMS', async () => {
+      mockVerifiedUnenrolledUser();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: false, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+      });
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password' }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Your organization does not allow SMS MFA');
+      expect(getEffectiveMfaPolicy).toHaveBeenCalledWith({
+        scope: 'organization',
+        userId: 'user-1',
+        orgId: 'org-1',
+        partnerId: null,
+      });
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows enabling SMS MFA when the resolved policy permits it', async () => {
+      mockVerifiedUnenrolledUser();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+      });
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(db.update).toHaveBeenCalled();
+    });
+
+    // SR2-20: adding SMS as a NEW factor on an ALREADY-PROTECTED account
+    // additionally requires a fresh existing-factor step-up grant.
+    it('rejects with 403 when the account is already protected and no step-up grant is presented', async () => {
+      mockVerifiedUnenrolledUser();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+      });
+      vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }), {
+          status: 403,
+        }) as any
+      );
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows enabling SMS MFA on an already-protected account when a valid step-up grant is presented', async () => {
+      mockVerifiedUnenrolledUser();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+      });
+      vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(null);
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: 'grant-1' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      // PR3 carry-forward: two-phase. Non-consuming validate at the gate, then
+      // the single-use consume immediately before the terminal factor write.
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(2);
+      expect(enforceExistingFactorStepUp).toHaveBeenNthCalledWith(
+        1,
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(enforceExistingFactorStepUp).toHaveBeenNthCalledWith(
+        2,
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: true }
+      );
+    });
+
+    // PR3 carry-forward: a benign 400 (phone never verified) must NOT burn the
+    // user's single-use grant — the consume only happens at the factor write.
+    it('does NOT consume the step-up grant when the request fails a precondition (unverified phone)', async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectChain([{ phoneNumber: null, phoneVerified: false, mfaEnabled: false }]) as any
+      );
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: 'grant-1' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('does NOT consume the step-up grant when the effective policy disallows SMS', async () => {
+      mockVerifiedUnenrolledUser();
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: false, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+      });
+
+      const res = await app.request('/auth/mfa/sms/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: 'grant-1' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(db.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /auth/phone/confirm', () => {
+    // Task 7 regression guard (SR2-19): invalidation is REPLACEMENT-ONLY.
+    // It must fire when the caller already has an ACTIVE SMS factor
+    // (mfaEnabled && mfaMethod === 'sms'), and must NOT fire during initial
+    // SMS enrollment (no active SMS factor yet) — firing there would sign
+    // the user out mid-enrollment before they ever reach /mfa/sms/enable.
+    function mockCurrentFactorRow(row: { mfaEnabled: boolean; mfaMethod: string | null }) {
+      vi.mocked(db.select).mockReturnValue(selectChain([row]) as any);
+    }
+
+    function mockValidCode() {
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn(),
+        checkVerificationCode: vi.fn().mockResolvedValue({ valid: true, serviceError: false }),
+      } as any);
+    }
+
+    function confirmRequest() {
+      return app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+15555550100',
+          code: '123456',
+          currentPassword: 'correct-password',
+        }),
+      });
+    }
+
+    it('invalidates MFA assurance when replacing an already-active SMS factor', async () => {
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      mockValidCode();
+
+      const res = await confirmRequest();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.message).toBe('Phone number verified');
+
+      // Routes through invalidateMfaAssuranceAfterFactorChange, which folds
+      // its write into db.transaction rather than a bare db.update.
+      expect(db.transaction).toHaveBeenCalled();
+
+      expect(writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.phone.verify.confirmed',
+          details: expect.objectContaining({ smsFactorReplacement: true }),
+        })
+      );
+    });
+
+    it('does NOT invalidate MFA assurance during initial SMS enrollment (no active SMS factor)', async () => {
+      mockCurrentFactorRow({ mfaEnabled: false, mfaMethod: null });
+      mockValidCode();
+
+      const res = await confirmRequest();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.message).toBe('Phone number verified');
+
+      // Must NOT route through the invalidation transaction — that would
+      // sign the user out mid-enrollment before /mfa/sms/enable ever runs.
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(db.update).toHaveBeenCalled();
+
+      expect(writeAuthAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'auth.phone.verify.confirmed',
+          details: expect.not.objectContaining({ smsFactorReplacement: true }),
+        })
+      );
+    });
+
+    // C1 (exploit-chain half 2 — the /phone/confirm step-up gate). Before this
+    // fix, /phone/confirm swapped the phone behind a PASSWORD ONLY, letting a
+    // stolen-token + phished-password attacker plant their own number (which
+    // then satisfied the SMS step-up). It must now consume an existing-factor
+    // grant for an already-protected account, and block the phone write when
+    // no valid grant is presented.
+    it('C1: rejects a phone swap on an already-protected account when no step-up grant is presented — phone never written', async () => {
+      // Gate denies (no grant on a protected account).
+      vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }), {
+          status: 403,
+        }) as any
+      );
+      // Twilio would approve if ever reached — proving the block is the gate,
+      // not a bad code.
+      const checkVerificationCode = vi.fn().mockResolvedValue({ valid: true, serviceError: false });
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn(),
+        checkVerificationCode,
+      } as any);
+
+      const res = await app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+15555550999', // attacker's number
+          code: '123456',
+          currentPassword: 'correct-password',
+        }),
+      });
+
+      expect(res.status).toBe(403);
+      // The gate must run BEFORE the code check and BEFORE any write. It is
+      // non-consuming here (PR3 carry-forward) — a denied request has no grant
+      // to burn anyway, and the consume happens only at the factor write.
+      expect(checkVerificationCode).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        undefined,
+        { consume: false }
+      );
+    });
+
+    it('C1: allows a phone change on an already-protected account when a valid step-up grant is presented', async () => {
+      vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(null);
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      mockValidCode();
+
+      const res = await app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+15555550100',
+          code: '123456',
+          currentPassword: 'correct-password',
+          stepUpGrantId: 'grant-1',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      // Two-phase: validate at the gate, consume at the terminal phone write.
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(2);
+      expect(enforceExistingFactorStepUp).toHaveBeenNthCalledWith(
+        1,
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(enforceExistingFactorStepUp).toHaveBeenNthCalledWith(
+        2,
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: true }
+      );
+    });
+
+    // PR3 carry-forward: a fat-fingered SMS code must not burn the grant.
+    it('does NOT consume the step-up grant when the SMS code is wrong (grant survives for a retry)', async () => {
+      mockCurrentFactorRow({ mfaEnabled: true, mfaMethod: 'sms' });
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn(),
+        checkVerificationCode: vi.fn().mockResolvedValue({ valid: false, serviceError: false }),
+      } as any);
+
+      const res = await app.request('/auth/phone/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: '+15555550100',
+          code: '000000',
+          currentPassword: 'correct-password',
+          stepUpGrantId: 'grant-1',
+        }),
+      });
+
+      expect(res.status).toBe(401);
+      // Only the non-consuming validate ran — the grant is still spendable.
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledTimes(1);
+      expect(enforceExistingFactorStepUp).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'grant-1',
+        { consume: false }
+      );
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+  });
+});

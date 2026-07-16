@@ -866,7 +866,7 @@ function configurationExportApp(partnerId: string, orgId: string): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('partnerApiPrincipal', {
-      servicePrincipalId: crypto.randomUUID(), keyId: crypto.randomUUID(), partnerId,
+      partnerServicePrincipalId: crypto.randomUUID(), keyId: crypto.randomUUID(), partnerId,
       name: 'Task 7 integration test',
       scopes: ['configuration:read', 'scripts:read', 'backup-configuration:read', 'custom-fields:read'],
       accessibleOrgIds: [orgId], rateLimit: 600,

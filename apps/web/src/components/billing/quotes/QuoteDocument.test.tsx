@@ -75,6 +75,44 @@ describe('QuoteDocument', () => {
     expect(screen.getByTestId('quote-document-wordmark')).toHaveTextContent('Lantern IT'); // no logoUrl → wordmark
   });
 
+  it('renders the resolved customer billing address and tax id in the Prepared for block', () => {
+    const detail = makeDetail({
+      billTo: {
+        name: 'Animal Health at Home',
+        address: { line1: '123 Vet Way', line2: 'Suite 4', city: 'Berthoud', region: 'CO', postalCode: '80513', country: 'US' },
+        taxId: '84-1234567',
+      },
+    });
+    render(<QuoteDocument detail={detail} customerName="Animal Health at Home" />);
+    const addr = screen.getByTestId('quote-document-billto-address');
+    expect(addr).toHaveTextContent('123 Vet Way');
+    expect(addr).toHaveTextContent('Berthoud, CO, 80513');
+    expect(screen.getByTestId('quote-document-billto-taxid')).toHaveTextContent('84-1234567');
+  });
+
+  it('omits the address block when the org has saved no billing address', () => {
+    const detail = makeDetail({ billTo: { name: 'Acme', address: null, taxId: null } });
+    render(<QuoteDocument detail={detail} customerName="Acme" />);
+    expect(screen.queryByTestId('quote-document-billto-address')).toBeNull();
+    expect(screen.queryByTestId('quote-document-billto-taxid')).toBeNull();
+  });
+
+  it('shows a per-table subtotal row only when the block opts in', () => {
+    // Default block has no showSubtotal → no subtotal row.
+    render(<QuoteDocument detail={makeDetail()} customerName="Acme" />);
+    expect(screen.queryByTestId('quote-table-subtotal')).toBeNull();
+  });
+
+  it('renders the opt-in subtotal split by recurrence', () => {
+    const d = makeDetail();
+    d.blocks[0].content = { label: 'Services', showSubtotal: true };
+    render(<QuoteDocument detail={d} customerName="Acme" />);
+    const row = screen.getByTestId('quote-table-subtotal');
+    // Fixture: $500 one-time + $450/mo.
+    expect(row).toHaveTextContent('$500.00');
+    expect(row.textContent).toMatch(/\$450\.00/);
+  });
+
   it('never renders internal cost/markup/net on the customer document', () => {
     const detail = makeDetail({
       lines: [

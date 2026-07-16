@@ -87,11 +87,17 @@ vi.mock('./workerObservability', () => ({
   attachWorkerObservability: vi.fn(),
 }));
 
+const captureExceptionMock = vi.fn();
+vi.mock('../services/sentry', () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...(args as [])),
+}));
+
 import {
   lastOccurrenceKey,
   isDue,
   wallClockIn,
   findDueReports,
+  processCheckSchedules,
   processRunScheduledReport,
 } from './reportScheduleWorker';
 
@@ -509,5 +515,87 @@ describe('processRunScheduledReport', () => {
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
     const mail = sendEmailMock.mock.calls[0]![0] as { attachments: unknown[] };
     expect(mail.attachments).toHaveLength(0);
+  });
+});
+
+// ─── Failure handling ────────────────────────────────────────────────────────
+
+describe('scheduled report failure handling', () => {
+  const report = {
+    id: REPORT_ID,
+    orgId: ORG_ID,
+    name: 'Nightly inventory',
+    type: 'device_inventory',
+    format: 'csv',
+    schedule: 'daily',
+    config: { schedule: { time: '09:00' }, emailRecipients: ['ops@example.com'] },
+    lastGeneratedAt: null,
+  };
+
+  const arrangeFailingRun = () => {
+    selectMock.mockReturnValueOnce(selectChain([report]));
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockRejectedValueOnce(new Error('boom'));
+  };
+
+  it('tells recipients when the last attempt fails, without leaking the raw error', async () => {
+    arrangeFailingRun();
+
+    await expect(
+      processRunScheduledReport(
+        { type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 },
+        { finalAttempt: true },
+      ),
+    ).rejects.toThrow('boom');
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const mail = sendEmailMock.mock.calls[0]![0] as { to: string[]; subject: string; html: string };
+    expect(mail.to).toEqual(['ops@example.com']);
+    expect(mail.subject).toContain('Nightly inventory');
+    // The run row keeps the raw message for operators; the customer-facing
+    // email must not carry it (it can hold Zod/PG internals).
+    expect(mail.html).not.toContain('boom');
+  });
+
+  it('stays quiet on a non-final attempt so a retry can still succeed', async () => {
+    arrangeFailingRun();
+
+    await expect(
+      processRunScheduledReport(
+        { type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 },
+        { finalAttempt: false },
+      ),
+    ).rejects.toThrow('boom');
+
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps running the rest of the due batch when one inline report throws', async () => {
+    const second = { ...report, id: '44444444-4444-4444-4444-444444444444', name: 'Second' };
+    // findDueReports: both reports due (never generated).
+    selectMock.mockReturnValueOnce(
+      selectChain([
+        { id: report.id, schedule: 'daily', lastGeneratedAt: null, config: report.config, orgSettings: null, partnerTimezone: null, partnerSettings: null },
+        { id: second.id, schedule: 'daily', lastGeneratedAt: null, config: second.config, orgSettings: null, partnerTimezone: null, partnerSettings: null },
+      ]),
+    );
+    // report 1: load -> throws during generation
+    selectMock.mockReturnValueOnce(selectChain([report]));
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockRejectedValueOnce(new Error('boom'));
+    // report 2: load -> succeeds
+    selectMock.mockReturnValueOnce(selectChain([second]));
+    selectMock.mockReturnValueOnce(selectChain([])); // timezone lookup
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await expect(processCheckSchedules()).resolves.toBeUndefined();
+
+    // The throwing report must not starve its neighbour.
+    expect(generateReportMock).toHaveBeenCalledTimes(2);
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 });

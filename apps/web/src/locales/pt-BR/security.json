@@ -566,6 +566,8 @@
     "noScanHistoryYet": "Ainda não ha histórico de varreduras.",
     "quickScan": "Varredura rápida",
     "scanHistory": "Histórico de varreduras",
+    "scanHistoryPartiallyUnavailable": "Não foi possível carregar o histórico de varreduras de {{failed}} de {{total}} dispositivos — esta lista está incompleta.",
+    "scanHistoryUnavailable": "Não foi possível carregar o histórico de varreduras.",
     "scanType": "Tipo de varredura",
     "scanTypeLabel": "verificação {{type}}",
     "scansAreQueuedImmediatelyOnSelectedDevices": "As varreduras são enfileiradas imediatamente nos dispositivos selecionados.",

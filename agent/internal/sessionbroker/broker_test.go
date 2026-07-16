@@ -89,12 +89,34 @@ func TestSessionForUserPrefersMostRecentUserSession(t *testing.T) {
 			userSessionNew.SessionID: userSessionNew,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	got := b.SessionForUser("alice")
 	if got != userSessionNew {
 		t.Fatalf("SessionForUser returned %q, want %q", got.SessionID, userSessionNew.SessionID)
+	}
+}
+
+func TestSessionForUserSelectsRDPHelper(t *testing.T) {
+	now := time.Now()
+
+	consoleSession, consoleClient := newTestUserSession(t, "console-helper", "alice", now.Add(-20*time.Minute))
+	defer consoleClient.Close()
+	consoleSession.WinSessionID = "1"
+	rdpSession, rdpClient := newTestUserSession(t, "rdp-helper", "alice", now.Add(-time.Minute))
+	defer rdpClient.Close()
+	rdpSession.WinSessionID = "7"
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			consoleSession.SessionID: consoleSession,
+			rdpSession.SessionID:     rdpSession,
+		},
+		byIdentity:   make(map[string][]*Session),
+	}
+
+	if got := b.SessionForUser("alice"); got != rdpSession {
+		t.Fatalf("SessionForUser returned %v, want RDP helper %q", got, rdpSession.SessionID)
 	}
 }
 
@@ -117,7 +139,6 @@ func TestLaunchProcessViaUserHelperBroadcastsToAllUserSessions(t *testing.T) {
 			newerSession.SessionID: newerSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	seen := make(chan string, 2)
@@ -184,7 +205,6 @@ func TestLaunchProcessViaUserHelperForSessionTargetsMatchingHelper(t *testing.T)
 			sessionB.SessionID: sessionB,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	seen := make(chan string, 1)
@@ -220,6 +240,62 @@ func TestLaunchProcessViaUserHelperForSessionTargetsMatchingHelper(t *testing.T)
 	}
 }
 
+func TestLaunchProcessViaUserHelperForSessionTargetsMatchingRDPHelper(t *testing.T) {
+	now := time.Now()
+
+	consoleSession, consoleClient := newTestUserSession(t, "console-helper", "alice", now.Add(-10*time.Minute))
+	rdpSession, rdpClient := newTestUserSession(t, "rdp-helper", "alice", now.Add(-time.Minute))
+	consoleSession.WinSessionID = "1"
+	rdpSession.WinSessionID = "7"
+	defer consoleSession.Close()
+	defer rdpSession.Close()
+	defer consoleClient.Close()
+	defer rdpClient.Close()
+
+	go consoleSession.RecvLoop(func(*Session, *ipc.Envelope) {})
+	go rdpSession.RecvLoop(func(*Session, *ipc.Envelope) {})
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			consoleSession.SessionID: consoleSession,
+			rdpSession.SessionID:     rdpSession,
+		},
+		byIdentity:   make(map[string][]*Session),
+	}
+
+	seen := make(chan string, 1)
+	startResponder := func(label string, client *ipc.Conn) {
+		t.Helper()
+		go func() {
+			client.SetReadDeadline(time.Now().Add(5 * time.Second))
+			env, err := client.Recv()
+			if err != nil {
+				return
+			}
+			seen <- label
+			respPayload, _ := json.Marshal(ipc.LaunchProcessResult{OK: true, PID: 4242})
+			if err := client.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeLaunchResult, Payload: respPayload}); err != nil {
+				t.Errorf("send %s launch response: %v", label, err)
+			}
+		}()
+	}
+	startResponder("console", consoleClient)
+	startResponder("rdp", rdpClient)
+
+	if err := b.LaunchProcessViaUserHelperForSession("7", "/usr/local/bin/breeze-helper"); err != nil {
+		t.Fatalf("LaunchProcessViaUserHelperForSession: %v", err)
+	}
+
+	select {
+	case got := <-seen:
+		if got != "rdp" {
+			t.Fatalf("targeted launch reached %s helper, want rdp", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for targeted RDP helper launch")
+	}
+}
+
 // Previously the reaper skipped capture-capable sessions. Issue #443: a
 // streaming helper Touches on every frame, so a genuinely idle capture
 // session over IdleTimeout is stranded and must be reaped.
@@ -235,7 +311,6 @@ func TestReapIdleSessionsReapsStrandedCaptureSessions(t *testing.T) {
 			session.SessionID: session,
 		},
 		byIdentity:   map[string][]*Session{session.IdentityKey: []*Session{session}},
-		staleHelpers: make(map[string][]int),
 	}
 
 	b.reapIdleSessions()
@@ -349,7 +424,6 @@ func TestPreferredSessionWithScopePrefersNewestUserHelper(t *testing.T) {
 			newerUser.SessionID:     newerUser,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	got := b.PreferredSessionWithScope("run_as_user")
@@ -386,7 +460,6 @@ func TestPreferredDesktopSession_LoginWindowConsole_PrefersLoginWindowHelper(t *
 			loginSession.SessionID: loginSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	// Without console user set, user_session wins (existing behavior).
@@ -431,7 +504,6 @@ func TestPreferredDesktopSession_LoggedInConsole_PrefersUserSession(t *testing.T
 			loginSession.SessionID: loginSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	// With a real user logged in, user_session should still win.
@@ -461,7 +533,6 @@ func TestPreferredDesktopSession_LoginWindowConsole_OnlyLoginHelpers(t *testing.
 			userSession.SessionID: userSession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	b.SetConsoleUser("loginwindow")
@@ -504,7 +575,6 @@ func TestPreferredDesktopSession_LoginWindow_DeterministicRegardlessOfOrder(t *t
 				loginSession.SessionID: loginSession,
 			},
 			byIdentity:   make(map[string][]*Session),
-			staleHelpers: make(map[string][]int),
 		}
 		b.SetConsoleUser("loginwindow")
 
@@ -546,7 +616,6 @@ func TestCloseSessionsByDesktopContext(t *testing.T) {
 			notifySession.SessionID: notifySession,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	closed := b.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession)
@@ -608,7 +677,6 @@ func TestCloseSessionsByDesktopContext_MultipleMatches(t *testing.T) {
 			loginSess.SessionID: loginSess,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	closed := b.CloseSessionsByDesktopContext(ipc.DesktopContextUserSession)

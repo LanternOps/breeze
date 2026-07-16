@@ -47,6 +47,39 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex\/import\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex-ec\/import\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/pax8\/import\/?$/ },
+  // The TD SYNNEX SFTP "test connection" route opens a real SSH/SFTP socket to
+  // the distributor (DNS resolve + handshake + auth + directory list, up to a
+  // 30s readyTimeout). testSftpConnection wraps each DB op in its own short
+  // withDbAccessContext, so the socket is never held across an open transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/catalog\/distributors\/td-synnex-sftp\/test\/?$/ },
+  // PR3 (SSO/OIDC) — the three provider routes that run OIDC discovery
+  // (`discoverOIDCConfig` → `safeFetch`, up to OIDC_FETCH_TIMEOUT_MS = 10s
+  // against a TENANT-CONTROLLED issuer host). Held inside the request
+  // transaction, a tenant admin pointing `issuer` at a blackholed host pins a
+  // pooled connection idle-in-transaction for 10s per call, on unrate-limited
+  // routes, against a 25-connection prod pool — tenant-triggerable pool
+  // starvation for every tenant (#1105 class). The handlers wrap each DB op in
+  // its own short `withDbAccessContext(dbAccessContextFromAuth(auth), …)` block
+  // (see `withProviderDbContext` in routes/sso.ts) and run discovery between
+  // them, holding no connection across the network call.
+  { method: 'POST', pattern: /^\/api\/v1\/sso\/providers\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/sso\/providers\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/sso\/providers\/[^/]+\/test\/?$/ },
+  // Pax8 order line authoring may fetch product commitment dependencies. The
+  // service re-enters short partner-scoped DB contexts around each DB phase,
+  // with the Pax8 HTTP request running after those contexts close.
+  { method: 'POST', pattern: /^\/api\/v1\/pax8\/orders\/[^/]+\/lines\/?$/ },
+  // Pax8 preflight, submit, and human reconciliation likewise split DB claims
+  // and result persistence around Pax8 HTTP. Pax8 writes are never retried.
+  { method: 'POST', pattern: /^\/api\/v1\/pax8\/orders\/[^/]+\/(?:preflight|submit|reconcile)\/?$/ },
+  // Dynamic Pax8 order forms proxy product metadata. The route reads and
+  // decrypts the active integration in one short partner context, then closes
+  // it before making the outbound request.
+  { method: 'GET', pattern: /^\/api\/v1\/pax8\/products\/[^/]+\/(?:provision-details|dependencies)\/?$/ },
+  // M365 consent callback and retest own short DB contexts around outbound
+  // Microsoft/executor HTTP and must never inherit an ambient request tx.
+  { method: 'GET', pattern: /^\/api\/v1\/m365\/consent\/callback\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/m365\/connections\/[^/]+\/retest\/?$/ },
 ];
 
 /**

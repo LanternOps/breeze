@@ -10,6 +10,7 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "test:load-static": "pnpm --dir load-tests test:static",
+    "test:community-readme": "node --test .github/scripts/update-community-readme.test.mjs",
     "db:migrate": "turbo run db:migrate --filter=@breeze/api",
     "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
     "db:seed": "turbo run db:seed --filter=@breeze/api",
@@ -19,10 +20,10 @@
     "wt-stack": "tsx scripts/dev/wt-stack/cli.ts"
   },
   "devDependencies": {
-    "@typescript-eslint/parser": "^8.57.1",
-    "eslint": "^10.6.0",
-    "tsx": "^4.23.0",
-    "turbo": "^2.9.17",
+    "@typescript-eslint/parser": "^8.64.0",
+    "eslint": "^10.7.0",
+    "tsx": "^4.23.1",
+    "turbo": "^2.10.5",
     "typescript": "^5.7.2"
   },
   "packageManager": "pnpm@10.33.4",
@@ -33,6 +34,7 @@
   "pnpm": {
     "overrides": {
       "axios@>=1.0.0 <1.15.2": ">=1.15.2",
+      "websocket-driver@<0.7.5": ">=0.7.5",
       "fast-xml-parser@<5.5.7": ">=5.5.7",
       "fast-xml-parser@<5.7.0": ">=5.7.0",
       "brace-expansion@<1.1.13": ">=1.1.13",

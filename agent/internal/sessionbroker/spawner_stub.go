@@ -14,12 +14,28 @@ import "fmt"
 // from the console-subsystem agent fallback in their telemetry. Always
 // empty on non-Windows builds since the stub never spawns.
 type SpawnedHelper struct {
-	PID        uint32
-	BinaryPath string
+	PID                uint32
+	BinaryPath         string
+	CommandMode        string
+	Role               string
+	WindowsSessionID   uint32
+	MainBinaryFallback bool
 }
 
 // Close is a no-op on non-Windows platforms.
-func (s *SpawnedHelper) Close() {}
+func (s *SpawnedHelper) Close() error { return nil }
+
+func (s *SpawnedHelper) ProcessID() uint32      { return s.PID }
+func (s *SpawnedHelper) ExecutablePath() string { return s.BinaryPath }
+
+// Alive always errors on non-Windows: the stub never spawns, so a SpawnedHelper
+// here is a programming error. Returning (false, nil) would tell callers a live
+// helper is dead - the exact confusion this signature exists to prevent.
+func (s *SpawnedHelper) Alive() (bool, error) {
+	return false, fmt.Errorf("SpawnedHelper: helper tracking not supported on this platform")
+}
+
+func (s *SpawnedHelper) Terminate() error       { return nil }
 
 // Wait is a no-op on non-Windows platforms. Returns (exitCode=-1, nil).
 func (s *SpawnedHelper) Wait() (int, error) { return -1, nil }

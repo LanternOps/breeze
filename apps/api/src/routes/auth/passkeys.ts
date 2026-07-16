@@ -24,11 +24,18 @@ import {
   verifyPasskeyRegistration
 } from '../../services/passkeys';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
+import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
+import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
+import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
 import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
+  evaluatePendingMfa,
+  enforceExistingFactorStepUp,
   getClientIP,
   mfaDisabledResponse,
+  parsePendingMfa,
+  type PendingMfaRecord,
   requireCurrentPasswordStepUp,
   resolveCurrentUserTokenContext,
   setRefreshTokenCookie,
@@ -55,11 +62,15 @@ const webAuthnCredentialSchema = z
 const passkeyNameSchema = z.string().trim().min(1).max(255);
 const registerOptionsSchema = z.object({
   currentPassword: z.string().min(1).max(256),
-  name: passkeyNameSchema.optional()
+  name: passkeyNameSchema.optional(),
+  // SR2-20: existing-factor step-up grant required when the account is
+  // already MFA-protected (see enforceExistingFactorStepUp in ./helpers).
+  stepUpGrantId: z.string().optional()
 });
 const registerVerifySchema = z.object({
   credential: webAuthnCredentialSchema,
-  name: passkeyNameSchema.optional()
+  name: passkeyNameSchema.optional(),
+  stepUpGrantId: z.string().optional()
 });
 const passkeyMfaOptionsSchema = z.object({
   tempToken: z.string().min(1)
@@ -75,25 +86,13 @@ const deletePasskeySchema = z.object({
   currentPassword: z.string().min(1).max(256)
 });
 
-type PendingPasskeyMfa = {
-  userId: string;
-  mfaMethod: string;
-  // #2153: true when the account has a registered passkey usable as an
-  // alternate second factor, even if the PRIMARY mfaMethod is totp/sms.
-  // Set server-side at login (login.ts) from a system-scoped user_passkeys
-  // read. Absent on pre-#2153 pending tokens → treated as false (falls back
-  // to the old "primary method is passkey" gate, so in-flight sessions during
-  // a deploy don't regress).
-  passkeyAvailable?: boolean;
-};
-
 // A pending MFA session may use the passkey endpoints when passkey is either
 // the account's primary method OR an available alternate factor. Both /options
 // and /verify still independently re-verify that a matching, non-disabled
 // credential is owned by the user and that the WebAuthn assertion checks out,
 // so this gate only decides whether the passkey path is OFFERED — it never
 // substitutes for credential/assertion verification.
-function pendingAllowsPasskey(pending: PendingPasskeyMfa): boolean {
+function pendingAllowsPasskey(pending: PendingMfaRecord): boolean {
   return pending.mfaMethod === 'passkey' || pending.passkeyAvailable === true;
 }
 
@@ -117,10 +116,16 @@ passkeyRoutes.post('/passkeys/register/options', authMiddleware, zValidator('jso
   }
 
   const auth = c.get('auth');
-  const { currentPassword } = c.req.valid('json');
+  const { currentPassword, stepUpGrantId } = c.req.valid('json');
 
   const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'passkey:pwd');
   if (passwordError) return passwordError;
+
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor proof. Non-consuming here — the SAME
+  // grant is consumed at /passkeys/register/verify below.
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: false });
+  if (stepUpError) return stepUpError;
 
   const existingPasskeys = await listActivePasskeys(auth.user.id);
   const options = await generatePasskeyRegistrationOptions({
@@ -137,7 +142,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   }
 
   const auth = c.get('auth');
-  const { credential, name } = c.req.valid('json');
+  const { credential, name, stepUpGrantId } = c.req.valid('json');
 
   let verification;
   try {
@@ -166,46 +171,66 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   }
 
   const fields = registrationInfoToPasskeyFields(verification, credential);
-  const [inserted] = await db
-    .insert(userPasskeys)
-    .values({
-      userId: auth.user.id,
-      credentialId: fields.credentialId,
-      publicKey: fields.publicKey,
-      counter: fields.counter,
-      deviceType: fields.deviceType,
-      backedUp: fields.backedUp,
-      transports: fields.transports,
-      name: name ?? 'Passkey',
-      aaguid: fields.aaguid,
-      updatedAt: new Date()
-    })
-    .returning();
+
+  // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
+  // requires a fresh existing-factor proof. Single-use consume — this is the
+  // terminal factor write.
+  const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
+  if (stepUpError) return stepUpError;
+
+  // SR2-07/SR2-19: the insert AND the users.mfaEnabled flip are folded into
+  // ONE transaction with the epoch bump + refresh-family revoke — registering
+  // a new passkey is a factor-add and must invalidate assurance minted before
+  // this factor existed. The inserted row is captured via closure so it can
+  // be used in the response after the transaction commits.
+  let inserted: PasskeyRow | undefined;
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-register', async (tx) => {
+    const [row] = await tx
+      .insert(userPasskeys)
+      .values({
+        userId: auth.user.id,
+        credentialId: fields.credentialId,
+        publicKey: fields.publicKey,
+        counter: fields.counter,
+        deviceType: fields.deviceType,
+        backedUp: fields.backedUp,
+        transports: fields.transports,
+        name: name ?? 'Passkey',
+        aaguid: fields.aaguid,
+        updatedAt: new Date()
+      })
+      .returning();
+
+    if (!row) {
+      throw new Error('Passkey insert returned no row');
+    }
+    inserted = row;
+
+    // Enable MFA, but do NOT overwrite an existing TOTP/SMS factor's method.
+    // `mfaMethod` is single-valued and drives login routing (login.ts/mfa.ts);
+    // clobbering it to 'passkey' would strand a user's working authenticator
+    // and risk lockout if they later lose the passkey device. Only make
+    // passkey the primary method when the user has no other factor configured.
+    const [currentMfa] = await tx
+      .select({ mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
+      .from(users)
+      .where(eq(users.id, auth.user.id))
+      .limit(1);
+    const hasExistingFactor = Boolean(currentMfa?.mfaSecret) || currentMfa?.mfaMethod === 'sms';
+
+    await tx
+      .update(users)
+      .set({
+        mfaEnabled: true,
+        ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
+        updatedAt: new Date()
+      })
+      .where(eq(users.id, auth.user.id));
+  });
 
   if (!inserted) {
     throw new Error('Passkey insert returned no row');
   }
-
-  // Enable MFA, but do NOT overwrite an existing TOTP/SMS factor's method.
-  // `mfaMethod` is single-valued and drives login routing (login.ts/mfa.ts);
-  // clobbering it to 'passkey' would strand a user's working authenticator
-  // and risk lockout if they later lose the passkey device. Only make passkey
-  // the primary method when the user has no other factor configured.
-  const [currentMfa] = await db
-    .select({ mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
-    .from(users)
-    .where(eq(users.id, auth.user.id))
-    .limit(1);
-  const hasExistingFactor = Boolean(currentMfa?.mfaSecret) || currentMfa?.mfaMethod === 'sms';
-
-  await db
-    .update(users)
-    .set({
-      mfaEnabled: true,
-      ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, auth.user.id));
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -213,7 +238,12 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'passkey', credentialId: fields.credentialId }
+    details: {
+      method: 'passkey',
+      credentialId: fields.credentialId,
+      mfaEpoch: result.mfaEpoch,
+      teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED
+    }
   });
 
   return c.json({
@@ -221,6 +251,74 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     passkey: toPublicPasskey(inserted)
   });
 });
+
+// SR2-20: authenticated passkey step-up challenge. Mirrors /mfa/passkey/options
+// (the login-time challenge issuer below), but keyed on the LOGGED-IN user
+// rather than a pre-auth login tempToken — this lets a passkey-only user
+// prove their existing factor to mint a step-up grant (POST /auth/mfa/step-up)
+// without a TOTP/SMS fallback, avoiding a lockout.
+passkeyRoutes.post('/mfa/step-up/options', authMiddleware, async (c) => {
+  if (!ENABLE_2FA) {
+    return mfaDisabledResponse(c);
+  }
+
+  const auth = c.get('auth');
+  const passkeys = await withSystemDbAccessContext(() => listActivePasskeys(auth.user.id));
+  if (passkeys.length === 0) {
+    return c.json({ error: 'No passkeys are registered for this account' }, 400);
+  }
+
+  const options = await generatePasskeyAuthenticationOptions({
+    userId: auth.user.id,
+    passkeys: passkeys.map(toStoredCredential)
+  });
+
+  return c.json({ options });
+});
+
+/**
+ * Verify a WebAuthn assertion as proof of an existing passkey factor for the
+ * SR2-20 step-up flow. Loads the caller-owned passkey, verifies against the
+ * stored authentication challenge (from POST /auth/mfa/step-up/options
+ * above), persists the new signature counter (clone detection), and returns
+ * whether it verified. Reused by mfa.ts's POST /auth/mfa/step-up passkey
+ * branch — keeps all WebAuthn machinery inside this module. Never throws on
+ * a challenge/ownership problem (returns false); other errors propagate.
+ */
+export async function verifyStepUpPasskeyAssertion(userId: string, credential: { id?: string }): Promise<boolean> {
+  const [passkey] = await withSystemDbAccessContext(() =>
+    db
+      .select()
+      .from(userPasskeys)
+      .where(eq(userPasskeys.credentialId, credential?.id ?? ''))
+      .limit(1)
+  );
+  if (!passkey || passkey.userId !== userId || passkey.disabledAt) {
+    return false;
+  }
+
+  let verification;
+  try {
+    verification = await verifyPasskeyAuthentication({
+      userId,
+      response: credential as never,
+      passkey: toStoredCredential(passkey)
+    });
+  } catch (err) {
+    if (err instanceof PasskeyChallengeError) return false;
+    throw err;
+  }
+  if (!verification.verified) return false;
+
+  const updateFields = authenticationInfoToPasskeyUpdateFields(verification);
+  await withSystemDbAccessContext(() =>
+    db
+      .update(userPasskeys)
+      .set({ counter: updateFields.counter, lastUsedAt: updateFields.lastUsedAt, updatedAt: new Date() })
+      .where(eq(userPasskeys.id, passkey.id))
+  );
+  return true;
+}
 
 passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsSchema), async (c) => {
   if (!ENABLE_2FA) {
@@ -302,6 +400,18 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   // Re-check account status before minting tokens — the user could have been
   // suspended during the 5-minute MFA window after the pending token was issued.
   if (user.status !== 'active') {
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+
+  // SR2-06: re-check the live epoch/status before minting. A factor change
+  // (mfa_epoch) or account-wide security event (auth_epoch) during the
+  // 5-minute MFA window must invalidate this in-flight session.
+  const liveEpochs = await getUserEpochs(user.id);
+  const verdict = liveEpochs
+    ? evaluatePendingMfa(pending, { status: user.status, authEpoch: liveEpochs.authEpoch, mfaEpoch: liveEpochs.mfaEpoch })
+    : ({ ok: false, reason: 'epoch_mismatch' } as const);
+  if (!verdict.ok) {
+    await redis.del(`mfa:pending:${tempToken}`);
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
 
@@ -466,29 +576,31 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     return c.json({ error: 'Cannot remove the last MFA factor while your role or organization requires MFA' }, 403);
   }
 
-  await db
-    .delete(userPasskeys)
-    .where(eq(userPasskeys.id, id));
+  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-delete', async (tx) => {
+    await tx
+      .delete(userPasskeys)
+      .where(eq(userPasskeys.id, id));
 
-  if (remainingFactorCount === 0) {
-    await db
-      .update(users)
-      .set({
-        mfaEnabled: false,
-        mfaMethod: null,
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  } else if (factorState.currentMfaMethod === 'passkey' && factorState.passkeyCount - 1 === 0) {
-    await db
-      .update(users)
-      .set({
-        mfaEnabled: true,
-        mfaMethod: factorState.hasTotp ? 'totp' : 'sms',
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  }
+    if (remainingFactorCount === 0) {
+      await tx
+        .update(users)
+        .set({
+          mfaEnabled: false,
+          mfaMethod: null,
+          updatedAt: new Date()
+        })
+        .where(eq(users.id, auth.user.id));
+    } else if (factorState.currentMfaMethod === 'passkey' && factorState.passkeyCount - 1 === 0) {
+      await tx
+        .update(users)
+        .set({
+          mfaEnabled: true,
+          mfaMethod: factorState.hasTotp ? 'totp' : 'sms',
+          updatedAt: new Date()
+        })
+        .where(eq(users.id, auth.user.id));
+    }
+  });
 
   writeAuthAudit(c, {
     orgId: auth.orgId ?? undefined,
@@ -496,38 +608,23 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'passkey', passkeyId: id }
+    details: {
+      method: 'passkey',
+      passkeyId: id,
+      mfaEpoch: result.mfaEpoch,
+      teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED
+    }
   });
 
   return c.json({ success: true });
 });
 
-async function readPendingPasskeyMfa(tempToken: string): Promise<PendingPasskeyMfa | null> {
+async function readPendingPasskeyMfa(tempToken: string): Promise<PendingMfaRecord | null> {
   const redis = getRedis();
-  if (!redis) {
-    return null;
-  }
-
+  if (!redis) return null;
   const raw = await redis.get(`mfa:pending:${tempToken}`);
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<PendingPasskeyMfa>;
-    if (typeof parsed.userId !== 'string') return null;
-    return {
-      userId: parsed.userId,
-      mfaMethod: parsed.mfaMethod || 'totp',
-      passkeyAvailable: parsed.passkeyAvailable === true
-    };
-  } catch {
-    return {
-      userId: raw,
-      mfaMethod: 'totp',
-      passkeyAvailable: false
-    };
-  }
+  if (!raw) return null;
+  return parsePendingMfa(raw);
 }
 
 async function listActivePasskeys(userId: string): Promise<PasskeyRow[]> {
@@ -553,12 +650,20 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
   currentMfaMethod: 'totp' | 'sms' | 'passkey' | null;
   mfaRequired: boolean;
 }> {
+  // I3/SR2-05: mfaRequired now comes from the resolver so a partner-set
+  // requireMfa (partner-inherited, invisible to the old org-only EXISTS
+  // below) blocks last-factor removal too, matching enrollment/login/disable.
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId: auth.user.id,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  }, { failClosed: true });
+
   // This runs inside the DELETE handler's request (user-scoped) context, where
   // a bare `withSystemDbAccessContext` would be a no-op. Escape the active
-  // context first so the roles / partner_users / organization_users /
-  // organizations reads that decide `mfaRequired` actually run under system
-  // scope — otherwise user-scoped RLS could hide a force_mfa role/org-setting
-  // row, under-count factors, and let the last MFA factor be removed.
+  // context first so the factor-count read is not affected by user-scoped RLS
+  // edge cases.
   const [state] = await runOutsideDbContext(() => withSystemDbAccessContext(async () =>
     db
       .select({
@@ -570,23 +675,7 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
         )`,
         hasTotp: sql<boolean>`${users.mfaSecret} IS NOT NULL`,
         hasSms: sql<boolean>`${users.mfaMethod} = 'sms' AND ${users.phoneVerified} = true`,
-        currentMfaMethod: users.mfaMethod,
-        forceMfa: sql<boolean>`EXISTS (
-          SELECT 1
-          FROM roles r
-          LEFT JOIN partner_users pu ON pu.role_id = r.id
-          LEFT JOIN organization_users ou ON ou.role_id = r.id
-          WHERE (pu.user_id = ${auth.user.id} OR ou.user_id = ${auth.user.id})
-            AND r.force_mfa = true
-        )`,
-        orgRequiresMfa: auth.orgId
-          ? sql<boolean>`EXISTS (
-              SELECT 1
-              FROM organizations o
-              WHERE o.id = ${auth.orgId}
-                AND COALESCE((o.settings->'security'->>'requireMfa')::boolean, false) = true
-            )`
-          : sql<boolean>`false`
+        currentMfaMethod: users.mfaMethod
       })
       .from(users)
       .where(eq(users.id, auth.user.id))
@@ -598,7 +687,7 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
     hasTotp: Boolean(state?.hasTotp),
     hasSms: Boolean(state?.hasSms),
     currentMfaMethod: state?.currentMfaMethod ?? null,
-    mfaRequired: Boolean((state as { forceMfa?: boolean; orgRequiresMfa?: boolean } | undefined)?.forceMfa || (state as { forceMfa?: boolean; orgRequiresMfa?: boolean } | undefined)?.orgRequiresMfa)
+    mfaRequired: policy.required
   };
 }
 

@@ -39,6 +39,8 @@ git -C ~/breeze log --oneline $PREV..HEAD                  # everything that wil
 
 If migrations are listed, you're committing prod to those migrations the moment the new API boots. Read them; confirm there are no large-table rewrites/backfills before you proceed (call those out in the upgrade notes if present).
 
+**Smoke-test privileged migrations as a NON-SUPERUSER role (learned the hard way, v0.95.0→v0.95.1).** CI and the local docker-compose test DB both migrate as the Postgres **superuser** (`POSTGRES_USER=breeze`), which silently passes statements a least-privilege role would be *denied*. Prod is DO-managed **`doadmin` — NOT a superuser**, so a migration that only a superuser can run passes every test and then **crash-loops the API on deploy** (this is exactly what took EU down on v0.95.0: `ALTER FUNCTION ... OWNER TO <role>` requires the *new owner* to hold `CREATE` on the schema; a superuser bypasses that check, doadmin does not → `permission denied for schema public`). So: any migration in the range that does `CREATE ROLE`, `ALTER ... OWNER TO`, `GRANT`/`REVOKE` on a schema, `CREATE EXTENSION`, or a `SECURITY DEFINER` function — **run it against a non-superuser role before tagging.** Two ways: pipe the migration to a real managed DB (or a droplet's `doadmin`) inside `BEGIN; ...; ROLLBACK;` with `ON_ERROR_STOP=1`, or `SET ROLE <nosuperuser-createrole-role>` on a local DB that already has the full schema. If it only works as a superuser, fix it forward (grant the owning role the privilege for the one statement, then revoke) **before** it reaches prod.
+
 ## Step 0.5 — After tagging: WAIT for the build, confirm ALL artifacts exist
 
 Pushing the tag kicks off `release.yml`, which is a **long, multi-job build** (~20–40 min): api/web/portal GHCR images, agent binaries for every platform, the **signed** Windows MSI, the **notarized** macOS agent/viewer/helper, watchdog + user-helper, and the signed `release-artifact-manifest.json` (+ `.ed25519`/`.minisig`) and `checksums.txt`. The GitHub Release is created by the **final** job — you cannot `gh release edit` the body until then, and **you must not roll out until every artifact is present**.
@@ -245,6 +247,16 @@ curl -sf https://<region>.2breeze.app/health     # 200 = healthy; check "version
 ssh root@<droplet> "docker logs breeze-api 2>&1 | grep -aE 'auto-migrate' | tail -5"
 # expect "[auto-migrate] Applied N migration(s)" and the unprivileged app-user line
 ```
+
+### Rolling back is NOT clean if a migration failed mid-set — the partial-migration trap
+
+`autoMigrate` applies each migration file in its own transaction and records success per file. If migration #7 of 10 fails, files #1–6 have **already committed**. Rolling `BREEZE_VERSION` back to `$PREV` restores the old *code* but the DB is now on a **newer-than-$PREV schema**, and the old code can choke on it. This bit us on v0.95.0: the auth-epochs migration committed a `NOT NULL`-no-default column (`refresh_token_families.absolute_expires_at`) before a *later* migration failed; after rolling back, the old version could not `INSERT` a refresh-token family (the column it doesn't know about is `NOT NULL`), so **new logins silently failed while `/health` stayed green**.
+
+So after any rollback that followed a mid-set failure:
+1. **`/health` is not proof of recovery.** Test the real write paths — especially minting a refresh-token family (login) — against the actual DB (`INSERT ... ` in a `BEGIN; ... ROLLBACK;`).
+2. **Scan for forward columns the old code can't satisfy:** `NOT NULL` columns with no default, or new CHECK constraints, added by the committed-but-newer migrations on tables the old version writes (`users`, `refresh_token_families`, `oauth_*`, `devices`, `audit_logs`).
+3. **Un-break minimally:** `ALTER COLUMN <col> SET DEFAULT <sane value>` (keeps `NOT NULL`, lets the old code insert) is the lightest fix; it's inert on the new version (which sets the value explicitly). Note the divergence and **drop the DEFAULT once you're forward again** so the schema matches a fresh install.
+4. **The clean alternative is to roll *forward*** to a fixed build rather than back — completing the migration set makes code and schema match. Prefer this when the fix is understood; the pre-deploy dump is the fallback if it isn't.
 
 ### Promote the agent fleet — via a DB row change
 

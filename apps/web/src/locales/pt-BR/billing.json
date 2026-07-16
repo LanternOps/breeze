@@ -386,6 +386,11 @@
         "thisLine": "esta linha",
         "removeSectionWithLines": "Remover seção com linhas"
       },
+      "customer": {
+        "help": "Mover um rascunho para outra empresa remove a atribuição de site e aplica a alíquota de imposto dessa empresa.",
+        "label": "Cliente",
+        "success": "Orçamento movido para {{name}}."
+      },
       "deposit": {
         "due": "Depósito devido",
         "eligibleAria": "Elegível para depósito",
@@ -420,6 +425,7 @@
         "reorderBlocks": "Não foi possível reordenar os blocos.",
         "reorderLines": "Não foi possível reordenar as linhas.",
         "reorderSections": "Não foi possível reordenar as seções.",
+        "saveCustomer": "Não foi possível alterar o cliente.",
         "saveTerms": "Não foi possível salvar os termos.",
         "saveTitle": "Não foi possível salvar o título.",
         "unitPriceZeroOrMore": "Informe um preço unitário de 0 ou mais.",
@@ -506,6 +512,7 @@
         "qty": "Qtd.",
         "recurrence": "Recorrência",
         "scrollAria": "Tabela de preços — role lateralmente para imposto, total e ações da linha",
+        "showSubtotal": "Mostrar linha de subtotal",
         "tax": "Imposto",
         "taxTitle": "Imposto por linha. O total de imposto do cabeçalho é autoritativo e pode diferir por um centavo de arredondamento.",
         "taxable": "Tributável",
@@ -526,6 +533,20 @@
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Empresa",
+        "confirm": "Criar cópia",
+        "defaultTitle": "Cópia de {{name}}",
+        "message": "Cria um novo rascunho com o mesmo conteúdo. Escolha a empresa de destino e dê um título.",
+        "retargetHint": "O novo rascunho usará os dados de faturamento e a alíquota de imposto desta empresa; a atribuição de site será removida.",
+        "title": "Duplicar orçamento",
+        "titleLabel": "Título"
+      },
+      "cloneError": "Não foi possível clonar a cotação.",
+      "cloneQuote": "Clonar cotação",
+      "cloneSavingTitle": "Aguarde até que as alterações sejam salvas antes de clonar.",
+      "cloneSuccess": "Cotação clonada.",
+      "cloning": "Clonando…",
       "deleteConfirm": {
         "message": "Esta ação exclui permanentemente a cotação em rascunho. Não é possível desfazê-la.",
         "title": "Excluir cotação em rascunho"
@@ -535,10 +556,13 @@
       "deleteSuccess": "Rascunho excluído",
       "downloadPdf": "Baixar PDF",
       "emptyHint": "Adicione pelo menos um item antes de enviar.",
+      "moreActions": "Mais ações",
       "savingHint": "Salvando alterações… O envio será liberado quando tudo estiver salvo.",
       "savingTitle": "Salvando suas alterações — o envio será liberado quando tudo estiver salvo.",
       "sendConfirm": {
         "message": "Enviaremos esta proposta por e-mail para {{orgName}} e a marcaremos como Enviada — {{amount}} devidos na aceitação. Não é possível desfazer esta ação.",
+        "messageLabel": "Adicionar uma mensagem pessoal (opcional)",
+        "messagePlaceholder": "Inclua uma breve nota — ela aparece no e-mail, acima do link de aceitação.",
         "title": "Enviar esta proposta?"
       },
       "sendError": "Não foi possível enviar a proposta.",
@@ -560,6 +584,11 @@
         "declined": "Recusado",
         "sent": "Enviado",
         "viewed": "Visualizado"
+      },
+      "pax8Order": {
+        "message_one": "Esta cotação preparou um pedido da Pax8 ({{count}} item) aguardando os detalhes de provisionamento",
+        "message_other": "Esta cotação preparou um pedido da Pax8 ({{count}} itens) aguardando os detalhes de provisionamento",
+        "open": "Abrir pedido da Pax8"
       },
       "pricing": "Preços",
       "proposalImageAlt": "Imagem da proposta",
@@ -588,13 +617,30 @@
     "distributorLookup": {
       "available": "{{count}} disponíveis",
       "cost": "custo {{currency}} {{amount}}",
+      "endOfLife": "Fim de vida",
       "importAndAdd": "Importar e adicionar",
+      "inStockOnly": "Somente em estoque",
       "lookupFailed": "Falha na consulta.",
+      "mfgPart": "Peça do fabricante {{part}}",
       "msrp": "MSRP {{amount}}",
+      "nightlyHint": "Digite pelo menos {{count}} caracteres para buscar no catálogo noturno.",
+      "nightlyPlaceholder": "Buscar por nome, SKU, nº da peça do fabricante ou fabricante",
+      "noResults": "Nenhum produto encontrado.",
+      "outOfStock": "Sem estoque",
       "placeholder": "SKU da SYNNEX ou nº da peça do fabricante",
       "searching": "Buscando…",
       "sellPrice": "Preço de venda",
-      "sku": "SKU {{sku}}"
+      "sku": "SKU {{sku}}",
+      "source": "Origem",
+      "sourceEcExpress": "EC Express (SKU / nº da peça exato)",
+      "sourceNightly": "Catálogo TD SYNNEX (arquivo noturno)",
+      "syncedDaysAgo": "sincronizado há {{count}}d",
+      "syncedHoursAgo": "sincronizado há {{count}}h",
+      "syncedJustNow": "sincronizado agora",
+      "syncedMinutesAgo": "sincronizado há {{count}}min",
+      "syncedUnknown": "horário de sincronização desconhecido",
+      "toBeDiscontinued": "Será descontinuado",
+      "warehouses": "Depósitos: {{list}}"
     },
     "document": {
       "additionalItems": "Itens adicionais",
@@ -603,6 +649,8 @@
       "imageUnavailable": "Imagem indisponível",
       "issued": "Emitida",
       "preparedFor": "Preparado para",
+      "taxId": "Identificação fiscal: {{id}}",
+      "imageZoomAria": "Ver imagem maior",
       "preview": {
         "description": "Isto é o que o cliente vê no link da proposta.",
         "downloadPdf": "Baixar PDF",

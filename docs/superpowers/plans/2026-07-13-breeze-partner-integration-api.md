@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - **Node 22.20.0:** prefix every `pnpm`/`node` command with `export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$PATH"`.
-- **Do not retrofit `api_keys`:** current keys require `org_id` and a human creator. Preserve that contract and add dedicated service-principal/key tables.
+- **Do not retrofit `api_keys`:** current keys require `org_id` and a human creator. Preserve that contract and add dedicated partner-service-principal/key tables.
 - **RLS shape 3:** both new tables carry direct `partner_id`, enable and force RLS in their creating migration, use flat `breeze_has_partner_access(partner_id)` policies, and join `PARTNER_TENANT_TABLES` in the same change.
 - **Hand-written migration only:** use `apps/api/migrations/2026-07-16-partner-service-principals.sql`; make it idempotent; do not add inner transaction blocks; do not use `drizzle-kit generate` or `push`.
 - **Request query context:** perform only the credential lookup and organization-resolution bootstrap under `withSystemDbAccessContext`; close it before `withDbAccessContext`. Export queries run under the unprivileged application role and the partner RLS context.
@@ -83,14 +83,14 @@ The initial routes and exact scopes are:
 **Files:**
 
 - Create: `apps/api/migrations/2026-07-16-partner-service-principals.sql`
-- Create: `apps/api/src/db/schema/servicePrincipals.ts`
-- Create: `apps/api/src/services/servicePrincipalScopes.ts`
-- Create: `apps/api/src/services/servicePrincipalScopes.test.ts`
+- Create: `apps/api/src/db/schema/partnerServicePrincipals.ts`
+- Create: `apps/api/src/services/partnerServicePrincipalScopes.ts`
+- Create: `apps/api/src/services/partnerServicePrincipalScopes.test.ts`
 - Modify: `apps/api/src/db/schema/index.ts`
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`
-- Create: `apps/api/src/__tests__/integration/servicePrincipalRls.integration.test.ts`
+- Create: `apps/api/src/__tests__/integration/partnerServicePrincipalRls.integration.test.ts`
 
-**Produces:** `service_principals`, `service_principal_keys`, the eight-scope union above, forced partner-axis RLS, and database constraints that reject unknown scopes/status values.
+**Produces:** `partner_service_principals`, `partner_service_principal_keys`, the eight-scope union above, forced partner-axis RLS, and database constraints that reject unknown scopes/status values.
 
 - [ ] **Step 1: Write the failing scope and RLS tests**
 
@@ -100,7 +100,7 @@ Test valid/invalid scopes, duplicates, empty scope arrays, and delegation valida
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$PATH"
-pnpm --filter=@breeze/api test:run -- src/services/servicePrincipalScopes.test.ts
+pnpm --filter=@breeze/api test:run -- src/services/partnerServicePrincipalScopes.test.ts
 pnpm --filter=@breeze/api test:rls-coverage
 ```
 
@@ -111,7 +111,7 @@ Expected failure: missing scope module/schema tables and missing RLS coverage en
 The migration contract is:
 
 ```sql
-CREATE TABLE IF NOT EXISTS service_principals (
+CREATE TABLE IF NOT EXISTS partner_service_principals (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   partner_id uuid NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
   name text NOT NULL,
@@ -126,10 +126,10 @@ CREATE TABLE IF NOT EXISTS service_principals (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS service_principal_keys (
+CREATE TABLE IF NOT EXISTS partner_service_principal_keys (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   partner_id uuid NOT NULL REFERENCES partners(id) ON DELETE CASCADE,
-  service_principal_id uuid NOT NULL REFERENCES service_principals(id) ON DELETE CASCADE,
+  partner_service_principal_id uuid NOT NULL REFERENCES partner_service_principals(id) ON DELETE CASCADE,
   name text NOT NULL,
   key_hash text NOT NULL UNIQUE,
   key_prefix text NOT NULL,
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS service_principal_keys (
   rate_limit integer NOT NULL DEFAULT 600 CHECK (rate_limit BETWEEN 1 AND 10000),
   last_used_at timestamptz,
   revoked_at timestamptz,
-  rotated_from_id uuid REFERENCES service_principal_keys(id) ON DELETE SET NULL,
+  rotated_from_id uuid REFERENCES partner_service_principal_keys(id) ON DELETE SET NULL,
   created_by uuid NOT NULL REFERENCES users(id),
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -155,16 +155,16 @@ Expose `validatePartnerServicePrincipalScopes`, `hasPartnerServicePrincipalScope
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$PATH"
 export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
-pnpm --filter=@breeze/api test:run -- src/services/servicePrincipalScopes.test.ts
+pnpm --filter=@breeze/api test:run -- src/services/partnerServicePrincipalScopes.test.ts
 pnpm --filter=@breeze/api test:rls-coverage
-pnpm --filter=@breeze/api test:integration -- src/__tests__/integration/servicePrincipalRls.integration.test.ts
+pnpm --filter=@breeze/api test:integration -- src/__tests__/integration/partnerServicePrincipalRls.integration.test.ts
 pnpm --filter=@breeze/api db:check-drift
 ```
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/migrations/2026-07-16-partner-service-principals.sql apps/api/src/db/schema apps/api/src/services/servicePrincipalScopes.ts apps/api/src/services/servicePrincipalScopes.test.ts apps/api/src/__tests__/integration
+git add apps/api/migrations/2026-07-16-partner-service-principals.sql apps/api/src/db/schema apps/api/src/services/partnerServicePrincipalScopes.ts apps/api/src/services/partnerServicePrincipalScopes.test.ts apps/api/src/__tests__/integration
 git commit -m "feat(auth): add partner service principals"
 ```
 
@@ -174,23 +174,23 @@ git commit -m "feat(auth): add partner service principals"
 
 **Files:**
 
-- Create: `apps/api/src/services/servicePrincipalKeys.ts`
-- Create: `apps/api/src/services/servicePrincipalKeys.test.ts`
-- Create: `apps/api/src/routes/servicePrincipals.ts`
-- Create: `apps/api/src/routes/servicePrincipals.test.ts`
+- Create: `apps/api/src/services/partnerServicePrincipalKeys.ts`
+- Create: `apps/api/src/services/partnerServicePrincipalKeys.test.ts`
+- Create: `apps/api/src/routes/partnerServicePrincipals.ts`
+- Create: `apps/api/src/routes/partnerServicePrincipals.test.ts`
 - Modify: `apps/api/src/index.ts`
-- Create: `apps/web/src/components/settings/ServicePrincipalsPage.tsx`
-- Create: `apps/web/src/components/settings/ServicePrincipalsPage.test.tsx`
-- Create: `apps/web/src/pages/settings/service-principals.astro`
+- Create: `apps/web/src/components/settings/PartnerServicePrincipalsPage.tsx`
+- Create: `apps/web/src/components/settings/PartnerServicePrincipalsPage.test.tsx`
+- Create: `apps/web/src/pages/settings/partner-service-principals.astro`
 - Modify: `apps/web/src/components/layout/Header.tsx`
 
 **Interfaces:**
 
 ```ts
-export async function issueServicePrincipalKey(
+export async function issuePartnerServicePrincipalKey(
   tx: Database,
   input: {
-    servicePrincipalId: string;
+    partnerServicePrincipalId: string;
     partnerId: string;
     name: string;
     actorId: string;
@@ -199,10 +199,10 @@ export async function issueServicePrincipalKey(
   },
 ): Promise<{ keyId: string; rawKey: string; keyPrefix: string }>;
 
-export async function rotateServicePrincipalKey(
+export async function rotatePartnerServicePrincipalKey(
   tx: Database,
   input: {
-    servicePrincipalId: string;
+    partnerServicePrincipalId: string;
     keyId: string;
     partnerId: string;
     actorId: string;
@@ -210,7 +210,7 @@ export async function rotateServicePrincipalKey(
 ): Promise<{ keyId: string; rawKey: string; keyPrefix: string }>;
 ```
 
-Generate at least 256 random bits and format plaintext keys as `brz_sp_<base64url>`. Persist SHA-256 only. The management routes are `GET|POST /api/v1/service-principals`, `PATCH /:id`, `POST /:id/keys`, `POST /:id/keys/:keyId/rotate`, and `DELETE /:id/keys/:keyId`.
+Generate at least 256 random bits and format plaintext keys as `brz_sp_<base64url>`. Persist SHA-256 only. The management routes are `GET|POST /api/v1/partner-service-principals`, `PATCH /:id`, `POST /:id/keys`, `POST /:id/keys/:keyId/rotate`, and `DELETE /:id/keys/:keyId`.
 
 - [ ] **Step 1: Write failing service and route tests**
 
@@ -220,12 +220,12 @@ Cover one-time plaintext reveal, hash/prefix persistence, duplicate name, key ro
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$PATH"
-pnpm --filter=@breeze/api test:run -- src/services/servicePrincipalKeys.test.ts src/routes/servicePrincipals.test.ts
+pnpm --filter=@breeze/api test:run -- src/services/partnerServicePrincipalKeys.test.ts src/routes/partnerServicePrincipals.test.ts
 ```
 
 - [ ] **Step 3: Implement service and routes**
 
-Mirror the human-management gates in `apps/api/src/routes/apiKeys.ts`: `authMiddleware`, partner/system scope, existing administrator permission, `requireMfa`, `withDbAccessContext`, and `writeAuditEvent`. Use `actorType: 'api_key'` for machine-use audit rows in this release and include sanitized `principalType: 'service_principal'`, `partnerId`, and `keyId` details; do not migrate the audit enum in this integration plan.
+Mirror the human-management gates in `apps/api/src/routes/apiKeys.ts`: `authMiddleware`, partner/system scope, existing administrator permission, `requireMfa`, `withDbAccessContext`, and `writeAuditEvent`. Use `actorType: 'api_key'` for machine-use audit rows in this release and include sanitized `principalType: 'partner_service_principal'`, `partnerId`, and `keyId` details; do not migrate the audit enum in this integration plan.
 
 - [ ] **Step 4: Implement the settings page with `runAction`**
 
@@ -235,8 +235,8 @@ List principals and masked key prefixes, create/edit/disable principals, issue/r
 
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$PATH"
-pnpm --filter=@breeze/api test:run -- src/services/servicePrincipalKeys.test.ts src/routes/servicePrincipals.test.ts
-pnpm --filter=@breeze/web test --run src/components/settings/ServicePrincipalsPage.test.tsx
+pnpm --filter=@breeze/api test:run -- src/services/partnerServicePrincipalKeys.test.ts src/routes/partnerServicePrincipals.test.ts
+pnpm --filter=@breeze/web test --run src/components/settings/PartnerServicePrincipalsPage.test.tsx
 pnpm --filter=@breeze/api build
 pnpm --filter=@breeze/web build
 ```
@@ -244,7 +244,7 @@ pnpm --filter=@breeze/web build
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/src/services/servicePrincipalKeys* apps/api/src/routes/servicePrincipals* apps/api/src/index.ts apps/web/src/components/settings/ServicePrincipalsPage* apps/web/src/pages/settings/service-principals.astro apps/web/src/components/layout/Header.tsx
+git add apps/api/src/services/partnerServicePrincipalKeys* apps/api/src/routes/partnerServicePrincipals* apps/api/src/index.ts apps/web/src/components/settings/PartnerServicePrincipalsPage* apps/web/src/pages/settings/partner-service-principals.astro apps/web/src/components/layout/Header.tsx
 git commit -m "feat(auth): manage service principal keys"
 ```
 
@@ -263,7 +263,7 @@ git commit -m "feat(auth): manage service principal keys"
 
 ```ts
 export interface PartnerApiPrincipalContext {
-  servicePrincipalId: string;
+  partnerServicePrincipalId: string;
   keyId: string;
   partnerId: string;
   name: string;
@@ -535,7 +535,7 @@ git commit -m "feat(api): export safe desired configuration"
 
 - [ ] **Step 1: Write failing audit and RLS integration tests**
 
-Audit fields: service-principal UUID, key UUID, partner UUID, route/resource, result, schema version, record count, duration, and HTTP status. Explicitly assert absence of keys, hashes, cursors, response bodies, rejected values, definitions, and error stacks. The RLS test authenticates through real middleware as Partner A, walks every page across interleaved Partner A/B data, forges filters/cursors, and proves all export queries execute under `breeze_app` after bootstrap.
+Audit fields: partner-service-principal UUID, key UUID, partner UUID, route/resource, result, schema version, record count, duration, and HTTP status. Explicitly assert absence of keys, hashes, cursors, response bodies, rejected values, definitions, and error stacks. The RLS test authenticates through real middleware as Partner A, walks every page across interleaved Partner A/B data, forges filters/cursors, and proves all export queries execute under `breeze_app` after bootstrap.
 
 - [ ] **Step 2: Run focused tests and observe failures**
 
@@ -564,13 +564,13 @@ Document principal creation, the exact minimum scopes, one-time key capture, rot
 ```bash
 export PATH="$HOME/.nvm/versions/node/v22.20.0/bin:$PATH"
 export DATABASE_URL="postgresql://breeze:breeze@localhost:5432/breeze"
-pnpm --filter=@breeze/api test:run -- src/services/servicePrincipalScopes.test.ts src/services/servicePrincipalKeys.test.ts src/middleware/partnerApiAuth.test.ts src/routes/servicePrincipals.test.ts src/routes/partnerApi
+pnpm --filter=@breeze/api test:run -- src/services/partnerServicePrincipalScopes.test.ts src/services/partnerServicePrincipalKeys.test.ts src/middleware/partnerApiAuth.test.ts src/routes/partnerServicePrincipals.test.ts src/routes/partnerApi
 pnpm --filter=@breeze/api test:rls-coverage
-pnpm --filter=@breeze/api test:integration -- src/__tests__/integration/servicePrincipalRls.integration.test.ts src/__tests__/integration/partnerApiRls.integration.test.ts
+pnpm --filter=@breeze/api test:integration -- src/__tests__/integration/partnerServicePrincipalRls.integration.test.ts src/__tests__/integration/partnerApiRls.integration.test.ts
 pnpm --filter=@breeze/api db:check-drift
 pnpm --filter=@breeze/api lint
 pnpm --filter=@breeze/api build
-pnpm --filter=@breeze/web test --run src/components/settings/ServicePrincipalsPage.test.tsx
+pnpm --filter=@breeze/web test --run src/components/settings/PartnerServicePrincipalsPage.test.tsx
 pnpm --filter=@breeze/web lint
 pnpm --filter=@breeze/web build
 ```

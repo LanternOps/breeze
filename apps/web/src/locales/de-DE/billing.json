@@ -1,0 +1,1257 @@
+{
+  "contracts": {
+    "shared": {
+      "status": {
+        "draft": "Entwurf",
+        "active": "Aktiv",
+        "paused": "Angehalten",
+        "cancelled": "Abgesagt",
+        "expired": "Abgelaufen"
+      },
+      "cadence": {
+        "monthly": "Monatlich",
+        "quarterly": "Vierteljährlich",
+        "annual": "Jährlich",
+        "custom": "Alle {{count}} Monate"
+      },
+      "billingTiming": {
+        "advance": "Im Voraus",
+        "arrears": "Im Rückstand"
+      },
+      "lineType": {
+        "flat": "Pauschalpreis",
+        "perDevice": "Pro Gerät",
+        "perSeat": "Pro Sitzplatz",
+        "manual": "Manuelle Menge"
+      },
+      "transition": {
+        "activate": "Aktivieren",
+        "pause": "Pausieren",
+        "resume": "Fortsetzen",
+        "cancel": "Abbrechen"
+      },
+      "values": {
+        "auto": "auto"
+      }
+    },
+    "contractDetail": {
+      "fields": {
+        "billingTiming": "Zeitpunkt der Abrechnung",
+        "cadence": "Abrechnungsintervall",
+        "startDate": "Startdatum",
+        "endDate": "Enddatum",
+        "nextBilling": "Nächste Abrechnung",
+        "autoIssue": "Automatisch ausstellen",
+        "renewal": "Erneuerung",
+        "estimatedPerPeriod": "Geschätzt / Zeitraum",
+        "notes": "Notizen"
+      },
+      "values": {
+        "noDrafts": "Nein (Entwürfe)"
+      },
+      "renewal": {
+        "autoRenews": "Automatische Verlängerung",
+        "everyMonths": "alle {{count}} Monate",
+        "currentTermEnds": "· Die aktuelle Laufzeit endet {{date}}",
+        "noticeDays": "· {{count}}-tägige Vorankündigung",
+        "doesNotAutoRenew": "Verlängert sich nicht automatisch"
+      },
+      "table": {
+        "unitPrice": "Stückpreis",
+        "qty": "Menge",
+        "tax": "Steuer",
+        "empty": "Dieser Vertrag enthält keine Positionen."
+      },
+      "billingHistory": {
+        "title": "Abrechnungsverlauf",
+        "period": "Zeitraum",
+        "generated": "Generiert",
+        "invoice": "Rechnung",
+        "empty": "Es wurden noch keine Rechnungen erstellt.",
+        "viewInvoice": "Rechnung ansehen"
+      },
+      "summary": {
+        "active": "Dieser Vertrag ist aktiv und generiert in seinem Rhythmus Rechnungen.",
+        "inactive": "Rechnungen werden erstellt, während der Vertrag aktiv ist."
+      },
+      "actions": {
+        "generateInvoiceNow": "Jetzt Rechnung erstellen",
+        "deleteDraft": "Entwurf löschen"
+      },
+      "errors": {
+        "transition": {
+          "activate": "Der Vertrag konnte nicht aktiviert werden.",
+          "pause": "Der Vertrag konnte nicht pausiert werden.",
+          "resume": "Der Vertrag konnte nicht fortgesetzt werden.",
+          "cancel": "Der Vertrag konnte nicht gekündigt werden."
+        },
+        "generateInvoice": "Es konnte keine Rechnung erstellt werden.",
+        "deleteDraft": "Der Entwurf konnte nicht gelöscht werden."
+      },
+      "toast": {
+        "transition": {
+          "activate": "Vertrag aktiviert",
+          "pause": "Vertrag pausiert",
+          "resume": "Vertrag wieder aufgenommen",
+          "cancel": "Vertrag gekündigt"
+        },
+        "invoiceGenerated": "Rechnung erstellt",
+        "draftDeleted": "Entwurf gelöscht"
+      },
+      "cancelConfirm": {
+        "title": "Diesen Vertrag kündigen?",
+        "message": "Durch die Kündigung werden alle zukünftigen Rechnungen für diesen Vertrag gestoppt. Dies kann nicht rückgängig gemacht werden – Sie müssten einen neuen Vertrag erstellen, um die Abrechnung fortzusetzen.",
+        "confirm": "Vertrag kündigen"
+      },
+      "deleteConfirm": {
+        "title": "Vertragsentwurf löschen",
+        "message": "Dadurch wird der Vertragsentwurf endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Entwurf löschen"
+      }
+    },
+    "contractEditor": {
+      "validation": {
+        "enterMonths": "Geben Sie die Anzahl der Monate ein",
+        "enterRenewalTermBeforeSaving": "Geben Sie vor dem Speichern einen Verlängerungszeitraum (Monate) ein.",
+        "enterContractName": "Geben Sie einen Vertragsnamen ein.",
+        "enterStartDate": "Geben Sie ein Startdatum ein.",
+        "renewalTermRange": "Geben Sie eine Verlängerungslaufzeit zwischen 1 und 120 Monaten ein.",
+        "advanceNoticeRange": "Geben Sie eine Vorankündigung zwischen 0 und 365 Tagen ein."
+      },
+      "errors": {
+        "loadOrganizations": "Die Organisationen konnten nicht geladen werden.",
+        "loadSites": "Die Standorte konnten nicht geladen werden.",
+        "createContract": "Der Vertrag konnte nicht erstellt werden.",
+        "saveContract": "Der Vertrag konnte nicht gespeichert werden.",
+        "addLine": "Die Position konnte nicht hinzugefügt werden.",
+        "removeLine": "Die Position konnte nicht entfernt werden.",
+        "activateContract": "Der Vertrag konnte nicht aktiviert werden."
+      },
+      "toast": {
+        "contractCreated": "Vertrag erstellt",
+        "lineAdded": "Position hinzugefügt",
+        "lineRemoved": "Position entfernt",
+        "contractActivated": "Vertrag aktiviert"
+      },
+      "schedule": {
+        "title": "Zeitplan",
+        "selectOrganization": "Wählen Sie eine Organisation aus…",
+        "namePlaceholder": "z.B. Verwaltete Dienste – Acme Co",
+        "billingTiming": "Zeitpunkt der Abrechnung",
+        "billingCadence": "Abrechnungsrhythmus",
+        "customCadence": "Maßgeschneidert…",
+        "intervalMonths": "Intervall (Monate)",
+        "startDate": "Startdatum"
+      },
+      "renewal": {
+        "title": "Erneuerung",
+        "endDateOptional": "Enddatum (optional)",
+        "autoIssue": "Generierte Rechnungen automatisch ausstellen (ansonsten landen sie als Entwürfe)",
+        "autoRenewAtEnd": "Automatische Verlängerung am Ende der Laufzeit",
+        "autoRenewSetEndDate": "Automatische Verlängerung am Ende der Laufzeit (legen Sie zuerst ein Enddatum fest)",
+        "renewalTermMonths": "Verlängerungsdauer (Monate)",
+        "advanceNoticeDays": "Vorankündigung (Tage)"
+      },
+      "content": {
+        "title": "Inhalt",
+        "notesOptional": "Notizen (optional)",
+        "termsOptional": "Bedingungen (optional, auf der Rechnung angegeben)",
+        "termsPlaceholder": "z.B. Netto 30. Automatische Verlängerung, sofern nicht 30 Tage vorher gekündigt."
+      },
+      "lines": {
+        "unitPrice": "Stückpreis",
+        "qty": "Menge",
+        "tax": "Steuer",
+        "empty": "Noch keine Positionen. Fügen Sie unten eine wiederkehrende Position hinzu."
+      },
+      "addLine": {
+        "integrationHint": "Aus einer Integration hinzufügen – eine Position wird vorab ausgefüllt.",
+        "linkPax8Subscription": "Pax8-Abonnement verknüpfen",
+        "addFromPax8Catalog": "Aus dem Pax8-Katalog hinzufügen",
+        "importFromTdSynnex": "Import aus TD SYNNEX",
+        "lineType": "Positionstyp",
+        "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
+        "unitPrice": "Stückpreis",
+        "quantity": "Menge",
+        "siteOptional": "Standort (optional – legt die Geräteanzahl fest)",
+        "allSites": "Alle Seiten",
+        "linkCatalogItemOptional": "Katalogelement verlinken (optional)",
+        "itemFallback": "Artikel",
+        "clearCatalogLink": "Katalogverknüpfung aufheben",
+        "searchCatalog": "Katalog durchsuchen…",
+        "taxable": "Steuerpflichtig",
+        "quantityResolvedAutomatically": "Die Menge wird zum Zeitpunkt der Abrechnung automatisch aufgelöst.",
+        "lineTotal": "Positionssumme: {{total}}",
+        "addLine": "Position hinzufügen"
+      },
+      "estimate": {
+        "title": "Geschätzter Zeitraum",
+        "saveFirst": "Speichern Sie den Vertrag und fügen Sie dann Positionen hinzu, um einen Kostenvoranschlag anzuzeigen.",
+        "plusAuto": "+ automatisch",
+        "includesLiveCounts": "Beinhaltet die Anzahl der Live-Geräte/Sitzplätze ab heute.",
+        "loadLiveCountsFailed": "Live-Zählungen konnten nicht geladen werden.",
+        "loadLiveCountsFailedWithAuto": "Live-Zählungen konnten nicht geladen werden – Positionen pro Gerät/Sitzplatz sind in dieser Gesamtzahl nicht enthalten."
+      },
+      "actions": {
+        "createContract": "Vertrag erstellen",
+        "activateContract": "Vertrag aktivieren",
+        "activateHint": "Fügen Sie mindestens eine Position zum Aktivieren hinzu."
+      },
+      "removeLineConfirm": {
+        "title": "Position entfernen",
+        "message": "Dadurch wird „{{description}}“ aus dem Vertrag entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "thisLine": "diese Position",
+        "confirm": "Position entfernen"
+      }
+    },
+    "contractWorkspace": {
+      "errors": {
+        "missingContractId": "Fehlende Vertrags-ID",
+        "notFound": "Vertrag nicht gefunden.",
+        "loadContract": "Der Vertrag konnte nicht geladen werden",
+        "unavailable": "Vertrag nicht verfügbar."
+      },
+      "backToContracts": "← Verträge",
+      "backToContractsText": "Zurück zu den Verträgen",
+      "newContract": "Neuer Vertrag",
+      "doneEditing": "Bearbeitung abgeschlossen"
+    },
+    "contractsList": {
+      "title": "Verträge",
+      "description": "Wiederkehrende Vereinbarungen, die in regelmäßigen Abständen automatisch Rechnungsentwürfe erstellen.",
+      "newContract": "Neuer Vertrag",
+      "accessDenied": "Sie sind nicht berechtigt, Verträge anzuzeigen.",
+      "errors": {
+        "loadOrganizations": "Die Organisationen konnten nicht geladen werden.",
+        "loadContracts": "Verträge konnten nicht geladen werden"
+      },
+      "filters": {
+        "allStatuses": "Alle Status",
+        "allOrganizations": "Alle Organisationen",
+        "searchPlaceholder": "Nach Name oder Organisation suchen",
+        "searchAria": "Verträge suchen"
+      },
+      "stats": {
+        "estimatedMonthlyRecurring": "Schätzung: monatlich wiederkehrend",
+        "activeContractCount": "{{count}} aktive Verträge",
+        "activeContractCount_one": "{{count}} aktiver Vertrag",
+        "activeContractCount_other": "{{count}} aktive Verträge"
+      },
+      "actions": {
+        "tryAgain": "Versuchen Sie es erneut",
+        "clearFilters": "Filter zurücksetzen"
+      },
+      "empty": {
+        "noMatches": "Keine Verträge entsprechen diesen Filtern.",
+        "title": "Noch keine Verträge",
+        "description": "Verträge rechnen einer Organisation in einem sich wiederholenden Rhythmus ab und erstellen die Rechnungen automatisch für Sie.",
+        "createFirst": "Erstellen Sie Ihren ersten Vertrag"
+      },
+      "table": {
+        "selectAllAria": "Wählen Sie alle Verträge aus",
+        "startDate": "Startdatum",
+        "cadence": "Abrechnungsintervall",
+        "nextBill": "Nächste Rechnung",
+        "estimatedPerPeriod": "Geschätzt / Zeitraum",
+        "selectContractAria": "Wählen Sie Vertrag {{name}}"
+      },
+      "bulk": {
+        "deleteDrafts": "Entwürfe löschen",
+        "deleteDrafts_one": "Entwurf löschen",
+        "deleteDrafts_other": "Entwürfe löschen"
+      },
+      "toast": {
+        "bulkLimit": "Wählen Sie bis zu {{limit}} auf einmal.",
+        "bulkFailed": "Bulk {{verb}} ist fehlgeschlagen. Wiederholen.",
+        "bulkPartial": "{{succeeded}} {{verb}}, {{skipped}} übersprungen{{failedText}}",
+        "failedSuffix": ", {{failed}} fehlgeschlagen",
+        "bulkSuccess": "{{succeeded}} {{verb}}"
+      },
+      "cancelConfirm": {
+        "title": "Verträge kündigen",
+        "message": "{{count}} ausgewählte(n) Vertrag(e) kündigen? Aktive und pausierte Verträge werden gekündigt; Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Verträge kündigen"
+      },
+      "deleteConfirm": {
+        "title": "Vertragsentwürfe löschen",
+        "message": "{{count}} Vertragsentwürfe löschen? Es werden nur Entwürfe gelöscht{{untouched}}; Dies kann nicht rückgängig gemacht werden.",
+        "message_one": "{{count}} Vertragsentwurf löschen? Es werden nur Entwürfe gelöscht{{untouched}}; Dies kann nicht rückgängig gemacht werden.",
+        "message_other": "{{count}} Vertragsentwürfe löschen? Es werden nur Entwürfe gelöscht{{untouched}}; Dies kann nicht rückgängig gemacht werden.",
+        "untouchedSuffix": "— Alle aktiven oder pausierten Verträge in Ihrer Auswahl bleiben davon unberührt",
+        "confirm": "Entwürfe löschen"
+      }
+    },
+    "contractPax8Drawer": {
+      "title": "Verknüpfen Sie ein Pax8-Abonnement",
+      "subtitlePicked": "Wählen Sie eine Position in diesem Vertrag aus (oder erstellen Sie eine), um sie zu verknüpfen.",
+      "subtitleChoose": "Wählen Sie ein synchronisiertes Abonnement aus, das Sie diesem Vertrag hinzufügen möchten.",
+      "loadingSubscriptions": "Abonnements werden geladen…",
+      "empty": "Für diese Organisation sind noch keine Pax8-Abonnements synchronisiert. Synchronisieren Sie sie unter Integrationen → Pax8.",
+      "subscriptionFallback": "Pax8-Abonnement",
+      "quantity": "Menge {{quantity}}",
+      "priceEach": "{{currency}} {{price}}/Stück",
+      "alreadyLinked": "bereits verlinkt",
+      "relink": "Neu verknüpfen",
+      "link": "Link",
+      "errors": {
+        "loadSubscriptions": "Pax8-Abonnements für diese Organisation konnten nicht geladen werden."
+      }
+    }
+  },
+  "quotes": {
+    "editor": {
+      "actions": {
+        "addImage": "Bild hinzufügen",
+        "addLine": "Position hinzufügen",
+        "addSection": "Abschnitt hinzufügen",
+        "adding": "Hinzufügen…",
+        "cancel": "Abbrechen",
+        "fetch": "Holen",
+        "fetchAddImage": "Bild abrufen und hinzufügen",
+        "fromUrl": "Ab URL",
+        "hideCostMargin": "Kosten und Marge ausblenden",
+        "moveLineDown": "Position nach unten verschieben",
+        "moveLineTo": "Position verschieben nach",
+        "moveLineToAnotherTable": "Position in eine andere Preistabelle verschieben",
+        "moveLineUp": "Position nach oben verschieben",
+        "moveSectionDown": "Abschnitt nach unten verschieben",
+        "moveSectionUp": "Abschnitt nach oben verschieben",
+        "moveTo": "Verschieben nach",
+        "remove": "Entfernen",
+        "removeImage": "Bild entfernen",
+        "removeLine": "Position entfernen",
+        "removeSection": "Abschnitt entfernen",
+        "replaceImage": "Bild ersetzen",
+        "showCostMargin": "Kosten und Marge anzeigen",
+        "uploadAddImage": "Bild hochladen und hinzufügen",
+        "uploading": "Hochladen…"
+      },
+      "addLine": {
+        "catalogItem": "Katalogartikel",
+        "manualLine": "Manuelle Position",
+        "searchDistributor": "Händler suchen",
+        "searchPax8": "Pax8 durchsuchen"
+      },
+      "addSection": {
+        "captionPlaceholder": "Bildunterschrift (optional)",
+        "headingPlaceholder": "Überschriftentext",
+        "imageHelp": "PNG, JPEG oder WebP, bis zu 5 MB.",
+        "imageUrlPlaceholder": "https://example.com/photo.png",
+        "richTextPlaceholder": "Vorschlagstext…",
+        "title": "Abschnitt hinzufügen",
+        "uploadFile": "Datei hochladen"
+      },
+      "autoFill": {
+        "filledDescription": "Beschreibung",
+        "filledEstimatedCost": "geschätzte Kosten {{amount}}",
+        "filledName": "Namen",
+        "filledPriceWithDefaultMarkup": "Preis {{amount}} (Standard {{markup}} % Aufschlag)",
+        "filledTaxableOff": "steuerpflichtig: aus",
+        "filledTaxableOn": "steuerpflichtig: am",
+        "help": "Durchsucht das Internet und gibt Namen, Beschreibung, Steuer und geschätzte Kosten ein. Sie legen den Preis fest.",
+        "helpWithDefaultMarkup": "Durchsucht das Internet, gibt Namen, Beschreibung und Steuer ein, schätzt Ihre Kosten und bepreist die Position mit Ihrem Standardaufschlag von {{markup}} %.",
+        "label": "Automatisch ausgefüllt:",
+        "review": "Überprüfen und passen Sie es an, bevor Sie es hinzufügen."
+      },
+      "autosaveHint": "Änderungen werden beim Bearbeiten automatisch gespeichert. Ein gelber Umriss markiert eine Bearbeitung, die noch nicht gespeichert wurde.",
+      "block": {
+        "imageSectionPdf": "Bildausschnitt (gerendert im PDF).",
+        "richTextContentAria": "Rich-Text-Inhalt"
+      },
+      "blockTypes": {
+        "heading": "Überschrift",
+        "image": "Bild",
+        "pricingTable": "Preistabelle",
+        "richText": "Rich-Text"
+      },
+      "catalog": {
+        "addSome": "Fügen Sie einige zum Produktkatalog hinzu",
+        "empty": "Keine Katalogartikel.",
+        "loadError": "Der Katalog konnte nicht geladen werden. Öffnen Sie den Editor erneut, um es noch einmal zu versuchen – Ihre vorhandenen Elemente sind sicher.",
+        "searchPlaceholder": "Katalog nach Name oder SKU durchsuchen"
+      },
+      "categories": {
+        "hardware": "Hardware",
+        "other": "Andere",
+        "service": "Service",
+        "software": "Software"
+      },
+      "confirm": {
+        "removeLineMessage": "Dadurch wird „{{name}}“ aus dem Angebot entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "removeLineTitle": "Position entfernen",
+        "removeSectionMessage": "Dadurch wird dieser Abschnitt entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "removeSectionTitle": "Abschnitt entfernen",
+        "removeSectionWithLines_one": "Dadurch werden die Preistabelle und ihre {{count}}-Position entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "removeSectionWithLines_other": "Dadurch werden die Preistabelle und ihre {{count}}-Positionen entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "thisLine": "diese Position",
+        "removeSectionWithLines": "Dadurch werden die Preistabelle und ihre Positionen entfernt. Dies kann nicht rückgängig gemacht werden."
+      },
+      "customer": {
+        "help": "Wird ein Entwurf einem anderen Unternehmen zugewiesen, wird die Standort-Zuordnung entfernt und der Steuersatz dieses Unternehmens angewendet.",
+        "label": "Kunde",
+        "success": "Angebot zu {{name}} verschoben."
+      },
+      "deposit": {
+        "due": "Anzahlung fällig",
+        "eligibleAria": "Anzahlung möglich",
+        "label": "Anzahlung",
+        "none": "Keine Anzahlung",
+        "percent": "Prozent",
+        "percentOfDue": "Prozentsatz der Fälligkeit bei Annahme",
+        "selectedLines": "Ausgewählte Positionen",
+        "selectedLinesHelp": "Überprüfen Sie die einzahlungsberechtigten einmaligen Positionen in jeder Preistabelle.",
+        "short": "Anzahlung"
+      },
+      "emptyBlocks": "Noch kein Inhalt. Fügen Sie unten eine Überschrift, Rich-Text oder eine Preistabelle hinzu.",
+      "errors": {
+        "addCatalogItem": "Das Katalogelement konnte nicht hinzugefügt werden.",
+        "addDistributorItem": "Der Händlerartikel konnte nicht hinzugefügt werden.",
+        "addImageSection": "Der Bildabschnitt konnte nicht hinzugefügt werden.",
+        "addLine": "Die Position konnte nicht hinzugefügt werden.",
+        "addPax8Product": "Das Pax8-Produkt konnte nicht hinzugefügt werden.",
+        "addSection": "Der Abschnitt konnte nicht hinzugefügt werden.",
+        "costZeroOrMore": "Geben Sie einen Preis von 0 oder mehr ein.",
+        "fetchImageFromUrl": "Das Bild von diesem URL konnte nicht abgerufen werden.",
+        "imageAddedSectionFailed": "Bild hinzugefügt, aber das Hinzufügen des Abschnitts ist fehlgeschlagen.",
+        "imageTooLarge": "Das Bild muss maximal 5 MB groß sein.",
+        "importDistributorItem": "Der Händlerartikel konnte nicht importiert werden.",
+        "importPax8Product": "Das Pax8-Produkt konnte nicht importiert werden.",
+        "lineAddedCatalogSaveFailed": "Position hinzugefügt, aber das Speichern im Katalog ist fehlgeschlagen.",
+        "lineNeedsNameOrDescription": "Eine Position benötigt einen Namen oder eine Beschreibung.",
+        "moveLine": "Die Position konnte nicht verschoben werden.",
+        "quantityWholeGreaterThanZero": "Geben Sie eine ganzzahlige Menge größer als 0 ein.",
+        "removeLine": "Die Position konnte nicht entfernt werden.",
+        "removeSection": "Der Abschnitt konnte nicht entfernt werden.",
+        "reorderBlocks": "Blöcke konnten nicht neu angeordnet werden.",
+        "reorderLines": "Positionen konnten nicht neu angeordnet werden.",
+        "reorderSections": "Abschnitte konnten nicht neu angeordnet werden.",
+        "saveCustomer": "Kunde konnte nicht geändert werden.",
+        "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
+        "saveTitle": "Der Titel konnte nicht gespeichert werden.",
+        "unitPriceZeroOrMore": "Geben Sie einen Stückpreis von 0 oder mehr ein.",
+        "updateBlock": "Der Block konnte nicht aktualisiert werden.",
+        "updateDeposit": "Die Anzahlung konnte nicht aktualisiert werden.",
+        "updateLine": "Die Position konnte nicht aktualisiert werden.",
+        "updateSection": "Der Abschnitt konnte nicht aktualisiert werden.",
+        "uploadImage": "Das Bild konnte nicht hochgeladen werden."
+      },
+      "image": {
+        "alt": "Angebotsbild",
+        "previewUnavailable": "Bildvorschau nicht verfügbar."
+      },
+      "internal": {
+        "full": "Intern · dem Kunden nicht angezeigt",
+        "short": "Intern"
+      },
+      "line": {
+        "billing": "Abrechnung",
+        "billingFrequencyAria": "Abrechnungshäufigkeit",
+        "cost": "Kosten",
+        "descriptionAria": "Positionsbeschreibung",
+        "descriptionOptional": "Beschreibung (optional)",
+        "enterCostFirstMarkup": "Geben Sie zunächst Kosten ein, um den Aufschlag in % festzulegen.",
+        "enterCostFirstMarkupSentence": "Geben Sie zunächst einen Preis ein, um den Aufschlag % festzulegen.",
+        "imageUrlAria": "Bild URL",
+        "markup": "Markup",
+        "markupPercent": "Aufschlag %",
+        "nameAria": "Positionsname",
+        "namePlaceholder": "Name",
+        "partNumberAbbr": "PN",
+        "partNumberOptional": "Teilenummer (optional)",
+        "profit": "Gewinn",
+        "quantityAria": "Menge",
+        "saveToCatalog": "Im Katalog speichern",
+        "sku": "SKU",
+        "skuOptional": "SKU (optional)",
+        "unitCost": "Stückkosten"
+      },
+      "liveTotals": {
+        "annualRecurring": "Jährlich wiederkehrend",
+        "dueOnAcceptance": "Fällig bei Abnahme",
+        "firstPeriodTotal": "Gesamtsumme der ersten Periode (inkl. wiederkehrende)",
+        "monthlyRecurring": "Monatlich wiederkehrend",
+        "oneTime": "Einmalig",
+        "srUpdated": "Summen aktualisiert. Einmalig {{oneTime}}, monatlich wiederkehrend {{monthly}}, jährlich wiederkehrend {{annual}}, fällig bei Abnahme {{due}}.",
+        "srUpdatedWithTax": "Summen aktualisiert. Einmalig {{oneTime}}, monatlich wiederkehrend {{monthly}}, jährlich wiederkehrend {{annual}}, Steuer {{tax}}, fällig bei Abnahme {{due}}.",
+        "tax": "Steuer",
+        "taxRate": "Steuersatz",
+        "taxRateHelp": "Gilt für Positionen, die als steuerpflichtig gekennzeichnet sind. Wird in den Steuereinstellungen der Organisation festgelegt.",
+        "title": "Live-Summen"
+      },
+      "recurrence": {
+        "annual": "Jährlich",
+        "monthly": "Monatlich",
+        "one_time": "Einmalig"
+      },
+      "status": {
+        "saved": "Gespeichert"
+      },
+      "success": {
+        "imageSectionAdded": "Bildabschnitt hinzugefügt",
+        "itemAdded": "Artikel hinzugefügt",
+        "lineAdded": "Position hinzugefügt",
+        "lineMoved": "Position verschoben",
+        "lineRemoved": "Position entfernt",
+        "savedToCatalog": "Im Katalog gespeichert",
+        "sectionAdded": "Abschnitt hinzugefügt",
+        "sectionRemoved": "Abschnitt entfernt"
+      },
+      "symbols": {
+        "check": "✓",
+        "notAvailable": "—",
+        "percent": "%",
+        "plusSeparator": " + "
+      },
+      "table": {
+        "emptyLines": "Noch keine Positionen. Fügen Sie unten einen Katalogartikel oder eine manuelle Position hinzu.",
+        "fallbackName": "Preistabelle {{number}}",
+        "item": "Artikel",
+        "labelAria": "Preistabellenetikett",
+        "labelPlaceholder": "Tabellenbeschriftung (optional, z. B. Monatliche Leistungen)",
+        "notTaxable": "Nicht steuerpflichtig",
+        "qty": "Menge",
+        "recurrence": "Wiederholung",
+        "scrollAria": "Preistabelle – scrollen Sie seitwärts für Steuer-, Gesamt- und Zeilenaktionen",
+        "showSubtotal": "Zwischensummenzeile anzeigen",
+        "tax": "Steuer",
+        "taxTitle": "Steuer pro Position. Maßgeblich ist die Überschrift „Steuersumme“, die um einen Rundungscent abweichen kann.",
+        "taxable": "Steuerpflichtig",
+        "total": "Insgesamt",
+        "unitPrice": "Stückpreis"
+      },
+      "terms": {
+        "placeholder": "Zahlungsbedingungen, Garantieklauseln usw.",
+        "title": "Allgemeine Geschäftsbedingungen"
+      },
+      "title": {
+        "label": "Angebotstitel",
+        "placeholder": "z.B. Aktualisierung des Büronetzwerks"
+      },
+      "units": {
+        "perMonth": "/Mo",
+        "perYear": "/Jahr"
+      }
+    },
+    "actions": {
+      "cloneDialog": {
+        "companyLabel": "Unternehmen",
+        "confirm": "Kopie erstellen",
+        "defaultTitle": "Kopie von {{name}}",
+        "message": "Erstellt einen neuen Entwurf mit demselben Inhalt. Wählen Sie das Unternehmen aus und vergeben Sie einen Titel.",
+        "retargetHint": "Der neue Entwurf verwendet die Rechnungsdaten und den Steuersatz dieses Unternehmens; die Standort-Zuordnung wird entfernt.",
+        "title": "Angebot duplizieren",
+        "titleLabel": "Titel"
+      },
+      "cloneError": "Das Angebot konnte nicht dupliziert werden.",
+      "cloneQuote": "Angebot duplizieren",
+      "cloneSavingTitle": "Warten Sie vor dem Duplizieren, bis die Änderungen gespeichert sind.",
+      "cloneSuccess": "Angebot dupliziert.",
+      "cloning": "Wird dupliziert…",
+      "deleteConfirm": {
+        "message": "Dadurch wird der Angebotsentwurf dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        "title": "Angebotsentwurf löschen"
+      },
+      "deleteDraft": "Entwurf löschen",
+      "deleteError": "Der Entwurf konnte nicht gelöscht werden.",
+      "deleteSuccess": "Entwurf gelöscht",
+      "downloadPdf": "Laden Sie PDF herunter",
+      "emptyHint": "Fügen Sie vor dem Senden mindestens einen Artikel hinzu.",
+      "moreActions": "Weitere Aktionen",
+      "savingHint": "Änderungen speichern… Entsperrungen senden, wenn alles gespeichert ist.",
+      "savingTitle": "Speichern Ihrer Änderungen – Entsperrungen senden, wenn alles gespeichert ist.",
+      "sendConfirm": {
+        "message": "Wir senden dieses Angebot per E-Mail an {{orgName}} und markieren es als „Gesendet“ – {{amount}} fällig bei Annahme. Dies kann nicht rückgängig gemacht werden.",
+        "messageLabel": "Persönliche Nachricht hinzufügen (optional)",
+        "messagePlaceholder": "Fügen Sie eine kurze Notiz hinzu – sie erscheint in der E-Mail über dem Zusage-Link.",
+        "title": "Dieses Angebot senden?"
+      },
+      "sendError": "Der Vorschlag konnte nicht gesendet werden.",
+      "sendProposal": "Vorschlag senden",
+      "sendSuccess": "Angebot gesendet – wir markieren es als „Gesehen“ und „Angenommen“, da {{orgName}} geöffnet und unterzeichnet wird.",
+      "sending": "Senden…"
+    },
+    "detail": {
+      "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
+      "created": "Erstellt",
+      "customer": "Kunde",
+      "empty": "Dieses Angebot hat noch keinen Inhalt.",
+      "expires": "Läuft {{date}} ab",
+      "from": "Von",
+      "imageUnavailable": "Bild nicht verfügbar",
+      "issued": "Ausgestellt",
+      "lifecycle": {
+        "accepted": "Akzeptiert",
+        "declined": "Abgelehnt",
+        "sent": "Gesendet",
+        "viewed": "Gesehen"
+      },
+      "pax8Order": {
+        "message_one": "Dieses Angebot hat einen Pax8-Auftrag ({{count}} Position) bereitgestellt, für den noch Bereitstellungsdetails fehlen",
+        "message_other": "Dieses Angebot hat einen Pax8-Auftrag ({{count}} Positionen) bereitgestellt, für den noch Bereitstellungsdetails fehlen",
+        "open": "Pax8-Auftrag öffnen"
+      },
+      "pricing": "Preise",
+      "proposalImageAlt": "Angebotsbild",
+      "table": {
+        "item": "Artikel",
+        "noLines": "Keine Positionen in dieser Tabelle.",
+        "qty": "Menge",
+        "recurrence": "Wiederholung",
+        "tax": "Steuer",
+        "total": "Insgesamt",
+        "unitPrice": "Stückpreis"
+      },
+      "tableScrollAria": "{{label}} – scrollen Sie seitwärts für weitere Spalten",
+      "terms": "Bedingungen",
+      "totals": {
+        "annualRecurring": "Jährlich wiederkehrend",
+        "dueOnAcceptance": "Fällig bei Abnahme",
+        "firstPeriod": "Gesamtsumme der ersten Periode (inkl. wiederkehrende)",
+        "monthlyRecurring": "Monatlich wiederkehrend",
+        "oneTime": "Einmalig",
+        "tax": "Steuer",
+        "title": "Summen"
+      },
+      "viewInvoice": "Rechnung ansehen"
+    },
+    "distributorLookup": {
+      "available": "{{count}} verfügbar",
+      "cost": "kostet {{currency}} {{amount}}",
+      "endOfLife": "Auslaufmodell",
+      "importAndAdd": "Importieren und hinzufügen",
+      "inStockOnly": "Nur auf Lager",
+      "lookupFailed": "Die Suche ist fehlgeschlagen.",
+      "mfgPart": "Hersteller-Teilenr. {{part}}",
+      "msrp": "MSRP {{amount}}",
+      "nightlyHint": "Geben Sie mindestens {{count}} Zeichen ein, um den nächtlichen Katalog zu durchsuchen.",
+      "nightlyPlaceholder": "Suche nach Name, SKU, Hersteller-Teilenummer oder Hersteller",
+      "noResults": "Keine passenden Produkte.",
+      "outOfStock": "Nicht auf Lager",
+      "placeholder": "SYNNEX SKU oder Hersteller-Teilenummer",
+      "searching": "Suche...",
+      "sellPrice": "Verkaufspreis",
+      "sku": "SKU {{sku}}",
+      "source": "Quelle",
+      "sourceEcExpress": "EC Express (exakte SKU / Teilenr.)",
+      "sourceNightly": "TD SYNNEX-Katalog (nächtliche Datei)",
+      "syncedDaysAgo": "vor {{count}} T synchronisiert",
+      "syncedHoursAgo": "vor {{count}} Std. synchronisiert",
+      "syncedJustNow": "gerade synchronisiert",
+      "syncedMinutesAgo": "vor {{count}} Min. synchronisiert",
+      "syncedUnknown": "Synchronisierungszeit unbekannt",
+      "toBeDiscontinued": "Wird eingestellt",
+      "warehouses": "Lager: {{list}}"
+    },
+    "document": {
+      "additionalItems": "Zusätzliche Artikel",
+      "draft": "Entwurf",
+      "empty": "Dieser Vorschlag hat noch keinen Inhalt.",
+      "imageUnavailable": "Bild nicht verfügbar",
+      "issued": "Ausgestellt",
+      "preparedFor": "Vorbereitet für",
+      "taxId": "Steuernummer: {{id}}",
+      "imageZoomAria": "Größeres Bild anzeigen",
+      "preview": {
+        "description": "Das sieht Ihr Kunde auf seinem Angebotslink.",
+        "downloadPdf": "Laden Sie PDF herunter",
+        "preparing": "Vorbereiten…"
+      },
+      "pricing": "Preise",
+      "pricingScrollAria": "Preise – scrollen Sie seitwärts für weitere Spalten",
+      "proposal": "Vorschlag",
+      "proposalImageAlt": "Angebotsbild",
+      "recurrence": {
+        "annual": "Jährlich",
+        "monthly": "Monatlich"
+      },
+      "table": {
+        "amount": "Betrag",
+        "description": "Beschreibung",
+        "qty": "Menge",
+        "tax": "Steuer",
+        "unitPrice": "Stückpreis"
+      },
+      "terms": "Bedingungen",
+      "totals": {
+        "annualRecurring": "Jährlich wiederkehrend",
+        "depositDue": "Anzahlung fällig",
+        "dueOnAcceptance": "Fällig bei Abnahme",
+        "monthlyRecurring": "Monatlich wiederkehrend",
+        "recurringNote": "Wenn Sie diesen Vorschlag annehmen, werden die einmaligen Kosten jetzt in Rechnung gestellt. Wiederkehrende Positionen werden nach ihrem eigenen Zeitplan abgerechnet.",
+        "remainingBalance": "Restguthaben",
+        "subtotal": "Zwischensumme",
+        "tax": "Steuer"
+      },
+      "validUntil": "Gültig bis"
+    },
+    "page": {
+      "accessDenied": "Sie sind nicht berechtigt, Angebote anzuzeigen.",
+      "bulk": {
+        "deleteDrafts": "Entwürfe löschen",
+        "deletedVerb": "gelöscht",
+        "failed": "Bulk {{verb}} ist fehlgeschlagen. Wiederholen.",
+        "limit": "Wählen Sie bis zu {{limit}} auf einmal.",
+        "partial": "{{succeeded}} {{verb}}, {{skipped}} übersprungen{{failedText}}",
+        "send": "Senden",
+        "sentVerb": "gesendet",
+        "success": "{{succeeded}} {{verb}}"
+      },
+      "bulkDelete": {
+        "message": "{{count}} ausgewählte Angebote löschen? Nur DRAFT-Angebote werden gelöscht; dies kann nicht rückgängig gemacht werden.",
+        "title": "Angebotsentwürfe löschen"
+      },
+      "bulkSend": {
+        "message": "{{count}} ausgewählte(s) Angebot(e) per E-Mail an ihre Kunden senden? Dies kann nicht rückgängig gemacht werden.",
+        "title": "Senden Sie Angebote"
+      },
+      "create": {
+        "description": "Wählen Sie den Kunden aus, für den dieses Angebot bestimmt ist. Als nächstes können Sie Blöcke und Preise hinzufügen.",
+        "error": "Es konnte kein Angebotsentwurf erstellt werden.",
+        "genericError": "Das Angebot konnte nicht erstellt werden.",
+        "noSpecificSite": "Keine bestimmte Standort",
+        "selectOrganization": "Wählen Sie eine Organisation aus…",
+        "siteOptional": "Standort (optional)",
+        "submit": "Entwurf erstellen",
+        "success": "Angebotsentwurf erstellt",
+        "title": "Neues Angebot",
+        "titleOptional": "Titel (optional)",
+        "titlePlaceholder": "z.B. Aktualisierung des Büronetzwerks",
+        "working": "Arbeiten…"
+      },
+      "deposit": {
+        "deposit": "Anzahlung",
+        "paid": "Anzahlung geleistet",
+        "unpaid": "Anzahlung unbezahlt"
+      },
+      "empty": {
+        "clearFilters": "Filter zurücksetzen",
+        "description": "Entwerfen Sie ein Angebot mit Überschriften, Rich-Text und einer Preistabelle und senden Sie es dann zur Annahme.",
+        "filtered": "Keine Angebote entsprechen diesen Filtern.",
+        "title": "Noch keine Angebote"
+      },
+      "errors": {
+        "loadOrganizations": "Die Organisationen konnten nicht geladen werden.",
+        "loadQuotes": "Angebote konnten nicht geladen werden",
+        "loadSites": "Die Standorte konnten nicht geladen werden."
+      },
+      "filters": {
+        "allOrganizations": "Alle Organisationen",
+        "allStatuses": "Alle Status",
+        "organizationAria": "Nach Organisation filtern",
+        "searchAria": "Angebote suchen",
+        "searchPlaceholder": "Nach Nummer oder Organisation suchen",
+        "statusAria": "Nach Status filtern"
+      },
+      "newQuote": "Neues Angebot",
+      "stats": {
+        "awaiting": "{{count}} warten",
+        "drafts": "Entwürfe",
+        "notYetSent": "noch nicht verschickt",
+        "outForSignature": "Zur Unterschrift bereit"
+      },
+      "subtitle": "Erstellen Sie Angebote mit umfangreichen Blöcken und wiederkehrenden Preisen und senden Sie sie dann an Kunden.",
+      "table": {
+        "created": "Erstellt",
+        "draftQuote": "Angebotsentwurf",
+        "number": "Nummer",
+        "selectAll": "Wählen Sie alle Angebote aus",
+        "selectQuote": "Angebot {{quote}} auswählen",
+        "total": "Insgesamt"
+      },
+      "title": "Angebote",
+      "tryAgain": "Versuchen Sie es erneut"
+    },
+    "pax8ProductLookup": {
+      "cost": "kostet {{currency}} {{amount}}",
+      "importAndAdd": "Importieren und hinzufügen",
+      "option": "Option {{number}}",
+      "placeholder": "Produkt, Anbieter oder SKU",
+      "searchFailed": "Die Suche ist fehlgeschlagen.",
+      "searching": "Suche...",
+      "sellPrice": "Verkaufspreis",
+      "term": "Begriff"
+    },
+    "recurrence": {
+      "one_time": "Einmalig",
+      "monthly": "Monatlich",
+      "annual": "Jährlich"
+    },
+    "status": {
+      "draft": "Entwurf",
+      "sent": "Gesendet",
+      "viewed": "Gesehen",
+      "accepted": "Akzeptiert",
+      "declined": "Abgelehnt",
+      "expired": "Abgelaufen",
+      "converted": "Konvertiert"
+    },
+    "workspace": {
+      "backLabel": "Angebote",
+      "backToQuotes": "Zurück zu Angeboten",
+      "draftTitle": "Angebotsentwurf",
+      "errors": {
+        "loadFailed": "Das Angebot konnte nicht geladen werden",
+        "missingId": "Fehlende Angebots-ID",
+        "notFound": "Angebot nicht gefunden.",
+        "unavailable": "Angebot nicht verfügbar."
+      },
+      "tabs": {
+        "editor": "Herausgeber",
+        "preview": "Vorschau",
+        "detail": "Detailliert"
+      }
+    }
+  },
+  "billingUi": {
+    "margin": {
+      "cost": "Kosten",
+      "missingCost": "Gewinnschätzung unvollständig – {{count}} Position ohne Kostenangabe.",
+      "missingCost_one": "Gewinnschätzung unvollständig – {{count}} Position ohne Kostenangabe.",
+      "missingCost_other": "Gewinnschätzung unvollständig – {{count}} Positionen ohne Kostenangabe.",
+      "profitAnnual": "Gewinn (jährlich)",
+      "profitMonthly": "Gewinn (monatlich)",
+      "profitOneTime": "Gewinn (einmalig)",
+      "title": "Marge (intern)"
+    },
+    "recurringBillingNote": "Bei Annahme dieses Angebots werden zunächst nur die einmaligen Kosten in Rechnung gestellt. Wiederkehrende Positionen (monatlich + jährlich) werden später gemäß ihrem jeweiligen Zeitplan abgerechnet. Die Gesamtsumme des ersten Abrechnungszeitraums umfasst die einmaligen Kosten und den ersten Zeitraum jedes wiederkehrenden Intervalls.",
+    "units": {
+      "perMonth": "/Mo",
+      "perYear": "/Jahr"
+    },
+    "unsaved": "Nicht gespeichert"
+  },
+  "bulk": {
+    "bulkActionBar": {
+      "selected": "{{count}} ausgewählt"
+    }
+  },
+  "invoice": {
+    "status": {
+      "draft": "Entwurf",
+      "sent": "Gesendet",
+      "issued": "Ausgestellt",
+      "partially_paid": "Teilweise bezahlt",
+      "overdue": "Überfällig",
+      "paid": "Bezahlt",
+      "void": "Storniert"
+    }
+  },
+  "invoiceEditor": {
+    "addLine": {
+      "add": "Hinzufügen",
+      "addInCatalog": "Fügen Sie einige zum Produktkatalog hinzu",
+      "bundle": "Bündel",
+      "catalogItem": "Katalogartikel",
+      "clearSelection": "Auswahl aufheben",
+      "manualLine": "Manuelle Position",
+      "noCatalogItems": "Keine Katalogartikel.",
+      "searchCatalog": "Katalog nach Name oder SKU durchsuchen",
+      "sourceAria": "Positionsquelle hinzufügen"
+    },
+    "billTo": {
+      "addInSettings": "Fügen Sie eine in den Organisationseinstellungen hinzu",
+      "noContact": "Kein Rechnungskontakt festgelegt.",
+      "title": "Bill zu"
+    },
+    "errors": {
+      "addLine": "Position konnte nicht hinzugefügt werden.",
+      "loadCatalog": "Der Katalog konnte nicht geladen werden.",
+      "nameOrDescription": "Eine Position benötigt einen Namen oder eine Beschreibung.",
+      "nonNegativeUnitPrice": "Geben Sie einen Stückpreis von 0 oder mehr ein.",
+      "quantityGreaterThanZero": "Geben Sie eine Menge größer als 0 ein.",
+      "removeLine": "Position konnte nicht entfernt werden.",
+      "saveNotes": "Notizen konnten nicht gespeichert werden.",
+      "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
+      "updateLine": "Position konnte nicht aktualisiert werden."
+    },
+    "fields": {
+      "descriptionOptional": "Beschreibung (optional)",
+      "lineDescription": "Positionsbeschreibung",
+      "lineName": "Positionsname",
+      "name": "Name",
+      "quantity": "Menge",
+      "taxable": "Steuerpflichtig",
+      "unitPrice": "Stückpreis"
+    },
+    "hiddenSuffix": "(versteckt)",
+    "notes": {
+      "placeholder": "Interne oder Kundennotizen…",
+      "title": "Notizen"
+    },
+    "remove": "Entfernen",
+    "saved": "Gespeichert",
+    "success": {
+      "lineAdded": "Position hinzugefügt",
+      "lineRemoved": "Position entfernt",
+      "notesSaved": "Notizen gespeichert",
+      "termsSaved": "Begriffe gespeichert"
+    },
+    "summary": {
+      "noTaxRate": "Positionen sind als steuerpflichtig gekennzeichnet, es ist jedoch kein Steuersatz festgelegt.",
+      "setTaxRate": "Legen Sie eine in den Abrechnungseinstellungen fest",
+      "subtotal": "Zwischensumme",
+      "tax": "Steuer",
+      "title": "Zusammenfassung",
+      "total": "Insgesamt"
+    },
+    "table": {
+      "customerVisible": "Für den Kunden sichtbar",
+      "customerVisibleTitle": "Ob diese Position auf der Rechnung des Kunden erscheint",
+      "empty": "Noch keine Positionen. Fügen Sie unten Katalogartikel, ein Bundle oder eine manuelle Position hinzu.",
+      "item": "Artikel",
+      "price": "Preis",
+      "qty": "Menge",
+      "tax": "Steuer",
+      "total": "Insgesamt"
+    },
+    "terms": {
+      "placeholder": "Zahlungsbedingungen, Garantieklauseln usw.",
+      "title": "Allgemeine Geschäftsbedingungen"
+    },
+    "unapprovedTime": "{{count}} Positionen verweisen auf nicht genehmigte Zeiten. Vor dem Ausstellen prüfen.",
+    "unapprovedTime_one": "{{count}} Position verweist auf nicht genehmigte Zeit. Vor dem Ausstellen prüfen.",
+    "unapprovedTime_other": "{{count}} Positionen verweisen auf nicht genehmigte Zeiten. Vor dem Ausstellen prüfen."
+  },
+  "invoiceActions": {
+    "deleteConfirm": {
+      "message": "Dadurch wird der Rechnungsentwurf endgültig gelöscht. Dies kann nicht rückgängig gemacht werden.",
+      "title": "Rechnungsentwurf löschen"
+    },
+    "deleteDraft": "Entwurf löschen",
+    "deleteError": "Der Entwurf konnte nicht gelöscht werden.",
+    "deleteSuccess": "Entwurf gelöscht",
+    "downloadPdf": "Laden Sie PDF herunter",
+    "downloadPdfError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
+    "issue": "Ausstellen",
+    "issueAndSend": "Ausstellen und senden",
+    "issueError": "Rechnung konnte nicht ausgestellt werden.",
+    "issueNoEmailWarning": "Rechnung ausgestellt – aber keine E-Mail gesendet (kein Rechnungskontakt/E-Mail nicht konfiguriert)",
+    "issueSendConfirm": {
+      "customerFallback": "der Kunde",
+      "message": "Dieser stellt die Rechnung aus und sendet sie per E-Mail an {{customer}} für {{amount}}. Dies kann nicht rückgängig gemacht werden.",
+      "title": "Diese Rechnung ausstellen und versenden?"
+    },
+    "issueSendError": "Rechnung ausgestellt, aber der Versand ist fehlgeschlagen.",
+    "issueSentSuccess": "Rechnung ausgestellt und verschickt",
+    "issueSuccess": "Rechnung ausgestellt",
+    "issuing": "Wird ausgestellt…",
+    "noVisibleLineHint": "Mindestens eine für Kunden sichtbare Position zum Ausstellen hinzufügen.",
+    "preparing": "Vorbereiten…"
+  },
+  "invoiceDetail": {
+    "accountingView": "Buchhaltungsansicht (Kosten, Marge, versteckte Komponenten)",
+    "deposit": {
+      "duePrefix": "Anzahlung von",
+      "dueSuffix": "fällig – {{paid}} von {{total}} bezahlt.",
+      "paid": "Anzahlung geleistet – Restbetrag {{balance}}."
+    },
+    "dueDate": {
+      "aria": "Fälligkeitsdatum",
+      "display": "Fällig {{date}}",
+      "updateError": "Das Fälligkeitsdatum konnte nicht aktualisiert werden.",
+      "updateSuccess": "Fälligkeitsdatum aktualisiert"
+    },
+    "from": "Von",
+    "lines": {
+      "cost": "Kosten",
+      "description": "Beschreibung",
+      "hiddenMarker": "(versteckt)",
+      "margin": "Marge",
+      "price": "Preis",
+      "qty": "Menge",
+      "tax": "Steuer",
+      "total": "Insgesamt"
+    },
+    "paymentMethods": {
+      "cash": "Bargeld",
+      "check": "Überprüfen",
+      "bank_transfer": "Banküberweisung",
+      "card": "Karte",
+      "other": "Andere"
+    },
+    "payments": {
+      "amount": "Betrag",
+      "amountRequired": "Geben Sie einen Zahlungsbetrag ein, um ihn zu erfassen",
+      "connectStripe": "Verbinden Sie Stripe, um Online-Zahlungen zu akzeptieren.",
+      "date": "Zahlungsdatum",
+      "draftHint": "Stellen Sie diese Rechnung aus, um Zahlungen zu erfassen.",
+      "empty": "Keine Zahlungen erfasst.",
+      "linkCopied": "Zahlungslink in die Zwischenablage kopiert",
+      "linkError": "Es konnte kein Zahlungslink erstellt werden.",
+      "loadFailed": "Zahlungen konnten nicht geladen werden.",
+      "method": "Zahlungsart",
+      "noLinkReturned": "Es wurde kein Zahlungslink zurückgegeben. Versuchen Sie es erneut.",
+      "online": "Online",
+      "record": "Zahlung aufzeichnen",
+      "recordConfirm": {
+        "message": "Eine Zahlung von {{amount}} ({{method}}) mit Datum {{date}} erfassen?",
+        "title": "Zahlung aufzeichnen"
+      },
+      "recordError": "Die Zahlung konnte nicht erfasst werden.",
+      "recordSuccess": "Zahlung vermerkt",
+      "reference": "Referenz",
+      "referencePlaceholder": "Referenz (optional)",
+      "reverse": "Stornieren",
+      "reverseAria": "Zahlung über {{amount}} stornieren",
+      "reverseConfirm": {
+        "label": "Zahlung stornieren",
+        "message": "Dadurch wird die Zahlung von {{amount}} {{method}} storniert und aus dem Rechnungssaldo entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "title": "Diese Zahlung stornieren?"
+      },
+      "reverseError": "Die Zahlung konnte nicht rückgängig gemacht werden.",
+      "reverseSuccess": "Zahlung storniert",
+      "sendLink": "Zahlungslink senden",
+      "setUp": "Einrichten",
+      "shareLinkPrompt": "Teilen Sie diesen Zahlungslink mit Ihrem Kunden:",
+      "stripeNudge": "Verbinden Sie Stripe, um Online-Kartenzahlungen zu akzeptieren.",
+      "title": "Zahlungen",
+      "viaStripe": "über Stripe"
+    },
+    "requestPayment": {
+      "invoiceSent": "Rechnung verschickt",
+      "noEmailWarning": "Es wurde keine E-Mail gesendet (kein Rechnungskontakt / E-Mail nicht konfiguriert)",
+      "paymentRequestSent": "Zahlungsaufforderung gesendet",
+      "requestPayment": "Zahlung anfordern",
+      "sendError": "Die Rechnung konnte nicht gesendet werden.",
+      "sendInvoice": "Rechnung senden"
+    },
+    "summary": {
+      "balanceDue": "Restbetrag fällig",
+      "paid": "Bezahlt",
+      "subtotal": "Zwischensumme",
+      "tax": "Steuer",
+      "total": "Insgesamt"
+    },
+    "terms": "Allgemeine Geschäftsbedingungen",
+    "void": {
+      "button": "Rechnung stornieren",
+      "description": "Durch das Stornieren werden abgerechnete Leistungen wieder freigegeben, sodass sie erneut in Rechnung gestellt werden können. Dies kann nicht rückgängig gemacht werden.",
+      "error": "Die Rechnung konnte nicht storniert werden.",
+      "reason": "Grund",
+      "reissue": "Als neuen Entwurf neu ausstellen",
+      "reissuedSuccess": "Rechnung storniert und als Entwurf neu ausgestellt",
+      "success": "Rechnung storniert",
+      "title": "Rechnung stornieren"
+    }
+  },
+  "invoiceDocument": {
+    "billTo": "Bill zu",
+    "documentType": "Rechnung",
+    "due": "Fällig",
+    "empty": "Diese Rechnung enthält noch keine Einzelposten.",
+    "fallbackTitle": "Rechnung",
+    "issued": "Ausgestellt",
+    "preview": {
+      "description": "Das sieht Ihr Kunde auf seiner Rechnung.",
+      "downloadError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
+      "downloadPdf": "Laden Sie PDF herunter",
+      "preparing": "Vorbereiten…"
+    },
+    "table": {
+      "amount": "Betrag",
+      "description": "Beschreibung",
+      "qty": "Menge",
+      "tax": "Steuer",
+      "unitPrice": "Stückpreis"
+    },
+    "terms": "Allgemeine Geschäftsbedingungen",
+    "totals": {
+      "amountDue": "Fälliger Betrag",
+      "paid": "Bezahlt",
+      "subtotal": "Zwischensumme",
+      "tax": "Steuer",
+      "total": "Insgesamt"
+    }
+  },
+  "invoiceWorkspace": {
+    "backLabel": "Rechnungen",
+    "backToInvoices": "Zurück zu Rechnungen",
+    "draftTitle": "Rechnungsentwurf",
+    "errors": {
+      "loadFailed": "Rechnung konnte nicht geladen werden",
+      "missingId": "Fehlende Rechnungs-ID",
+      "notFound": "Rechnung nicht gefunden.",
+      "unavailable": "Rechnung nicht verfügbar."
+    },
+    "tabs": {
+      "editor": "Herausgeber",
+      "preview": "Vorschau",
+      "detail": "Detailliert"
+    }
+  },
+  "invoicesPage": {
+    "accessDenied": "Sie sind nicht berechtigt, Rechnungen anzuzeigen.",
+    "bulk": {
+      "deleteDrafts": "Entwürfe löschen",
+      "deletedVerb": "gelöscht",
+      "failed": "Bulk {{verb}} ist fehlgeschlagen. Wiederholen.",
+      "issue": "Ausstellen",
+      "issuedVerb": "ausgestellt",
+      "limit": "Wählen Sie bis zu {{limit}} auf einmal.",
+      "partial": "{{succeeded}} {{verb}}, {{skipped}} übersprungen{{failedText}}",
+      "success": "{{succeeded}} {{verb}}",
+      "void": "Stornieren",
+      "voidedVerb": "storniert"
+    },
+    "bulkDelete": {
+      "message": "{{count}} ausgewählte Rechnung(en) löschen? Es werden nur DRAFT-Rechnungen gelöscht; Dies kann nicht rückgängig gemacht werden.",
+      "title": "Rechnungsentwürfe löschen"
+    },
+    "bulkVoid": {
+      "description": "Durch das Stornieren werden abgerechnete Leistungen wieder freigegeben, sodass sie erneut in Rechnung gestellt werden können. Dies kann nicht rückgängig gemacht werden.",
+      "reason": "Grund",
+      "submit": "Rechnungen stornieren",
+      "title": "Rechnungen stornieren"
+    },
+    "deposit": {
+      "paid": "Anzahlung geleistet",
+      "unpaid": "Anzahlung unbezahlt"
+    },
+    "dialog": {
+      "allSites": "Alle Seiten",
+      "assemble": "Zusammenbauen",
+      "assembleError": "Für diesen Bereich konnte keine Rechnung erstellt werden.",
+      "assembleFromWork": "Von der Arbeit zusammenbauen",
+      "assembleSuccess": "Rechnungsentwurf zusammengestellt",
+      "blankInvoice": "Leere Rechnung",
+      "createDraft": "Entwurf erstellen",
+      "createError": "Es konnte kein Rechnungsentwurf erstellt werden.",
+      "createGenericError": "Die Rechnung konnte nicht erstellt werden.",
+      "createSuccess": "Rechnungsentwurf erstellt",
+      "description": "Fassen Sie nicht abgerechnete Arbeiten in einem Entwurf zusammen oder erstellen Sie eine leere Rechnung.",
+      "from": "Von",
+      "selectOrganization": "Wählen Sie eine Organisation aus…",
+      "siteOptional": "Standort (optional)",
+      "sourceAria": "Rechnungsquelle",
+      "title": "Neue Rechnung",
+      "to": "Zu",
+      "working": "Arbeiten…"
+    },
+    "empty": {
+      "description": "Fassen Sie nicht abgerechnete Zeit und Teile in einem Entwurf zusammen oder erstellen Sie eine leere Rechnung.",
+      "filtered": "Keine Rechnungen entsprechen diesen Filtern.",
+      "title": "Noch keine Rechnungen"
+    },
+    "errors": {
+      "loadInvoices": "Rechnungen konnten nicht geladen werden",
+      "loadOrganizations": "Die Organisationen konnten nicht geladen werden.",
+      "loadSites": "Die Standorte konnten nicht geladen werden."
+    },
+    "filters": {
+      "allOrganizations": "Alle Organisationen",
+      "allStatuses": "Alle Status",
+      "issuedFrom": "Ausgestellt von",
+      "issuedTo": "Ausgestellt an",
+      "organizationAria": "Nach Organisation filtern",
+      "searchAria": "Rechnungen suchen",
+      "searchPlaceholder": "Nach Nummer oder Organisation suchen",
+      "statusAria": "Nach Status filtern"
+    },
+    "newInvoice": "Neue Rechnung",
+    "stats": {
+      "drafts": "Entwürfe",
+      "needsFollowUp": "muss weiterverfolgt werden",
+      "notYetIssued": "noch nicht ausgestellt",
+      "open": "{{count}} geöffnet",
+      "outstanding": "Hervorragend",
+      "overdue": "Überfällig"
+    },
+    "subtitle": "Kundenrechnungen erstellen, ausstellen und nachverfolgen.",
+    "table": {
+      "balance": "Gleichgewicht",
+      "draftInvoice": "Rechnungsentwurf",
+      "due": "Fällig",
+      "issued": "Ausgestellt",
+      "number": "Nummer",
+      "selectAll": "Wählen Sie alle Rechnungen aus",
+      "selectInvoice": "Wählen Sie Rechnung {{invoice}}",
+      "total": "Insgesamt"
+    },
+    "title": "Rechnungen",
+    "tryAgain": "Versuchen Sie es erneut"
+  },
+  "orgBillingSettings": {
+    "address": {
+      "city": "Stadt",
+      "country": "Land",
+      "line1": "Adresszeile 1",
+      "line2": "Adresszeile 2",
+      "postal": "Postleitzahl",
+      "region": "Region/Bundesland",
+      "title": "Rechnungsadresse"
+    },
+    "contact": {
+      "description": "Angebote und Rechnungen werden per E-Mail an diese Adresse gesendet. Ohne diese Angabe wird das Senden eines Angebots als „Gesendet“ gekennzeichnet, es wird jedoch nichts per E-Mail gesendet.",
+      "email": "Kontakt-E-Mail",
+      "emailInvalid": "Geben Sie eine gültige E-Mail-Adresse ein",
+      "emailPlaceholder": "billing@customer.example",
+      "name": "Kontaktname",
+      "title": "Rechnungskontakt"
+    },
+    "loadError": "Die Abrechnungseinstellungen konnten nicht geladen werden.",
+    "loading": "Abrechnungseinstellungen werden geladen…",
+    "saveButton": "Abrechnungseinstellungen speichern",
+    "saveError": "Die Abrechnungseinstellungen der Organisation konnten nicht gespeichert werden.",
+    "saveSuccess": "Die Abrechnungseinstellungen der Organisation wurden gespeichert",
+    "tax": {
+      "partnerDefault": "Partnerstandard",
+      "taxExempt": "Steuerfrei",
+      "taxId": "Steuer-ID",
+      "taxRate": "Steuersatz (%)",
+      "title": "Steuer"
+    }
+  },
+  "partnerBillingSettings": {
+    "company": {
+      "addressLine1": "Adresszeile 1",
+      "addressLine2": "Adresszeile 2",
+      "city": "Stadt",
+      "country": "Land",
+      "defaultTerms": "Standard-Geschäftsbedingungen",
+      "defaultTermsPlaceholder": "Zahlungsbedingungen, Haftungsausschlüsse, Garantiebedingungen usw.",
+      "description": "Wird in Angeboten und Rechnungen als Verkäufer angezeigt.",
+      "name": "Firmenname",
+      "phone": "Telefon",
+      "postal": "Postleitzahl",
+      "region": "Bundesland/Region",
+      "title": "Firmenkontakt",
+      "website": "Website"
+    },
+    "defaults": {
+      "aiStyle": "AI-Produktkopierstil",
+      "aiStyleHelp": "Bestimmt, wie „Automatisch aus dem Web ausfüllen“ und „Mit KI optimieren“ Produktnamen und Beschreibungen in Angeboten, Rechnungen und Katalogartikeln formulieren. Für das Standardformat leer lassen.",
+      "aiStylePlaceholder": "Standard: Der Artikelname ist ein kurzer, allgemeiner, kundenfreundlicher Name („Wireless Access Point“); Die Beschreibung beginnt mit dem vollständigen Produktnamen, gefolgt von stichpunktartigen Spezifikationen, die präzise genug sind, um eine Bestellung anhand dieser zu überprüfen. Beschreiben Sie hier Ihren eigenen Stil, um ihn zu überschreiben.",
+      "autoTaxHardware": "Hardware-Artikel automatisch besteuern",
+      "autoTaxHardwareHelp": "Neu importierte Hardware ist standardmäßig steuerpflichtig.",
+      "currencyCode": "Währungscode",
+      "defaultMarkup": "Standardaufschlag (%)",
+      "defaultTaxRate": "Standardsteuersatz (%)",
+      "description": "Währung, Steuern, Nummerierung und Bedingungen, die auf neue Angebote und Rechnungen Ihrer Kunden angewendet werden.",
+      "invoiceFooter": "Fußzeile der Rechnung",
+      "invoiceFooterPlaceholder": "Zahlungsanweisungen, Dankesschreiben usw.",
+      "invoiceNumberPrefix": "Präfix der Rechnungsnummer",
+      "markupHelp": "Standardaufschlag auf die Vertriebskosten, der zum Vorabfüllen des Verkaufspreises beim Importieren von Katalogartikeln verwendet wird. Die resultierende Bruttomarge wird beim Import angezeigt.",
+      "paymentTermsDays": "Zahlungsbedingungen (Tage)",
+      "title": "Abrechnungsvorgaben"
+    },
+    "loadError": "Die Abrechnungseinstellungen konnten nicht geladen werden.",
+    "loading": "Abrechnungseinstellungen werden geladen…",
+    "saveButton": "Abrechnungseinstellungen speichern",
+    "saveError": "Die Abrechnungseinstellungen konnten nicht gespeichert werden.",
+    "saveSuccess": "Abrechnungseinstellungen gespeichert"
+  },
+  "shared": {
+    "documentWorkspace": {
+      "backAria": "Zurück zu {{label}}"
+    },
+    "sortableTh": {
+      "ascending": "Aufsteigend",
+      "descending": "Absteigend",
+      "sortBy": "Sortieren nach {{label}}",
+      "sortByWithDirection": "Sortieren nach {{label}}, {{direction}}"
+    },
+    "statusPill": {
+      "prefix": "Status:"
+    }
+  }
+}

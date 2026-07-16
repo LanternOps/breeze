@@ -7,6 +7,9 @@ import { updateLine, uploadQuoteImage } from '../../../lib/api/quotes';
 
 // Writer permissions so the inline line editor renders (read-only hides it).
 vi.mock('../../../stores/auth', () => ({
+  // orgStore (imported by QuoteEditor for the customer select) registers an
+  // org-id provider against the auth store at module scope.
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: vi.fn().mockResolvedValue(
     { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
   ),

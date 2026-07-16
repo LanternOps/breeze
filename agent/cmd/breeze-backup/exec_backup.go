@@ -66,6 +66,79 @@ func applyCommandStorageEncryption(provider providers.BackupProvider, payload js
 	return nil
 }
 
+// backupRunProviderConfig mirrors the providerConfig the API sends in a backup
+// command payload (apps/api/src/jobs/backupWorker.ts). Creds arrive plaintext.
+type backupRunProviderConfig struct {
+	Bucket    string `json:"bucket"`
+	Region    string `json:"region"`
+	Endpoint  string `json:"endpoint"`
+	AccessKey string `json:"accessKey"`
+	SecretKey string `json:"secretKey"`
+	Path      string `json:"path"` // local provider destination
+}
+
+// managerFromBackupRunPayload builds a BackupManager from the backup_run command
+// payload's provider + providerConfig + paths. Returns (nil,nil) when the payload
+// carries no provider config so the caller falls back to the agent.yaml manager.
+func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	var p struct {
+		Provider       string                   `json:"provider"`
+		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
+		Paths          []string                 `json:"paths"`
+		SystemImage    bool                     `json:"systemImage"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("invalid backup_run payload: %w", err)
+	}
+	if p.ProviderConfig == nil || p.Provider == "" {
+		return nil, nil
+	}
+	var provider providers.BackupProvider
+	switch p.Provider {
+	case "s3":
+		provider = providers.NewS3ProviderWithEndpoint(
+			p.ProviderConfig.Bucket, p.ProviderConfig.Region, p.ProviderConfig.Endpoint,
+			p.ProviderConfig.AccessKey, p.ProviderConfig.SecretKey, "")
+	case "local":
+		provider = providers.NewLocalProvider(p.ProviderConfig.Path)
+	default:
+		return nil, fmt.Errorf("unsupported backup provider %q", p.Provider)
+	}
+	// system_image mode carries no file paths: the backup content is the
+	// collected system-state staging dir. The server fans a `system_image`
+	// selection out as a backup_run with `systemImage:true` and no `paths`
+	// (backupWorker.ts resolveBackupTargets), so enable system-state collection
+	// and skip the file-paths requirement below.
+	if p.SystemImage {
+		// BackupConfig.Retention is left at its zero value (0) — same
+		// server-owns-retention invariant as the file-mode path below (which
+		// sets it explicitly): the agent must never prune remote storage itself
+		// and race the server's GFS/legal-hold/immutability authority.
+		return backup.NewBackupManager(backup.BackupConfig{
+			Provider:           provider,
+			SystemStateEnabled: true,
+		}), nil
+	}
+	if len(p.Paths) == 0 {
+		return nil, fmt.Errorf("backup_run payload has no paths")
+	}
+	// Retention is owned entirely by the server: GFS tiering, legal-hold and
+	// object-immutability live in apps/api/src/jobs/backupRetention.ts, and the
+	// backup_run payload carries no retention field. The agent MUST NOT prune —
+	// BackupManager.Backup would otherwise call DeleteSnapshotContext and delete
+	// objects directly from S3/B2/local storage, racing the server's authority.
+	// Retention: 0 makes DeleteSnapshotContext a no-op (it returns early on
+	// retention <= 0), leaving the server as the sole retention authority.
+	return backup.NewBackupManager(backup.BackupConfig{
+		Provider:  provider,
+		Paths:     p.Paths,
+		Retention: 0,
+	}), nil
+}
+
 // parseBackupRunExcludes extracts file-exclusion glob patterns from a
 // backup_run command payload (#2418). Returns nil when the payload omits the
 // field so locally-configured excludes still apply; a server that sends an
@@ -82,6 +155,61 @@ func parseBackupRunExcludes(payload json.RawMessage) ([]string, error) {
 		return nil, fmt.Errorf("invalid backup payload: %w", err)
 	}
 	return p.Excludes, nil
+}
+
+// restoreProviderFromPayload builds a BackupProvider directly from a restore/
+// verify/test-restore command payload's provider + providerConfig, mirroring
+// managerFromBackupRunPayload's parsing. Returns (nil, nil) when the payload
+// carries no provider config so callers fall back to resolveRestoreProvider.
+func restoreProviderFromPayload(payload json.RawMessage) (providers.BackupProvider, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	var p struct {
+		Provider       string                   `json:"provider"`
+		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, fmt.Errorf("invalid backup restore payload: %w", err)
+	}
+	if p.ProviderConfig == nil || p.Provider == "" {
+		return nil, nil
+	}
+	switch p.Provider {
+	case "s3":
+		return providers.NewS3ProviderWithEndpoint(
+			p.ProviderConfig.Bucket, p.ProviderConfig.Region, p.ProviderConfig.Endpoint,
+			p.ProviderConfig.AccessKey, p.ProviderConfig.SecretKey, ""), nil
+	case "local":
+		return providers.NewLocalProvider(p.ProviderConfig.Path), nil
+	default:
+		return nil, fmt.Errorf("unsupported backup provider %q", p.Provider)
+	}
+}
+
+// restoreProviderForCommand resolves the provider to use for restore/verify/
+// test-restore commands. The payload's provider+providerConfig (sent by the
+// API, mirroring backup_run) takes precedence over the agent.yaml-configured
+// manager, since mgr is empty on most real agents. Vault fallback is
+// preserved: when a vault provider is configured it still wraps the resolved
+// primary via NewFallbackProvider, whether the primary came from the payload
+// or from mgr.
+func restoreProviderForCommand(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) (providers.BackupProvider, error) {
+	payloadProvider, err := restoreProviderFromPayload(payload)
+	if err != nil {
+		return nil, err
+	}
+	if payloadProvider == nil {
+		return resolveRestoreProvider(mgr, vaultState), nil
+	}
+	if vaultState != nil {
+		if vaultMgr := vaultState.Get(); vaultMgr != nil {
+			if vaultProvider := vaultMgr.GetProvider(); vaultProvider != nil {
+				return providers.NewFallbackProvider(vaultProvider, payloadProvider), nil
+			}
+		}
+	}
+	return payloadProvider, nil
 }
 
 func resolveRestoreProvider(mgr *backup.BackupManager, vaultState *vaultManagerRef) providers.BackupProvider {
@@ -111,7 +239,10 @@ func execBackupRestore(payload json.RawMessage, mgr *backup.BackupManager, vault
 }
 
 func execBackupRestoreWithProgress(ctx context.Context, commandID string, payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef, conn *ipc.Conn) backupipc.BackupCommandResult {
-	restoreProvider := resolveRestoreProvider(mgr, vaultState)
+	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
+	if err != nil {
+		return fail(err.Error())
+	}
 	if restoreProvider == nil {
 		return fail("backup not configured on this device")
 	}
@@ -157,7 +288,10 @@ func execBackupRestoreWithProgress(ctx context.Context, commandID string, payloa
 }
 
 func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
-	restoreProvider := resolveRestoreProvider(mgr, vaultState)
+	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
+	if err != nil {
+		return fail(err.Error())
+	}
 	if restoreProvider == nil {
 		return fail("backup not configured on this device")
 	}
@@ -172,7 +306,10 @@ func execBackupVerify(payload json.RawMessage, mgr *backup.BackupManager, vaultS
 }
 
 func execBackupTestRestore(payload json.RawMessage, mgr *backup.BackupManager, vaultState *vaultManagerRef) backupipc.BackupCommandResult {
-	restoreProvider := resolveRestoreProvider(mgr, vaultState)
+	restoreProvider, err := restoreProviderForCommand(payload, mgr, vaultState)
+	if err != nil {
+		return fail(err.Error())
+	}
 	if restoreProvider == nil {
 		return fail("backup not configured on this device")
 	}

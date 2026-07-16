@@ -16,3 +16,6 @@ func Warning(source, message string) {}
 
 // Error writes an error event.
 func Error(source, message string) {}
+
+// WriteError is a no-op on non-Windows platforms.
+func WriteError(source, message string) error { return nil }

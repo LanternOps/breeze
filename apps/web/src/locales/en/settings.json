@@ -1,5 +1,5 @@
 {
-  "servicePrincipals": {
+  "partnerServicePrincipals": {
     "title": "Service principals",
     "description": "Manage partner-scoped machine identities and their access keys.",
     "create": "Create service principal",
@@ -45,7 +45,13 @@
     "englishLabel": "English",
     "englishDescription": "English (United States)",
     "ptBRLabel": "Português (Brasil)",
-    "ptBRDescription": "Portuguese (Brazil)"
+    "ptBRDescription": "Portuguese (Brazil)",
+    "es419Label": "Español (Latinoamérica)",
+    "es419Description": "Spanish (Latin America)",
+    "frFRLabel": "Français (France)",
+    "frFRDescription": "French (France)",
+    "deDELabel": "Deutsch (Deutschland)",
+    "deDEDescription": "German (Germany)"
   },
   "partner": {
     "regional": {
@@ -532,6 +538,10 @@
     "createTitle": "Create Enrollment Key",
     "createDescription": "Generate a new key for agent enrollment.",
     "namePlaceholder": "e.g., Production servers",
+    "selectSite": "Select a site…",
+    "siteHelp": "Devices enrolled with this key are assigned to this site.",
+    "noSitesForOrg": "This organization has no sites yet.",
+    "createASite": "Create a site",
     "maxUsage": "Max Usage (optional)",
     "unlimited": "Unlimited",
     "maxUsageHelp": "Maximum number of agents that can enroll with this key.",
@@ -1576,7 +1586,10 @@
     "connect": "Connect",
     "emailMismatch": "That identity provider account uses a different email than your Breeze account. Sign in to your provider with the email on your Breeze account and try again.",
     "identityInUse": "That identity provider account is already linked to a different Breeze user.",
-    "userGone": "Your account could not be found. Please sign in again."
+    "sessionInvalid": "Your session changed before linking could finish. Please sign in again and retry.",
+    "providerInactive": "That single sign-on provider is no longer active. Contact your administrator.",
+    "configChanged": "The single sign-on configuration changed while you were connecting. Please try again.",
+    "emailUnverified": "Your identity provider did not confirm that your email address is verified. Contact your administrator."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Loading connected apps…",
@@ -2089,6 +2102,59 @@
     "notConfigured": "Not configured",
     "manufacturerPart": " · MFG {{part}}"
   },
+  "tdSynnexSftpPanel": {
+    "tDSYNNEXPriceFile": "TD SYNNEX Price File",
+    "connectTheTDSYNNEXNightlySFTPPriceAndAvailabilityFeed": "Connect the TD SYNNEX nightly SFTP price & availability feed. Breeze downloads the file each night and keeps your reseller cost and stock levels current.",
+    "loadingTDSYNNEXPriceFile": "Loading TD SYNNEX Price File.",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "lastTestSucceeded": "Last test succeeded",
+    "lastTestFailed": "Last test failed",
+    "region": "Region",
+    "unitedStates": "United States",
+    "canada": "Canada",
+    "accountNumber": "Account number",
+    "digitsOnlyTheSFTPUsernameAndFilenameAreDerivedFromIt": "Digits only — the SFTP username and remote filename are derived from it.",
+    "password": "Password",
+    "leaveBlankToKeepTheCurrentPassword": "Leave blank to keep the current password.",
+    "sFTPHost": "SFTP host",
+    "sFTPUsername": "SFTP username",
+    "remoteFile": "Remote file",
+    "enabled": "Enabled",
+    "saving": "Saving...",
+    "saveSettings": "Save settings",
+    "testing": "Testing...",
+    "testConnection": "Test connection",
+    "queueing": "Queueing...",
+    "syncNow": "Sync now",
+    "connectedAndTheNightlyFileWasFound": "Connected. The nightly price file was found on the server.",
+    "connectedButTheNightlyFileIsNotOnTheServerYet": "Connected, but the nightly price file is not on the server yet.",
+    "theConnectionWorksButTheFileIsNotAvailableYet": "The connection works, but TD SYNNEX has not generated your price file yet. It is usually available within 24 hours of the first successful login.",
+    "lastSync": "Last sync",
+    "status": "Status",
+    "when": "When",
+    "file": "File",
+    "rows": "Rows",
+    "never": "Never",
+    "searchBySKUMfgPartOrName": "Search by SKU, mfg part #, or name",
+    "search": "Search",
+    "searching": "Searching...",
+    "sYNNEXSKU": "SYNNEX SKU",
+    "mfgPartNo": "Mfg part #",
+    "name": "Name",
+    "cost": "Cost",
+    "qty": "Qty",
+    "uSD": "USD",
+    "noPriceRowsYetRunASyncOnceTDSYNNEXHasGeneratedTheFile": "No price rows yet. Run a sync once TD SYNNEX has generated your file.",
+    "tDSYNNEXPriceFileSettingsSaved": "TD SYNNEX Price File settings saved",
+    "tDSYNNEXPriceFileSettingsFailedToLoad": "TD SYNNEX Price File settings failed to load.",
+    "tDSYNNEXPriceFileSettingsFailedToSave": "TD SYNNEX Price File settings failed to save.",
+    "tDSYNNEXPriceFileConnectionTestFailed": "TD SYNNEX Price File connection test failed.",
+    "tDSYNNEXPriceFileSyncQueued": "TD SYNNEX Price File sync queued",
+    "tDSYNNEXPriceFileSyncCouldNotBeQueued": "TD SYNNEX Price File sync could not be queued.",
+    "tDSYNNEXPriceFileSearchFailed": "TD SYNNEX Price File search failed.",
+    "tDSYNNEXPriceFileSearchFailedInvalidResponse": "TD SYNNEX Price File search failed (invalid response)."
+  },
   "themingSettings": {
     "light": "Light",
     "dark": "Dark",
@@ -2385,6 +2451,8 @@
       "contractsDescription": "Recurring agreements",
       "billing": "Billing",
       "billingDescription": "Tax and billing address",
+      "pax8": "Pax8",
+      "pax8Description": "Subscriptions and ordering",
       "portalBranding": "Portal & Branding",
       "branding": "Branding",
       "brandingDescription": "Portal theme and visuals",
@@ -2451,6 +2519,60 @@
       "saveName": "Failed to save organization name",
       "saveSettings": "Failed to save settings",
       "saveType": "Failed to save organization type"
+    }
+  },
+  "pax8": {
+    "title": "Pax8 subscriptions",
+    "description": "Review billable quantities, stage changes, and submit Pax8 orders.",
+    "actions": { "newOrder": "New order", "retry": "Try again" },
+    "states": { "loadingProduct": "Loading product requirements…" },
+    "products": { "emptyReason": "Map active catalog products to Pax8 before ordering." },
+    "enums": {
+      "orderStatus": { "draft": "Draft", "awaitingDetails": "Awaiting details", "ready": "Ready", "submitting": "Submitting", "completed": "Completed", "partiallyFailed": "Partially failed", "failed": "Failed", "cancelled": "Cancelled" },
+      "lineAction": { "newSubscription": "New subscription", "changeQuantity": "Change quantity", "cancel": "Cancel subscription" },
+      "submitState": { "pending": "Pending", "inFlight": "In progress", "succeeded": "Succeeded", "failed": "Failed", "needsReconcile": "Needs reconciliation" },
+      "billingTerm": { "monthly": "Monthly", "annual": "Annual", "twoYear": "2-year", "threeYear": "3-year", "oneTime": "One-time", "trial": "Trial", "activation": "Activation" }
+    },
+    "mapping": {
+      "title": "Company mapping", "company": "Pax8 company", "choose": "Choose a company", "map": "Map company",
+      "empty": "Map this organization to its Pax8 company before ordering.", "noIntegration": "Connect and sync Pax8 in partner integrations first.",
+      "unknownStatus": "Status not reported", "activeRequired": "The mapped Pax8 company must be Active with primary Admin, Billing, and Technical contacts before an order can be staged."
+    },
+    "subscriptions": {
+      "title": "Subscription ledger", "description": "Breeze quantities are authoritative for billing. Pax8 values are last-known observations.",
+      "empty": "No Pax8 subscriptions have been observed for this organization.", "product": "Product", "breeze": "Breeze quantity", "pax8": "Pax8 reported",
+      "status": "Status", "observed": "Last observed", "actions": "Actions", "unknownProduct": "Unknown product", "unknownStatus": "Unknown",
+      "neverObserved": "Never", "notLinked": "Not linked", "notReported": "Not reported", "drift": "Drift",
+      "targetQuantity": "Target quantity for {{product}}", "stageChange": "Stage change", "cancel": "Cancel",
+      "actionUnavailable": "Link this subscription to a manual contract line before changing it.",
+      "commitmentUnavailable": "The active commitment cannot be identified safely. Refresh Pax8 data before ordering.",
+      "increaseBlocked": "This commitment does not allow quantity increases.", "decreaseBlocked": "This commitment does not allow quantity decreases.",
+      "cancelBlocked": "This commitment does not allow early cancellation.", "confirmCancel": "Stage cancellation for {{product}}?",
+      "feeWarning": "Pax8 reports that an early-cancellation fee applies.", "confirm": "Stage cancellation", "keep": "Keep subscription"
+    },
+    "orders": {
+      "title": "Orders", "description": "Open staged work and order history for this organization.", "empty": "No Pax8 orders yet.",
+      "quoteOrder": "Quote fulfillment order", "directOrder": "Direct order"
+    },
+    "order": {
+      "title": "Order builder", "back": "Back to Pax8", "quoteSource": "Staged from an accepted quote", "directSource": "Direct organization order",
+      "addProduct": "Add product", "product": "Product", "chooseProduct": "Choose a mapped product", "billingTerm": "Billing term", "quantity": "Quantity",
+      "commitment": "Commitment", "noCommitmentSelected": "No commitment selected", "addToOrder": "Add to order",
+      "item": "Item", "action": "Action", "state": "State", "actions": "Actions", "empty": "This order has no lines yet.", "unknownItem": "Unknown item",
+      "editDetails": "Edit details", "remove": "Remove line", "editProvisioning": "Provisioning details", "saveDetails": "Save details", "cancelEdit": "Cancel",
+      "reviewSubmit": "Preflight and submit", "reconcile": "Reconcile", "completed": "Order completed"
+    },
+    "provisioning": { "optional": "Optional", "none": "This product reports no provisioning fields.", "unsupported": "Pax8 returned an unsupported field type.", "clear": "Clear {{field}}", "clearButton": "Clear" },
+    "toasts": {
+      "companyMapped": "Pax8 company mapped", "draftReady": "Pax8 draft ready", "changeStaged": "Quantity change staged", "cancelStaged": "Cancellation staged",
+      "lineAdded": "Product added to the order", "lineUpdated": "Provisioning details saved", "lineRemoved": "Order line removed",
+      "preflightPassed": "Pax8 preflight passed", "submitted": "Pax8 order submitted", "submitNeedsAttention": "Pax8 order finished with items that need attention", "reconciled": "Pax8 order reconciled"
+    },
+    "errors": {
+      "load": "Pax8 data could not be loaded.", "loadOrder": "The Pax8 order could not be loaded.", "foreignOrder": "This Pax8 order belongs to another organization.", "loadProduct": "Product requirements could not be loaded.",
+      "mapCompany": "The Pax8 company could not be mapped.", "createDraft": "The Pax8 draft could not be created.", "stageChange": "The quantity change could not be staged.",
+      "stageCancel": "The cancellation could not be staged.", "addLine": "The product could not be added.", "updateLine": "Provisioning details could not be saved.",
+      "removeLine": "The order line could not be removed.", "preflight": "Pax8 preflight failed.", "submit": "The Pax8 order could not be submitted.", "reconcile": "The Pax8 order could not be reconciled."
     }
   },
   "orgTicketSettingsEditor": {

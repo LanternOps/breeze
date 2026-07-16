@@ -42,6 +42,7 @@ vi.mock('../db/schema', () => ({
     id: 'contract_lines.id',
     orgId: 'contract_lines.org_id',
     lineType: 'contract_lines.line_type',
+    manualQuantity: 'contract_lines.manual_quantity',
   },
   pax8Integrations: {
     id: 'pax8_integrations.id',
@@ -68,6 +69,7 @@ vi.mock('../db/schema', () => ({
     ignored: 'pax8_company_mappings.ignored',
     lastSeenAt: 'pax8_company_mappings.last_seen_at',
     updatedAt: 'pax8_company_mappings.updated_at',
+    metadata: 'pax8_company_mappings.metadata',
     integrationId: 'pax8_company_mappings.integration_id',
     partnerId: 'pax8_company_mappings.partner_id',
   },
@@ -84,10 +86,12 @@ vi.mock('../db/schema', () => ({
     status: 'pax8_subscription_snapshots.status',
     billingTerm: 'pax8_subscription_snapshots.billing_term',
     quantity: 'pax8_subscription_snapshots.quantity',
+    quantityKnown: 'pax8_subscription_snapshots.quantity_known',
     unitPrice: 'pax8_subscription_snapshots.unit_price',
     unitCost: 'pax8_subscription_snapshots.unit_cost',
     currencyCode: 'pax8_subscription_snapshots.currency_code',
     lastSeenAt: 'pax8_subscription_snapshots.last_seen_at',
+    raw: 'pax8_subscription_snapshots.raw',
   },
   pax8ContractLineLinks: {
     id: 'pax8_contract_line_links.id',
@@ -96,8 +100,8 @@ vi.mock('../db/schema', () => ({
     subscriptionSnapshotId: 'pax8_contract_line_links.subscription_snapshot_id',
     contractLineId: 'pax8_contract_line_links.contract_line_id',
     syncEnabled: 'pax8_contract_line_links.sync_enabled',
-    lastAppliedQuantity: 'pax8_contract_line_links.last_applied_quantity',
-    lastAppliedAt: 'pax8_contract_line_links.last_applied_at',
+    lastObservedQuantity: 'pax8_contract_line_links.last_applied_quantity',
+    lastObservedAt: 'pax8_contract_line_links.last_applied_at',
   },
 }));
 
@@ -188,19 +192,31 @@ function mockSubscriptionSelectOnce(integrationRows: unknown[], snapshotRows: un
     })),
   } as any);
 
-  // Second call: the snapshot join query (from/leftJoin/leftJoin/where/orderBy/limit)
+  // Second call: the snapshot join query (three left joins, then filtering).
   const leftJoinMock = vi.fn().mockReturnThis();
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn(() => ({
       leftJoin: leftJoinMock.mockImplementation(() => ({
         leftJoin: vi.fn(() => ({
-          where: whereSpy,
+          leftJoin: vi.fn(() => ({
+            where: whereSpy,
+          })),
         })),
       })),
     })),
   } as any);
 
   return { whereSpy, getConditions: () => whereConditions };
+}
+
+function mockCompanySelectOnce(integrationRows: unknown[], companyRows: unknown[]) {
+  mockSelectOnce(integrationRows);
+  const chain: Record<string, any> = {};
+  chain.from = vi.fn(() => chain);
+  chain.leftJoin = vi.fn(() => chain);
+  chain.where = vi.fn(() => chain);
+  chain.orderBy = vi.fn(async () => companyRows);
+  vi.mocked(db.select).mockReturnValueOnce(chain as any);
 }
 
 describe('pax8 routes', () => {
@@ -231,6 +247,30 @@ describe('pax8 routes', () => {
     });
 
     expect(res.status).toBe(403);
+  });
+
+  it('GET /companies returns bounded ordering readiness without contact PII or metadata', async () => {
+    const integration = { id: '44444444-4444-4444-4444-444444444444', partnerId: authState.partnerId };
+    mockCompanySelectOnce([integration], [{
+      pax8CompanyId: 'company-1', pax8CompanyName: 'Acme', status: 'Active', mappedOrgId: ORG_A,
+      mappedOrgName: 'Acme', ignored: false, lastSeenAt: null, updatedAt: null,
+      metadata: {
+        contacts: [{ email: 'private@example.com', types: [
+          { type: 'Admin', primary: true }, { type: 'Billing', primary: true }, { type: 'Technical', primary: true },
+        ] }],
+      },
+    }]);
+
+    const res = await app.request('/pax8/companies');
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.data[0]).toMatchObject({
+      statusActive: true, primaryAdminReady: true, primaryBillingReady: true,
+      primaryTechnicalReady: true, orderReady: true,
+    });
+    expect(body.data[0]).not.toHaveProperty('metadata');
+    expect(JSON.stringify(body)).not.toContain('private@example.com');
   });
 
   it('requires credentials when creating a Pax8 integration', async () => {
@@ -470,6 +510,29 @@ describe('pax8 routes', () => {
     expect(orgConditionSpy).toHaveReturnedWith(`pax8_subscription_snapshots.org_id IN (${ORG_A})`);
     const body = await res.json();
     expect(body).toHaveProperty('integrationId', integration.id);
+    expect(vi.mocked(db.select).mock.calls[1]?.[0]).toMatchObject({
+      breezeQuantity: 'contract_lines.manual_quantity',
+      quantity: 'pax8_subscription_snapshots.quantity',
+      quantityKnown: 'pax8_subscription_snapshots.quantity_known',
+    });
+  });
+
+  it('GET /subscriptions projects active commitment evidence without exposing the raw snapshot', async () => {
+    const integration = { id: '44444444-4444-4444-4444-444444444444', partnerId: authState.partnerId };
+    mockSubscriptionSelectOnce([integration], [{
+      id: 'snap-1', orgId: ORG_A,
+      raw: { commitment: { id: 'active-commitment', secret: 'do-not-return' } },
+    }]);
+
+    const res = await app.request(`/pax8/subscriptions?orgId=${ORG_A}`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.data[0]).toMatchObject({
+      activeCommitmentId: 'active-commitment', activeCommitmentAmbiguous: false,
+    });
+    expect(body.data[0]).not.toHaveProperty('raw');
+    expect(JSON.stringify(body)).not.toContain('do-not-return');
   });
 
   it('GET /subscriptions with inaccessible orgId returns 403', async () => {

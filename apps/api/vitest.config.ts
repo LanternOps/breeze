@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { availableParallelism } from 'node:os';
 import path from 'path';
 
 export default defineConfig({
@@ -11,9 +12,12 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    maxWorkers: Math.max(1, Math.min(4, Math.floor(availableParallelism() / 2))),
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     exclude: [
       'src/__tests__/integration/**',
+      // Real-PostgreSQL exact request-pool role checks have a dedicated runner.
+      'src/db/requestDatabaseRole.integration.test.ts',
       // Real-driver integration test for the inbound email pipeline. It needs the
       // integration setup (real postgres pool + autoMigrate seed) and is run by
       // vitest.integration.config.ts — not the unit runner, which has no DB.
@@ -39,6 +43,16 @@ export default defineConfig({
       // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's
       // no-DB environment fails the suite on connect. Belongs to vitest.integration.config.ts.
       'src/jobs/suppressionExpiryReaper.integration.test.ts',
+      // Device change ingest real-DB test (#2502 Phase 2): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate in its
+      // beforeAll), so the unit runner's no-DB environment fails the suite on
+      // connect. Belongs to vitest.integration.config.ts.
+      'src/routes/agents/changes.integration.test.ts',
+      // Auth-email worker real-DB test (SR2-22): imports `__tests__/integration/setup`
+      // (real postgres pool + autoMigrate + real Redis) and lives in src/jobs/ — outside
+      // the `src/__tests__/integration/**` glob above — so the no-DB unit runner would
+      // fail it on connect. Belongs to vitest.integration.config.ts (already in its include).
+      'src/jobs/authEmailWorker.integration.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

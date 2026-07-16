@@ -450,6 +450,7 @@ export async function applyBackupCommandResultToJob(params: {
       id: backupJobs.id,
       configId: backupJobs.configId,
       backupType: backupJobs.backupType,
+      backupMode: backupJobs.backupMode,
     });
 
   if (!updatedJob) {
@@ -471,8 +472,15 @@ export async function applyBackupCommandResultToJob(params: {
   const timestamp = result.snapshot?.timestamp
     ? new Date(result.snapshot.timestamp)
     : now;
+  // A system_image job dispatches a generic backup_run whose result carries no
+  // backupType, so derive it from the job's backup_mode; otherwise the snapshot
+  // (and BMR restore, which keys off snapshot.backupType) mislabels it 'file'.
+  const derivedBackupType =
+    updatedJob.backupMode === 'system_image' ? 'system_image' : undefined;
   const snapshotBackupType =
-    result.backupType ?? updatedJob.backupType ?? 'file';
+    result.backupType ?? derivedBackupType ?? updatedJob.backupType ?? 'file';
+  const systemStateManifest = result.systemStateManifest ?? null;
+  const hardwareProfile = systemStateManifest?.hardwareProfile ?? null;
   const snapshotMetadata: Record<string, unknown> = {
     ...metadata,
     hasIndexedFiles: Boolean(result.snapshot?.files?.length),
@@ -497,6 +505,8 @@ export async function applyBackupCommandResultToJob(params: {
     metadata: snapshotMetadata,
     encryptionKeyId: resolveSnapshotEncryptionKeyId(snapshotMetadata),
     backupType: snapshotBackupType,
+    systemStateManifest,
+    hardwareProfile,
   } as const;
 
   const [existingSnapshot] = await db

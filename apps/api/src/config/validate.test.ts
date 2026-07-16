@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { validateConfig } from './validate';
 
@@ -22,6 +25,7 @@ function withEnv(overrides: Record<string, string>, fn: () => void) {
 
 const validEnv = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/breeze',
+  DATABASE_URL_APP: 'postgresql://breeze_app:request-secret@localhost:5432/breeze',
   JWT_SECRET: 'a7f3b9c2d1e4f6a8b0c3d5e7f9a1b3c5e7d9f1a3b5c7d9e1f3a5b7c9d1e3f5',
   APP_ENCRYPTION_KEY: '440e7e4bafb77c92cc38f818c90ad2e4c155089a438e6a790572a328e532b60a',
   MFA_ENCRYPTION_KEY: 'a725b6546832661a86e27bf46ea556099f163efc5a5f1daa58697f13f6204510',
@@ -135,6 +139,98 @@ describe('validateConfig', () => {
     }, () => {
       expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
       expect(() => validateConfig()).toThrow('JWT_SECRET key material');
+  describe('M365 customer Graph-read onboarding', () => {
+    const descriptorEnv = (signingJwkFile: string) => ({
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'true',
+      M365_CUSTOMER_GRAPH_READ_CLIENT_ID: '33333333-3333-4333-8333-333333333333',
+      M365_CUSTOMER_GRAPH_READ_VAULT_REF:
+        'akv://customer-vault.vault.azure.net/m365-customer-graph-read/0123456789abcdef0123456789abcdef',
+      M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION: '0123456789abcdef0123456789abcdef',
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS: '11111111-1111-4111-8111-111111111111',
+      M365_GRAPH_READ_EXECUTOR_URL: 'https://m365-graph-read.internal.example.test',
+      M365_GRAPH_READ_EXECUTOR_AUDIENCE: 'm365-graph-read-executor',
+      M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: signingJwkFile,
+      M365_GRAPH_READ_EXECUTOR_SIGNING_KID: 'graph-read-api-1',
+      PUBLIC_URL: 'https://console.example.test',
+    });
+
+    it('refuses boot when onboarding is enabled without a complete descriptor', () => {
+      withEnv({
+        ...validEnv,
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'true',
+        M365_CUSTOMER_GRAPH_READ_CLIENT_ID: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(/M365_CUSTOMER_GRAPH_READ_CLIENT_ID/);
+      });
+    });
+
+    it('validates the complete descriptor at boot when onboarding is enabled', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'breeze-m365-boot-'));
+      const signingJwkFile = join(dir, 'signing.jwk');
+      writeFileSync(signingJwkFile, JSON.stringify({
+        kty: 'OKP',
+        crv: 'Ed25519',
+        alg: 'EdDSA',
+        use: 'sig',
+        kid: 'graph-read-api-1',
+        x: Buffer.alloc(32, 1).toString('base64url'),
+        d: Buffer.alloc(32, 2).toString('base64url'),
+      }), { mode: 0o600 });
+      chmodSync(signingJwkFile, 0o600);
+
+      try {
+        withEnv({ ...validEnv, ...descriptorEnv(signingJwkFile) }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not require or parse descriptor fields when onboarding is disabled', () => {
+      withEnv({
+        ...validEnv,
+        M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'false',
+        M365_CUSTOMER_GRAPH_READ_CLIENT_ID: 'not-a-uuid',
+        M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: '/missing/signing.jwk',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  it('rejects production with only the administrator DATABASE_URL', () => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      DATABASE_URL_APP: '',
+      BREEZE_APP_DB_PASSWORD: '',
+      POSTGRES_PASSWORD: '',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(() => validateConfig()).toThrow(
+        /DATABASE_URL_APP.*BREEZE_APP_DB_PASSWORD.*POSTGRES_PASSWORD/i,
+      );
+    });
+  });
+
+  it.each([
+    ['DATABASE_URL_APP', 'postgresql://breeze_app:request-secret@localhost:5432/breeze'],
+    ['BREEZE_APP_DB_PASSWORD', 'request-secret'],
+    ['POSTGRES_PASSWORD', 'request-secret'],
+  ] as const)('accepts the %s request-role credential path in production', (key, value) => {
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      DATABASE_URL_APP: '',
+      BREEZE_APP_DB_PASSWORD: '',
+      POSTGRES_PASSWORD: '',
+      [key]: value,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      expect(validateConfig()[key]).toBe(value);
     });
   });
 
@@ -754,6 +850,40 @@ describe('validateConfig', () => {
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('FORCE_HTTPS')
       );
+    });
+    warnSpy.mockRestore();
+  });
+
+  it('warns when proxy trust is on but TRUST_CF_CONNECTING_IP is off in production (SR2-16)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    }, () => {
+      validateConfig();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('TRUST_CF_CONNECTING_IP')
+      );
+    });
+    warnSpy.mockRestore();
+  });
+
+  it('does not warn about TRUST_CF_CONNECTING_IP when it is enabled', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+      TRUST_CF_CONNECTING_IP: 'true',
+    }, () => {
+      validateConfig();
+      const cfWarnings = warnSpy.mock.calls
+        .flat()
+        .filter((m) => typeof m === 'string' && m.includes('TRUST_CF_CONNECTING_IP'));
+      expect(cfWarnings).toHaveLength(0);
     });
     warnSpy.mockRestore();
   });
@@ -1539,6 +1669,55 @@ describe('validateConfig', () => {
         const config = validateConfig();
         expect(config.APNS_ENVIRONMENT).toBe('sandbox');
       });
+    });
+
+    // Compose maps these as `${APNS_*:-}`, so an operator who has not configured
+    // push still gets every key injected as "". That must read as "unset", not as
+    // an opted-in partial set, and the ENVIRONMENT enum must not reject "".
+    it('treats an all-empty APNS_* set as unset (compose injects "" for each)', () => {
+      withEnv(
+        {
+          ...validEnv,
+          APNS_AUTH_KEY: '',
+          APNS_KEY_ID: '',
+          APNS_TEAM_ID: '',
+          APNS_BUNDLE_ID: '',
+          APNS_ENVIRONMENT: '',
+        },
+        () => {
+          const config = validateConfig();
+          expect(config.APNS_ENVIRONMENT).toBeUndefined();
+        }
+      );
+    });
+
+    it('treats an empty APNS_ENVIRONMENT as unset when credentials are configured', () => {
+      withEnv({ ...validEnv, ...apnsFull, APNS_ENVIRONMENT: '' }, () => {
+        const config = validateConfig();
+        expect(config.APNS_ENVIRONMENT).toBeUndefined();
+      });
+    });
+
+    it('still refuses boot on an invalid APNS_ENVIRONMENT', () => {
+      withEnv({ ...validEnv, ...apnsFull, APNS_ENVIRONMENT: 'staging' }, () => {
+        expect(() => validateConfig()).toThrow('APNS_ENVIRONMENT');
+      });
+    });
+
+    it('still refuses boot on a partial set even when the empty keys are present', () => {
+      withEnv(
+        {
+          ...validEnv,
+          APNS_TEAM_ID: 'TEAM123456',
+          APNS_BUNDLE_ID: 'app.breeze.mobile',
+          APNS_AUTH_KEY: '',
+          APNS_KEY_ID: '',
+          APNS_ENVIRONMENT: '',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow('APNS_AUTH_KEY');
+        }
+      );
     });
 
     it.each(['APNS_AUTH_KEY', 'APNS_KEY_ID', 'APNS_TEAM_ID', 'APNS_BUNDLE_ID'])(

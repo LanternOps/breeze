@@ -3,6 +3,8 @@ package sessionbroker
 import (
 	"strings"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 // TestBuildUserHelperCmdLine_AlwaysExplicitRole guards against the spawn-path
@@ -39,6 +41,52 @@ func TestBuildUserHelperCmdLine_AlwaysExplicitRole(t *testing.T) {
 			// Quoting around the exe path matters — the path contains a space.
 			if !strings.HasPrefix(got, `"C:\Program Files\Breeze\breeze-agent.exe"`) {
 				t.Fatalf("exe path not quoted: got %q", got)
+			}
+		})
+	}
+}
+
+func TestSpawnedHelperDiagnosticsRetainRoleProvenance(t *testing.T) {
+	helper := &SpawnedHelper{
+		PID:                42,
+		BinaryPath:         `C:\Program Files\Breeze\breeze-agent.exe`,
+		CommandMode:        "user-helper",
+		Role:               "user",
+		WindowsSessionID:   7,
+		MainBinaryFallback: true,
+	}
+
+	if helper.CommandMode != "user-helper" || helper.Role != "user" || helper.WindowsSessionID != 7 {
+		t.Fatalf("spawn role provenance = command:%q role:%q session:%d", helper.CommandMode, helper.Role, helper.WindowsSessionID)
+	}
+	if helper.BinaryPath != `C:\Program Files\Breeze\breeze-agent.exe` || !helper.MainBinaryFallback {
+		t.Fatalf("spawn executable provenance = path:%q fallback:%v", helper.BinaryPath, helper.MainBinaryFallback)
+	}
+}
+
+// TestHelperRoleSpawnableRejectsNonLifecycleRoles guards the privilege boundary
+// in the spawn path. The role selects the token: before this gate,
+// createHelperSuspended sent anything that was not exactly "user" down the
+// SYSTEM-token branch, so a zero-value HelperKey (Role: "") or a misspelled
+// role silently escalated to SYSTEM.
+func TestHelperRoleSpawnableRejectsNonLifecycleRoles(t *testing.T) {
+	tests := []struct {
+		name string
+		role string
+		want bool
+	}{
+		{"system role spawnable", ipc.HelperRoleSystem, true},
+		{"user role spawnable", ipc.HelperRoleUser, true},
+		{"zero-value role is not spawnable", "", false},
+		{"wrong case is not spawnable", "User", false},
+		{"assist is not a lifecycle role", ipc.HelperRoleAssist, false},
+		{"watchdog is not a lifecycle role", ipc.HelperRoleWatchdog, false},
+		{"unknown role is not spawnable", "banana", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := helperRoleSpawnable(tc.role); got != tc.want {
+				t.Fatalf("helperRoleSpawnable(%q) = %v, want %v", tc.role, got, tc.want)
 			}
 		})
 	}

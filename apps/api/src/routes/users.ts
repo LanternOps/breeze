@@ -7,8 +7,8 @@ import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations, partners, permissions, rolePermissions } from '../db/schema';
-import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission } from '../middleware/auth';
+import { users, partnerUsers, organizationUsers, roles, organizations, partners } from '../db/schema';
+import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
   deleteAvatar,
@@ -21,23 +21,29 @@ import {
 import {
   clearPermissionCache,
   getUserPermissions,
-  hasPermission,
-  isAssignablePermission,
-  PERMISSIONS,
-  type UserPermissions
+  PERMISSIONS
 } from '../services/permissions';
+import {
+  getScopeContext,
+  getScopedRole,
+  validateAssignableRole,
+  type ScopeContext,
+} from '../services/roleAssignment';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
 import { captureException } from '../services/sentry';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
-import { hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userRequiresSetup } from './auth/helpers';
+import { enforceExistingFactorStepUp, hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userIsMfaProtected, userRequiresSetup } from './auth/helpers';
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from '../services/authLifecycle';
+import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
+import { requestPendingEmailChange } from '../services/pendingEmail';
 
 export const userRoutes = new Hono();
+const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const satisfies readonly SupportedLocale[];
 
 userRoutes.use('*', authMiddleware);
 userRoutes.use('*', async (c, next) => {
@@ -121,142 +127,6 @@ const updateUserSchema = z.object({
 const assignRoleSchema = z.object({
   roleId: z.string().guid()
 });
-
-type ScopeContext =
-  | { scope: 'partner'; partnerId: string }
-  | { scope: 'organization'; orgId: string };
-
-function getScopeContext(auth: { scope: string; partnerId: string | null; orgId: string | null }): ScopeContext {
-  if (auth.scope === 'partner' && auth.partnerId) {
-    return { scope: 'partner', partnerId: auth.partnerId };
-  }
-
-  if (auth.scope === 'organization' && auth.orgId) {
-    return { scope: 'organization', orgId: auth.orgId };
-  }
-
-  throw new HTTPException(403, { message: 'Partner or organization context required' });
-}
-
-async function getScopedRole(roleId: string, scopeContext: ScopeContext) {
-  const [role] = await db
-    .select({
-      id: roles.id,
-      scope: roles.scope,
-      name: roles.name,
-      description: roles.description,
-      isSystem: roles.isSystem,
-      parentRoleId: roles.parentRoleId,
-      partnerId: roles.partnerId,
-      orgId: roles.orgId
-    })
-    .from(roles)
-    .where(eq(roles.id, roleId))
-    .limit(1);
-
-  if (!role || role.scope !== scopeContext.scope) {
-    return null;
-  }
-
-  if (role.isSystem) {
-    return role;
-  }
-
-  if (scopeContext.scope === 'partner' && role.partnerId === scopeContext.partnerId) {
-    return role;
-  }
-
-  if (scopeContext.scope === 'organization' && role.orgId === scopeContext.orgId) {
-    return role;
-  }
-
-  return null;
-}
-
-async function getEffectiveRolePermissions(
-  roleId: string,
-  visited: Set<string> = new Set()
-): Promise<Array<{ resource: string; action: string }>> {
-  if (visited.has(roleId)) return [];
-  visited.add(roleId);
-
-  const [role] = await db
-    .select({ parentRoleId: roles.parentRoleId })
-    .from(roles)
-    .where(eq(roles.id, roleId))
-    .limit(1);
-
-  const directPermissions = await db
-    .select({
-      resource: permissions.resource,
-      action: permissions.action
-    })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(eq(rolePermissions.roleId, roleId));
-
-  if (!role?.parentRoleId) {
-    return directPermissions;
-  }
-
-  const inheritedPermissions = await getEffectiveRolePermissions(role.parentRoleId, visited);
-  const result = new Map<string, { resource: string; action: string }>();
-  for (const permission of [...directPermissions, ...inheritedPermissions]) {
-    result.set(`${permission.resource}:${permission.action}`, permission);
-  }
-  return [...result.values()];
-}
-
-async function getCallerPermissions(
-  c: any,
-  auth: { user: { id: string }; partnerId: string | null; orgId: string | null }
-): Promise<UserPermissions | null> {
-  const existing = c.get('permissions') as UserPermissions | undefined;
-  if (existing) return existing;
-
-  return getUserPermissions(auth.user.id, {
-    partnerId: auth.partnerId || undefined,
-    orgId: auth.orgId || undefined
-  });
-}
-
-async function validateAssignableRole(
-  c: any,
-  auth: { user: { id: string }; partnerId: string | null; orgId: string | null },
-  role: { id: string; isSystem: boolean }
-): Promise<string | null> {
-  const rolePermissionsForAssignment = await getEffectiveRolePermissions(role.id);
-  if (rolePermissionsForAssignment.length === 0) {
-    return null;
-  }
-
-  const callerPermissions = await getCallerPermissions(c, auth);
-  if (!callerPermissions) {
-    return 'No permissions found';
-  }
-
-  for (const permission of rolePermissionsForAssignment) {
-    if (permission.resource === '*' || permission.action === '*') {
-      if (!role.isSystem) {
-        return 'Custom roles with wildcard permissions cannot be assigned';
-      }
-      if (!hasPermission(callerPermissions, permission.resource, permission.action)) {
-        return 'Cannot assign a role broader than caller permissions';
-      }
-      continue;
-    }
-
-    if (!isAssignablePermission(permission)) {
-      return `Role contains unknown permission: ${permission.resource}:${permission.action}`;
-    }
-
-    if (!hasPermission(callerPermissions, permission.resource, permission.action)) {
-      return `Cannot assign a role with permission not held by caller: ${permission.resource}:${permission.action}`;
-    }
-  }
-
-  return null;
-}
 
 async function getScopedUser(userId: string, scopeContext: ScopeContext) {
   if (scopeContext.scope === 'partner') {
@@ -491,7 +361,11 @@ userRoutes.get('/me', async (c) => {
       )
     );
     const language = (partner?.settings as { language?: unknown } | null | undefined)?.language;
-    partnerDefaultLocale = language === 'en' || language === 'pt-BR' ? language : null;
+    partnerDefaultLocale =
+      typeof language === 'string'
+      && (supportedLocales as readonly string[]).includes(language)
+        ? language as SupportedLocale
+        : null;
   }
 
   // Surface the user's effective permission grants so the web app can hide nav
@@ -537,6 +411,11 @@ const updateMeSchema = z
     // Account-takeover step-up for the email-change path. NEVER persisted and
     // excluded from the audit changedFields — it is verified, then dropped.
     currentPassword: z.string().optional(),
+    // SR2-18 recovery-grade step-up: an MFA-protected account must additionally
+    // present a FRESH existing-factor step-up grant (minted seconds ago by
+    // POST /auth/mfa/step-up). NEVER persisted, excluded from audit
+    // changedFields — it is consumed by enforceExistingFactorStepUp, then dropped.
+    stepUpGrantId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -568,7 +447,11 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     .select({
       email: users.email,
       passwordHash: users.passwordHash,
-      preferences: users.preferences
+      preferences: users.preferences,
+      // The token minted for the pending address is partner-scoped. users.partner_id
+      // is NOT NULL, and an org-scoped session carries auth.partnerId === null, so
+      // read the owning partner off the row rather than the token.
+      partnerId: users.partnerId
     })
     .from(users)
     .where(eq(users.id, auth.user.id))
@@ -585,9 +468,13 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   // Tracks how identity was re-proven for the email change so the dedicated
   // audit can record it. Stays undefined for non-email changes.
   let stepUpMethod: 'password' | 'mfa' | undefined;
-  // The address that owned the account before the change — used for the audit
-  // detail and the security notification to the OLD address.
+  // The address that owns the account right now — used for the audit detail and
+  // the security notification to the OLD (still-authoritative) address.
   let previousEmail: string | undefined;
+  // SR2-17: the REQUESTED address, recorded as pending. NOT written to
+  // users.email — the live identity does not move until the verification token
+  // minted below is redeemed (Task 8).
+  let pendingNewEmail: string | undefined;
 
   if (body.name) {
     updates.name = body.name.slice(0, 255);
@@ -616,7 +503,12 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
         )
         ?? validatePreferenceEnum(prefs, 'font', ['breeze', 'system'], 'breeze or system')
         ?? validatePreferenceEnum(prefs, 'timeFormat', ['12h', '24h'], '12h or 24h')
-        ?? validatePreferenceEnum(prefs, 'locale', ['en', 'pt-BR'], 'en or pt-BR');
+        ?? validatePreferenceEnum(
+          prefs,
+          'locale',
+          supportedLocales,
+          'en, pt-BR, es-419, fr-FR, or de-DE'
+        );
       if (validationError) {
         return c.json({ error: validationError }, 400);
       }
@@ -636,74 +528,142 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
 
   if (body.email) {
     const normalizedEmail = body.email.toLowerCase().trim().slice(0, 255);
-    // self.email is already normalized in the DB; only step-up + notify when the
-    // email is genuinely changing. A same-email "change" is a no-op here.
+    // self.email is already normalized in the DB; only step-up + record-pending
+    // when the email is genuinely changing. A same-email "change" is a no-op.
     const emailChanging = normalizedEmail !== self.email;
 
     if (emailChanging) {
-      // Account-takeover step-up — mirror change-password's SSO→password
-      // ordering; additionally allow MFA step-up for passwordless users
-      // (change-password rejects them with 400), BEFORE any write.
-      // (a) SSO-enforced org: email is managed at the IdP.
+      // (a) SSO-enforced org: email is managed at the IdP. Unchanged.
       if (await isPasswordAuthDisabledBySso({ scope: auth.scope, orgId: auth.orgId, partnerId: auth.partnerId })) {
         return c.json({ error: 'Email changes for this organization are managed through your SSO provider.' }, 403);
       }
 
+      // SR2-18: a user parked in mfa_enrollment_required is admitted to
+      // /users/me ONLY so they can finish enrolling (isMfaEnrollmentExemptPath
+      // in middleware/auth.ts exempts the whole path — the middleware sees the
+      // path, not the body). That exemption must NOT let them move the account's
+      // RECOVERY ADDRESS: a session stolen before enrollment could otherwise
+      // repoint recovery and defeat the whole forced-enrollment gate. The gate
+      // lives HERE, in the handler, because narrowing the path exemption would
+      // break GET /users/me, which the enrollment UI needs. Fail CLOSED: an
+      // unresolvable policy (getEffectiveMfaPolicy throws) denies too.
+      const policy = await getEffectiveMfaPolicy({
+        scope: auth.scope,
+        userId: auth.user.id,
+        orgId: auth.orgId,
+        partnerId: auth.partnerId,
+      });
+      if (policy.required && !(await userIsMfaProtected(auth.user.id))) {
+        return c.json({ error: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' }, 403);
+      }
+
+      // SR2-18: an email change moves the account's recovery surface — the new
+      // address can drive /forgot-password and MFA recovery — so it demands the
+      // SAME assurance as adding an MFA factor, not less.
+      //
+      //   (b) local-password user: current password, verified against argon2;
+      //   (c) passwordless AND unprotected (SSO-only account with no factor and
+      //       no password): there is nothing to step up with → DENY. This must
+      //       not fall through to a vacuous mfa=true pass.
+      //   then, for any MFA-PROTECTED account: additionally a FRESH existing-
+      //       factor step-up grant, bound to the live epochs + this session's
+      //       sid. A stale MFA claim on an hours-old token is NOT sufficient.
       if (self.passwordHash) {
-        // (b) Local-password user: require + verify the current password.
         if (!body.currentPassword) {
           return c.json({ error: 'Current password is required to change your email address.' }, 400);
         }
         const stepUp = await requireCurrentPasswordStepUp(c, auth.user.id, body.currentPassword, 'email-change:pwd');
         if (stepUp) return stepUp; // 401 / 429 / 503 Response, or null on success
         stepUpMethod = 'password';
-      } else {
-        // (c) Passwordless, non-SSO-enforced user: require satisfied MFA.
-        if (!hasSatisfiedMfa(auth)) {
-          return c.json({ error: 'MFA verification is required to change your email address.' }, 403);
-        }
-        stepUpMethod = 'mfa';
+      } else if (!(await userIsMfaProtected(auth.user.id))) {
+        return c.json({ error: 'This account cannot change its email address here.' }, 403);
       }
 
+      // enforceExistingFactorStepUp is a NO-OP for an account with no factor
+      // (initial-enrollment chicken-and-egg), and a hard 403 for a protected
+      // account without a fresh grant. consume: true — single use, terminal.
+      const factorStepUp = await enforceExistingFactorStepUp(c, auth, body.stepUpGrantId, { consume: true });
+      if (factorStepUp) return factorStepUp;
+      if (!stepUpMethod) stepUpMethod = 'mfa';
+
+      // The still-authoritative address (login/reset/SSO still resolve to it)
+      // and the requested address. No cross-account uniqueness pre-check runs
+      // here: revealing "that address already belongs to someone" is an
+      // enumeration oracle (SR2 property 3). pending_email is intentionally NOT
+      // unique; a genuine collision fails CLOSED at COMMIT (Task 8) as a 23505
+      // against users_email_unique. The response below is uniform whether or not
+      // the address is taken.
       previousEmail = self.email;
-
-      // Uniqueness check (only matters when the email is actually changing).
-      const [existing] = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.email, normalizedEmail))
-        .limit(1);
-      if (existing && existing.id !== auth.user.id) {
-        return c.json({ error: 'Email already in use' }, 409);
-      }
+      pendingNewEmail = normalizedEmail;
     }
-
-    // Always include the (normalized) email in the write. When it's unchanged
-    // this is a harmless no-op that keeps a same-email PATCH a valid 200 rather
-    // than a "No valid updates provided" 400, and it requires no step-up.
-    updates.email = normalizedEmail;
   }
 
-  if (Object.keys(updates).length === 1) {
+  // A same-email PATCH (body.email provided but unchanged) stays a valid 200
+  // no-op — the updatedAt-only write below is harmless. Only bail with "No
+  // valid updates" when the caller supplied nothing actionable at all.
+  if (Object.keys(updates).length === 1 && body.email === undefined) {
     return c.json({ error: 'No valid updates provided' }, 400);
   }
 
+  const returningColumns = {
+    id: users.id,
+    email: users.email,
+    name: users.name,
+    avatarUrl: users.avatarUrl,
+    status: users.status,
+    mfaEnabled: users.mfaEnabled,
+    preferences: users.preferences
+  };
+
+  // SR2-17: the email is NOT written here. `updates` never carries `email`, so
+  // the live identity (login, password reset, CF Access, SSO matching) keeps
+  // resolving to the OLD address. A genuine email change becomes a PENDING
+  // request below, committed only by the verification click (Task 8). Initiation
+  // does NOT advance auth_epoch and does NOT revoke refresh families — the user
+  // stays signed in so they can go prove the new address. The email_epoch bump
+  // (which invalidates stale verification artifacts) happens inside
+  // requestPendingEmailChange; auth_epoch + family revoke move to the commit.
   const [updated] = await db
     .update(users)
     .set(updates)
     .where(eq(users.id, auth.user.id))
-    .returning({
-      id: users.id,
-      email: users.email,
-      name: users.name,
-      avatarUrl: users.avatarUrl,
-      status: users.status,
-      mfaEnabled: users.mfaEnabled,
-      preferences: users.preferences
-    });
+    .returning(returningColumns);
 
   if (!updated) {
     return c.json({ error: 'Failed to update profile' }, 500);
+  }
+
+  // SR2-17: record the pending address + mint the email_change verification
+  // token. Done AFTER the name/preferences write so a failure here cannot
+  // half-apply an unrelated profile edit. Fails closed (throws) on a 0-row
+  // pending write — the request 500s rather than reporting a change it never
+  // recorded.
+  let pendingEmailOut: string | undefined;
+  let pendingEmailRequestedAt: Date | undefined;
+  if (pendingNewEmail) {
+    pendingEmailRequestedAt = new Date();
+    const { rawToken } = await requestPendingEmailChange({
+      userId: auth.user.id,
+      partnerId: self.partnerId,
+      newEmail: pendingNewEmail,
+    });
+    pendingEmailOut = pendingNewEmail;
+
+    const appBaseUrl = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
+    const verificationUrl = `${appBaseUrl}/auth/verify-email?token=${encodeURIComponent(rawToken)}`;
+    const emailService = getEmailService();
+    if (emailService) {
+      // To the NEW address: prove you control it.
+      await emailService.sendVerificationEmail({ to: pendingNewEmail, name: updated.name ?? undefined, verificationUrl })
+        .catch((err: unknown) => { console.error('[users] pending-email verification send failed', err); captureException(err); });
+      // To the OLD (still-authoritative) address: a change was REQUESTED. Fires
+      // at INITIATION, not only on completion — the owner of the address being
+      // abandoned must hear about it while they can still act, not after the swap.
+      await emailService.sendEmailChanged({ to: previousEmail!, name: updated.name, newEmail: pendingNewEmail, pending: true })
+        .catch((err: unknown) => { console.error('[users] pending-email security notice failed', err); captureException(err); });
+    } else {
+      console.warn('[users] Email service not configured; pending-email notices were not sent');
+    }
   }
 
   // Every successful self-profile change MUST be audited regardless of caller
@@ -721,6 +681,9 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     resourceId: updated.id,
     resourceName: updated.name,
     details: {
+      // Only fields actually written to the row. The pending email is NOT a
+      // committed field change, so it is reported by the dedicated requested
+      // audit below, never here.
       changedFields: Object.keys(updates).filter((key) => key !== 'updatedAt')
     },
     ipAddress: getTrustedClientIpOrUndefined(c),
@@ -728,44 +691,39 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     result: 'success'
   });
 
-  // Dedicated email-change audit + security notification to the OLD address.
-  // Only fires on a genuine, step-up-cleared email change (previousEmail set).
+  // Dedicated email-change-REQUESTED audit. Only fires on a genuine,
+  // step-up-cleared pending change (previousEmail set). Nothing is revoked at
+  // initiation, so the revocation-outcome fields (#2428) move to Task 8's
+  // commit audit — they are deliberately absent here.
   if (previousEmail !== undefined) {
     createAuditLogAsync({
       orgId: auditOrgId,
       actorId: auth.user.id,
       actorEmail: auth.user.email,
-      action: 'user.email.change',
+      action: 'user.email.change.requested',
       resourceType: 'user',
       resourceId: updated.id,
       resourceName: updated.name,
       details: {
         previousEmail,
-        newEmail: updated.email,
+        pendingEmail: pendingNewEmail,
         stepUp: stepUpMethod
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),
       result: 'success'
     });
-
-    // Notify the OLD address (best-effort: never FAILs the request (errors are
-    // swallowed). It is awaited, so it adds the send latency to this (rare)
-    // email-change response).
-    const emailService = getEmailService();
-    if (emailService) {
-      try {
-        await emailService.sendEmailChanged({ to: previousEmail, name: updated.name, newEmail: updated.email });
-      } catch (err) {
-        console.error('[users] Failed to send email-change security notice', err);
-        captureException(err);
-      }
-    } else {
-      console.warn('[users] Email service not configured; email-change security notice was not sent');
-    }
   }
 
-  return c.json(updated);
+  return c.json({
+    ...updated,
+    // SR2-17: the returned email is the OLD (unchanged) address. The requested
+    // address surfaces separately as pendingEmail so the UI shows a
+    // "confirm your new address" state rather than optimistically swapping.
+    pendingEmail: pendingEmailOut,
+    pendingEmailRequestedAt,
+    verificationSent: !!pendingEmailOut
+  });
 });
 
 // --- Avatars ---

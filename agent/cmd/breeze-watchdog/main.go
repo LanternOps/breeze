@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -181,6 +183,143 @@ func main() {
 	}
 }
 
+// Shutdown causes for the watchdog run context. context.Cause reports which
+// one fired so the journal records why the loop ended.
+var (
+	errShutdownSignal = errors.New("watchdog: shutdown requested by signal")
+	errShutdownSCM    = errors.New("watchdog: shutdown requested by service control manager")
+	errRunEnded       = errors.New("watchdog: run loop ended")
+)
+
+// watchdogRunContext returns a context that is cancelled when a process signal
+// arrives or the SCM stop channel closes, plus a stop func that releases the
+// forwarders on a normal return.
+//
+// The forwarders are separate goroutines on purpose. Recovery runs
+// synchronously inside the main select loop and can park for the recovery
+// deadline waiting on an SCM transition, so a stop that was only noticed the
+// next time the loop came around would leave the watchdog service stuck in
+// STOP_PENDING long past the SCM's own stop deadline. Cancelling the context
+// from outside the loop makes those waits abort promptly. Either channel may
+// be nil (a nil channel blocks forever, which is the intent on the platform
+// that does not use it).
+func watchdogRunContext(parent context.Context, sigCh <-chan os.Signal, stopCh <-chan struct{}) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	go func() {
+		select {
+		case <-sigCh:
+			cancel(errShutdownSignal)
+		case <-ctx.Done():
+		}
+	}()
+	go func() {
+		select {
+		case <-stopCh:
+			cancel(errShutdownSCM)
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() { cancel(errRunEnded) }
+}
+
+// shutdownTrigger maps a run-context cancellation cause to the journal's
+// trigger label. An unrecognized cause is reported as "unknown" rather than
+// guessed at — the journal is the only forensic record of why the watchdog
+// stopped.
+func shutdownTrigger(cause error) string {
+	switch {
+	case errors.Is(cause, errShutdownSignal):
+		return "signal"
+	case errors.Is(cause, errShutdownSCM):
+		return "scm"
+	default:
+		return "unknown"
+	}
+}
+
+// recoveryJournalFields renders a recovery outcome for the health journal.
+//
+// state_file_pid, old_scm_pid, and new_scm_pid are deliberately three separate
+// keys: the state-file PID is only the stale hint the agent wrote about
+// itself, while the SCM PIDs are what the service manager reported before and
+// after the action. Collapsing them into one "pid" would erase the evidence
+// that recovery never took destructive action on the hint.
+func recoveryJournalFields(result watchdog.RecoveryResult, err error) map[string]any {
+	fields := map[string]any{
+		"intent":         string(result.Intent),
+		"action":         string(result.Action),
+		"disposition":    string(result.Disposition),
+		"phase":          result.Phase,
+		"initial_state":  result.InitialState,
+		"final_state":    result.FinalState,
+		"state_file_pid": result.StateFilePID,
+		"old_scm_pid":    result.OldPID,
+		"new_scm_pid":    result.NewPID,
+		"elapsed_ms":     result.Elapsed.Milliseconds(),
+		"action_taken":   result.ActionTaken,
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+		fields["failure_class"] = string(recoveryFailureClass(err))
+	}
+	return fields
+}
+
+// recoveryFailureClass extracts the typed failure class from a recovery error.
+// A failure that is not a *watchdog.RecoveryError is reported as
+// "unclassified" so it can never journal an empty class that reads like a
+// success.
+func recoveryFailureClass(err error) watchdog.RecoveryFailureClass {
+	var rerr *watchdog.RecoveryError
+	if errors.As(err, &rerr) && rerr.Class != "" {
+		return rerr.Class
+	}
+	return "unclassified"
+}
+
+// shouldVerifyRecovery reports whether an attempt earned a pending heartbeat
+// verification. It fails closed: only an error-free VerifyHeartbeat
+// disposition qualifies, so a zero-value, errored, or unknown-disposition
+// result can never be misread as "the agent is coming back". ActionTaken is
+// deliberately not consulted — it only means a side effect was issued.
+func shouldVerifyRecovery(result watchdog.RecoveryResult, err error) bool {
+	return err == nil && result.Disposition == watchdog.RecoveryDispositionVerifyHeartbeat
+}
+
+// shouldFailoverRecovery reports whether the controller declared the attempt
+// terminal (identity/ownership uncertainty). Terminal is terminal regardless
+// of the error value: retrying is exactly the action that could kill the wrong
+// process.
+func shouldFailoverRecovery(result watchdog.RecoveryResult) bool {
+	return result.Disposition == watchdog.RecoveryDispositionFailover
+}
+
+// recoveryCanceled reports whether an attempt aborted because the run context
+// was cancelled (SCM stop / signal). That is the watchdog shutting down, not a
+// diagnosis about the agent, so the caller must exit rather than feed a
+// recovery or failover event.
+func recoveryCanceled(err error) bool {
+	var rerr *watchdog.RecoveryError
+	return errors.As(err, &rerr) && rerr.Class == watchdog.RecoveryFailureCanceled
+}
+
+// failoverRecoveryIntent maps an operator failover command to the explicit
+// recovery intent it must run with, and whether the escalation window is reset
+// first. Intent is never inferred from the attempt count: "start_agent" landing
+// while the ladder sits at attempt 2 must not force-kill anything. resetFirst
+// is true only for an operator restart, which is a fresh verified graceful
+// restart rather than the next rung of the current ladder.
+func failoverRecoveryIntent(cmdType string) (intent watchdog.RecoveryIntent, resetFirst bool, ok bool) {
+	switch cmdType {
+	case "restart_agent":
+		return watchdog.RecoveryIntentRestart, true, true
+	case "start_agent":
+		return watchdog.RecoveryIntentEnsureStart, false, true
+	default:
+		return "", false, false
+	}
+}
+
 // runWatchdog is the main watchdog loop.
 // stopCh is an optional channel that, when closed, triggers a clean shutdown.
 // On Unix this is nil (signal handling is used instead). On Windows the SCM
@@ -320,10 +459,20 @@ func runWatchdog(stopCh <-chan struct{}) {
 	// Signal handling.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigChan)
 
-	// If no external stop channel provided, create a dummy that never fires.
-	if stopCh == nil {
-		stopCh = make(chan struct{})
+	// A signal or an SCM stop cancels runCtx from its own goroutine, which is
+	// what lets an in-flight recovery abort its waits instead of holding the
+	// service in STOP_PENDING for the whole recovery deadline. Every recovery
+	// request below carries runCtx for exactly that reason.
+	runCtx, stopRun := watchdogRunContext(context.Background(), sigChan, stopCh)
+	defer stopRun()
+
+	shutdown := func() {
+		trigger := shutdownTrigger(context.Cause(runCtx))
+		journal.Log(watchdog.LevelInfo, "watchdog.shutdown", map[string]any{"trigger": trigger})
+		fmt.Printf("Watchdog shutting down (%s)\n", trigger)
+		ipcClient.Close()
 	}
 
 	// Create tickers for the three check intervals.
@@ -344,16 +493,8 @@ func runWatchdog(stopCh <-chan struct{}) {
 
 	for {
 		select {
-		case <-sigChan:
-			journal.Log(watchdog.LevelInfo, "watchdog.shutdown", map[string]any{"trigger": "signal"})
-			fmt.Println("Watchdog shutting down")
-			ipcClient.Close()
-			return
-
-		case <-stopCh:
-			journal.Log(watchdog.LevelInfo, "watchdog.shutdown", map[string]any{"trigger": "scm"})
-			fmt.Println("Watchdog shutting down (SCM stop)")
-			ipcClient.Close()
+		case <-runCtx.Done():
+			shutdown()
 			return
 
 		case <-processTicker.C:
@@ -421,7 +562,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 			if wd.State() != watchdog.StateFailover || failoverClient == nil {
 				continue
 			}
-			handleFailoverPoll(failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h, &failoverFailures, &lastDiskServerURL)
+			handleFailoverPoll(runCtx, failoverClient, wd, journal, cfg, tokenStore, recovery, cfg.Watchdog.MaxRestartsPer24h, &failoverFailures, &lastDiskServerURL)
 		}
 
 		// State-driven actions after each tick.
@@ -482,17 +623,40 @@ func runWatchdog(stopCh <-chan struct{}) {
 				"count_24h": recovery.Count24h(),
 				"pid":       pid,
 			})
-			ok, err := recovery.Attempt(pid)
-			if ok {
+			result, err := recovery.Attempt(watchdog.RecoveryRequest{
+				StateFilePID: pid,
+				Intent:       watchdog.RecoveryIntentUnhealthy,
+				Context:      runCtx,
+			})
+			fields := recoveryJournalFields(result, err)
+			fields["attempt"] = recovery.Attempts()
+			fields["count_24h"] = recovery.Count24h()
+
+			// A cancelled attempt means we are shutting down, not that the
+			// agent failed to recover: exit without feeding a recovery or
+			// failover event off a diagnosis we never actually made.
+			if recoveryCanceled(err) {
+				journal.Log(watchdog.LevelInfo, "recovery.canceled", fields)
+				shutdown()
+				return
+			}
+
+			switch {
+			case err != nil:
+				journal.Log(watchdog.LevelError, "recovery.failed", fields)
+			case result.ActionTaken:
+				journal.Log(watchdog.LevelInfo, "recovery.attempt_dispatched", fields)
+			default:
+				// No side effect (e.g. the controller only observed an
+				// in-flight service transition).
+				journal.Log(watchdog.LevelInfo, "recovery.observed_transition", fields)
+			}
+
+			if shouldFailoverRecovery(result) {
+				pendingVerify = nil
+				wd.HandleEvent(watchdog.EventRecoveryExhausted)
+			} else if shouldVerifyRecovery(result, err) {
 				pendingVerify = &struct{ startedAt time.Time }{startedAt: time.Now()}
-				journal.Log(watchdog.LevelInfo, "recovery.attempt_dispatched", map[string]any{
-					"attempt":   recovery.Attempts(),
-					"count_24h": recovery.Count24h(),
-				})
-			} else {
-				journal.Log(watchdog.LevelError, "recovery.failed", map[string]any{
-					"error": errStr(err),
-				})
 			}
 
 		case watchdog.StateFailover:
@@ -529,7 +693,7 @@ func runWatchdog(stopCh <-chan struct{}) {
 					})
 				} else {
 					failoverFailures = 0
-					handleInitialFailoverHeartbeatResponse(failoverClient, resp, wd, journal, cfg, tokenStore, recovery)
+					handleInitialFailoverHeartbeatResponse(runCtx, failoverClient, resp, wd, journal, cfg, tokenStore, recovery)
 				}
 			}
 
@@ -616,7 +780,10 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 }
 
 // handleFailoverPoll sends a heartbeat and polls for commands during failover.
+// ctx is the watchdog run context — commands that drive recovery inherit it so
+// an SCM stop cancels them on the same boundary as the main loop's own.
 func handleFailoverPoll(
+	ctx context.Context,
 	fc *watchdog.FailoverClient,
 	wd *watchdog.Watchdog,
 	journal *watchdog.Journal,
@@ -657,7 +824,7 @@ func handleFailoverPoll(
 	}
 
 	executeFailoverCommands(heartbeatCmds, pollCmds, func(cmd watchdog.FailoverCommand) {
-		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
+		handleFailoverCommand(ctx, fc, cmd, wd, journal, cfg, tokens, recovery)
 	})
 }
 
@@ -665,6 +832,7 @@ func handleFailoverPoll(
 // failover starts. Those heartbeat commands are already claimed server-side, so
 // execute them immediately; there is no poll batch yet on this path.
 func handleInitialFailoverHeartbeatResponse(
+	ctx context.Context,
 	fc *watchdog.FailoverClient,
 	resp *watchdog.HeartbeatResponse,
 	wd *watchdog.Watchdog,
@@ -674,7 +842,7 @@ func handleInitialFailoverHeartbeatResponse(
 	recovery *watchdog.RecoveryManager,
 ) {
 	processInitialFailoverHeartbeatResponse(resp, wd, journal, cfg, tokens, recovery, func(cmd watchdog.FailoverCommand) {
-		handleFailoverCommand(fc, cmd, wd, journal, cfg, tokens, recovery)
+		handleFailoverCommand(ctx, fc, cmd, wd, journal, cfg, tokens, recovery)
 	})
 }
 
@@ -741,8 +909,11 @@ func processHeartbeatResponse(
 	return resp.Commands
 }
 
-// handleFailoverCommand executes a single command from the API.
+// handleFailoverCommand executes a single command from the API. ctx is the
+// watchdog run context, so a recovery a command dispatches is cancelled by an
+// SCM stop just like one the main loop started.
 func handleFailoverCommand(
+	ctx context.Context,
 	fc *watchdog.FailoverClient,
 	cmd watchdog.FailoverCommand,
 	wd *watchdog.Watchdog,
@@ -761,27 +932,35 @@ func handleFailoverCommand(
 	var errMsg string
 
 	switch cmd.Type {
-	case "restart_agent":
-		recovery.Reset()
-		wd.HandleEvent(watchdog.EventStartAgent)
-		ok, err := recovery.Attempt(0)
-		if ok {
-			resultStatus = "completed"
-			result = map[string]string{"action": "restart_agent"}
-		} else {
-			resultStatus = "failed"
-			errMsg = errStr(err)
+	case "restart_agent", "start_agent":
+		// Explicit intent per command type — never whichever rung the
+		// escalation ladder happens to be on. An operator restart additionally
+		// resets the window: it is a fresh graceful restart, not attempt N+1.
+		intent, resetFirst, _ := failoverRecoveryIntent(cmd.Type)
+		if resetFirst {
+			recovery.Reset()
 		}
-
-	case "start_agent":
 		wd.HandleEvent(watchdog.EventStartAgent)
-		ok, err := recovery.Attempt(0)
-		if ok {
+		res, err := recovery.Attempt(watchdog.RecoveryRequest{
+			Intent:  intent,
+			Context: ctx,
+		})
+		fields := recoveryJournalFields(res, err)
+		fields["command_id"] = cmd.ID
+		if err == nil && res.ActionTaken {
+			journal.Log(watchdog.LevelInfo, "failover.recovery_dispatched", fields)
 			resultStatus = "completed"
-			result = map[string]string{"action": "start_agent"}
+			result = map[string]string{"action": cmd.Type}
 		} else {
+			journal.Log(watchdog.LevelError, "failover.recovery_failed", fields)
 			resultStatus = "failed"
 			errMsg = errStr(err)
+			if errMsg == "" {
+				// No error, but no side effect either (e.g. the controller
+				// observed an in-flight transition). Report why rather than
+				// submitting a bare "failed" with an empty message.
+				errMsg = fmt.Sprintf("recovery took no action (action=%s, disposition=%s)", res.Action, res.Disposition)
+			}
 		}
 
 	case "collect_diagnostics":

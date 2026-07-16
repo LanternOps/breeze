@@ -25,6 +25,7 @@ export interface Pax8SubscriptionRecord {
   status: string | null;
   billingTerm: string | null;
   quantity: string;
+  quantityKnown: boolean;
   unitPrice: string | null;
   unitCost: string | null;
   currencyCode: string | null;
@@ -51,6 +52,67 @@ export interface Pax8ProductPriceRecord {
   suggestedRetailPrice: string | null;  // end-customer list price
   currencyCode: string | null;
   raw: JsonRecord;
+}
+
+export interface Pax8ProvisioningDetailInput {
+  key: string;
+  values: string[];
+}
+
+export interface Pax8OrderLineInput {
+  lineItemNumber: number;
+  productId: string;
+  quantity: number;
+  billingTerm: string;
+  commitmentTermId?: string;
+  provisioningDetails?: Pax8ProvisioningDetailInput[];
+}
+
+export interface Pax8CreateOrderInput {
+  companyId: string;
+  lineItems: Pax8OrderLineInput[];
+  orderedBy?: 'Pax8 Partner' | 'Customer' | 'Pax8';
+  orderedByUserEmail?: string;
+}
+
+export interface Pax8OrderResult {
+  pax8OrderId: string | null;
+  lineItems: Array<{ lineItemNumber: number | null; productId: string | null; subscriptionId: string | null }>;
+}
+
+export interface Pax8OrderRecord {
+  pax8OrderId: string;
+  pax8CompanyId: string;
+  createdDate: string | null;
+  lineItems: Array<{
+    lineItemNumber: number | null;
+    productId: string | null;
+    quantity: string;
+    quantityKnown: boolean;
+    subscriptionId: string | null;
+  }>;
+  raw: JsonRecord;
+}
+
+export interface Pax8ProvisionDetail {
+  key: string;
+  label: string | null;
+  description: string | null;
+  valueType: 'Input' | 'Single-Value' | 'Multi-Value' | null;
+  possibleValues: string[] | null;
+}
+
+export interface Pax8Commitment {
+  id: string;
+  term: string | null;
+  allowForQuantityIncrease: boolean;
+  allowForQuantityDecrease: boolean;
+  allowForEarlyCancellation: boolean;
+  cancellationFeeApplied: boolean;
+}
+
+export interface Pax8ProductDependencies {
+  commitments: Pax8Commitment[];
 }
 
 export interface Pax8ClientCredentials {
@@ -125,9 +187,12 @@ function normalizeMoney(value: unknown): string | null {
   return numberValue.toFixed(2);
 }
 
-function normalizeQuantity(value: unknown): string {
+function normalizeQuantityEvidence(value: unknown): { quantity: string; quantityKnown: boolean } {
   const normalized = normalizeMoney(value);
-  return normalized ?? '0.00';
+  return {
+    quantity: normalized ?? '0.00',
+    quantityKnown: normalized !== null,
+  };
 }
 
 function normalizeIsoDate(value: unknown): string | null {
@@ -185,6 +250,7 @@ function normalizeSubscription(value: unknown): Pax8SubscriptionRecord | null {
   const pricing = nestedRecord(record, 'pricing') ?? nestedRecord(record, 'price');
   const cost = nestedRecord(record, 'cost');
 
+  const quantity = normalizeQuantityEvidence(record.quantity ?? record.seats ?? record.licenses ?? record.licenseCount);
   return {
     pax8SubscriptionId: id,
     pax8CompanyId: companyId,
@@ -194,7 +260,7 @@ function normalizeSubscription(value: unknown): Pax8SubscriptionRecord | null {
     vendorSkuId: firstString(record, ['vendorSkuId', 'vendor_sku_id', 'sku', 'skuId']) ?? (product ? firstString(product, ['vendorSkuId', 'sku', 'skuId']) : null),
     status: firstString(record, ['status', 'state']),
     billingTerm: firstString(record, ['billingTerm', 'billing_term', 'term']),
-    quantity: normalizeQuantity(record.quantity ?? record.seats ?? record.licenses ?? record.licenseCount),
+    ...quantity,
     unitPrice: pricing ? normalizeMoney(pricing.unitPrice ?? pricing.price ?? pricing.amount) : normalizeMoney(record.unitPrice),
     unitCost: cost ? normalizeMoney(cost.unitCost ?? cost.cost ?? cost.amount) : normalizeMoney(record.unitCost),
     currencyCode: firstString(record, ['currencyCode', 'currency']) ?? (pricing ? firstString(pricing, ['currencyCode', 'currency']) : null),
@@ -202,6 +268,33 @@ function normalizeSubscription(value: unknown): Pax8SubscriptionRecord | null {
     endDate: normalizeIsoDate(record.endDate ?? record.endedAt),
     billingStart: normalizeIsoDate(record.billingStart ?? record.billingStartDate),
     commitmentTermEndDate: normalizeIsoDate(record.commitmentTermEndDate ?? record.commitmentEndDate),
+    raw: record,
+  };
+}
+
+function normalizeOrder(value: unknown): Pax8OrderRecord | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const id = firstString(record, ['id', 'orderId', 'order_id']);
+  const companyId =
+    firstString(record, ['companyId', 'company_id', 'customerId', 'customer_id']) ??
+    firstNestedString(record, [['company', ['id', 'companyId']], ['customer', ['id', 'companyId']]]);
+  if (!id || !companyId) return null;
+  const lineItems = extractArray(record.lineItems).map((value) => {
+    const line = asRecord(value);
+    if (!line) return null;
+    return {
+      lineItemNumber: firstNumber(line, ['lineItemNumber', 'line_item_number']),
+      productId: firstString(line, ['productId', 'product_id']),
+      ...normalizeQuantityEvidence(line.quantity),
+      subscriptionId: firstString(line, ['subscriptionId', 'subscription_id']),
+    };
+  }).filter((line): line is Pax8OrderRecord['lineItems'][number] => line !== null);
+  return {
+    pax8OrderId: id,
+    pax8CompanyId: companyId,
+    createdDate: normalizeIsoDate(record.createdDate ?? record.created_date),
+    lineItems,
     raw: record,
   };
 }
@@ -265,9 +358,15 @@ export class Pax8Client {
     return rows.map(normalizeCompany).filter((row): row is Pax8CompanyRecord => row !== null);
   }
 
-  async listSubscriptions(opts: { limit?: number } = {}): Promise<Pax8SubscriptionRecord[]> {
-    const rows = await this.fetchPaged('/subscriptions', opts.limit);
+  async listSubscriptions(opts: { limit?: number; companyId?: string } = {}): Promise<Pax8SubscriptionRecord[]> {
+    const rows = await this.fetchPaged('/subscriptions', opts.limit, { companyId: opts.companyId });
     return rows.map(normalizeSubscription).filter((row): row is Pax8SubscriptionRecord => row !== null);
+  }
+
+  /** Read-only company order listing used only by human-triggered reconcile. */
+  async listOrders(opts: { limit?: number; companyId: string }): Promise<Pax8OrderRecord[]> {
+    const rows = await this.fetchPaged('/orders', opts.limit, { companyId: opts.companyId });
+    return rows.map(normalizeOrder).filter((row): row is Pax8OrderRecord => row !== null);
   }
 
   async listProducts(opts: { limit?: number; vendorName?: string } = {}): Promise<Pax8ProductRecord[]> {
@@ -280,6 +379,98 @@ export class Pax8Client {
   async getProductPricing(productId: string): Promise<Pax8ProductPriceRecord[]> {
     const payload = await this.requestJson(`/products/${encodeURIComponent(productId)}/pricing`);
     return extractArray(payload).map(normalizeProductPrice).filter((row): row is Pax8ProductPriceRecord => row !== null);
+  }
+
+  /**
+   * POST /v1/orders. Pax8 has NO idempotency key — calling this twice creates
+   * two real, billable orders, and Order.createdDate is a DATE (not a timestamp)
+   * so you cannot tell them apart afterward. Callers MUST claim their intent row
+   * in a committed transaction before invoking this, and MUST NOT retry on
+   * timeout. See pax8OrderSubmit.ts.
+   *
+   * `isMock: true` validates without touching Pax8's database. It is the ONLY
+   * machine-checkable oracle for whether provisioningDetails are complete,
+   * because their provision-details endpoint does not expose requiredness.
+   */
+  async createOrder(input: Pax8CreateOrderInput, opts: { isMock?: boolean } = {}): Promise<Pax8OrderResult> {
+    const payload = await this.requestJson(
+      '/orders',
+      opts.isMock ? { isMock: true } : {},
+      { method: 'POST', body: input },
+    );
+    const record = asRecord(payload);
+    const lineItems = extractArray(record?.lineItems).map((raw) => {
+      const li = asRecord(raw);
+      return {
+        lineItemNumber: li ? firstNumber(li, ['lineItemNumber']) : null,
+        productId: li ? firstString(li, ['productId', 'product_id']) : null,
+        subscriptionId: li ? firstString(li, ['subscriptionId', 'subscription_id']) : null,
+      };
+    });
+    return { pax8OrderId: record ? firstString(record, ['id', 'orderId']) : null, lineItems };
+  }
+
+  /**
+   * PUT /v1/subscriptions/{id}. Despite the verb this is a PARTIAL update, and
+   * `price`, `partnerCost`, `currencyCode`, `startDate`, and `endDate` are all
+   * writable. We send `quantity` and nothing else — a read-modify-write would
+   * re-send pricing and can overwrite the customer's rate. Do not "helpfully"
+   * add fields to this body.
+   */
+  async updateSubscriptionQuantity(subscriptionId: string, quantity: number): Promise<void> {
+    await this.requestJson(
+      `/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      {},
+      { method: 'PUT', body: { quantity } },
+    );
+  }
+
+  /** DELETE /v1/subscriptions/{id}. No body. Cancel is terminal — Pax8 exposes no reactivate. */
+  async cancelSubscription(subscriptionId: string, cancelDate?: string | null): Promise<void> {
+    await this.requestJson(
+      `/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      cancelDate ? { cancelDate } : {},
+      { method: 'DELETE' },
+    );
+  }
+
+  async getProvisionDetails(productId: string): Promise<Pax8ProvisionDetail[]> {
+    const payload = await this.requestJson(`/products/${encodeURIComponent(productId)}/provision-details`);
+    return extractArray(payload).map((raw): Pax8ProvisionDetail | null => {
+      const r = asRecord(raw);
+      const key = r ? firstString(r, ['key']) : null;
+      if (!r || !key) return null;
+      const valueType = firstString(r, ['valueType']);
+      const possible = Array.isArray(r.possibleValues)
+        ? r.possibleValues.filter((v): v is string => typeof v === 'string')
+        : null;
+      return {
+        key,
+        label: firstString(r, ['label']),
+        description: firstString(r, ['description']),
+        valueType: (valueType as Pax8ProvisionDetail['valueType']) ?? null,
+        possibleValues: possible,
+      };
+    }).filter((d): d is Pax8ProvisionDetail => d !== null);
+  }
+
+  async getProductDependencies(productId: string): Promise<Pax8ProductDependencies> {
+    const payload = await this.requestJson(`/products/${encodeURIComponent(productId)}/dependencies`);
+    const root = asRecord(payload);
+    const commitments = extractArray(root?.commitmentDependencies).map((raw): Pax8Commitment | null => {
+      const r = asRecord(raw);
+      const id = r ? firstString(r, ['id']) : null;
+      if (!r || !id) return null;
+      return {
+        id,
+        term: firstString(r, ['term']),
+        allowForQuantityIncrease: r.allowForQuantityIncrease === true,
+        allowForQuantityDecrease: r.allowForQuantityDecrease === true,
+        allowForEarlyCancellation: r.allowForEarlyCancellation === true,
+        cancellationFeeApplied: r.cancellationFeeApplied === true,
+      };
+    }).filter((c): c is Pax8Commitment => c !== null);
+    return { commitments };
   }
 
   private async fetchPaged(path: string, limit?: number, extraQuery: Record<string, string | number | boolean | undefined> = {}): Promise<unknown[]> {
@@ -297,24 +488,38 @@ export class Pax8Client {
     return all;
   }
 
-  private async requestJson(path: string, query: Record<string, string | number | boolean | undefined> = {}): Promise<unknown> {
+  private async requestJson(
+    path: string,
+    query: Record<string, string | number | boolean | undefined> = {},
+    init: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown } = {},
+  ): Promise<unknown> {
     const token = await this.getAccessToken();
     const url = new URL(`${this.apiBaseUrl}${path.startsWith('/') ? path : `/${path}`}`);
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
 
+    const method = init.method ?? 'GET';
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${token}`,
+      accept: 'application/json',
+    };
+    if (init.body !== undefined) headers['content-type'] = 'application/json';
+
     const res = await this.doFetch(url.toString(), {
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: 'application/json',
-      },
+      method,
+      headers,
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
       timeoutMs: DEFAULT_TIMEOUT_MS,
     } as RequestInit & { timeoutMs?: number });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Pax8ApiError(`Pax8 API returned ${res.status}`, res.status, body.slice(0, 500));
+      // Pax8 puts per-line-item validation failures in `details[]`. Keep the raw
+      // body — the UI shows it verbatim rather than guessing at what's wrong,
+      // because requiredness is NOT discoverable from their spec.
+      throw new Pax8ApiError(`Pax8 API returned ${res.status}`, res.status, body.slice(0, 4000));
     }
+    if (res.status === 204) return null;
     return res.json();
   }
 

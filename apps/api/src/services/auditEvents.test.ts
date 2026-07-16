@@ -53,7 +53,7 @@ describe('writeAuditEvent', () => {
       actorType: 'api_key',
       actorId: '123e4567-e89b-42d3-a456-426614174001',
       action: 'partner_api.request',
-      resourceType: 'service_principal',
+      resourceType: 'partner_service_principal',
     });
 
     expect(result).toBe(persistence);

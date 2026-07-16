@@ -137,7 +137,7 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
     // render, matching invoiceService.issueInvoice. Fire-and-forget; never fails the
     // accept the customer already completed.
     await emitAcceptInvoiceIssued(res, auth.user.id);
-    return c.json({ data: { invoiceId: res.invoiceId, status: res.quote.status } });
+    return c.json({ data: { invoiceId: res.invoiceId, status: res.quote.status, pax8OrderId: res.pax8OrderId } });
   } catch (err) { if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status); throw err; }
 });
 

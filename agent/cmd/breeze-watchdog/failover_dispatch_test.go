@@ -118,3 +118,45 @@ func hasJournalEvent(entries []watchdog.JournalEntry, event string) bool {
 	}
 	return false
 }
+
+// An operator failover command carries its own intent. The watchdog must map
+// the command type to that intent explicitly and never let the escalation
+// ladder's attempt count decide: at attempt 2 the unhealthy ladder selects a
+// forced restart (terminate the process, then start), which a "start_agent"
+// command must never trigger. Ladder selection itself is proven against the
+// controllers in internal/watchdog; these tests pin the command → intent map
+// that feeds it.
+
+func TestFailoverStartAgentUsesEnsureStartIntent(t *testing.T) {
+	intent, resetFirst, ok := failoverRecoveryIntent("start_agent")
+	if !ok {
+		t.Fatal("start_agent is not mapped to a recovery intent")
+	}
+	if intent != watchdog.RecoveryIntentEnsureStart {
+		t.Errorf("intent = %q, want %q", intent, watchdog.RecoveryIntentEnsureStart)
+	}
+	if resetFirst {
+		t.Error("start_agent reset the escalation window; only an operator restart may")
+	}
+}
+
+func TestFailoverRestartAgentUsesRestartIntent(t *testing.T) {
+	intent, resetFirst, ok := failoverRecoveryIntent("restart_agent")
+	if !ok {
+		t.Fatal("restart_agent is not mapped to a recovery intent")
+	}
+	if intent != watchdog.RecoveryIntentRestart {
+		t.Errorf("intent = %q, want %q", intent, watchdog.RecoveryIntentRestart)
+	}
+	if !resetFirst {
+		t.Error("restart_agent did not reset the escalation window before attempting")
+	}
+}
+
+func TestFailoverRecoveryIntentRejectsNonRecoveryCommands(t *testing.T) {
+	for _, cmdType := range []string{"collect_diagnostics", "update_agent", "", "start"} {
+		if intent, _, ok := failoverRecoveryIntent(cmdType); ok {
+			t.Errorf("%q mapped to recovery intent %q, want no mapping", cmdType, intent)
+		}
+	}
+}

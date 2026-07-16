@@ -121,3 +121,6 @@ backups/
 
 # brainstorming visual companion mockups
 .superpowers/
+
+# Git LFS hooks regenerated per-workspace (core.hooksPath=.githooks)
+.githooks/

@@ -55,6 +55,66 @@ describe('i18n extraction quality', () => {
     );
   });
 
+  it('keeps Pax8 contract links observation-only in every locale', () => {
+    const locales = ['en', 'de-DE', 'es-419', 'fr-FR', 'pt-BR'];
+    const requiredPax8Keys = [
+      'subscriptionObservationDescription',
+      'observingQuantity',
+      'observationPaused',
+      'pauseObservations',
+      'resumeObservations',
+    ];
+    const removedPax8Keys = [
+      'licenseSubscriptionsPulledFromPax8LinkASubscription',
+      'syncPaused',
+      'syncResumed',
+      'syncing',
+      'linked',
+      'pause',
+      'resume',
+    ];
+    const forbiddenPromises = [
+      /sync quantities automatically/i,
+      /Mengen automatisch zu synchronisieren/i,
+      /sincronizar las cantidades automáticamente/i,
+      /synchroniser automatiquement les quantités/i,
+      /sincronizar quantidades automaticamente/i,
+      /keep quantity in sync/i,
+      /Halten Sie die Menge synchron/i,
+      /Mantenga la cantidad sincronizada/i,
+      /Gardez la quantité synchronisée/i,
+      /Mantenha a quantidade sincronizada/i,
+    ];
+
+    for (const locale of locales) {
+      const catalog = JSON.parse(
+        readSource(`locales/${locale}/integrations.json`),
+      ) as {
+        pax8Integration: Record<string, string>;
+        linkSubscriptionPicker: Record<string, string>;
+      };
+      for (const key of requiredPax8Keys) {
+        expect(catalog.pax8Integration[key], `${locale}: missing ${key}`).toBeTruthy();
+      }
+      for (const key of removedPax8Keys) {
+        expect(catalog.pax8Integration, `${locale}: stale ${key}`).not.toHaveProperty(key);
+      }
+      expect(
+        catalog.linkSubscriptionPicker.trackQuantityForDrift,
+        `${locale}: missing drift label`,
+      ).toBeTruthy();
+      expect(catalog.linkSubscriptionPicker).not.toHaveProperty('keepQuantityInSync');
+
+      const pax8Copy = JSON.stringify({
+        pax8Integration: catalog.pax8Integration,
+        linkSubscriptionPicker: catalog.linkSubscriptionPicker,
+      });
+      for (const promise of forbiddenPromises) {
+        expect(pax8Copy, `${locale}: ${promise}`).not.toMatch(promise);
+      }
+    }
+  });
+
   it('provides complete singular and plural backup sentences', () => {
     expect(i18n.t('backup:backupOverviewContent.alreadyRunningCount', { lng: 'en', count: 1 }))
       .toBe('1 device is already running a backup.');

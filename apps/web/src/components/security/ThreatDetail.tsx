@@ -15,6 +15,8 @@ import {
 import { fetchWithAuth } from "@/stores/auth";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { friendlyFetchError } from "@/lib/utils";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import AccessDenied from "../shared/AccessDenied";
 type ThreatSeverity = "low" | "medium" | "high" | "critical";
 type ThreatStatus = "active" | "quarantined" | "removed";
 type ThreatDetailData = {
@@ -58,13 +60,16 @@ export default function ThreatDetail({
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
   const fetchThreat = useCallback(async () => {
     setLoading(true);
     setError(undefined);
+    setErrorKind("none");
     try {
       const listResponse = await fetchWithAuth("/security/threats?limit=100");
-      if (!listResponse.ok)
-        throw new Error(`${listResponse.status} ${listResponse.statusText}`);
+      // HttpError (not a bare Error) so a 403 survives the throw and the render
+      // can tell "you may not see this" from "this broke, try again" (#2472).
+      throwIfNotOk(listResponse);
       const listPayload = await listResponse.json();
       const list: ThreatDetailData[] = Array.isArray(listPayload.data)
         ? listPayload.data
@@ -87,7 +92,10 @@ export default function ThreatDetail({
           .slice(0, 5),
       );
     } catch (err) {
-      setError(friendlyFetchError(err));
+      const kind = errorKindOf(err);
+      setErrorKind(kind);
+      // 'denied' renders AccessDenied, which supplies its own copy.
+      if (kind === "other") setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -104,8 +112,7 @@ export default function ThreatDetail({
         `/security/threats/${threat.id}/${action}`,
         { method: "POST" },
       );
-      if (!response.ok)
-        throw new Error(`${response.status} ${response.statusText}`);
+      throwIfNotOk(response);
       await fetchThreat();
     } catch (err) {
       setError(friendlyFetchError(err));
@@ -169,6 +176,17 @@ export default function ThreatDetail({
           <Loader2 className="h-4 w-4 animate-spin" />
           {t("securityThreatDetail.loadingThreatDetails")}
         </div>
+      </div>
+    );
+  }
+  // A 403 is terminal for this user — a retry hits the same permission gate. Stop
+  // before the detail panels: falling through would paint the "no threat
+  // selected" empty state and tell someone who may not see the data that
+  // nothing was found. Fabricated emptiness is worse than an error. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div className="rounded-lg border bg-card p-6 shadow-xs">
+        <AccessDenied testId="security-threat-detail-denied" />
       </div>
     );
   }

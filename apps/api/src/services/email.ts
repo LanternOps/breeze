@@ -93,6 +93,17 @@ export interface EmailChangedEmailParams {
   name?: string | null;
   newEmail: string;
   supportEmail?: string;
+  // SR2-17: true when a change was REQUESTED (a verification link was sent to
+  // newEmail and the address has NOT moved yet); false/undefined keeps today's
+  // "your email WAS changed" completed-change copy. Sent to the OLD address in
+  // both cases so the abandoned mailbox's owner is always notified.
+  pending?: boolean;
+}
+
+export interface SignupAttemptOnExistingAccountEmailParams {
+  to: string | string[];
+  name?: string | null;
+  supportEmail?: string;
 }
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -308,6 +319,16 @@ export class EmailService {
 
   async sendEmailChanged(params: EmailChangedEmailParams): Promise<void> {
     const template = buildEmailChangedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text
+    });
+  }
+
+  async sendSignupAttemptOnExistingAccount(params: SignupAttemptOnExistingAccountEmailParams): Promise<void> {
+    const template = buildSignupAttemptOnExistingAccountTemplate(params);
     await this.sendEmail({
       to: params.to,
       subject: template.subject,
@@ -736,6 +757,43 @@ function buildVerificationTemplate(params: VerificationEmailParams): EmailTempla
   return { subject, html, text };
 }
 
+// SR2-21 (Q5 option b): a signup was attempted against an address that ALREADY
+// has an account. The existing holder is notified — but is deliberately NOT sent
+// the signup/verification link (that would let an attacker drive a verification
+// flow against someone else's mailbox). No token, no button: just "you already
+// have an account, sign in".
+function buildSignupAttemptOnExistingAccountTemplate(
+  params: SignupAttemptOnExistingAccountEmailParams,
+): EmailTemplate {
+  const name = params.name?.trim() || 'there';
+  const subject = 'A Breeze sign-up was attempted with your email';
+  const preheader = 'You already have a Breeze account — no new account was created.';
+  const body = `
+      <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
+      <p style="${BODY_PARA}">Someone tried to create a Breeze account with this address. You already have one — sign in, or reset your password if you've forgotten it.</p>
+      <p style="${MUTED_PARA}">No new account was created and no action is required. If this wasn't you, you can safely ignore this email.</p>
+  `;
+  const html = renderLayout({
+    title: subject,
+    preheader,
+    heading: 'You already have a Breeze account',
+    body,
+    footer: supportFooter(params.supportEmail, 'Need help? Contact'),
+  });
+
+  const support = getSupportEmail(params.supportEmail);
+  const text = [
+    `Hi ${name},`,
+    "Someone tried to create a Breeze account with this address. You already have one — sign in, or reset your password if you've forgotten it.",
+    "No new account was created and no action is required. If this wasn't you, you can safely ignore this email.",
+    support ? `Need help? Contact ${support}.` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return { subject, html, text };
+}
+
 function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
   const name = params.name?.trim() || 'there';
   const inviter = params.inviterName?.trim() || 'A teammate';
@@ -906,6 +964,41 @@ function buildAccountLockedTemplate(params: AccountLockedEmailParams): EmailTemp
 
 function buildEmailChangedTemplate(params: EmailChangedEmailParams): EmailTemplate {
   const name = params.name?.trim() || 'there';
+
+  // SR2-17: a REQUESTED change has NOT moved the address yet — a verification
+  // link went to the new address and the account keeps this (old) address until
+  // it is confirmed. Say exactly that so the owner of the abandoned mailbox can
+  // act while they still control the account.
+  if (params.pending) {
+    const subject = 'Email change requested on your Breeze account';
+    const preheader = `A change to ${params.newEmail} was requested. Your email has not changed yet.`;
+    const body = `
+      <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
+      <p style="${BODY_PARA}">Someone requested to change your Breeze account email to <strong>${escapeHtml(params.newEmail)}</strong>. We sent a verification link to that address. <strong>Your email will not change until that link is confirmed</strong>, and this address stays in control of the account until then.</p>
+      <p style="${MUTED_PARA}"><strong>If you did not request this change</strong>, no action is required to keep your current email — but your account may be compromised, so change your password and contact support to secure it.</p>
+    `;
+    const html = renderLayout({
+      title: subject,
+      preheader,
+      heading: 'Email change requested',
+      body,
+      footer: supportFooter(params.supportEmail, 'If you did not request this change, contact'),
+    });
+
+    const support = getSupportEmail(params.supportEmail);
+    const text = [
+      `Hi ${name},`,
+      `Someone requested to change your Breeze account email to ${params.newEmail}. We sent a verification link to that address.`,
+      'Your email will not change until that link is confirmed, and this address stays in control of the account until then.',
+      'If you did not request this change, no action is required to keep your current email, but your account may be compromised — change your password and contact support to secure it.',
+      support ? `Contact ${support}.` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    return { subject, html, text };
+  }
+
   const subject = 'Your Breeze account email was changed';
   const preheader = `The email on your Breeze account was changed to ${params.newEmail}.`;
   const body = `

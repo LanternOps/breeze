@@ -3,9 +3,12 @@ package backup
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"os"
@@ -16,6 +19,29 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
+
+// sha256File streams a file through SHA-256 and returns the lowercase-hex
+// digest. Streaming keeps memory flat for large files.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// checksumMatches reports whether the file at path hashes to want. A hashing
+// error counts as a mismatch (fail-closed) so verification never passes a file
+// it could not read.
+func checksumMatches(path, want string) bool {
+	got, err := sha256File(path)
+	return err == nil && got == want
+}
 
 const (
 	snapshotRootDir     = "snapshots"
@@ -32,11 +58,32 @@ type Snapshot struct {
 }
 
 // SnapshotFile captures metadata for a backed up file.
+//
+// Checksum + Mode were added so integrity/test-restore can detect silent
+// corruption and so restore can reapply Unix permissions. Both are
+// `omitempty`: manifests written before this change carry neither, and the
+// verify/restore paths treat an absent value as "not available" and fall back
+// gracefully (size-only check on verify, default mode on restore).
 type SnapshotFile struct {
 	SourcePath string    `json:"sourcePath"`
 	BackupPath string    `json:"backupPath"`
 	Size       int64     `json:"size"`
 	ModTime    time.Time `json:"modTime"`
+	// Checksum is the lowercase-hex SHA-256 of the ORIGINAL (uncompressed)
+	// source bytes. Verify/restore compare it against the bytes returned by
+	// provider.Download(), which yields the original source bytes for every
+	// provider: the cloud providers (S3/B2/Azure/GCS) store the object verbatim,
+	// and LocalProvider stores it gzip-compressed (the .gz suffix) but
+	// decompresses on download. Do NOT assume the *stored* object equals the
+	// source bytes — that holds only for the cloud providers, not LocalProvider.
+	Checksum string `json:"checksum,omitempty"`
+	// Mode is the file's Unix permission bits (os.FileMode.Perm(), low 9 bits
+	// only — setuid/setgid/sticky are intentionally NOT captured or restored),
+	// reapplied on restore. 0 means "unknown" (an older manifest) → restore
+	// leaves the OS default. Caveat: a file legitimately at mode 0000 also
+	// stores as 0 and is therefore treated as "unknown" (left at the OS default
+	// rather than restored to 0000) — an accepted limitation.
+	Mode uint32 `json:"mode,omitempty"`
 }
 
 type contextUploader interface {
@@ -87,11 +134,31 @@ func CreateSnapshotContext(ctx context.Context, provider providers.BackupProvide
 			continue
 		}
 
+		// Checksum the source bytes so integrity/test-restore can detect silent
+		// corruption of the stored object. A hash failure here is non-fatal —
+		// the file is still backed up; it just won't carry a checksum (verify
+		// falls back to a size check for it).
+		//
+		// NOTE: this re-reads the source after the upload above. On a host with
+		// no snapshotting (Unix has no VSS), a file that mutates between the
+		// upload read and this hash read yields a checksum that won't match the
+		// stored object, so a later verify raises a false "corruption" alert.
+		// That's the safe direction (a false alarm, not a silent pass) and is
+		// consistent with the pre-existing size-from-collection vs content-from-
+		// upload race. Eliminating it fully requires hashing the bytes as they
+		// stream to the provider (a provider-interface change) — left as future work.
+		checksum, sumErr := sha256File(file.sourcePath)
+		if sumErr != nil {
+			log.Printf("[backup] checksum failed for %s: %v", file.sourcePath, sumErr)
+		}
+
 		snapshot.Files = append(snapshot.Files, SnapshotFile{
 			SourcePath: file.sourcePath,
 			BackupPath: backupPath,
 			Size:       file.size,
 			ModTime:    file.modTime,
+			Checksum:   checksum,
+			Mode:       uint32(file.mode.Perm()),
 		})
 		snapshot.Size += file.size
 	}

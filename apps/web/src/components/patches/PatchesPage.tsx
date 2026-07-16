@@ -65,6 +65,16 @@ export default function PatchesPage() {
   const canManageRings = scope === 'partner' || scope === 'system';
   const RING_SCOPE_HINT = t('patchesPage.ringScopeHint');
 
+  // The Update Rings tab is gated on the client-only JWT scope (canManageRings),
+  // which is absent during SSR, so the server renders two tabs and the client
+  // three. Render the tab list from an SSR-stable value until after mount so the
+  // first client render matches the server markup — companion to the #2421
+  // active-tab fix below. canManageRings itself stays accurate everywhere else
+  // (the hash-resolution effect, ring actions) so the #rings deep-link and
+  // scope guards are unaffected.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   // Start from the SSR-safe default; the hash (with the org-scope guard) is
   // applied post-mount by the sync effect below, avoiding an SSR hydration
   // mismatch (#2421).
@@ -119,9 +129,9 @@ export default function PatchesPage() {
     () => [
       { id: 'compliance' as TabKey, label: t('patchesPage.tabs.compliance'), icon: <BarChart3 className="h-4 w-4" /> },
       { id: 'patches' as TabKey, label: t('patchesPage.tabs.patches'), icon: <FileCog className="h-4 w-4" /> },
-      ...(canManageRings ? [{ id: 'rings' as TabKey, label: t('patchesPage.tabs.updateRings'), icon: <Layers className="h-4 w-4" /> }] : [])
+      ...(mounted && canManageRings ? [{ id: 'rings' as TabKey, label: t('patchesPage.tabs.updateRings'), icon: <Layers className="h-4 w-4" /> }] : [])
     ],
-    [canManageRings, t]
+    [mounted, canManageRings, t]
   );
 
   // Ring selector data (simplified for dropdown)

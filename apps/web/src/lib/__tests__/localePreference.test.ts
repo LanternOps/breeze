@@ -24,17 +24,28 @@ describe('locale preference', () => {
     vi.unstubAllGlobals();
   });
 
-  it('exposes exactly en and pt-BR', () => {
-    expect(LOCALE_OPTIONS).toEqual(['en', 'pt-BR']);
+  it('exposes exactly the supported locales', () => {
+    expect(LOCALE_OPTIONS).toEqual(['en', 'pt-BR', 'es-419', 'fr-FR', 'de-DE']);
   });
 
   it('validates locales', () => {
-    expect(isValidLocale('en')).toBe(true);
-    expect(isValidLocale('pt-BR')).toBe(true);
+    for (const locale of ['en', 'pt-BR', 'es-419', 'fr-FR', 'de-DE']) {
+      expect(isValidLocale(locale)).toBe(true);
+      expect(normalizeLocale(locale)).toBe(locale);
+    }
     expect(isValidLocale('fr')).toBe(false);
+    expect(isValidLocale('de-AT')).toBe(false);
     expect(isValidLocale(42)).toBe(false);
-    expect(normalizeLocale('pt-BR')).toBe('pt-BR');
     expect(normalizeLocale('junk')).toBeUndefined();
+  });
+
+  it.each([
+    ['es-MX', 'es-419'],
+    ['fr-CA', 'fr-FR'],
+    ['de-AT', 'de-DE'],
+  ] as const)('maps browser locale %s to %s', (browserLocale, expected) => {
+    vi.stubGlobal('navigator', { languages: [browserLocale], language: browserLocale });
+    expect(detectBrowserLocale()).toBe(expected);
   });
 
   it('round-trips through localStorage', () => {
@@ -58,7 +69,7 @@ describe('locale preference', () => {
     expect(detectBrowserLocale()).toBe('pt-BR');
     vi.stubGlobal('navigator', { languages: ['en-GB'], language: 'en-GB' });
     expect(detectBrowserLocale()).toBe('en');
-    vi.stubGlobal('navigator', { languages: ['fr-FR'], language: 'fr-FR' });
+    vi.stubGlobal('navigator', { languages: ['ja-JP'], language: 'ja-JP' });
     expect(detectBrowserLocale()).toBe('en');
   });
 

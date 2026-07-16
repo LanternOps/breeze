@@ -9,20 +9,19 @@ vi.mock('../../db', () => ({
 
 vi.mock('../../db/schema', () => ({
   users: { id: 'users.id', email: 'users.email', name: 'users.name', mfaEnabled: 'users.mfaEnabled', setupCompletedAt: 'users.setupCompletedAt' },
-  partners: { id: 'partners.id', name: 'partners.name', slug: 'partners.slug', plan: 'partners.plan', status: 'partners.status', settings: 'partners.settings' },
   partnerUsers: { userId: 'partnerUsers.userId' },
 }));
 
 vi.mock('../../services', () => ({
   hashPassword: vi.fn(async () => 'hashed'),
   isPasswordStrong: vi.fn(() => ({ valid: true, errors: [] })),
-  createTokenPair: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', refreshJti: 'jti-mock', expiresInSeconds: 900 })),
   rateLimiter: vi.fn(async () => ({ allowed: true })),
   getRedis: vi.fn(() => ({})),
-  // Task 7 follow-up: shared family-mint helper. /register-partner now mints
-  // a fresh family for its auto-login, matching every other authenticated
-  // token-mint path.
-  mintRefreshTokenFamily: vi.fn(async () => 'family-id-mock'),
+  // register.ts no longer imports these token-mint helpers (the mint moved to
+  // verifyEmail step 2). They are mocked only so the SR2-21 suite can assert
+  // they are NEVER called from the request.
+  createTokenPair: vi.fn(async () => ({ accessToken: 'a', refreshToken: 'r', refreshJti: 'jti', expiresInSeconds: 900 })),
+  mintRefreshTokenFamily: vi.fn(async () => 'family-id'),
   bindRefreshJtiToFamily: vi.fn(async () => undefined),
   getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
 }));
@@ -31,8 +30,12 @@ vi.mock('../../services/partnerCreate', () => ({
   createPartner: vi.fn(),
 }));
 
-vi.mock('../../services/partnerHooks', () => ({
-  dispatchHook: vi.fn(async () => null),
+vi.mock('../../services/pendingRegistration', () => ({
+  createPendingRegistration: vi.fn(async () => ({ rawToken: 'raw-token', tokenHash: 'f'.repeat(64) })),
+}));
+
+vi.mock('../../services/authEmailQueue', () => ({
+  enqueueRegistrationVerification: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -52,29 +55,14 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
-vi.mock('../../services/emailVerification', () => ({
-  generateVerificationToken: vi.fn(async () => 'verify-token'),
-}));
-
-vi.mock('../../services/email', () => ({
-  getEmailService: vi.fn(() => ({
-    sendVerificationEmail: vi.fn(async () => undefined),
-  })),
-}));
-
 vi.mock('./helpers', async () => {
   const actual = await vi.importActual<typeof import('./helpers')>('./helpers');
   return {
     ...actual,
     runWithSystemDbAccess: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-    setRefreshTokenCookie: vi.fn(),
-    toPublicTokens: vi.fn((t: { accessToken: string; expiresInSeconds: number }) => ({
-      accessToken: t.accessToken,
-      expiresInSeconds: t.expiresInSeconds,
-    })),
     getClientRateLimitKey: vi.fn(() => 'test-client'),
     registrationDisabledResponse: vi.fn((c: { json: (b: unknown, s: number) => unknown }) =>
-      c.json({ error: 'Registration disabled' }, 403),
+      c.json({ error: 'Registration disabled' }, 404),
     ),
   };
 });
@@ -84,14 +72,15 @@ vi.mock('./schemas', async () => {
   return {
     ...actual,
     ENABLE_REGISTRATION: true,
-    ENABLE_2FA: false,
   };
 });
 
 import { registerRoutes } from './register';
 import { db } from '../../db';
+import { createTokenPair, mintRefreshTokenFamily, getRedis } from '../../services';
 import { createPartner } from '../../services/partnerCreate';
-import { writeAuditEvent } from '../../services/auditEvents';
+import { createPendingRegistration } from '../../services/pendingRegistration';
+import { enqueueRegistrationVerification } from '../../services/authEmailQueue';
 import { createAuditLog } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
 
@@ -110,9 +99,9 @@ function selectChain(rows: unknown[]) {
   };
 }
 
-const validBody = {
+const VALID_BODY = {
   companyName: 'Acme Co',
-  email: 'admin@acme.test',
+  email: 'new@corp.com',
   password: 'Sup3rSecure!',
   name: 'Admin User',
   acceptTerms: true,
@@ -121,110 +110,86 @@ const validBody = {
 function postRegisterPartner(body: unknown, headers: Record<string, string> = {}) {
   return registerRoutes.request('/register-partner', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: { 'content-type': 'application/json', 'user-agent': 'vitest/1.0', ...headers },
     body: JSON.stringify(body),
   });
 }
 
-describe('/register-partner partner status by deployment mode', () => {
+describe('POST /register-partner — SR2-21: email-first, no account created before verification', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.IS_HOSTED = 'true'; // hosted mode: the setup-admin gate is skipped (no db.select)
+    vi.mocked(getRedis).mockReturnValue({} as never);
+    vi.mocked(createPendingRegistration).mockResolvedValue({ rawToken: 'raw-token', tokenHash: 'f'.repeat(64) });
+  });
+
+  afterEach(() => {
     delete process.env.IS_HOSTED;
+  });
 
-    vi.mocked(createPartner).mockResolvedValue({
-      partnerId: 'p-1',
-      orgId: 'o-1',
-      adminUserId: 'u-1',
-      adminRoleId: 'r-1',
-      siteId: 's-1',
-      mcpOrigin: false,
+  it('creates NO partner, NO user, NO tokens, and sets NO cookie', async () => {
+    const res = await postRegisterPartner(VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      message: 'If registration can proceed, you will receive next steps shortly.',
     });
-
-    // Hosted path: skip gate (IS_HOSTED=true), no dup user, then partner+user rows
-    // Non-hosted path: setup admin exists, no dup user, then partner+user rows
+    expect(vi.mocked(createPartner)).not.toHaveBeenCalled();
+    expect(vi.mocked(createTokenPair)).not.toHaveBeenCalled();
+    expect(vi.mocked(mintRefreshTokenFamily)).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
   });
 
-  function setupDbSelectsForSuccess(isHostedMode: boolean) {
-    if (isHostedMode) {
-      // gate skipped; user-existence check + post-create partner + post-create user
-      vi.mocked(db.select)
-        .mockReturnValueOnce(selectChain([]) as any)
-        .mockReturnValueOnce(selectChain([{
-          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'pending',
-        }]) as any)
-        .mockReturnValueOnce(selectChain([{
-          id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-        }]) as any);
-    } else {
-      // setup-admin check returns admin, user-existence empty, partner+user rows
-      vi.mocked(db.select)
-        .mockReturnValueOnce(selectChain([{ setupCompletedAt: new Date() }]) as any)
-        .mockReturnValueOnce(selectChain([]) as any)
-        .mockReturnValueOnce(selectChain([{
-          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'free', status: 'active',
-        }]) as any)
-        .mockReturnValueOnce(selectChain([{
-          id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-        }]) as any);
-    }
-  }
-
-  it('creates partner with status=pending when IS_HOSTED=true', async () => {
-    process.env.IS_HOSTED = 'true';
-    setupDbSelectsForSuccess(true);
-
-    const res = await postRegisterPartner(validBody);
-    expect(res.status).toBeLessThan(400);
-    expect(createPartner).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'pending' }),
-    );
+  it('performs NO user-existence lookup (that lookup WAS the oracle)', async () => {
+    await postRegisterPartner(VALID_BODY);
+    // db.select is still used by the SELF-HOSTED setup gate. In hosted mode
+    // (isHosted() -> true, the mode this suite runs) there must be ZERO selects.
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
 
-  it('creates partner with status=active when IS_HOSTED is unset', async () => {
-    // IS_HOSTED already deleted in beforeEach
-    setupDbSelectsForSuccess(false);
-
-    const res = await postRegisterPartner(validBody);
-    expect(res.status).toBeLessThan(400);
-    expect(createPartner).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'active' }),
-    );
+  it('returns the byte-identical body whether or not the address has an account', async () => {
+    const a = await postRegisterPartner({ ...VALID_BODY, email: 'brand-new@corp.com' });
+    const b = await postRegisterPartner({ ...VALID_BODY, email: 'already-registered@corp.com' });
+    expect(a.status).toBe(b.status);
+    expect(await a.json()).toEqual(await b.json());
   });
 
-  it('threads signup IP and user agent into createPartner', async () => {
-    process.env.IS_HOSTED = 'true';
-    setupDbSelectsForSuccess(true);
-
-    const res = await postRegisterPartner(validBody, { 'user-agent': 'vitest-agent/1.0' });
-    expect(res.status).toBeLessThan(400);
-    expect(createPartner).toHaveBeenCalledWith(
+  it('stores the step-1 attribution (trusted IP + UA) in the pending record', async () => {
+    await postRegisterPartner(VALID_BODY);
+    expect(vi.mocked(createPendingRegistration)).toHaveBeenCalledWith(
       expect.objectContaining({
-        origin: { mcp: false, ip: '127.0.0.1', userAgent: 'vitest-agent/1.0' },
+        email: 'new@corp.com',
+        passwordHash: 'hashed',
+        signupIp: '127.0.0.1', // from the mocked getTrustedClientIpOrUndefined
+        signupUserAgent: expect.any(String),
       }),
     );
   });
+
+  it('enqueues the verification job with the token HASH, never the raw token', async () => {
+    await postRegisterPartner(VALID_BODY);
+    const [arg] = vi.mocked(enqueueRegistrationVerification).mock.calls[0]!;
+    expect(arg).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('Redis down: the generic 503 and NO pending record', async () => {
+    vi.mocked(getRedis).mockReturnValueOnce(null as never);
+    const res = await postRegisterPartner(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(vi.mocked(createPendingRegistration)).not.toHaveBeenCalled();
+  });
 });
 
-describe('POST /register-partner setup-admin gate', () => {
+describe('POST /register-partner setup-admin gate (still enforced pre-park)', () => {
   const originalFlag = process.env.IS_HOSTED;
 
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.IS_HOSTED;
-
-    vi.mocked(createPartner).mockResolvedValue({
-      partnerId: 'p-1',
-      orgId: 'o-1',
-      adminUserId: 'u-1',
-      adminRoleId: 'r-1',
-      siteId: 's-1',
-      mcpOrigin: false,
-    });
-
-    // Default: setup-admin lookup returns no admin; user-existence check returns empty.
-    // Both are SELECT chains and the route hits them in order. selectChain returns
-    // an empty array on .limit() so both lookups behave the same way.
-    vi.mocked(db.select).mockReturnValue(selectChain([]) as any);
+    vi.mocked(getRedis).mockReturnValue({} as never);
+    vi.mocked(createPendingRegistration).mockResolvedValue({ rawToken: 'raw-token', tokenHash: 'f'.repeat(64) });
+    // Default self-hosted lookup returns no setup admin.
+    vi.mocked(db.select).mockReturnValue(selectChain([]) as never);
   });
 
   afterEach(() => {
@@ -232,105 +197,63 @@ describe('POST /register-partner setup-admin gate', () => {
     else process.env.IS_HOSTED = originalFlag;
   });
 
-  it('returns 403 when IS_HOSTED is unset and no setup admin exists', async () => {
-    const res = await postRegisterPartner(validBody);
+  it('returns 403 and parks NOTHING when IS_HOSTED is unset and no setup admin exists', async () => {
+    const res = await postRegisterPartner(VALID_BODY);
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error).toMatch(/setup is not yet complete/i);
-    expect(createPartner).not.toHaveBeenCalled();
+    expect(vi.mocked(createPendingRegistration)).not.toHaveBeenCalled();
+    expect(vi.mocked(enqueueRegistrationVerification)).not.toHaveBeenCalled();
   });
 
-  it('skips the setup-admin gate and proceeds when IS_HOSTED=true', async () => {
-    process.env.IS_HOSTED = 'true';
-
-    // After the gate is skipped, the route runs the user-existence SELECT and
-    // then the post-create SELECTs for partner + user. Stage three responses:
-    //  1. user-existence -> empty (no dup)
-    //  2. partner row after create
-    //  3. user row after create
-    vi.mocked(db.select)
-      .mockReturnValueOnce(selectChain([]) as any)
-      .mockReturnValueOnce(selectChain([{
-        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
-      }]) as any)
-      .mockReturnValueOnce(selectChain([{
-        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-      }]) as any);
-
-    const res = await postRegisterPartner(validBody);
+  it('proceeds to park when a setup admin exists (self-hosted)', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{ setupCompletedAt: new Date() }]) as never);
+    const res = await postRegisterPartner(VALID_BODY);
     expect(res.status).toBe(200);
-    expect(createPartner).toHaveBeenCalledOnce();
+    expect(vi.mocked(createPendingRegistration)).toHaveBeenCalledOnce();
+    // Self-hosted parks with hostedExpectation=false.
+    expect(vi.mocked(createPendingRegistration)).toHaveBeenCalledWith(
+      expect.objectContaining({ hostedExpectation: false }),
+    );
   });
 
-  it('writes a setup-admin-gate-bypass audit event when IS_HOSTED=true', async () => {
+  it('skips the gate and writes a bypass audit when IS_HOSTED=true (no db.select)', async () => {
     process.env.IS_HOSTED = 'true';
-
-    vi.mocked(db.select)
-      .mockReturnValueOnce(selectChain([]) as any)
-      .mockReturnValueOnce(selectChain([{
-        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
-      }]) as any)
-      .mockReturnValueOnce(selectChain([{
-        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-      }]) as any);
-
-    await postRegisterPartner(validBody);
-    expect(createAuditLog).toHaveBeenCalledTimes(1);
-    expect(createAuditLog).toHaveBeenCalledWith({
-      orgId: null,
-      actorType: 'system',
-      actorId: '00000000-0000-0000-0000-000000000000',
-      action: 'register-partner.setup-admin-gate-bypass',
-      resourceType: 'partner',
-      details: {
-        email: 'admin@acme.test',
-        companyName: 'Acme Co',
-        reason: 'mcp-bootstrap-enabled',
-      },
-      ipAddress: '127.0.0.1',
-      userAgent: undefined,
-      result: 'success',
-    });
+    const res = await postRegisterPartner(VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+    expect(createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'register-partner.setup-admin-gate-bypass' }),
+    );
+    expect(vi.mocked(createPendingRegistration)).toHaveBeenCalledWith(
+      expect.objectContaining({ hostedExpectation: true }),
+    );
   });
 
-  it('does NOT write the bypass audit event when the gate is enforced', async () => {
-    await postRegisterPartner(validBody);
+  it('does NOT write the bypass audit when the gate is enforced (self-hosted)', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{ setupCompletedAt: new Date() }]) as never);
+    await postRegisterPartner(VALID_BODY);
     expect(createAuditLog).not.toHaveBeenCalled();
   });
 
-  it('proceeds with signup when the bypass audit-log write fails', async () => {
+  it('proceeds with signup when the bypass audit-log write fails (IS_HOSTED=true)', async () => {
     process.env.IS_HOSTED = 'true';
     const auditErr = new Error('audit DB unreachable');
     vi.mocked(createAuditLog).mockRejectedValueOnce(auditErr);
-
-    vi.mocked(db.select)
-      .mockReturnValueOnce(selectChain([]) as any)
-      .mockReturnValueOnce(selectChain([{
-        id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
-      }]) as any)
-      .mockReturnValueOnce(selectChain([{
-        id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-      }]) as any);
-
-    const res = await postRegisterPartner(validBody);
+    const res = await postRegisterPartner(VALID_BODY);
     expect(res.status).toBe(200);
-    expect(createPartner).toHaveBeenCalledOnce();
+    expect(vi.mocked(createPendingRegistration)).toHaveBeenCalledOnce();
     expect(captureException).toHaveBeenCalledWith(auditErr, expect.anything());
   });
 
   // Truthy-parsing matrix per envFlag(): '1' | 'true' | 'yes' | 'on'
-  // (case-insensitive) bypass the gate; anything else enforces it. A
-  // regression where 'False' or 'no' bypasses would silently open
-  // registration in self-hosted production. Locks the contract at this layer
-  // so swapping envFlag's parser triggers a test failure here, not a CVE.
+  // (case-insensitive) bypass the gate; anything else enforces it.
   it.each([
-    // bypass (200)
     ['1', 200],
     ['true', 200],
     ['TRUE', 200],
     ['yes', 200],
     ['on', 200],
-    // enforce (403)
     ['false', 403],
     ['0', 403],
     ['no', 403],
@@ -338,18 +261,8 @@ describe('POST /register-partner setup-admin gate', () => {
     ['', 403],
     ['random', 403],
   ])('IS_HOSTED=%j → status %i', async (flag, expectedStatus) => {
-    process.env.IS_HOSTED = flag;
-    if (expectedStatus === 200) {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(selectChain([]) as any)
-        .mockReturnValueOnce(selectChain([{
-          id: 'p-1', name: 'Acme Co', slug: 'acme-co', plan: 'starter', status: 'active',
-        }]) as any)
-        .mockReturnValueOnce(selectChain([{
-          id: 'u-1', email: 'admin@acme.test', name: 'Admin User', mfaEnabled: false,
-        }]) as any);
-    }
-    const res = await postRegisterPartner(validBody);
+    process.env.IS_HOSTED = flag as string;
+    const res = await postRegisterPartner(VALID_BODY);
     expect(res.status).toBe(expectedStatus);
   });
 });

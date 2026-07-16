@@ -16,7 +16,9 @@ import {
   formatSafeDate,
   friendlyFetchError,
 } from "@/lib/utils";
+import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { fetchWithAuth } from "@/stores/auth";
+import AccessDenied from "../shared/AccessDenied";
 import SecurityPageHeader from "./SecurityPageHeader";
 import SecurityStatCard from "./SecurityStatCard";
 import {
@@ -69,6 +71,9 @@ export default function VulnerabilitiesPage() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
+  // Separate from `error`: a refetch clears the load error, not the action error.
+  const [actionError, setActionError] = useState<string>();
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   // Deep-linkable severity filter (#severity=critical), see dashboard severity rows.
@@ -88,6 +93,7 @@ export default function VulnerabilitiesPage() {
   const fetchData = useCallback(
     async (page = 1) => {
       setError(undefined);
+      setErrorKind("none");
       setLoading(true);
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -101,7 +107,9 @@ export default function VulnerabilitiesPage() {
         const res = await fetchWithAuth(`/security/threats?${params}`, {
           signal: controller.signal,
         });
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        // HttpError (not a bare Error) so a 403 survives the throw and the render
+        // can tell "you may not see this" from "this broke, try again" (#2472).
+        throwIfNotOk(res);
         const json = await res.json();
         if (!Array.isArray(json.data))
           throw new Error(
@@ -113,7 +121,10 @@ export default function VulnerabilitiesPage() {
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         console.error("[VulnerabilitiesPage] fetch error:", err);
-        setError(friendlyFetchError(err));
+        const kind = errorKindOf(err);
+        setErrorKind(kind);
+        // 'denied' renders AccessDenied, which supplies its own copy.
+        if (kind === "other") setError(friendlyFetchError(err));
       } finally {
         // An aborted request must NOT drop the spinner — a superseding request
         // is still in flight. On a `#severity=` deep link the hook's post-mount
@@ -130,18 +141,23 @@ export default function VulnerabilitiesPage() {
     return () => abortRef.current?.abort();
   }, [fetchData]);
   const handleBulkAction = async (action: "quarantine" | "remove") => {
+    setActionError(undefined);
     try {
       for (const id of selectedIds) {
         const res = await fetchWithAuth(`/security/threats/${id}/${action}`, {
           method: "POST",
         });
-        if (!res.ok)
-          throw new Error(`Failed to ${action} threat ${id}: ${res.status}`);
+        throwIfNotOk(res);
       }
       setSelectedIds(new Set());
     } catch (err) {
       console.error("[VulnerabilitiesPage] bulk action error:", err);
-      setError(friendlyFetchError(err));
+      // NOT `setError`: the unconditional `fetchData` below opens with
+      // `setError(undefined)`, and React batches both writes into one render — so
+      // a failed quarantine/remove was wiped before it ever painted and the user
+      // saw NOTHING while the threat stayed listed as active. Keep action failures
+      // in their own state, which the refetch does not clear. (#2472)
+      setActionError(friendlyFetchError(err));
     }
     fetchData(pagination.page);
   };
@@ -194,6 +210,23 @@ export default function VulnerabilitiesPage() {
       </div>
     );
   }
+  // A 403 is terminal for this user — a retry hits the same permission gate. Stop
+  // before the summary tiles: falling through would paint the zeroed `summary`
+  // default and tell someone who may not see the data that 0 threats are
+  // active. Fabricated zeros are worse than an error. (#2472)
+  if (errorKind === "denied") {
+    return (
+      <div className="space-y-6">
+        <SecurityPageHeader
+          title={t("securityVulnerabilitiesPage.vulnerabilities")}
+          subtitle={t(
+            "securityVulnerabilitiesPage.detectedThreatsAcrossAllDevices",
+          )}
+        />
+        <AccessDenied testId="security-vulnerabilities-denied" />
+      </div>
+    );
+  }
   return (
     <div className="space-y-6">
       <SecurityPageHeader
@@ -234,6 +267,16 @@ export default function VulnerabilitiesPage() {
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
           <p className="text-sm text-destructive">{error}</p>
+        </div>
+      )}
+
+      {actionError && (
+        <div
+          className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center"
+          data-testid="vulnerabilities-action-error"
+          role="alert"
+        >
+          <p className="text-sm text-destructive">{actionError}</p>
         </div>
       )}
 

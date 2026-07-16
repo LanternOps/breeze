@@ -8,128 +8,31 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-// TestRoleIdentityRejectionConsoleSessionBinding verifies the positive
-// console-session assertion added for the assist/user IPC roles (#1009): on a
-// multi-user Windows host, a non-SYSTEM peer in a non-console session that
-// claims assist/user must be rejected, while the same role from the active
-// console session is accepted. The SYSTEM/watchdog paths must be unchanged.
-//
-// The comparison is pure (peer WinSessionID vs active console session id), so it
-// is fully table-testable on darwin without any Windows APIs.
-func TestRoleIdentityRejectionConsoleSessionBinding(t *testing.T) {
+func TestRoleIdentityRejection(t *testing.T) {
 	const nonSystemSID = "S-1-5-21-1-2-3-1001"
 
-	cases := []struct {
-		name           string
-		role           string
-		sid            string
-		peerWinSession string
-		consoleSession string
-		wantReason     string
-		wantReject     bool
+	tests := []struct {
+		name, role, sid, peer, claimed, console, wantReason string
+		wantReject                                          bool
 	}{
-		{
-			name:           "assist from console session accepted",
-			role:           ipc.HelperRoleAssist,
-			sid:            nonSystemSID,
-			peerWinSession: "1",
-			consoleSession: "1",
-			wantReject:     false,
-		},
-		{
-			name:           "assist from non-console session rejected",
-			role:           ipc.HelperRoleAssist,
-			sid:            nonSystemSID,
-			peerWinSession: "3",
-			consoleSession: "1",
-			wantReason:     "assist role requires the active console session",
-			wantReject:     true,
-		},
-		{
-			name:           "user from console session accepted",
-			role:           ipc.HelperRoleUser,
-			sid:            nonSystemSID,
-			peerWinSession: "2",
-			consoleSession: "2",
-			wantReject:     false,
-		},
-		{
-			name:           "user from non-console session rejected",
-			role:           ipc.HelperRoleUser,
-			sid:            nonSystemSID,
-			peerWinSession: "2",
-			consoleSession: "1",
-			wantReason:     "user role requires the active console session",
-			wantReject:     true,
-		},
-		{
-			// SYSTEM is gated by SID only and must be unaffected by the
-			// console-session binding regardless of which session it runs in.
-			name:           "system role unaffected by console session",
-			role:           ipc.HelperRoleSystem,
-			sid:            systemSID,
-			peerWinSession: "0",
-			consoleSession: "1",
-			wantReject:     false,
-		},
-		{
-			name:           "watchdog role unaffected by console session",
-			role:           ipc.HelperRoleWatchdog,
-			sid:            systemSID,
-			peerWinSession: "0",
-			consoleSession: "1",
-			wantReject:     false,
-		},
-		{
-			// Existing SID gate still fires before the console check.
-			name:           "assist as SYSTEM still rejected on SID",
-			role:           ipc.HelperRoleAssist,
-			sid:            systemSID,
-			peerWinSession: "1",
-			consoleSession: "1",
-			wantReason:     "assist role requires non-SYSTEM identity",
-			wantReject:     true,
-		},
-		{
-			// Defensive: an unknown/empty console session id must not silently
-			// admit assist/user from an arbitrary session.
-			name:           "assist rejected when console session unknown",
-			role:           ipc.HelperRoleAssist,
-			sid:            nonSystemSID,
-			peerWinSession: "1",
-			consoleSession: "",
-			wantReason:     "assist role requires the active console session",
-			wantReject:     true,
-		},
-		{
-			// Fail-closed: GetConsoleSessionID() returns "0" when
-			// WTSGetActiveConsoleSessionId fails (API returns 0xFFFFFFFF). A peer
-			// whose kernel session is also "0" (Session-0 services) must NOT be
-			// admitted just because peer == console == "0" — "0" is not a valid
-			// interactive console session (#1009 review fail-closed hole).
-			name:           "assist rejected when console lookup failed (session 0 sentinel)",
-			role:           ipc.HelperRoleAssist,
-			sid:            nonSystemSID,
-			peerWinSession: "0",
-			consoleSession: "0",
-			wantReason:     "assist role requires the active console session",
-			wantReject:     true,
-		},
-		{
-			name:           "user rejected when console lookup failed (session 0 sentinel)",
-			role:           ipc.HelperRoleUser,
-			sid:            nonSystemSID,
-			peerWinSession: "0",
-			consoleSession: "0",
-			wantReason:     "user role requires the active console session",
-			wantReject:     true,
-		},
+		{"RDP user matching kernel session", ipc.HelperRoleUser, nonSystemSID, "7", "7", "1", "", false},
+		{"RDP user session mismatch", ipc.HelperRoleUser, nonSystemSID, "7", "8", "1", "user role session claim does not match peer token", true},
+		{"RDP user unknown peer session", ipc.HelperRoleUser, nonSystemSID, "0", "7", "1", "user role requires an interactive peer session", true},
+		{"SYSTEM cannot claim user", ipc.HelperRoleUser, systemSID, "7", "7", "1", "user role requires non-SYSTEM identity", true},
+		{"non-SYSTEM cannot claim system", ipc.HelperRoleSystem, nonSystemSID, "7", "7", "1", "system role requires SYSTEM identity", true},
+		{"SYSTEM matching RDP session", ipc.HelperRoleSystem, systemSID, "7", "7", "1", "", false},
+		{"assist remains console bound", ipc.HelperRoleAssist, nonSystemSID, "7", "7", "1", "assist role requires the active console session", true},
+		{"assist from console session accepted", ipc.HelperRoleAssist, nonSystemSID, "1", "1", "1", "", false},
+		{"assist as SYSTEM rejected on SID", ipc.HelperRoleAssist, systemSID, "1", "1", "1", "assist role requires non-SYSTEM identity", true},
+		{"assist rejected when console lookup failed (session 0 sentinel)", ipc.HelperRoleAssist, nonSystemSID, "0", "0", "0", "assist role requires the active console session", true},
+		{"watchdog as SYSTEM unaffected by console session", ipc.HelperRoleWatchdog, systemSID, "0", "0", "1", "", false},
+		{"watchdog as non-SYSTEM rejected", ipc.HelperRoleWatchdog, nonSystemSID, "1", "1", "1", "watchdog role requires SYSTEM identity", true},
 	}
 
-	for _, tc := range cases {
+	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			reason, rejected := roleIdentityRejection(
-				tc.role, tc.sid, 0, tc.peerWinSession, tc.consoleSession, "windows",
+				tc.role, tc.sid, 0, tc.peer, tc.claimed, tc.console, "windows",
 			)
 			if rejected != tc.wantReject {
 				t.Fatalf("rejected = %v, want %v (reason %q)", rejected, tc.wantReject, reason)
@@ -148,10 +51,35 @@ func TestRoleIdentityRejectionConsoleSessionBinding(t *testing.T) {
 // must NOT cause a rejection on goos != windows.
 func TestRoleIdentityRejectionUnixUnchangedByConsoleBinding(t *testing.T) {
 	reason, rejected := roleIdentityRejection(
-		ipc.HelperRoleUser, "", 1000, "99", "1", "darwin",
+		ipc.HelperRoleUser, "", 1000, "99", "7", "1", "darwin",
 	)
 	if rejected {
 		t.Fatalf("unix user role unexpectedly rejected: reason=%q", reason)
+	}
+}
+
+func TestPreferredRunAsUserSessionIgnoresRDPHelper(t *testing.T) {
+	now := time.Now()
+
+	consoleUser, consoleClient := newTestUserSession(t, "console-user", "alice", now.Add(-20*time.Minute))
+	defer consoleClient.Close()
+	consoleUser.WinSessionID = "1"
+
+	rdpUser, rdpClient := newTestUserSession(t, "rdp-user", "alice", now.Add(-time.Minute))
+	defer rdpClient.Close()
+	rdpUser.WinSessionID = "7"
+
+	b := &Broker{
+		sessions: map[string]*Session{
+			consoleUser.SessionID: consoleUser,
+			rdpUser.SessionID:     rdpUser,
+		},
+		byIdentity:         make(map[string][]*Session),
+		consoleSessionIDFn: func() string { return "1" },
+	}
+
+	if got := b.preferredRunAsUserSessionForOS("windows"); got != consoleUser {
+		t.Fatalf("preferredRunAsUserSessionForOS(windows) = %v, want physical-console helper %q", got, consoleUser.SessionID)
 	}
 }
 
@@ -179,7 +107,6 @@ func TestPreferredRunAsUserSessionFiltersByConsoleSession(t *testing.T) {
 			otherUser.SessionID:   otherUser,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -216,7 +143,6 @@ func TestPreferredRunAsUserSessionNoConsoleHelper(t *testing.T) {
 			otherUser.SessionID: otherUser,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -253,7 +179,6 @@ func TestPreferredRunAsUserSessionWarnsWhenConsoleBindingSuppressesDelivery(t *t
 			otherUser.SessionID: otherUser,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -302,7 +227,6 @@ func TestPreferredRunAsUserSessionWarnCountsAllExcludedHelpers(t *testing.T) {
 			c.SessionID:     c,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -335,7 +259,6 @@ func TestPreferredRunAsUserSessionWarnsWhenConsoleLookupFailed(t *testing.T) {
 			helper.SessionID: helper,
 		},
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 		// "0" is the WTSGetActiveConsoleSessionId failure / Session-0 sentinel,
 		// normalized to "" by ConsoleSessionID().
 		consoleSessionIDFn: func() string { return "0" },
@@ -364,7 +287,6 @@ func TestPreferredRunAsUserSessionNoWarnWhenNoUserHelper(t *testing.T) {
 	b := &Broker{
 		sessions:           map[string]*Session{},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 
@@ -401,7 +323,6 @@ func TestPreferredRunAsUserSessionNoWarnOnConsoleMatch(t *testing.T) {
 			otherUser.SessionID:   otherUser,
 		},
 		byIdentity:         make(map[string][]*Session),
-		staleHelpers:       make(map[string][]int),
 		consoleSessionIDFn: func() string { return "1" },
 	}
 

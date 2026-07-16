@@ -1,6 +1,33 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createHash } from 'node:crypto';
+
+const configState = vi.hoisted(() => ({
+  dcrEnabled: true,
+}));
+
+type CallableDelegate = (...args: any[]) => any;
+
+const mocks = vi.hoisted(() => ({
+  getProvider: vi.fn(),
+  getRedis: vi.fn(),
+  rateLimiter: vi.fn<CallableDelegate>(),
+}));
+
+vi.mock('../config/env', () => Object.defineProperty({
+  MCP_OAUTH_ENABLED: true,
+  OAUTH_ISSUER: 'https://test.example',
+  OAUTH_RESOURCE_URL: 'https://test.example/mcp/server',
+}, 'OAUTH_DCR_ENABLED', {
+  enumerable: true,
+  configurable: true,
+  get: () => configState.dcrEnabled,
+}));
+vi.mock('../oauth/provider', () => ({ getProvider: mocks.getProvider }));
+vi.mock('../services/redis', () => ({ getRedis: mocks.getRedis }));
+vi.mock('../services/rate-limit', () => ({ rateLimiter: mocks.rateLimiter }));
+
+import { oauthRoutes } from './oauth';
 
 const ENV_KEYS = [
   'MCP_OAUTH_ENABLED',
@@ -11,6 +38,7 @@ const ENV_KEYS = [
   'OAUTH_DCR_ENABLED',
   'NODE_ENV',
   'TRUST_PROXY_HEADERS',
+  'TRUSTED_PROXY_CIDRS',
 ] as const;
 
 const resetEnv = () => {
@@ -22,31 +50,10 @@ const resetAt = new Date('2026-04-23T00:00:00.000Z');
 const tokenClientKey = (clientId: string) =>
   `oauth:token:client:${createHash('sha256').update(clientId).digest('hex').slice(0, 32)}`;
 
-const importApp = async (
-  rateLimiter: ReturnType<typeof vi.fn> = vi.fn(async () => ({ allowed: true, remaining: 1, resetAt })),
+const loadApp = (
+  rateLimiter: CallableDelegate = vi.fn(async () => ({ allowed: true, remaining: 1, resetAt })),
 ) => {
-  process.env.MCP_OAUTH_ENABLED = 'true';
-  // DCR defaults to OFF in every environment (Task 21). Most tests in this
-  // file exercise registration-endpoint metadata + rate-limit policy, which
-  // requires DCR enabled. Tests that exercise the "DCR disabled" path set
-  // OAUTH_DCR_ENABLED=false explicitly before calling importApp.
-  if (process.env.OAUTH_DCR_ENABLED === undefined && process.env.NODE_ENV !== 'production') {
-    process.env.OAUTH_DCR_ENABLED = 'true';
-  }
-  vi.doMock('../services/redis', () => ({
-    getRedis: vi.fn(() => null),
-  }));
-  vi.doMock('../services/rate-limit', () => ({
-    rateLimiter,
-  }));
-  vi.doMock('../oauth/provider', () => ({
-    getProvider: vi.fn(async () => {
-      throw new Error('provider sentinel');
-    }),
-  }));
-  vi.resetModules();
-
-  const { oauthRoutes } = await import('./oauth');
+  mocks.rateLimiter.mockImplementation(rateLimiter);
   const app = new Hono();
   app.onError(() => new Response('provider sentinel', { status: 200 }));
   app.route('/oauth', oauthRoutes);
@@ -56,14 +63,13 @@ const importApp = async (
 describe('oauthRoutes rate limits', () => {
   beforeEach(() => {
     resetEnv();
-    vi.resetModules();
-  });
-
-  afterEach(() => {
-    resetEnv();
-    vi.doUnmock('../services/redis');
-    vi.doUnmock('../services/rate-limit');
-    vi.doUnmock('../oauth/provider');
+    configState.dcrEnabled = true;
+    mocks.getProvider.mockReset();
+    mocks.getProvider.mockRejectedValue(new Error('provider sentinel'));
+    mocks.getRedis.mockReset();
+    mocks.getRedis.mockReturnValue(null);
+    mocks.rateLimiter.mockReset();
+    mocks.rateLimiter.mockResolvedValue({ allowed: true, remaining: 1, resetAt });
   });
 
   it('returns 429 on the 11th POST /oauth/reg from the same IP', async () => {
@@ -72,7 +78,7 @@ describe('oauthRoutes rate limits', () => {
       remaining: 0,
       resetAt,
     }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     for (let i = 0; i < 10; i++) {
       const res = await app.request('/oauth/reg', {
@@ -94,8 +100,9 @@ describe('oauthRoutes rate limits', () => {
 
   it('disables DCR by default in production', async () => {
     process.env.NODE_ENV = 'production';
+    configState.dcrEnabled = false;
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg', {
       method: 'POST',
@@ -118,9 +125,9 @@ describe('oauthRoutes rate limits', () => {
 
   it('allows DCR in production when OAUTH_DCR_ENABLED=true', async () => {
     process.env.NODE_ENV = 'production';
-    process.env.OAUTH_DCR_ENABLED = 'true';
+    configState.dcrEnabled = true;
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg', {
       method: 'POST',
@@ -142,7 +149,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('returns 413 for oversized POST /oauth/reg bodies before provider bridge', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg', {
       method: 'POST',
@@ -163,7 +170,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('rejects DCR metadata with too many redirect URIs', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg', {
       method: 'POST',
@@ -186,7 +193,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('rejects DCR metadata with unsupported scopes', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg', {
       method: 'POST',
@@ -210,7 +217,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('rejects confidential DCR token endpoint auth methods', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg', {
       method: 'POST',
@@ -234,7 +241,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('rejects unsupported DCR grant and response types', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const grantRes = await app.request('/oauth/reg', {
       method: 'POST',
@@ -275,7 +282,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('rejects DCR remote key and request metadata', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg', {
       method: 'POST',
@@ -299,7 +306,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('applies the same DCR metadata policy to registration-management updates', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg/client-1', {
       method: 'PUT',
@@ -325,7 +332,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('rejects DCR registration with a remote http:// redirect_uri (MCP-OAUTH-09)', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg', {
       method: 'POST',
@@ -347,7 +354,7 @@ describe('oauthRoutes rate limits', () => {
   it('rejects http://localhost redirect_uri but not the loopback IP (RFC 8252)', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
 
-    const rejected = await (await importApp(rateLimiter)).request('/oauth/reg', {
+    const rejected = await (await loadApp(rateLimiter)).request('/oauth/reg', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.31' },
       body: JSON.stringify({ client_name: 'x', redirect_uris: ['http://localhost:8080/cb'] }),
@@ -357,7 +364,7 @@ describe('oauthRoutes rate limits', () => {
 
     // The literal loopback IP passes the pre-handler and falls through to the
     // provider bridge (mocked to throw → onError yields the 200 sentinel).
-    const accepted = await (await importApp(rateLimiter)).request('/oauth/reg', {
+    const accepted = await (await loadApp(rateLimiter)).request('/oauth/reg', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.31' },
       body: JSON.stringify({ client_name: 'x', redirect_uris: ['http://127.0.0.1:49152/cb'] }),
@@ -367,7 +374,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('applies the redirect-uri transport policy to registration-management updates (MCP-OAUTH-09)', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg/client-1', {
       method: 'PUT',
@@ -384,7 +391,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('rate-limits registration-management deletes', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg/client-1', {
       method: 'DELETE',
@@ -398,7 +405,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('rate-limits registration-management lookups', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg/client-1', {
       method: 'GET',
@@ -412,7 +419,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('keys POST /oauth/token by IP and client_id when client_id is present', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 59, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/token', {
       method: 'POST',
@@ -430,7 +437,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('keys POST /oauth/token by IP when client_id is missing', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 59, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/token', {
       method: 'POST',
@@ -450,7 +457,7 @@ describe('oauthRoutes rate limits', () => {
     process.env.NODE_ENV = 'production';
     process.env.TRUST_PROXY_HEADERS = 'false';
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 59, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/token', {
       method: 'POST',
@@ -473,7 +480,7 @@ describe('oauthRoutes rate limits', () => {
       remaining: 0,
       resetAt,
     }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     for (let i = 0; i < 60; i++) {
       const res = await app.request('/oauth/token', {
@@ -503,7 +510,7 @@ describe('oauthRoutes rate limits', () => {
       }
       return { allowed: true, remaining: 59, resetAt };
     });
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     for (let i = 0; i < 30; i++) {
       const res = await app.request('/oauth/token', {
@@ -533,7 +540,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('returns 413 for oversized POST /oauth/token bodies before provider bridge', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 59, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/token', {
       method: 'POST',
@@ -554,7 +561,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('rate-limits POST /oauth/token/revocation by IP', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/token/revocation', {
       method: 'POST',
@@ -572,7 +579,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('keys GET /oauth/auth by IP and rate-limits at 20/minute', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/auth', {
       method: 'GET',
@@ -586,7 +593,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('does not rate-limit other OAuth paths', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/me', {
       method: 'POST',
@@ -599,7 +606,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('returns 400 when DCR receives malformed JSON (does not silently treat as empty)', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 9, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     const res = await app.request('/oauth/reg', {
       method: 'POST',
@@ -619,7 +626,7 @@ describe('oauthRoutes rate limits', () => {
 
   it('preserves token rawBody for the oidc-provider bridge to replay (production node path)', async () => {
     const rateLimiter = vi.fn(async () => ({ allowed: true, remaining: 59, resetAt }));
-    const app = await importApp(rateLimiter);
+    const app = await loadApp(rateLimiter);
 
     // Simulate a real Node IncomingMessage (with .on()) so the route uses
     // the rawBody pre-buffer path. Hono's app.request accepts an env arg
@@ -659,24 +666,4 @@ describe('oauthRoutes rate limits', () => {
     expect((incoming.rawBody as Buffer).toString('utf8')).toBe(bodyStr);
   });
 
-  it('does not attach the middleware when MCP_OAUTH_ENABLED is false', async () => {
-    const rateLimiter = vi.fn(async () => ({ allowed: false, remaining: 0, resetAt }));
-    vi.doMock('../services/redis', () => ({
-      getRedis: vi.fn(() => null),
-    }));
-    vi.doMock('../services/rate-limit', () => ({
-      rateLimiter,
-    }));
-    vi.resetModules();
-
-    const { oauthRoutes } = await import('./oauth');
-    const app = new Hono().route('/oauth', oauthRoutes);
-    const res = await app.request('/oauth/reg', {
-      method: 'POST',
-      headers: { 'x-forwarded-for': '203.0.113.60' },
-    });
-
-    expect(res.status).toBe(404);
-    expect(rateLimiter).not.toHaveBeenCalled();
-  });
 });

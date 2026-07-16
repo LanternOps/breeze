@@ -13,7 +13,9 @@ const changeTypeValues = [
   'startup',
   'network',
   'scheduled_task',
-  'user_account'
+  'user_account',
+  'hardware',
+  'os_version'
 ] as const;
 
 const changeActionValues = [

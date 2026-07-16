@@ -11,7 +11,6 @@ func TestSetClearBackupSession(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	s := &Session{SessionID: "backup-test"}
@@ -41,7 +40,6 @@ func TestStopBackupHelper_NilBroker(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 	// Should not panic when backup is nil
 	b.StopBackupHelper()
@@ -51,7 +49,6 @@ func TestForwardBackupCommand_NotConnected(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 	_, err := b.ForwardBackupCommand("cmd-1", "backup_run", nil, 5e9)
 	if err == nil {
@@ -71,11 +68,33 @@ func TestHelperRoleBackupConstant(t *testing.T) {
 	}
 }
 
+// TestBackupBinaryName pins the platform-suffix contract for the breeze-backup
+// helper. The helper is built for every supported OS (see agent/Makefile), and
+// is installed as breeze-backup.exe on Windows but breeze-backup elsewhere. The
+// original bug resolved the sibling fallback as "breeze-backup" on every OS, so
+// on Windows os.Stat could never find the installed breeze-backup.exe and every
+// backup run failed with "backup binary not found". No non-Windows CI run could
+// have caught it, hence this GOOS-parameterized test.
+func TestBackupBinaryName(t *testing.T) {
+	tests := []struct {
+		goos string
+		want string
+	}{
+		{"windows", "breeze-backup.exe"},
+		{"linux", "breeze-backup"},
+		{"darwin", "breeze-backup"},
+	}
+	for _, tt := range tests {
+		if got := backupBinaryName(tt.goos); got != tt.want {
+			t.Errorf("backupBinaryName(%q) = %q, want %q", tt.goos, got, tt.want)
+		}
+	}
+}
+
 func TestGetOrSpawnBackupHelper_ExistingSession(t *testing.T) {
 	b := &Broker{
 		sessions:     make(map[string]*Session),
 		byIdentity:   make(map[string][]*Session),
-		staleHelpers: make(map[string][]int),
 	}
 
 	// Pre-set a backup session

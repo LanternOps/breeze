@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the service layer — routes are thin; we assert wiring, validation, error mapping.
 vi.mock('../../services/quoteService', () => ({
   createQuote: vi.fn(),
+  cloneQuote: vi.fn(),
   getQuote: vi.fn(),
   listQuotes: vi.fn(),
   updateQuote: vi.fn(),
@@ -110,6 +111,81 @@ describe('quote crud + lines routes', () => {
     expect(svc.createQuote).toHaveBeenCalledOnce();
   });
 
+  it('POST /:id/clone clones a quote into a new draft (bodyless legacy call → no retarget)', async () => {
+    (svc.cloneQuote as any).mockResolvedValue({ id: BLOCK_ID, status: 'draft' });
+    const res = await app().request(`/${QUOTE_ID}/clone`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({ id: BLOCK_ID, status: 'draft' });
+    expect(svc.cloneQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything(), {});
+  });
+
+  it('POST /:id/clone passes retarget/rename options through to the service', async () => {
+    (svc.cloneQuote as any).mockResolvedValue({ id: BLOCK_ID, status: 'draft' });
+    const res = await app().request(`/${QUOTE_ID}/clone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, title: 'Clone of Q-1' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(svc.cloneQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything(), { orgId: ORG_ID, title: 'Clone of Q-1' });
+  });
+
+  it('POST /:id/clone honors a JSON retarget body even without a content-type header', async () => {
+    // No content-type gate: a caller that forgets the header must still get the
+    // retarget it asked for, never a silent same-org clone.
+    (svc.cloneQuote as any).mockResolvedValue({ id: BLOCK_ID, status: 'draft' });
+    const res = await app().request(`/${QUOTE_ID}/clone`, {
+      method: 'POST',
+      body: JSON.stringify({ orgId: ORG_ID }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(svc.cloneQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything(), { orgId: ORG_ID });
+  });
+
+  it('POST /:id/clone rejects a non-JSON body instead of silently cloning', async () => {
+    const res = await app().request(`/${QUOTE_ID}/clone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `orgId=${ORG_ID}`,
+    });
+
+    expect(res.status).toBe(400);
+    expect(svc.cloneQuote).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/clone rejects a malformed retarget body instead of silently cloning', async () => {
+    // A mis-keyed field must 400 (strict schema), not fall back to a same-org clone.
+    const res = await app().request(`/${QUOTE_ID}/clone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgID: ORG_ID }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(svc.cloneQuote).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/clone rejects an invalid quote id before calling the service', async () => {
+    const res = await app().request('/not-a-uuid/clone', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(svc.cloneQuote).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/clone is blocked by the write-permission gate', async () => {
+    const { HTTPException } = await import('hono/http-exception');
+    gate.permGate = async () => { throw new HTTPException(403, { message: 'Permission denied' }); };
+
+    const res = await app().request(`/${QUOTE_ID}/clone`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(svc.cloneQuote).not.toHaveBeenCalled();
+  });
+
   it('POST / rejects an invalid body (non-UUID orgId → 400, no service call)', async () => {
     const res = await app().request('/', {
       method: 'POST',
@@ -121,12 +197,32 @@ describe('quote crud + lines routes', () => {
   });
 
   it('GET /:id fetches one quote', async () => {
-    (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID }, blocks: [], lines: [] });
+    (svc.getQuote as any).mockResolvedValue({
+      quote: { id: QUOTE_ID },
+      blocks: [],
+      lines: [],
+      pax8OrderId: '55555555-5555-5555-5555-555555555555',
+      pax8OrderLineCount: 2,
+    });
     const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.quote.id).toBe(QUOTE_ID);
+    expect(body.data).toMatchObject({
+      pax8OrderId: '55555555-5555-5555-5555-555555555555',
+      pax8OrderLineCount: 2,
+    });
     expect(svc.getQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+  });
+
+  it('GET /:id denies callers without quotes:read before loading the staged-order summary', async () => {
+    const { HTTPException } = await import('hono/http-exception');
+    gate.permGate = async () => { throw new HTTPException(403, { message: 'Permission denied' }); };
+
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+
+    expect(res.status).toBe(403);
+    expect(svc.getQuote).not.toHaveBeenCalled();
   });
 
   it('POST /:id/lines adds a manual line', async () => {
@@ -375,7 +471,10 @@ describe('quote crud + lines routes', () => {
       ],
       lines: [
         { id: 'l1', blockId: 'b2', description: 'Onsite hour', quantity: '2', unitPrice: '150', lineTotal: '300', recurrence: 'one_time' }
-      ]
+      ],
+      // getQuote resolves the customer bill-to (from the org for drafts); the route
+      // overlays it onto the render payload.
+      billTo: { name: 'Acme Customer', address: null, taxId: null }
     };
 
     it('streams the rendered PDF inline (200, application/pdf, inline filename)', async () => {

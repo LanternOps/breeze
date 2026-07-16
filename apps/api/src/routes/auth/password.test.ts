@@ -8,6 +8,7 @@ const {
   getEligibilityForUserMock,
   runPostCommitCleanupMock,
   recordFailedLoginMock,
+  enqueuePasswordResetRequestMock,
 } = vi.hoisted(() => ({
   sendPasswordResetMock: vi.fn(async () => undefined),
   setexMock: vi.fn(async (_key: string, _ttlSeconds: number, _value: string) => 'OK'),
@@ -23,6 +24,7 @@ const {
       | undefined,
   })),
   recordFailedLoginMock: vi.fn(),
+  enqueuePasswordResetRequestMock: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../db', () => ({
@@ -78,6 +80,13 @@ vi.mock('../../services/anomalyMetrics', () => ({
   recordFailedLogin: recordFailedLoginMock,
 }));
 
+// SR2-22: /forgot-password now enqueues an opaque job instead of doing any
+// existence-dependent work in-request. The queue producer is mocked so the
+// route tests can assert the enqueue happens without a live BullMQ/Redis.
+vi.mock('../../services/authEmailQueue', () => ({
+  enqueuePasswordResetRequest: enqueuePasswordResetRequestMock,
+}));
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
@@ -127,6 +136,8 @@ vi.mock('./ssoPolicy', () => ({
 import { passwordRoutes } from './password';
 import { db } from '../../db';
 import { writeAuthAudit } from './helpers';
+import { getPasswordResetEligibility } from '../../services/passwordResetEligibility';
+import { enqueuePasswordResetRequest } from '../../services/authEmailQueue';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -194,144 +205,118 @@ describe('password reset eligibility (#719)', () => {
       oauthResult: { grantsRevoked: 0, refreshTokensRevoked: 0, jtisRevoked: 0 },
     });
     recordFailedLoginMock.mockReset();
+    enqueuePasswordResetRequestMock.mockReset();
+    enqueuePasswordResetRequestMock.mockResolvedValue(undefined);
     vi.mocked(db.transaction).mockReset();
     stubTransaction();
   });
 
-  describe('POST /forgot-password', () => {
-    it('sends reset email for users in pending partners (#719)', async () => {
-      getEligibilityMock.mockResolvedValue({
-        allowed: true,
-        userId: 'u-pending',
-        email: 'pending@x.com',
+  // SR2-22: /forgot-password does ZERO existence-dependent work in the request
+  // path. It enqueues one opaque job and returns a fixed generic body. All the
+  // conditional work (eligibility lookup, epoch advance, envelope write, mail
+  // send, audit, anomaly metric) moved to jobs/authEmailWorker.ts — see
+  // authEmailWorker.test.ts for the coverage that used to live in this block.
+  describe('POST /forgot-password — SR2-22: the request does no conditional work', () => {
+    async function postForgot(body: unknown) {
+      return postJson('/forgot-password', body);
+    }
+
+    it('returns the identical body for a known and an unknown address', async () => {
+      const known = await postForgot({ email: 'admin@msp.com' });
+      const unknown = await postForgot({ email: 'nobody@nowhere.test' });
+      expect(known.status).toBe(200);
+      expect(unknown.status).toBe(200);
+      const knownBody = await known.json();
+      const unknownBody = await unknown.json();
+      expect(knownBody).toEqual(unknownBody);
+      expect(knownBody).toEqual({
+        success: true,
+        message: 'If this email exists, a reset link will be sent.',
       });
-
-      const res = await postJson('/forgot-password', { email: 'pending@x.com' });
-
-      expect(res.status).toBe(200);
-      expect(getEligibilityMock).toHaveBeenCalledWith('pending@x.com');
-      expect(sendPasswordResetMock).toHaveBeenCalledWith(
-        expect.objectContaining({ to: 'pending@x.com' }),
-      );
-      // SR2-08: the stored token value is now a generation+email envelope,
-      // not a bare userId.
-      expect(setexMock).toHaveBeenCalledWith(
-        expect.stringMatching(/^reset:/),
-        3600,
-        JSON.stringify({ userId: 'u-pending', passwordResetEpoch: DEFAULT_EPOCH_ROW.passwordResetEpoch, email: 'pending@x.com' }),
-      );
-      expect(writeAuthAudit).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          action: 'user.password.reset.requested',
-          result: 'success',
-          userId: 'u-pending',
-        }),
-      );
-      // A successful (allowed) reset must NOT pollute the inactive-tenant signal.
-      expect(recordFailedLoginMock).not.toHaveBeenCalled();
     });
 
-    it('refuses reset for users in suspended partners (generic 200, no email sent)', async () => {
-      getEligibilityMock.mockResolvedValue({
-        allowed: false,
-        reason: 'tenant_inactive',
-        detail: 'partner:suspended',
-        userId: 'u-suspended',
-        email: 'sus@x.com',
-      });
-
-      const res = await postJson('/forgot-password', { email: 'sus@x.com' });
-
-      expect(res.status).toBe(200);
-      const body = await res.json() as { success: boolean; error?: string };
-      expect(body.success).toBe(true);
-      // Anti-enumeration: the blocking partner status NEVER appears in the
-      // response body.
-      expect(JSON.stringify(body)).not.toContain('suspended');
-      expect(sendPasswordResetMock).not.toHaveBeenCalled();
+    it('does NOT touch the database, does NOT advance an epoch, and does NOT send mail', async () => {
+      await postForgot({ email: 'admin@msp.com' });
+      // The oracle was the latency of these. They must not run in-request.
+      // NB: advanceUserEpochs (kept REAL for the SR2-08 tests) can only run
+      // INSIDE db.transaction, so a not-called db.transaction is a stronger
+      // proof that no epoch advance happened in-request than spying the fn.
+      expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+      expect(vi.mocked(getPasswordResetEligibility)).not.toHaveBeenCalled();
       expect(setexMock).not.toHaveBeenCalled();
-      expect(db.transaction).not.toHaveBeenCalled();
-      expect(writeAuthAudit).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          action: 'user.password.reset.requested',
-          result: 'denied',
-          reason: 'tenant_inactive',
-          userId: 'u-suspended',
-          // #719 residual 1: specific status recorded server-side for ops.
-          details: { detail: 'partner:suspended' },
-        }),
-      );
-      // #719 residual 2: inactive-tenant reset attempts feed the anomaly metric.
-      expect(recordFailedLoginMock).toHaveBeenCalledWith('reset_tenant_inactive');
-    });
-
-    it('refuses reset for unknown emails (generic 200, no email sent, no audit)', async () => {
-      getEligibilityMock.mockResolvedValue({
-        allowed: false,
-        reason: 'unknown_user',
-      });
-
-      const res = await postJson('/forgot-password', { email: 'noone@x.com' });
-
-      expect(res.status).toBe(200);
       expect(sendPasswordResetMock).not.toHaveBeenCalled();
-      expect(setexMock).not.toHaveBeenCalled();
-      // No audit log for unknown users — defeats enumeration via audit-trail
-      // exposure or write-volume side-channels.
       expect(writeAuthAudit).not.toHaveBeenCalled();
-      // And no metric — an unknown email must be indistinguishable from a
-      // known-but-inactive one in every observable channel.
       expect(recordFailedLoginMock).not.toHaveBeenCalled();
     });
 
-    it('refuses reset for SSO-enforced org users', async () => {
-      getEligibilityMock.mockResolvedValue({
-        allowed: false,
-        reason: 'sso_required',
-        userId: 'u-sso',
-        email: 'sso@x.com',
-      });
-
-      const res = await postJson('/forgot-password', { email: 'sso@x.com' });
-
-      expect(res.status).toBe(200);
-      expect(sendPasswordResetMock).not.toHaveBeenCalled();
-      expect(writeAuthAudit).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          action: 'user.password.reset.requested',
-          result: 'denied',
-          reason: 'sso_required',
-          userId: 'u-sso',
-        }),
-      );
-      // Only tenant_inactive feeds the inactive-tenant signal — sso_required
-      // is a separate, intentional policy and must not inflate it.
-      expect(recordFailedLoginMock).not.toHaveBeenCalled();
+    it('enqueues exactly one opaque job with the normalized address', async () => {
+      await postForgot({ email: '  ADMIN@MSP.com ' });
+      expect(vi.mocked(enqueuePasswordResetRequest)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(enqueuePasswordResetRequest)).toHaveBeenCalledWith('admin@msp.com');
     });
 
-    it('refuses reset for disabled users', async () => {
-      getEligibilityMock.mockResolvedValue({
-        allowed: false,
-        reason: 'user_disabled',
-        userId: 'u-disabled',
-        email: 'off@x.com',
-      });
+    it('enqueues for a known and an unknown address indistinguishably (structural + duration)', async () => {
+      const ITER = 40;
+      const timeMany = async (email: string): Promise<number> => {
+        const start = performance.now();
+        for (let i = 0; i < ITER; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await postForgot({ email });
+        }
+        return performance.now() - start;
+      };
+      const knownMs = await timeMany('admin@msp.com');
+      const unknownMs = await timeMany('nobody@nowhere.test');
 
-      const res = await postJson('/forgot-password', { email: 'off@x.com' });
-
-      expect(res.status).toBe(200);
+      // Structural indistinguishability: identical enqueue count, and NONE of
+      // the existence-dependent calls fired for either address.
+      expect(vi.mocked(enqueuePasswordResetRequest)).toHaveBeenCalledTimes(ITER * 2);
+      expect(vi.mocked(getPasswordResetEligibility)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
       expect(sendPasswordResetMock).not.toHaveBeenCalled();
-      expect(writeAuthAudit).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          action: 'user.password.reset.requested',
-          result: 'denied',
-          reason: 'user_disabled',
-        }),
-      );
+
+      // Duration: no order-of-magnitude oracle. Both paths run the identical
+      // branch-free code, so their aggregate wall-clock must stay within a
+      // generous factor of each other (loose bound = flake-proof; the
+      // structural assertions above are the real guard).
+      const slower = Math.max(knownMs, unknownMs);
+      const faster = Math.max(Math.min(knownMs, unknownMs), 0.001);
+      expect(slower / faster).toBeLessThan(5);
+    });
+
+    it('returns the generic 200 (not a 4xx/5xx oracle) when the rate limit is exceeded', async () => {
+      const { rateLimiter } = await import('../../services');
+      vi.mocked(rateLimiter).mockResolvedValueOnce({ allowed: false } as never);
+
+      const res = await postForgot({ email: 'admin@msp.com' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        success: true,
+        message: 'If this email exists, a reset link will be sent.',
+      });
+      // Rate-limited requests must NOT enqueue (that would be a work oracle).
+      expect(vi.mocked(enqueuePasswordResetRequest)).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 (service state, not account state) when Redis is down', async () => {
+      const { getRedis } = await import('../../services');
+      vi.mocked(getRedis).mockReturnValueOnce(null as never);
+
+      const res = await postForgot({ email: 'admin@msp.com' });
+      expect(res.status).toBe(503);
+      expect(vi.mocked(enqueuePasswordResetRequest)).not.toHaveBeenCalled();
+    });
+
+    it('still returns the generic 200 even if the enqueue itself throws (no availability oracle)', async () => {
+      enqueuePasswordResetRequestMock.mockRejectedValueOnce(new Error('redis blip'));
+
+      const res = await postForgot({ email: 'admin@msp.com' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        success: true,
+        message: 'If this email exists, a reset link will be sent.',
+      });
     });
   });
 
@@ -350,25 +335,21 @@ describe('password reset eligibility (#719)', () => {
     });
 
     it('(a) rejects redemption via an older token once a newer reset token has been issued', async () => {
-      // First issuance: epoch advances to 2, embedded in the token.
-      stubTransaction({ ...DEFAULT_EPOCH_ROW, passwordResetEpoch: 2 });
-      await postJson('/forgot-password', { email: 'user@example.test' });
-      const firstEnvelope = setexMock.mock.calls[0]?.[2] as string;
-      expect(JSON.parse(firstEnvelope)).toEqual({
+      // SR2-22: issuance moved to the worker (jobs/authEmailWorker.ts), which
+      // advances password_reset_epoch and embeds it in the envelope — the same
+      // envelope shape this route redeems. The worker's issuance is covered by
+      // authEmailWorker.test.ts; here we build the FIRST (older, epoch-2)
+      // envelope directly and prove the REDEMPTION side (unchanged, in-route)
+      // fails closed once the live generation has moved past it.
+      const firstEnvelope = JSON.stringify({
         userId: 'u-1',
         passwordResetEpoch: 2,
         email: 'user@example.test',
       });
 
-      // Second issuance (e.g. the user requests another reset before using
-      // the first): epoch advances again to 3.
-      stubTransaction({ ...DEFAULT_EPOCH_ROW, passwordResetEpoch: 3 });
-      await postJson('/forgot-password', { email: 'user@example.test' });
-      expect(setexMock).toHaveBeenCalledTimes(2);
-
-      // Redeem the FIRST (older, epoch-2) token. The live user row is now at
-      // epoch 3 (the second issuance already advanced it) — must fail closed
-      // even though the token itself hasn't expired.
+      // The live user row is now at epoch 3 (a second issuance already advanced
+      // it) — redeeming the older epoch-2 token must fail closed even though
+      // the token itself hasn't expired.
       getdelMock.mockResolvedValue(firstEnvelope);
       vi.mocked(db.select).mockReturnValue(
         selectChain([{ passwordResetEpoch: 3, email: 'user@example.test' }]) as any,

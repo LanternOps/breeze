@@ -91,6 +91,7 @@ export const pax8SubscriptionSnapshots = pgTable('pax8_subscription_snapshots', 
   status: varchar('status', { length: 40 }),
   billingTerm: varchar('billing_term', { length: 40 }),
   quantity: numeric('quantity', { precision: 12, scale: 2 }).notNull().default('0'),
+  quantityKnown: boolean('quantity_known').notNull().default(false),
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }),
   unitCost: numeric('unit_cost', { precision: 12, scale: 2 }),
   currencyCode: char('currency_code', { length: 3 }),
@@ -157,8 +158,10 @@ export const pax8ContractLineLinks = pgTable('pax8_contract_line_links', {
   subscriptionSnapshotId: uuid('subscription_snapshot_id').notNull().references(() => pax8SubscriptionSnapshots.id, { onDelete: 'cascade' }),
   contractLineId: uuid('contract_line_id').notNull().references(() => contractLines.id, { onDelete: 'cascade' }),
   syncEnabled: boolean('sync_enabled').notNull().default(false),
-  lastAppliedQuantity: numeric('last_applied_quantity', { precision: 12, scale: 2 }),
-  lastAppliedAt: timestamp('last_applied_at', { withTimezone: true }),
+  // Physical names are retained for migration compatibility. These values are
+  // observations only; they are never applied to contract billing quantity.
+  lastObservedQuantity: numeric('last_applied_quantity', { precision: 12, scale: 2 }),
+  lastObservedAt: timestamp('last_applied_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({

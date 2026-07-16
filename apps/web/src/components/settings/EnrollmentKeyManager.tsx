@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
-import { useOrgStore } from '../../stores/orgStore';
+import { useOrgStore, type Site } from '../../stores/orgStore';
 import { fallbackInstallerFilename, filenameFromContentDisposition } from '@/lib/downloadFilename';
 import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
@@ -37,6 +37,7 @@ type ModalMode = 'closed' | 'create' | 'delete';
 
 export default function EnrollmentKeyManager() {
   const { t } = useTranslation('settings');
+  const { currentOrgId, currentSiteId, sites: storeSites, organizations, isLoading: storeLoading } = useOrgStore();
   const [keys, setKeys] = useState<EnrollmentKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -57,6 +58,16 @@ export default function EnrollmentKeyManager() {
   const [formName, setFormName] = useState('');
   const [formMaxUsage, setFormMaxUsage] = useState('');
   const [formExpiresAt, setFormExpiresAt] = useState('');
+  // Enrollment keys are unusable for `breeze-agent enroll` without a siteId
+  // (the API rejects enrollment with "Enrollment key must be associated with
+  // a site"), so the create form requires picking one. Org selection drives
+  // the site list: a partner admin managing multiple orgs gets an explicit
+  // Organization dropdown; everyone else (org-scoped token, or a partner with
+  // exactly one org) is defaulted straight to the active org.
+  const [formOrgId, setFormOrgId] = useState('');
+  const [formSiteId, setFormSiteId] = useState('');
+  const [formSites, setFormSites] = useState<Site[]>([]);
+  const [sitesLoading, setSitesLoading] = useState(false);
 
   const fetchKeys = useCallback(async (page = 1) => {
     try {
@@ -96,6 +107,60 @@ export default function EnrollmentKeyManager() {
     return () => document.removeEventListener('click', handler);
   }, [downloadDropdownId]);
 
+  // Load the site list for the create form's selected org. Reuses the
+  // already-fetched org-switcher sites when the form's org matches the
+  // globally active org (the common case); only issues a fresh request when
+  // a partner admin picks a different org from the form's own selector.
+  useEffect(() => {
+    if (modalMode !== 'create' || !formOrgId) {
+      setFormSites([]);
+      return;
+    }
+    if (formOrgId === currentOrgId) {
+      setFormSites(storeSites.filter((s) => s.orgId === formOrgId));
+      return;
+    }
+    // Cross-org: clear the previously-selected org's sites immediately so the
+    // default-site effect falls back to '' until the correct list loads. Without
+    // this, switching the Org dropdown leaves the old org's sites in place and a
+    // stale siteId could be defaulted (and submitted) for the newly-picked org.
+    let cancelled = false;
+    setFormSites([]);
+    setSitesLoading(true);
+    fetchWithAuth(`/orgs/sites?organizationId=${formOrgId}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(res)))
+      .then((data) => {
+        if (cancelled) return;
+        const list: Site[] = Array.isArray(data?.data)
+          ? data.data
+          : Array.isArray(data?.sites)
+            ? data.sites
+            : [];
+        setFormSites(list);
+      })
+      .catch(() => {
+        if (!cancelled) setFormSites([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSitesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modalMode, formOrgId, currentOrgId, storeSites]);
+
+  // Default the site selection once the list loads: prefer the globally
+  // active site if it belongs to this org, otherwise the first available.
+  useEffect(() => {
+    if (modalMode !== 'create') return;
+    if (formSiteId && formSites.some((s) => s.id === formSiteId)) return;
+    if (currentSiteId && formSites.some((s) => s.id === currentSiteId)) {
+      setFormSiteId(currentSiteId);
+    } else {
+      setFormSiteId(formSites[0]?.id ?? '');
+    }
+  }, [modalMode, formSites, currentSiteId, formSiteId]);
+
   const handleCopyKey = async (key: string, id: string) => {
     try {
       await navigator.clipboard.writeText(key);
@@ -110,6 +175,8 @@ export default function EnrollmentKeyManager() {
     setFormName('');
     setFormMaxUsage('');
     setFormExpiresAt('');
+    setFormOrgId(currentOrgId ?? organizations[0]?.id ?? '');
+    setFormSiteId('');
     setModalMode('create');
   };
 
@@ -125,13 +192,17 @@ export default function EnrollmentKeyManager() {
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!formSiteId) return;
     setSubmitting(true);
     try {
-      const body: Record<string, unknown> = { name: formName };
+      const body: Record<string, unknown> = { name: formName, siteId: formSiteId };
 
-      // Use the currently selected org from the org switcher
-      const currentOrgId = useOrgStore.getState().currentOrgId;
-      if (currentOrgId) {
+      // Prefer the org chosen in the form (defaults to the org switcher's
+      // active org; only differs when a partner admin picked another org
+      // from the form's own Organization selector).
+      if (formOrgId) {
+        body.orgId = formOrgId;
+      } else if (currentOrgId) {
         body.orgId = currentOrgId;
       } else if (keys.length > 0) {
         body.orgId = keys[0].orgId;
@@ -320,6 +391,13 @@ export default function EnrollmentKeyManager() {
       </div>
     );
   }
+
+  // Whether the create form's site list reflects a completed load. For the
+  // common same-org case we lean on the store's load flag (its sites are fetched
+  // globally by the org switcher); for a cross-org pick we track it locally.
+  // Only once resolved do we show the "no sites yet" empty state — otherwise it
+  // flashes before the async site list has actually landed.
+  const formSitesResolved = formOrgId === currentOrgId ? !storeLoading : !sitesLoading;
 
   return (
     <div className="space-y-6">
@@ -585,6 +663,56 @@ export default function EnrollmentKeyManager() {
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />
               </div>
+              {organizations.length > 1 && (
+                <div>
+                  <label className="text-sm font-medium">{t('common:labels.organization')}</label>
+                  <select
+                    data-testid="enrollment-key-org-select"
+                    value={formOrgId}
+                    onChange={(e) => {
+                      setFormOrgId(e.target.value);
+                      setFormSiteId('');
+                    }}
+                    required
+                    className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
+                  >
+                    {organizations.map((org) => (
+                      <option key={org.id} value={org.id}>{org.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="text-sm font-medium">{t('common:labels.site')}</label>
+                {formSitesResolved && formSites.length === 0 ? (
+                  <div className="mt-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                    {t('enrollmentKeys.noSitesForOrg')}{' '}
+                    <a
+                      href="/settings/organizations"
+                      className="font-medium underline hover:no-underline"
+                    >
+                      {t('enrollmentKeys.createASite')}
+                    </a>
+                  </div>
+                ) : (
+                  <select
+                    data-testid="enrollment-key-site-select"
+                    value={formSiteId}
+                    onChange={(e) => setFormSiteId(e.target.value)}
+                    required
+                    disabled={!formSitesResolved}
+                    className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary disabled:opacity-60"
+                  >
+                    <option value="" disabled>{t('enrollmentKeys.selectSite')}</option>
+                    {formSites.map((site) => (
+                      <option key={site.id} value={site.id}>{site.name}</option>
+                    ))}
+                  </select>
+                )}
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t('enrollmentKeys.siteHelp')}
+                </p>
+              </div>
               <div>
                 <label className="text-sm font-medium">{t('enrollmentKeys.maxUsage')}</label>
                 <input
@@ -618,7 +746,7 @@ export default function EnrollmentKeyManager() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || !formName.trim()}
+                  disabled={submitting || !formName.trim() || !formSiteId || sitesLoading}
                   className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {submitting ? t('enrollmentKeys.creating') : t('enrollmentKeys.createKey')}

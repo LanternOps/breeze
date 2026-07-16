@@ -38,7 +38,7 @@ Pax8 connects with your Pax8 **OAuth client credentials**. Once connected, Breez
    - **Display name** — a label for this connection (defaults to `Pax8`).
    - **Client ID** — your Pax8 OAuth client ID.
    - **Client secret** — your Pax8 OAuth client secret.
-   - **Webhook secret** *(optional)* — used to verify inbound Pax8 webhooks.
+   - **Webhook secret** *(optional)* — stored with the integration, but not required by the ordering or scheduled-sync workflow.
 
 3. Click **Connect Pax8**. Secrets are stored encrypted; once saved, each field shows a **Configured** badge. When updating an existing connection you can leave a secret field blank to keep the stored value.
 
@@ -48,28 +48,74 @@ Pax8 connects with your Pax8 **OAuth client credentials**. Once connected, Breez
 </Steps>
 
 <Aside type="caution">
-  Pax8 write actions (connecting, syncing, and linking subscriptions) are **MFA-gated** on the server. If you see an "MFA required" message, enable multi-factor authentication on your Breeze account and retry.
+  Pax8 write actions (connecting, syncing, mapping companies, linking subscriptions, and authoring or submitting orders) are **MFA-gated** on the server. If you see an "MFA required" message, enable multi-factor authentication on your Breeze account and retry.
 </Aside>
 
 **What syncs from Pax8**
 
 - **Companies** — your Pax8 client companies, with status, shown in the **Company mapping** table. Map each Pax8 company to a Breeze organization (or leave it unmapped).
 - **License subscriptions** — pulled per company, including product name, vendor, quantity, unit cost, unit price, currency, billing term, and status.
-- **Contract-line linkage** — once a company is mapped to an organization, each subscription can be linked to a contract line so quantities flow into recurring billing.
+- **Contract-line linkage** — once a company is mapped to an organization, each subscription can be linked to a manual contract line. Breeze keeps the billing quantity on that contract line and records the Pax8 quantity separately as an observation.
 
-**Subscription actions**
+<Aside type="caution" title="Behavior change: Pax8 no longer overwrites billing quantities">
+  Existing links with `sync_enabled` will **stop automatically updating contract-line quantities from Pax8**. This is intentional: the quantity reported by the Pax8 subscription API does not reliably match the quantity Pax8 invoices. The Breeze order ledger and its linked manual contract-line quantity are now the billing source of truth. Scheduled sync records Pax8's reported quantity for comparison and surfaces drift instead of silently changing customer billing.
+</Aside>
 
-A subscription only becomes linkable after its company is mapped to a Breeze organization. Each subscription row then offers:
+**Subscription links on the Integrations page**
+
+A subscription only becomes linkable after its company is mapped to a Breeze organization. On **Integrations → Distributors → Pax8**, each subscription row offers:
 
 | Action | Description |
 |--------|-------------|
-| **Link** | Connect the subscription to a contract line (or create a new manual line) |
-| **Change** | Re-point the subscription to a different contract line |
-| **Pause** | Stop automatic quantity sync while keeping the link intact |
-| **Resume** | Re-enable automatic quantity sync |
+| **Link for observation** | Connect the subscription to a contract line (or create a new manual line) |
+| **Change link** | Re-point the subscription to a different contract line |
+| **Pause observations** | Stop recording Pax8 quantity observations for this link while keeping the link intact |
+| **Resume observations** | Resume recording observations and drift detection for this link |
 | **Unlink** | Remove the connection between the subscription and the contract line |
 
-When sync is enabled on a link, Pax8 subscription quantities are pushed to the linked contract line on each sync. Pausing stops future quantity updates but leaves the last-synced quantity in place so billing isn't affected unexpectedly.
+These Integrations-page actions manage the contract-line link and whether scheduled sync records observations; that table's **Pax8 reported** column is not a Breeze billing quantity. To compare quantities or stage an order action, open the mapped organization's **Pax8** tab. The organization tab shows **Breeze quantity** (the authoritative manual contract-line billing quantity), **Pax8 reported** (the latest known observation), and a **Drift** badge when both values are known and disagree. A missing or unknown Pax8 quantity is not treated as zero and does not produce a drift warning.
+
+### Prepare an organization for ordering
+
+Ordering is managed from the organization's **Pax8** settings tab, but remains a partner-account operation:
+
+1. Sync the integration so the Pax8 company, subscriptions, and product mappings are current.
+2. Open **Settings → Organizations → _organization_ → Pax8**, or go directly to `/settings/organizations/<org-id>#pax8`.
+3. Map exactly one Pax8 company to the organization.
+4. Confirm the mapped company is **Active** in Pax8 and has primary **Admin**, **Billing**, and **Technical** contacts. The organization tab shows the Pax8 company status. When the mapping is not order-ready, it shows one combined warning; it does not show contact details or separate indicators for the three contact roles.
+5. Link recurring subscriptions to the corresponding manual contract lines. A linked line is required before the organization tab can stage a quantity change or cancellation.
+
+The **New order** action stays unavailable until the company mapping is order-ready and at least one active Product Catalog item is mapped to a Pax8 product.
+
+### Build and submit a direct order
+
+The organization tab keeps one mutable direct order per organization. Returning to **New order** reopens that draft until it is submitted.
+
+<Steps>
+1. Click **New order** and choose an active, Pax8-mapped catalog product.
+
+2. Set its billing term and quantity. If Pax8 reports commitment choices, select one. Complete any product-specific provisioning fields that you know; Breeze leaves all of these fields optional because Pax8 does not identify required fields in its metadata.
+
+3. Add the product to the order. You can edit its commitment and provisioning details or remove the line while the order is still mutable.
+
+4. To change an existing subscription, enter the target **Breeze quantity** and click **Stage change**. To cancel, click **Cancel** and confirm the warning. Breeze checks the subscription's active commitment dependencies before staging either action and blocks increases, decreases, or early cancellation that Pax8 says are not allowed. If the active commitment cannot be determined unambiguously, refresh the Pax8 data and resolve that ambiguity before ordering.
+
+5. Click **Review & submit**. Breeze first sends a mock Pax8 order for new-subscription lines. If Pax8 returns validation details, Breeze shows the raw message beside the affected line so you can add or correct provisioning values. Quantity changes and cancellations are dependency-checked when staged; Pax8's mock-order preflight applies only to new subscriptions.
+
+6. After preflight passes, Breeze submits each action and records the result on every line. Successful quantity changes and cancellations update the linked manual contract-line quantity (`0` for a completed cancellation); successful new subscriptions update their linked line when one exists.
+</Steps>
+
+<Aside type="caution" title="Do not blindly retry an uncertain submission">
+  Pax8 does not accept an idempotency key for these writes. If Breeze cannot determine whether a request completed, the line is marked **Needs reconcile** instead of being sent again. Click **Reconcile**: Breeze reads Pax8 orders and subscriptions and reclassifies the existing attempt without issuing another write. If the result remains unknown, investigate before taking any manual action in Pax8 or Breeze.
+</Aside>
+
+The order history shows direct and quote-originated orders with their current status. Selecting an order changes the URL hash to `#pax8/<order-id>`, so the same order can be bookmarked and browser Back/Forward navigation works.
+
+### Complete an order staged from a quote
+
+Accepting a quote that contains Pax8-backed catalog items creates the invoice and contracts as usual, then stages a Pax8 order in the **same database transaction**. Acceptance does **not** submit anything to Pax8 and a missing company mapping never blocks the customer from accepting.
+
+On a converted quote, technicians see **“This quote staged a Pax8 order (N items) awaiting provisioning details”**. Follow **Open Pax8 order** to the organization's deep link, map an order-ready company if needed, then review each new-subscription line. The catalog item, quote source, and linked recurring contract line are preserved; you only complete the commitment and provisioning details. Run preflight and submit it using the same flow as a direct order. One-time quote lines can be ordered, but are not linked to a recurring contract line.
 
   </TabItem>
   <TabItem label="TD SYNNEX Pricing">

@@ -41,6 +41,7 @@ import {
 import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
 import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
 import { loadReportBrandingForOrg } from '../services/reportBranding';
+import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 
 // Re-exported so the occurrence-math tests colocated with this worker keep
@@ -57,6 +58,8 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const REPORT_SCHEDULE_QUEUE = 'report-schedules';
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
+/** Attempts per `run-scheduled-report` job before the occurrence is given up on. */
+const RUN_JOB_ATTEMPTS = 3;
 // Attachments above this size are dropped in favour of the in-app link.
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
@@ -189,6 +192,46 @@ function trendLineOf(result: ReportResult): string | null {
   return null;
 }
 
+/**
+ * Tells recipients their scheduled report did not arrive. Without this a failed
+ * occurrence is silent end-to-end: the job is not retried again after its final
+ * attempt, `lastGeneratedAt` has already moved past the occurrence, and the only
+ * record is a `failed` report_runs row nobody is watching.
+ *
+ * Deliberately omits the underlying error: it reaches customer inboxes, and the
+ * raw message can carry Zod issue arrays or PG schema details. Operators get the
+ * real message on the run row and in Sentry.
+ */
+async function emailReportFailure(opts: {
+  reportName: string;
+  recipients: string[];
+}): Promise<void> {
+  const email = getEmailService();
+  if (!email) {
+    console.warn('[ReportScheduleWorker] Email service not configured; cannot notify failure for', opts.reportName);
+    return;
+  }
+  const base = (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/$/, '');
+  const html = renderLayout({
+    title: 'Scheduled report failed',
+    preheader: `${opts.reportName} could not be generated`,
+    heading: 'Scheduled report failed',
+    body: [
+      renderParagraph(
+        `We couldn't generate <strong>${escapeHtml(opts.reportName)}</strong> for its scheduled run. No report was produced.`,
+      ),
+      renderParagraph('Your team can run it manually, or wait for the next scheduled occurrence.'),
+      renderButton('View reports', `${base}/reports`),
+    ].join(''),
+  });
+
+  await email.sendEmail({
+    to: opts.recipients,
+    subject: `Scheduled report failed: ${opts.reportName}`,
+    html,
+  });
+}
+
 async function emailReportRun(opts: {
   reportName: string;
   reportType: string;
@@ -284,7 +327,10 @@ async function emailReportRun(opts: {
   });
 }
 
-export async function processRunScheduledReport(data: RunScheduledReportJobData): Promise<void> {
+export async function processRunScheduledReport(
+  data: RunScheduledReportJobData,
+  opts: { finalAttempt?: boolean } = {},
+): Promise<void> {
   const [report] = await db
     .select()
     .from(reports)
@@ -372,18 +418,42 @@ export async function processRunScheduledReport(data: RunScheduledReportJobData)
         errorMessage: err instanceof Error ? err.message : 'Failed to generate report',
       })
       .where(eq(reportRuns.id, run.id));
+
+    // Only once the job is out of retries: an earlier attempt may still succeed,
+    // and this occurrence will not be re-enqueued after the last one fails.
+    if (opts.finalAttempt) {
+      const recipients = recipientsOf(config);
+      if (recipients.length > 0) {
+        try {
+          await emailReportFailure({ reportName: report.name, recipients });
+        } catch (notifyErr) {
+          console.error(`[ReportScheduleWorker] Failure notice undeliverable for report ${report.id}:`, notifyErr);
+        }
+      }
+    }
     throw err;
   }
 }
 
-async function processCheckSchedules(): Promise<void> {
+export async function processCheckSchedules(): Promise<void> {
   const due = await findDueReports(new Date());
   if (due.length === 0) return;
   console.log(`[ReportScheduleWorker] ${due.length} scheduled report(s) due`);
 
   for (const item of due) {
     if (!isRedisAvailable()) {
-      await processRunScheduledReport({ type: 'run-scheduled-report', reportId: item.id, occurrenceKey: item.occurrenceKey });
+      // Inline mode has no queue to absorb a throw, so one failing report would
+      // abort the loop and silently starve every remaining org's reports.
+      // There is no retry here either, hence finalAttempt.
+      try {
+        await processRunScheduledReport(
+          { type: 'run-scheduled-report', reportId: item.id, occurrenceKey: item.occurrenceKey },
+          { finalAttempt: true },
+        );
+      } catch (err) {
+        console.error(`[ReportScheduleWorker] Inline run failed for report ${item.id}:`, err);
+        captureException(err);
+      }
       continue;
     }
     // Occurrence-keyed jobId dedupes double-enqueue across overlapping checks.
@@ -392,6 +462,12 @@ async function processCheckSchedules(): Promise<void> {
       { type: 'run-scheduled-report', reportId: item.id, occurrenceKey: item.occurrenceKey },
       {
         jobId: `report-sched-run-${item.id}-${item.occurrenceKey}`,
+        // A transient blip must not cost the whole occurrence: lastGeneratedAt is
+        // stamped before generation (deliberately — it stops a failed report from
+        // being re-found due every check interval), so once these attempts are
+        // spent the occurrence is gone until the next one.
+        attempts: RUN_JOB_ATTEMPTS,
+        backoff: { type: 'exponential', delay: 30_000 },
         removeOnComplete: { count: 500 },
         removeOnFail: { count: 500 },
       },
@@ -436,8 +512,14 @@ export async function initializeReportScheduleWorker(): Promise<void> {
         switch (job.data.type) {
           case 'check-schedules':
             return processCheckSchedules();
-          case 'run-scheduled-report':
-            return processRunScheduledReport(job.data);
+          case 'run-scheduled-report': {
+            // attemptsMade counts attempts already finished, so on the last one
+            // it is attempts-1 and this run is the occurrence's final chance.
+            const allowed = job.opts.attempts ?? 1;
+            return processRunScheduledReport(job.data, {
+              finalAttempt: job.attemptsMade + 1 >= allowed,
+            });
+          }
           default:
             throw new Error(`Unknown report schedule job type: ${(job.data as { type: string }).type}`);
         }

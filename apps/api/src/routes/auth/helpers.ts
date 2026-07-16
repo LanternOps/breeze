@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partnerUsers, organizationUsers, organizations, userPasskeys } from '../../db/schema';
 import {
@@ -9,11 +9,15 @@ import {
   getTrustedClientIp,
   getRedis,
   rateLimiter,
-  verifyPassword
+  verifyPassword,
+  getUserEpochs
 } from '../../services';
+import { getImmediatePeerIpOrUndefined } from '../../services/clientIp';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { consumeMFAToken } from '../../services/mfa';
+import { validateStepUpGrant, consumeStepUpGrant } from '../../services/mfaStepUpGrant';
+import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../../services/auditEvents';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
@@ -41,6 +45,26 @@ export const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T>
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
+
+// Shared floor-the-clock timing equalizer for pre-auth endpoints whose latency
+// would otherwise be an account-enumeration oracle (login audit finding H-4;
+// forgot-password SR2-22). The slowest legitimate path (real user, SSO/tenant
+// joins, argon2) runs materially longer than the cheap "no such account" path;
+// flooring every response at a fixed budget collapses that delta. 350ms
+// comfortably exceeds the slowest legitimate path while staying below the
+// interactive-feel "sluggish" threshold (500ms+). Test/E2E mode skips the floor
+// so suites stay fast — unit tests assert state, not wall-clock.
+export const AUTH_RESPONSE_FLOOR_MS = 350;
+
+function authResponseFloorDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function authResponseFloorPromise(): Promise<void> {
+  if (process.env.NODE_ENV === 'test') return Promise.resolve();
+  if (process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true') return Promise.resolve();
+  return authResponseFloorDelay(AUTH_RESPONSE_FLOOR_MS);
+}
 
 /**
  * #2153: does the account have at least one usable (non-disabled) passkey?
@@ -90,15 +114,20 @@ export function getClientRateLimitKey(c: RequestLike): string {
     return `ip:${trustedIp}`;
   }
 
+  // No proxy-verified client IP. Do NOT fingerprint forwarded IP headers —
+  // an attacker rotating X-Forwarded-For from an untrusted peer would mint a
+  // fresh bucket per request and evade the per-IP limit (SR2-16). Key on the
+  // immediate TCP peer, which cannot be spoofed at L7.
+  const peerIp = getImmediatePeerIpOrUndefined(c);
+  if (peerIp) {
+    return `socket:${peerIp}`;
+  }
+
+  // Only when even the socket address is unavailable (non-Node runtime / test
+  // shim) fall back to a NON-IP fingerprint. Never include x-forwarded-for /
+  // x-real-ip / cf-connecting-ip here — they are attacker-controlled.
   const read = (name: string) => c.req.header(name) ?? c.req.header(name.toLowerCase()) ?? '';
-  const fingerprintSource = [
-    read('user-agent'),
-    read('accept-language'),
-    read('origin'),
-    read('x-forwarded-for'),
-    read('x-real-ip'),
-    read('cf-connecting-ip')
-  ].join('|');
+  const fingerprintSource = [read('user-agent'), read('accept-language'), read('origin')].join('|');
 
   const digest = createHash('sha256')
     .update(fingerprintSource || 'no-client-fingerprint')
@@ -198,6 +227,88 @@ export async function requireFreshMfaStepUp(
     return c.json({ error: 'Invalid credentials' }, 401);
   }
 
+  return null;
+}
+
+// ============================================
+// Existing-factor step-up for factor addition (SR2-20)
+// ============================================
+
+/**
+ * True when the account already has ANY active MFA factor (TOTP, SMS, or a
+ * non-disabled passkey). Drives the SR2-20 gate: initial enrollment (no
+ * factor yet) stays password-only; adding a factor to an ALREADY-PROTECTED
+ * account additionally requires a fresh existing-factor step-up grant.
+ *
+ * Runs under system DB access: several callers (e.g. `/mfa/enable`,
+ * `/passkeys/register/*`) call this from within their own request-scoped
+ * (user-id-scoped) RLS context, where it would still resolve correctly, but
+ * system context keeps this probe uniform regardless of caller context.
+ */
+export async function userIsMfaProtected(userId: string): Promise<boolean> {
+  const [row] = await runWithSystemDbAccess(() =>
+    db
+      .select({
+        mfaEnabled: users.mfaEnabled,
+        passkeyCount: sql<number>`(SELECT COUNT(*)::int FROM user_passkeys WHERE user_id = ${userId} AND disabled_at IS NULL)`,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+  );
+  return row?.mfaEnabled === true || Number(row?.passkeyCount ?? 0) > 0;
+}
+
+/**
+ * Enforce the SR2-20 existing-factor step-up on a factor-ADDITION endpoint.
+ * No-factor accounts (initial enrollment) pass with password-only (returns
+ * null) — this avoids a chicken-and-egg lockout. Already-protected accounts
+ * must present a fresh grant bound to the live epochs + this session's
+ * `sid`; the binding is re-checked against the LIVE row here (not just at
+ * mint time) so a factor change since the grant was minted (which bumps
+ * `mfa_epoch` + revokes refresh families) invalidates it.
+ *
+ * Every factor-addition route calls this TWICE, in two phases:
+ *
+ * `opts.consume: false` = non-consuming validate, at the gate. Runs before the
+ * factor proof (TOTP/SMS code, WebAuthn assertion) so a missing/bogus/stale
+ * grant 403s without burning the consuming TOTP verifier's time-step.
+ * `opts.consume: true` = single-use consume, immediately before the terminal
+ * write, once the factor proof has validated. A wrong code therefore leaves the
+ * grant intact for a retry, while a successful add burns it exactly once (the
+ * consume re-checks the binding against the LIVE epochs and fails CLOSED, so
+ * one grant can never write two factors).
+ *
+ * Returns a 403/503 Response to short-circuit the caller, or null to proceed.
+ */
+export async function enforceExistingFactorStepUp(
+  c: Context,
+  auth: AuthContext,
+  grantId: string | undefined,
+  opts: { consume: boolean },
+): Promise<Response | null> {
+  if (!(await userIsMfaProtected(auth.user.id))) return null;
+
+  const epochs = await getUserEpochs(auth.user.id);
+  if (!epochs || !auth.token.sid) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+
+  const bind = {
+    userId: auth.user.id,
+    operation: 'add_factor' as const,
+    authEpoch: epochs.authEpoch,
+    mfaEpoch: epochs.mfaEpoch,
+    sid: auth.token.sid,
+  };
+
+  const ok = grantId
+    ? (opts.consume ? await consumeStepUpGrant(grantId, bind) : await validateStepUpGrant(grantId, bind))
+    : false;
+
+  if (!ok) {
+    return c.json({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }, 403);
+  }
   return null;
 }
 
@@ -436,6 +547,83 @@ export function hashRecoveryCode(code: string): string {
 
 export function hashRecoveryCodes(codes: string[]): string[] {
   return codes.map(hashRecoveryCode);
+}
+
+// ============================================
+// Pending MFA session helpers (SR2-06)
+// ============================================
+
+export interface PendingMfaRecord {
+  userId: string;
+  mfaMethod: 'totp' | 'sms' | 'passkey';
+  passkeyAvailable: boolean;
+  authEpoch: number;
+  mfaEpoch: number;
+  statusExpectation: string;
+  allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
+  expiresAt: number;
+}
+
+/**
+ * Strict parse of a `mfa:pending:<tempToken>` value. Returns null for the
+ * legacy bare-userId form or any record missing the epoch/status binding
+ * (SR2-06): those predate this rollout and must force a fresh login rather than
+ * complete with no live re-check.
+ */
+export function parsePendingMfa(raw: string): PendingMfaRecord | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null; // legacy bare-userId string
+  }
+  const method = parsed.mfaMethod;
+  const am = parsed.allowedMethods as Record<string, unknown> | undefined;
+  if (
+    typeof parsed.userId !== 'string' ||
+    (method !== 'totp' && method !== 'sms' && method !== 'passkey') ||
+    typeof parsed.authEpoch !== 'number' ||
+    typeof parsed.mfaEpoch !== 'number' ||
+    typeof parsed.statusExpectation !== 'string' ||
+    typeof parsed.expiresAt !== 'number' ||
+    !am || typeof am !== 'object'
+  ) {
+    return null;
+  }
+  return {
+    userId: parsed.userId,
+    mfaMethod: method,
+    passkeyAvailable: parsed.passkeyAvailable === true,
+    authEpoch: parsed.authEpoch,
+    mfaEpoch: parsed.mfaEpoch,
+    statusExpectation: parsed.statusExpectation,
+    allowedMethods: {
+      totp: am.totp !== false,
+      sms: am.sms !== false,
+      passkey: am.passkey !== false,
+    },
+    expiresAt: parsed.expiresAt,
+  };
+}
+
+/**
+ * Compare a pending record against the live user row. MFA assurance is valid
+ * only for the current MFA config + status (invariants 6/7). Any factor change
+ * bumps mfa_epoch; any account-wide change bumps auth_epoch; a suspend flips
+ * status — all of which must invalidate an in-flight MFA session.
+ */
+export function evaluatePendingMfa(
+  record: PendingMfaRecord,
+  live: { status: string; authEpoch: number; mfaEpoch: number },
+): { ok: true } | { ok: false; reason: 'expired' | 'epoch_mismatch' | 'status_changed' } {
+  if (record.expiresAt <= Date.now()) return { ok: false, reason: 'expired' };
+  if (record.authEpoch !== live.authEpoch || record.mfaEpoch !== live.mfaEpoch) {
+    return { ok: false, reason: 'epoch_mismatch' };
+  }
+  if (live.status !== 'active' || record.statusExpectation !== live.status) {
+    return { ok: false, reason: 'status_changed' };
+  }
+  return { ok: true };
 }
 
 // ============================================

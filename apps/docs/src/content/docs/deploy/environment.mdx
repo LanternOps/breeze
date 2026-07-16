@@ -19,10 +19,14 @@ All configuration is done through environment variables, defined in your `.env.p
 | Variable | Default | Required | Description |
 |---|---|---|---|
 | `POSTGRES_USER` | `breeze` | | PostgreSQL username |
-| `POSTGRES_PASSWORD` | — | Yes | PostgreSQL password |
+| `POSTGRES_PASSWORD` | — | Yes | PostgreSQL password. Also used to derive the unprivileged request-pool credential (see below) unless `DATABASE_URL_APP` or `BREEZE_APP_DB_PASSWORD` is set. |
 | `POSTGRES_DB` | `breeze` | | Database name |
 | `POSTGRES_PORT` | `5432` | | PostgreSQL port |
 | `DATABASE_URL` | — | Auto | Full connection string (constructed from above in Docker) |
+| `DATABASE_URL_APP` | — | One of these three (prod) | Explicit connection string for the **unprivileged request role** (`breeze_app`). Preferred, and **required** for multi-host / high-availability `DATABASE_URL` values, which cannot be derived automatically. |
+| `BREEZE_APP_DB_PASSWORD` | — | One of these three (prod) | Password for the `breeze_app` role, used to derive its connection string from `DATABASE_URL`. |
+
+In production, Breeze runs request handlers as an unprivileged, row-level-security-enforced database role (`breeze_app`) rather than as the database owner. **The API refuses to start** unless it can configure that role — set one of `DATABASE_URL_APP`, `BREEZE_APP_DB_PASSWORD`, or `POSTGRES_PASSWORD`. This check runs whenever `NODE_ENV=production`, **including when `AUTO_MIGRATE=false`**. The API also **refuses to start if it detects it is running as a `SUPERUSER` or `BYPASSRLS` role** — if you were previously running as the `postgres` superuser, switch to a `NOSUPERUSER`/`NOBYPASSRLS` role. After doing so you may notice rows that were previously visible to a tenant "disappear"; that is row-level security working correctly, not data loss. See the [request-database-role runbook](https://github.com/LanternOps/breeze/blob/main/docs/runbooks/request-database-role.md).
 
 ## Redis
 
@@ -69,6 +73,7 @@ deployment env vars.
 | `IS_HOSTED` | — | Yes (prod) | `true` for hosted SaaS edition, `false` for self-hosted. Must be set explicitly — the API refuses to boot otherwise. Controls signup gating, billing, and email-verification policy. |
 | `TRUST_PROXY_HEADERS` | — | Yes (prod) | `true` when behind a reverse proxy (Caddy, Cloudflare). Must be set explicitly in production. |
 | `TRUSTED_PROXY_CIDRS` | — | When `TRUST_PROXY_HEADERS=true` | Comma-separated CIDRs of trusted reverse proxies (e.g., `10.0.0.0/8,172.16.0.0/12`). Required when proxy headers are trusted. |
+| `TRUST_CF_CONNECTING_IP` | `false` | | Set to `true` **only** when Breeze is fronted by Cloudflare. Cloudflare overwrites the `CF-Connecting-IP` header at its edge, but a non-Cloudflare reverse proxy (including the bundled Caddy) does not strip it — so trusting it without a Cloudflare front would let a client spoof the header to defeat IP allowlists and per-IP rate limits. When off, client IPs are resolved from `X-Forwarded-For` instead. If you are behind Cloudflare and leave this unset, client-IP attribution (rate limits, audit logs, IP allowlists) falls back to `X-Forwarded-For`; the API logs a startup warning in that case. |
 | `IP_ALLOWLIST_ENFORCEMENT_MODE` | `enforce` | | Partner dashboard IP allowlist mode. Use `off` only as a break-glass switch if an allowlist locks everyone out. The allowlist only enforces when a partner has entries configured and proxy trust is working through `TRUST_PROXY_HEADERS` plus `TRUSTED_PROXY_CIDRS`. |
 | `DASHBOARD_URL` | — | | URL for links in emails |
 | `PUBLIC_APP_URL` | — | | Public-facing app URL |
@@ -102,6 +107,18 @@ deployment env vars.
 | `TWILIO_VERIFY_SERVICE_SID` | — | Twilio Verify service SID (for SMS MFA) |
 | `TWILIO_MESSAGING_SERVICE_SID` | — | Twilio Messaging Service SID (for alert SMS) |
 | `TWILIO_PHONE_NUMBER` | — | Twilio phone number for outbound SMS |
+
+## Mobile Push Notifications (iOS)
+
+Push notifications to the iOS app go directly through Apple's push service (APNs). All four values are optional but **all-or-none** — setting any one makes the other three required, so a half-configured setup fails at startup rather than silently at first send. Leave them all unset to disable push.
+
+| Variable | Default | Description |
+|---|---|---|
+| `APNS_AUTH_KEY` | — | Contents of the Apple `.p8` push auth key |
+| `APNS_KEY_ID` | — | Apple push key ID |
+| `APNS_TEAM_ID` | — | Apple developer team ID |
+| `APNS_BUNDLE_ID` | — | iOS app bundle identifier |
+| `APNS_ENVIRONMENT` | `production` | `production` or `sandbox`. An empty value is treated as unset. |
 
 ## Binary Distribution
 

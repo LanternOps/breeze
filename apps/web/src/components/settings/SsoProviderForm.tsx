@@ -53,6 +53,15 @@ export type Role = {
   // Present on roles fetched from /roles. Used to filter the default-role
   // dropdown by the selected ownership scope (partner vs organization).
   scope?: 'partner' | 'organization';
+  // Present on roles fetched from /roles. A built-in system role's org_id /
+  // partner_id are always NULL, so it can never be resolved by the SSO JIT
+  // provisioning path's strict axis-equality check (SR2-10 Fix 1) even though
+  // it's a perfectly valid role for ordinary user invites — the API's
+  // config-time validator now 400s a defaultRoleId for exactly this reason.
+  // Filtered out of the dropdown below so an admin can't pick a role
+  // guaranteed to fail, which would otherwise silently brick every future SSO
+  // sign-in on the provider.
+  isSystem?: boolean;
 };
 
 type SsoProviderFormProps = {
@@ -136,9 +145,17 @@ export default function SsoProviderForm({
   // scope: partner-wide providers auto-provision into PARTNER roles, org
   // providers into ORG roles. Roles carry `scope`; when it's absent (older
   // payloads) fall back to showing them under the organization scope.
+  //
+  // Also excludes `isSystem` roles (SR2-10 Fix 1): a built-in system role's
+  // org_id/partner_id are always NULL, so the JIT provisioning path can never
+  // resolve one, and the API now 400s a defaultRoleId that isn't scoped to the
+  // provider's own org/partner. Offering it here would let an admin pick a
+  // role guaranteed to fail.
   const visibleRoles = useMemo(() => {
-    if (ownerScope === 'partner') return roles.filter(r => r.scope === 'partner');
-    return roles.filter(r => r.scope !== 'partner');
+    const scoped = ownerScope === 'partner'
+      ? roles.filter(r => r.scope === 'partner')
+      : roles.filter(r => r.scope !== 'partner');
+    return scoped.filter(r => !r.isSystem);
   }, [roles, ownerScope]);
 
   // Apply preset configuration when preset changes

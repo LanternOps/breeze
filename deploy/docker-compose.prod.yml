@@ -69,12 +69,26 @@ services:
     platform: linux/amd64
     container_name: breeze-api
     restart: unless-stopped
+    # Keep the root filesystem writable while redis_password is environment-backed;
+    # standalone Compose supports only file-backed secrets for read-only services.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     environment:
       NODE_ENV: production
       API_PORT: 3001
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      # Production requires ONE of DATABASE_URL_APP / BREEZE_APP_DB_PASSWORD /
+      # POSTGRES_PASSWORD to configure the unprivileged request role (#2368).
+      # All three must be mapped here — the validator names POSTGRES_PASSWORD as
+      # a valid option, and compose only interpolates vars listed in this block,
+      # so omitting it makes that advice silently fail.
       DATABASE_URL_APP: ${DATABASE_URL_APP:-}
       BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
@@ -120,6 +134,19 @@ services:
       # stays dark (env.ts defaults to ''). Threaded through compose so the feature
       # can be enabled from .env. Same gap class as IS_HOSTED above.
       CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+      # Optional customer Graph-read onboarding. The executor is intentionally
+      # not part of this generic Compose stack: deploy it separately with a
+      # workload identity, private ingress, and controlled HTTPS egress.
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: ${M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED:-false}
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS: ${M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS:-}
+      M365_CUSTOMER_GRAPH_READ_CLIENT_ID: ${M365_CUSTOMER_GRAPH_READ_CLIENT_ID:-}
+      M365_CUSTOMER_GRAPH_READ_CALLBACK_URL: ${M365_CUSTOMER_GRAPH_READ_CALLBACK_URL:-}
+      M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION: ${M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION:-}
+      M365_CUSTOMER_GRAPH_READ_VAULT_REF: ${M365_CUSTOMER_GRAPH_READ_VAULT_REF:-}
+      M365_GRAPH_READ_EXECUTOR_URL: ${M365_GRAPH_READ_EXECUTOR_URL:-}
+      M365_GRAPH_READ_EXECUTOR_AUDIENCE: ${M365_GRAPH_READ_EXECUTOR_AUDIENCE:-m365-graph-read-executor}
+      M365_GRAPH_READ_EXECUTOR_SIGNING_KID: ${M365_GRAPH_READ_EXECUTOR_SIGNING_KID:-}
+      M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_read_executor_signing_private_jwk
       APP_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: github
@@ -145,6 +172,10 @@ services:
       TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-600}
       TRUST_PROXY_HEADERS: "true"
       TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-172.30.0.11/32}"
+      # This reference stack is fronted by Cloudflare (cloudflared → Caddy), so
+      # CF-Connecting-IP is authoritative. Self-hosters NOT behind Cloudflare
+      # must leave this unset — see the base docker-compose.yml note.
+      TRUST_CF_CONNECTING_IP: "${TRUST_CF_CONNECTING_IP:-true}"
       PARTNER_HOOKS_URL: http://billing:3002/hooks
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
@@ -158,11 +189,22 @@ services:
       OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
       OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
       ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
+      # Native APNs push for the iOS app (all optional; unset = push disabled).
+      # All-or-none: setting ANY of these makes the four credentials required,
+      # so a half-configured relay fails at boot instead of silently at first
+      # send. Empty values are treated as unset.
+      APNS_AUTH_KEY: ${APNS_AUTH_KEY:-}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
+      APNS_ENVIRONMENT: ${APNS_ENVIRONMENT:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
     secrets:
       - redis_password
+      - source: m365_graph_read_executor_signing_private_jwk
+        target: m365_graph_read_executor_signing_private_jwk
     depends_on:
       binaries-init:
         condition: service_completed_successfully
@@ -345,3 +387,8 @@ volumes:
 secrets:
   redis_password:
     environment: REDIS_PASSWORD
+  # Standalone Compose bind-mounts file-backed secrets and ignores uid/gid/mode
+  # target attributes. /dev/null keeps dark deployments optional; when enabled,
+  # the source JWK must already have numeric owner 1001:1001 and mode 0400.
+  m365_graph_read_executor_signing_private_jwk:
+    file: ${M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE:-/dev/null}

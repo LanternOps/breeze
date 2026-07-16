@@ -143,6 +143,11 @@ type Command struct {
 	Payload map[string]any `json:"payload"`
 }
 
+type helperLifecycleController interface {
+	Stop()
+	Done() <-chan struct{}
+}
+
 type Heartbeat struct {
 	config                *config.Config
 	secureToken           *secmem.SecureString
@@ -186,15 +191,23 @@ type Heartbeat struct {
 	lastPatchUpdate       time.Time // stamped at startup; gate then re-runs every PatchScanIntervalHours
 
 	// User session helper (IPC)
-	helperToken      string // retained copy of the helper-scoped token for connect-time pushes
-	helperTokenMu    sync.RWMutex
-	sessionBroker    *sessionbroker.Broker
-	isService        bool
-	isHeadless       bool
-	scmSessionCh     chan sessionbroker.SCMSessionEvent // fed by SCM handler
-	helperFinder     func(targetSession string) *sessionbroker.Session
-	spawnHelper      func(targetSession string) error
-	killStaleHelpers func(staleKey string)
+	helperToken     string // retained copy of the helper-scoped token for connect-time pushes
+	helperTokenMu   sync.RWMutex
+	sessionBroker   *sessionbroker.Broker
+	helperLifecycle helperLifecycleController
+	lifecycleCancel context.CancelFunc
+	shutdownTimeout time.Duration
+	isService       bool
+	isHeadless      bool
+	scmSessionCh    chan sessionbroker.SCMSessionEvent // fed by SCM handler
+	helperFinder    func(targetSession string) *sessionbroker.Session
+	spawnHelper     func(targetSession string) error
+
+	// Shutdown seams keep lifecycle ordering directly testable without opening
+	// sockets or spawning Windows processes. Production leaves these nil.
+	stopBrokerAcceptingAndWait func(context.Context) error
+	stopHelperLifecycleAndWait func(context.Context) error
+	closeSessionBroker         func()
 	// pamFindSession / pamRequestDialog default to the real broker methods in
 	// RunPamFlow when nil; overridden in pam_flow_test.go.
 	pamFindSession   func(capability, targetWinSession string) *sessionbroker.Session
@@ -835,27 +848,77 @@ func checkUpdateMarker() bool {
 	return true
 }
 
-func (h *Heartbeat) Start() {
-	// Start session broker for user helpers
-	if h.sessionBroker != nil {
-		go h.sessionBroker.Listen(h.stopChan)
-		h.startDarwinDesktopWatcher()
+func bootstrapThenListen(bootstrap func() error, listen func()) error {
+	if bootstrap != nil {
+		if err := bootstrap(); err != nil {
+			return err
+		}
 	}
-	if h.sessionCol != nil {
-		h.sessionCol.Start(h.stopChan)
+	if listen != nil {
+		listen()
 	}
+	return nil
+}
 
+// lifecycleBootstrapRetryInterval matches the lifecycle reconcile cadence: both
+// recover from the same transient WTS enumeration failure.
+const lifecycleBootstrapRetryInterval = 30 * time.Second
+
+// bootstrapThenListenWithRetry keeps the fail-closed contract of
+// bootstrapThenListen — never listen without desired state — while making the
+// failure recoverable. Bootstrap reaches WTSEnumerateSessionsW, which fails
+// transiently when the agent service starts before Remote Desktop Services' RPC
+// endpoint is ready. Without a retry, one boot-order flake costs the agent its
+// pipe listener for the entire process lifetime: no remote desktop, no PAM, no
+// helper IPC, while the machine keeps heartbeating healthy. The reconcile loop
+// already treats this same error as transient and retries it.
+//
+// Blocks until bootstrap succeeds (then listens exactly once) or ctx is done.
+func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, listen func(), retry time.Duration) {
+	for {
+		err := bootstrapThenListen(bootstrap, listen)
+		if err == nil {
+			return
+		}
+		log.Warn("helper lifecycle bootstrap failed; retrying before starting broker listener",
+			"retryIn", retry.String(), "error", err.Error())
+		select {
+		case <-ctx.Done():
+			log.Error("helper lifecycle bootstrap never succeeded; broker listener not started",
+				"error", ctx.Err().Error())
+			return
+		case <-time.After(retry):
+		}
+	}
+}
+
+func (h *Heartbeat) Start() {
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
 	// channel (created in constructor) is fed by the service handler
 	// (service_windows.go) for instant notification; the lifecycle manager
 	// also runs a slow reconcile tick as a safety net for helper crashes
 	// and early-boot edge cases.
+	var lifecycle *sessionbroker.HelperLifecycleManager
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
-		go func() { <-h.stopChan; cancel() }()
-		lm := sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
-		go lm.Start(ctx)
+		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh)
+		h.mu.Lock()
+		h.helperLifecycle = lifecycle
+		h.lifecycleCancel = cancel
+		h.mu.Unlock()
+		go bootstrapThenListenWithRetry(ctx, lifecycle.Bootstrap, func() {
+			go h.sessionBroker.Listen(h.stopChan)
+		}, lifecycleBootstrapRetryInterval)
+		go lifecycle.Start(ctx)
+	} else if h.sessionBroker != nil {
+		go h.sessionBroker.Listen(h.stopChan)
+	}
+	if h.sessionBroker != nil {
+		h.startDarwinDesktopWatcher()
+	}
+	if h.sessionCol != nil {
+		h.sessionCol.Start(h.stopChan)
 	}
 
 	// Jitter: random delay before first heartbeat to avoid thundering herd
@@ -1091,12 +1154,61 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
-		if h.rebootMgr != nil {
-			h.rebootMgr.Stop()
+		shutdownTimeout := h.shutdownTimeout
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = 5 * time.Second
 		}
-		// Stop backup helper if running
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+
+		if h.stopBrokerAcceptingAndWait != nil {
+			if err := h.stopBrokerAcceptingAndWait(ctx); err != nil {
+				log.Warn("session broker pre-auth drain timed out", "error", err.Error())
+			}
+		} else if h.sessionBroker != nil {
+			if err := h.sessionBroker.StopAcceptingAndWait(ctx); err != nil {
+				log.Warn("session broker pre-auth drain timed out", "error", err.Error())
+			}
+		}
+
+		if h.stopHelperLifecycleAndWait != nil {
+			if err := h.stopHelperLifecycleAndWait(ctx); err != nil {
+				log.Warn("helper lifecycle shutdown timed out", "error", err.Error())
+			}
+		} else {
+			h.mu.Lock()
+			lifecycle := h.helperLifecycle
+			lifecycleCancel := h.lifecycleCancel
+			h.mu.Unlock()
+			if lifecycleCancel != nil {
+				lifecycleCancel()
+			}
+			if lifecycle != nil {
+				// Stop bounds its own cleanup work. Keep this synchronous so broker
+				// close cannot overlap a still-running lifecycle cleanup goroutine.
+				lifecycle.Stop()
+				select {
+				case <-lifecycle.Done():
+				case <-ctx.Done():
+					log.Warn("helper lifecycle reconcile loop did not stop before deadline")
+				}
+			}
+		}
+
 		if h.sessionBroker != nil {
 			h.sessionBroker.StopBackupHelper()
+		}
+		if h.closeSessionBroker != nil {
+			h.closeSessionBroker()
+		} else if h.sessionBroker != nil {
+			h.sessionBroker.Close()
+		}
+
+		if h.stopChan != nil {
+			close(h.stopChan)
+		}
+		if h.rebootMgr != nil {
+			h.rebootMgr.Stop()
 		}
 		if h.monitor != nil {
 			h.monitor.Stop()
@@ -1111,9 +1223,6 @@ func (h *Heartbeat) Stop() {
 		if h.tunnelMgr != nil {
 			h.tunnelMgr.Stop()
 		}
-		// Close stopChan first — this signals broker.Listen() to call broker.Close()
-		// internally. The broker's Close() is idempotent via its closed flag.
-		close(h.stopChan)
 	})
 }
 

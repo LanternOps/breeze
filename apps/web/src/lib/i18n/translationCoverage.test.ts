@@ -1,0 +1,213 @@
+import { describe, expect, it } from 'vitest';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const localesDir = join(dirname(fileURLToPath(import.meta.url)), '../../locales');
+const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'de-DE'] as const;
+type TranslatedLocale = (typeof translatedLocales)[number];
+
+// Per-namespace count caps for exact-English duplicates that survived review
+// (mostly intentionally preserved literals). These limit net duplicate growth;
+// translating an existing duplicate creates headroom because keys are not pinned.
+const namespaceDuplicateBaselines = {
+  'pt-BR': {
+    'admin.json': 19,
+    'ai.json': 1,
+    'alerts.json': 43,
+    'auth.json': 14,
+    'backup.json': 51,
+    'billing.json': 38,
+    'common.json': 89,
+    'devices.json': 159,
+    'discovery.json': 17,
+    'integrations.json': 23,
+    'patches.json': 22,
+    'peripherals.json': 4,
+    'policies.json': 357,
+    'portal.json': 3,
+    'remote.json': 12,
+    'reports.json': 39,
+    'scripts.json': 55,
+    'security.json': 140,
+    'settings.json': 107,
+    'tickets.json': 13,
+    'vulnerabilities.json': 13,
+  },
+  'es-419': {
+    'admin.json': 16,
+    'ai.json': 4,
+    'alerts.json': 39,
+    'auth.json': 14,
+    'backup.json': 29,
+    'billing.json': 32,
+    'common.json': 75,
+    'devices.json': 115,
+    'discovery.json': 17,
+    'integrations.json': 31,
+    'patches.json': 15,
+    'peripherals.json': 4,
+    'policies.json': 241,
+    'portal.json': 4,
+    'remote.json': 12,
+    'reports.json': 32,
+    'scripts.json': 57,
+    'security.json': 114,
+    'settings.json': 111,
+    'tickets.json': 13,
+    'vulnerabilities.json': 16,
+  },
+  'fr-FR': {
+    'admin.json': 27,
+    'ai.json': 9,
+    'alerts.json': 58,
+    'auth.json': 13,
+    'backup.json': 58,
+    'billing.json': 38,
+    'common.json': 93,
+    'devices.json': 136,
+    'discovery.json': 15,
+    'integrations.json': 38,
+    'patches.json': 20,
+    'peripherals.json': 9,
+    'policies.json': 204,
+    'portal.json': 4,
+    'remote.json': 18,
+    'reports.json': 43,
+    'scripts.json': 60,
+    'security.json': 144,
+    'settings.json': 139,
+    'tickets.json': 21,
+    'vulnerabilities.json': 15,
+  },
+  'de-DE': {
+    'admin.json': 23,
+    'ai.json': 5,
+    'alerts.json': 46,
+    'auth.json': 15,
+    'backup.json': 62,
+    'billing.json': 26,
+    'common.json': 90,
+    'devices.json': 146,
+    'discovery.json': 26,
+    'integrations.json': 43,
+    'patches.json': 22,
+    'peripherals.json': 4,
+    'policies.json': 205,
+    'portal.json': 4,
+    'remote.json': 14,
+    'reports.json': 53,
+    'scripts.json': 53,
+    'security.json': 166,
+    'settings.json': 161,
+    'tickets.json': 13,
+    'vulnerabilities.json': 20,
+  },
+} satisfies Record<TranslatedLocale, Record<string, number>>;
+
+function flatten(
+  obj: Record<string, unknown>,
+  prefix = '',
+  out = new Map<string, string>(),
+): Map<string, string> {
+  for (const [key, value] of Object.entries(obj)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (value !== null && typeof value === 'object') {
+      flatten(value as Record<string, unknown>, path, out);
+    } else {
+      out.set(path, String(value));
+    }
+  }
+  return out;
+}
+
+function readLocale(locale: string): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const file of readdirSync(join(localesDir, locale)).filter((name) =>
+    name.endsWith('.json'),
+  )) {
+    const values = flatten(
+      JSON.parse(readFileSync(join(localesDir, locale, file), 'utf8')),
+    );
+    for (const [key, value] of values) {
+      result.set(`${file}:${key}`, value);
+    }
+  }
+  return result;
+}
+
+function namespaceDuplicateRegressions(
+  english: Map<string, string>,
+  translated: Map<string, string>,
+  baselines: Record<string, number>,
+): string[] {
+  const duplicateCounts = new Map<string, number>();
+  for (const [key, value] of english) {
+    if (translated.get(key) !== value) continue;
+    const namespace = key.slice(0, key.indexOf(':'));
+    duplicateCounts.set(namespace, (duplicateCounts.get(namespace) ?? 0) + 1);
+  }
+
+  return Object.entries(baselines).flatMap(([namespace, baseline]) => {
+    const count = duplicateCounts.get(namespace) ?? 0;
+    return count > baseline
+      ? [`${namespace}: ${count} exact-English duplicates exceeds baseline ${baseline}`]
+      : [];
+  });
+}
+
+describe('translation coverage', () => {
+  const english = readLocale('en');
+
+  for (const locale of translatedLocales) {
+    it(`${locale} is not an English catalog copy`, () => {
+      const translated = readLocale(locale);
+      const duplicates = [...english].filter(
+        ([key, value]) => translated.get(key) === value,
+      );
+
+      expect(
+        duplicates.length / english.size,
+        duplicates
+          .slice(0, 25)
+          .map(([key]) => key)
+          .join('\n'),
+      ).toBeLessThan(0.2);
+    });
+
+    it(`${locale} does not exceed reviewed namespace duplicate baselines`, () => {
+      const translated = readLocale(locale);
+      const baselines = namespaceDuplicateBaselines[locale];
+      const namespaces = [
+        ...new Set([...english.keys()].map((key) => key.slice(0, key.indexOf(':')))),
+      ].sort();
+
+      expect(Object.keys(baselines).sort()).toEqual(namespaces);
+      const regressions = namespaceDuplicateRegressions(
+        english,
+        translated,
+        baselines,
+      );
+      expect(regressions, regressions.join('\n')).toEqual([]);
+    });
+  }
+});
+
+describe('translation coverage guard helpers', () => {
+  it('rejects a namespace whose exact-English duplicates exceed its baseline', () => {
+    const english = new Map([
+      ['settings.json:title', 'Settings'],
+      ['settings.json:save', 'Save'],
+    ]);
+    const translated = new Map([
+      ['settings.json:title', 'Settings'],
+      ['settings.json:save', 'Save'],
+    ]);
+
+    expect(
+      namespaceDuplicateRegressions(english, translated, {
+        'settings.json': 1,
+      }),
+    ).toEqual(['settings.json: 2 exact-English duplicates exceeds baseline 1']);
+  });
+});

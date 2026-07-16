@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // ============================================================
 // Mocks — must appear before any `import` of the source
@@ -485,5 +485,116 @@ describe("POST /api/v1/installer/bootstrap", () => {
     const res = await app.request("/api/v1/installer/bootstrap/EEEEEEEEEE");
     expect(res.status).toBe(404);
     expect(db.select).toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/v1/installer/bootstrap — trusted client IP (SR2-16)", () => {
+  const origTrust = process.env.TRUST_PROXY_HEADERS;
+  const origCidrs = process.env.TRUSTED_PROXY_CIDRS;
+
+  afterEach(() => {
+    if (origTrust === undefined) delete process.env.TRUST_PROXY_HEADERS;
+    else process.env.TRUST_PROXY_HEADERS = origTrust;
+    if (origCidrs === undefined) delete process.env.TRUSTED_PROXY_CIDRS;
+    else process.env.TRUSTED_PROXY_CIDRS = origCidrs;
+    delete process.env.TRUST_CF_CONNECTING_IP;
+  });
+
+  function mockRedeemChain(tokenRow: Record<string, unknown>, parentKey: Record<string, unknown>, org: Record<string, unknown>) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: () => Promise.resolve([parentKey]) }) }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: () => Promise.resolve([org]) }) }),
+      } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: () => ({
+        returning: () => Promise.resolve([{ id: "ck-ip-test", orgId: tokenRow.orgId, siteId: tokenRow.siteId }]),
+      }),
+    } as any);
+  }
+
+  it("records the fallback, not a spoofed cf-connecting-ip, when the peer is untrusted (SR2-16)", async () => {
+    process.env.TRUST_PROXY_HEADERS = "false";
+    delete process.env.TRUSTED_PROXY_CIDRS;
+
+    const tokenRow = {
+      id: "ip-t1", token: "IIIIIIIIII", orgId: "o-ip", parentEnrollmentKeyId: "pk-ip", siteId: "s-ip",
+      maxUsage: 1, consumedCount: 0, createdBy: "u-ip", consumedAt: null, expiresAt: new Date(Date.now() + 60_000),
+    };
+    const parentKey = {
+      id: "pk-ip", name: "IP parent", orgId: "o-ip", siteId: "s-ip", keySecretHash: "hash",
+      expiresAt: new Date(Date.now() + 60_000 * 60),
+    };
+    const org = { id: "o-ip", name: "IP Org" };
+    mockRedeemChain(tokenRow, parentKey, org);
+
+    let capturedSet: Record<string, unknown> | null = null;
+    vi.mocked(db.update).mockReturnValue({
+      set: (vals: Record<string, unknown>) => {
+        capturedSet = vals;
+        return { where: () => ({ returning: () => Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]) }) };
+      },
+    } as any);
+
+    const app = makeApp();
+    const res = await app.request(
+      "/api/v1/installer/bootstrap",
+      {
+        method: "POST",
+        headers: { "X-Breeze-Bootstrap-Token": "IIIIIIIIII", "cf-connecting-ip": "203.0.113.5" },
+      },
+      { incoming: { socket: { remoteAddress: "198.51.100.77" } } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(capturedSet).not.toBeNull();
+    // GUARD-BITE: RED today — installer.ts reads the header raw, so the
+    // persisted enrollment IP is the spoof '203.0.113.5' instead of the
+    // socket fallback.
+    expect((capturedSet as any).consumedFromIp).not.toBe("203.0.113.5");
+    expect((capturedSet as any).consumedFromIp).toBe("198.51.100.77");
+  });
+
+  it("records the real cf-connecting-ip when the peer is a trusted proxy (SR2-16)", async () => {
+    process.env.TRUST_PROXY_HEADERS = "true";
+    process.env.TRUSTED_PROXY_CIDRS = "198.51.100.77/32";
+    process.env.TRUST_CF_CONNECTING_IP = "true";
+
+    const tokenRow = {
+      id: "ip-t2", token: "JJJJJJJJJJ", orgId: "o-ip2", parentEnrollmentKeyId: "pk-ip2", siteId: "s-ip2",
+      maxUsage: 1, consumedCount: 0, createdBy: "u-ip2", consumedAt: null, expiresAt: new Date(Date.now() + 60_000),
+    };
+    const parentKey = {
+      id: "pk-ip2", name: "IP2 parent", orgId: "o-ip2", siteId: "s-ip2", keySecretHash: "hash",
+      expiresAt: new Date(Date.now() + 60_000 * 60),
+    };
+    const org = { id: "o-ip2", name: "IP2 Org" };
+    mockRedeemChain(tokenRow, parentKey, org);
+
+    let capturedSet: Record<string, unknown> | null = null;
+    vi.mocked(db.update).mockReturnValue({
+      set: (vals: Record<string, unknown>) => {
+        capturedSet = vals;
+        return { where: () => ({ returning: () => Promise.resolve([{ ...tokenRow, consumedAt: new Date() }]) }) };
+      },
+    } as any);
+
+    const app = makeApp();
+    const res = await app.request(
+      "/api/v1/installer/bootstrap",
+      {
+        method: "POST",
+        headers: { "X-Breeze-Bootstrap-Token": "JJJJJJJJJJ", "cf-connecting-ip": "203.0.113.5" },
+      },
+      { incoming: { socket: { remoteAddress: "198.51.100.77" } } },
+    );
+
+    expect(res.status).toBe(200);
+    expect((capturedSet as any).consumedFromIp).toBe("203.0.113.5");
   });
 });

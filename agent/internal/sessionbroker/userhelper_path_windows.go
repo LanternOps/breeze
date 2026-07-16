@@ -17,10 +17,10 @@ import (
 // fallback semantics are unit-testable on every platform the agent builds on,
 // not just Windows. This wrapper just supplies the agent's own executable
 // path and delegates.
-func userHelperExePath() (string, error) {
+func userHelperExePath() (ResolvedHelperExecutable, error) {
 	agentExe, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("os.Executable: %w", err)
+		return ResolvedHelperExecutable{}, fmt.Errorf("os.Executable: %w", err)
 	}
 	return resolveUserHelperPath(agentExe)
 }
