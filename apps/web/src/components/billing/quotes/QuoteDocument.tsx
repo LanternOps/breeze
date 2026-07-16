@@ -11,7 +11,6 @@ import {
   type QuoteLine,
   STATUS_ROLES,
   statusLabel,
-  stripHtml,
   formatDate,
   formatMoney,
   lineTaxAmount,
@@ -190,9 +189,18 @@ function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block
     return <h2 className="text-balance text-lg font-semibold text-foreground">{text}</h2>;
   }
   if (block.blockType === 'rich_text') {
-    const text = stripHtml((block.content?.html as string | undefined) ?? '');
-    if (!text) return null;
-    return <p className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground/90">{text}</p>;
+    // The API sanitizes every rich_text block's content.html on both write and
+    // read serialization (richTextSanitize.ts's fixed p/br/strong/em/u/h3/h4/
+    // ul/ol/li/a allowlist) before it ever reaches this component, so rendering
+    // it as real HTML here is safe.
+    const html = (block.content?.html as string | undefined) ?? '';
+    if (!html.trim()) return null;
+    return (
+      <div
+        className="quote-rich-text prose prose-sm max-w-prose text-pretty leading-relaxed text-foreground/90 dark:prose-invert"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
   }
   if (block.blockType === 'image') {
     const imageId = (block.content?.imageId as string | undefined) ?? '';

@@ -29,32 +29,6 @@ function lineTax(lineTotal: string | number, taxable: boolean | undefined, rate:
   return Math.round(cents * rate) / 100;
 }
 
-// rich_text blocks store author HTML. The portal has no HTML sanitizer
-// dependency, and rendering untrusted HTML on the *unauthenticated* public page
-// would be an XSS sink, so we strip all tags to plain text (matching the PDF's
-// stripHtml + the web detail view, which also renders rich_text as text) and
-// preserve line breaks with whitespace-pre-wrap. This is the safe sanitization.
-function stripHtml(html: string): string {
-  // Output is rendered as a React text node (auto-escaped), so this is display
-  // cleanup. Strip tags to a fixpoint so a split tag can't survive one pass, and
-  // decode `&amp;` LAST so it can't re-introduce an entity a later rule re-decodes.
-  let out = html
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|h[1-6]|li)>/gi, '\n');
-  let prev: string;
-  do { prev = out; out = out.replace(/<[^>]*>/g, ''); } while (out !== prev);
-  return out
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&amp;/gi, '&')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
 const RECURRENCE_GROUPS: ReadonlyArray<{ key: string; label: string; suffix: string }> = [
   { key: 'one_time', label: 'One-time', suffix: '' },
   { key: 'monthly', label: 'Monthly', suffix: '/mo' },
@@ -178,16 +152,19 @@ export function QuoteBlocks({
     }
 
     if (block.blockType === 'rich_text') {
-      const text = stripHtml(String(content.html ?? ''));
-      if (!text) return null;
+      // The API sanitizes every rich_text block's content.html on both write and
+      // read serialization (richTextSanitize.ts's fixed p/br/strong/em/u/h3/h4/
+      // ul/ol/li/a allowlist) before it ever reaches this component — including
+      // on the unauthenticated public quote link — so rendering it here is safe.
+      const html = String(content.html ?? '');
+      if (!html.trim()) return null;
       return (
-        <p
+        <div
           key={block.id}
-          className="whitespace-pre-wrap text-sm leading-relaxed text-foreground"
+          className="quote-rich-text text-sm leading-relaxed text-foreground"
           data-testid={`quote-block-${block.id}`}
-        >
-          {text}
-        </p>
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
       );
     }
 

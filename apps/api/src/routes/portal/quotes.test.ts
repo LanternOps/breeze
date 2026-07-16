@@ -47,11 +47,69 @@ function app(orgId = ORG_ID) {
   return a;
 }
 
+describe('portal quotes GET /quotes/:id', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbResults.length = 0;
+  });
+
+  it('sanitizes a legacy dirty rich_text block (script tag) before it leaves the API', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null,
+    }]); // quote SELECT
+    dbResults.push([
+      { id: 'b1', quoteId: QUOTE_ID, orgId: ORG_ID, blockType: 'rich_text', content: { html: '<p>Hello</p><script>alert(1)</script>' }, sortOrder: 0 },
+      { id: 'b2', quoteId: QUOTE_ID, orgId: ORG_ID, blockType: 'heading', content: { text: 'Intro', level: 2 }, sortOrder: 1 },
+    ]); // quoteBlocks SELECT — one legacy dirty row, one unrelated block type
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT (no match → silent no-op)
+
+    const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const richBlock = body.data.blocks.find((b: { id: string }) => b.id === 'b1');
+    expect(richBlock.content.html).toBe('<p>Hello</p>');
+    expect(richBlock.content.html).not.toContain('script');
+    const headingBlock = body.data.blocks.find((b: { id: string }) => b.id === 'b2');
+    expect(headingBlock.content).toEqual({ text: 'Intro', level: 2 }); // untouched
+  });
+
+  it('404s for a quote outside the customer org', async () => {
+    dbResults.push([]); // quote SELECT → none
+    const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('portal quotes /:id/pdf', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbResults.length = 0;
     renderQuotePdfMock.mockResolvedValue(Buffer.from('%PDF-test'));
+  });
+
+  it('sanitizes a legacy dirty rich_text block before handing blocks to the PDF renderer', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null, sellerSnapshot: null, terms: null,
+    }]); // quote SELECT
+    dbResults.push([
+      { id: 'b1', quoteId: QUOTE_ID, orgId: ORG_ID, blockType: 'rich_text', content: { html: '<p>Hi</p><script>alert(1)</script>' }, sortOrder: 0 },
+    ]); // quoteBlocks SELECT
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([{ name: 'Lantern IT', billingCompanyName: null, billingEmail: null, billingPhone: null, billingWebsite: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null, invoiceFooter: null, currencyCode: 'USD' }]); // partners SELECT (system ctx)
+    dbResults.push([]); // portalBranding SELECT
+
+    const res = await app().request(`/quotes/${QUOTE_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(200);
+
+    const [, blocksArg] = renderQuotePdfMock.mock.calls[0] as [unknown, { content: { html: string } }[]];
+    expect(blocksArg[0]!.content.html).toBe('<p>Hi</p>');
+    expect(blocksArg[0]!.content.html).not.toContain('script');
   });
 
   it('feeds renderQuotePdf the same totals sweep as GET /quotes/:id (dueOnAcceptanceTotal + categoryBreakdown), not the raw tax-exclusive fallback', async () => {

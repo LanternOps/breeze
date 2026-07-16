@@ -11,6 +11,7 @@ import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
+import { sanitizeRichTextHtml } from './richTextSanitize';
 import type {
   CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery
 } from '@breeze/shared';
@@ -30,6 +31,35 @@ import type {
  */
 export function toCustomerLines<T extends { unitCost: unknown }>(lines: T[]): Omit<T, 'unitCost'>[] {
   return lines.map(({ unitCost: _cost, ...rest }) => rest as Omit<T, 'unitCost'>);
+}
+
+/**
+ * Sanitize every rich_text block's content.html at READ-serialization time —
+ * defense in depth alongside the write-time sanitization in addBlock/updateBlock
+ * below, covering rows written before this sanitizer existed (or by any future
+ * write path that forgets to sanitize). Every place a quote's blocks leave the
+ * API — the internal editor (getQuote, below), the portal, and the public accept
+ * link — must route through this so no unsanitized author HTML is ever served.
+ */
+export function sanitizeQuoteBlocksForRead<T extends { blockType: string; content: unknown }>(blocks: T[]): T[] {
+  return blocks.map((block) => {
+    if (block.blockType !== 'rich_text') return block;
+    const content = block.content;
+    if (!content || typeof content !== 'object' || Array.isArray(content)) return block;
+    const html = (content as Record<string, unknown>).html;
+    if (typeof html !== 'string') return block;
+    return { ...block, content: { ...(content as Record<string, unknown>), html: sanitizeRichTextHtml(html) } };
+  });
+}
+
+/** Sanitize a rich_text block's content.html at WRITE time (addBlock/updateBlock) —
+ * the primary defense; sanitizeQuoteBlocksForRead above is the secondary one.
+ * Other block types pass through unchanged. */
+function sanitizeBlockContentForWrite(input: QuoteBlockInput): QuoteBlockInput['content'] {
+  if (input.blockType === 'rich_text') {
+    return { ...input.content, html: sanitizeRichTextHtml(input.content.html) };
+  }
+  return input.content;
 }
 
 function resolvePartner(actor: QuoteActor): string {
@@ -362,7 +392,9 @@ export async function getQuote(id: string, actor: QuoteActor) {
   const [q] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
-  const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
+  const blocks = sanitizeQuoteBlocksForRead(
+    await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder)
+  );
   const lines = await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder);
   // Quote acceptance returns the staged order id once, but the technician may
   // reload or open the converted quote later. Keep discoverability in the quote
@@ -600,7 +632,7 @@ export async function addBlock(quoteId: string, input: QuoteBlockInput, actor: Q
     quoteId,
     orgId: q.orgId,
     blockType: input.blockType,
-    content: input.content,
+    content: sanitizeBlockContentForWrite(input),
     sortOrder,
   }).returning();
   return row!;
@@ -624,7 +656,7 @@ export async function updateBlock(quoteId: string, blockId: string, input: Quote
     throw new QuoteServiceError('Block type cannot be changed', 400, 'BLOCK_TYPE_MISMATCH');
   }
   const [row] = await db.update(quoteBlocks)
-    .set({ content: input.content })
+    .set({ content: sanitizeBlockContentForWrite(input) })
     .where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)))
     .returning();
   return row!;

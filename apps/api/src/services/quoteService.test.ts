@@ -339,6 +339,62 @@ describe('quoteService deposits', () => {
     expect(billTo.taxId).toBe('ORG-TAX');
   });
 
+  it('addBlock sanitizes a rich_text block\'s content.html before insert (script tag stripped)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ max: -1 }]); // nextBlockSortOrder
+    queueResult([{ id: 'blk1', blockType: 'rich_text', content: { html: '<p>Hello</p>' } }]); // insert returning
+
+    await svc.addBlock('q1', { blockType: 'rich_text', content: { html: '<p>Hello</p><script>alert(1)</script>' } }, actor);
+
+    const valuesMock = (db as unknown as Chain).values;
+    const inserted = valuesMock.mock.calls.at(-1)![0] as { content: { html: string } };
+    expect(inserted.content.html).toBe('<p>Hello</p>');
+    expect(inserted.content.html).not.toContain('script');
+  });
+
+  it('addBlock leaves non-rich_text block content untouched', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ max: -1 }]); // nextBlockSortOrder
+    queueResult([{ id: 'blk1', blockType: 'heading', content: { text: 'Intro', level: 2 } }]); // insert returning
+
+    await svc.addBlock('q1', { blockType: 'heading', content: { text: 'Intro', level: 2 } }, actor);
+
+    const valuesMock = (db as unknown as Chain).values;
+    const inserted = valuesMock.mock.calls.at(-1)![0] as { content: { text: string; level: number } };
+    expect(inserted.content).toEqual({ text: 'Intro', level: 2 });
+  });
+
+  it('updateBlock sanitizes a rich_text block\'s content.html before update (script tag stripped)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ blockType: 'rich_text' }]); // existing block type check
+    queueResult([{ id: 'blk1', blockType: 'rich_text', content: { html: '<p>Updated</p>' } }]); // update returning
+
+    await svc.updateBlock('q1', 'blk1', { blockType: 'rich_text', content: { html: '<p>Updated</p><script>alert(2)</script>' } }, actor);
+
+    const setMock = (db as unknown as Chain).set;
+    const updated = setMock.mock.calls.at(-1)![0] as { content: { html: string } };
+    expect(updated.content.html).toBe('<p>Updated</p>');
+    expect(updated.content.html).not.toContain('script');
+  });
+
+  it('getQuote sanitizes a legacy dirty rich_text block on read (defense in depth for pre-sanitizer rows)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', taxRate: null, depositType: 'none', depositPercent: null }]); // quote
+    queueResult([
+      { id: 'blk1', quoteId: 'q1', orgId: 'org1', blockType: 'rich_text', content: { html: '<p>Legacy</p><script>alert(3)</script>' }, sortOrder: 0 },
+      { id: 'blk2', quoteId: 'q1', orgId: 'org1', blockType: 'heading', content: { text: 'Title', level: 2 }, sortOrder: 1 },
+    ]); // blocks (one legacy dirty row, one unrelated block type)
+    queueResult([]); // quote lines
+    queueResult([]); // no staged Pax8 order
+
+    const { blocks } = await svc.getQuote('q1', actor);
+
+    const richBlock = blocks.find((b) => b.id === 'blk1') as { content: { html: string } };
+    expect(richBlock.content.html).toBe('<p>Legacy</p>');
+    expect(richBlock.content.html).not.toContain('script');
+    const headingBlock = blocks.find((b) => b.id === 'blk2') as { content: { text: string } };
+    expect(headingBlock.content).toEqual({ text: 'Title', level: 2 }); // untouched
+  });
+
   it('listQuotes left-joins the converted invoice and flattens invoiceDepositDue/invoiceAmountPaid onto each row', async () => {
     // The chain mock yields queued rows regardless of shape; queue the joined
     // projection shape the real select({ quote, invoiceDepositDue, invoiceAmountPaid }) returns.

@@ -113,6 +113,26 @@ describe('QuoteDocument', () => {
     expect(row.textContent).toMatch(/\$450\.00/);
   });
 
+  it('renders a rich_text block as formatted HTML (not stripped to plain text)', () => {
+    const d = makeDetail();
+    d.blocks = [
+      ...d.blocks,
+      {
+        id: 'b-2', quoteId: 'q-1', orgId: 'org-1', blockType: 'rich_text',
+        content: { html: '<p>Please review <strong>carefully</strong>.</p><ul><li>Item one</li></ul>' },
+        sortOrder: 1, createdAt: '2026-06-01T00:00:00Z',
+      },
+    ];
+    render(<QuoteDocument detail={d} customerName="Acme" />);
+
+    // Real elements, not escaped/stripped text — the API is trusted to have
+    // already sanitized this HTML (richTextSanitize.ts), so it's rendered as-is.
+    const strongEl = screen.getByText('carefully');
+    expect(strongEl.tagName).toBe('STRONG');
+    const listItem = screen.getByText('Item one');
+    expect(listItem.closest('li')).not.toBeNull();
+  });
+
   it('never renders internal cost/markup/net on the customer document', () => {
     const detail = makeDetail({
       lines: [

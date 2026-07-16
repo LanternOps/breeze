@@ -13,7 +13,7 @@ import { createQuotePayLink } from '../../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../../services/quoteMath';
 import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
-import { toCustomerLines } from '../../services/quoteService';
+import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
@@ -39,7 +39,7 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
   const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
   if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found' }, 404);
-  const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
+  const blocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder));
   const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
   try { await markQuoteViewed(id, auth.user.orgId); } catch (err) { console.error('[portal] quote markViewed failed', { id, err }); }
   // Derive the amount accept actually invoices (one-time only) so the customer
@@ -54,7 +54,7 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
   const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
   if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found' }, 404);
-  const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder);
+  const blocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder));
   const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
   // Same totals sweep as GET /quotes/:id: derive the amount due on acceptance
   // (one-time only, tax-inclusive) + per-category subtotals so the PDF's
