@@ -872,6 +872,76 @@ jobs:
         working-directory: agent
         run: go test -race ./internal/sessionbroker ./internal/eventlog ./internal/watchdog ./cmd/breeze-watchdog
 
+  # ─── Go agent lint ────────────────────────────────────────────────────
+  # The `lint` job above is JS/TS + compose guards only; the Go agent was
+  # never vet/lint-gated in CI (golangci-lint lived only in agent/Makefile).
+  # `go vet` is an unconditional gate (the tree is already vet-clean).
+  # golangci-lint runs in new-issues-only mode so the pre-existing backlog
+  # (incl. ~20 unformatted files) does not block PRs — burn it down separately.
+  lint-agent:
+    name: Lint Agent (Go)
+    runs-on: ubuntu-latest
+    # CGO off (matches test-agent): the agent's only cgo files are the linux
+    # X11/pcap capture backends, whose C headers are not on the runner. vet +
+    # lint cover the CGO-off build; the cgo backends are compiled by build-agent.
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: go vet
+        working-directory: agent
+        run: go vet ./...
+
+      - name: golangci-lint (new issues only)
+        working-directory: agent
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          golangci-lint run --new-from-rev="origin/${BASE_REF}" ./...
+
+  # ─── Go agent race tests (broad) ──────────────────────────────────────
+  # test-agent runs the suite CGO-off (no race detector). This job races the
+  # ENTIRE agent tree so new concurrency-heavy packages are covered
+  # automatically without a hand-maintained list (~80s). The race detector
+  # requires CGO; it runs on macOS to match the repo's only cgo agent build
+  # (build-agent darwin) — the linux agent is never cgo-built in CI, and the
+  # concurrency logic under test is platform-independent. Windows-only
+  # concurrency is covered by the agent's own windows race jobs.
+  test-agent-race:
+    name: Test Agent (race)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Download Go dependencies
+        working-directory: agent
+        run: go mod download
+
+      - name: go test -race ./...
+        working-directory: agent
+        env:
+          CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
+        run: CGO_ENABLED=1 go test -race -count=1 ./...
+
   # ─── Windows runtime smoke (#1000) ────────────────────────────────────
   # CI cross-compiles the Windows agent (build-agent matrix) but never RAN
   # it on Windows, so runtime-only Windows regressions shipped green. This
