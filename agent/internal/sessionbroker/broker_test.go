@@ -951,6 +951,26 @@ func TestFindCapableSessionPamUsesSystemPamScope(t *testing.T) {
 	}
 }
 
+func TestFindCapableSessionPamDoesNotFallBackAcrossWindowsSessions(t *testing.T) {
+	otherSession := &Session{
+		SessionID:     "system-pam-other-session",
+		WinSessionID:  "8",
+		AllowedScopes: []string{ipc.ScopePam},
+		HelperRole:    ipc.HelperRoleSystem,
+		ConnectedAt:   time.Now(),
+		LastSeen:      time.Now(),
+	}
+	b := &Broker{
+		sessions: map[string]*Session{
+			otherSession.SessionID: otherSession,
+		},
+	}
+
+	if got := b.FindCapableSession(ipc.ScopePam, "7"); got != nil {
+		t.Fatalf("FindCapableSession(pam, target=7) = %v, want nil rather than session %q", got, otherSession.WinSessionID)
+	}
+}
+
 func TestAssistHelperBinaryPathsIncludeBreezeHelper(t *testing.T) {
 	paths := assistHelperBinaryPaths("/opt/breeze")
 	found := false
