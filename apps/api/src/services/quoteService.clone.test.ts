@@ -91,6 +91,10 @@ describe('cloneQuote', () => {
         { id: 'line-parent', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: 'Server', description: null, quantity: '1.00', unitPrice: '100.00', taxable: true, customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: '50.00', depositEligible: true, itemType: 'hardware', sku: 'SKU-1', partNumber: 'PN-1', imageId: 'image-1', sortOrder: 0, createdAt: new Date() },
         { id: 'line-child', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: 'line-parent', name: 'Setup', description: null, quantity: '1.00', unitPrice: '0.00', taxable: false, customerVisible: true, lineTotal: '0.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: null, depositEligible: false, itemType: 'service', sku: null, partNumber: null, imageId: null, sortOrder: 1, createdAt: new Date() },
       ],
+      // getQuote() also looks up a staged Pax8 order for this quote (#2501); empty
+      // here means "no staged order", which short-circuits the pax8OrderLineSummary
+      // query below it so no extra select is consumed from this queue.
+      [],
       [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
     );
 
