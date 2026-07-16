@@ -101,3 +101,52 @@ func TestPamDialogMessagesRoundTrip(t *testing.T) {
 		t.Fatalf("ScopeConsentUI = %q, want consent_ui", ScopeConsentUI)
 	}
 }
+
+func TestPamDismissConsentMessagesRoundTrip(t *testing.T) {
+	if TypePamDismissConsent != "pam_dismiss_consent" {
+		t.Fatalf("TypePamDismissConsent = %q, want pam_dismiss_consent", TypePamDismissConsent)
+	}
+	if TypePamDismissConsentResult != "pam_dismiss_consent_result" {
+		t.Fatalf("TypePamDismissConsentResult = %q, want pam_dismiss_consent_result", TypePamDismissConsentResult)
+	}
+
+	requestBytes, err := json.Marshal(PamDismissConsentRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(requestBytes) != `{}` {
+		t.Fatalf("request JSON = %s, want {}", requestBytes)
+	}
+	var requestOut PamDismissConsentRequest
+	if err := json.Unmarshal(requestBytes, &requestOut); err != nil {
+		t.Fatal(err)
+	}
+
+	result := PamDismissConsentResult{
+		Success:       true,
+		Reason:        "dismissed",
+		DetailMessage: "consent process terminated",
+	}
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(resultBytes) != `{"success":true,"reason":"dismissed","detailMessage":"consent process terminated"}` {
+		t.Fatalf("result JSON = %s", resultBytes)
+	}
+	var resultOut PamDismissConsentResult
+	if err := json.Unmarshal(resultBytes, &resultOut); err != nil {
+		t.Fatal(err)
+	}
+	if resultOut != result {
+		t.Fatalf("result round-trip mismatch: %+v != %+v", resultOut, result)
+	}
+
+	withoutDetail, err := json.Marshal(PamDismissConsentResult{Success: false, Reason: "not_found"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(withoutDetail) != `{"success":false,"reason":"not_found"}` {
+		t.Fatalf("omitempty failed: %s", withoutDetail)
+	}
+}
