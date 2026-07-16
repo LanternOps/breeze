@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { type ElevationRequest, requestTarget } from './types';
+import { DialogHeader, ErrorAlert, btnGhostClass, inputClass } from './ui';
 
 export default function PamRevokeModal({
   request,
@@ -21,6 +22,7 @@ export default function PamRevokeModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const reasonId = useId();
+  const titleId = useId();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,14 +66,12 @@ export default function PamRevokeModal({
     }
   };
 
+  const modalTitle = t('pamPamRevokeModal.title', { defaultValue: 'Revoke active elevation' });
+
   return (
-    <Dialog
-      open
-      onClose={onClose}
-      title={t('pamPamRevokeModal.title', { defaultValue: 'Revoke active elevation' })}
-      maxWidth="md"
-    >
-      <form onSubmit={handleSubmit} className="space-y-4 p-6 pt-2">
+    <Dialog open onClose={onClose} title={modalTitle} labelledBy={titleId} maxWidth="md">
+      <DialogHeader id={titleId} title={modalTitle} />
+      <form onSubmit={handleSubmit} className="space-y-4 p-6">
         <p className="text-sm text-muted-foreground">
           <Trans
             i18nKey="pamPamRevokeModal.description"
@@ -100,35 +100,24 @@ export default function PamRevokeModal({
             rows={3}
             required
             data-testid="pam-revoke-reason"
-            className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+            className={inputClass}
             placeholder={t('pamPamRevokeModal.form.reasonPlaceholder', {
               defaultValue: 'Recorded in the audit trail',
             })}
           />
         </div>
 
-        {error && (
-          <div
-            role="alert"
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          >
-            {error}
-          </div>
-        )}
+        {error && <ErrorAlert>{error}</ErrorAlert>}
 
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border px-3 py-2 text-sm hover:bg-accent"
-          >
+          <button type="button" onClick={onClose} className={btnGhostClass}>
             {t('common:actions.cancel', { defaultValue: 'Cancel' })}
           </button>
           <button
             type="submit"
             disabled={submitting || !reason.trim()}
             data-testid="pam-revoke-submit"
-            className="rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white shadow-xs transition-colors hover:bg-red-700 disabled:pointer-events-none disabled:opacity-50"
           >
             {submitting
               ? t('pamPamRevokeModal.actions.revoking', { defaultValue: 'Revoking…' })

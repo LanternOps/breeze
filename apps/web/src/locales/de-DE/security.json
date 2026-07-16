@@ -941,6 +941,10 @@
       "createRule": "Regel konnte nicht erstellt werden",
       "network": "Netzwerkfehler"
     },
+    "sections": {
+      "criteria": "Übereinstimmungskriterien",
+      "window": "Zeitfenster"
+    },
     "toasts": {
       "ruleSaved": "Regel „{{name}}“ {{action}}",
       "updated": "aktualisiert",

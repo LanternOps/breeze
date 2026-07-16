@@ -1,17 +1,29 @@
 import '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
-import { ShieldCheck, Timer, Inbox } from 'lucide-react';
+import { History, ShieldCheck, Timer, Inbox } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import {
   type ElevationRequest,
   FLOW_LABELS,
-  STATUS_LABELS,
   decisionAttribution,
   requestTarget,
-  statusBadgeClass,
 } from './types';
+import {
+  EmptyState,
+  ErrorAlert,
+  StatusBadge,
+  TableSkeleton,
+  tableClass,
+  tableWrapClass,
+  tbodyClass,
+  tdClass,
+  thClass,
+  theadClass,
+  theadRowClass,
+  rowClass,
+} from './ui';
 
 interface OverviewData {
   active: ElevationRequest[];
@@ -77,9 +89,19 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
-        <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        {t('pamPamOverviewTab.loading', { defaultValue: 'Loading overview…' })}
+      <div className="space-y-6">
+        <div className="grid gap-4 sm:grid-cols-3">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="rounded-lg border bg-card p-4 shadow-xs">
+              <div className="skeleton h-3 w-28" />
+              <div className="skeleton mt-3 h-8 w-12" />
+            </div>
+          ))}
+        </div>
+        <TableSkeleton
+          rows={4}
+          label={t('pamPamOverviewTab.loading', { defaultValue: 'Loading overview…' })}
+        />
       </div>
     );
   }
@@ -89,28 +111,29 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
 
   return (
     <div className="space-y-6">
-      {error && (
-        <div
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </div>
-      )}
+      {error && <ErrorAlert>{error}</ErrorAlert>}
 
       {isFirstRun && (
-        <div className="rounded-md border bg-muted/20 p-4" data-testid="pam-setup-steps">
-          <p className="text-sm font-medium">
-            {t('pamPamOverviewTab.setup.title', {
-              defaultValue: 'Getting started with Privileged Access',
-            })}
-          </p>
-          <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
+        <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="pam-setup-steps">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10">
+              <ShieldCheck className="h-4.5 w-4.5 text-primary" aria-hidden="true" />
+            </div>
+            <p className="text-sm font-semibold">
+              {t('pamPamOverviewTab.setup.title', {
+                defaultValue: 'Getting started with Privileged Access',
+              })}
+            </p>
+          </div>
+          <ol className="mt-3 list-decimal space-y-1.5 pl-10 text-sm text-muted-foreground marker:font-medium marker:text-foreground">
             <li>
               {t('pamPamOverviewTab.setup.step1BeforeLink', {
                 defaultValue: 'UAC prompt capture is on by default. Scope it per device with a',
               })}{' '}
-              <a href="/configuration-policies" className="underline underline-offset-2 hover:text-foreground">
+              <a
+                href="/configuration-policies"
+                className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+              >
                 {t('pamPamOverviewTab.setup.configurationPolicyLink', {
                   defaultValue: 'Configuration Policy → Privileged Access',
                 })}
@@ -135,19 +158,22 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
 
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard
-          icon={<ShieldCheck className="h-5 w-5 text-green-500" />}
+          icon={ShieldCheck}
+          iconClass="bg-green-500/10 text-green-600 dark:text-green-400"
           label={t('pamPamOverviewTab.stats.activeElevations', { defaultValue: 'Active elevations' })}
           value={data?.active.length ?? 0}
           testId="pam-stat-active"
         />
         <StatCard
-          icon={<Inbox className="h-5 w-5 text-yellow-500" />}
+          icon={Inbox}
+          iconClass="bg-amber-500/10 text-amber-600 dark:text-amber-400"
           label={t('pamPamOverviewTab.stats.pendingRequests', { defaultValue: 'Pending requests' })}
           value={data?.pendingTotal ?? 0}
           testId="pam-stat-pending"
         />
         <StatCard
-          icon={<Timer className="h-5 w-5 text-blue-500" />}
+          icon={Timer}
+          iconClass="bg-blue-500/10 text-blue-600 dark:text-blue-400"
           label={t('pamPamOverviewTab.stats.recentDecisions', { defaultValue: 'Recent decisions' })}
           value={data?.recent.length ?? 0}
           testId="pam-stat-recent"
@@ -155,52 +181,44 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
       </div>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
+        <h2 className="mb-2 text-sm font-semibold">
           {t('pamPamOverviewTab.active.title', { defaultValue: 'Active elevations' })}
         </h2>
         {!data || data.active.length === 0 ? (
-          <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
-            <ShieldCheck className="mx-auto h-8 w-8 text-muted-foreground" />
-            <p className="mt-2 text-sm font-medium">
-              {t('pamPamOverviewTab.active.emptyTitle', { defaultValue: 'No active elevations' })}
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t('pamPamOverviewTab.active.emptyDescription', {
-                defaultValue:
-                  'Approved elevation windows will appear here until they expire or are revoked.',
-              })}
-            </p>
-          </div>
+          <EmptyState
+            icon={ShieldCheck}
+            title={t('pamPamOverviewTab.active.emptyTitle', { defaultValue: 'No active elevations' })}
+            description={t('pamPamOverviewTab.active.emptyDescription', {
+              defaultValue:
+                'Approved elevation windows will appear here until they expire or are revoked.',
+            })}
+          />
         ) : (
-          <div className="overflow-x-auto rounded-md border bg-card">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.device', { defaultValue: 'Device' })}</th>
-                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.user', { defaultValue: 'User' })}</th>
-                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.target', { defaultValue: 'Target' })}</th>
-                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.flow', { defaultValue: 'Flow' })}</th>
-                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.status', { defaultValue: 'Status' })}</th>
-                  <th className="px-3 py-2 font-medium">{t('pamPamOverviewTab.table.expires', { defaultValue: 'Expires' })}</th>
+          <div className={tableWrapClass}>
+            <table className={tableClass}>
+              <thead className={theadClass}>
+                <tr className={theadRowClass}>
+                  <th className={thClass}>{t('pamPamOverviewTab.table.device', { defaultValue: 'Device' })}</th>
+                  <th className={thClass}>{t('pamPamOverviewTab.table.user', { defaultValue: 'User' })}</th>
+                  <th className={thClass}>{t('pamPamOverviewTab.table.target', { defaultValue: 'Target' })}</th>
+                  <th className={thClass}>{t('pamPamOverviewTab.table.flow', { defaultValue: 'Flow' })}</th>
+                  <th className={thClass}>{t('pamPamOverviewTab.table.status', { defaultValue: 'Status' })}</th>
+                  <th className={thClass}>{t('pamPamOverviewTab.table.expires', { defaultValue: 'Expires' })}</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className={tbodyClass}>
                 {data.active.map((r) => (
-                  <tr key={r.id} className="border-b last:border-0" data-testid={`pam-active-row-${r.id}`}>
-                    <td className="px-3 py-2">{r.deviceHostname ?? r.deviceId}</td>
-                    <td className="px-3 py-2">{r.subjectUsername}</td>
-                    <td className="max-w-[280px] truncate px-3 py-2" title={requestTarget(r)}>
+                  <tr key={r.id} className={rowClass} data-testid={`pam-active-row-${r.id}`}>
+                    <td className={`${tdClass} font-medium`}>{r.deviceHostname ?? r.deviceId}</td>
+                    <td className={tdClass}>{r.subjectUsername}</td>
+                    <td className={`${tdClass} max-w-[280px] truncate`} title={requestTarget(r)}>
                       {requestTarget(r)}
                     </td>
-                    <td className="px-3 py-2">{FLOW_LABELS[r.flowType]}</td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(r.status)}`}
-                      >
-                        {STATUS_LABELS[r.status]}
-                      </span>
+                    <td className={`${tdClass} whitespace-nowrap`}>{FLOW_LABELS[r.flowType]}</td>
+                    <td className={tdClass}>
+                      <StatusBadge status={r.status} />
                     </td>
-                    <td className="px-3 py-2 text-muted-foreground">
+                    <td className={`${tdClass} whitespace-nowrap tabular-nums text-muted-foreground`}>
                       {r.expiresAt ? <ExpiresIn at={r.expiresAt} /> : '—'}
                     </td>
                   </tr>
@@ -212,23 +230,27 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-muted-foreground">
+        <h2 className="mb-2 text-sm font-semibold">
           {t('pamPamOverviewTab.recent.title', { defaultValue: 'Recent decisions' })}
         </h2>
         {!data || data.recent.length === 0 ? (
-          <div className="rounded-md border border-dashed bg-card px-4 py-6 text-center text-sm text-muted-foreground">
-            {t('pamPamOverviewTab.recent.empty', { defaultValue: 'No decided requests yet.' })}
-          </div>
+          <EmptyState
+            icon={History}
+            title={t('pamPamOverviewTab.recent.empty', { defaultValue: 'No decided requests yet.' })}
+          />
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <ul className="divide-y rounded-lg border bg-card shadow-xs">
             {data.recent.map((r) => {
               const attribution = decisionAttribution(r);
               return (
-                <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                <li
+                  key={r.id}
+                  className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-muted/40"
+                >
                   <span className="min-w-0 flex-1 truncate" title={requestTarget(r)}>
                     <span className="font-medium">{r.deviceHostname ?? r.deviceId}</span>
                     <span className="text-muted-foreground"> · {r.subjectUsername} · </span>
-                    {requestTarget(r)}
+                    <span className="text-muted-foreground">{requestTarget(r)}</span>
                   </span>
                   {attribution && (
                     <span
@@ -239,11 +261,7 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
                       {attribution}
                     </span>
                   )}
-                  <span
-                    className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(r.status)}`}
-                  >
-                    {STATUS_LABELS[r.status]}
-                  </span>
+                  <StatusBadge status={r.status} />
                 </li>
               );
             })}
@@ -255,23 +273,30 @@ export default function PamOverviewTab({ liveTick }: { liveTick: number }) {
 }
 
 function StatCard({
-  icon,
+  icon: Icon,
+  iconClass,
   label,
   value,
   testId,
 }: {
-  icon: React.ReactNode;
+  icon: typeof ShieldCheck;
+  iconClass: string;
   label: string;
   value: number;
   testId: string;
 }) {
   return (
-    <div className="rounded-md border bg-card px-4 py-3" data-testid={testId}>
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        {icon}
-        {label}
+    <div
+      className="flex items-start justify-between gap-3 rounded-lg border bg-card p-4 shadow-xs"
+      data-testid={testId}
+    >
+      <div>
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+        <div className="mt-1.5 text-3xl font-bold tabular-nums tracking-tight">{value}</div>
       </div>
-      <div className="mt-1 text-2xl font-semibold">{value}</div>
+      <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${iconClass}`}>
+        <Icon className="h-4.5 w-4.5" aria-hidden="true" />
+      </div>
     </div>
   );
 }

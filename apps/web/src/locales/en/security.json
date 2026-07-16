@@ -941,6 +941,10 @@
       "createRule": "Failed to create rule",
       "network": "Network error"
     },
+    "sections": {
+      "criteria": "Match criteria",
+      "window": "Time window"
+    },
     "toasts": {
       "ruleSaved": "Rule \"{{name}}\" {{action}}",
       "updated": "updated",

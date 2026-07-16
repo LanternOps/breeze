@@ -9,6 +9,24 @@ import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import PamRuleModal from './PamRuleModal';
 import { type PamRule, type PamUnmatchedVerdict, VERDICT_LABELS } from './types';
+import {
+  EmptyState,
+  ErrorAlert,
+  Switch,
+  TableSkeleton,
+  btnOutlineClass,
+  btnOutlineDestructiveClass,
+  btnPrimaryClass,
+  selectClass,
+  tableClass,
+  tableWrapClass,
+  tbodyClass,
+  tdClass,
+  thClass,
+  theadClass,
+  theadRowClass,
+  rowClass,
+} from './ui';
 
 function ruleCriteriaSummary(rule: PamRule, signerGroupNames: Record<string, string> = {}): string {
   const parts: string[] = [];
@@ -222,8 +240,8 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <p className="max-w-2xl text-sm text-muted-foreground">
           {t('pamPamRulesTab.description', {
             defaultValue:
               'Software policies are evaluated first — an allowlist/blocklist match decides before these rules. Rules then run in priority order (lowest first); the first match decides.',
@@ -233,14 +251,14 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
           type="button"
           onClick={() => setCreating(true)}
           data-testid="pam-add-rule-btn"
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className={btnPrimaryClass}
         >
-          <Plus className="h-4 w-4" />
+          <Plus className="h-4 w-4" aria-hidden="true" />
           {t('pamPamRulesTab.actions.addRule', { defaultValue: 'Add rule' })}
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-md border bg-card px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border bg-card px-4 py-3 shadow-xs">
         <label htmlFor="pam-default-unmatched-verdict" className="text-sm font-medium">
           {t('pamPamRulesTab.defaultVerdict.label', { defaultValue: 'Default verdict' })}
         </label>
@@ -250,7 +268,7 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
           onChange={(e) => void changeDefaultVerdict(e.target.value as PamUnmatchedVerdict)}
           disabled={savingDefault}
           data-testid="pam-default-unmatched-verdict"
-          className="rounded-md border bg-background px-2 py-1 text-sm disabled:opacity-50"
+          className={`${selectClass} disabled:opacity-50`}
         >
           <option value="require_approval">
             {t('pamPamRulesTab.defaultVerdict.requireApproval', { defaultValue: 'Require approval' })}
@@ -266,51 +284,37 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
         </span>
       </div>
 
-      {error && (
-        <div
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </div>
-      )}
+      {error && <ErrorAlert>{error}</ErrorAlert>}
 
       {loading ? (
-        <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          {t('pamPamRulesTab.loading', { defaultValue: 'Loading rules…' })}
-        </div>
+        <TableSkeleton label={t('pamPamRulesTab.loading', { defaultValue: 'Loading rules…' })} />
       ) : rules.length === 0 ? (
-        <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
-          <ListChecks className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-2 text-sm font-medium">
-            {t('pamPamRulesTab.empty.title', { defaultValue: 'No PAM rules yet' })}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t('pamPamRulesTab.empty.description', {
-              defaultValue: 'Without rules, every elevation request waits for a manual decision.',
-            })}
-          </p>
-        </div>
+        <EmptyState
+          icon={ListChecks}
+          title={t('pamPamRulesTab.empty.title', { defaultValue: 'No PAM rules yet' })}
+          description={t('pamPamRulesTab.empty.description', {
+            defaultValue: 'Without rules, every elevation request waits for a manual decision.',
+          })}
+        />
       ) : (
-        <div className="overflow-x-auto rounded-md border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs text-muted-foreground">
-                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.priority', { defaultValue: 'Priority' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.name', { defaultValue: 'Name' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.criteria', { defaultValue: 'Criteria' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.scope', { defaultValue: 'Scope' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.verdict', { defaultValue: 'Verdict' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRulesTab.table.enabled', { defaultValue: 'Enabled' })}</th>
-                <th className="px-3 py-2 font-medium" />
+        <div className={tableWrapClass}>
+          <table className={tableClass}>
+            <thead className={theadClass}>
+              <tr className={theadRowClass}>
+                <th className={thClass}>{t('pamPamRulesTab.table.priority', { defaultValue: 'Priority' })}</th>
+                <th className={thClass}>{t('pamPamRulesTab.table.name', { defaultValue: 'Name' })}</th>
+                <th className={thClass}>{t('pamPamRulesTab.table.criteria', { defaultValue: 'Criteria' })}</th>
+                <th className={thClass}>{t('pamPamRulesTab.table.scope', { defaultValue: 'Scope' })}</th>
+                <th className={thClass}>{t('pamPamRulesTab.table.verdict', { defaultValue: 'Verdict' })}</th>
+                <th className={thClass}>{t('pamPamRulesTab.table.enabled', { defaultValue: 'Enabled' })}</th>
+                <th className={thClass} />
               </tr>
             </thead>
-            <tbody>
+            <tbody className={tbodyClass}>
               {rules.map((rule) => (
-                <tr key={rule.id} className="border-b last:border-0" data-testid={`pam-rule-row-${rule.id}`}>
-                  <td className="px-3 py-2 text-muted-foreground">{rule.priority}</td>
-                  <td className="px-3 py-2">
+                <tr key={rule.id} className={rowClass} data-testid={`pam-rule-row-${rule.id}`}>
+                  <td className={`${tdClass} tabular-nums text-muted-foreground`}>{rule.priority}</td>
+                  <td className={tdClass}>
                     <div className="font-medium" data-testid={`pam-rule-name-${rule.id}`}>
                       {rule.name}
                     </div>
@@ -320,53 +324,44 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
                       </div>
                     )}
                   </td>
-                  <td className="max-w-[320px] truncate px-3 py-2 text-xs text-muted-foreground" title={ruleCriteriaSummary(rule, signerGroupNames)}>
+                  <td className={`${tdClass} max-w-[320px] truncate text-xs text-muted-foreground`} title={ruleCriteriaSummary(rule, signerGroupNames)}>
                     {ruleCriteriaSummary(rule, signerGroupNames) || '—'}
                   </td>
                   <td
-                    className="whitespace-nowrap px-3 py-2 text-xs text-muted-foreground"
+                    className={`${tdClass} whitespace-nowrap text-xs text-muted-foreground`}
                     data-testid={`pam-rule-scope-${rule.id}`}
                   >
                     {rule.siteId
                       ? siteNames[rule.siteId] ?? rule.siteId
                       : t('pamPamRulesTab.table.orgWide', { defaultValue: 'Org-wide' })}
                   </td>
-                  <td className="px-3 py-2">{VERDICT_LABELS[rule.verdict]}</td>
-                  <td className="px-3 py-2">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={rule.enabled}
-                      onClick={() => void toggleEnabled(rule)}
-                      data-testid={`pam-rule-toggle-${rule.id}`}
-                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                        rule.enabled ? 'bg-green-500' : 'bg-muted'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                          rule.enabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
-                        }`}
-                      />
-                    </button>
+                  <td className={`${tdClass} whitespace-nowrap`}>{VERDICT_LABELS[rule.verdict]}</td>
+                  <td className={tdClass}>
+                    <Switch
+                      checked={rule.enabled}
+                      onToggle={() => void toggleEnabled(rule)}
+                      testId={`pam-rule-toggle-${rule.id}`}
+                    />
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => setEditing(rule)}
-                      data-testid={`pam-rule-edit-${rule.id}`}
-                      className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                    >
-                      {t('common:actions.edit', { defaultValue: 'Edit' })}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTarget(rule)}
-                      data-testid={`pam-rule-delete-${rule.id}`}
-                      className="ml-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
-                    >
-                      {t('common:actions.delete', { defaultValue: 'Delete' })}
-                    </button>
+                  <td className={`${tdClass} whitespace-nowrap text-right`}>
+                    <div className="inline-flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setEditing(rule)}
+                        data-testid={`pam-rule-edit-${rule.id}`}
+                        className={btnOutlineClass}
+                      >
+                        {t('common:actions.edit', { defaultValue: 'Edit' })}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(rule)}
+                        data-testid={`pam-rule-delete-${rule.id}`}
+                        className={btnOutlineDestructiveClass}
+                      >
+                        {t('common:actions.delete', { defaultValue: 'Delete' })}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

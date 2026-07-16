@@ -67,23 +67,28 @@ export default function PamPage() {
           </p>
         </div>
         <span
-          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${
             connected
-              ? 'bg-green-500/15 text-green-600 dark:text-green-400'
-              : 'bg-muted text-muted-foreground'
+              ? 'border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400'
+              : 'border-border bg-muted text-muted-foreground'
           }`}
           data-testid="pam-live-indicator"
         >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-green-500' : 'bg-muted-foreground'}`}
-          />
+          <span className="relative flex h-1.5 w-1.5">
+            {connected && (
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-500 opacity-60 motion-reduce:hidden" />
+            )}
+            <span
+              className={`relative inline-flex h-1.5 w-1.5 rounded-full ${connected ? 'bg-green-500' : 'bg-muted-foreground'}`}
+            />
+          </span>
           {connected
             ? t('pamPamPage.liveStatus.live', { defaultValue: 'Live' })
             : t('pamPamPage.liveStatus.offline', { defaultValue: 'Offline' })}
         </span>
       </div>
 
-      <div role="tablist" className="flex gap-1 border-b">
+      <div role="tablist" className="flex gap-1 overflow-x-auto border-b">
         <TabButton
           active={activeTab === 'overview'}
           onClick={() => switchTab('overview')}
@@ -155,10 +160,10 @@ function TabButton({
       aria-selected={active}
       onClick={onClick}
       data-testid={testId}
-      className={`inline-flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+      className={`-mb-px inline-flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors ${
         active
           ? 'border-primary text-foreground'
-          : 'border-transparent text-muted-foreground hover:text-foreground'
+          : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
       }`}
     >
       {icon}
