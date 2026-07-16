@@ -130,21 +130,11 @@ vi.mock('./helpers', () => ({
   checkSessionRateLimit,
   checkUserSessionRateLimit,
   logSessionAudit: vi.fn(),
-  // Default to mode 'off' here so the offer handler ships no prompt block and
-  // makes no extra technician/org selects — keeps these site-scope tests focused.
-  // The consent path (prompt stamping + redaction) is covered in
-  // promptConfig.integration.test.ts and the granted/denied audits in
-  // sessions.deny.test.ts.
-  resolveRemoteSessionPromptConfig: vi.fn(() =>
-    Promise.resolve({
-      mode: 'off',
-      consentUnavailableBehavior: 'proceed',
-      notifyOnEnd: true,
-      showIndicator: true,
-      identityLevel: 'name_email',
-    })
-  ),
-  buildTechnicianDisplay: vi.fn(() => ({ name: null, email: null, orgName: null })),
+  // Default to "no prompt" (mode 'off' equivalent) so the offer handler ships
+  // no prompt block — keeps these site-scope tests focused. The prompt
+  // construction itself (partner-name redaction etc.) is covered by the
+  // buildRemoteSessionPromptPayload suite in helpers.test.ts.
+  buildRemoteSessionPromptPayload: vi.fn(async () => undefined),
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG: 10,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: 5,
 }));
@@ -183,7 +173,7 @@ vi.mock('./recordingUrl', () => ({ normalizeRecordingUrl: vi.fn((u: unknown) => 
 
 import { sessionRoutes } from './sessions';
 import { db } from '../../db';
-import { buildTechnicianDisplay, resolveRemoteSessionPromptConfig } from './helpers';
+import { buildRemoteSessionPromptPayload } from './helpers';
 
 const ORG_ID = 'org-111';
 const ALLOWED_SITE = 'site-a';
@@ -843,42 +833,22 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(db.update).toHaveBeenCalledTimes(1);
     });
 
-    it('feeds the PARTNER (MSP) name into technicianDisplay, not the client org name', async () => {
+    it('ships the prompt block from buildRemoteSessionPromptPayload in the start_desktop payload', async () => {
       getSessionWithOrgCheck.mockResolvedValue({
         session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
         device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
       });
       rigOfferUpdate();
 
-      // Override the file-wide 'off' default so the offer handler actually
-      // builds and ships the technicianDisplay block.
-      vi.mocked(resolveRemoteSessionPromptConfig).mockResolvedValueOnce({
+      const prompt = {
         mode: 'notify',
+        technicianDisplay: { name: 'Billy Tech', email: 'billy@example.com', orgName: 'Olive Technology' },
         consentUnavailableBehavior: 'proceed',
+        consentTimeoutMs: 30000,
         notifyOnEnd: true,
         showIndicator: true,
-        identityLevel: 'name_email',
-      });
-
-      // technician lookup — select({name,email}).from(users).where().limit()
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ name: 'Billy Tech', email: 'billy@example.com' }]),
-          }),
-        }),
-      } as never);
-
-      // org -> partner join — select({name}).from(organizations).innerJoin(partners).where().limit()
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ name: 'Olive Technology' }]),
-            }),
-          }),
-        }),
-      } as never);
+      };
+      vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce(prompt);
 
       const res = await app.request(`/remote/sessions/${SESSION_ID}/offer`, {
         method: 'POST',
@@ -887,69 +857,12 @@ describe('remote sessions — site-scope enforcement', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(vi.mocked(buildTechnicianDisplay)).toHaveBeenCalledWith(
-        expect.anything(),        // identityLevel
-        expect.anything(),        // tech name
-        expect.anything(),        // tech email
-        'Olive Technology',       // partner name — NOT the org name
+      expect(vi.mocked(buildRemoteSessionPromptPayload)).toHaveBeenCalledWith(
+        expect.objectContaining({ id: DEVICE_IN_ALLOWED, orgId: ORG_ID }),
+        'user-1',
       );
-    });
-
-    it('falls back to a null partner name and still ships the offer when the partner lookup throws', async () => {
-      getSessionWithOrgCheck.mockResolvedValue({
-        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
-        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
-      });
-      rigOfferUpdate();
-
-      // Override the file-wide 'off' default so the offer handler actually
-      // builds and ships the technicianDisplay block.
-      vi.mocked(resolveRemoteSessionPromptConfig).mockResolvedValueOnce({
-        mode: 'notify',
-        consentUnavailableBehavior: 'proceed',
-        notifyOnEnd: true,
-        showIndicator: true,
-        identityLevel: 'name_email',
-      });
-
-      // technician lookup — select({name,email}).from(users).where().limit()
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ name: 'Billy Tech', email: 'billy@example.com' }]),
-          }),
-        }),
-      } as never);
-
-      // org -> partner join — select({name}).from(organizations).innerJoin(partners).where().limit()
-      // the terminal .limit() rejects to simulate the partner lookup failing.
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockRejectedValue(new Error('connection reset')),
-            }),
-          }),
-        }),
-      } as never);
-
-      const res = await app.request(`/remote/sessions/${SESSION_ID}/offer`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json', 'x-restrict-site': ALLOWED_SITE },
-        body: offerBody,
-      });
-
-      // The session still starts — a partner-name resolution failure must not
-      // strand the session mid-start (status is already 'connecting' and the
-      // audit log already written by this point).
-      expect(res.status).toBe(200);
-      expect(sendCommandToAgent).toHaveBeenCalled();
-      expect(vi.mocked(buildTechnicianDisplay)).toHaveBeenCalledWith(
-        expect.anything(),        // identityLevel
-        expect.anything(),        // tech name
-        expect.anything(),        // tech email
-        null,                     // partner name falls back to null on error
-      );
+      const call = vi.mocked(sendCommandToAgent).mock.calls.at(-1) as unknown as [string, { payload: Record<string, unknown> }];
+      expect(call[1].payload.prompt).toEqual(prompt);
     });
   });
 });

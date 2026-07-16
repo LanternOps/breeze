@@ -35,8 +35,7 @@ import {
   checkUserSessionRateLimit,
   logSessionAudit,
   classifyConsentDenyAction,
-  resolveRemoteSessionPromptConfig,
-  buildTechnicianDisplay,
+  buildRemoteSessionPromptPayload,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG,
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER
 } from './helpers';
@@ -917,64 +916,10 @@ sessionRoutes.post(
     // redacted technician identity, then ship it in the start payload so the
     // agent can render the consent/notification prompt to the end user before
     // capture starts. The agent enforces consent/deny because the viewer is
-    // untrusted. Only attach `prompt` when the policy isn't `off` (a fully
-    // silent session ships no prompt block at all). Remote-session consent.
-    const promptCfg = await resolveRemoteSessionPromptConfig(device.id);
-    let prompt: Record<string, unknown> | undefined;
-    if (promptCfg.mode !== 'off') {
-      const [tech] = await db
-        .select({ name: users.name, email: users.email })
-        .from(users)
-        .where(eq(users.id, session.userId))
-        .limit(1);
-      // The dialog shows who the technician WORKS FOR — the MSP (partner) —
-      // not the client org the device belongs to. Showing the client's own
-      // company name is what a social engineer would claim anyway.
-      //
-      // Runs in a system DB context: this route serves org-scoped callers,
-      // and an org-scope RLS context's accessiblePartnerIds is always empty
-      // (computeAccessiblePartnerIds in middleware/auth.ts) — org tokens
-      // never pass breeze_has_partner_access, so a plain `db.select` here
-      // would silently return 0 rows under FORCE RLS on `partners`.
-      let partnerName: string | null = null;
-      try {
-        const [partnerRow] = await runOutsideDbContext(() =>
-          withSystemDbAccessContext(() =>
-            db
-              .select({ name: partners.name })
-              .from(organizations)
-              .innerJoin(partners, eq(organizations.partnerId, partners.id))
-              .where(eq(organizations.id, device.orgId))
-              .limit(1)
-          )
-        );
-        partnerName = partnerRow?.name ?? null;
-      } catch (error) {
-        // Fail-safe: the prompt still ships without the partner name rather than
-        // 500-ing the offer handler — by this point remoteSessions.status is
-        // already 'connecting' and the audit log is already written, so a throw
-        // here would strand the session mid-start with the agent never commanded.
-        console.error(
-          `[Remote] Failed to resolve partner name for device ${device.id}; proceeding without it:`,
-          error instanceof Error ? error.message : error
-        );
-        captureException(error);
-      }
-      const technicianDisplay = buildTechnicianDisplay(
-        promptCfg.identityLevel,
-        tech?.name ?? null,
-        tech?.email ?? null,
-        partnerName,
-      );
-      prompt = {
-        mode: promptCfg.mode,
-        technicianDisplay,
-        consentUnavailableBehavior: promptCfg.consentUnavailableBehavior,
-        consentTimeoutMs: 30000,
-        notifyOnEnd: promptCfg.notifyOnEnd,
-        showIndicator: promptCfg.showIndicator,
-      };
-    }
+    // untrusted. Undefined when the policy is `off` (a fully silent session
+    // ships no prompt block at all). Shared with the viewer-token WS offer
+    // handler (desktopWs.ts). Remote-session consent.
+    const prompt = await buildRemoteSessionPromptPayload(device, session.userId);
 
     const agentReachable = sendCommandToAgent(device.agentId, {
       id: `desk-start-${sessionId}`,

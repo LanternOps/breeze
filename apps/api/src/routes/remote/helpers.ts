@@ -7,7 +7,10 @@ import {
   devices,
   auditLogs,
   configPolicyFeatureLinks,
-  configPolicyRemoteAccessSettings
+  configPolicyRemoteAccessSettings,
+  users,
+  organizations,
+  partners
 } from '../../db/schema';
 import { canAccessSite, type UserPermissions } from '../../services/permissions';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
@@ -499,4 +502,79 @@ export function buildTechnicianDisplay(
   if (level === 'generic') return { name: null, email: null, orgName };
   if (level === 'name') return { name, email: null, orgName };
   return { name, email, orgName };
+}
+
+/**
+ * Build the `prompt` block for a start_desktop payload: the resolved
+ * consent/notification policy plus the redacted technician identity. Returns
+ * undefined when the policy mode is `off` (a fully silent session ships no
+ * prompt block at all).
+ *
+ * Shared by the REST offer route (remote/sessions.ts) and the viewer-token WS
+ * offer handler (desktopWs.ts) so the two start_desktop paths cannot drift —
+ * the WS path shipping no prompt is exactly how the session notice + on-screen
+ * banner silently disappeared for viewer-token sessions.
+ *
+ * Both lookups run in a system DB context: the WS handler has no
+ * request-scoped context (a bare select would silently return 0 rows under
+ * FORCE RLS), and the partner join is invisible to org-scoped callers anyway.
+ * The dialog shows who the technician WORKS FOR — the MSP (partner) — not the
+ * client org the device belongs to. Showing the client's own company name is
+ * what a social engineer would claim anyway.
+ */
+export async function buildRemoteSessionPromptPayload(
+  device: { id: string; orgId: string },
+  technicianUserId: string
+): Promise<Record<string, unknown> | undefined> {
+  const promptCfg = await resolveRemoteSessionPromptConfig(device.id);
+  if (promptCfg.mode === 'off') return undefined;
+
+  let techName: string | null = null;
+  let techEmail: string | null = null;
+  let partnerName: string | null = null;
+  try {
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [tech] = await db
+          .select({ name: users.name, email: users.email })
+          .from(users)
+          .where(eq(users.id, technicianUserId))
+          .limit(1);
+        techName = tech?.name ?? null;
+        techEmail = tech?.email ?? null;
+
+        const [partnerRow] = await db
+          .select({ name: partners.name })
+          .from(organizations)
+          .innerJoin(partners, eq(organizations.partnerId, partners.id))
+          .where(eq(organizations.id, device.orgId))
+          .limit(1);
+        partnerName = partnerRow?.name ?? null;
+      })
+    );
+  } catch (error) {
+    // Fail-safe: the prompt still ships without the identity details rather
+    // than 500-ing the offer handler — a throw here would strand the session
+    // mid-start with the agent never commanded.
+    console.error(
+      `[RemoteSessionPrompt] Failed to resolve technician/partner identity for device ${device.id}; proceeding without it:`,
+      error instanceof Error ? error.message : error
+    );
+    captureException(error);
+  }
+
+  const technicianDisplay = buildTechnicianDisplay(
+    promptCfg.identityLevel,
+    techName,
+    techEmail,
+    partnerName
+  );
+  return {
+    mode: promptCfg.mode,
+    technicianDisplay,
+    consentUnavailableBehavior: promptCfg.consentUnavailableBehavior,
+    consentTimeoutMs: 30000,
+    notifyOnEnd: promptCfg.notifyOnEnd,
+    showIndicator: promptCfg.showIndicator,
+  };
 }

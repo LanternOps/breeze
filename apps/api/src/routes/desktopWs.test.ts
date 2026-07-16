@@ -80,6 +80,7 @@ vi.mock('../services/rate-limit', () => ({
 vi.mock('./remote/helpers', () => ({
   logSessionAudit: vi.fn(async () => undefined),
   getIceServers: vi.fn(() => []),
+  buildRemoteSessionPromptPayload: vi.fn(async () => undefined),
 }));
 
 // Permissive offer schema so zValidator('json', webrtcOfferSchema) passes and
@@ -335,6 +336,28 @@ describe('validateViewerSessionAccess (via /:id/viewer/offer)', () => {
   });
 
   // --- happy path positive control -----------------------------------
+
+  it('ships the consent/banner prompt block in the viewer-token start_desktop payload', async () => {
+    primeHappyPath();
+    const { buildRemoteSessionPromptPayload } = await import('./remote/helpers');
+    const prompt = {
+      mode: 'notify',
+      technicianDisplay: { name: 'Billy Tech', email: null, orgName: 'Olive Technology' },
+      consentUnavailableBehavior: 'proceed',
+      consentTimeoutMs: 30000,
+      notifyOnEnd: true,
+      showIndicator: true,
+    };
+    vi.mocked(buildRemoteSessionPromptPayload).mockResolvedValueOnce(prompt);
+
+    const res = await offerRequest();
+    expect(res.status).toBe(200);
+
+    const [, command] = vi.mocked(sendCommandToAgent).mock.calls[0]!;
+    // Regression: the viewer-token WS path used to ship NO prompt block at
+    // all, so the agent never showed the session notice or on-screen banner.
+    expect((command as { payload: Record<string, unknown> }).payload.prompt).toEqual(prompt);
+  });
 
   it('on valid + active + allowed: submits offer and sends start_desktop with the policy payload', async () => {
     primeHappyPath();

@@ -7,7 +7,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
 import { createWsTicket, consumeDesktopConnectCode, consumeWsTicket, getViewerAccessTokenExpirySeconds } from '../services/remoteSessionAuth';
-import { getIceServers, logSessionAudit } from './remote/helpers';
+import { getIceServers, logSessionAudit, buildRemoteSessionPromptPayload } from './remote/helpers';
 import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../services/remoteAccessPolicy';
@@ -1002,6 +1002,13 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
       // idle / max-duration limits) so the agent enforces it locally — the
       // viewer is untrusted. Findings #2 and #7.
       const desktopPolicy = await resolveDesktopSessionPolicy(access.device.id);
+      // Consent/notification prompt + on-screen session banner config, same as
+      // the REST offer route — without it the agent shows no "technician
+      // connected" notice or indicator for viewer-token sessions.
+      const prompt = await buildRemoteSessionPromptPayload(
+        access.device,
+        access.session.userId
+      );
       const agentReachable = sendCommandToAgent(access.device.agentId, {
         id: `desk-start-${sessionId}`,
         type: 'start_desktop',
@@ -1017,7 +1024,8 @@ export function createDesktopWsRoutes(upgradeWebSocket: Function): Hono {
           idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
           maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,
           ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
-          ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {})
+          ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
+          ...(prompt ? { prompt } : {})
         }
       });
 

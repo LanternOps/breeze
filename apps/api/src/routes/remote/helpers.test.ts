@@ -3,12 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const {
   insert,
   insertValues,
+  select,
   runOutsideDbContext,
   withSystemDbAccessContext,
   captureException
 } = vi.hoisted(() => {
   const insertValues = vi.fn(() => Promise.resolve());
   const insert = vi.fn(() => ({ values: insertValues }));
+  const select = vi.fn();
   // `runOutsideDbContext` is synchronous (wraps AsyncLocalStorage.exit); the
   // real impl just calls its argument outside the current context. The mock
   // passes through so we can assert ordering separately.
@@ -18,6 +20,7 @@ const {
   return {
     insert,
     insertValues,
+    select,
     runOutsideDbContext,
     withSystemDbAccessContext,
     captureException
@@ -25,7 +28,7 @@ const {
 });
 
 vi.mock('../../db', () => ({
-  db: { insert },
+  db: { insert, select },
   runOutsideDbContext,
   withSystemDbAccessContext
 }));
@@ -33,14 +36,26 @@ vi.mock('../../db', () => ({
 vi.mock('../../db/schema', () => ({
   remoteSessions: {},
   devices: {},
-  auditLogs: { __table: 'audit_logs' }
+  auditLogs: { __table: 'audit_logs' },
+  configPolicyFeatureLinks: {},
+  configPolicyRemoteAccessSettings: {},
+  users: {},
+  organizations: {},
+  partners: {}
+}));
+
+// buildRemoteSessionPromptPayload → resolveRemoteSessionPromptConfig lazily
+// imports the configurationPolicy service; return "no effective config" so the
+// prompt config falls to the spec defaults (mode 'notify', indicator on).
+vi.mock('../../services/configurationPolicy', () => ({
+  resolveEffectiveConfig: vi.fn(async () => undefined)
 }));
 
 vi.mock('../../services/sentry', () => ({
   captureException
 }));
 
-import { buildTechnicianDisplay, classifyConsentDenyAction, generateTurnCredentials, getIceServers, getTurnCredentialTtlSeconds, logSessionAudit, resolveConsentMarkerSessionId } from './helpers';
+import { buildRemoteSessionPromptPayload, buildTechnicianDisplay, classifyConsentDenyAction, generateTurnCredentials, getIceServers, getTurnCredentialTtlSeconds, logSessionAudit, resolveConsentMarkerSessionId } from './helpers';
 
 describe('buildTechnicianDisplay', () => {
   it('returns name + email + orgName at name_email level', () => {
@@ -73,6 +88,72 @@ describe('buildTechnicianDisplay', () => {
       email: null,
       orgName: null,
     });
+  });
+});
+
+describe('buildRemoteSessionPromptPayload', () => {
+  const DEVICE = { id: 'dev-1', orgId: 'org-1' };
+
+  function rigTechSelect(result: Promise<unknown[]>) {
+    // technician lookup — select({name,email}).from(users).where().limit()
+    select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockReturnValue(result),
+        }),
+      }),
+    } as never);
+  }
+
+  function rigPartnerSelect(result: Promise<unknown[]>) {
+    // org → partner join — select({name}).from(organizations).innerJoin(partners).where().limit()
+    select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockReturnValue(result),
+          }),
+        }),
+      }),
+    } as never);
+  }
+
+  beforeEach(() => {
+    select.mockReset();
+  });
+
+  it('feeds the PARTNER (MSP) name into technicianDisplay, not the client org name', async () => {
+    rigTechSelect(Promise.resolve([{ name: 'Billy Tech', email: 'billy@example.com' }]));
+    rigPartnerSelect(Promise.resolve([{ name: 'Olive Technology' }]));
+
+    const prompt = await buildRemoteSessionPromptPayload(DEVICE, 'user-1');
+
+    expect(prompt).toMatchObject({
+      mode: 'notify',
+      showIndicator: true,
+      notifyOnEnd: true,
+      consentTimeoutMs: 30000,
+      technicianDisplay: {
+        name: 'Billy Tech',
+        email: 'billy@example.com',
+        orgName: 'Olive Technology', // partner name — NOT the org name
+      },
+    });
+  });
+
+  it('still ships the prompt with a null identity when the lookups throw', async () => {
+    rigTechSelect(Promise.reject(new Error('connection reset')));
+
+    const prompt = await buildRemoteSessionPromptPayload(DEVICE, 'user-1');
+
+    // A resolution failure must not strand the session mid-start: the prompt
+    // ships (defaults, indicator on) with the identity fields nulled.
+    expect(prompt).toMatchObject({
+      mode: 'notify',
+      showIndicator: true,
+      technicianDisplay: { name: null, email: null, orgName: null },
+    });
+    expect(captureException).toHaveBeenCalled();
   });
 });
 
