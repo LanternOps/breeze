@@ -3670,3 +3670,12 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 - **UI badge (done):** `SnapshotBrowser.tsx` now shows a "System image" badge on the snapshot header + a type suffix in the selector dropdown (`backupType !== 'file'`). Web test added; `astro check` 0 errors.
 - **Windows hardware profile (done):** root cause was `wmic.exe`, deprecated/removed on Server 2022 — the whole collector silently returned zeros. Rewrote `hw_windows.go` to use PowerShell `Get-CimInstance`. Verified live: `AMD Ryzen 7 3800X`, 4 cores, 4255 MB, 4 disks, 2 NICs, BIOS `090008`, `Microsoft Corporation Virtual Machine`.
 - **Restore round-trip (done, non-destructive):** restored the system_image snapshot to `C:\tmp\restore-test` via `POST /backup/restore` (full). 13 files / 103,584,508 bytes / 0 failed; on-disk artifacts byte-match the backup (registry SOFTWARE 84,037,632, SYSTEM 18,776,064, SAM/SECURITY, BCD, drivers, services, tasks, firewall, features). Full BMR (destructive, needs boot media) intentionally not run on the live VM.
+
+### Code review round (PR #2581) — hardening applied
+
+A 4-agent review (code / silent-failure / tests / comments) confirmed the core change sound and surfaced partial-failure gaps, now fixed:
+- **Partial system-state collection no longer silent (C1):** `state_windows.go` records failed steps in `manifest.IncompleteSteps`, `collectRegistry` reports failure when it captures zero hives (every Windows box has SYSTEM/SOFTWARE), and `backup.go` surfaces a completion `Warning` (→ result `warning` → job errorLog → UI) so a degraded system_image can't pass as a full, restorable capture.
+- **CIM failures now logged (M1):** `cimCSV` logs each failure with PowerShell stderr — an unlogged failure was how the wmic path shipped all-zero profiles.
+- **Malformed-completed backup result now fails, not silently completes (H2):** the Redis enqueue path in `agentWs.ts` gates `status` on parse success, mirroring the inline path.
+- **Tests added:** Go seam (`collectSystemState`) + fail-loud/partial-warning assertions (the prior test was vacuous on CI hosts); `backupProcessResultSchema` + `backupCommandResultSchema` manifest round-trip (the strict-schema rejection that hung the job); backupType precedence (file not mislabeled, explicit type wins).
+- **Deferred (noted, not fixed):** H1 (server null-manifest guard — verified unreachable in practice); M2 (combined file+system_image mode — not dispatched); hard-fail-on-missing-registry policy (product decision); hw perf (8 PowerShell spawns).

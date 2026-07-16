@@ -4,7 +4,9 @@ package systemstate
 
 import (
 	"encoding/csv"
+	"errors"
 	"io"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -116,16 +118,35 @@ func (c *WindowsCollector) CollectHardwareProfile() (*HardwareProfile, error) {
 // cimCSV queries a CIM/WMI class via PowerShell and returns CSV (header row =
 // the requested property names, matching csvField lookups). filter is an
 // optional WQL filter (e.g. "NetConnectionStatus=2"); pass "" for none.
+//
+// SAFETY: className, filter, and props are ALL interpolated raw into the
+// PowerShell -Command script. Every current caller passes code-defined string
+// literals, so there is no injection surface. This invariant MUST hold — never
+// pass a caller/agent/server-controlled value here. A dynamic -Filter in
+// particular would allow PowerShell/WQL injection into a script that runs with
+// the agent's (typically SYSTEM) privileges; parameterize or strictly validate
+// before introducing any non-literal argument.
 func cimCSV(className, filter string, props ...string) ([]byte, error) {
-	// Property names are compile-time constants from this file (never user
-	// input), so string interpolation into the -Command script is safe here.
 	script := "Get-CimInstance -ClassName " + className
 	if filter != "" {
 		script += " -Filter '" + filter + "'"
 	}
 	script += " | Select-Object " + strings.Join(props, ",") + " | ConvertTo-Csv -NoTypeInformation"
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-	return cmd.Output()
+	out, err := cmd.Output()
+	if err != nil {
+		// Don't let CIM failures vanish silently: an unlogged failure here is
+		// exactly how the wmic path shipped all-zero hardware profiles. Include
+		// PowerShell's stderr (blocked execution policy, Constrained Language
+		// Mode, missing binary, etc.) so the zeros are diagnosable.
+		var stderr string
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderr = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		slog.Warn("systemstate: CIM query failed", "class", className, "error", err.Error(), "stderr", stderr)
+	}
+	return out, err
 }
 
 func firstCSVRow(data []byte) map[string]string {
@@ -136,7 +157,7 @@ func firstCSVRow(data []byte) map[string]string {
 	return rows[0]
 }
 
-// allCSVRows parses WMIC CSV output into a slice of header->value maps.
+// allCSVRows parses ConvertTo-Csv output into a slice of header->value maps.
 func allCSVRows(data []byte) []map[string]string {
 	r := csv.NewReader(strings.NewReader(string(data)))
 	r.LazyQuotes = true

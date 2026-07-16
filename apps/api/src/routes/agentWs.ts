@@ -1370,7 +1370,11 @@ export async function processOrphanedCommandResult(
           backupJob.orgId,
           backupJob.deviceId,
           {
-            status: result.status ?? 'failed',
+            // A malformed stdout must not ride an agent-reported 'completed'
+            // through to a completed job with no snapshot (mirrors the inline
+            // path below). Without this, a truncated/invalid system_image
+            // result completes green and the parse error is discarded.
+            status: result.status === 'completed' && parsedBackup.success ? 'completed' : 'failed',
             snapshotId: backupData?.snapshotId,
             filesBackedUp: backupData?.filesBackedUp,
             bytesBackedUp: backupData?.bytesBackedUp,

@@ -37,9 +37,11 @@ type SnapshotFile = {
 
 type BackupType = 'file' | 'system_image' | 'database' | 'application';
 
-// Human labels for non-file backup types. Kept as literals (matching the
-// existing immutability badge in this file) so a new snapshot type doesn't
-// fan a locale key out across all five translation bundles.
+// Human labels for non-file backup types. Deliberately untranslated literals
+// (like the sibling immutability badge, though the legal-hold badge next to it
+// does use t()): these render in English across all locales as a tradeoff to
+// avoid fanning a new key out across all five translation bundles. Move to t()
+// keys if/when the badge cluster is localized as a whole.
 const BACKUP_TYPE_LABELS: Record<Exclude<BackupType, 'file'>, string> = {
   system_image: 'System image',
   database: 'Database',

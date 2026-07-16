@@ -54,6 +54,7 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 		arts, err := s.fn(stagingDir)
 		if err != nil {
 			slog.Warn("systemstate: step failed", "step", s.name, "error", err.Error())
+			manifest.IncompleteSteps = append(manifest.IncompleteSteps, s.name)
 			continue
 		}
 		manifest.Artifacts = append(manifest.Artifacts, arts...)
@@ -94,6 +95,13 @@ func (c *WindowsCollector) collectRegistry(stagingDir string) ([]Artifact, error
 			continue
 		}
 		artifacts = append(artifacts, artifactFromFile("registry_"+hive, "registry", outPath, stagingDir))
+	}
+	// Every Windows machine has SYSTEM/SOFTWARE hives, so capturing none is a
+	// real failure (e.g. the helper lacks the required privilege), not an
+	// "optional artifact absent" case. Report it so CollectState flags the
+	// step incomplete rather than silently producing an unbootable backup.
+	if len(artifacts) == 0 {
+		return nil, fmt.Errorf("reg save captured no registry hives")
 	}
 	return artifacts, nil
 }

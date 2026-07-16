@@ -29,6 +29,12 @@ const (
 
 var errBackupStopped = errors.New("backup stopped")
 
+// collectSystemState is a seam over systemstate.CollectSystemState so tests can
+// exercise the failure and partial-collection paths deterministically — the
+// real collector shells out to OS tools and succeeds on any CI host, which
+// would otherwise leave the system-state fail-loud/warning branches uncovered.
+var collectSystemState = systemstate.CollectSystemState
+
 // BackupConfig defines backup configuration settings.
 type BackupConfig struct {
 	Provider           providers.BackupProvider
@@ -61,7 +67,13 @@ type BackupJob struct {
 	// routes it to the command result's stderr, and the server reads the reason
 	// from `result.error || result.stderr` (routes/agentWs.ts). Keep this field
 	// for in-process inspection (e.g. autoSyncToVault) only.
-	Error               error                            `json:"error,omitempty"`
+	Error error `json:"error,omitempty"`
+	// Warning is a non-fatal completion note surfaced to the server (the
+	// backupCommandResultSchema `warning` field → the job's errorLog → UI). Used
+	// when a run completes but is degraded — e.g. a partial system-state
+	// collection where some artifact classes failed — so a partial system_image
+	// backup doesn't silently present as a full, restorable capture.
+	Warning             string                           `json:"warning,omitempty"`
 	VSSMetadata         *vss.VSSMetadata                 `json:"vssMetadata,omitempty"`         // nil when VSS was not used
 	SystemStateManifest *systemstate.SystemStateManifest `json:"systemStateManifest,omitempty"` // nil when system state was not collected
 }
@@ -248,12 +260,20 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 		if err := ctx.Err(); err != nil {
 			return stopBackupRun()
 		}
-		manifest, stagingDir, ssErr := systemstate.CollectSystemState()
+		manifest, stagingDir, ssErr := collectSystemState()
 		if ssErr != nil {
 			systemStateErr = ssErr
 			log.Printf("[backup] system state collection failed, proceeding without: %v", ssErr)
 		} else {
 			job.SystemStateManifest = manifest
+			// A partial collection still returns a manifest (best-effort steps).
+			// Surface which classes failed as a completion warning so a degraded
+			// system_image — e.g. missing registry/boot, which a bare-metal
+			// restore can't boot without — doesn't pass as a full capture.
+			if len(manifest.IncompleteSteps) > 0 {
+				job.Warning = fmt.Sprintf("system state collection incomplete: %v failed", manifest.IncompleteSteps)
+				log.Printf("[backup] %s", job.Warning)
+			}
 			// Append staging dir to backup paths so artifacts are included in snapshot
 			backupPaths = append(backupPaths, stagingDir)
 			defer func() {

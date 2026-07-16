@@ -8,11 +8,17 @@ import "time"
 
 // SystemStateManifest describes all collected system state artifacts.
 type SystemStateManifest struct {
-	Platform        string           `json:"platform"`
-	OSVersion       string           `json:"osVersion"`
-	Hostname        string           `json:"hostname"`
-	CollectedAt     time.Time        `json:"collectedAt"`
-	Artifacts       []Artifact       `json:"artifacts"`
+	Platform    string     `json:"platform"`
+	OSVersion   string     `json:"osVersion"`
+	Hostname    string     `json:"hostname"`
+	CollectedAt time.Time  `json:"collectedAt"`
+	Artifacts   []Artifact `json:"artifacts"`
+	// IncompleteSteps names the collection steps that failed to run (e.g.
+	// "registry", "boot"). System state is collected best-effort — a partial
+	// collection still produces a manifest — so this is how callers learn the
+	// backup is incomplete instead of it silently passing as a full capture.
+	// Empty/omitted means every step succeeded.
+	IncompleteSteps []string         `json:"incompleteSteps,omitempty"`
 	HardwareProfile *HardwareProfile `json:"hardwareProfile,omitempty"`
 }
 

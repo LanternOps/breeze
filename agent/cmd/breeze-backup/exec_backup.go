@@ -113,9 +113,10 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 	// (backupWorker.ts resolveBackupTargets), so enable system-state collection
 	// and skip the file-paths requirement below.
 	if p.SystemImage {
-		// Retention: 0 — same server-owns-retention invariant as the file-mode
-		// path below: the agent must never prune remote storage itself and race
-		// the server's GFS/legal-hold/immutability authority.
+		// BackupConfig.Retention is left at its zero value (0) — same
+		// server-owns-retention invariant as the file-mode path below (which
+		// sets it explicitly): the agent must never prune remote storage itself
+		// and race the server's GFS/legal-hold/immutability authority.
 		return backup.NewBackupManager(backup.BackupConfig{
 			Provider:           provider,
 			SystemStateEnabled: true,
