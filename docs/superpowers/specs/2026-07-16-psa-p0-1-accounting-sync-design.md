@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-16
 
-**Status:** Approved design; pending written-spec review
+**Status:** Approved design; written-spec review revisions applied 2026-07-16
 
 **Source:** P0 #1 in `internal/psa-gap-matrix-2026-07.md`
 
@@ -123,8 +123,9 @@ These decisions came from the design review and are not implementation options:
    existing remote object. A user can instead approve creation.
 9. **History survives disconnect.** Disconnect revokes/clears usable credentials and
    stops new work; it does not delete connection identity, mappings, or sync evidence.
-10. **Tax mismatch fails visibly.** A remote tax difference greater than $0.01 creates
-    a variance exception and pauses subsequent automatic posting for that connection.
+10. **Tax mismatch fails visibly.** A remote tax difference greater than one minor
+    unit of the connection currency (for example $0.01 for USD) creates a variance
+    exception and pauses subsequent automatic posting for that connection.
 
 ## 5. Scope
 
@@ -247,7 +248,8 @@ required.
 #### Outbox relay and workers
 
 The relay claims committed `pending` operations using short DB transactions and adds a
-deterministically keyed BullMQ job. A repair sweep requeues DB operations left in
+deterministically keyed BullMQ job. Deterministic job keys use `-` separators only;
+BullMQ job IDs must never contain colons (repository rule). A repair sweep requeues DB operations left in
 `pending`, stale `queued`, or stale `running` states. Workers may run more than once;
 database uniqueness plus provider idempotency makes repeats safe.
 
@@ -412,7 +414,12 @@ Bidirectional payment sync requires a durable local payment identity. Change
 | `void_reason` | Required bounded reason for user actions or normalized provider reversal reason. |
 
 Add a unique `(id, invoice_id)` target for payment-allocation FKs and a unique
-`invoices(id, partner_id)` target for accounting partner binding. An accounting
+`invoices(id, partner_id)` target for accounting partner binding. The
+`(id, partner_id)` binding is only meaningful if `invoices.partner_id` is
+`NOT NULL`: under Postgres `MATCH SIMPLE`, a composite FK with any NULL column
+silently enforces nothing. Verify or backfill `invoices.partner_id` and add the
+`NOT NULL` constraint in the same expand migration, before any accounting FK
+targets it. An accounting
 allocation references both `(invoice_payment_id, invoice_id)` and
 `(invoice_id, partner_id)`, so matching a payment ID cannot smuggle an invoice from
 another partner. Update all invoice payment sums/lists so only `voided_at IS NULL`
@@ -701,7 +708,8 @@ Accounting records are financial provenance, not disposable cache data:
 - Organizations and catalog items referenced by accounting history use the existing
   archive/soft-delete lifecycle. Issued invoices remain immutable and payments are
   soft-voided as specified above. Direct hard deletion of a referenced local financial
-  entity is restricted rather than cascading away accounting evidence.
+  entity is restricted rather than cascading away accounting evidence, outside the
+  tenant-erasure flows in Section 8.14.
 - A connection may be hard-deleted only as part of complete partner deletion or an
   authorized tenant-erasure workflow. That workflow deletes accounting children in an
   explicit tested dependency order before core partner rows; ordinary connection APIs
@@ -712,8 +720,53 @@ Accounting records are financial provenance, not disposable cache data:
   operation payloads, customer financial details, or provider secrets.
 
 Foreign-key actions encode these rules (`RESTRICT` for ordinary referenced financial
-entities, explicit service-owned cleanup for partner erasure) instead of relying on API
-discipline alone.
+entities, explicit service-owned cleanup for organization and partner erasure per
+Section 8.14) instead of relying on API discipline alone.
+
+### 8.14 Organization erasure interaction
+
+Partner erasure is not the only hard-delete flow. `cascadeDeleteOrg`
+(`services/tenantCascade.ts`) hard-deletes a single customer organization today, and
+`invoices` and `invoice_payments` are in its cascade set. The accounting tables are
+partner-axis, so the org-axis `org_id` sweep never reaches them, while their
+`RESTRICT`-style FKs into invoices and payments would abort the org cascade the first
+time an org with accounting history is erased. Partner erasure runs the org cascade
+for each child organization *before* its dynamic `partner_id` sweep, so the same
+failure would break partner deletion too. This interaction is designed in, not left
+to discovery:
+
+- Org erasure deletes, inside the same cascade transaction and children-first:
+  payment allocations referencing the org's invoices or payments; remote-payment
+  headers whose every allocation belonged to the erased org; entity mappings whose
+  local reference is the org or one of its invoices; and sync operations bound to the
+  org's entities, together with their attempts and exceptions. Erasing the org erases
+  the subject of that provenance; retaining sync history about deleted invoices would
+  serve no audit purpose while breaking referential integrity. Partner-level rows
+  with no org-entity reference (connections, cursors, webhook receipts, tax mappings,
+  item-only operations) are untouched and survive as partner history.
+- Because these tables intentionally use `organization_id` on a partner axis, neither
+  the RLS shape-1 auto-discovery nor the org-cascade contract test (both key on a
+  column literally named `org_id`) will force this registration mechanically.
+  Implement the deletions as explicit pre-clear steps in the existing cascade
+  machinery (the `ASSOCIATED_SYSTEM_SCOPED_TABLES`-style `clearSql` mechanism in
+  `tenantCascade.ts`), and treat that registration as a mandatory same-PR checklist
+  item for every accounting table that references an org-owned entity. This is the
+  exact latent-erasure-bug class the repository has shipped five times; no automated
+  contract covers these tables, so the checklist and the integration test below are
+  the only guards.
+- Org erasure follows the same fail-closed rule as disconnect: it returns 409 while
+  an unexpired running lease or unresolved `ambiguous` operation references the org's
+  entities, because a remote write may exist that has not been adopted or proven
+  absent. Other nonterminal operations are canceled implicitly by the erasure; the
+  erasure's own audit record is the cancellation evidence.
+- One integration test proves that deleting an organization with confirmed mappings,
+  posted invoices, reconciled provider payments, open operations, and open exceptions
+  completes without FK violation and leaves no accounting row referencing the erased
+  org's entities, while partner-level connection history survives.
+
+This does not weaken Section 8.13: ordinary APIs still expose no hard delete, and
+provider identity, connection lifecycle history, and non-erased-org evidence remain
+intact.
 
 ## 9. Connection lifecycle
 
@@ -865,9 +918,10 @@ The provider invoice must equal the immutable Breeze invoice total:
 - Inactive/deleted references block affected operations and create configuration
   exceptions; Breeze never silently chooses a replacement account.
 - Provider adapters apply their native tax model but return normalized remote totals.
-- A remote total or tax difference over $0.01 produces
-  `succeeded_with_variance`, opens an exception, and pauses further auto posting on that
-  connection. Already-created remote transactions are never hidden or called failed.
+- A remote total or tax difference over one minor unit of the connection currency
+  produces `succeeded_with_variance`, opens an exception, and pauses further auto
+  posting on that connection. Already-created remote transactions are never hidden or
+  called failed.
 - Resolving the exception requires correcting mappings and void/reissue, or explicitly
   acknowledging a documented provider limitation. Acknowledgment does not rewrite the
   Breeze invoice total.
@@ -1262,8 +1316,13 @@ Add accounting actions to the existing resource/action RBAC model:
 
 All accounting access remains partner/system scoped; org-scoped users receive 403 and
 cannot infer whether a connection or mapping exists. `accounting:manage` and
-`accounting:map` mutations require current MFA. Activation, disconnect, cancellation,
-and exception dismissal also require MFA because they can change or suppress money flow.
+`accounting:map` mutations require MFA, as do activation, disconnect, cancellation,
+and exception dismissal, because they can change or suppress money flow. The MFA gate
+uses the existing `requireMfa()` middleware semantics (`middleware/auth.ts`): it
+asserts the session token's MFA flag and passes when the deployment has 2FA globally
+disabled. A step-up/recent-re-authentication ("sudo mode") mechanism does not exist in
+the RBAC layer and is not built by P0-1; if a stronger recency guarantee is wanted
+later, it is a separate platform feature, not an accounting-route patch.
 
 ### 15.2 RLS and physical tenant binding
 
@@ -1471,8 +1530,8 @@ Run identical behavioral tests against QBO and Xero adapters with mocked HTTP:
   together; failure of the optional post-commit lifecycle event loses none of them.
 - Disconnect races with worker claim/terminal completion cannot produce an unrecorded
   remote write or a successful disconnect while a live/ambiguous operation exists.
-- Tax difference at $0.01 does not trigger variance; greater than $0.01 does and pauses
-  auto posting.
+- Tax difference at exactly one minor currency unit does not trigger variance; greater
+  than one minor unit does and pauses auto posting.
 
 ### 19.3 Route tests
 
@@ -1497,6 +1556,12 @@ chains.
   referenced connection/local financial entity is restricted.
 - Complete partner deletion removes accounting children in the documented dependency
   order without leaving tenant payloads or cross-tenant orphans.
+- Deleting a single organization with accounting history (confirmed mappings, posted
+  invoices, reconciled provider payments, open operations and exceptions) completes
+  without FK violation, leaves no accounting row referencing the erased org's
+  entities, and preserves partner-level connection history (Section 8.14).
+- Org erasure returns 409 while an unexpired running lease or unresolved `ambiguous`
+  operation references the org's entities.
 - Concurrent mapping confirmation and payment reconciliation remain idempotent.
 
 ### 19.5 Web tests
@@ -1538,10 +1603,17 @@ No provider reaches general availability until its complete smoke gate passes.
 
 Schema/migrations/RLS, connection instances and active-provider rule, typed provider
 contract, generic mappings, tax mappings, durable operations/attempts, webhook receipts,
-cursors, exceptions, permissions, and legacy QBO-link backfill.
+cursors, exceptions, permissions, org/partner erasure pre-clears (Section 8.14), and
+legacy QBO-link backfill.
 
-**Gate:** RLS forge suite, migration drift, backfill accounting, outbox crash/replay, and
-no unresolved data-loss/tenant-isolation findings.
+The transactional outbox and fenced-lease worker are net-new infrastructure with no
+repository precedent (closest prior art is advisory-lock job-creation dedup). They are
+Stage 1's highest-risk component: their crash/replay/fencing tests land with the first
+implementation PR, not after.
+
+**Gate:** RLS forge suite, migration drift, backfill accounting, outbox crash/replay,
+org and partner erasure completing without FK violation, and no unresolved
+data-loss/tenant-isolation findings.
 
 ### Stage 2 — QBO setup and mappings
 
@@ -1599,11 +1671,13 @@ P0-1 is done when all statements are true:
   logs, APIs, attempts, or audit records.
 - Every non-successful financial operation is visible with remediation; no mutation is a
   silent no-op.
-- Currency mismatch blocks activation and tax variance greater than $0.01 is surfaced
-  and pauses auto posting.
+- Currency mismatch blocks activation and tax variance greater than one minor unit of
+  the connection currency is surfaced and pauses auto posting.
 - Disconnect/switch preserves provenance and never retargets historical work.
-- No ordinary API or retention job hard-deletes accounting provenance; partner erasure
-  removes it through the tested tenant-deletion workflow.
+- No ordinary API or retention job hard-deletes accounting provenance; organization
+  and partner erasure remove it through the tested tenant-deletion workflows
+  (Section 8.14), and org erasure with accounting history completes without FK
+  violation.
 - Ambiguous writes remain fail-closed until a unique remote result is adopted or
   authoritative absence is proven; disconnect/switch cannot bypass that state.
 - Both provider sandbox suites pass and production cohort metrics show no unresolved
