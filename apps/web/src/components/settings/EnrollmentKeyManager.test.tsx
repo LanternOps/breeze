@@ -5,9 +5,11 @@ const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
-vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: { getState: () => ({ currentOrgId: 'org-1' }) },
-}));
+vi.mock('../../stores/orgStore', () => {
+  const state = { currentOrgId: 'org-1', currentSiteId: null, sites: [], organizations: [] };
+  const useOrgStore = Object.assign(() => state, { getState: () => state });
+  return { useOrgStore };
+});
 // Pass-through runAction so the request fn (and thus fetchWithAuth) actually runs.
 vi.mock('../../lib/runAction', () => ({
   ActionError: class ActionError extends Error {
