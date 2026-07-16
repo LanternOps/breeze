@@ -88,6 +88,7 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		Provider       string                   `json:"provider"`
 		ProviderConfig *backupRunProviderConfig `json:"providerConfig"`
 		Paths          []string                 `json:"paths"`
+		SystemImage    bool                     `json:"systemImage"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil, fmt.Errorf("invalid backup_run payload: %w", err)
@@ -105,6 +106,20 @@ func managerFromBackupRunPayload(payload json.RawMessage) (*backup.BackupManager
 		provider = providers.NewLocalProvider(p.ProviderConfig.Path)
 	default:
 		return nil, fmt.Errorf("unsupported backup provider %q", p.Provider)
+	}
+	// system_image mode carries no file paths: the backup content is the
+	// collected system-state staging dir. The server fans a `system_image`
+	// selection out as a backup_run with `systemImage:true` and no `paths`
+	// (backupWorker.ts resolveBackupTargets), so enable system-state collection
+	// and skip the file-paths requirement below.
+	if p.SystemImage {
+		// Retention: 0 — same server-owns-retention invariant as the file-mode
+		// path below: the agent must never prune remote storage itself and race
+		// the server's GFS/legal-hold/immutability authority.
+		return backup.NewBackupManager(backup.BackupConfig{
+			Provider:           provider,
+			SystemStateEnabled: true,
+		}), nil
 	}
 	if len(p.Paths) == 0 {
 		return nil, fmt.Errorf("backup_run payload has no paths")

@@ -47,13 +47,13 @@ type BackupConfig struct {
 // `bytesBackedUp`, `filesBackedUp`). Without tags Go emits PascalCase and the
 // server can't record snapshot id / size (total_size stays null).
 type BackupJob struct {
-	ID                  string                           `json:"id"`
-	StartedAt           time.Time                        `json:"startedAt"`
-	CompletedAt         time.Time                        `json:"completedAt"`
-	Snapshot            *Snapshot                        `json:"snapshot"`
-	FilesBackedUp       int                              `json:"filesBackedUp"`
-	BytesBackedUp       int64                            `json:"bytesBackedUp"`
-	Status              string                           `json:"status"`
+	ID            string    `json:"id"`
+	StartedAt     time.Time `json:"startedAt"`
+	CompletedAt   time.Time `json:"completedAt"`
+	Snapshot      *Snapshot `json:"snapshot"`
+	FilesBackedUp int       `json:"filesBackedUp"`
+	BytesBackedUp int64     `json:"bytesBackedUp"`
+	Status        string    `json:"status"`
 	// Error is the agent's internal failure record. It is NOT the wire failure
 	// carrier: marshaling a non-nil `error` interface yields `{}`, and the
 	// server's backupCommandResultSchema doesn't read an `error` field anyway.
@@ -111,6 +111,12 @@ func (m *BackupManager) GetStagingDir() string {
 	return m.config.StagingDir
 }
 
+// GetSystemStateEnabled reports whether this manager collects system state
+// (system_image mode) alongside/instead of file paths.
+func (m *BackupManager) GetSystemStateEnabled() bool {
+	return m.config.SystemStateEnabled
+}
+
 // Stop cancels an in-flight backup job and waits for it to unwind. It reports
 // whether a job was actually running (false = nothing to stop).
 func (m *BackupManager) Stop() bool {
@@ -158,7 +164,11 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 	if m.config.Provider == nil {
 		return nil, errors.New("backup provider is required")
 	}
-	if len(m.config.Paths) == 0 {
+	// A system-state-only run (system_image mode) legitimately has no file
+	// paths — the collected system-state staging dir is appended to
+	// backupPaths below and becomes the entire snapshot. Only require file
+	// paths when system-state collection is off.
+	if len(m.config.Paths) == 0 && !m.config.SystemStateEnabled {
 		return nil, errors.New("backup paths are required")
 	}
 
@@ -233,12 +243,14 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 	}
 
 	// System state collection: gather OS config, hardware profile, etc.
+	var systemStateErr error
 	if m.config.SystemStateEnabled {
 		if err := ctx.Err(); err != nil {
 			return stopBackupRun()
 		}
 		manifest, stagingDir, ssErr := systemstate.CollectSystemState()
 		if ssErr != nil {
+			systemStateErr = ssErr
 			log.Printf("[backup] system state collection failed, proceeding without: %v", ssErr)
 		} else {
 			job.SystemStateManifest = manifest
@@ -271,6 +283,20 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 	if len(files) == 0 {
 		if err := ctx.Err(); err != nil {
 			return stopBackupRun()
+		}
+		// A system-state-only run (no configured file paths) that produced
+		// nothing is a hard failure, not a no-op skip: there are no files to
+		// fall back on, so a green empty snapshot would silently protect
+		// nothing. Surface the collection error (or a synthetic one).
+		if m.config.SystemStateEnabled && len(m.config.Paths) == 0 {
+			runErr := systemStateErr
+			if runErr == nil {
+				runErr = errors.New("system state collection produced no artifacts")
+			}
+			job.Status = jobStatusFailed
+			job.CompletedAt = time.Now().UTC()
+			job.Error = errors.Join(scanErr, runErr)
+			return job, job.Error
 		}
 		job.Status = jobStatusSkipped
 		job.CompletedAt = time.Now().UTC()

@@ -27,6 +27,12 @@ export const backupProcessResultSchema = z.object({
   filesBackedUp: z.number().int().nonnegative().optional(),
   bytesBackedUp: z.number().nonnegative().optional(),
   warning: z.string().min(1).optional(),
+  // system_image (system-state) backups carry the OS-artifact manifest and a
+  // derived backup type; forwarded through the queue so persistence can label
+  // the snapshot and BMR restore can read the manifest. Manifest kept
+  // permissive (passthrough) so an unmodeled field never fails the job.
+  backupType: z.enum(['file', 'system_image', 'database', 'application']).optional(),
+  systemStateManifest: z.record(z.string(), z.unknown()).nullish(),
   snapshot: backupSnapshotSummarySchema.optional(),
   error: z.string().min(1).optional(),
 }).strict();

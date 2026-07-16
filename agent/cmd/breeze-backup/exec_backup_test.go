@@ -252,14 +252,15 @@ func TestExecBMRRecoverUsesTokenDrivenRunner(t *testing.T) {
 
 func TestManagerFromBackupRunPayload(t *testing.T) {
 	tests := []struct {
-		name         string
-		payload      string
-		wantNil      bool // manager is nil (fall back to agent.yaml manager)
-		wantErr      bool
-		wantProvider string   // "s3" | "local" | "" (skip provider assertion)
-		wantBucket   string   // for s3
-		wantBasePath string   // for local
-		wantPaths    []string // expected manager paths
+		name            string
+		payload         string
+		wantNil         bool // manager is nil (fall back to agent.yaml manager)
+		wantErr         bool
+		wantProvider    string   // "s3" | "local" | "" (skip provider assertion)
+		wantBucket      string   // for s3
+		wantBasePath    string   // for local
+		wantPaths       []string // expected manager paths
+		wantSystemImage bool     // expected SystemStateEnabled
 	}{
 		{
 			name:    "empty payload falls back to agent.yaml manager",
@@ -305,6 +306,17 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 			payload: `{"provider":`,
 			wantErr: true,
 		},
+		{
+			// The server fans a `system_image` selection out as a backup_run
+			// carrying `systemImage:true` and no `paths` (backupWorker.ts
+			// resolveBackupTargets). Before the fix this tripped the "backup_run
+			// payload has no paths" guard and the job failed outright.
+			name:            "system_image mode needs no paths",
+			payload:         `{"provider":"s3","providerConfig":{"bucket":"my-bucket","region":"us-east-1","accessKey":"AK","secretKey":"SK"},"systemImage":true}`,
+			wantProvider:    "s3",
+			wantBucket:      "my-bucket",
+			wantSystemImage: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -343,6 +355,10 @@ func TestManagerFromBackupRunPayload(t *testing.T) {
 				if gotPaths[i] != tt.wantPaths[i] {
 					t.Errorf("paths[%d] = %q, want %q", i, gotPaths[i], tt.wantPaths[i])
 				}
+			}
+
+			if got := mgr.GetSystemStateEnabled(); got != tt.wantSystemImage {
+				t.Fatalf("SystemStateEnabled = %v, want %v", got, tt.wantSystemImage)
 			}
 
 			provider := mgr.GetProvider()

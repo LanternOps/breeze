@@ -1375,6 +1375,8 @@ export async function processOrphanedCommandResult(
             filesBackedUp: backupData?.filesBackedUp,
             bytesBackedUp: backupData?.bytesBackedUp,
             warning: backupData?.warning,
+            backupType: backupData?.backupType,
+            systemStateManifest: backupData?.systemStateManifest,
             snapshot: backupData?.snapshot,
             error: malformedPayloadError || result.error || result.stderr,
           },

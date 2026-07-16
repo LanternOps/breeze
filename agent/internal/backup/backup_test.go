@@ -263,6 +263,23 @@ func TestRunBackup_SystemStateDoesNotMutateConfiguredPaths(t *testing.T) {
 	}
 }
 
+func TestRunBackup_SystemStateOnly_NoPathsAllowed(t *testing.T) {
+	// system_image mode runs with no configured file paths — the collected
+	// system-state staging dir is the whole snapshot. The "backup paths are
+	// required" guard must NOT fire. Collection itself may succeed or fail
+	// depending on the host, so we only assert the guard is not what stopped it.
+	provider := newMockProvider()
+	mgr := NewBackupManager(BackupConfig{
+		Provider:           provider,
+		SystemStateEnabled: true,
+	})
+
+	_, err := mgr.RunBackup()
+	if err != nil && strings.Contains(err.Error(), "backup paths are required") {
+		t.Fatalf("system-state-only run must not be rejected for missing paths: %v", err)
+	}
+}
+
 func TestRunBackup_MultiplePaths(t *testing.T) {
 	tmpDir := t.TempDir()
 	dir1 := pathpkg.Join(tmpDir, "dir1")

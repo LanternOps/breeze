@@ -223,6 +223,53 @@ describe('backup result persistence', () => {
     }));
   });
 
+  it('labels a system_image snapshot and persists its system-state manifest + hardware profile', async () => {
+    vi.mocked(db.update)
+      .mockReturnValueOnce(chainMock([{ id: 'job-1', configId: 'config-1', backupType: null, backupMode: 'system_image' }]) as any)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([]) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chainMock([]) as any)
+      .mockReturnValueOnce(chainMock([{ featureLinkId: 'feature-1', policyId: null, deviceId: 'device-1' }]) as any);
+    vi.mocked(db.insert).mockReturnValueOnce(chainMock([{
+      id: 'snapshot-db-1',
+      jobId: 'job-1',
+      snapshotId: 'provider-snap-1',
+    }]) as any);
+    vi.mocked(applyGfsTagsToSnapshot).mockResolvedValue({ daily: true });
+    vi.mocked(resolveGfsConfigForJob).mockResolvedValue(null);
+    vi.mocked(computeExpiresAt).mockReturnValue(null);
+
+    const manifest = {
+      platform: 'windows',
+      osVersion: 'Microsoft Windows [Version 10.0.20348.169]',
+      hostname: 'WIN-TEST',
+      artifacts: [{ name: 'registry_SYSTEM', category: 'registry', path: 'registry/SYSTEM', sizeBytes: 100 }],
+      hardwareProfile: { cpuModel: 'Xeon', cpuCores: 4, totalMemoryMB: 8192 },
+    };
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: {
+        snapshotId: 'provider-snap-1',
+        filesBackedUp: 13,
+        // backup_run for system_image carries no backupType — it must be
+        // derived from the job's backup_mode, not defaulted to 'file'.
+        systemStateManifest: manifest,
+      } as any,
+    });
+
+    const insertValues = vi.mocked(db.insert).mock.results[0]?.value?.values;
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      backupType: 'system_image',
+      systemStateManifest: manifest,
+      hardwareProfile: manifest.hardwareProfile,
+    }));
+  });
+
   it('applies provider immutability when the winning feature link requests it', async () => {
     resolveBackupProtectionForDeviceMock.mockResolvedValueOnce({
       legalHold: false,
