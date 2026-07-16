@@ -10,6 +10,7 @@ Make the quote builder able to produce a full client proposal like the reference
 
 1. **Contract documents as first-class entities.** Today the MSA would be pasted into `quotes.termsAndConditions` as a text blob, and `contracts` records hold only structured billing data (`notes`/`terms` free text). This effort adds a versioned, partner-wide contract template library, inline rendering of a pinned template version inside a proposal, and an executed-document snapshot filed against the billing contract on acceptance.
 2. **Branded cover page.** Quote-level cover configuration (title, cover image, prepared-for/prepared-by) rendered as the proposal's first page.
+3. **Rich-text fidelity.** `rich_text` blocks store HTML but every renderer strips it to plain text today: the PDF renderer (`stripHtml` in `quotePdf.ts`), the portal/public views (deliberate — no sanitizer dependency exists, and raw author HTML on the unauthenticated public page would be an XSS sink), and the web detail view. The editor is a raw-HTML `<textarea>`. The reference proposal's bold lead-ins and bullet/numbered lists — and any MSA template — require real formatting end-to-end: a sanitized constrained HTML subset, a formatted-text pdfkit renderer, safe HTML rendering in portal/web, and a TipTap WYSIWYG editor.
 
 Everything else in the reference proposal (narrative sections, images, multiple pricing tables with section totals, one-time vs recurring, typed-name e-signature, public token link, PDF) already exists in the quote block system.
 
@@ -23,6 +24,7 @@ Everything else in the reference proposal (narrative sections, images, multiple 
 | Cover page | In scope |
 | Relationship to billing contracts | Partner-wide template library; executed snapshot attaches to the billing contract created by quote acceptance |
 | Embedding mechanism | New `contract` quote block type (Approach A) — not a header slot, not PDF-append-only |
+| Rich text | In scope: sanitized constrained HTML subset + formatted pdfkit rendering + TipTap editor (raised mid-design after fidelity audit; textarea/strip-to-plain-text status quo can't reproduce the reference proposal or render an MSA) |
 
 ## Data model
 
@@ -119,6 +121,17 @@ Client experience unchanged: one typed-name acceptance (portal or public token).
 - Billing contract detail gets a **Documents** section: executed doc, template + version, signer, date, PDF download.
 - Proposal with a contract block but no recurring lines → no billing contract; the snapshot still exists org-scoped and quote-linked, surfaced in the contracts area under "Unattached documents", linkable to a billing contract later.
 
+## Rich-text fidelity pipeline
+
+Applies identically to quote `rich_text` blocks and authored contract template bodies (`body_html`).
+
+- **Allowed subset:** `p`, `br`, `strong`, `em`, `u`, `h3`, `h4`, `ul`, `ol`, `li`, `a[href]` (http/https only, `rel="noopener noreferrer"` forced). Everything else — tags, attributes, inline styles, event handlers, `javascript:` URLs — is stripped.
+- **Sanitize on write:** all rich-text inputs (quote block create/update, template version bodies) pass through a server-side sanitizer (`sanitize-html`) before storage; only the clean subset is ever persisted.
+- **Sanitize on read (defense in depth + legacy rows):** rich-text HTML is re-sanitized at the API serialization boundary for portal/public/web responses. Rows written before sanitization existed are thereby covered without a data migration.
+- **Portal/web rendering:** replace strip-to-plain-text with rendering the sanitized subset as real HTML. Safe because the only HTML that can reach these views has passed the server-side sanitizer.
+- **PDF rendering:** new formatted-text renderer parses the sanitized subset into paragraphs/headings/lists with inline bold/italic/underline runs and draws them with pdfkit (replacing `stripHtml` in `quotePdf.ts`); contract document rendering reuses the same module.
+- **Editor:** TipTap (`@tiptap/react` + starter-kit) replaces the raw-HTML textareas in the quote editor's rich_text blocks and powers the contract template editor. TipTap's schema is configured to exactly the allowed subset, so the editor cannot produce markup the sanitizer would strip.
+
 ## API surface
 
 - **New routes** (`apps/api/src/routes/contracts/templates.ts` or similar, mounted with existing contracts router): template CRUD, version create/publish, archive, PDF-version upload. Create accepts `ownerScope`; update schemas derived via `.partial()` must `.omit({ ownerScope: true })`. Partner-wide create/update/delete gated on `canManagePartnerWidePolicies(auth)`.
@@ -145,7 +158,7 @@ Client experience unchanged: one typed-name acceptance (portal or public token).
 
 - **RLS integration** (`contractTemplatesPartnerRls.integration.test.ts`): cross-partner forge → 42501; XOR violation → 23514; org isolation; portal-context read of partner-owned template succeeds only via the system-context service path.
 - **Contract tests**: rls-coverage allowlists (both dual-axis tables), tenant cascade (run `tenantCascade.integration.test.ts` locally — it only fails in the Integration CI job, so a stale-base PR can go green and red main).
-- **Unit**: new block + coverPage validator coverage; variable substitution (missing-variable send block, HTML escaping); version immutability; sha composition.
+- **Unit**: new block + coverPage validator coverage; variable substitution (missing-variable send block, HTML escaping); version immutability; sha composition; sanitizer (XSS vectors: script/style/event handlers/`javascript:` hrefs stripped, allowed subset preserved); formatted-text PDF renderer (bold runs, nested lists, headings).
 - **Integration (real Postgres)**: accept flow end-to-end — acceptance row + snapshot row + billing-contract linkage in one transaction; hash includes contract content.
 - **E2E (Playwright, data-testid)**: build proposal with cover + narrative + pricing + contract block → send → accept via public link → verify Documents section on the billing contract.
 
