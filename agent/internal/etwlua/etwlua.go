@@ -99,6 +99,10 @@ type Event struct {
 	// on standalone machines. Required.
 	SubjectUsername string `json:"subject_username"`
 
+	// SubjectSessionID is the local Windows session that owns the consent UI.
+	// It is used to route PAM locally and must not be sent to the server.
+	SubjectSessionID uint32 `json:"-"`
+
 	// TargetExecutablePath is the absolute path of the binary about to be
 	// elevated. Required.
 	TargetExecutablePath string `json:"target_executable_path"`
