@@ -64,7 +64,10 @@ describe('renderQuotePdf', () => {
       [
         { id: 'b1', blockType: 'heading', sortOrder: 0, content: { text: 'Our work', level: 2 } },
         { id: 'b2', blockType: 'image', sortOrder: 1, content: { imageId: 'img-123', caption: 'A diagram', width: 200 } },
-        { id: 'b3', blockType: 'rich_text', sortOrder: 2, content: { html: '<p>Hello <b>world</b></p>' } },
+        // <strong> (not <b>) — the sanitized rich-text subset (richTextSanitize.ts)
+        // never emits <b>, and the hand-rolled parser only recognizes the 11
+        // allowed tags.
+        { id: 'b3', blockType: 'rich_text', sortOrder: 2, content: { html: '<p>Hello <strong>world</strong></p>' } },
       ],
       [],
       async (imageId) => { requestedId = imageId; return { data: ONE_BY_ONE_PNG }; },
@@ -73,6 +76,11 @@ describe('renderQuotePdf', () => {
     expect(requestedId).toBe('img-123');
     expect(buf.subarray(0, 4).toString()).toBe('%PDF');
     expect(buf.length).toBeGreaterThan(800);
+    // Formatted rich-text rendering (Task 2): the paragraph's text actually
+    // reaches the page, split across the plain/bold run boundary.
+    const text = extractPdfText(buf);
+    expect(text).toContain('Hello');
+    expect(text).toContain('world');
   });
 
   it('embeds a product thumbnail for a catalog-sourced line via loadCatalogImage', async () => {

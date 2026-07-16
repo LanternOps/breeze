@@ -17,6 +17,7 @@ import PDFDocument from 'pdfkit';
 import { toCents, fromCents } from '@breeze/shared';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
+import { renderRichTextIntoPdf } from './richTextPdf';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -58,10 +59,6 @@ function hexToColor(value: string | null | undefined, fallback: string): string 
   if (!value) return fallback;
   const v = value.startsWith('#') ? value : `#${value}`;
   return /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : fallback;
-}
-
-function stripHtml(html: string): string {
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function addressLines(addr: BillToAddress | null | undefined): string[] {
@@ -534,10 +531,17 @@ export async function renderQuotePdf(
       y = doc.y + 8;
     } else if (b.blockType === 'rich_text') {
       const html = String((b.content as { html?: string }).html ?? '');
-      const text = stripHtml(html);
-      if (text) {
-        doc.fillColor('#1f2937').fontSize(11).font('Helvetica').text(text, c.left, y, { width: c.contentWidth });
-        y = doc.y + 8;
+      if (html.trim()) {
+        // ensureRoom reads doc.y (pdfkit's own cursor, kept accurate by every
+        // draw call the renderer makes) rather than the outer `y` snapshot, so
+        // it stays correct across the multiple blocks a single rich_text block
+        // can expand into (paragraphs/headings/lists), not just the one
+        // page-break check the outer `y` would otherwise be stale for.
+        const ensureRoom = (needed: number): number => {
+          y = ensureSpace(doc, doc.y, needed);
+          return y;
+        };
+        y = renderRichTextIntoPdf(doc, html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom });
       }
     } else if (b.blockType === 'image') {
       const imageId = (b.content as { imageId?: string }).imageId;
