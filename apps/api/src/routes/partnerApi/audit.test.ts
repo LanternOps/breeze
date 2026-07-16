@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Handler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,7 +42,7 @@ function envelope(data: unknown[] = []) {
 
 function createApp(
   resource: PartnerExportResource,
-  handler: Parameters<Hono['get']>[1],
+  handler: Handler,
   options: { authenticated?: boolean } = {},
 ) {
   const app = new Hono();
@@ -117,12 +117,12 @@ describe('partner export audit middleware', () => {
       'httpStatus',
       'keyId',
       'partnerId',
+      'partnerServicePrincipalId',
       'recordCount',
       'resource',
       'result',
       'route',
       'schemaVersion',
-      'partnerServicePrincipalId',
     ]);
 
     const serialized = JSON.stringify(mocks.writeAuditEventAsync.mock.calls);

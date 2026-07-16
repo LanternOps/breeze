@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -106,6 +106,20 @@ let app: Hono;
 function request(path: string, scope = 'inventory:read', apiKey = 'test-key') {
   return app.request(path, { headers: { 'X-API-Key': apiKey, 'X-Test-Scopes': scope } });
 }
+
+
+// The route stack derives cursor expiry from the mocked snapshot
+// (2026-07-14T12:00Z + 24h) but decodePartnerExportCursor checks expiry
+// against the wall clock. Pin Date (and only Date) so cursor round-trips
+// stay inside the snapshot's validity window regardless of when the suite
+// runs.
+beforeAll(() => {
+  vi.useFakeTimers({ now: new Date('2026-07-14T12:30:00.000Z'), toFake: ['Date'] });
+});
+
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 describe('partner reconstruction inventory exports', () => {
   beforeEach(() => {

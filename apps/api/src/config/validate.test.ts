@@ -139,6 +139,9 @@ describe('validateConfig', () => {
     }, () => {
       expect(() => validateConfig()).toThrow('PARTNER_API_CURSOR_SIGNING_KEY');
       expect(() => validateConfig()).toThrow('JWT_SECRET key material');
+    });
+  });
+
   describe('M365 customer Graph-read onboarding', () => {
     const descriptorEnv = (signingJwkFile: string) => ({
       M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'true',

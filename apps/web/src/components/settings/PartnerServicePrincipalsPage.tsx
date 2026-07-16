@@ -107,7 +107,7 @@ export default function PartnerServicePrincipalsPage() {
           { method: creating ? 'POST' : 'PATCH', body: JSON.stringify(payload) },
         ),
         errorFallback: t('partnerServicePrincipals.saveFailed'),
-        successMessage: t(creating ? 'partnerServicePrincipals.created' : 'partnerServicePrincipals.updated'),
+        successMessage: creating ? t('partnerServicePrincipals.created') : t('partnerServicePrincipals.updated'),
         onUnauthorized: UNAUTHORIZED,
       });
       setEditing(null);
@@ -211,7 +211,7 @@ export default function PartnerServicePrincipalsPage() {
     </section>)}
 
     {editing && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-6 shadow-lg">
-      <h2 className="font-semibold">{t(editing === 'new' ? 'partnerServicePrincipals.create' : 'partnerServicePrincipals.edit')}</h2>
+      <h2 className="font-semibold">{editing === 'new' ? t('partnerServicePrincipals.create') : t('partnerServicePrincipals.edit')}</h2>
       <label className="block text-sm">{t('partnerServicePrincipals.name')}<input className="mt-1 w-full rounded border bg-background p-2" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
       <label className="block text-sm">{t('partnerServicePrincipals.principalDescription')}<textarea className="mt-1 w-full rounded border bg-background p-2" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
       <fieldset><legend className="text-sm">{t('partnerServicePrincipals.scopes')}</legend><div className="mt-1 grid grid-cols-2 gap-1">{AVAILABLE_SCOPES.map((scope) => <label key={scope} className="text-xs"><input type="checkbox" checked={draft.scopes.includes(scope)} onChange={(event) => setDraft({ ...draft, scopes: event.target.checked ? [...draft.scopes, scope] : draft.scopes.filter((item) => item !== scope) })} /> {scope}</label>)}</div></fieldset>
