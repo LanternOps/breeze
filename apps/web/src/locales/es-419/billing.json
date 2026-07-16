@@ -386,6 +386,11 @@
         "thisLine": "esta linea",
         "removeSectionWithLines": "Esto elimina la tabla de precios y sus líneas. Esto no se puede deshacer."
       },
+      "customer": {
+        "help": "Mover un borrador a otra empresa quita la asignación de sitio y aplica la tasa de impuestos de esa empresa.",
+        "label": "Cliente",
+        "success": "Cotización movida a {{name}}."
+      },
       "deposit": {
         "due": "Depósito adeudado",
         "eligibleAria": "Depósito elegible",
@@ -420,6 +425,7 @@
         "reorderBlocks": "No se pudieron reordenar los bloques.",
         "reorderLines": "No se pudieron reordenar las líneas.",
         "reorderSections": "No se pudieron reordenar las secciones.",
+        "saveCustomer": "No se pudo cambiar el cliente.",
         "saveTerms": "No se pudieron guardar los términos.",
         "saveTitle": "No se pudo guardar el título.",
         "unitPriceZeroOrMore": "Introduzca un precio unitario de 0 o más.",
@@ -527,6 +533,15 @@
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Empresa",
+        "confirm": "Crear copia",
+        "defaultTitle": "Copia de {{name}}",
+        "message": "Crea un nuevo borrador con el mismo contenido. Elige la empresa a la que va dirigido y asígnale un título.",
+        "retargetHint": "El nuevo borrador usará los datos de facturación y la tasa de impuestos de esta empresa; se quitará la asignación de sitio.",
+        "title": "Duplicar cotización",
+        "titleLabel": "Título"
+      },
       "cloneError": "No se pudo clonar la cotización.",
       "cloneQuote": "Clonar cotización",
       "cloneSavingTitle": "Espere a que se guarden los cambios antes de clonar.",
@@ -541,6 +556,7 @@
       "deleteSuccess": "Borrador eliminado",
       "downloadPdf": "Descargar PDF",
       "emptyHint": "Agregue al menos un artículo antes de enviar.",
+      "moreActions": "Más acciones",
       "savingHint": "Guardando cambios... Enviar desbloqueos cuando todo esté guardado.",
       "savingTitle": "Guardar sus cambios: envíe desbloqueos cuando todo esté guardado.",
       "sendConfirm": {

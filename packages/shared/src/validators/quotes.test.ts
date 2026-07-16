@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  createQuoteSchema, quoteLineInputSchema, quoteBlockInputSchema, listQuotesQuerySchema,
+  createQuoteSchema, cloneQuoteSchema, quoteLineInputSchema, quoteBlockInputSchema, listQuotesQuerySchema,
   acceptQuoteSchema, declineQuoteSchema,
   updateQuoteSchema, reorderBlocksSchema, reorderLinesSchema,
   updateQuoteLineSchema, catalogQuoteLineSchema, moveQuoteLineSchema,
@@ -34,6 +34,33 @@ describe('quote validators', () => {
       .toBe('33333333-3333-3333-3333-333333333333');
     expect(updateQuoteLineSchema.parse({ imageId: null }).imageId).toBeNull();
     expect(updateQuoteLineSchema.safeParse({ imageId: 'not-a-guid' }).success).toBe(false);
+  });
+
+  it('clone options accept orgId/title, tolerate an empty body, and reject unknown keys', () => {
+    expect(cloneQuoteSchema.parse({})).toEqual({});
+    expect(cloneQuoteSchema.parse({ orgId: '11111111-1111-1111-1111-111111111111', title: 'Clone of Q-1' }))
+      .toEqual({ orgId: '11111111-1111-1111-1111-111111111111', title: 'Clone of Q-1' });
+    expect(cloneQuoteSchema.safeParse({ orgId: 'not-a-guid' }).success).toBe(false);
+    expect(cloneQuoteSchema.safeParse({ title: 'x'.repeat(201) }).success).toBe(false);
+    // strict: a mis-keyed field is a 400, not a silent same-org clone
+    expect(cloneQuoteSchema.safeParse({ orgID: '11111111-1111-1111-1111-111111111111' }).success).toBe(false);
+  });
+
+  it('update accepts an orgId reassignment guid and rejects a non-guid', () => {
+    expect(updateQuoteSchema.parse({ orgId: '22222222-2222-2222-2222-222222222222' }).orgId)
+      .toBe('22222222-2222-2222-2222-222222222222');
+    expect(updateQuoteSchema.safeParse({ orgId: 'not-a-guid' }).success).toBe(false);
+    expect(updateQuoteSchema.safeParse({ orgId: null }).success).toBe(false); // a quote always has an org
+  });
+
+  it('update strips unknown keys (non-strict) — a mis-keyed orgID is a no-op, unlike the strict clone body', () => {
+    // Documented asymmetry: updateQuoteSchema predates orgId and stays
+    // non-strict for existing callers, so { orgID } parses to an empty patch
+    // (200, nothing reassigned) rather than a 400. cloneQuoteSchema is strict
+    // because its only purpose is retarget/rename.
+    const parsed = updateQuoteSchema.parse({ orgID: '22222222-2222-2222-2222-222222222222' });
+    expect(parsed).toEqual({});
+    expect('orgId' in parsed).toBe(false);
   });
 
   it('create/update accept a bounded title and reject an oversized one', () => {

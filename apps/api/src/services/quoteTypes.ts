@@ -25,6 +25,7 @@ export interface QuoteActor {
 export type QuoteServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'ORG_DENIED'
+  | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'
   | 'QUOTE_NOT_FOUND'
   | 'NOT_A_DRAFT'

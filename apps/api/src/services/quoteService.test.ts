@@ -10,8 +10,11 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute', 'transaction'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
+    // Execute the callback with the same chain as `tx` — each awaited tx call
+    // still consumes one queued result, exactly like a bare db call.
+    chain.transaction = vi.fn(async (run: (tx: unknown) => unknown) => run(chain));
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
@@ -89,6 +92,98 @@ describe('quoteService deposits', () => {
     expect(setMock.mock.calls[0]![0]).toMatchObject({ taxRate: '0.25000', depositType: 'percent', depositPercent: '50.00' });
     // Recompute persists the deposit_amount computed on the NEW 25% rate.
     expect(setMock.mock.calls[1]![0]).toMatchObject({ depositAmount: '62.50' });
+  });
+
+  it('updateQuote reassigns a draft to another company: children re-tenanted, site/bill-to reset, tax re-resolved', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    // loadDraft
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: 's1', billToName: 'Old Co', taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
+    queueResult([{ id: 'org2' }]); // target org same-partner membership check
+    // resolveQuoteTaxRate for the NEW org: 5% org rate, no partner default
+    queueResult([{ taxExempt: false, taxRate: '0.05000' }]);
+    queueResult([{ defaultTaxRate: null }]);
+    queueResult([]); // tx: quotes header update
+    queueResult([]); // tx: blocks org move
+    queueResult([]); // tx: lines org move
+    queueResult([]); // tx: images org move
+    // recomputeAndPersist: header select (new rate), lines, own update
+    queueResult([{ taxRate: '0.05000', depositType: 'none', depositPercent: null }]);
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]);
+    queueResult([]);
+    // final re-select
+    queueResult([{ id: 'q1', orgId: 'org2', siteId: null, billToName: null, taxRate: '0.05000' }]);
+
+    const updated = await svc.updateQuote('q1', { orgId: 'org2' }, orgActor);
+
+    expect(updated.orgId).toBe('org2');
+    const setMock = (db as unknown as Chain).set;
+    // Call 0: the header update moves the org, clears the old customer's site +
+    // bill-to override, and applies the new org's resolved tax rate.
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ orgId: 'org2', siteId: null, billToName: null, taxRate: '0.05000' });
+    // Calls 1-3: denormalized org_id moves on blocks, lines, and images.
+    expect(setMock.mock.calls[1]![0]).toEqual({ orgId: 'org2' });
+    expect(setMock.mock.calls[2]![0]).toEqual({ orgId: 'org2' });
+    expect(setMock.mock.calls[3]![0]).toEqual({ orgId: 'org2' });
+  });
+
+  it('updateQuote org change with an explicit taxRate in the same patch skips re-resolution and keeps the explicit rate', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    // loadDraft
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
+    queueResult([{ id: 'org2' }]); // membership check — NO resolveQuoteTaxRate selects follow
+    queueResult([]); // tx: quotes header update
+    queueResult([]); // tx: blocks org move
+    queueResult([]); // tx: lines org move
+    queueResult([]); // tx: images org move
+    queueResult([{ taxRate: '0.20000', depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+    queueResult([{ id: 'q1', orgId: 'org2', taxRate: '0.20000' }]); // final re-select
+
+    const updated = await svc.updateQuote('q1', { orgId: 'org2', taxRate: 0.2 }, orgActor);
+
+    expect(updated.taxRate).toBe('0.20000');
+    const setMock = (db as unknown as Chain).set;
+    // The explicit rate wins — the org-change branch must not clobber it with a
+    // re-resolved default (nor consume the resolveQuoteTaxRate selects at all).
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ orgId: 'org2', taxRate: '0.20000' });
+  });
+
+  it('updateQuote org change preserves a billToName supplied in the same patch', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: 'Old Co', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'org2' }]); // membership check
+    queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
+    queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
+    queueResult([]); // tx: quotes header update
+    queueResult([]); // tx: blocks org move
+    queueResult([]); // tx: lines org move
+    queueResult([]); // tx: images org move
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]); // recompute lines
+    queueResult([]); // recompute update
+    queueResult([{ id: 'q1', orgId: 'org2', billToName: 'Fresh Contact' }]); // final re-select
+
+    await svc.updateQuote('q1', { orgId: 'org2', billToName: 'Fresh Contact' }, orgActor);
+
+    const setMock = (db as unknown as Chain).set;
+    // The fresh override survives the org change; only an unsupplied billToName
+    // is nulled as a stale reference to the old customer.
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ orgId: 'org2', billToName: 'Fresh Contact' });
+  });
+
+  it('updateQuote rejects reassignment to an org outside the actor scope', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]);
+
+    await expect(svc.updateQuote('q1', { orgId: 'org2' }, actor)).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+
+  it('updateQuote rejects reassignment to an org of another partner', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]);
+    queueResult([]); // membership check finds no org2 row under p1
+
+    await expect(svc.updateQuote('q1', { orgId: 'org2' }, orgActor)).rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
   });
 
   it('updateQuote throws DEPOSIT_REQUIRES_ONE_TIME_LINES when the quote has no one-time visible lines', async () => {

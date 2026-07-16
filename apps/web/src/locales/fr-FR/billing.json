@@ -386,6 +386,11 @@
         "thisLine": "cette ligne",
         "removeSectionWithLines": "Cette action supprime le tableau de prix et ses lignes. Elle est irréversible."
       },
+      "customer": {
+        "help": "Déplacer un brouillon vers une autre entreprise retire l’affectation de site et applique le taux de taxe de cette entreprise.",
+        "label": "Client",
+        "success": "Devis déplacé vers {{name}}."
+      },
       "deposit": {
         "due": "Acompte dû",
         "eligibleAria": "Éligible à l'acompte",
@@ -420,6 +425,7 @@
         "reorderBlocks": "Impossible de réordonner les blocs.",
         "reorderLines": "Impossible de réordonner les lignes.",
         "reorderSections": "Impossible de réordonner les sections.",
+        "saveCustomer": "Impossible de changer le client.",
         "saveTerms": "Impossible d'enregistrer les conditions.",
         "saveTitle": "Impossible d'enregistrer le titre.",
         "unitPriceZeroOrMore": "Saisissez un prix unitaire supérieur ou égal à 0.",
@@ -527,6 +533,15 @@
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Entreprise",
+        "confirm": "Créer la copie",
+        "defaultTitle": "Copie de {{name}}",
+        "message": "Crée un nouveau brouillon avec le même contenu. Choisissez l’entreprise concernée et donnez-lui un titre.",
+        "retargetHint": "Le nouveau brouillon utilisera les informations de facturation et le taux de taxe de cette entreprise ; l’affectation de site sera retirée.",
+        "title": "Dupliquer le devis",
+        "titleLabel": "Titre"
+      },
       "cloneError": "Impossible de dupliquer le devis.",
       "cloneQuote": "Dupliquer le devis",
       "cloneSavingTitle": "Attendez la fin de l'enregistrement avant de dupliquer.",
@@ -541,6 +556,7 @@
       "deleteSuccess": "Brouillon supprimé",
       "downloadPdf": "Télécharger le PDF",
       "emptyHint": "Ajoutez au moins un article avant l'envoi.",
+      "moreActions": "Plus d’actions",
       "savingHint": "Enregistrement des modifications… L'envoi sera disponible une fois tout enregistré.",
       "savingTitle": "Enregistrement de vos modifications — l'envoi sera disponible une fois tout enregistré.",
       "sendConfirm": {

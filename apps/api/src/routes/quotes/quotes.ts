@@ -5,9 +5,9 @@ import { and, eq } from 'drizzle-orm';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import {
-  createQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
+  createQuoteSchema, cloneQuoteSchema, updateQuoteSchema, quoteLineInputSchema, catalogQuoteLineSchema,
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
-  reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema,
+  reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema, type CloneQuoteInput,
 } from '@breeze/shared';
 import {
   createQuote, cloneQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
@@ -50,7 +50,23 @@ quoteCrudRoutes.post('/', scopes, writePerm, zValidator('json', createQuoteSchem
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idParam), async (c) => {
-  try { return c.json({ data: await cloneQuote(c.req.valid('param').id, quoteActorFrom(c)) }); }
+  // Optional retarget/rename body. Distinguish an ABSENT body (legacy callers
+  // POST nothing) from a PRESENT-but-broken one: an empty body degrades to a
+  // plain same-org clone; ANY non-empty body that fails to read, parse, or
+  // validate is a 400 — never a silent same-org clone of a retarget the caller
+  // intended. Read unconditionally (no content-type gate): a JSON body sent
+  // without the header must still be honored, and a non-JSON body must 400.
+  let input: CloneQuoteInput = {};
+  let raw: string;
+  try { raw = await c.req.text(); } catch { return c.json({ error: 'Failed to read request body' }, 400); }
+  if (raw.trim()) {
+    let json: unknown;
+    try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+    const parsed = cloneQuoteSchema.safeParse(json);
+    if (!parsed.success) return c.json({ error: 'Invalid clone options' }, 400);
+    input = parsed.data;
+  }
+  try { return c.json({ data: await cloneQuote(c.req.valid('param').id, quoteActorFrom(c), input) }); }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {

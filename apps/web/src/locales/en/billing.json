@@ -386,6 +386,11 @@
         "thisLine": "this line",
         "removeSectionWithLines": "This removes the pricing table and its lines. This can't be undone."
       },
+      "customer": {
+        "help": "Moving a draft to another company clears the site assignment and applies that company’s tax rate.",
+        "label": "Customer",
+        "success": "Quote moved to {{name}}."
+      },
       "deposit": {
         "due": "Deposit due",
         "eligibleAria": "Deposit eligible",
@@ -420,6 +425,7 @@
         "reorderBlocks": "Could not reorder blocks.",
         "reorderLines": "Could not reorder lines.",
         "reorderSections": "Could not reorder sections.",
+        "saveCustomer": "Could not change the customer.",
         "saveTerms": "Could not save terms.",
         "saveTitle": "Could not save the title.",
         "unitPriceZeroOrMore": "Enter a unit price of 0 or more.",
@@ -527,6 +533,15 @@
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Company",
+        "confirm": "Create clone",
+        "defaultTitle": "Clone of {{name}}",
+        "message": "Creates a new draft with the same content. Pick the company it’s for and give it a title.",
+        "retargetHint": "The new draft will use this company’s billing details and tax rate; the site assignment is cleared.",
+        "title": "Clone quote",
+        "titleLabel": "Title"
+      },
       "cloneError": "Could not clone the quote.",
       "cloneQuote": "Clone quote",
       "cloneSavingTitle": "Wait for changes to finish saving before cloning.",
@@ -541,6 +556,7 @@
       "deleteSuccess": "Draft deleted",
       "downloadPdf": "Download PDF",
       "emptyHint": "Add at least one item before sending.",
+      "moreActions": "More actions",
       "savingHint": "Saving changes… Send unlocks when everything is saved.",
       "savingTitle": "Saving your changes — Send unlocks when everything is saved.",
       "sendConfirm": {
@@ -897,9 +913,9 @@
     "unapprovedTime_other": "{{count}} lines reference unapproved time. Review before issuing."
   },
   "invoiceActions": {
-      "deleteConfirm": {
-        "message": "This permanently deletes the draft invoice. This cannot be undone.",
-        "title": "Delete draft invoice"
+    "deleteConfirm": {
+      "message": "This permanently deletes the draft invoice. This cannot be undone.",
+      "title": "Delete draft invoice"
     },
     "deleteDraft": "Delete draft",
     "deleteError": "Could not delete the draft.",

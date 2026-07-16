@@ -69,8 +69,14 @@ export function createQuote(body: CreateQuoteInput): Promise<Response> {
   });
 }
 
-export function cloneQuote(id: string): Promise<Response> {
-  return fetchWithAuth(`/quotes/${id}/clone`, { method: 'POST' });
+/** Clone a quote into a new draft. Optional body retargets it to another
+ *  organization (same partner) and/or renames it — omitted fields fall back to
+ *  the source quote (matches `cloneQuoteSchema` in shared). */
+export function cloneQuote(id: string, body?: { orgId?: string; title?: string }): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/clone`, {
+    method: 'POST',
+    ...(body ? { headers: JSON_HEADERS, body: JSON.stringify(body) } : {}),
+  });
 }
 
 export function updateQuote(id: string, body: UpdateQuoteInput): Promise<Response> {

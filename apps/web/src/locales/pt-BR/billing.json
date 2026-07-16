@@ -386,6 +386,11 @@
         "thisLine": "esta linha",
         "removeSectionWithLines": "Remover seção com linhas"
       },
+      "customer": {
+        "help": "Mover um rascunho para outra empresa remove a atribuição de site e aplica a alíquota de imposto dessa empresa.",
+        "label": "Cliente",
+        "success": "Orçamento movido para {{name}}."
+      },
       "deposit": {
         "due": "Depósito devido",
         "eligibleAria": "Elegível para depósito",
@@ -420,6 +425,7 @@
         "reorderBlocks": "Não foi possível reordenar os blocos.",
         "reorderLines": "Não foi possível reordenar as linhas.",
         "reorderSections": "Não foi possível reordenar as seções.",
+        "saveCustomer": "Não foi possível alterar o cliente.",
         "saveTerms": "Não foi possível salvar os termos.",
         "saveTitle": "Não foi possível salvar o título.",
         "unitPriceZeroOrMore": "Informe um preço unitário de 0 ou mais.",
@@ -527,6 +533,15 @@
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Empresa",
+        "confirm": "Criar cópia",
+        "defaultTitle": "Cópia de {{name}}",
+        "message": "Cria um novo rascunho com o mesmo conteúdo. Escolha a empresa de destino e dê um título.",
+        "retargetHint": "O novo rascunho usará os dados de faturamento e a alíquota de imposto desta empresa; a atribuição de site será removida.",
+        "title": "Duplicar orçamento",
+        "titleLabel": "Título"
+      },
       "cloneError": "Não foi possível clonar a cotação.",
       "cloneQuote": "Clonar cotação",
       "cloneSavingTitle": "Aguarde até que as alterações sejam salvas antes de clonar.",
@@ -541,6 +556,7 @@
       "deleteSuccess": "Rascunho excluído",
       "downloadPdf": "Baixar PDF",
       "emptyHint": "Adicione pelo menos um item antes de enviar.",
+      "moreActions": "Mais ações",
       "savingHint": "Salvando alterações… O envio será liberado quando tudo estiver salvo.",
       "savingTitle": "Salvando suas alterações — o envio será liberado quando tudo estiver salvo.",
       "sendConfirm": {

@@ -6,6 +6,7 @@ import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { usePermissions } from '../../../lib/permissions';
+import { useOrgStore } from '../../../stores/orgStore';
 import { formatPercent } from '@/lib/i18n/format';
 import {
   addBlock,
@@ -340,6 +341,57 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
     }, t('quotes.editor.errors.saveTitle'));
     if (ok) flashTitleSaved();
   }, [titleDirty, title, quote.id, refresh, runScoped, flashTitleSaved, t]);
+
+  // ---- customer (organization) reassignment --------------------------------
+  // Company choices for the customer select: the partner's org list, with the
+  // quote's own org prepended if it isn't loaded (e.g. All-orgs scope) so the
+  // select always shows a valid current value.
+  const organizations = useOrgStore((s) => s.organizations);
+  const orgOptions = useMemo(() => {
+    const sorted = [...organizations].sort((a, b) => a.name.localeCompare(b.name));
+    if (!sorted.some((o) => o.id === quote.orgId)) {
+      sorted.unshift({
+        id: quote.orgId,
+        name: detail.billTo?.name?.trim() || quote.orgId.slice(0, 8),
+      } as (typeof sorted)[number]);
+    }
+    return sorted;
+  }, [organizations, quote.orgId, detail.billTo?.name]);
+
+  // Local mirror so the select shows the chosen company instantly instead of
+  // snapping back to the prop value while the PATCH is in flight (same pattern
+  // as the deposit controls); resyncs from the server after each refresh().
+  const [customerOrgId, setCustomerOrgId] = useState(quote.orgId);
+  useEffect(() => { setCustomerOrgId(quote.orgId); }, [quote.orgId]);
+
+  // Reassign the draft to another company. The server clears the site + bill-to
+  // override and re-resolves the org's tax rate, so refresh() re-pulls the whole
+  // detail to land the recomputed totals and the new bill-to in one hop.
+  const saveCustomer = useCallback((orgId: string) => {
+    if (orgId === quote.orgId) return;
+    const name = orgOptions.find((o) => o.id === orgId)?.name ?? '';
+    setCustomerOrgId(orgId);
+    void runScoped('customer', async () => {
+      try {
+        await runAction({
+          request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+            method: 'PATCH', body: JSON.stringify({ orgId }),
+          }),
+          errorFallback: t('quotes.editor.errors.saveCustomer'),
+          successMessage: t('quotes.editor.customer.success', { name }),
+          onUnauthorized: UNAUTHORIZED,
+        });
+      } catch (err) {
+        // Snap back to the last-known server value, then re-pull: on an error
+        // the client can't know whether the move landed, so re-converge on
+        // server truth instead of asserting a rollback.
+        setCustomerOrgId(quote.orgId);
+        refresh();
+        throw err;
+      }
+      refresh();
+    }, t('quotes.editor.errors.saveCustomer'));
+  }, [quote.id, quote.orgId, orgOptions, refresh, runScoped, t]);
 
   // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
   // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
@@ -1125,21 +1177,42 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange }:
         </button>
       </div>
       {canWrite && (
-        <div className="max-w-xl">
-          <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
-          <input
-            id="quote-title"
-            type="text"
-            value={title}
-            maxLength={200}
-            placeholder={t('quotes.editor.title.placeholder')}
-            onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
-            onBlur={() => void saveTitle()}
-            disabled={isPending('title')}
-            data-testid="quote-title"
-            className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
-          />
-          <SrSaved show={titleSaved} testId="quote-title-saved" />
+        <div className="flex max-w-3xl flex-wrap items-start gap-3">
+          <div className="min-w-64 flex-1">
+            <label htmlFor="quote-title" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.title.label')}</label>
+            <input
+              id="quote-title"
+              type="text"
+              value={title}
+              maxLength={200}
+              placeholder={t('quotes.editor.title.placeholder')}
+              onChange={(e) => { setTitle(e.target.value); setTitleDirty(true); }}
+              onBlur={() => void saveTitle()}
+              disabled={isPending('title')}
+              data-testid="quote-title"
+              className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(titleDirty, titleSaved)}`}
+            />
+            <SrSaved show={titleSaved} testId="quote-title-saved" />
+          </div>
+          {/* Customer reassignment (drafts only — this editor only mounts for
+              drafts). Selecting a company saves immediately; the server clears
+              the site + bill-to override and applies the new org's tax rate. */}
+          <div className="w-64 max-w-full">
+            <label htmlFor="quote-customer" className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.customer.label')}</label>
+            <select
+              id="quote-customer"
+              value={customerOrgId}
+              onChange={(e) => saveCustomer(e.target.value)}
+              disabled={isPending('customer')}
+              title={t('quotes.editor.customer.help')}
+              data-testid="quote-customer"
+              className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+            >
+              {orgOptions.map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+          </div>
         </div>
       )}
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">

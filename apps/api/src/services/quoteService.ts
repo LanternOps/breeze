@@ -12,7 +12,7 @@ import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type Qu
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
 import type {
-  CreateQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery
+  CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery
 } from '@breeze/shared';
 
 // ---------------------------------------------------------------------------
@@ -78,14 +78,18 @@ export function assertQuoteAccess(actor: QuoteActor, quote: { orgId: string; sit
  * totals). Routes per-line cents through the shared
  * computeLineTotal/toCents discipline (via computeQuoteTotals) so the header
  * totals are penny-consistent with the persisted line_total and with invoices.
+ *
+ * `dbc` lets a caller run the recompute inside its own transaction (updateQuote's
+ * org reassignment) so a mid-flight failure can't commit the header move while
+ * leaving totals computed under the old tax rate.
  */
-async function recomputeAndPersist(quoteId: string): Promise<void> {
-  const [q] = await db.select({
+async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select' | 'update'> = db): Promise<void> {
+  const [q] = await dbc.select({
     taxRate: quotes.taxRate,
     depositType: quotes.depositType,
     depositPercent: quotes.depositPercent,
   }).from(quotes).where(eq(quotes.id, quoteId)).limit(1);
-  const lines = await db.select({
+  const lines = await dbc.select({
     quantity: quoteLines.quantity,
     unitPrice: quoteLines.unitPrice,
     taxable: quoteLines.taxable,
@@ -96,7 +100,7 @@ async function recomputeAndPersist(quoteId: string): Promise<void> {
   }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId));
   const deposit = toQuoteDepositConfig(q?.depositType, q?.depositPercent);
   const totals = computeQuoteTotals(lines as QuoteLineForMath[], q?.taxRate ? parseFloat(q.taxRate) : null, deposit);
-  await db.update(quotes).set({
+  await dbc.update(quotes).set({
     subtotal: totals.subtotal,
     taxTotal: totals.taxTotal,
     total: totals.total,
@@ -199,10 +203,37 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
  * image.quote_id and line items can reference blocks, images, and parent lines.
  * Lifecycle, document, seller/customer snapshots, and expiry are intentionally
  * reset so an old accepted/expired quote is safe to revise and send again.
+ *
+ * `input` optionally retargets the clone to another organization of the same
+ * partner and/or renames it. Retargeting clears the site and billToName (both
+ * belong to the OLD customer) and re-resolves the tax rate for the new org —
+ * the same precedence createQuote uses — so totals are correct for the new
+ * customer; a same-org clone keeps the source rate verbatim (it may have been
+ * hand-set via the API).
  */
-export async function cloneQuote(id: string, actor: QuoteActor) {
+export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuoteInput = {}) {
   const { quote: source, blocks, lines } = await getQuote(id, actor);
   const images = await db.select().from(quoteImages).where(eq(quoteImages.quoteId, id));
+
+  const targetOrgId = input.orgId ?? source.orgId;
+  const orgChanged = targetOrgId !== source.orgId;
+  if (orgChanged) {
+    assertOrg(actor, targetOrgId);
+    // Retargeting lands the clone with a null site (the source's site belongs to
+    // the OLD org), which a site-restricted caller can never see — deny exactly
+    // as updateQuote's reassignment path does.
+    assertSite(actor, null);
+    // Same-partner guard. RLS hides other partners' orgs from this context, so a
+    // cross-partner id resolves to "not found" rather than leaking existence.
+    const [target] = await db.select({ id: organizations.id }).from(organizations)
+      .where(and(eq(organizations.id, targetOrgId), eq(organizations.partnerId, source.partnerId)))
+      .limit(1);
+    if (!target) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+  }
+  const taxRate = orgChanged
+    ? await resolveQuoteTaxRate(targetOrgId, source.partnerId)
+    : source.taxRate;
+  const title = input.title !== undefined ? (input.title.trim() || null) : source.title;
 
   const year = new Date().getUTCFullYear();
   const counter = await allocateQuoteCounter(source.partnerId, year);
@@ -214,7 +245,7 @@ export async function cloneQuote(id: string, actor: QuoteActor) {
   const lineIds = new Map(lines.map((line) => [line.id, randomUUID()]));
   const totals = computeQuoteTotals(
     lines as QuoteLineForMath[],
-    source.taxRate ? parseFloat(source.taxRate) : null,
+    taxRate ? parseFloat(taxRate) : null,
     toQuoteDepositConfig(source.depositType, source.depositPercent),
   );
 
@@ -222,10 +253,10 @@ export async function cloneQuote(id: string, actor: QuoteActor) {
     const [cloned] = await tx.insert(quotes).values({
       id: quoteId,
       partnerId: source.partnerId,
-      orgId: source.orgId,
-      siteId: source.siteId,
+      orgId: targetOrgId,
+      siteId: orgChanged ? null : source.siteId,
       quoteNumber,
-      title: source.title,
+      title,
       status: 'draft',
       currencyCode: source.currencyCode,
       issueDate: null,
@@ -234,7 +265,7 @@ export async function cloneQuote(id: string, actor: QuoteActor) {
       declinedAt: null,
       convertedAt: null,
       subtotal: totals.subtotal,
-      taxRate: source.taxRate,
+      taxRate,
       taxTotal: totals.taxTotal,
       total: totals.total,
       oneTimeTotal: totals.oneTimeTotal,
@@ -243,7 +274,7 @@ export async function cloneQuote(id: string, actor: QuoteActor) {
       depositType: source.depositType,
       depositPercent: source.depositPercent,
       depositAmount: totals.depositDueTotal,
-      billToName: source.billToName,
+      billToName: orgChanged ? null : source.billToName,
       billToAddress: null,
       billToTaxId: null,
       introNotes: source.introNotes,
@@ -264,7 +295,7 @@ export async function cloneQuote(id: string, actor: QuoteActor) {
       await tx.insert(quoteImages).values(images.map((image) => ({
         id: imageIds.get(image.id)!,
         quoteId,
-        orgId: source.orgId,
+        orgId: targetOrgId,
         imageData: image.imageData,
         mime: image.mime,
         byteSize: image.byteSize,
@@ -286,7 +317,7 @@ export async function cloneQuote(id: string, actor: QuoteActor) {
         return {
           id: blockIds.get(block.id)!,
           quoteId,
-          orgId: source.orgId,
+          orgId: targetOrgId,
           blockType: block.blockType,
           content,
           sortOrder: block.sortOrder,
@@ -299,7 +330,7 @@ export async function cloneQuote(id: string, actor: QuoteActor) {
         id: lineIds.get(line.id)!,
         quoteId,
         blockId: line.blockId ? blockIds.get(line.blockId) ?? null : null,
-        orgId: source.orgId,
+        orgId: targetOrgId,
         sourceType: line.sourceType,
         catalogItemId: line.catalogItemId,
         parentLineId: line.parentLineId ? lineIds.get(line.parentLineId) ?? null : null,
@@ -456,12 +487,36 @@ export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {
 }
 
 /** Draft-only header edit. Only provided fields are written; nullable fields can be
- *  explicitly cleared with null. A tax-rate change triggers a totals recompute. */
+ *  explicitly cleared with null. A tax-rate change triggers a totals recompute.
+ *
+ *  `orgId` reassigns the draft to another organization of the same partner:
+ *  the site is cleared (it belongs to the old customer), the billToName
+ *  override is cleared and the tax rate re-resolved for the new org (each
+ *  unless the same patch sets a fresh value explicitly), and the denormalized
+ *  org_id on blocks/lines/images is moved in the same transaction so
+ *  RLS-scoped readers never see a half-moved quote. */
 export async function updateQuote(id: string, input: UpdateQuoteInput, actor: QuoteActor) {
   const q = await loadDraft(id, actor);
   // A site-restricted caller may not move the quote to a site it can't access
   // (nor clear it to null, which a restricted caller can never see).
   if (input.siteId !== undefined) assertSite(actor, input.siteId);
+  const orgChanged = input.orgId !== undefined && input.orgId !== q.orgId;
+  // Re-resolved org tax default; undefined = org unchanged (keep current rate).
+  let orgTaxRate: string | null | undefined;
+  if (orgChanged) {
+    const targetOrgId = input.orgId!;
+    assertOrg(actor, targetOrgId);
+    // Reassignment clears the site, and a site-restricted caller can never see a
+    // null-site quote — deny exactly as assertSite would for an explicit null.
+    assertSite(actor, null);
+    // Same-partner guard; RLS hides other partners' orgs so a cross-partner id
+    // resolves to "not found" rather than leaking existence.
+    const [target] = await db.select({ id: organizations.id }).from(organizations)
+      .where(and(eq(organizations.id, targetOrgId), eq(organizations.partnerId, q.partnerId)))
+      .limit(1);
+    if (!target) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    if (input.taxRate === undefined) orgTaxRate = await resolveQuoteTaxRate(targetOrgId, q.partnerId);
+  }
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (input.siteId !== undefined) set.siteId = input.siteId;
   if (input.title !== undefined) set.title = input.title === null ? null : input.title.trim() || null;
@@ -483,7 +538,13 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     // Include an in-flight taxRate change from THIS SAME patch — a deposit
     // validated against the stale persisted rate could pass here and then fail
     // (or silently mis-total) once the new tax rate lands via recomputeAndPersist.
-    const effectiveTaxRate = (input.taxRate !== undefined ? input.taxRate : (q.taxRate ? parseFloat(q.taxRate) : null));
+    // An org change re-resolves the rate too (orgTaxRate) and must be coherent
+    // the same way.
+    const effectiveTaxRate = input.taxRate !== undefined
+      ? input.taxRate
+      : orgTaxRate !== undefined
+        ? (orgTaxRate ? parseFloat(orgTaxRate) : null)
+        : (q.taxRate ? parseFloat(q.taxRate) : null);
     const check = validateQuoteDeposit(
       lines as QuoteLineForMath[],
       effectiveTaxRate === null ? null : Number(effectiveTaxRate),
@@ -493,8 +554,32 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     set.depositType = nextType;
     set.depositPercent = nextType === 'percent' && nextPercent != null ? Number(nextPercent).toFixed(2) : null;
   }
-  await db.update(quotes).set(set).where(eq(quotes.id, id));
-  await recomputeAndPersist(id);
+  if (orgChanged) {
+    const targetOrgId = input.orgId!;
+    set.orgId = targetOrgId;
+    // The site belongs to the OLD org — always cleared, even if the same patch
+    // named one (a site can't be validated against the new org here).
+    set.siteId = null;
+    // A billToName override referenced the old customer; drop it so the draft
+    // bill-to falls back to the new org's name/address, unless this same patch
+    // sets a fresh override explicitly.
+    if (input.billToName === undefined) set.billToName = null;
+    if (orgTaxRate !== undefined) set.taxRate = orgTaxRate;
+    await db.transaction(async (tx) => {
+      await tx.update(quotes).set(set).where(eq(quotes.id, id));
+      // Move the denormalized org_id on every child row in the same transaction.
+      await tx.update(quoteBlocks).set({ orgId: targetOrgId }).where(eq(quoteBlocks.quoteId, id));
+      await tx.update(quoteLines).set({ orgId: targetOrgId }).where(eq(quoteLines.quoteId, id));
+      await tx.update(quoteImages).set({ orgId: targetOrgId }).where(eq(quoteImages.quoteId, id));
+      // Recompute INSIDE the transaction: a failure here must roll back the org
+      // move too, never commit the quote onto the new org with totals still
+      // computed under the old tax rate.
+      await recomputeAndPersist(id, tx);
+    });
+  } else {
+    await db.update(quotes).set(set).where(eq(quotes.id, id));
+    await recomputeAndPersist(id);
+  }
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   return updated!;
 }

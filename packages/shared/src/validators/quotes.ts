@@ -90,7 +90,20 @@ export const createQuoteSchema = z.object({
   termsAndConditions: z.string().max(20_000).optional(),
 });
 
+// Optional retarget/rename for POST /quotes/:id/clone. Omitted fields fall back
+// to the source quote. `.strict()` so a mis-keyed field is a 400, not silently
+// ignored (mirrors sendBodySchema).
+export const cloneQuoteSchema = z.object({
+  orgId: z.string().guid().optional(),
+  title: z.string().max(200).optional(),
+}).strict();
+
 export const updateQuoteSchema = z.object({
+  // Reassign the draft to another organization of the same partner. The service
+  // clears the site, and clears the billToName override / re-resolves the tax
+  // rate for the new org unless the same patch provides them (drafts only, like
+  // every other header field here — see updateQuote in quoteService).
+  orgId: z.string().guid().optional(),
   siteId: z.string().guid().nullable().optional(),
   title: z.string().max(200).nullable().optional(),
   expiryDate: isoDate.nullable().optional(),
@@ -157,6 +170,7 @@ export const bulkQuoteIdsSchema = z.object({
 export type QuoteLineInput = z.infer<typeof quoteLineInputSchema>;
 export type QuoteBlockInput = z.infer<typeof quoteBlockInputSchema>;
 export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;
+export type CloneQuoteInput = z.infer<typeof cloneQuoteSchema>;
 export type UpdateQuoteInput = z.infer<typeof updateQuoteSchema>;
 export type ListQuotesQuery = z.infer<typeof listQuotesQuerySchema>;
 export type AcceptQuoteInput = z.infer<typeof acceptQuoteSchema>;

@@ -16,6 +16,9 @@ type Perm = { resource: string; action: string };
 const state = vi.hoisted(() => ({ permissions: [] as Perm[] }));
 
 vi.mock('../../../stores/auth', () => ({
+  // orgStore (imported by QuoteEditor for the customer select) registers an
+  // org-id provider against the auth store at module scope.
+  registerOrgIdProvider: vi.fn(),
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: Perm[] } }) => unknown) =>

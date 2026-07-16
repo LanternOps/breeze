@@ -111,14 +111,62 @@ describe('quote crud + lines routes', () => {
     expect(svc.createQuote).toHaveBeenCalledOnce();
   });
 
-  it('POST /:id/clone clones a quote into a new draft', async () => {
+  it('POST /:id/clone clones a quote into a new draft (bodyless legacy call → no retarget)', async () => {
     (svc.cloneQuote as any).mockResolvedValue({ id: BLOCK_ID, status: 'draft' });
     const res = await app().request(`/${QUOTE_ID}/clone`, { method: 'POST' });
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data).toEqual({ id: BLOCK_ID, status: 'draft' });
-    expect(svc.cloneQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+    expect(svc.cloneQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything(), {});
+  });
+
+  it('POST /:id/clone passes retarget/rename options through to the service', async () => {
+    (svc.cloneQuote as any).mockResolvedValue({ id: BLOCK_ID, status: 'draft' });
+    const res = await app().request(`/${QUOTE_ID}/clone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, title: 'Clone of Q-1' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(svc.cloneQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything(), { orgId: ORG_ID, title: 'Clone of Q-1' });
+  });
+
+  it('POST /:id/clone honors a JSON retarget body even without a content-type header', async () => {
+    // No content-type gate: a caller that forgets the header must still get the
+    // retarget it asked for, never a silent same-org clone.
+    (svc.cloneQuote as any).mockResolvedValue({ id: BLOCK_ID, status: 'draft' });
+    const res = await app().request(`/${QUOTE_ID}/clone`, {
+      method: 'POST',
+      body: JSON.stringify({ orgId: ORG_ID }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(svc.cloneQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything(), { orgId: ORG_ID });
+  });
+
+  it('POST /:id/clone rejects a non-JSON body instead of silently cloning', async () => {
+    const res = await app().request(`/${QUOTE_ID}/clone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `orgId=${ORG_ID}`,
+    });
+
+    expect(res.status).toBe(400);
+    expect(svc.cloneQuote).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/clone rejects a malformed retarget body instead of silently cloning', async () => {
+    // A mis-keyed field must 400 (strict schema), not fall back to a same-org clone.
+    const res = await app().request(`/${QUOTE_ID}/clone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgID: ORG_ID }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(svc.cloneQuote).not.toHaveBeenCalled();
   });
 
   it('POST /:id/clone rejects an invalid quote id before calling the service', async () => {

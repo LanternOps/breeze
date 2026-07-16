@@ -386,6 +386,11 @@
         "thisLine": "diese Position",
         "removeSectionWithLines": "Dadurch werden die Preistabelle und ihre Positionen entfernt. Dies kann nicht rückgängig gemacht werden."
       },
+      "customer": {
+        "help": "Wird ein Entwurf einem anderen Unternehmen zugewiesen, wird die Standort-Zuordnung entfernt und der Steuersatz dieses Unternehmens angewendet.",
+        "label": "Kunde",
+        "success": "Angebot zu {{name}} verschoben."
+      },
       "deposit": {
         "due": "Anzahlung fällig",
         "eligibleAria": "Anzahlung möglich",
@@ -420,6 +425,7 @@
         "reorderBlocks": "Blöcke konnten nicht neu angeordnet werden.",
         "reorderLines": "Positionen konnten nicht neu angeordnet werden.",
         "reorderSections": "Abschnitte konnten nicht neu angeordnet werden.",
+        "saveCustomer": "Kunde konnte nicht geändert werden.",
         "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
         "saveTitle": "Der Titel konnte nicht gespeichert werden.",
         "unitPriceZeroOrMore": "Geben Sie einen Stückpreis von 0 oder mehr ein.",
@@ -527,6 +533,15 @@
       }
     },
     "actions": {
+      "cloneDialog": {
+        "companyLabel": "Unternehmen",
+        "confirm": "Kopie erstellen",
+        "defaultTitle": "Kopie von {{name}}",
+        "message": "Erstellt einen neuen Entwurf mit demselben Inhalt. Wählen Sie das Unternehmen aus und vergeben Sie einen Titel.",
+        "retargetHint": "Der neue Entwurf verwendet die Rechnungsdaten und den Steuersatz dieses Unternehmens; die Standort-Zuordnung wird entfernt.",
+        "title": "Angebot duplizieren",
+        "titleLabel": "Titel"
+      },
       "cloneError": "Das Angebot konnte nicht dupliziert werden.",
       "cloneQuote": "Angebot duplizieren",
       "cloneSavingTitle": "Warten Sie vor dem Duplizieren, bis die Änderungen gespeichert sind.",
@@ -541,6 +556,7 @@
       "deleteSuccess": "Entwurf gelöscht",
       "downloadPdf": "Laden Sie PDF herunter",
       "emptyHint": "Fügen Sie vor dem Senden mindestens einen Artikel hinzu.",
+      "moreActions": "Weitere Aktionen",
       "savingHint": "Änderungen speichern… Entsperrungen senden, wenn alles gespeichert ist.",
       "savingTitle": "Speichern Ihrer Änderungen – Entsperrungen senden, wenn alles gespeichert ist.",
       "sendConfirm": {

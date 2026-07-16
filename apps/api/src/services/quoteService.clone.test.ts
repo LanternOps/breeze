@@ -53,6 +53,8 @@ vi.mock('./quoteNumbers', () => ({
 import { cloneQuote } from './quoteService';
 
 const actor = { userId: 'user-1', partnerId: 'partner-1', accessibleOrgIds: ['org-1'] };
+// For retarget tests: may clone INTO org-2 (source stays org-1).
+const retargetActor = { userId: 'user-1', partnerId: 'partner-1', accessibleOrgIds: ['org-1', 'org-2'] };
 
 function sourceQuote() {
   return {
@@ -125,6 +127,73 @@ describe('cloneQuote', () => {
     const clonedChild = lineInsert.find((line) => line.name === 'Setup')!;
     expect(clonedParent).toMatchObject({ quoteId: cloned.id, blockId: clonedLinesBlock.id, imageId: clonedImage.id });
     expect(clonedChild.parentLineId).toBe(clonedParent.id);
+  });
+
+  it('retargets a clone to another company: new org on all rows, site/bill-to reset, tax re-resolved', async () => {
+    state.selectResults.push(
+      [sourceQuote()],
+      [{ id: 'block-lines', quoteId: 'quote-1', orgId: 'org-1', blockType: 'line_items', content: { label: 'Services' }, sortOrder: 0, createdAt: new Date() }],
+      [{ id: 'line-1', quoteId: 'quote-1', blockId: 'block-lines', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: 'Server', description: null, quantity: '1.00', unitPrice: '100.00', taxable: true, customerVisible: true, lineTotal: '100.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, unitCost: null, depositEligible: true, itemType: 'hardware', sku: null, partNumber: null, imageId: 'image-1', sortOrder: 0, createdAt: new Date() }],
+      [], // no staged Pax8 order
+      [{ id: 'image-1', quoteId: 'quote-1', orgId: 'org-1', imageData: Buffer.from('image'), mime: 'image/png', byteSize: 5, sha256: 'hash', createdAt: new Date() }],
+      [{ id: 'org-2' }], // target org same-partner membership check
+      // resolveQuoteTaxRate for the NEW org: 8% org rate, no partner default
+      [{ taxExempt: false, taxRate: '0.08000' }],
+      [{ defaultTaxRate: null }],
+    );
+
+    const cloned = await cloneQuote('quote-1', retargetActor, { orgId: 'org-2', title: 'Beta rollout' });
+
+    expect(state.transactionCalls).toBe(1);
+    const [quoteInsert, imageInsert, blockInsert, lineInsert] = state.insertedValues as [
+      Record<string, unknown>, Array<Record<string, unknown>>, Array<Record<string, unknown>>, Array<Record<string, unknown>>,
+    ];
+    expect(quoteInsert).toMatchObject({
+      id: cloned.id,
+      orgId: 'org-2',
+      // The site and bill-to override belonged to the OLD customer.
+      siteId: null,
+      billToName: null,
+      title: 'Beta rollout',
+      status: 'draft',
+      // Re-resolved for the new org, not the source's 5%.
+      taxRate: '0.08000',
+    });
+    // Denormalized org_id on EVERY child row follows the new company — a stray
+    // source.orgId on images would RLS-hide them from the new org's readers.
+    expect(imageInsert.every((i) => i.orgId === 'org-2')).toBe(true);
+    expect(blockInsert.every((b) => b.orgId === 'org-2')).toBe(true);
+    expect(lineInsert.every((l) => l.orgId === 'org-2')).toBe(true);
+  });
+
+  it('rejects a retarget by a site-restricted actor (the clone would land site-less)', async () => {
+    // The actor CAN see the source quote (site-1 is allowlisted) but retargeting
+    // clears the site — mirroring updateQuote, that must be denied.
+    state.selectResults.push([sourceQuote()], [], [], [], []);
+    const siteRestricted = { ...retargetActor, allowedSiteIds: ['site-1'] };
+
+    await expect(cloneQuote('quote-1', siteRestricted, { orgId: 'org-2' })).rejects.toMatchObject({ code: 'SITE_DENIED', status: 403 });
+    expect(state.transactionCalls).toBe(0);
+    expect(state.insertedValues).toEqual([]);
+  });
+
+  it('rejects retargeting to an org outside the actor scope', async () => {
+    state.selectResults.push([sourceQuote()], [], [], [], []);
+
+    await expect(cloneQuote('quote-1', actor, { orgId: 'org-2' })).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+    expect(state.transactionCalls).toBe(0);
+    expect(state.insertedValues).toEqual([]);
+  });
+
+  it('rejects retargeting to an org of another partner (membership lookup misses)', async () => {
+    state.selectResults.push(
+      [sourceQuote()], [], [], [], [],
+      [], // membership check finds no org-2 row under partner-1
+    );
+
+    await expect(cloneQuote('quote-1', retargetActor, { orgId: 'org-2' })).rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
+    expect(state.transactionCalls).toBe(0);
+    expect(state.insertedValues).toEqual([]);
   });
 
   it('rejects a cross-organization clone before creating anything', async () => {
