@@ -23,14 +23,20 @@ import { renderRichTextIntoPdf } from './richTextPdf';
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
 // ---------------------------------------------------------------------------
 
-function formatMoney(amount: string | number | null | undefined, currency: string): string {
+// Exported so other renderers (contractTemplateRender.ts's auto-variable
+// resolver) format money identically instead of hand-rolling a second
+// Intl/toLocaleString call that could drift from this one.
+export function formatMoney(amount: string | number | null | undefined, currency: string): string {
   const n = Number(amount ?? 0);
   const symbol = currency === 'USD' ? '$' : '';
   const formatted = n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return symbol ? `${symbol}${formatted}` : `${formatted} ${currency}`;
 }
 
-function formatDate(value: string | Date | null | undefined): string {
+// Exported for the same reason as formatMoney above — kept in lock-step so a
+// contract's {{dates.effective}}/{{dates.expiry}} render in the same style as
+// the PDF's own date fields.
+export function formatDate(value: string | Date | null | undefined): string {
   if (!value) return '';
   const d = typeof value === 'string' ? new Date(value + (value.length === 10 ? 'T00:00:00Z' : '')) : value;
   if (Number.isNaN(d.getTime())) return '';

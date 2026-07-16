@@ -1,0 +1,304 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mirrors commandQueue.test.ts's mocking idiom: a passthrough default so most
+// tests don't have to know the wrapper exists, with individual tests
+// asserting on the vi.fn() call record where the wrapper usage itself is the
+// thing under test (green-local/red-CI trap: an unmocked '../db' import here
+// would pull in the real pg pool and either hang or throw on connect).
+vi.mock('../db', () => ({
+  db: { select: vi.fn() },
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import {
+  loadContractBlockRenderData,
+  resolveAutoVariables,
+  substituteVariables,
+  findUnresolvedVariables,
+  type ContractBlockRenderData,
+  type QuoteRow,
+} from './contractTemplateRender';
+
+function selectReturning(rows: unknown[], onResolve?: () => void) {
+  return {
+    from: () => ({
+      where: () => {
+        onResolve?.();
+        return Promise.resolve(rows);
+      },
+    }),
+  };
+}
+
+// Full quotes row fixture — resolveAutoVariables takes the whole row (see
+// contractTemplateRender.ts's QuoteRow comment), so every column needs a value.
+function fixtureQuote(overrides: Partial<QuoteRow> = {}): QuoteRow {
+  const base: QuoteRow = {
+    id: 'quote-1',
+    partnerId: 'partner-1',
+    orgId: 'org-1',
+    siteId: null,
+    quoteNumber: 'Q-1001',
+    title: 'Managed Services Proposal',
+    status: 'draft',
+    currencyCode: 'USD',
+    issueDate: '2026-07-01',
+    expiryDate: '2026-08-01',
+    acceptedAt: null,
+    declinedAt: null,
+    convertedAt: null,
+    subtotal: '810.00',
+    taxRate: null,
+    taxTotal: '0.00',
+    total: '810.00',
+    oneTimeTotal: '810.00',
+    monthlyRecurringTotal: '0.00',
+    annualRecurringTotal: '0.00',
+    depositType: 'none',
+    depositPercent: null,
+    depositAmount: null,
+    billToName: 'Acme Co',
+    billToAddress: { line1: '1 Main St', line2: null, city: 'Springfield', region: 'IL', postalCode: '62701', country: 'USA' },
+    billToTaxId: null,
+    introNotes: null,
+    terms: null,
+    sellerSnapshot: { name: 'Breeze MSP', address: null, phone: null, email: null, website: null },
+    coverPage: null,
+    termsAndConditions: null,
+    declineReason: null,
+    convertedInvoiceId: null,
+    pdfDocumentRef: null,
+    pdfSha256: null,
+    sentAt: null,
+    firstViewedAt: null,
+    viewedAt: null,
+    createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'),
+    updatedAt: new Date('2026-07-01T00:00:00Z'),
+  };
+  return { ...base, ...overrides };
+}
+
+describe('substituteVariables', () => {
+  it('HTML-escapes substituted values', () => {
+    const { html, missing } = substituteVariables('<p>{{client.name}}</p>', {
+      'client.name': '<b>Acme & Co</b>',
+    });
+    expect(html).toBe('<p>&lt;b&gt;Acme &amp; Co&lt;/b&gt;</p>');
+    expect(missing).toEqual([]);
+  });
+
+  it('reports a missing manual variable and leaves its token in place', () => {
+    const { html, missing } = substituteVariables('<p>Term: {{governing_state}}</p>', {});
+    expect(html).toBe('<p>Term: {{governing_state}}</p>');
+    expect(missing).toEqual(['governing_state']);
+  });
+
+  it('resolves known tokens while reporting unknown ones, in one pass', () => {
+    const { html, missing } = substituteVariables('{{client.name}} / {{initial_term}}', {
+      'client.name': 'Acme',
+    });
+    expect(html).toBe('Acme / {{initial_term}}');
+    expect(missing).toEqual(['initial_term']);
+  });
+
+  it('does not double-report the same missing token repeated twice', () => {
+    const { missing } = substituteVariables('{{x}} and {{x}} again', {});
+    expect(missing).toEqual(['x']);
+  });
+});
+
+describe('resolveAutoVariables', () => {
+  it('formats money via the quotePdf money-formatting helper', () => {
+    const values = resolveAutoVariables(fixtureQuote());
+    expect(values['totals.one_time']).toBe('$810.00');
+    expect(values['totals.monthly']).toBe('$0.00');
+    expect(values['totals.annual']).toBe('$0.00');
+    expect(values['totals.total']).toBe('$810.00');
+  });
+
+  it('resolves the non-money auto variables from the quote fixture', () => {
+    const values = resolveAutoVariables(fixtureQuote());
+    expect(values['client.name']).toBe('Acme Co');
+    expect(values['client.address']).toBe('1 Main St, Springfield, IL, 62701, USA');
+    expect(values['seller.name']).toBe('Breeze MSP');
+    expect(values['quote.number']).toBe('Q-1001');
+    expect(values['quote.title']).toBe('Managed Services Proposal');
+  });
+
+  it('defaults dates.effective to today and formats dates.expiry from the quote', () => {
+    const values = resolveAutoVariables(fixtureQuote());
+    expect(values['dates.expiry']).toBe('Aug 01, 2026');
+    expect(values['dates.effective']).toMatch(/^[A-Z][a-z]{2} \d{2}, \d{4}$/);
+  });
+
+  it('honors an explicit effectiveDate override', () => {
+    const values = resolveAutoVariables(fixtureQuote(), { effectiveDate: '2026-09-15' });
+    expect(values['dates.effective']).toBe('Sep 15, 2026');
+  });
+
+  it('falls back to empty strings for null client/seller fields', () => {
+    const values = resolveAutoVariables(fixtureQuote({ billToName: null, billToAddress: null, sellerSnapshot: null }));
+    expect(values['client.name']).toBe('');
+    expect(values['client.address']).toBe('');
+    expect(values['seller.name']).toBe('');
+  });
+});
+
+describe('findUnresolvedVariables', () => {
+  const data: ContractBlockRenderData = {
+    blockId: 'block-1',
+    templateId: 'tmpl-1',
+    templateVersionId: 'ver-1',
+    sourceType: 'authored',
+    bodyHtml: '<p>{{client.name}} agrees to {{governing_state}}</p>',
+    fileData: null,
+    versionSha256: 'sha',
+    declaredVariables: [
+      { name: 'client.name', kind: 'auto' },
+      { name: 'governing_state', kind: 'manual' },
+    ],
+    templateName: 'MSA',
+    versionNumber: 1,
+  };
+
+  it('reports only variables missing from their respective (auto/manual) source', () => {
+    const unresolved = findUnresolvedVariables(data, {}, { 'client.name': 'Acme' });
+    expect(unresolved).toEqual(['governing_state']);
+  });
+
+  it('returns empty when every declared variable has a value', () => {
+    const unresolved = findUnresolvedVariables(data, { governing_state: 'Texas' }, { 'client.name': 'Acme' });
+    expect(unresolved).toEqual([]);
+  });
+
+  it('an auto variable missing from autoValues is still reported even if present in variableValues', () => {
+    const unresolved = findUnresolvedVariables(data, { 'client.name': 'stray manual entry' }, {});
+    // 'client.name' is kind:'auto' so it's looked up in autoValues (empty here) —
+    // its presence under the wrong key (variableValues) doesn't resolve it.
+    // 'governing_state' is kind:'manual' and also absent from variableValues.
+    expect(unresolved).toEqual(['client.name', 'governing_state']);
+  });
+});
+
+describe('loadContractBlockRenderData', () => {
+  beforeEach(() => {
+    vi.mocked(withSystemDbAccessContext).mockClear();
+    vi.mocked(runOutsideDbContext).mockClear();
+    vi.mocked(db.select).mockReset();
+  });
+
+  const versionRow = {
+    id: 'ver-1',
+    templateId: 'tmpl-1',
+    orgId: null,
+    partnerId: 'partner-1',
+    versionNumber: 2,
+    status: 'published',
+    sourceType: 'authored' as const,
+    bodyHtml: '<p>Hello {{client.name}}</p>',
+    fileData: null,
+    mime: null,
+    byteSize: null,
+    sha256: 'abc123',
+    declaredVariables: [{ name: 'client.name', kind: 'auto' }],
+    publishedAt: new Date('2026-07-01T00:00:00Z'),
+    createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'),
+  };
+  const templateRow = {
+    id: 'tmpl-1',
+    orgId: null,
+    partnerId: 'partner-1',
+    name: 'MSA',
+    description: null,
+    status: 'active',
+    createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'),
+    updatedAt: new Date('2026-07-01T00:00:00Z'),
+  };
+
+  const contractBlock = {
+    id: 'block-1',
+    blockType: 'contract',
+    content: { templateId: 'tmpl-1', templateVersionId: 'ver-1', variableValues: {} },
+  };
+
+  it('wraps reads in withSystemDbAccessContext (partner-owned template rows are invisible to org-scoped RLS)', async () => {
+    const callOrder: string[] = [];
+    vi.mocked(runOutsideDbContext).mockImplementationOnce(async (fn: () => unknown) => {
+      callOrder.push('enter-outside');
+      const result = await fn();
+      callOrder.push('exit-outside');
+      return result;
+    });
+    vi.mocked(withSystemDbAccessContext).mockImplementationOnce(async (fn: () => unknown) => {
+      callOrder.push('enter-system');
+      const result = await fn();
+      callOrder.push('exit-system');
+      return result;
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([versionRow], () => callOrder.push('versions-select')) as never)
+      .mockReturnValueOnce(selectReturning([templateRow], () => callOrder.push('templates-select')) as never);
+
+    const result = await loadContractBlockRenderData([contractBlock]);
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    // Both reads must fire between enter-system/exit-system, not before
+    // enter-outside — proves the DB calls are actually inside the wrapper,
+    // not just that the wrapper was called somewhere unrelated (this exact
+    // pattern has gone green-local/red-CI before when the wrapper was
+    // mocked as a bare no-op instead of asserted on).
+    expect(callOrder).toEqual([
+      'enter-outside',
+      'enter-system',
+      'versions-select',
+      'templates-select',
+      'exit-system',
+      'exit-outside',
+    ]);
+    expect(result).toHaveLength(1);
+  });
+
+  it('returns render data for an authored contract block, re-sanitized and mapped from the version/template rows', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([versionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    const [data] = await loadContractBlockRenderData([contractBlock]);
+
+    expect(data).toEqual<ContractBlockRenderData>({
+      blockId: 'block-1',
+      templateId: 'tmpl-1',
+      templateVersionId: 'ver-1',
+      sourceType: 'authored',
+      bodyHtml: '<p>Hello {{client.name}}</p>',
+      fileData: null,
+      versionSha256: 'abc123',
+      declaredVariables: [{ name: 'client.name', kind: 'auto' }],
+      templateName: 'MSA',
+      versionNumber: 2,
+    });
+  });
+
+  it('ignores non-contract blocks and short-circuits without touching the db', async () => {
+    const result = await loadContractBlockRenderData([
+      { id: 'block-2', blockType: 'heading', content: { text: 'Intro', level: 2 } },
+    ]);
+    expect(result).toEqual([]);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('throws when a block references a version that no longer resolves', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([]) as never)
+      .mockReturnValueOnce(selectReturning([]) as never);
+
+    await expect(loadContractBlockRenderData([contractBlock])).rejects.toThrow(/missing or mismatched/);
+  });
+});
