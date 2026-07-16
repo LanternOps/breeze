@@ -941,6 +941,10 @@
       "createRule": "Impossible de créer une règle",
       "network": "Erreur réseau"
     },
+    "sections": {
+      "criteria": "Critères de correspondance",
+      "window": "Fenêtre horaire"
+    },
     "toasts": {
       "ruleSaved": "Règle « {{name}} » {{action}}",
       "updated": "Mise à jour",

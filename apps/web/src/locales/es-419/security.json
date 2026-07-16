@@ -941,6 +941,10 @@
       "createRule": "No se pudo crear la regla",
       "network": "error de red"
     },
+    "sections": {
+      "criteria": "Criterios de coincidencia",
+      "window": "Ventana de tiempo"
+    },
     "toasts": {
       "ruleSaved": "Regla \"{{name}}\" {{action}}",
       "updated": "actualizado",

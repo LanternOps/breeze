@@ -3641,3 +3641,29 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 - The live walkthrough also exposed and fixed a stored-locale hydration race that could render pt-BR before English SSR islands hydrated.
 - Final read-only code review found no unresolved Critical or Important issues after runtime, enforcement, formatter, and copy-quality remediation.
 - Brazilian Portuguese copy remains machine-drafted and should receive native-speaker review before production rollout.
+
+## PAM approval dialog on the secure desktop — 2026-07-16
+
+**Branch:** `ToddHebebrand/PAM-Testing-2`
+**Commit:** `3e9046839`
+**Tested by:** Codex
+**Result:** PARTIAL
+
+### What was tested
+
+- [x] Agent: SYSTEM-only PAM scope/selection, same-Windows-session fail-closed routing, dialog IPC authorization, input-desktop fallback, restore/cleanup ordering, restore failure, and panic cleanup under Go unit tests with `-race`.
+- [x] Agent: full `go test -race ./...` suite.
+- [x] Windows build: `internal/userhelper`, `internal/sessionbroker`, and `internal/heartbeat` test binaries cross-compiled for Windows amd64 with CGO disabled.
+- [ ] Native Windows: real UAC interaction with `PromptOnSecureDesktop=1` and `=0` was unavailable because this worktree has no configured E2E/dev-push credentials or Windows device ID.
+
+### Evidence
+
+- Focused `sessionbroker`, `userhelper`, and `heartbeat` race tests passed.
+- Full agent race suite passed after all review fixes.
+- Focused Go vet, Windows cross-compilation, and diff whitespace checks passed.
+- Independent task review and final whole-branch review found no unresolved Critical or Important issues.
+
+### Issues Found
+
+- No implementation defects remain from automated review and verification.
+- Before release, manually verify Approve, Deny, timeout, default-desktop fallback, and console/RDP coexistence on a native Windows test host.

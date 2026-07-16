@@ -9,6 +9,25 @@ import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
 import { type PamSignerGroup } from './types';
+import {
+  DialogHeader,
+  EmptyState,
+  ErrorAlert,
+  TableSkeleton,
+  btnGhostClass,
+  btnOutlineClass,
+  btnOutlineDestructiveClass,
+  btnPrimaryClass,
+  inputClass,
+  tableClass,
+  tableWrapClass,
+  tbodyClass,
+  tdClass,
+  thClass,
+  theadClass,
+  theadRowClass,
+  rowClass,
+} from './ui';
 
 /**
  * Manage reusable signer groups (trusted-publisher catalog). A group is a named
@@ -101,8 +120,8 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <p className="max-w-2xl text-sm text-muted-foreground">
           {t('pamPamSignerGroupsTab.description', {
             defaultValue:
               'A signer group is a named list of trusted Authenticode signers. Reference one from a rule instead of repeating the same publisher across many rules.',
@@ -112,57 +131,46 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
           type="button"
           onClick={() => setCreating(true)}
           data-testid="pam-add-signer-group-btn"
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          className={btnPrimaryClass}
         >
-          <Plus className="h-4 w-4" />
+          <Plus className="h-4 w-4" aria-hidden="true" />
           {t('pamPamSignerGroupsTab.actions.addSignerGroup', { defaultValue: 'Add signer group' })}
         </button>
       </div>
 
-      {error && (
-        <div
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </div>
-      )}
+      {error && <ErrorAlert>{error}</ErrorAlert>}
 
       {loading ? (
-        <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          {t('pamPamSignerGroupsTab.loading', { defaultValue: 'Loading signer groups…' })}
-        </div>
+        <TableSkeleton
+          rows={3}
+          label={t('pamPamSignerGroupsTab.loading', { defaultValue: 'Loading signer groups…' })}
+        />
       ) : groups.length === 0 ? (
-        <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
-          <ShieldCheck className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-2 text-sm font-medium">
-            {t('pamPamSignerGroupsTab.empty.title', { defaultValue: 'No signer groups yet' })}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t('pamPamSignerGroupsTab.empty.description', {
-              defaultValue: 'Create one to reuse a trusted-publisher list across multiple rules.',
-            })}
-          </p>
-        </div>
+        <EmptyState
+          icon={ShieldCheck}
+          title={t('pamPamSignerGroupsTab.empty.title', { defaultValue: 'No signer groups yet' })}
+          description={t('pamPamSignerGroupsTab.empty.description', {
+            defaultValue: 'Create one to reuse a trusted-publisher list across multiple rules.',
+          })}
+        />
       ) : (
-        <div className="overflow-x-auto rounded-md border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs text-muted-foreground">
-                <th className="px-3 py-2 font-medium">{t('pamPamSignerGroupsTab.table.name', { defaultValue: 'Name' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamSignerGroupsTab.table.signers', { defaultValue: 'Signers' })}</th>
-                <th className="px-3 py-2 font-medium" />
+        <div className={tableWrapClass}>
+          <table className={tableClass}>
+            <thead className={theadClass}>
+              <tr className={theadRowClass}>
+                <th className={thClass}>{t('pamPamSignerGroupsTab.table.name', { defaultValue: 'Name' })}</th>
+                <th className={thClass}>{t('pamPamSignerGroupsTab.table.signers', { defaultValue: 'Signers' })}</th>
+                <th className={thClass} />
               </tr>
             </thead>
-            <tbody>
+            <tbody className={tbodyClass}>
               {groups.map((group) => (
                 <tr
                   key={group.id}
-                  className="border-b last:border-0"
+                  className={rowClass}
                   data-testid={`pam-signer-group-row-${group.id}`}
                 >
-                  <td className="px-3 py-2">
+                  <td className={tdClass}>
                     <div className="font-medium" data-testid={`pam-signer-group-name-${group.id}`}>
                       {group.name}
                     </div>
@@ -176,32 +184,38 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
                     )}
                   </td>
                   <td
-                    className="max-w-[360px] px-3 py-2 text-xs text-muted-foreground"
+                    className={`${tdClass} max-w-[360px]`}
                     data-testid={`pam-signer-group-signers-${group.id}`}
                     title={group.signers.join(', ')}
                   >
-                    <span className="font-medium">{group.signers.length}</span>
+                    <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums">
+                      {group.signers.length}
+                    </span>
                     {group.signers.length > 0 && (
-                      <span className="ml-1.5 truncate">· {group.signers.join(', ')}</span>
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        {group.signers.join(', ')}
+                      </span>
                     )}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => setEditing(group)}
-                      data-testid={`pam-signer-group-edit-${group.id}`}
-                      className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                    >
-                      {t('common:actions.edit', { defaultValue: 'Edit' })}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTarget(group)}
-                      data-testid={`pam-signer-group-delete-${group.id}`}
-                      className="ml-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
-                    >
-                      {t('common:actions.delete', { defaultValue: 'Delete' })}
-                    </button>
+                  <td className={`${tdClass} whitespace-nowrap text-right`}>
+                    <div className="inline-flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setEditing(group)}
+                        data-testid={`pam-signer-group-edit-${group.id}`}
+                        className={btnOutlineClass}
+                      >
+                        {t('common:actions.edit', { defaultValue: 'Edit' })}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(group)}
+                        data-testid={`pam-signer-group-delete-${group.id}`}
+                        className={btnOutlineDestructiveClass}
+                      >
+                        {t('common:actions.delete', { defaultValue: 'Delete' })}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -268,8 +282,11 @@ function PamSignerGroupModal({
 
   const nameId = useId();
   const descId = useId();
+  const titleId = useId();
 
-  const inputClass = 'w-full rounded-md border bg-background px-3 py-2 text-sm';
+  const modalTitle = isEdit
+    ? t('pamPamSignerGroupsTab.modal.title.edit', { defaultValue: 'Edit signer group' })
+    : t('pamPamSignerGroupsTab.modal.title.new', { defaultValue: 'New signer group' });
 
   const updateSigner = (i: number, value: string) => {
     setSigners((prev) => prev.map((s, idx) => (idx === i ? value : s)));
@@ -341,15 +358,15 @@ function PamSignerGroupModal({
     <Dialog
       open
       onClose={onClose}
-      title={
-        isEdit
-          ? t('pamPamSignerGroupsTab.modal.title.edit', { defaultValue: 'Edit signer group' })
-          : t('pamPamSignerGroupsTab.modal.title.new', { defaultValue: 'New signer group' })
-      }
+      title={modalTitle}
+      labelledBy={titleId}
       maxWidth="lg"
-      className="max-h-[90vh] overflow-y-auto p-6"
+      className="flex max-h-[90vh] flex-col"
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <DialogHeader id={titleId} title={modalTitle} />
+      {/* Signer rows scroll; the action footer stays pinned. */}
+      <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
         <div>
           <label htmlFor={nameId} className="mb-1 block text-sm font-medium">
             {t('pamPamSignerGroupsTab.modal.form.name', { defaultValue: 'Name' })}
@@ -411,9 +428,9 @@ function PamSignerGroupModal({
                     defaultValue: 'Remove signer',
                   })}
                   data-testid={`pam-signer-group-remove-signer-${i}`}
-                  className="rounded-md border border-destructive/40 p-2 text-destructive hover:bg-destructive/10"
+                  className="rounded-md border border-destructive/40 p-2 text-destructive shadow-xs transition-colors hover:bg-destructive/10"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
                 </button>
               </div>
             ))}
@@ -422,35 +439,25 @@ function PamSignerGroupModal({
             type="button"
             onClick={addSigner}
             data-testid="pam-signer-group-add-signer"
-            className="mt-2 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
+            className={`mt-2 ${btnOutlineClass}`}
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
             {t('pamPamSignerGroupsTab.modal.actions.addSigner', { defaultValue: 'Add signer' })}
           </button>
         </div>
 
-        {error && (
-          <div
-            role="alert"
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          >
-            {error}
-          </div>
-        )}
+        {error && <ErrorAlert>{error}</ErrorAlert>}
+        </div>
 
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border px-3 py-2 text-sm hover:bg-accent"
-          >
-              {t('common:actions.cancel', { defaultValue: 'Cancel' })}
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t px-6 py-4">
+          <button type="button" onClick={onClose} className={btnGhostClass}>
+            {t('common:actions.cancel', { defaultValue: 'Cancel' })}
           </button>
           <button
             type="submit"
             disabled={submitting || !name.trim()}
             data-testid="pam-signer-group-save"
-            className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className={btnPrimaryClass}
           >
             {submitting
               ? t('common:states.saving', { defaultValue: 'Saving…' })

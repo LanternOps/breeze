@@ -4,15 +4,25 @@ package userhelper
 
 import (
 	"fmt"
-	"strings"
+	"runtime"
 	"syscall"
 	"unsafe"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-var pamDialogUser32 = syscall.NewLazyDLL("user32.dll")
-var procMessageBoxW = pamDialogUser32.NewProc("MessageBoxW")
+var (
+	pamDialogUser32   = syscall.NewLazyDLL("user32.dll")
+	pamDialogKernel32 = syscall.NewLazyDLL("kernel32.dll")
+
+	procMessageBoxW                  = pamDialogUser32.NewProc("MessageBoxW")
+	procPamOpenInputDesktop          = pamDialogUser32.NewProc("OpenInputDesktop")
+	procPamGetThreadDesktop          = pamDialogUser32.NewProc("GetThreadDesktop")
+	procPamSetThreadDesktop          = pamDialogUser32.NewProc("SetThreadDesktop")
+	procPamCloseDesktop              = pamDialogUser32.NewProc("CloseDesktop")
+	procPamGetUserObjectInformationW = pamDialogUser32.NewProc("GetUserObjectInformationW")
+	procPamGetCurrentThreadID        = pamDialogKernel32.NewProc("GetCurrentThreadId")
+)
 
 const (
 	mbYesNo         = 0x00000004
@@ -22,10 +32,26 @@ const (
 	mbTopMost       = 0x00040000
 
 	idYes = 6
+
+	pamDesktopGenericAll = 0x10000000
+	pamUOIName           = 2
 )
 
 func showPamDialog(req ipc.PamRequestDialog) ipc.PamDialogResult {
-	title := syscall.StringToUTF16Ptr("Breeze — Elevation Request")
+	return showPamDialogOnInputDesktop(windowsPamDesktopOps{}, func(_ string) ipc.PamDialogResult {
+		// The custom window is the primary rendering; the plain MessageBox
+		// stays as a fallback so a class-registration or window-creation
+		// failure can never swallow an elevation prompt.
+		if result, ok := showPamDialogWindow(req); ok {
+			return result
+		}
+		log.Warn("pam: custom elevation dialog unavailable; falling back to MessageBox")
+		return showPamMessageBox(req)
+	})
+}
+
+func showPamMessageBox(req ipc.PamRequestDialog) ipc.PamDialogResult {
+	title := syscall.StringToUTF16Ptr(pamDialogTitle)
 	body := syscall.StringToUTF16Ptr(buildPamDialogBody(req))
 	flags := uintptr(mbYesNo | mbIconWarning | mbTopMost | mbSystemModal | mbSetForeground)
 
@@ -36,28 +62,72 @@ func showPamDialog(req ipc.PamRequestDialog) ipc.PamDialogResult {
 	return ipc.PamDialogResult{Approved: false, DismissedByUser: true}
 }
 
-func buildPamDialogBody(req ipc.PamRequestDialog) string {
-	lines := []string{
-		"Breeze detected an elevation request.",
-		"",
-		fmt.Sprintf("Program: %s", pamDialogValue(req.ExePath)),
-		fmt.Sprintf("Signer: %s", pamDialogValue(req.Signer)),
-		fmt.Sprintf("User: %s", pamDialogValue(req.SubjectUser)),
+type windowsPamDesktopOps struct{}
+
+func (windowsPamDesktopOps) LockOSThread()   { runtime.LockOSThread() }
+func (windowsPamDesktopOps) UnlockOSThread() { runtime.UnlockOSThread() }
+
+func (windowsPamDesktopOps) CurrentThreadDesktop() (uintptr, error) {
+	threadID, _, _ := procPamGetCurrentThreadID.Call()
+	handle, _, callErr := procPamGetThreadDesktop.Call(threadID)
+	if handle == 0 {
+		return 0, fmt.Errorf("GetThreadDesktop: %w", callErr)
 	}
-	if req.Reason != "" {
-		lines = append(lines, fmt.Sprintf("Reason: %s", pamDialogValue(req.Reason)))
-	}
-	if req.IntentSummary != "" {
-		lines = append(lines, fmt.Sprintf("Intent: %s", pamDialogValue(req.IntentSummary)))
-	}
-	lines = append(lines, "", "Approve this elevation request?")
-	return strings.Join(lines, "\r\n")
+	return handle, nil
 }
 
-func pamDialogValue(value string) string {
-	value = strings.TrimSpace(strings.ReplaceAll(value, "\x00", " "))
-	if value == "" {
-		return "Unknown"
+func (windowsPamDesktopOps) OpenInputDesktop() (uintptr, error) {
+	handle, _, callErr := procPamOpenInputDesktop.Call(0, 0, uintptr(pamDesktopGenericAll))
+	if handle == 0 {
+		return 0, fmt.Errorf("OpenInputDesktop: %w", callErr)
 	}
-	return value
+	return handle, nil
 }
+
+func (windowsPamDesktopOps) DesktopName(handle uintptr) (string, error) {
+	var buffer [128]uint16
+	var needed uint32
+	ret, _, callErr := procPamGetUserObjectInformationW.Call(
+		handle,
+		pamUOIName,
+		uintptr(unsafe.Pointer(&buffer[0])),
+		uintptr(len(buffer)*2),
+		uintptr(unsafe.Pointer(&needed)),
+	)
+	if ret == 0 {
+		return "", fmt.Errorf("GetUserObjectInformationW(UOI_NAME): %w", callErr)
+	}
+
+	length := int(needed / 2)
+	if length > len(buffer) {
+		length = len(buffer)
+	}
+	for i := 0; i < length; i++ {
+		if buffer[i] == 0 {
+			length = i
+			break
+		}
+	}
+	name := syscall.UTF16ToString(buffer[:length])
+	if name == "" {
+		return "", fmt.Errorf("GetUserObjectInformationW(UOI_NAME) returned an empty name")
+	}
+	return name, nil
+}
+
+func (windowsPamDesktopOps) SetThreadDesktop(handle uintptr) error {
+	ret, _, callErr := procPamSetThreadDesktop.Call(handle)
+	if ret == 0 {
+		return fmt.Errorf("SetThreadDesktop: %w", callErr)
+	}
+	return nil
+}
+
+func (windowsPamDesktopOps) CloseDesktop(handle uintptr) error {
+	ret, _, callErr := procPamCloseDesktop.Call(handle)
+	if ret == 0 {
+		return fmt.Errorf("CloseDesktop: %w", callErr)
+	}
+	return nil
+}
+

@@ -1,12 +1,14 @@
 import '@/lib/i18n';
 import { useId, useState } from 'react';
+import { Check, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { getApprovalAssertion } from '../../stores/authenticator';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
-import { type ElevationRequest, FLOW_LABELS, requestTarget } from './types';
+import { type ElevationRequest, FLOW_ICONS, FLOW_LABELS, requestTarget } from './types';
+import { DialogHeader, ErrorAlert, btnGhostClass, inputClass } from './ui';
 
 /**
  * True when the assertion ceremony failed because the technician has no
@@ -40,6 +42,7 @@ export default function PamRespondModal({
   const [error, setError] = useState<string | null>(null);
   const reasonId = useId();
   const durationId = useId();
+  const titleId = useId();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -124,53 +127,65 @@ export default function PamRespondModal({
     }
   };
 
+  const modalTitle = t('pamPamRespondModal.title', {
+    defaultValue: 'Respond to elevation request',
+  });
+  const FlowIcon = FLOW_ICONS[request.flowType];
+
   return (
-    <Dialog
-      open
-      onClose={onClose}
-      title={t('pamPamRespondModal.title', { defaultValue: 'Respond to elevation request' })}
-      maxWidth="lg"
-    >
-      <form onSubmit={handleSubmit} className="space-y-4 p-6 pt-2">
-        <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
-          <div className="font-medium">{requestTarget(request)}</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">
-            {request.deviceHostname ?? request.deviceId} · {request.subjectUsername} ·{' '}
-            {FLOW_LABELS[request.flowType]}
+    <Dialog open onClose={onClose} title={modalTitle} labelledBy={titleId} maxWidth="lg">
+      <DialogHeader id={titleId} title={modalTitle} />
+      <form onSubmit={handleSubmit} className="space-y-4 p-6">
+        <div className="flex items-start gap-3 rounded-lg border bg-muted/30 p-4">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted">
+            <FlowIcon className="h-4.5 w-4.5 text-muted-foreground" aria-hidden="true" />
           </div>
-          {request.reason && (
-            <div className="mt-1 text-xs text-muted-foreground">
-              {t('pamPamRespondModal.summary.reason', {
-                defaultValue: 'Reason: {{reason}}',
-                reason: request.reason,
-              })}
+          <div className="min-w-0 text-sm">
+            <div className="truncate font-medium" title={requestTarget(request)}>
+              {requestTarget(request)}
             </div>
-          )}
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              {request.deviceHostname ?? request.deviceId} · {request.subjectUsername} ·{' '}
+              {FLOW_LABELS[request.flowType]}
+            </div>
+            {request.reason && (
+              <div className="mt-1 text-xs text-muted-foreground">
+                {t('pamPamRespondModal.summary.reason', {
+                  defaultValue: 'Reason: {{reason}}',
+                  reason: request.reason,
+                })}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex gap-2">
           <button
             type="button"
             onClick={() => setDecision('approve')}
+            aria-pressed={decision === 'approve'}
             data-testid="pam-respond-approve-toggle"
-            className={`flex-1 rounded-md border px-3 py-2 text-sm font-medium ${
+            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
               decision === 'approve'
                 ? 'border-green-500 bg-green-500/10 text-green-600 dark:text-green-400'
                 : 'text-muted-foreground hover:bg-accent'
             }`}
           >
+            <Check className="h-4 w-4" aria-hidden="true" />
             {t('pamPamRespondModal.decisions.approve', { defaultValue: 'Approve' })}
           </button>
           <button
             type="button"
             onClick={() => setDecision('deny')}
+            aria-pressed={decision === 'deny'}
             data-testid="pam-respond-deny-toggle"
-            className={`flex-1 rounded-md border px-3 py-2 text-sm font-medium ${
+            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
               decision === 'deny'
                 ? 'border-red-500 bg-red-500/10 text-red-600 dark:text-red-400'
                 : 'text-muted-foreground hover:bg-accent'
             }`}
           >
+            <X className="h-4 w-4" aria-hidden="true" />
             {t('pamPamRespondModal.decisions.deny', { defaultValue: 'Deny' })}
           </button>
         </div>
@@ -190,7 +205,7 @@ export default function PamRespondModal({
               value={duration}
               onChange={(e) => setDuration(e.target.value)}
               data-testid="pam-respond-duration"
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+              className={inputClass}
             />
             <p className="mt-1 text-xs text-muted-foreground">
               {t('pamPamRespondModal.form.durationHelp', {
@@ -215,21 +230,14 @@ export default function PamRespondModal({
             maxLength={2000}
             rows={3}
             data-testid="pam-respond-reason"
-            className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+            className={inputClass}
             placeholder={t('pamPamRespondModal.form.reasonPlaceholder', {
               defaultValue: 'Recorded in the audit trail',
             })}
           />
         </div>
 
-        {error && (
-          <div
-            role="alert"
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          >
-            {error}
-          </div>
-        )}
+        {error && <ErrorAlert>{error}</ErrorAlert>}
 
         <div className="flex items-center justify-between gap-2">
           {onCreateRule ? (
@@ -238,7 +246,7 @@ export default function PamRespondModal({
               onClick={onCreateRule}
               disabled={submitting}
               data-testid="pam-respond-create-rule"
-              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50"
+              className="text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground disabled:opacity-50"
             >
               {t('pamPamRespondModal.actions.createRule', {
                 defaultValue: 'Create rule from this request…',
@@ -248,18 +256,14 @@ export default function PamRespondModal({
             <span />
           )}
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md border px-3 py-2 text-sm hover:bg-accent"
-            >
+            <button type="button" onClick={onClose} className={btnGhostClass}>
               {t('common:actions.cancel', { defaultValue: 'Cancel' })}
             </button>
             <button
               type="submit"
               disabled={submitting}
               data-testid="pam-respond-submit"
-              className={`rounded-md px-3 py-2 text-sm font-medium text-white disabled:opacity-50 ${
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium text-white shadow-xs transition-colors disabled:pointer-events-none disabled:opacity-50 ${
                 decision === 'approve' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'
               }`}
             >

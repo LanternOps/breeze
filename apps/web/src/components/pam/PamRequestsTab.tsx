@@ -13,15 +13,33 @@ import {
   type ElevationFlowType,
   type ElevationRequest,
   type ElevationStatus,
-  FLOW_ICONS,
   FLOW_LABELS,
   type Pagination,
   STATUS_LABELS,
   decisionAttribution,
   requestTarget,
   requestToRuleDraft,
-  statusBadgeClass,
 } from './types';
+import {
+  EmptyState,
+  ErrorAlert,
+  FlowCell,
+  Pager,
+  RiskTierBadge,
+  StatusBadge,
+  TableSkeleton,
+  btnOutlineClass,
+  btnOutlineDestructiveClass,
+  selectClass,
+  tableClass,
+  tableWrapClass,
+  tbodyClass,
+  tdClass,
+  thClass,
+  theadClass,
+  theadRowClass,
+  rowClass,
+} from './ui';
 
 const STATUS_OPTIONS: Array<ElevationStatus | ''> = [
   '',
@@ -100,7 +118,9 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">{t('pamPamRequestsTab.filters.status', { defaultValue: 'Status' })}</span>
+          <span className="font-medium text-muted-foreground">
+            {t('pamPamRequestsTab.filters.status', { defaultValue: 'Status' })}
+          </span>
           <select
             value={status}
             onChange={(e) => {
@@ -108,7 +128,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
               setStatus(e.target.value as ElevationStatus | '');
             }}
             data-testid="pam-filter-status"
-            className="rounded-md border bg-background px-2 py-1.5 text-sm"
+            className={selectClass}
           >
             {STATUS_OPTIONS.map((s) => (
               <option key={s || 'all'} value={s}>
@@ -118,7 +138,9 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
           </select>
         </label>
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">{t('pamPamRequestsTab.filters.flow', { defaultValue: 'Flow' })}</span>
+          <span className="font-medium text-muted-foreground">
+            {t('pamPamRequestsTab.filters.flow', { defaultValue: 'Flow' })}
+          </span>
           <select
             value={flowType}
             onChange={(e) => {
@@ -126,7 +148,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
               setFlowType(e.target.value as ElevationFlowType | '');
             }}
             data-testid="pam-filter-flow"
-            className="rounded-md border bg-background px-2 py-1.5 text-sm"
+            className={selectClass}
           >
             {FLOW_OPTIONS.map((f) => (
               <option key={f || 'all'} value={f}>
@@ -135,7 +157,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
             ))}
           </select>
         </label>
-        <span className="ml-auto text-xs text-muted-foreground">
+        <span className="ml-auto text-xs tabular-nums text-muted-foreground">
           {t('pamPamRequestsTab.summary.requestCount', {
             defaultValue: '{{count}} request',
             defaultValue_plural: '{{count}} requests',
@@ -144,62 +166,54 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
         </span>
       </div>
 
-      {error && (
-        <div
-          role="alert"
-          className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-        >
-          {error}
-        </div>
-      )}
+      {error && <ErrorAlert>{error}</ErrorAlert>}
 
       {loading ? (
-        <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-6 text-sm text-muted-foreground">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          {t('pamPamRequestsTab.loading', { defaultValue: 'Loading requests…' })}
-        </div>
+        <TableSkeleton label={t('pamPamRequestsTab.loading', { defaultValue: 'Loading requests…' })} />
       ) : requests.length === 0 ? (
-        <div className="rounded-md border border-dashed bg-card px-4 py-8 text-center">
-          <Inbox className="mx-auto h-8 w-8 text-muted-foreground" />
-          <p className="mt-2 text-sm font-medium">
-            {t('pamPamRequestsTab.empty.title', { defaultValue: 'No elevation requests' })}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {status === 'pending'
+        <EmptyState
+          icon={Inbox}
+          title={t('pamPamRequestsTab.empty.title', { defaultValue: 'No elevation requests' })}
+          description={
+            status === 'pending'
               ? t('pamPamRequestsTab.empty.pendingDescription', {
                   defaultValue:
                     'Nothing waiting on you. New UAC prompts, JIT admin requests, and AI tool actions queue here.',
                 })
               : t('pamPamRequestsTab.empty.filteredDescription', {
                   defaultValue: 'Requests matching the current filters will appear here.',
-                })}
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
+                })
+          }
+        >
+          <p className="mx-auto mt-3 max-w-md text-xs text-muted-foreground">
             {t('pamPamRequestsTab.empty.policyPrefix', {
               defaultValue: 'Not seeing expected requests? UAC capture is controlled per device by',
             })}{' '}
-            <a href="/configuration-policies" className="underline underline-offset-2 hover:text-foreground">
+            <a
+              href="/configuration-policies"
+              className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+            >
               {t('pamPamRequestsTab.empty.policyLink', {
                 defaultValue: 'Configuration Policies → Privileged Access',
               })}
             </a>.
           </p>
-        </div>
+        </EmptyState>
       ) : (
-        <div className="overflow-x-auto rounded-md border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs text-muted-foreground">
-                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.requested', { defaultValue: 'Requested' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.device', { defaultValue: 'Device' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.user', { defaultValue: 'User' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.target', { defaultValue: 'Target' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.flow', { defaultValue: 'Flow' })}</th>
-                <th className="px-3 py-2 font-medium">{t('pamPamRequestsTab.table.status', { defaultValue: 'Status' })}</th>
-                <th className="px-3 py-2 font-medium" />
+        <div className={tableWrapClass}>
+          <table className={tableClass}>
+            <thead className={theadClass}>
+              <tr className={theadRowClass}>
+                <th className={thClass}>{t('pamPamRequestsTab.table.requested', { defaultValue: 'Requested' })}</th>
+                <th className={thClass}>{t('pamPamRequestsTab.table.device', { defaultValue: 'Device' })}</th>
+                <th className={thClass}>{t('pamPamRequestsTab.table.user', { defaultValue: 'User' })}</th>
+                <th className={thClass}>{t('pamPamRequestsTab.table.target', { defaultValue: 'Target' })}</th>
+                <th className={thClass}>{t('pamPamRequestsTab.table.flow', { defaultValue: 'Flow' })}</th>
+                <th className={thClass}>{t('pamPamRequestsTab.table.status', { defaultValue: 'Status' })}</th>
+                <th className={thClass} />
               </tr>
             </thead>
-            <tbody>
+            <tbody className={tbodyClass}>
               {requests.map((r) => {
                 const canRespond = r.status === 'pending';
                 const canRevoke = (ACTIVE_STATUSES as readonly string[]).includes(r.status);
@@ -209,32 +223,26 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                 const showDenialReason =
                   r.decisionSource === 'human' || r.decisionSource == null;
                 return (
-                  <tr key={r.id} className="border-b align-top last:border-0" data-testid={`pam-request-row-${r.id}`}>
-                    <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
+                  <tr key={r.id} className={`${rowClass} align-top`} data-testid={`pam-request-row-${r.id}`}>
+                    <td className={`${tdClass} whitespace-nowrap tabular-nums text-muted-foreground`}>
                       {formatDateTime(r.requestedAt)}
                     </td>
-                    <td className="px-3 py-2">{r.deviceHostname ?? r.deviceId}</td>
-                    <td className="px-3 py-2">{r.subjectUsername}</td>
-                    <td className="max-w-[260px] px-3 py-2">
+                    <td className={`${tdClass} font-medium`}>{r.deviceHostname ?? r.deviceId}</td>
+                    <td className={tdClass}>{r.subjectUsername}</td>
+                    <td className={`${tdClass} max-w-[260px]`}>
                       <div className="flex items-center gap-1.5">
                         <span className="truncate" title={requestTarget(r)}>
                           {requestTarget(r)}
                         </span>
                         {r.flowType === 'ai_tool_action' && r.riskTier != null && (
-                          <span
-                            data-testid={`pam-risk-tier-${r.id}`}
+                          <RiskTierBadge
+                            tier={r.riskTier}
+                            testId={`pam-risk-tier-${r.id}`}
                             title={t('pamPamRequestsTab.table.riskTierTitle', {
                               defaultValue: 'Risk tier {{tier}}',
                               tier: r.riskTier,
                             })}
-                            className={`inline-flex shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold ${
-                              r.riskTier >= 3
-                                ? 'bg-red-500/15 text-red-600 dark:text-red-400'
-                                : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                            }`}
-                          >
-                            T{r.riskTier}
-                          </span>
+                          />
                         )}
                       </div>
                       {r.reason && (
@@ -251,23 +259,11 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                         </div>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2">
-                      {(() => {
-                        const FlowIcon = FLOW_ICONS[r.flowType];
-                        return (
-                          <span className="inline-flex items-center gap-1.5">
-                            <FlowIcon aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
-                            {FLOW_LABELS[r.flowType]}
-                          </span>
-                        );
-                      })()}
+                    <td className={`${tdClass} whitespace-nowrap`}>
+                      <FlowCell flowType={r.flowType} />
                     </td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(r.status)}`}
-                      >
-                        {STATUS_LABELS[r.status]}
-                      </span>
+                    <td className={tdClass}>
+                      <StatusBadge status={r.status} />
                       {attribution && (
                         <div
                           className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground"
@@ -283,38 +279,40 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                         </div>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2 text-right">
-                      {canRespond && (
+                    <td className={`${tdClass} whitespace-nowrap text-right`}>
+                      <div className="inline-flex items-center gap-1.5">
+                        {canRespond && (
+                          <button
+                            type="button"
+                            onClick={() => setResponding(r)}
+                            data-testid={`pam-respond-btn-${r.id}`}
+                            className={btnOutlineClass}
+                          >
+                            {t('pamPamRequestsTab.actions.respond', { defaultValue: 'Respond' })}
+                          </button>
+                        )}
+                        {canRevoke && (
+                          <button
+                            type="button"
+                            onClick={() => setRevoking(r)}
+                            data-testid={`pam-revoke-btn-${r.id}`}
+                            className={btnOutlineDestructiveClass}
+                          >
+                            {t('pamPamRequestsTab.actions.revoke', { defaultValue: 'Revoke' })}
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => setResponding(r)}
-                          data-testid={`pam-respond-btn-${r.id}`}
-                          className="rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
+                          onClick={() => setRuleDraft(r)}
+                          data-testid={`pam-create-rule-btn-${r.id}`}
+                          title={t('pamPamRequestsTab.actions.ruleTitle', {
+                            defaultValue: 'Create a PAM rule pre-filled from this request',
+                          })}
+                          className={btnOutlineClass}
                         >
-                          {t('pamPamRequestsTab.actions.respond', { defaultValue: 'Respond' })}
+                          {t('pamPamRequestsTab.actions.rule', { defaultValue: 'Rule…' })}
                         </button>
-                      )}
-                      {canRevoke && (
-                        <button
-                          type="button"
-                          onClick={() => setRevoking(r)}
-                          data-testid={`pam-revoke-btn-${r.id}`}
-                          className="rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
-                        >
-                          {t('pamPamRequestsTab.actions.revoke', { defaultValue: 'Revoke' })}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setRuleDraft(r)}
-                        data-testid={`pam-create-rule-btn-${r.id}`}
-                        title={t('pamPamRequestsTab.actions.ruleTitle', {
-                          defaultValue: 'Create a PAM rule pre-filled from this request',
-                        })}
-                        className="ml-1.5 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-accent"
-                      >
-                        {t('pamPamRequestsTab.actions.rule', { defaultValue: 'Rule…' })}
-                      </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -324,33 +322,19 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
         </div>
       )}
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-end gap-2 text-sm">
-          <button
-            type="button"
-            disabled={page <= 1}
-            onClick={() => setPage((p) => p - 1)}
-            className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50"
-          >
-            {t('pamPamRequestsTab.pagination.previous', { defaultValue: 'Previous' })}
-          </button>
-          <span className="text-xs text-muted-foreground">
-            {t('pamPamRequestsTab.pagination.pageOf', {
-              defaultValue: 'Page {{page}} of {{totalPages}}',
-              page: pagination.page,
-              totalPages,
-            })}
-          </span>
-          <button
-            type="button"
-            disabled={page >= totalPages}
-            onClick={() => setPage((p) => p + 1)}
-            className="rounded-md border px-2.5 py-1 text-xs disabled:opacity-50"
-          >
-            {t('common:actions.next', { defaultValue: 'Next' })}
-          </button>
-        </div>
-      )}
+      <Pager
+        page={page}
+        totalPages={totalPages}
+        onPrev={() => setPage((p) => p - 1)}
+        onNext={() => setPage((p) => p + 1)}
+        prevLabel={t('pamPamRequestsTab.pagination.previous', { defaultValue: 'Previous' })}
+        nextLabel={t('common:actions.next', { defaultValue: 'Next' })}
+        pageLabel={t('pamPamRequestsTab.pagination.pageOf', {
+          defaultValue: 'Page {{page}} of {{totalPages}}',
+          page: pagination.page,
+          totalPages,
+        })}
+      />
 
       {responding && (
         <PamRespondModal

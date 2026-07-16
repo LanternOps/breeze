@@ -941,6 +941,10 @@
       "createRule": "Falha ao criar a regra",
       "network": "Erro de rede"
     },
+    "sections": {
+      "criteria": "Critérios de correspondência",
+      "window": "Janela de tempo"
+    },
     "toasts": {
       "ruleSaved": "Regra \"{{name}}\" {{action}}",
       "updated": "atualizada",
