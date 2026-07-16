@@ -73,6 +73,13 @@ Navigate to **Operations > Backup** in the sidebar to reach the backup dashboard
 | **SLA** | RPO/RTO targets, compliance tracking, breach alerts |
 | **Encryption** | Encryption key management and rotation |
 
+### The Device Backup Tab
+
+Each device also has its own **Backup** tab (on the device detail page) for single-device actions:
+
+- **Run backup now** — triggers an immediate backup for that one device. It's disabled when the device is offline or has no backup policy assigned, and if a backup is already running it shows a friendly "already running" message instead of starting a second job. This is different from the dashboard's **Run all backups**, which fans out a run across every protected device.
+- **Next run** and **Last success** are shown in the device's effective timezone (with the zone label), matching the schedule you set in the policy editor — not your browser's local time. A schedule set for "03:00 in the device's timezone" reads as `03:00 AM` on the tab, not shifted to wherever your browser happens to be.
+
 ---
 
 ## Quick Start
@@ -84,14 +91,14 @@ New to Breeze Backup? Here's the fastest path to protecting your first device:
 
 2. **Create a backup policy.** Go to **Settings > Configuration Policies**, create a new policy, and add a **Backup** feature link. Choose your backup mode (file, Hyper-V, MSSQL, or system image), select the storage configuration you just created, and assign the policy to devices, sites, or groups. See [Backup Policies](/backup/policies/) for details.
 
-3. **Verify it works.** Back on the Backup dashboard, click **Run all backups** to trigger an immediate run. Watch the job appear in Recent Jobs. Once it completes, go to the **Verification** tab and run an integrity check. See [Verification & Recovery Readiness](/backup/verification/) for details.
+3. **Verify it works.** Back on the Backup dashboard, click **Run all backups** to trigger an immediate run across every protected device (or use **Run backup now** on a single device's Backup tab). Watch the job appear in Recent Jobs. Once it completes, go to the **Verification** tab and run an integrity check. See [Verification & Recovery Readiness](/backup/verification/) for details.
 </Steps>
 
 ---
 
 ## Backup Binary Architecture
 
-Enterprise backup operations (Hyper-V, SQL Server, system image, cloud-to-cloud) run in a dedicated `breeze-backup` helper process that communicates with the main agent over HMAC-signed IPC. This keeps the core agent lightweight (~15 MB) while the backup binary includes the heavier cloud SDKs and backup tooling. The backup binary is bundled in both the Windows MSI and macOS .pkg installers.
+Enterprise backup operations (Hyper-V, SQL Server, system image, cloud-to-cloud) run in a dedicated `breeze-backup` helper process that communicates with the main agent over HMAC-signed IPC. This keeps the core agent lightweight (~15 MB) while the backup binary includes the heavier cloud SDKs and backup tooling. The backup binary is bundled by the Windows MSI, the macOS .pkg, and the Linux and macOS shell-script service installs — so every supported install path can run backups out of the box. (Previously only the MSI and .pkg bundled it, which meant hosts set up with the shell-script installer couldn't run backups until the helper was placed manually.)
 
 <Aside type="note">
   The backup binary is installed automatically. No additional setup is needed unless you're building from source.
