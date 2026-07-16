@@ -356,8 +356,11 @@ describe('backup jobs routes', () => {
       skippedRunning: 0,
       skippedBrokenProfile: 0,
       failed: 1,
+      failedToCreate: 0,
       jobIds: ['job-online'],
       failedJobIds: ['job-failing'],
+      failedToCreateDevices: [],
+      skippedBrokenProfileDevices: [],
     });
   });
 
@@ -418,8 +421,11 @@ describe('backup jobs routes', () => {
       skippedRunning: 0,
       skippedBrokenProfile: 0,
       failed: 0,
+      failedToCreate: 0,
       jobIds: ['job-file-1'],
       failedJobIds: [],
+      failedToCreateDevices: [],
+      skippedBrokenProfileDevices: [],
     });
   });
 
@@ -450,9 +456,102 @@ describe('backup jobs routes', () => {
       skippedRunning: 0,
       skippedBrokenProfile: 1,
       failed: 0,
+      failedToCreate: 0,
       jobIds: [],
       failedJobIds: [],
+      failedToCreateDevices: [],
+      skippedBrokenProfileDevices: [{ deviceId: 'device-broken', reason: 'broken_profile' }],
     });
+  });
+
+  it('run-all surfaces a device whose job creation returns null in failedToCreate, not skippedRunning', async () => {
+    vi.mocked(resolveAllBackupAssignedDevices).mockResolvedValueOnce([
+      { deviceId: 'device-null', configId: 'config-1', featureLinkId: 'feature-1' } as any,
+    ]);
+    selectMock.mockReturnValueOnce(makeSelectChain([{ id: 'device-null' }]));
+    // No resolver override -> resolveBackupConfigForDevice returns null (legacy
+    // single NULL-mode spec), falling back to the map's configId.
+    vi.mocked(resolveBackupConfigForDevice).mockResolvedValueOnce(null as any);
+    vi.mocked(createManualBackupJobIfIdle).mockResolvedValueOnce(null);
+
+    const res = await app.request('/jobs/run-all', { method: 'POST' });
+
+    expect(res.status).toBe(201);
+    expect(createManualBackupJobIfIdle).toHaveBeenCalledTimes(1);
+    // The idle-check race / DB error must not be dispatched.
+    expect(enqueueBackupDispatchMock).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.data).toEqual({
+      created: 0,
+      skipped: 0,
+      skippedOffline: 0,
+      // The failure must NOT be laundered into the benign "already running"
+      // bucket.
+      skippedRunning: 0,
+      skippedBrokenProfile: 0,
+      failed: 0,
+      failedToCreate: 1,
+      jobIds: [],
+      failedJobIds: [],
+      failedToCreateDevices: [{ deviceId: 'device-null', modes: ['legacy'] }],
+      skippedBrokenProfileDevices: [],
+    });
+  });
+
+  it('run-all flags a multi-spec device in failedToCreate when one spec creates and another returns null', async () => {
+    vi.mocked(resolveAllBackupAssignedDevices).mockResolvedValueOnce([
+      { deviceId: 'device-multi', configId: 'config-legacy', featureLinkId: 'feature-legacy' } as any,
+    ]);
+    selectMock.mockReturnValueOnce(makeSelectChain([{ id: 'device-multi' }]));
+    vi.mocked(resolveBackupConfigForDevice).mockResolvedValueOnce({
+      settings: null,
+      featureLinkId: 'feature-1',
+      configId: 'config-1',
+      selectionSpecs: [
+        { backupMode: 'file', targets: { paths: ['C:\\Data'], excludes: [] } },
+        { backupMode: 'system_image', targets: { volumes: ['C:'] } },
+      ],
+      selectionError: null,
+      inlineSettings: null,
+      resolvedTimezone: 'UTC',
+    } as any);
+    // First spec (file) creates; second spec (system_image) returns null.
+    vi.mocked(createManualBackupJobIfIdle)
+      .mockResolvedValueOnce({
+        created: true,
+        job: {
+          id: 'job-multi-file',
+          orgId: 'org-a',
+          configId: 'config-1',
+          deviceId: 'device-multi',
+          status: 'pending',
+          type: 'manual',
+          backupMode: 'file',
+          createdAt: new Date('2026-04-01T00:00:00Z'),
+          updatedAt: new Date('2026-04-01T00:00:00Z'),
+        } as any,
+      } as any)
+      .mockResolvedValueOnce(null);
+    enqueueBackupDispatchMock.mockResolvedValueOnce(undefined);
+
+    const res = await app.request('/jobs/run-all', { method: 'POST' });
+
+    expect(res.status).toBe(201);
+    expect(createManualBackupJobIfIdle).toHaveBeenCalledTimes(2);
+    // The successfully created file job is still enqueued (not stranded).
+    expect(enqueueBackupDispatchMock).toHaveBeenCalledTimes(1);
+    expect(enqueueBackupDispatchMock).toHaveBeenCalledWith('job-multi-file', 'config-1', 'org-a', 'device-multi');
+    const body = await res.json();
+    // The device appears in failedToCreate for the failed spec; it is NOT
+    // reported as a clean success only.
+    expect(body.data.failedToCreate).toBe(1);
+    expect(body.data.failedToCreateDevices).toEqual([
+      { deviceId: 'device-multi', modes: ['system_image'] },
+    ]);
+    expect(body.data.skippedRunning).toBe(0);
+    // The real created job is still surfaced/dispatched.
+    expect(body.data.created).toBe(1);
+    expect(body.data.jobIds).toEqual(['job-multi-file']);
   });
 });
 

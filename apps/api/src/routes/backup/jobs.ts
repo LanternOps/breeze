@@ -391,9 +391,18 @@ jobsRoutes.post(
   const skippedRunning: string[] = [];
   // Broken profile link, or no backup config could be resolved at all — same
   // "refuse loudly" contract as POST /jobs/run/:deviceId. These devices get
-  // NO job (an empty job would report success while protecting nothing).
-  const skippedBrokenProfile: string[] = [];
+  // NO job (an empty job would report success while protecting nothing). Each
+  // entry carries a `reason` so an operator can tell WHY from the response
+  // alone (the single-device path distinguishes these; run-all used to fold
+  // them into one opaque bucket).
+  const skippedBrokenProfile: Array<{ deviceId: string; reason: 'broken_profile' | 'no_config' }> = [];
   const failed: string[] = [];
+  // Job creation returned null (DB error or lost idle-check race). Distinct
+  // from skippedRunning ("benign, already pending") and from created — a device
+  // with ANY spec that failed to create surfaces here so the failure is visible
+  // in the response body, not laundered into "already running" or hidden behind
+  // a sibling spec that did create. `modes` lists which selections failed.
+  const failedToCreate: Array<{ deviceId: string; modes: string[] }> = [];
   const deviceIds = Array.from(deviceConfigMap.keys());
   const onlineDevices = await db
     .select({ id: devices.id, siteId: devices.siteId })
@@ -435,7 +444,7 @@ jobsRoutes.post(
         `[BackupJobs] Run-all for device ${deviceId} (link ${resolved.featureLinkId}): ${resolved.selectionError}`
       );
       recordBackupDispatchFailure('manual_backup', 'selection_error');
-      skippedBrokenProfile.push(deviceId);
+      skippedBrokenProfile.push({ deviceId, reason: 'broken_profile' });
       continue;
     }
 
@@ -445,7 +454,7 @@ jobsRoutes.post(
     if (!configId) {
       console.error(`[BackupJobs] Run-all for device ${deviceId}: no backup config could be resolved`);
       recordBackupDispatchFailure('manual_backup', 'no_config');
-      skippedBrokenProfile.push(deviceId);
+      skippedBrokenProfile.push({ deviceId, reason: 'no_config' });
       continue;
     }
 
@@ -454,6 +463,8 @@ jobsRoutes.post(
     // create a single NULL-mode job as before.
     const specs = resolved?.selectionSpecs ?? [undefined];
     const deviceJobs: Array<NonNullable<Awaited<ReturnType<typeof createManualBackupJobIfIdle>>>['job']> = [];
+    // Selections whose job creation returned null (DB error / lost idle race).
+    const failedModes: string[] = [];
 
     for (const spec of specs) {
       const result = await createManualBackupJobIfIdle({
@@ -466,6 +477,7 @@ jobsRoutes.post(
       if (!result) {
         console.error(`[BackupJobs] Run-all: failed to create backup job for device ${deviceId}`);
         recordBackupDispatchFailure('manual_backup', 'create_failed');
+        failedModes.push(spec?.backupMode ?? 'legacy');
         continue;
       }
       if (result.created) {
@@ -473,13 +485,9 @@ jobsRoutes.post(
       }
     }
 
-    if (deviceJobs.length === 0) {
-      // Every spec either already had an active job for this device+mode, or
-      // failed to create outright — nothing new to dispatch for this device.
-      skippedRunning.push(deviceId);
-      continue;
-    }
-
+    // Enqueue whatever WAS created for this device — a create failure on one
+    // spec must not strand a sibling spec's real job (a created-but-unenqueued
+    // row sits `pending` forever and blocks that mode's future manual runs).
     for (const job of deviceJobs) {
       try {
         const { enqueueBackupDispatch } = await import('../../jobs/backupWorker');
@@ -492,6 +500,17 @@ jobsRoutes.post(
         await markBackupJobDispatchFailed(job.id, error);
         failed.push(job.id);
       }
+    }
+
+    if (failedModes.length > 0) {
+      // At least one selection failed to create. Surface the device explicitly
+      // instead of laundering it into skippedRunning (if nothing created) or
+      // hiding it behind the sibling jobs that did create.
+      failedToCreate.push({ deviceId, modes: failedModes });
+    } else if (deviceJobs.length === 0) {
+      // Every spec already had an active job for this device+mode — benign,
+      // nothing new to dispatch.
+      skippedRunning.push(deviceId);
     }
   }
 
@@ -509,8 +528,12 @@ jobsRoutes.post(
       skippedRunning: skippedRunning.length,
       skippedBrokenProfile: skippedBrokenProfile.length,
       failed: failed.length,
+      failedToCreate: failedToCreate.length,
     },
-    result: failed.length > 0 && created.length === 0 ? 'failure' : 'success',
+    result:
+      (failed.length > 0 || failedToCreate.length > 0) && created.length === 0
+        ? 'failure'
+        : 'success',
   });
 
   return c.json({
@@ -521,8 +544,14 @@ jobsRoutes.post(
       skippedRunning: skippedRunning.length,
       skippedBrokenProfile: skippedBrokenProfile.length,
       failed: failed.length,
+      // Job-creation failures (DB error / lost idle race). Additive: distinct
+      // from `skippedRunning` (benign) and `failed` (enqueue failure).
+      failedToCreate: failedToCreate.length,
       jobIds: created,
       failedJobIds: failed,
+      // Per-device detail so an operator can act from the response alone.
+      failedToCreateDevices: failedToCreate,
+      skippedBrokenProfileDevices: skippedBrokenProfile,
     },
   }, 201);
 });
