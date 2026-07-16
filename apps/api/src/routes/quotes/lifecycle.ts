@@ -34,21 +34,27 @@ function remoteImageStatus(reason: RemoteImageFailureReason): 413 | 415 | 502 | 
   }
 }
 
-// Optional sender note included in the customer email. Parsed defensively: most
-// callers (bulk-send, tests, MCP) POST no body, yet fetchWithAuth always stamps a
-// JSON content-type — so an absent/empty/invalid body degrades to "no message"
-// rather than 400-ing a send that used to work.
-const sendBodySchema = z.object({ message: z.string().trim().max(2000).optional() });
+// Optional sender note included in the customer email. `.strict()` so a mis-keyed
+// field (e.g. {"mesage":"hi"}) is a 400, not a silently dropped note.
+const sendBodySchema = z.object({ message: z.string().trim().max(2000).optional() }).strict();
 
 // POST /:id/send — issue + email. Gated on the (previously dead) quotes:send permission.
 quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
   let message: string | undefined;
+  // Distinguish an ABSENT body (most callers — bulk-send/MCP/tests POST nothing,
+  // yet fetchWithAuth still stamps a JSON content-type) from a PRESENT-but-broken
+  // one. An empty body degrades to "no message"; a non-empty body that fails to
+  // parse/validate is rejected 400 rather than silently swallowing a note the
+  // sender intended (mirrors the image-from-URL route below).
   if ((c.req.header('content-type') ?? '').includes('application/json')) {
-    let json: unknown = {};
-    try { json = await c.req.json(); } catch { json = {}; }
-    const parsed = sendBodySchema.safeParse(json ?? {});
-    if (!parsed.success) return c.json({ error: 'Invalid message' }, 400);
-    message = parsed.data.message && parsed.data.message.length > 0 ? parsed.data.message : undefined;
+    const raw = await c.req.text().catch(() => '');
+    if (raw.trim()) {
+      let json: unknown;
+      try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+      const parsed = sendBodySchema.safeParse(json);
+      if (!parsed.success) return c.json({ error: 'Invalid message' }, 400);
+      message = parsed.data.message && parsed.data.message.length > 0 ? parsed.data.message : undefined;
+    }
   }
   try { return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c), { message }) }); }
   catch (err) { return handleServiceError(c, err); }

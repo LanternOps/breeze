@@ -96,8 +96,13 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showS
   // buckets are shown, joined with " + " — matching the document footer style.
   const subtotalParts: string[] = [];
   if (showSubtotal) {
-    const sums = { one_time: 0, monthly: 0, annual: 0 } as Record<string, number>;
-    for (const l of sorted) sums[l.recurrence] = (sums[l.recurrence] ?? 0) + Number(l.lineTotal);
+    const sums = { one_time: 0, monthly: 0, annual: 0 };
+    for (const l of sorted) {
+      // Fold any unrecognized recurrence into one_time so the subtotal always
+      // covers every rendered row (parity with the PDF renderer).
+      const key = l.recurrence === 'monthly' || l.recurrence === 'annual' ? l.recurrence : 'one_time';
+      sums[key] += Number(l.lineTotal);
+    }
     if (sums.one_time > 0) subtotalParts.push(formatMoney(sums.one_time, currency));
     if (sums.monthly > 0) subtotalParts.push(`${formatMoney(sums.monthly, currency)}${t('billingUi.units.perMonth')}`);
     if (sums.annual > 0) subtotalParts.push(`${formatMoney(sums.annual, currency)}${t('billingUi.units.perYear')}`);

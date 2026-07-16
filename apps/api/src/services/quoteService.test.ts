@@ -215,6 +215,35 @@ describe('quoteService deposits', () => {
     expect(detail.pax8OrderLineCount).toBe(0);
   });
 
+  it('getQuote returns a SENT quote bill-to from the frozen snapshot, never the live org', async () => {
+    // Frozen at send when the org had no address → an all-null block. That blank is
+    // the immutable record; getQuote must NOT re-derive from the (now-populated) org.
+    const frozen = { line1: null, line2: null, city: null, region: null, postalCode: null, country: null };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', billToName: 'Frozen Co', billToAddress: frozen, billToTaxId: null, taxRate: null, depositType: 'none', depositPercent: null }]); // quote
+    queueResult([]); // blocks
+    queueResult([]); // lines
+    queueResult([]); // no staged Pax8 order
+    // Deliberately queue NO org row: a sent quote must not query the live org at all.
+
+    const { billTo } = await svc.getQuote('q1', actor);
+    expect(billTo.name).toBe('Frozen Co');
+    expect(billTo.address).toEqual(frozen); // the all-null frozen block, not re-derived
+    expect(billTo.taxId).toBeNull();
+  });
+
+  it('getQuote resolves a DRAFT quote bill-to from the org billing settings', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', billToName: null, billToAddress: null, billToTaxId: null, taxRate: null, depositType: 'none', depositPercent: null }]); // quote
+    queueResult([]); // blocks
+    queueResult([]); // lines
+    queueResult([]); // no staged Pax8 order
+    queueResult([{ name: 'Org Inc', taxId: 'ORG-TAX', billingAddressLine1: 'Org St', billingAddressLine2: null, billingAddressCity: 'Berthoud', billingAddressRegion: 'CO', billingAddressPostalCode: '80513', billingAddressCountry: 'US' }]); // org billing
+
+    const { billTo } = await svc.getQuote('q1', actor);
+    expect(billTo.name).toBe('Org Inc');
+    expect(billTo.address?.line1).toBe('Org St');
+    expect(billTo.taxId).toBe('ORG-TAX');
+  });
+
   it('listQuotes left-joins the converted invoice and flattens invoiceDepositDue/invoiceAmountPaid onto each row', async () => {
     // The chain mock yields queued rows regardless of shape; queue the joined
     // projection shape the real select({ quote, invoiceDepositDue, invoiceAmountPaid }) returns.

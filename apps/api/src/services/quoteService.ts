@@ -359,35 +359,54 @@ export async function getQuote(id: string, actor: QuoteActor) {
     q.taxRate ? parseFloat(q.taxRate) : null,
     toQuoteDepositConfig(q.depositType, q.depositPercent),
   );
-  // Resolve the customer "bill to" for display. A sent quote carries its own
-  // frozen snapshot (billTo* columns filled at send from the org's Billing
-  // settings); a draft has none, so we fall back to the SAME org columns the send
-  // path freezes. This is what makes the customer name + billing address show on
-  // a draft's PDF/preview instead of a blank block — the data always lived on the
-  // org, it just wasn't surfaced until send. A tech-entered billToName override
-  // still wins over the org name.
-  const [org] = await db
-    .select({
-      name: organizations.name,
-      taxId: organizations.taxId,
-      billingAddressLine1: organizations.billingAddressLine1,
-      billingAddressLine2: organizations.billingAddressLine2,
-      billingAddressCity: organizations.billingAddressCity,
-      billingAddressRegion: organizations.billingAddressRegion,
-      billingAddressPostalCode: organizations.billingAddressPostalCode,
-      billingAddressCountry: organizations.billingAddressCountry,
-    })
-    .from(organizations)
-    .where(eq(organizations.id, q.orgId))
-    .limit(1);
+  // Resolve the customer "bill to" for display. Keyed on quote STATUS, not on
+  // whether the frozen fields happen to be populated:
+  //  - A NON-DRAFT quote carries its own frozen snapshot, written at send time
+  //    from the org's Billing settings. Return it VERBATIM — never re-derive from
+  //    the live org — so the issued document stays immutable even if the org's
+  //    billing address is edited afterwards. (An org with no address at send time
+  //    froze an all-null block; that blank is the correct, immutable record.)
+  //  - A DRAFT has no frozen snapshot yet, so fall back to the SAME org columns
+  //    the send path will freeze, surfacing the customer name + address on the
+  //    draft's preview/PDF instead of a blank block. A tech-entered billToName
+  //    override still wins over the org name.
   const frozenAddress = (q.billToAddress as BillToAddress | null) ?? null;
-  const hasFrozenAddress = !!frozenAddress
-    && Object.values(frozenAddress).some((v) => typeof v === 'string' && v.trim().length > 0);
-  const billTo = {
-    name: q.billToName?.trim() ? q.billToName : (org?.name ?? null),
-    address: hasFrozenAddress ? frozenAddress : buildBillToAddress(org),
-    taxId: q.billToTaxId ?? org?.taxId ?? null,
-  };
+  let billTo: { name: string | null; address: BillToAddress | null; taxId: string | null };
+  if (q.status === 'draft') {
+    const [org] = await db
+      .select({
+        name: organizations.name,
+        taxId: organizations.taxId,
+        billingAddressLine1: organizations.billingAddressLine1,
+        billingAddressLine2: organizations.billingAddressLine2,
+        billingAddressCity: organizations.billingAddressCity,
+        billingAddressRegion: organizations.billingAddressRegion,
+        billingAddressPostalCode: organizations.billingAddressPostalCode,
+        billingAddressCountry: organizations.billingAddressCountry,
+      })
+      .from(organizations)
+      .where(eq(organizations.id, q.orgId))
+      .limit(1);
+    if (!org) {
+      // getQuote just read this quote in the SAME context, so its org should be
+      // visible too — an unreadable org is anomalous. Mirror the send path's
+      // telemetry (quoteLifecycle) rather than let a blank bill-to be silent.
+      console.error(`[quoteService] org ${q.orgId} not readable while resolving draft bill-to for quote ${q.id} — showing an empty bill-to`);
+    }
+    const hasFrozenAddress = !!frozenAddress
+      && Object.values(frozenAddress).some((v) => typeof v === 'string' && v.trim().length > 0);
+    billTo = {
+      name: q.billToName?.trim() ? q.billToName : (org?.name ?? null),
+      address: hasFrozenAddress ? frozenAddress : buildBillToAddress(org),
+      taxId: q.billToTaxId ?? org?.taxId ?? null,
+    };
+  } else {
+    billTo = {
+      name: q.billToName ?? null,
+      address: frozenAddress,
+      taxId: q.billToTaxId ?? null,
+    };
+  }
   return {
     quote: {
       ...q,

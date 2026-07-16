@@ -298,7 +298,15 @@ async function renderLineTable(
     doc.fillColor('#1f2937').font('Helvetica').fontSize(10);
     doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
     if (img) {
-      try { doc.image(img, descX, y, { fit: [THUMB, THUMB] }); } catch { /* corrupt image: skip */ }
+      // A buffer that loaded but pdfkit can't decode: skip the thumbnail (never
+      // abort the document) but REPORT it — the pre-load loop above logs byte-level
+      // failures, so a decode-at-draw failure must not be the one silent gap.
+      try {
+        doc.image(img, descX, y, { fit: [THUMB, THUMB] });
+      } catch (e) {
+        console.error('[quotePdf] doc.image (line thumbnail) failed', l.id, e instanceof Error ? e.message : e);
+        captureException(e instanceof Error ? e : new Error(String(e)));
+      }
     }
     doc.fillColor('#1f2937').font('Helvetica-Bold').fontSize(10).text(title, descX + gutter, y, { width: descW });
     if (blurb) {
@@ -319,15 +327,18 @@ async function renderLineTable(
   // Opt-in per-table subtotal: sum THIS table's lines split by recurrence, shown
   // as non-zero parts joined with " + " (matches the document footer style).
   if (showSubtotal) {
-    const sums: Record<string, number> = { one_time: 0, monthly: 0, annual: 0 };
+    const sums = { one_time: 0, monthly: 0, annual: 0 };
     for (const l of lines) {
-      const key = l.recurrence ?? 'one_time';
-      sums[key] = (sums[key] ?? 0) + Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice));
+      // Fold any unrecognized recurrence (e.g. a future re-enabled 'quarterly')
+      // into one_time so the printed Subtotal always covers every rendered row —
+      // never silently omit a bucket the parts list below doesn't know about.
+      const key = l.recurrence === 'monthly' || l.recurrence === 'annual' ? l.recurrence : 'one_time';
+      sums[key] += Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice));
     }
     const parts: string[] = [];
-    if (sums.one_time! > 0) parts.push(formatMoney(sums.one_time, currency));
-    if (sums.monthly! > 0) parts.push(`${formatMoney(sums.monthly, currency)}/mo`);
-    if (sums.annual! > 0) parts.push(`${formatMoney(sums.annual, currency)}/yr`);
+    if (sums.one_time > 0) parts.push(formatMoney(sums.one_time, currency));
+    if (sums.monthly > 0) parts.push(`${formatMoney(sums.monthly, currency)}/mo`);
+    if (sums.annual > 0) parts.push(`${formatMoney(sums.annual, currency)}/yr`);
     if (parts.length) {
       y = ensureRowSpace(y, 24);
       doc.moveTo(c.colUnitX, y).lineTo(c.right, y).lineWidth(0.5).strokeColor('#e5e7eb').stroke();
