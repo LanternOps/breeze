@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Monitor, Network, Gauge, Plus, X } from "lucide-react";
+import { Monitor, Network, Gauge, Plus, X, UserCheck } from "lucide-react";
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
@@ -23,6 +23,14 @@ type RemoteAccessSettings = {
   maxConcurrentTunnels: number;
   idleTimeoutMinutes: number;
   maxSessionDurationHours: number;
+  // End-user privacy & consent (normalized server-side into
+  // config_policy_remote_access_settings; drives the connect notice, the
+  // consent gate, the on-screen session banner, and identity redaction).
+  sessionPromptMode: "off" | "notify" | "consent";
+  consentUnavailableBehavior: "proceed" | "block";
+  notifyOnSessionEnd: boolean;
+  showActiveIndicator: boolean;
+  technicianIdentityLevel: "name_email" | "name" | "generic";
 };
 const defaults: RemoteAccessSettings = {
   webrtcDesktop: true,
@@ -36,6 +44,11 @@ const defaults: RemoteAccessSettings = {
   maxConcurrentTunnels: 5,
   idleTimeoutMinutes: 5,
   maxSessionDurationHours: 8,
+  sessionPromptMode: "notify",
+  consentUnavailableBehavior: "proceed",
+  notifyOnSessionEnd: true,
+  showActiveIndicator: true,
+  technicianIdentityLevel: "name_email",
 };
 const idleTimeoutOptions = [1, 2, 5, 10, 15, 30];
 const maxSessionOptions = [1, 2, 4, 8, 12, 24];
@@ -395,6 +408,116 @@ export default function RemoteAccessTab({
                 </button>
               </span>
             ))}
+          </div>
+        </div>
+      </div>
+
+      {/* End-user privacy & consent */}
+      <div className="mt-6">
+        <div className="flex items-center gap-2">
+          <UserCheck className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">
+            {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.privacyConsent")}
+          </h3>
+        </div>
+        <div className="mt-3 space-y-3">
+          <div className="rounded-md border bg-background px-4 py-3">
+            <label className="text-sm font-medium">
+              {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.sessionPrompt")}
+            </label>
+            <p className="text-xs text-muted-foreground">
+              {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.sessionPromptHelp")}
+            </p>
+            <select
+              value={settings.sessionPromptMode}
+              onChange={(e) =>
+                update(
+                  "sessionPromptMode",
+                  e.target.value as RemoteAccessSettings["sessionPromptMode"],
+                )
+              }
+              data-testid="remote-access-session-prompt-mode"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            >
+              <option value="off">
+                {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.promptOff")}
+              </option>
+              <option value="notify">
+                {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.promptNotify")}
+              </option>
+              <option value="consent">
+                {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.promptConsent")}
+              </option>
+            </select>
+          </div>
+          {settings.sessionPromptMode === "consent" && (
+            <div className="rounded-md border bg-background px-4 py-3">
+              <label className="text-sm font-medium">
+                {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.consentUnavailable")}
+              </label>
+              <p className="text-xs text-muted-foreground">
+                {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.consentUnavailableHelp")}
+              </p>
+              <select
+                value={settings.consentUnavailableBehavior}
+                onChange={(e) =>
+                  update(
+                    "consentUnavailableBehavior",
+                    e.target.value as RemoteAccessSettings["consentUnavailableBehavior"],
+                  )
+                }
+                data-testid="remote-access-consent-unavailable"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm"
+              >
+                <option value="proceed">
+                  {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.unavailableProceed")}
+                </option>
+                <option value="block">
+                  {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.unavailableBlock")}
+                </option>
+              </select>
+            </div>
+          )}
+          <ToggleRow
+            label={i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.showIndicator")}
+            description={i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.showIndicatorHelp")}
+            checked={settings.showActiveIndicator}
+            onChange={(v) => update("showActiveIndicator", v)}
+          />
+          <ToggleRow
+            label={i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.notifyOnEnd")}
+            description={i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.notifyOnEndHelp")}
+            checked={settings.notifyOnSessionEnd}
+            onChange={(v) => update("notifyOnSessionEnd", v)}
+          />
+          <div className="rounded-md border bg-background px-4 py-3">
+            <label className="text-sm font-medium">
+              {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.identityLevel")}
+            </label>
+            <p className="text-xs text-muted-foreground">
+              {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.identityLevelHelp")}
+            </p>
+            <select
+              value={settings.technicianIdentityLevel}
+              onChange={(e) =>
+                update(
+                  "technicianIdentityLevel",
+                  e.target.value as RemoteAccessSettings["technicianIdentityLevel"],
+                )
+              }
+              data-testid="remote-access-identity-level"
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            >
+              <option value="name_email">
+                {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.identityNameEmail")}
+              </option>
+              <option value="name">
+                {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.identityName")}
+              </option>
+              <option value="generic">
+                {i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.identityGeneric")}
+              </option>
+            </select>
           </div>
         </div>
       </div>
