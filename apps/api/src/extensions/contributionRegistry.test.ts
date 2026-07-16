@@ -296,6 +296,33 @@ describe('ExtensionContributionRegistry', () => {
     expect((await host.request('/published/late')).status).toBe(404);
   });
 
+  it('does not expose the private route app through caller-controlled composition', async () => {
+    const registry = new ExtensionContributionRegistry();
+    const extensionApp = new Hono();
+    extensionApp.get('/before', (c) => c.json({ version: 'original' }));
+    const session = registry.begin(makeManifest());
+    session.registrar.mountRoute(extensionApp);
+    const published = session.finish().routeApp as PublishedExtensionRouteApp;
+
+    const host = new Hono();
+    const originalRoute = host.route.bind(host);
+    let capturedApp: Hono | undefined;
+    host.route = ((path: string, app: Hono) => {
+      capturedApp = app;
+      return originalRoute(path, app);
+    }) as typeof host.route;
+
+    published.composeInto(host, '/published');
+
+    if (capturedApp) {
+      expect(() => capturedApp!.get('/late', (c) => c.json({ late: true }))).toThrow();
+      expect((await capturedApp.request('/late')).status).toBe(404);
+    }
+    expect(capturedApp).toBeUndefined();
+    expect(await (await host.request('/published/before')).json())
+      .toEqual({ version: 'original' });
+  });
+
   it('withdraws an active extension without removing its contributions', () => {
     const registry = new ExtensionContributionRegistry();
     const staged = makeStaged('demo', '1.0.0', { job: true, tool: true });

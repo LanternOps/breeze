@@ -102,11 +102,15 @@ function copyAndSealRouteApp(source: Hono | undefined): PublishedExtensionRouteA
   if (!source) return null;
   const copiedApp = new Hono();
   copiedApp.route('/', source);
-  for (const route of copiedApp.routes) Object.freeze(route);
-  Object.freeze(copiedApp.routes);
+  const routes = Object.freeze(copiedApp.routes.map((route) => Object.freeze({
+    method: route.method,
+    path: route.path,
+    handler: route.handler,
+  })));
   return Object.freeze({
     composeInto(host: Hono, mountPrefix: string): void {
-      host.route(mountPrefix, copiedApp);
+      const mountedHost = host.basePath(mountPrefix);
+      for (const route of routes) mountedHost.on(route.method, route.path, route.handler);
     },
   });
 }
