@@ -8,6 +8,8 @@ export interface QuoteEmailParams {
   expiryDate?: string;  // pre-formatted date or empty
   acceptUrl: string;
   supportEmail?: string;
+  /** Optional free-text note from the sender, shown above the accept CTA. */
+  message?: string;
 }
 
 /**
@@ -22,9 +24,16 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
   const expiryLine = params.expiryDate
     ? `<p style="${MUTED_PARA}">This proposal is valid until <strong>${escapeHtml(params.expiryDate)}</strong>.</p>`
     : '';
+  // Sender's personal note, if any. Escaped, with newlines preserved as <br> so a
+  // multi-line note keeps its shape. Rendered between the intro and the CTA.
+  const note = params.message?.trim();
+  const messageBlock = note
+    ? `<p style="${BODY_PARA}">${escapeHtml(note).replace(/\r?\n/g, '<br>')}</p>`
+    : '';
   const body = `
       <p style="${BODY_PARA}">Hi there,</p>
       <p style="${BODY_PARA}">${escapeHtml(params.partnerName)} has sent you proposal <strong>${escapeHtml(number)}</strong> for <strong>${escapeHtml(params.total)}</strong>. A PDF copy is attached.</p>
+      ${messageBlock}
       ${renderButton('Review & accept', params.acceptUrl)}
       ${expiryLine}
   `;
@@ -33,6 +42,7 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
   const text = [
     'Hi there,',
     `${params.partnerName} has sent you proposal ${number} for ${params.total}. A PDF copy is attached.`,
+    note || null,
     `Review & accept: ${params.acceptUrl}`,
     params.expiryDate ? `Valid until ${params.expiryDate}.` : null,
     support ? `Questions? Contact ${support}.` : null,

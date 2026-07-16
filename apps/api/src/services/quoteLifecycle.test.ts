@@ -264,6 +264,7 @@ describe('sendQuote customer-facing PDF', () => {
     queueResult([]); // blocks
     queueResult([visibleLine, internalLine]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
 
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
     queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
@@ -312,6 +313,7 @@ describe('sendQuote bill-to snapshot', () => {
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([org]);    // getQuote's own draft billTo org lookup (status is 'draft' for every quote sent through this helper)
     queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]); // partnerRow (reused for partner name)
     queueResult([org]);    // org (billing snapshot + recipient)
     queueResult([{ id: 'q1' }]); // update ... returning (claimed)

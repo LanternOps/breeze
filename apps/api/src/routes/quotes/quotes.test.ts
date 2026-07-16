@@ -423,7 +423,10 @@ describe('quote crud + lines routes', () => {
       ],
       lines: [
         { id: 'l1', blockId: 'b2', description: 'Onsite hour', quantity: '2', unitPrice: '150', lineTotal: '300', recurrence: 'one_time' }
-      ]
+      ],
+      // getQuote resolves the customer bill-to (from the org for drafts); the route
+      // overlays it onto the render payload.
+      billTo: { name: 'Acme Customer', address: null, taxId: null }
     };
 
     it('streams the rendered PDF inline (200, application/pdf, inline filename)', async () => {

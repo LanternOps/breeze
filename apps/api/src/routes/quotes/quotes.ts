@@ -122,7 +122,7 @@ quoteCrudRoutes.delete('/:id/lines/:lineId', scopes, writePerm, zValidator('para
 quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
-    const { quote, blocks, lines } = await getQuote(id, quoteActorFrom(c));
+    const { quote, blocks, lines, billTo } = await getQuote(id, quoteActorFrom(c));
 
     const branding = await resolveQuoteBranding(quote);
 
@@ -131,6 +131,13 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
       // Legacy/draft docs have no frozen snapshot; resolveQuoteBranding synthesizes
       // one from the live partner so the From block still renders.
       sellerSnapshot: branding.seller,
+      // Overlay the resolved customer bill-to so a DRAFT (whose billTo* columns are
+      // still null) renders the org's billing address in the "Prepared for" block,
+      // matching what the customer will get once sent. Falls back to the quote's
+      // own frozen fields if a caller supplies no resolved billTo.
+      billToName: billTo?.name ?? quote.billToName,
+      billToAddress: billTo?.address ?? quote.billToAddress,
+      billToTaxId: billTo?.taxId ?? quote.billToTaxId,
     };
 
     // Real image loader: pull bytes from quote_images, constrained to BOTH the

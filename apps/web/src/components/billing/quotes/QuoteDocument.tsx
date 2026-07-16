@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { useOrgStore } from '../../../stores/orgStore';
@@ -37,6 +37,15 @@ function DocLineThumb({ path }: { path: string }) {
 function DocImage({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
   const { t } = useTranslation('billing');
   const { url, failed } = useAuthedImage(quoteImageUrl(quoteId, imageId));
+  const [zoomed, setZoomed] = useState(false);
+
+  // Escape closes the zoom overlay (parity with clicking the backdrop).
+  useEffect(() => {
+    if (!zoomed) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoomed(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoomed]);
 
   if (failed) {
     return (
@@ -48,18 +57,56 @@ function DocImage({ quoteId, imageId, caption }: { quoteId: string; imageId: str
   if (!url) {
     return <div className="h-40 animate-pulse rounded-lg bg-muted/60" aria-hidden />;
   }
+  const alt = caption || t('quotes.document.proposalImageAlt');
   return (
     <figure className="space-y-2">
-      <img src={url} alt={caption || t('quotes.document.proposalImageAlt')} className="w-full rounded-lg border bg-card object-contain" />
+      {/* Click to view a larger version — a button keeps it keyboard-reachable. */}
+      <button
+        type="button"
+        onClick={() => setZoomed(true)}
+        aria-label={t('quotes.document.imageZoomAria')}
+        data-testid="quote-image-zoom-trigger"
+        className="block w-full cursor-zoom-in rounded-lg focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <img src={url} alt={alt} className="w-full rounded-lg border bg-card object-contain" />
+      </button>
       {caption && <figcaption className="text-center text-xs text-muted-foreground">{caption}</figcaption>}
+      {zoomed && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={alt}
+          onClick={() => setZoomed(false)}
+          data-testid="quote-image-lightbox"
+          className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/80 p-4"
+        >
+          <img src={url} alt={alt} className="max-h-full max-w-full rounded-lg object-contain shadow-2xl" />
+        </div>
+      )}
     </figure>
   );
 }
 
-function PricingTable({ lines, quoteId, currency, label, taxRate, showTax }: { lines: QuoteLine[]; quoteId: string; currency: string; label?: string; taxRate: string | null; showTax: boolean }) {
+function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showSubtotal }: { lines: QuoteLine[]; quoteId: string; currency: string; label?: string; taxRate: string | null; showTax: boolean; showSubtotal?: boolean }) {
   const { t } = useTranslation('billing');
   if (lines.length === 0) return null;
   const sorted = [...lines].sort((a, b) => a.sortOrder - b.sortOrder);
+  // Opt-in per-table subtotal, summed from THIS table's rows and split by
+  // recurrence (a table can mix one-time / monthly / annual). Only non-zero
+  // buckets are shown, joined with " + " — matching the document footer style.
+  const subtotalParts: string[] = [];
+  if (showSubtotal) {
+    const sums = { one_time: 0, monthly: 0, annual: 0 };
+    for (const l of sorted) {
+      // Fold any unrecognized recurrence into one_time so the subtotal always
+      // covers every rendered row (parity with the PDF renderer).
+      const key = l.recurrence === 'monthly' || l.recurrence === 'annual' ? l.recurrence : 'one_time';
+      sums[key] += Number(l.lineTotal);
+    }
+    if (sums.one_time > 0) subtotalParts.push(formatMoney(sums.one_time, currency));
+    if (sums.monthly > 0) subtotalParts.push(`${formatMoney(sums.monthly, currency)}${t('billingUi.units.perMonth')}`);
+    if (sums.annual > 0) subtotalParts.push(`${formatMoney(sums.annual, currency)}${t('billingUi.units.perYear')}`);
+  }
   return (
     <div className="overflow-hidden rounded-lg border bg-card">
       {label && (
@@ -117,6 +164,18 @@ function PricingTable({ lines, quoteId, currency, label, taxRate, showTax }: { l
               );
             })}
           </tbody>
+          {showSubtotal && subtotalParts.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 bg-muted/20" data-testid="quote-table-subtotal">
+                <td className="px-4 py-2.5 text-right text-sm font-semibold text-foreground sm:px-5" colSpan={showTax ? 4 : 3}>
+                  {t('quotes.document.totals.subtotal')}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right text-sm font-semibold tabular-nums text-foreground sm:px-5">
+                  {subtotalParts.join(' + ')}
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>
@@ -143,7 +202,8 @@ function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block
   }
   // line_items
   const label = (block.content?.label as string | undefined)?.trim() || t('quotes.document.pricing');
-  return <PricingTable lines={lines} quoteId={quoteId} currency={currency} label={label} taxRate={taxRate} showTax={showTax} />;
+  const showSubtotal = block.content?.showSubtotal === true;
+  return <PricingTable lines={lines} quoteId={quoteId} currency={currency} label={label} taxRate={taxRate} showTax={showTax} showSubtotal={showSubtotal} />;
 }
 
 interface DocumentProps {
@@ -157,7 +217,16 @@ interface DocumentProps {
  *  logo/accent. Works for drafts (no portal round-trip). */
 export function QuoteDocument({ detail, customerName }: DocumentProps) {
   const { t } = useTranslation('billing');
-  const { quote, blocks, lines, branding } = detail;
+  const { quote, blocks, lines, branding, billTo } = detail;
+  // Customer billing address lines (resolved server-side from the org's Billing
+  // settings for drafts, or the frozen snapshot once sent). Empty when the org
+  // has saved no billing address — the block then shows just the name.
+  const billToLines = useMemo(() => {
+    const a = billTo?.address;
+    if (!a) return [] as string[];
+    const cityLine = [a.city, a.region, a.postalCode].filter(Boolean).join(', ');
+    return [a.line1, a.line2, cityLine, a.country].filter((s): s is string => !!s && s.trim().length > 0);
+  }, [billTo?.address]);
   const currency = branding?.currencyCode ?? quote.currencyCode;
   const seller = branding?.seller ?? quote.sellerSnapshot ?? null;
   const accent = branding?.primaryColor || 'hsl(var(--primary))';
@@ -245,6 +314,16 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.document.preparedFor')}</p>
             <p className="mt-1 text-base font-medium text-foreground" data-testid="quote-document-customer">{customerName}</p>
+            {billToLines.length > 0 && (
+              <address className="mt-0.5 not-italic text-sm leading-relaxed text-muted-foreground" data-testid="quote-document-billto-address">
+                {billToLines.map((l, i) => <div key={i}>{l}</div>)}
+              </address>
+            )}
+            {billTo?.taxId?.trim() && (
+              <p className="mt-0.5 text-xs text-muted-foreground" data-testid="quote-document-billto-taxid">
+                {t('quotes.document.taxId', { id: billTo.taxId })}
+              </p>
+            )}
           </div>
           {quote.introNotes?.trim() && (
             <p className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground/90">
@@ -383,13 +462,15 @@ export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailDa
   const { busy, downloadPdf } = useQuotePdfDownload(quote);
 
   const customerName = useMemo(() => {
-    const billTo = quote.billToName?.trim();
-    if (billTo) return billTo;
+    // Server-resolved name wins (billToName override, else the org's name); the
+    // org store is only a backstop for payloads/fixtures without a resolved billTo.
+    const resolvedBillTo = detail.billTo?.name?.trim() || quote.billToName?.trim();
+    if (resolvedBillTo) return resolvedBillTo;
     const resolved = organizations.find((o) => o.id === quote.orgId)?.name?.trim();
     // Never leak a raw org UUID fragment onto a customer-facing document — if the
     // org store hasn't resolved a name yet, show a neutral em-dash instead.
     return resolved || '—';
-  }, [quote.billToName, quote.orgId, organizations]);
+  }, [detail.billTo?.name, quote.billToName, quote.orgId, organizations]);
 
   return (
     <div className="space-y-4" data-testid="quote-preview">

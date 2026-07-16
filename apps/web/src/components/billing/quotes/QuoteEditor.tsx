@@ -1650,6 +1650,7 @@ function BlockCard({
   const heading = (block.content?.text as string | undefined) ?? '';
   const html = (block.content?.html as string | undefined) ?? '';
   const tableLabel = (block.content?.label as string | undefined) ?? '';
+  const showSubtotal = (block.content?.showSubtotal as boolean | undefined) === true;
   const imageId = (block.content?.imageId as string | undefined) ?? '';
   const imageCaption = (block.content?.caption as string | undefined) ?? '';
 
@@ -1701,10 +1702,20 @@ function BlockCard({
   // Rename a pricing table. An empty label is a valid clear (the document falls
   // back to its "Pricing" default), so — unlike heading — we commit the trimmed
   // value even when blank, only skipping when nothing actually changed.
+  // Both the label and the subtotal toggle live in the SAME line_items content
+  // object, and onEditBlock REPLACES content wholesale — so each edit must carry
+  // the other's current value forward or it gets dropped.
+  const lineItemsContent = (nextLabel: string, nextSubtotal: boolean) => ({
+    ...(nextLabel.trim() ? { label: nextLabel.trim() } : {}),
+    ...(nextSubtotal ? { showSubtotal: true } : {}),
+  });
   const commitLabel = async () => {
     const label = labelDraft.trim();
     if (label === tableLabel.trim()) { setLabelDraft(tableLabel); return; }
-    if (await onEditBlock(block, label ? { label } : {})) flashSaved();
+    if (await onEditBlock(block, lineItemsContent(label, showSubtotal))) flashSaved();
+  };
+  const toggleSubtotal = async (next: boolean) => {
+    if (await onEditBlock(block, lineItemsContent(tableLabel, next))) flashSaved();
   };
 
   const submitManual = async () => {
@@ -1809,14 +1820,26 @@ function BlockCard({
                 className={`h-9 w-full rounded-md border bg-background px-3 text-sm font-semibold transition-shadow disabled:opacity-60 ${fieldRing(labelDraft.trim() !== tableLabel.trim(), blockSaved)}`}
               />
             )}
+            {canWrite && (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={showSubtotal}
+                  onChange={(e) => void toggleSubtotal(e.target.checked)}
+                  disabled={blockBusy}
+                  data-testid={`quote-block-subtotal-toggle-${block.id}`}
+                />
+                {t('quotes.editor.table.showSubtotal')}
+              </label>
+            )}
             {/* The 7-column row (description + 4 inline controls + total + actions)
                 can't compress gracefully on a tablet, so the table keeps a sensible
                 min width and the wrapper scrolls horizontally below that. */}
             <div className="overflow-x-auto rounded-md focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring" role="region" aria-label={t('quotes.editor.table.scrollAria')} tabIndex={0}>
-            <table className="w-full min-w-[640px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
+            <table className="w-full min-w-[800px] text-sm" data-testid={`quote-block-lines-${block.id}`}>
               <thead>
                 <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="px-2 py-2 font-medium">{t('quotes.editor.table.item')}</th>
+                  <th className="min-w-[13rem] px-2 py-2 font-medium">{t('quotes.editor.table.item')}</th>
                   <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.qty')}</th>
                   <th className="px-2 py-2 text-right font-medium">{t('quotes.editor.table.unitPrice')}</th>
                   <th className="px-2 py-2 font-medium">{t('quotes.editor.table.recurrence')}</th>
@@ -1872,8 +1895,8 @@ function BlockCard({
 
             {/* Add line to this pricing table */}
             {canWrite && (
-            <div className="rounded-md border bg-background/40 p-3" data-testid={`quote-block-add-line-${block.id}`}>
-              <div className="mb-2 flex gap-2">
+            <div className="mt-3 rounded-md border bg-background/40 p-4" data-testid={`quote-block-add-line-${block.id}`}>
+              <div className="mb-3 flex gap-2">
                 {(['catalog', 'manual', ...(ecActive ? ['distributor'] as const : []), ...(pax8Active ? ['pax8'] as const : [])] as const).map((m) => (
                   <button
                     key={m}
@@ -1931,7 +1954,7 @@ function BlockCard({
                   />
                 )
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <CatalogEnrichButton
                       idSuffix={`quote-${block.id}`}
@@ -2036,8 +2059,10 @@ function BlockCard({
                       </select>
                     </label>
                   </div>
-                  {/* Internal-only cost & identity fields (never shown to the customer). */}
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.internal.full')}</p>
+                  {/* Internal-only cost & identity fields (never shown to the customer).
+                      Divider + top padding sets them apart from the customer-facing
+                      fields above so the two groups don't read as one dense block. */}
+                  <p className="mt-1 border-t pt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('quotes.editor.internal.full')}</p>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_110px_100px]">
                     <label className="block">
                       <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.line.skuOptional')}</span>
@@ -2526,9 +2551,10 @@ function EditableLineRow({
   return (
     <>
     <tr className="border-t align-top [&>td]:pt-4" data-testid={`quote-line-${line.id}`}>
-      <td className="px-2 py-2">
-        {/* min-w-0 lets the name input honour its own min-w-[12rem] floor rather
-            than the flex row's min-content, so a catalog thumbnail can't crush it. */}
+      {/* Column min-width (min-w-[13rem]) is declared on the cell so table
+          auto-layout reserves the name column instead of squeezing it below the
+          input's width (which used to overflow into the qty cell). */}
+      <td className="min-w-[13rem] px-2 py-2">
         <div className="flex min-w-0 items-start gap-2">
           {line.imageId
             ? <LineImageThumb quoteId={quoteId} imageId={line.imageId} />
@@ -2543,7 +2569,7 @@ function EditableLineRow({
               onBlur={commitName}
               disabled={fieldBusy('name')}
               data-testid={`quote-line-name-${line.id}`}
-              className={`h-9 w-full min-w-[12rem] rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
+              className={`h-9 w-full rounded-md border bg-background px-2 py-1 text-sm font-medium transition-shadow focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60 ${fieldRing(nameDirty, saved)}`}
             />
           </div>
         </div>

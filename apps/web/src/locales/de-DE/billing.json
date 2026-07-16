@@ -506,6 +506,7 @@
         "qty": "Menge",
         "recurrence": "Wiederholung",
         "scrollAria": "Preistabelle – scrollen Sie seitwärts für Steuer-, Gesamt- und Zeilenaktionen",
+        "showSubtotal": "Zwischensummenzeile anzeigen",
         "tax": "Steuer",
         "taxTitle": "Steuer pro Position. Maßgeblich ist die Überschrift „Steuersumme“, die um einen Rundungscent abweichen kann.",
         "taxable": "Steuerpflichtig",
@@ -544,6 +545,8 @@
       "savingTitle": "Speichern Ihrer Änderungen – Entsperrungen senden, wenn alles gespeichert ist.",
       "sendConfirm": {
         "message": "Wir senden dieses Angebot per E-Mail an {{orgName}} und markieren es als „Gesendet“ – {{amount}} fällig bei Annahme. Dies kann nicht rückgängig gemacht werden.",
+        "messageLabel": "Persönliche Nachricht hinzufügen (optional)",
+        "messagePlaceholder": "Fügen Sie eine kurze Notiz hinzu – sie erscheint in der E-Mail über dem Zusage-Link.",
         "title": "Dieses Angebot senden?"
       },
       "sendError": "Der Vorschlag konnte nicht gesendet werden.",
@@ -630,6 +633,8 @@
       "imageUnavailable": "Bild nicht verfügbar",
       "issued": "Ausgestellt",
       "preparedFor": "Vorbereitet für",
+      "taxId": "Steuernummer: {{id}}",
+      "imageZoomAria": "Größeres Bild anzeigen",
       "preview": {
         "description": "Das sieht Ihr Kunde auf seinem Angebotslink.",
         "downloadPdf": "Laden Sie PDF herunter",

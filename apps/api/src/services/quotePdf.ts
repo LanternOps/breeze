@@ -213,6 +213,7 @@ async function renderLineTable(
   loadQuoteImage: (imageId: string) => Promise<{ data: Buffer } | null>,
   taxRate = 0,
   showTax = false,
+  showSubtotal = false,
 ): Promise<number> {
   const c = columnsFor(doc, showTax);
   let y = ensureSpace(doc, startY, 60);
@@ -275,33 +276,77 @@ async function renderLineTable(
 
   const descX = c.colDescX;
   for (const l of lines) {
-    y = ensureRowSpace(y, Math.max(30, gutter));
     // Title falls back to description for legacy lines that predate the name/description split.
     const title = (l.name ?? l.description ?? '').trim() || '—';
     const blurb = l.name ? (l.description ?? '').trim() : '';
-    doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
+    // Measure each fragment at the SAME font/size it is drawn with. The blurb is
+    // rendered at 8.5pt but used to be measured while the font was still 10pt,
+    // over-reserving ~1.5pt per wrapped line — a visible gap below tall spec-list
+    // rows (e.g. a 15-bullet PC). Measure title as bold-10, blurb as regular-8.5.
+    doc.font('Helvetica-Bold').fontSize(10);
     const titleHeight = doc.heightOfString(title, { width: descW });
-    const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW }) + 2 : 0;
+    doc.font('Helvetica').fontSize(8.5);
+    const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
     const descHeight = titleHeight + blurbHeight;
-    doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
     const img = imageByLine.get(l.id);
+    const rowHeight = Math.max(descHeight, img ? THUMB : 12);
+    // Keep the whole row together: if it won't fit in the remaining page, break to
+    // a fresh page (re-drawing the column header) rather than letting a long
+    // description overflow into the footer band. (Old reserve was a flat 30/52pt,
+    // so tall rows spilled past the bottom margin.)
+    y = ensureRowSpace(y, rowHeight + 6);
+    doc.fillColor('#1f2937').font('Helvetica').fontSize(10);
+    doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.contentWidth * 0.10, align: 'left' });
     if (img) {
-      try { doc.image(img, descX, y, { fit: [THUMB, THUMB] }); } catch { /* corrupt image: skip */ }
+      // A buffer that loaded but pdfkit can't decode: skip the thumbnail (never
+      // abort the document) but REPORT it — the pre-load loop above logs byte-level
+      // failures, so a decode-at-draw failure must not be the one silent gap.
+      try {
+        doc.image(img, descX, y, { fit: [THUMB, THUMB] });
+      } catch (e) {
+        console.error('[quotePdf] doc.image (line thumbnail) failed', l.id, e instanceof Error ? e.message : e);
+        captureException(e instanceof Error ? e : new Error(String(e)));
+      }
     }
-    doc.font('Helvetica-Bold').text(title, descX + gutter, y, { width: descW });
+    doc.fillColor('#1f2937').font('Helvetica-Bold').fontSize(10).text(title, descX + gutter, y, { width: descW });
     if (blurb) {
-      doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, descX + gutter, y + titleHeight + 2, { width: descW });
+      doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, descX + gutter, y + titleHeight + 2, { width: descW, lineGap: 1 });
       doc.fillColor('#1f2937').fontSize(10);
     }
-    doc.font('Helvetica').text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right' });
+    doc.font('Helvetica').fontSize(10).text(formatMoney(l.unitPrice, currency), c.colUnitX, y, { width: c.colNumW, align: 'right' });
     if (showTax) {
       const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
       doc.fillColor('#6b7280').text(t === null ? '—' : formatMoney(t, currency), c.colTaxX, y, { width: c.colNumW, align: 'right' });
       doc.fillColor('#1f2937');
     }
     const suffix = recurrenceSuffix(l.recurrence);
-    doc.text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency)}${suffix}`, c.colAmtX, y, { width: c.colNumW, align: 'right' });
-    y += Math.max(descHeight, img ? THUMB : 12) + 6;
+    doc.font('Helvetica').fontSize(10).text(`${formatMoney(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), currency)}${suffix}`, c.colAmtX, y, { width: c.colNumW, align: 'right' });
+    y += rowHeight + 6;
+  }
+
+  // Opt-in per-table subtotal: sum THIS table's lines split by recurrence, shown
+  // as non-zero parts joined with " + " (matches the document footer style).
+  if (showSubtotal) {
+    const sums = { one_time: 0, monthly: 0, annual: 0 };
+    for (const l of lines) {
+      // Fold any unrecognized recurrence (e.g. a future re-enabled 'quarterly')
+      // into one_time so the printed Subtotal always covers every rendered row —
+      // never silently omit a bucket the parts list below doesn't know about.
+      const key = l.recurrence === 'monthly' || l.recurrence === 'annual' ? l.recurrence : 'one_time';
+      sums[key] += Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice));
+    }
+    const parts: string[] = [];
+    if (sums.one_time > 0) parts.push(formatMoney(sums.one_time, currency));
+    if (sums.monthly > 0) parts.push(`${formatMoney(sums.monthly, currency)}/mo`);
+    if (sums.annual > 0) parts.push(`${formatMoney(sums.annual, currency)}/yr`);
+    if (parts.length) {
+      y = ensureRowSpace(y, 24);
+      doc.moveTo(c.colUnitX, y).lineTo(c.right, y).lineWidth(0.5).strokeColor('#e5e7eb').stroke();
+      y += 6;
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#374151').text('Subtotal', c.colUnitX, y, { width: c.contentWidth * 0.2, align: 'left' });
+      doc.fillColor('#111827').text(parts.join('  +  '), c.colUnitX, y, { width: c.right - c.colUnitX, align: 'right' });
+      y += 18;
+    }
   }
   return y + 6;
 }
@@ -531,12 +576,18 @@ export async function renderQuotePdf(
         // Section label above the table (parity with the web document), e.g.
         // "Recurring services" / "One-time".
         const label = String((b.content as { label?: string }).label ?? '').trim();
+        // Keep the section label glued to its table header + first row: reserve
+        // space for label + column header + a minimum first row up front. Without
+        // this, a label near the page bottom fit its own 36pt reservation but
+        // renderLineTable then broke, stranding the label (and later the column
+        // header) alone at the foot of the page.
+        y = ensureSpace(doc, y, (label ? 24 : 0) + 24 + 52);
         if (label) {
-          y = ensureSpace(doc, y, 36);
           doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(label, c.left, y, { width: c.contentWidth });
           y = doc.y + 6;
         }
-        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax);
+        const showSubtotal = (b.content as { showSubtotal?: boolean }).showSubtotal === true;
+        y = await renderLineTable(doc, blockLines, currency, y, loadCatalogImage, loadImage, taxRate, showTax, showSubtotal);
       }
     }
   }

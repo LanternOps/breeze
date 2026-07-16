@@ -506,6 +506,7 @@
         "qty": "Qty",
         "recurrence": "Recurrence",
         "scrollAria": "Pricing table — scroll sideways for tax, total and row actions",
+        "showSubtotal": "Show subtotal row",
         "tax": "Tax",
         "taxTitle": "Per-line tax. The header Tax total is authoritative and may differ by a rounding cent.",
         "taxable": "Taxable",
@@ -544,6 +545,8 @@
       "savingTitle": "Saving your changes — Send unlocks when everything is saved.",
       "sendConfirm": {
         "message": "We'll email this proposal to {{orgName}} and mark it Sent — {{amount}} due on acceptance. This can't be undone.",
+        "messageLabel": "Add a personal message (optional)",
+        "messagePlaceholder": "Include a short note — it appears in the email above the accept link.",
         "title": "Send this proposal?"
       },
       "sendError": "Could not send the proposal.",
@@ -630,6 +633,8 @@
       "imageUnavailable": "Image unavailable",
       "issued": "Issued",
       "preparedFor": "Prepared for",
+      "taxId": "Tax ID: {{id}}",
+      "imageZoomAria": "View larger image",
       "preview": {
         "description": "This is what your customer sees on their proposal link.",
         "downloadPdf": "Download PDF",

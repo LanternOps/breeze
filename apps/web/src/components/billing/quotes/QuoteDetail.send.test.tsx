@@ -96,8 +96,24 @@ describe('QuoteDetail — send proposal', () => {
 
     fireEvent.click(screen.getByTestId('quote-send-confirm'));
     await waitFor(() => {
-      expect(sendQuote).toHaveBeenCalledWith('q-1');
+      // No note typed → the empty string is forwarded (the API client trims it away).
+      expect(sendQuote).toHaveBeenCalledWith('q-1', '');
       expect(onChanged).toHaveBeenCalled();
     });
+  });
+
+  it('forwards a typed personal message to the send call', async () => {
+    const sendQuote = vi.mocked(quotesApi.sendQuote);
+    sendQuote.mockResolvedValue(resp({ data: null }));
+
+    render(<QuoteDetail detail={filledDraft} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('quote-send'));
+    await waitFor(() => expect(screen.getByTestId('quote-send-message')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('quote-send-message'), { target: { value: 'Thanks for your business!' } });
+
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+    await waitFor(() => expect(sendQuote).toHaveBeenCalledWith('q-1', 'Thanks for your business!'));
   });
 });

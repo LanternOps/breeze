@@ -82,7 +82,11 @@ function formatMoneyish(n: string | null | undefined, currency: string): string 
 }
 
 /** Issue (if draft) + send: assign number, status→sent, sentAt, mint token, best-effort email. */
-export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote: QuoteRow; emailed: boolean; acceptUrl: string }> {
+export async function sendQuote(
+  id: string,
+  actor: QuoteActor,
+  opts: { message?: string } = {},
+): Promise<{ quote: QuoteRow; emailed: boolean; acceptUrl: string }> {
   const { quote, blocks, lines } = await getQuote(id, actor); // getQuote enforces org-access (404)
   if (quote.status !== 'draft') {
     // Phase 2 send is issue-once: a non-draft quote (already sent/viewed/etc.) cannot be re-sent.
@@ -220,6 +224,7 @@ export async function sendQuote(id: string, actor: QuoteActor): Promise<{ quote:
         quoteNumber, partnerName: partnerName ?? 'your provider',
         total: formatMoneyish(quote.total, quote.currencyCode), acceptUrl,
         expiryDate: quote.expiryDate ?? undefined,
+        message: opts.message,
       });
       await emailService.sendEmail({ to: recipient, subject: template.subject, html: template.html, text: template.text, attachments: [{ filename: `${quoteNumber}.pdf`, content: pdf, contentType: 'application/pdf' }] });
       emailed = true;

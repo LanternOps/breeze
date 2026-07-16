@@ -506,6 +506,7 @@
         "qty": "Qté",
         "recurrence": "Récurrence",
         "scrollAria": "Tableau de prix — faites défiler horizontalement pour la taxe, le total et les actions de ligne",
+        "showSubtotal": "Afficher la ligne de sous-total",
         "tax": "Taxe",
         "taxTitle": "Taxe par ligne. L'en-tête Total taxe fait foi et peut différer d'un centime par arrondi.",
         "taxable": "Taxable",
@@ -544,6 +545,8 @@
       "savingTitle": "Enregistrement de vos modifications — l'envoi sera disponible une fois tout enregistré.",
       "sendConfirm": {
         "message": "Nous enverrons cette proposition par e-mail à {{orgName}} et la marquerons Envoyée — {{amount}} dû à l'acceptation. Cette action est irréversible.",
+        "messageLabel": "Ajouter un message personnel (facultatif)",
+        "messagePlaceholder": "Ajoutez une courte note : elle apparaît dans l'e-mail, au-dessus du lien d'acceptation.",
         "title": "Envoyer cette proposition ?"
       },
       "sendError": "Impossible d'envoyer la proposition.",
@@ -630,6 +633,8 @@
       "imageUnavailable": "Image indisponible",
       "issued": "Émis",
       "preparedFor": "Préparé pour",
+      "taxId": "Identifiant fiscal : {{id}}",
+      "imageZoomAria": "Voir l'image en grand",
       "preview": {
         "description": "Voici ce que votre client voit sur son lien de proposition.",
         "downloadPdf": "Télécharger le PDF",

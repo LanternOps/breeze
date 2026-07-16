@@ -155,6 +155,38 @@ describe('quoteService (breeze_app, real DB)', () => {
     expect(fetched.quote.annualRecurringTotal).toBe('0.00');
   });
 
+  runDb('addManualLine without a blockId lands in an auto-created pricing section, reused across lines (#2553)', async () => {
+    const fx = await seedFixture();
+    const quote = await withDbAccessContext(fx.ctxA, () =>
+      createQuote({ orgId: fx.orgA.id, currencyCode: 'USD' }, fx.actorA)
+    );
+
+    const l1 = await withDbAccessContext(fx.ctxA, () =>
+      addManualLine(quote.id, {
+        sourceType: 'manual', description: 'First', quantity: 1, unitPrice: 100,
+        taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false,
+      }, fx.actorA)
+    );
+    // Never orphaned — the line carries a real blockId.
+    expect(l1.blockId).toBeTruthy();
+
+    const l2 = await withDbAccessContext(fx.ctxA, () =>
+      addManualLine(quote.id, {
+        sourceType: 'manual', description: 'Second', quantity: 1, unitPrice: 50,
+        taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false,
+      }, fx.actorA)
+    );
+
+    const fetched = await withDbAccessContext(fx.ctxA, () => getQuote(quote.id, fx.actorA));
+    // One default line_items section is created and REUSED for both lines, so the
+    // editor (which renders lines only inside blocks) shows them — no ghost line.
+    const lineBlocks = fetched.blocks.filter((b) => b.blockType === 'line_items');
+    expect(lineBlocks).toHaveLength(1);
+    expect(l1.blockId).toBe(lineBlocks[0]!.id);
+    expect(l2.blockId).toBe(lineBlocks[0]!.id);
+    expect(fetched.lines.every((l) => l.blockId === lineBlocks[0]!.id)).toBe(true);
+  });
+
   runDb('addCatalogLine snapshots a recurring item (recurrence/term/price/MRR)', async () => {
     const fx = await seedFixture();
     const item = await seedCatalogItem(fx.partnerA.id, {

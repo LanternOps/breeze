@@ -22,7 +22,10 @@ const depositPercent = z.number().gt(0).lt(100).multipleOf(0.01);
 const headingContent = z.object({ text: z.string().min(1).max(300), level: z.number().int().min(1).max(3).default(2) });
 const richTextContent = z.object({ html: z.string().max(50_000) });
 const imageContent = z.object({ imageId: z.string().guid(), caption: z.string().max(500).optional(), width: z.number().int().min(50).max(2000).optional() });
-const lineItemsContent = z.object({ label: z.string().max(200).optional() });
+// `showSubtotal` opts this pricing table into a per-table subtotal row (summed
+// from its own lines, split by recurrence). Off by default so existing tables
+// render unchanged.
+const lineItemsContent = z.object({ label: z.string().max(200).optional(), showSubtotal: z.boolean().optional() });
 
 export const quoteBlockInputSchema = z.discriminatedUnion('blockType', [
   z.object({ blockType: z.literal('heading'), content: headingContent }),

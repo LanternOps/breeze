@@ -7,6 +7,7 @@ import { organizations, partners } from '../db/schema/orgs';
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { computeLineTotal, resolveEffectiveTaxRate } from './invoiceMath';
+import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
@@ -358,6 +359,54 @@ export async function getQuote(id: string, actor: QuoteActor) {
     q.taxRate ? parseFloat(q.taxRate) : null,
     toQuoteDepositConfig(q.depositType, q.depositPercent),
   );
+  // Resolve the customer "bill to" for display. Keyed on quote STATUS, not on
+  // whether the frozen fields happen to be populated:
+  //  - A NON-DRAFT quote carries its own frozen snapshot, written at send time
+  //    from the org's Billing settings. Return it VERBATIM — never re-derive from
+  //    the live org — so the issued document stays immutable even if the org's
+  //    billing address is edited afterwards. (An org with no address at send time
+  //    froze an all-null block; that blank is the correct, immutable record.)
+  //  - A DRAFT has no frozen snapshot yet, so fall back to the SAME org columns
+  //    the send path will freeze, surfacing the customer name + address on the
+  //    draft's preview/PDF instead of a blank block. A tech-entered billToName
+  //    override still wins over the org name.
+  const frozenAddress = (q.billToAddress as BillToAddress | null) ?? null;
+  let billTo: { name: string | null; address: BillToAddress | null; taxId: string | null };
+  if (q.status === 'draft') {
+    const [org] = await db
+      .select({
+        name: organizations.name,
+        taxId: organizations.taxId,
+        billingAddressLine1: organizations.billingAddressLine1,
+        billingAddressLine2: organizations.billingAddressLine2,
+        billingAddressCity: organizations.billingAddressCity,
+        billingAddressRegion: organizations.billingAddressRegion,
+        billingAddressPostalCode: organizations.billingAddressPostalCode,
+        billingAddressCountry: organizations.billingAddressCountry,
+      })
+      .from(organizations)
+      .where(eq(organizations.id, q.orgId))
+      .limit(1);
+    if (!org) {
+      // getQuote just read this quote in the SAME context, so its org should be
+      // visible too — an unreadable org is anomalous. Mirror the send path's
+      // telemetry (quoteLifecycle) rather than let a blank bill-to be silent.
+      console.error(`[quoteService] org ${q.orgId} not readable while resolving draft bill-to for quote ${q.id} — showing an empty bill-to`);
+    }
+    const hasFrozenAddress = !!frozenAddress
+      && Object.values(frozenAddress).some((v) => typeof v === 'string' && v.trim().length > 0);
+    billTo = {
+      name: q.billToName?.trim() ? q.billToName : (org?.name ?? null),
+      address: hasFrozenAddress ? frozenAddress : buildBillToAddress(org),
+      taxId: q.billToTaxId ?? org?.taxId ?? null,
+    };
+  } else {
+    billTo = {
+      name: q.billToName ?? null,
+      address: frozenAddress,
+      taxId: q.billToTaxId ?? null,
+    };
+  }
   return {
     quote: {
       ...q,
@@ -367,6 +416,7 @@ export async function getQuote(id: string, actor: QuoteActor) {
     },
     blocks,
     lines,
+    billTo,
     pax8OrderId: pax8OrderSummary?.pax8OrderId ?? null,
     pax8OrderLineCount: Number(pax8OrderLineSummary?.count ?? 0),
   };
@@ -513,15 +563,44 @@ export async function deleteBlock(quoteId: string, blockId: string, actor: Quote
 // Lines
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve the block a new line should live in. A caller-supplied blockId is used
+ * as-is; when it's omitted (the API / MCP add-line path — the web editor always
+ * passes one), the line is attached to the quote's default pricing section: the
+ * earliest existing line_items block, or a fresh one created on demand.
+ *
+ * Without this, a blockId-less line became an "orphan" — counted in the totals
+ * and drawn in the PDF's trailing table, but NEVER rendered in the editor (which
+ * only walks line_items blocks). The result was a quote showing a real dollar
+ * total while the builder said "No content yet", uneditable from the UI (#2553).
+ */
+async function resolveLineBlockId(quoteId: string, orgId: string, blockId: string | null | undefined): Promise<string> {
+  if (blockId) return blockId;
+  const [existing] = await db
+    .select({ id: quoteBlocks.id })
+    .from(quoteBlocks)
+    .where(and(eq(quoteBlocks.quoteId, quoteId), eq(quoteBlocks.blockType, 'line_items')))
+    .orderBy(quoteBlocks.sortOrder)
+    .limit(1);
+  if (existing) return existing.id;
+  const sortOrder = await nextBlockSortOrder(quoteId);
+  const [block] = await db
+    .insert(quoteBlocks)
+    .values({ quoteId, orgId, blockType: 'line_items', content: {}, sortOrder })
+    .returning({ id: quoteBlocks.id });
+  return block!.id;
+}
+
 export async function addManualLine(quoteId: string, input: QuoteLineInput, actor: QuoteActor) {
   const q = await loadDraft(quoteId, actor);
   const quantity = String(input.quantity);
   const unitPrice = Number(input.unitPrice).toFixed(2);
+  const blockId = await resolveLineBlockId(quoteId, q.orgId, input.blockId);
   const sortOrder = await nextLineSortOrder(quoteId);
   const [row] = await db.insert(quoteLines).values({
     quoteId,
     orgId: q.orgId,
-    blockId: input.blockId ?? null,
+    blockId,
     sourceType: input.sourceType,
     catalogItemId: input.catalogItemId ?? null,
     name: input.name ?? null,
@@ -579,11 +658,12 @@ export async function addCatalogLine(
     ? (item.billingFrequency === 'annual' ? 'annual' : 'monthly')
     : 'one_time';
   const qty = String(quantity);
+  const resolvedBlockId = await resolveLineBlockId(quoteId, q.orgId, blockId);
   const sortOrder = await nextLineSortOrder(quoteId);
   const [row] = await db.insert(quoteLines).values({
     quoteId,
     orgId: q.orgId,
-    blockId: blockId ?? null,
+    blockId: resolvedBlockId,
     sourceType: 'catalog',
     catalogItemId,
     // Mirror the catalog item: its name is the line title, its description the blurb.
