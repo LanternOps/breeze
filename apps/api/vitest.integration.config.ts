@@ -100,6 +100,10 @@ export default defineConfig({
       // file needs a dedicated audit against current auth route shapes.
       'src/__tests__/integration/auth.integration.test.ts',
     ],
+    // Migrations run ONCE per invocation here (not in setup.ts's per-file
+    // beforeAll): re-verifying 400+ migration checksums for every test file
+    // was ~4 min of pure no-op work per CI run.
+    globalSetup: ['src/__tests__/integration/globalSetup.ts'],
     setupFiles: ['src/__tests__/integration/setup.ts'],
     // Integration tests run sequentially to avoid database conflicts.
     // `fileParallelism: false` forces vitest to run test files one at a
@@ -112,7 +116,7 @@ export default defineConfig({
     // Longer timeouts for database operations
     testTimeout: 30000,
     hookTimeout: 30000,
-    // No `bail` here on purpose: the suite is ~90s, and bail:1 masks
+    // No `bail` here on purpose: bail:1 masks
     // stacked breakages — in June 2026 it hid #1092's org-scope lockout
     // behind #1042's RBAC 403 for a day because each CI run only ever
     // surfaced the first failure. Always report every failure.

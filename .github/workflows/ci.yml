@@ -1223,16 +1223,31 @@ jobs:
   # main red for 8 days. No Docker image builds, but the real-DB suite plus
   # RLS coverage regularly needs more than 15 minutes as the migration/test
   # surface grows.
+  #
+  # Sharded 4 ways with vitest `--shard` (2026-07): the suite had grown to
+  # 212 files / ~1170 tests ≈ 21 min of strictly sequential wall clock
+  # (fileParallelism stays false — the shared TRUNCATE-based cleanup in
+  # setup.ts requires it). Each shard is a full job with its own fresh
+  # Postgres/Redis containers, so per-file isolation semantics are
+  # unchanged; only the file list is split. Branch protection requires the
+  # "CI Success" fan-in, and `needs.integration-test.result` there already
+  # aggregates across the matrix (success only if every shard passed).
   integration-test:
-    name: Integration Tests
+    name: Integration Tests (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     needs: [lint, typecheck]
-    # The suite (138 files / ~690 tests) runs ~29 min and was tipping over the
-    # old 30-min ceiling at the boundary (passed/cancelled non-deterministically
-    # on the same commit). Raised to 40 for headroom — the tests pass, this is
-    # runtime growth, not a hang. By 2026-07 the baseline hit ~36 min and PRs
-    # adding integration suites tipped over 40 the same way; raised to 55.
-    timeout-minutes: 55
+    strategy:
+      # Report every shard's result — a red shard must not cancel the others
+      # (same rationale as the no-bail rule inside the suite: masking stacked
+      # breakages hid #1092 behind #1042 for a day).
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # ~1/4 of the suite (~6 min) + env/container setup + one autoMigrate
+    # pass. 25 leaves generous headroom for suite growth; before sharding
+    # this ceiling had to be raised twice (30→40→55) as the sequential
+    # runtime grew.
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -1281,13 +1296,19 @@ jobs:
           # guarded `db` proxy. Production code must always carry an access
           # context, so a genuine offender here is a real bug, not test noise.
           DB_CONTEXTLESS_WRITE_STRICT: 'true'
-        run: pnpm --filter=@breeze/api test:integration
+        # pnpm forwards args after the script name to the script itself, so
+        # --shard reaches vitest. Sharding only splits the file list; files
+        # within a shard still run sequentially (fileParallelism: false).
+        run: pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/4
 
       # Dedicated exact-role enforcement runner. The general integration config
       # excludes it because this suite manages a temporary BYPASSRLS role and
       # must not inherit the shared TRUNCATE hooks. The preceding suite has
-      # already applied migrations and ensured the breeze_app login exists.
+      # already applied migrations (globalSetup runs autoMigrate on every
+      # shard's fresh DB) and ensured the breeze_app login exists. Runs on
+      # shard 1 only — it's a single-DB contract check, not a sharded suite.
       - name: Run request database role enforcement tests
+        if: matrix.shard == 1
         env:
           DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
           DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
@@ -1299,11 +1320,13 @@ jobs:
       # The rls-coverage contract test inspects pg_catalog to verify every
       # tenant-scoped table has policies covering SELECT/INSERT/UPDATE/DELETE
       # via the right access helper. Runs against the same test DB AFTER
-      # the integration suite (which has already triggered autoMigrate).
-      # Has its own runner because vitest.integration.config.ts excludes it:
-      # the read-only catalog inspection must not be hooked to setup.ts,
-      # which TRUNCATEs core tables on beforeEach.
+      # the integration suite (whose globalSetup has already triggered
+      # autoMigrate). Has its own runner because vitest.integration.config.ts
+      # excludes it: the read-only catalog inspection must not be hooked to
+      # setup.ts, which TRUNCATEs core tables on beforeEach. Shard 1 only —
+      # a single-DB contract check, identical on every shard.
       - name: Run RLS coverage contract test
+        if: matrix.shard == 1
         env:
           DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
           DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test

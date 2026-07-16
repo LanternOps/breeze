@@ -27,8 +27,8 @@
  *   pnpm vitest run --config vitest.integration.config.ts \
  *     src/__tests__/integration/emailRecoveryRegistration.integration.test.ts
  *
- * The integration harness (setup.ts) runs autoMigrate() — which creates the
- * unprivileged `breeze_app` RLS role — off DATABASE_URL/DATABASE_URL_APP.
+ * The integration harness (globalSetup.ts) runs autoMigrate() — which creates
+ * the unprivileged `breeze_app` RLS role — off DATABASE_URL/DATABASE_URL_APP.
  */
 import './setup';
 

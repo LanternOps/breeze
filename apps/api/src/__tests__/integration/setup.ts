@@ -22,7 +22,6 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres, { type Sql } from 'postgres';
 import Redis, { type RedisOptions } from 'ioredis';
 import * as schema from '../../db/schema';
-import { autoMigrate } from '../../db/autoMigrate';
 import { assertTestDatabaseUrlSafe } from '../../testUtils/integrationDatabaseSafety';
 
 // Load test environment variables
@@ -138,7 +137,10 @@ export async function setupIntegrationTests() {
     retryStrategy: (times) => Math.min(times * 100, 3000)
   } as RedisOptions);
 
-  // Wait for connections to be ready
+  // Wait for connections to be ready. Migrations are NOT run here: they are
+  // applied exactly once per `vitest run` by globalSetup.ts (see
+  // vitest.integration.config.ts) — re-running autoMigrate in every file's
+  // beforeAll was a ~1.1s/file no-op verification tax (~4 min of CI time).
   try {
     // Test PostgreSQL connection
     await testClient`SELECT 1`;
@@ -147,16 +149,6 @@ export async function setupIntegrationTests() {
     // Test Redis connection
     await testRedis.ping();
     console.log('Redis connection established');
-
-    // Run all hand-written SQL migrations against the test DB and ensure
-    // the unprivileged `breeze_app` role exists with the right password
-    // and privileges. `autoMigrate()` is idempotent and internally calls
-    // `ensureAppRole()`, so integration tests see the same schema state
-    // as a freshly-started API process.
-    console.log('Running migrations...');
-    await autoMigrate();
-
-    console.log('Database ready for testing');
   } catch (error) {
     console.error('Failed to connect to test services:', error);
     console.error('\nMake sure test containers are running:');
@@ -258,7 +250,7 @@ const CLEANUP_TABLES = [
 // Resolved once per test file (module instance): which of CLEANUP_TABLES exist
 // in this branch's schema. Replaces the old per-statement 42P01 tolerance —
 // filtering up front lets the truncate run as ONE statement, and the schema
-// cannot change mid-run (autoMigrate runs in beforeAll, before any cleanup).
+// cannot change mid-run (autoMigrate runs in globalSetup, before any worker).
 let existingCleanupTables: string[] | null = null;
 
 async function resolveCleanupTables(): Promise<string[]> {
