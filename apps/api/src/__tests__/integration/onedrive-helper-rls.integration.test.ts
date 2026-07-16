@@ -410,8 +410,13 @@ describe('config_policy_onedrive_settings RLS isolation (breeze_app)', () => {
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
-  // (d) Cross-org UPDATE WITH CHECK denied: org A owns a settings row and tries
-  // to reassign its org_id to org B → 42501 (covers the UPDATE WITH CHECK policy).
+  // (d) Cross-org UPDATE re-home denied: org A owns a settings row and tries
+  // to reassign its org_id to org B. Two independent layers both reject this —
+  // the RLS UPDATE WITH CHECK (42501) and the feature-link reference-ownership
+  // composite FK (23503, 2026-07-27-b) — and which surfaces first is an
+  // implementation detail. Either way the cross-org re-home cannot commit.
+  // (The forged-INSERT test above stays a pure 42501 RLS proof: there the FK
+  // side is deliberately consistent.)
   runDb('blocks org A re-homing its own settings row to org B', async () => {
     const fx = await seedFixture();
 
@@ -430,7 +435,7 @@ describe('config_policy_onedrive_settings RLS isolation (breeze_app)', () => {
           .set({ orgId: fx.orgB.id })
           .where(eq(configPolicyOnedriveSettings.id, settingsId))
       )
-    ).rejects.toMatchObject({ cause: { code: '42501' } });
+    ).rejects.toMatchObject({ cause: { code: expect.stringMatching(/^(?:42501|23503)$/) } });
   });
 
   runDb('blocks same-org settings from referencing another org feature link', async () => {
@@ -571,8 +576,10 @@ describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
-  // (c) Cross-org UPDATE WITH CHECK denied: org A owns a library row and tries
-  // to reassign its org_id to org B → 42501 (covers the UPDATE WITH CHECK policy).
+  // (c) Cross-org UPDATE re-home denied: org A owns a library row and tries
+  // to reassign its org_id to org B. Denied by RLS UPDATE WITH CHECK (42501)
+  // or the settings reference-ownership composite FK (23503) — see the
+  // settings re-home test above for why either code proves the block.
   runDb('blocks org A re-homing its own library row to org B', async () => {
     const fx = await seedFixture();
 
@@ -601,7 +608,7 @@ describe('config_policy_onedrive_libraries RLS isolation (breeze_app)', () => {
           .set({ orgId: fx.orgB.id })
           .where(eq(configPolicyOnedriveLibraries.id, libraryId))
       )
-    ).rejects.toMatchObject({ cause: { code: '42501' } });
+    ).rejects.toMatchObject({ cause: { code: expect.stringMatching(/^(?:42501|23503)$/) } });
   });
 
   runDb('blocks same-org library from referencing another org settings row', async () => {
