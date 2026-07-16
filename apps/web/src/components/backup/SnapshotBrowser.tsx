@@ -35,10 +35,24 @@ type SnapshotFile = {
   path?: string;
 };
 
+type BackupType = 'file' | 'system_image' | 'database' | 'application';
+
+// Human labels for non-file backup types. Deliberately untranslated literals
+// (like the sibling immutability badge, though the legal-hold badge next to it
+// does use t()): these render in English across all locales as a tradeoff to
+// avoid fanning a new key out across all five translation bundles. Move to t()
+// keys if/when the badge cluster is localized as a whole.
+const BACKUP_TYPE_LABELS: Record<Exclude<BackupType, 'file'>, string> = {
+  system_image: 'System image',
+  database: 'Database',
+  application: 'Application',
+};
+
 type Snapshot = {
   id: string;
   label: string | null;
   createdAt: string;
+  backupType?: BackupType;
   sizeBytes: number | null;
   fileCount: number | null;
   location: string | null;
@@ -443,6 +457,9 @@ export default function SnapshotBrowser() {
               {snapshots.map((snapshot) => (
                 <option key={snapshot.id} value={snapshot.id}>
                   {snapshot.label ?? snapshot.id}
+                  {snapshot.backupType && snapshot.backupType !== 'file'
+                    ? ` — ${BACKUP_TYPE_LABELS[snapshot.backupType]}`
+                    : ''}
                 </option>
               ))}
             </select>
@@ -460,6 +477,11 @@ export default function SnapshotBrowser() {
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-semibold text-foreground">{selectedSnapshotDisplayLabel}</span>
+                {selectedSnapshot.backupType && selectedSnapshot.backupType !== 'file' && (
+                  <span className="rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-0.5 text-xs font-medium text-violet-700">
+                    {BACKUP_TYPE_LABELS[selectedSnapshot.backupType]}
+                  </span>
+                )}
                 {selectedSnapshot.legalHold && (
                   <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700">
                     {t('snapshotBrowser.legalHold')} </span>

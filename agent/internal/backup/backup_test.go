@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/backup/systemstate"
 )
 
 type blockingUploadProvider struct {
@@ -260,6 +262,102 @@ func TestRunBackup_SystemStateDoesNotMutateConfiguredPaths(t *testing.T) {
 	}
 	if mgr.config.Paths[0] != file1 {
 		t.Fatalf("configured path = %q, want %q", mgr.config.Paths[0], file1)
+	}
+}
+
+// stubCollectSystemState swaps the package-level collector seam for the test
+// and restores it on cleanup.
+func stubCollectSystemState(t *testing.T, fn func() (*systemstate.SystemStateManifest, string, error)) {
+	t.Helper()
+	orig := collectSystemState
+	t.Cleanup(func() { collectSystemState = orig })
+	collectSystemState = fn
+}
+
+func TestRunBackup_SystemImage_NoPathsAllowed(t *testing.T) {
+	// system_image mode runs with no configured file paths — the collected
+	// system-state staging dir is the whole snapshot, so the "backup paths are
+	// required" guard must NOT fire.
+	stagingDir := t.TempDir()
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), []byte("svc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{Platform: "test"}, stagingDir, nil
+	})
+
+	mgr := NewBackupManager(BackupConfig{Provider: newMockProvider(), SystemStateEnabled: true})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("system-state-only run should succeed with collected artifacts: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("status = %q, want completed", job.Status)
+	}
+}
+
+func TestRunBackup_SystemImage_CollectionFailureFailsLoud(t *testing.T) {
+	// A system-state-only run whose collection fails entirely must fail loudly,
+	// not fall through to a green empty snapshot (it has no file paths to fall
+	// back on). The bug this guards: silently "protecting nothing".
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return nil, "", fmt.Errorf("forced collection failure")
+	})
+
+	mgr := NewBackupManager(BackupConfig{Provider: newMockProvider(), SystemStateEnabled: true})
+	job, err := mgr.RunBackup()
+	if err == nil {
+		t.Fatal("expected failed collection to surface as an error")
+	}
+	if job == nil || job.Status != jobStatusFailed {
+		t.Fatalf("status = %v, want %q", job, jobStatusFailed)
+	}
+}
+
+func TestRunBackup_SystemImage_EmptyCollectionFailsLoud(t *testing.T) {
+	// Collection "succeeded" but produced zero artifacts (empty staging dir) →
+	// still a hard failure with a synthetic reason, not a skip.
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{Platform: "test"}, t.TempDir(), nil
+	})
+
+	mgr := NewBackupManager(BackupConfig{Provider: newMockProvider(), SystemStateEnabled: true})
+	job, err := mgr.RunBackup()
+	if err == nil || job == nil || job.Status != jobStatusFailed {
+		t.Fatalf("empty system-state collection should fail loudly; got job=%v err=%v", job, err)
+	}
+	if !strings.Contains(err.Error(), "no artifacts") {
+		t.Fatalf("expected synthetic no-artifacts error, got: %v", err)
+	}
+}
+
+func TestRunBackup_SystemImage_PartialCollectionWarns(t *testing.T) {
+	// A partial collection of *optional* classes (certs/iis) still completes,
+	// but must surface a warning so a degraded system_image is visible. (A
+	// missing *required* class returns an error from the collector and fails the
+	// run instead — see TestRunBackup_SystemImage_CollectionFailureFailsLoud.)
+	stagingDir := t.TempDir()
+	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), []byte("svc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubCollectSystemState(t, func() (*systemstate.SystemStateManifest, string, error) {
+		return &systemstate.SystemStateManifest{
+			Platform:        "test",
+			Artifacts:       []systemstate.Artifact{{Name: "services", Category: "services"}},
+			IncompleteSteps: []string{"certs", "iis"},
+		}, stagingDir, nil
+	})
+
+	mgr := NewBackupManager(BackupConfig{Provider: newMockProvider(), SystemStateEnabled: true})
+	job, err := mgr.RunBackup()
+	if err != nil {
+		t.Fatalf("partial collection with artifacts should complete: %v", err)
+	}
+	if job.Status != jobStatusCompleted {
+		t.Fatalf("status = %q, want completed", job.Status)
+	}
+	if !strings.Contains(job.Warning, "certs") || !strings.Contains(job.Warning, "incomplete") {
+		t.Fatalf("expected incomplete-steps warning, got %q", job.Warning)
 	}
 }
 

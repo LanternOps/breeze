@@ -35,6 +35,22 @@ func CollectSystemState() (manifest *SystemStateManifest, stagingDir string, err
 	return manifest, stagingDir, nil
 }
 
+// missingRequired returns the subset of failed (incomplete) collection steps
+// that are required for a restorable system image. A non-empty result means the
+// collection must be treated as a hard failure rather than a best-effort
+// partial — an image missing these classes (e.g. registry/boot on Windows)
+// would not boot at restore time, so it must not present as a full capture.
+// The required set is supplied by each platform collector.
+func missingRequired(incomplete []string, required map[string]bool) []string {
+	var missing []string
+	for _, s := range incomplete {
+		if required[s] {
+			missing = append(missing, s)
+		}
+	}
+	return missing
+}
+
 // CollectHardwareOnly captures hardware information without performing
 // a full system state collection. Useful for inventory and recovery planning.
 func CollectHardwareOnly() (*HardwareProfile, error) {

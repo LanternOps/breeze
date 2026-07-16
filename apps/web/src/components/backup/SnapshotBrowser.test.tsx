@@ -142,4 +142,32 @@ describe('SnapshotBrowser', () => {
     expect(await screen.findByText(/Provider immutability was requested by policy/i)).toBeTruthy();
     expect(screen.getByText(/Bucket object lock no longer enabled/i)).toBeTruthy();
   });
+
+  it('badges a system_image snapshot with its backup type', async () => {
+    fetchMock.mockImplementationOnce(async () => makeJsonResponse({
+      data: [
+        {
+          id: 'snap-1',
+          label: 'Nightly Snapshot',
+          createdAt: '2026-03-31T00:00:00Z',
+          backupType: 'system_image',
+          sizeBytes: 1048576,
+          fileCount: 13,
+          location: 'snapshots/provider-snap-1',
+          expiresAt: '2026-04-30T00:00:00Z',
+          legalHold: false,
+          legalHoldReason: null,
+          isImmutable: false,
+          immutableUntil: null,
+          immutabilityEnforcement: null,
+          requestedImmutabilityEnforcement: null,
+          immutabilityFallbackReason: null,
+        },
+      ],
+    }));
+
+    render(<SnapshotBrowser />);
+
+    expect(await screen.findByText(/System image/i)).toBeTruthy();
+  });
 });
