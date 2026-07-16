@@ -266,10 +266,11 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 			log.Printf("[backup] system state collection failed, proceeding without: %v", ssErr)
 		} else {
 			job.SystemStateManifest = manifest
-			// A partial collection still returns a manifest (best-effort steps).
-			// Surface which classes failed as a completion warning so a degraded
-			// system_image — e.g. missing registry/boot, which a bare-metal
-			// restore can't boot without — doesn't pass as a full capture.
+			// Collection succeeded on all *required* artifacts (missing a
+			// required class returns an error above and fails the run). Any
+			// remaining incomplete steps are best-effort classes (certs, iis,
+			// ...) — surface them as a completion warning so a degraded capture
+			// is visible without discarding an otherwise-usable backup.
 			if len(manifest.IncompleteSteps) > 0 {
 				job.Warning = fmt.Sprintf("system state collection incomplete: %v failed", manifest.IncompleteSteps)
 				log.Printf("[backup] %s", job.Warning)

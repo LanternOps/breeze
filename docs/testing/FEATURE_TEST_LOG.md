@@ -3679,3 +3679,11 @@ A 4-agent review (code / silent-failure / tests / comments) confirmed the core c
 - **Malformed-completed backup result now fails, not silently completes (H2):** the Redis enqueue path in `agentWs.ts` gates `status` on parse success, mirroring the inline path.
 - **Tests added:** Go seam (`collectSystemState`) + fail-loud/partial-warning assertions (the prior test was vacuous on CI hosts); `backupProcessResultSchema` + `backupCommandResultSchema` manifest round-trip (the strict-schema rejection that hung the job); backupType precedence (file not mislabeled, explicit type wins).
 - **Deferred (noted, not fixed):** H1 (server null-manifest guard — verified unreachable in practice); M2 (combined file+system_image mode — not dispatched); hard-fail-on-missing-registry policy (product decision); hw perf (8 PowerShell spawns).
+
+### Partial-collection policy: hard-fail on required artifacts (per Todd)
+
+Refined the review-round C1 handling — missing *required* artifacts now fails the run rather than warning:
+- `systemstate.go` adds a pure, CI-testable `missingRequired(incomplete, required)` policy helper; the Windows collector declares `windowsRequiredSteps = {registry, boot}` (the classes a bare-metal restore can't boot without) and `CollectState` returns an error when any is missing.
+- A required-artifact failure therefore propagates as a collection error → the system_image job fails loud (no green unbootable snapshot).
+- Genuinely optional classes (certs, iis, firewall, …) still complete with a surfaced warning — an MSP doesn't lose an otherwise-good backup over a non-critical step.
+- Tests: `TestMissingRequired` (policy table); partial-warning test switched to optional classes (certs/iis); required-failure → hard-fail is covered by the collection-error consumption test.

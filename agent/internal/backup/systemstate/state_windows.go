@@ -18,6 +18,15 @@ import (
 // Windows features, and IIS configuration.
 type WindowsCollector struct{}
 
+// windowsRequiredSteps are the collection steps whose failure makes a Windows
+// system_image unbootable/unrestorable. If any of these fails, CollectState
+// returns an error so the backup fails hard instead of shipping a partial that
+// presents as a complete capture.
+var windowsRequiredSteps = map[string]bool{
+	"registry": true,
+	"boot":     true,
+}
+
 // NewCollector returns a WindowsCollector.
 func NewCollector() Collector {
 	return &WindowsCollector{}
@@ -62,6 +71,14 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 
 	if len(manifest.Artifacts) == 0 {
 		return manifest, fmt.Errorf("system state collection produced no artifacts — all %d steps failed", len(steps))
+	}
+
+	// Registry hives and boot config are required for a bootable bare-metal
+	// restore; a system_image missing either is not restorable, so fail hard
+	// rather than shipping a partial that looks complete. Other steps (certs,
+	// iis, firewall, ...) are best-effort and only warn (see IncompleteSteps).
+	if missing := missingRequired(manifest.IncompleteSteps, windowsRequiredSteps); len(missing) > 0 {
+		return manifest, fmt.Errorf("system state collection missing required artifact(s) %v — image would not be restorable", missing)
 	}
 
 	// Attach hardware profile (best-effort).

@@ -332,9 +332,10 @@ func TestRunBackup_SystemImage_EmptyCollectionFailsLoud(t *testing.T) {
 }
 
 func TestRunBackup_SystemImage_PartialCollectionWarns(t *testing.T) {
-	// A partial collection (some artifact classes captured, others failed) still
-	// completes, but must surface a warning so a degraded system_image doesn't
-	// silently present as a full, restorable capture.
+	// A partial collection of *optional* classes (certs/iis) still completes,
+	// but must surface a warning so a degraded system_image is visible. (A
+	// missing *required* class returns an error from the collector and fails the
+	// run instead — see TestRunBackup_SystemImage_CollectionFailureFailsLoud.)
 	stagingDir := t.TempDir()
 	if err := os.WriteFile(pathpkg.Join(stagingDir, "services.txt"), []byte("svc"), 0o600); err != nil {
 		t.Fatal(err)
@@ -343,7 +344,7 @@ func TestRunBackup_SystemImage_PartialCollectionWarns(t *testing.T) {
 		return &systemstate.SystemStateManifest{
 			Platform:        "test",
 			Artifacts:       []systemstate.Artifact{{Name: "services", Category: "services"}},
-			IncompleteSteps: []string{"registry", "boot"},
+			IncompleteSteps: []string{"certs", "iis"},
 		}, stagingDir, nil
 	})
 
@@ -355,7 +356,7 @@ func TestRunBackup_SystemImage_PartialCollectionWarns(t *testing.T) {
 	if job.Status != jobStatusCompleted {
 		t.Fatalf("status = %q, want completed", job.Status)
 	}
-	if !strings.Contains(job.Warning, "registry") || !strings.Contains(job.Warning, "incomplete") {
+	if !strings.Contains(job.Warning, "certs") || !strings.Contains(job.Warning, "incomplete") {
 		t.Fatalf("expected incomplete-steps warning, got %q", job.Warning)
 	}
 }
