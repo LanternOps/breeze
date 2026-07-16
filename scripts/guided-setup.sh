@@ -3434,6 +3434,7 @@ configure_core_env() {
   done
   prompt_secret "ENROLLMENT_KEY_PEPPER" "Enrollment key pepper" "base64_32" true >/dev/null
   prompt_secret "MFA_RECOVERY_CODE_PEPPER" "MFA recovery code pepper" "base64_32" true >/dev/null
+  prompt_secret "PARTNER_API_CURSOR_SIGNING_KEY" "Partner API cursor signing key" "base64_32" true >/dev/null
   prompt_secret "SESSION_SECRET" "Session secret" "base64_64" true >/dev/null
   prompt_secret "METRICS_SCRAPE_TOKEN" "Metrics scrape token" "hex32" true >/dev/null
   prompt_secret "GRAFANA_ADMIN_PASSWORD" "Grafana admin password" "base64_24" true >/dev/null

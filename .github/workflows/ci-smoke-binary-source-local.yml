@@ -100,6 +100,9 @@ jobs:
           PUBLIC_APP_URL: http://localhost:3001
           # Production-strict env that the API requires at boot post-#568.
           JWT_SECRET: ci-smoke-bsl-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          # Partner reconstruction API cursor signing key (32 random bytes,
+          # canonical base64) — required at production boot post-#2506.
+          PARTNER_API_CURSOR_SIGNING_KEY: fD9k9y5kfWTroMAjLM4+tpKrbOHrbu+4Bq775lViAHw=
           APP_ENCRYPTION_KEY: e9367714341ea19491ff7cd095d1a97e15ae3f7962416723ecfb29a89ed71eb9
           MFA_ENCRYPTION_KEY: e86f8b88f2c058d428de55c4abec1b50a3cd960a7205dffdb65be8130abbb777
           ENROLLMENT_KEY_PEPPER: ci-smoke-bsl-enrollment-pepper-Hy4Bz9Mp2Wq6Tv0Lk3

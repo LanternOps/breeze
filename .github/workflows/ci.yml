@@ -1381,6 +1381,9 @@ jobs:
           POSTGRES_PASSWORD=smoketest
           REDIS_PASSWORD=ci-smoke-redis-pw
           JWT_SECRET=ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          # Required in production by config/validate.ts (#2506) — signs
+          # partner reconstruction export cursors. 32 random bytes, base64.
+          PARTNER_API_CURSOR_SIGNING_KEY=nJ4B7uS2xielQGyxLoBLcPCPey5FyilPeVQbGL10CDo=
           AGENT_ENROLLMENT_SECRET=ci-smoke-agent-enrollment-Hy4Bz9Mp2Wq6Tv0Lk3
           BREEZE_BOOTSTRAP_ADMIN_EMAIL=ci-admin@breeze.local
           BREEZE_BOOTSTRAP_ADMIN_PASSWORD=ci-smoke-bootstrap-credential-32-chars
