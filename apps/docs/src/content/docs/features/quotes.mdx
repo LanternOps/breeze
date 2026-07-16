@@ -48,6 +48,18 @@ Any line can carry an **image**, so a hardware quote can show the product the cu
 
 A quote separates **one-time** charges (hardware, project work) from **recurring** charges (monthly or annual services) into distinct pricing tables, each with its own subtotal, so the customer sees "pay once" and "pay every month" as separate figures. Set a line's cadence with its **One-time / Monthly / Annual** control. If you add a line to the wrong table, use the line's **Move to…** action to shift it between the one-time and recurring tables without deleting and re-adding it.
 
+Each pricing table also has a **Show subtotal** option you can turn on or off per table. When enabled, the table's subtotal -- split by recurrence -- appears on both the in-app **Preview** and the **PDF** the customer sees, so you can choose which sections show a running figure.
+
+### Customer Bill-To ("Prepared for")
+
+Every quote -- including a **draft** -- renders a **Prepared for** block with the customer's name, billing address, and tax id, drawn from the organization's **Billing** settings. This shows on both the in-app **Preview** and the **PDF**, so a draft you're reviewing looks the way the customer will see it. (Previously the block was blank until the quote was sent.)
+
+The displayed name still honors a **bill-to name** override when one is set on the quote.
+
+<Aside type="note">
+  The billing address comes from the organization's Billing settings. Keep those current so quotes address the customer correctly. A per-quote address override is planned as a future enhancement.
+</Aside>
+
 ### Inline Editing of Line Items
 
 Quote line items can be edited in place directly in the editor -- you don't need to delete a line and re-add it to correct a detail. Click a field on an existing line to edit it inline:
@@ -88,6 +100,8 @@ When a customer accepts a quote, Breeze turns it into the documents that bill it
 - **One-time lines** become an **invoice** (with the deposit due first, if one was set).
 - **Recurring lines** become one or more **draft contracts** -- monthly and annual lines split into separate drafts, one billing cadence each -- that you review and activate. See [Recurring Contracts → From an Accepted Quote](/features/contracts/#from-an-accepted-quote).
 
+If the accepted quote contains **Pax8-backed** catalog items, acceptance also **stages a Pax8 order** for those items alongside the invoice and contracts. Acceptance doesn't submit anything to Pax8; you complete the commitment and provisioning details and submit it afterward. See [Distributor Integrations → Complete an order staged from a quote](/features/distributor-integrations/#complete-an-order-staged-from-a-quote).
+
 ## Sending and Tracking
 
 <Steps>
@@ -96,7 +110,30 @@ When a customer accepts a quote, Breeze turns it into the documents that bill it
 3. **Send** the quote to the customer for review and acceptance.
 </Steps>
 
+The **Send** dialog accepts an optional **personal message**. When you add one, it renders in the email above the accept link, so you can add a short note to the customer without leaving the quote. Leave it blank to send the standard email.
+
+Preview images support **click-to-zoom**: click an image on the quote preview to open it enlarged, and press **Escape** or click the backdrop to close it. The lightbox is keyboard-reachable.
+
 You can send or delete quotes in bulk from the quote list -- select quotes with the checkboxes to reveal the bulk action bar. Actions run per-item in isolation, so partial success is possible and the bar reports what succeeded and what failed.
+
+## Cloning a Quote
+
+Reuse the structure and line items of an existing proposal instead of rebuilding it. From a quote's actions, choose **Clone quote** to open a dialog where you pick:
+
+- **Company** -- defaults to the source quote's company. Choose a different one to retarget the clone.
+- **Title** -- prefilled with **Clone of** the source quote's title (or its number). You can edit it or leave it blank for an untitled clone.
+
+The clone is a fresh, editable **draft** with its own new quote number, in the same partner. It does **not** carry over the source quote's acceptance or conversion state -- you get a clean proposal to adjust and send.
+
+If you retarget the clone to a **different company**, Breeze applies that company's billing details and tax rate and clears the site and bill-to override, so the new draft reflects the new customer rather than the original one.
+
+Cloning requires quote **write** permission.
+
+## Changing the Customer on a Draft
+
+While a quote is still a **draft**, you can move it to a different customer without cloning. The editor has a **Customer** selector next to the title; switching it re-resolves the tax rate and clears the site and bill-to override -- unless the same edit supplies new values for them.
+
+**Issued quotes -- ones you've already sent or that have been accepted -- are immutable**, including their customer. To point an issued quote at a different customer, use [Clone quote](#cloning-a-quote) and retarget the clone.
 
 ## Permissions
 

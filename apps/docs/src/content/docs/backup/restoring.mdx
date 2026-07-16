@@ -23,6 +23,10 @@ Before restoring, you can inspect what a snapshot contains:
 4. Navigate the file tree — expand folders to see their contents, including file names, sizes, and modification dates.
 </Steps>
 
+<Aside type="note">
+  Non-file snapshots are badged by type in the browser — a Windows system-state snapshot shows a **System image** badge in both the snapshot selector and the detail header, so you can tell it apart from a file backup at a glance.
+</Aside>
+
 <Aside type="tip">
   Always browse a snapshot before restoring to confirm the files you need are present. This is especially useful when deciding between a full restore and a selective one.
 </Aside>
@@ -97,6 +101,7 @@ Cross-device restores also require the destination device to be online when you 
 ## Restore Considerations
 
 - **Existing files.** A full restore to the original location overwrites files at the same paths. Use an alternate path if you want to compare before replacing.
-- **Permissions.** Restored files retain the permissions from the snapshot. If restoring to a different device or OS, permissions may need adjustment.
+- **Permissions.** Restored files retain the permissions from the snapshot. On Linux and macOS, Unix mode bits and the original modification time (mtime) are reapplied to each restored file. If restoring to a different device or OS, permissions may need adjustment.
+- **System-image restores.** Windows system-state (system image) snapshots restore byte-for-byte — the restored artifacts match the original backup exactly.
 - **Open files.** On Windows, files locked by running applications may fail to restore. Stop the relevant services first, or restore to an alternate path.
 - **Disk space.** Ensure the target device has enough free space for the restore. The snapshot's total size is shown in the Restore Wizard summary.
