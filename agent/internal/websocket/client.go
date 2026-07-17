@@ -90,6 +90,17 @@ type Client struct {
 	stopOnce             sync.Once
 	isRunning            bool
 	runningMu            sync.RWMutex
+
+	// OnConnected, if set, is invoked synchronously from the read pump once
+	// the server's "connected" welcome frame has been parsed — i.e. after a
+	// full (re)connect handshake, not just a raw TCP/TLS dial. This is the
+	// same message the capability negotiation handshake uses. Callers (e.g.
+	// the heartbeat's backup-result outbox) use it to retry anything that
+	// couldn't be sent before the last disconnect. Must not block: it runs
+	// inline before the pump resumes reading. Set once at construction time,
+	// before Start() is called — never mutated afterwards, so it's safe to
+	// read without a lock.
+	OnConnected func()
 }
 
 // New creates a new WebSocket client
@@ -383,6 +394,10 @@ func (c *Client) handleConnectedMessage(raw []byte) {
 		}
 	}
 	c.setTerminalOutputBase64(enabled)
+
+	if c.OnConnected != nil {
+		c.OnConnected()
+	}
 }
 
 func (c *Client) resetConnectionCapabilities() {

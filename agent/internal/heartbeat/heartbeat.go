@@ -149,35 +149,40 @@ type helperLifecycleController interface {
 }
 
 type Heartbeat struct {
-	config                *config.Config
-	secureToken           *secmem.SecureString
-	client                *http.Client
-	clientMu              sync.RWMutex
-	stopChan              chan struct{}
-	metricsCol            *collectors.MetricsCollector
-	hardwareCol           *collectors.HardwareCollector
-	softwareCol           *collectors.SoftwareCollector
-	inventoryCol          *collectors.InventoryCollector
-	vpnCol                *collectors.VPNCollector
-	changeTrackerCol      *collectors.ChangeTrackerCollector
-	sessionCol            *collectors.SessionCollector
-	policyStateCol        *collectors.PolicyStateCollector
-	patchCol              *collectors.PatchCollector
-	patchMgr              *patching.PatchManager
-	connectionsCol        *collectors.ConnectionsCollector
-	eventLogCol           *collectors.EventLogCollector
-	bootCol               *collectors.BootPerformanceCollector
-	reliabilityCol        *collectors.ReliabilityCollector
-	agentVersion          string
-	desktopMgr            *desktop.SessionManager
-	wsDesktopMgr          *desktop.WsSessionManager
-	terminalMgr           *terminal.Manager
-	tunnelMgr             *tunnel.Manager
-	executor              *executor.Executor
-	backupBinaryPath      string
-	rebootMgr             *patching.RebootManager
-	securityScanner       *security.SecurityScanner
-	wsClient              *websocket.Client
+	config           *config.Config
+	secureToken      *secmem.SecureString
+	client           *http.Client
+	clientMu         sync.RWMutex
+	stopChan         chan struct{}
+	metricsCol       *collectors.MetricsCollector
+	hardwareCol      *collectors.HardwareCollector
+	softwareCol      *collectors.SoftwareCollector
+	inventoryCol     *collectors.InventoryCollector
+	vpnCol           *collectors.VPNCollector
+	changeTrackerCol *collectors.ChangeTrackerCollector
+	sessionCol       *collectors.SessionCollector
+	policyStateCol   *collectors.PolicyStateCollector
+	patchCol         *collectors.PatchCollector
+	patchMgr         *patching.PatchManager
+	connectionsCol   *collectors.ConnectionsCollector
+	eventLogCol      *collectors.EventLogCollector
+	bootCol          *collectors.BootPerformanceCollector
+	reliabilityCol   *collectors.ReliabilityCollector
+	agentVersion     string
+	desktopMgr       *desktop.SessionManager
+	wsDesktopMgr     *desktop.WsSessionManager
+	terminalMgr      *terminal.Manager
+	tunnelMgr        *tunnel.Manager
+	executor         *executor.Executor
+	backupBinaryPath string
+	rebootMgr        *patching.RebootManager
+	securityScanner  *security.SecurityScanner
+	wsClient         *websocket.Client
+	// backupOutbox persists terminal backup results that failed to send over
+	// the WS connection, so a transient blip doesn't orphan the job
+	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
+	// nil in production — always constructed in NewWithVersion.
+	backupOutbox          *backupResultOutbox
 	mu                    sync.Mutex
 	lastInventoryUpdate   time.Time
 	lastEventLogUpdate    time.Time
@@ -466,6 +471,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		healthMon:       health.NewMonitor(),
 		retryCfg:        httputil.DefaultRetryConfig(),
 		seenCommands:    make(map[string]time.Time),
+		backupOutbox:    newBackupResultOutbox(backupResultOutboxDir()),
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
@@ -643,6 +649,24 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 	if os.Getenv("BREEZE_TUNNEL_DIAG") == "1" && h.tunnelMgr != nil && ws != nil {
 		h.tunnelMgr.StartDiagLogger(5*time.Second, ws.BinaryFrameChanStats)
 	}
+	// Retry any backup results that couldn't be delivered before the last
+	// disconnect as soon as the handshake completes on every (re)connect —
+	// set here, before Start() is ever called on ws, so there's no race with
+	// the read pump goroutine that invokes it (terminal-result outbox).
+	if ws != nil {
+		ws.OnConnected = h.flushBackupResultOutbox
+	}
+}
+
+// flushBackupResultOutbox retries delivery of any backup results persisted
+// because a prior SendResult failed (WS blip). Called on every WS
+// (re)connect via wsClient.OnConnected. A flush failure just leaves the
+// entry on disk for the next reconnect.
+func (h *Heartbeat) flushBackupResultOutbox() {
+	if h.backupOutbox == nil || h.wsClient == nil {
+		return
+	}
+	h.backupOutbox.Flush(h.wsClient.SendResult)
 }
 
 // SetAuthMonitor sets the shared auth-failure monitor.
@@ -746,7 +770,11 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			}
 		}
 		if err := h.wsClient.SendResult(result); err != nil {
-			log.Warn("failed to send backup result", "commandId", backupResult.CommandID, "error", err.Error())
+			log.Warn("failed to send backup result, persisting to outbox for retry on reconnect",
+				"commandId", backupResult.CommandID, "error", err.Error())
+			if h.backupOutbox != nil {
+				h.backupOutbox.Enqueue(result)
+			}
 		}
 	case backupipc.TypeBackupProgress:
 		if h.wsClient == nil {
