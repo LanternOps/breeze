@@ -20,6 +20,8 @@ import { quoteImages } from '../../db/schema/quotes';
 import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
+import { renderContractBlocksForClient } from '../../services/contractTemplateRender';
+import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 
 export const quoteCrudRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
@@ -38,6 +40,7 @@ export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
 }
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
 
@@ -70,13 +73,19 @@ quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idPara
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
+  const id = c.req.valid('param').id;
   try {
-    const detail = await getQuote(c.req.valid('param').id, quoteActorFrom(c));
+    const detail = await getQuote(id, quoteActorFrom(c));
     // Branding lets the in-app Preview render the customer-facing document
     // (logo, accent, seller, footer) without a second round-trip — same object
     // the PDF route builds, so the preview matches what the customer receives.
     const branding = await resolveQuoteBranding(detail.quote);
-    return c.json({ data: { ...detail, branding } });
+    // Resolves every `contract` block's pinned template version (system context)
+    // and replaces its raw authoring content with the render contract the
+    // in-app Preview (web QuoteDocument.tsx) understands — same contract portal
+    // and public serve, so the editor preview matches what the customer sees.
+    const blocks = await renderContractBlocksForClient(detail.blocks, detail.quote, (blockId) => `/quotes/${id}/contract-file/${blockId}`);
+    return c.json({ data: { ...detail, blocks, branding } });
   } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateQuoteSchema), async (c) => {

@@ -644,6 +644,12 @@
     },
     "document": {
       "additionalItems": "Additional items",
+      "contract": {
+        "download": "Download contract",
+        "previewTitle": "{{name}} contract document",
+        "unavailable": "Contract file unavailable",
+        "versionFooter": "{{name}} — v{{version}}"
+      },
       "draft": "Draft",
       "empty": "This proposal doesn’t have any content yet.",
       "imageUnavailable": "Image unavailable",

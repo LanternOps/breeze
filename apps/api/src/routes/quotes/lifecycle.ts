@@ -7,6 +7,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { sendQuote } from '../../services/quoteLifecycle';
 import { getQuote } from '../../services/quoteService';
 import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
+import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
 import { quoteActorFrom, handleServiceError } from './quotes';
 
 export const quoteLifecycleRoutes = new Hono();
@@ -16,6 +17,7 @@ const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIO
 const sendPerm = requirePermission(PERMISSIONS.QUOTES_SEND.resource, PERMISSIONS.QUOTES_SEND.action);
 const idParam = z.object({ id: z.string().guid() });
 const imageParam = z.object({ id: z.string().guid(), imageId: z.string().guid() });
+const contractFileParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
 
 // Accepts only http(s) URLs; the fetch layer enforces size/mime.
 const imageFromUrlSchema = z.object({
@@ -110,5 +112,23 @@ quoteLifecycleRoutes.get('/:id/images/:imageId', scopes, readPerm, zValidator('p
     const img = await readQuoteImage(imageId, id);
     if (!img) return c.json({ error: 'Image not found' }, 404);
     return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
+  } catch (err) { return handleServiceError(c, err); }
+});
+
+// GET /:id/contract-file/:blockId — uploaded contract PDF bytes for the editor
+// preview, mirroring /:id/images/:imageId. getQuote's org-access check + finding
+// the block among ITS OWN blocks (not a bare id lookup) closes the cross-quote
+// blockId case the same way the image route's quote_id match does.
+quoteLifecycleRoutes.get('/:id/contract-file/:blockId', scopes, readPerm, zValidator('param', contractFileParam), async (c) => {
+  const { id, blockId } = c.req.valid('param');
+  try {
+    const { blocks } = await getQuote(id, quoteActorFrom(c)); // org-access 404
+    const block = blocks.find((b) => b.id === blockId && b.blockType === 'contract');
+    if (!block) return c.json({ error: 'Contract file not found' }, 404);
+    const [renderData] = await loadContractBlockRenderData([block]);
+    if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) {
+      return c.json({ error: 'Contract file not found' }, 404);
+    }
+    return new Response(new Uint8Array(renderData.fileData), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(renderData.fileData.length), 'Cache-Control': 'private, max-age=300' } });
   } catch (err) { return handleServiceError(c, err); }
 });

@@ -1,9 +1,10 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { QuoteDocument } from './QuoteDocument';
 import QuoteDocumentPreview from './QuoteDocument';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
+import { fetchWithAuth } from '../../../stores/auth';
 
 // QuoteDocument is presentational, but its module imports the auth/org stores and
 // navigation (used by the preview wrapper + authed images). Mock them so the unit
@@ -131,6 +132,80 @@ describe('QuoteDocument', () => {
     expect(strongEl.tagName).toBe('STRONG');
     const listItem = screen.getByText('Item one');
     expect(listItem.closest('li')).not.toBeNull();
+  });
+
+  it('renders an authored contract block via dangerouslySetInnerHTML with a template name + version footer', () => {
+    const d = makeDetail();
+    d.blocks = [
+      ...d.blocks,
+      {
+        id: 'b-3', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
+        content: {
+          label: 'Master Services Agreement',
+          templateName: 'MSA',
+          versionNumber: 3,
+          sourceType: 'authored',
+          renderedHtml: '<p>Acme Industries agrees to Texas law.</p>',
+          fileUrl: null,
+        },
+        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
+      },
+    ];
+    render(<QuoteDocument detail={d} customerName="Acme Industries" />);
+
+    const el = screen.getByTestId('contract-block');
+    expect(el.textContent).toContain('Acme Industries agrees to Texas law.');
+    expect(el.textContent).toContain('Master Services Agreement');
+    expect(el.textContent).toContain('MSA');
+    expect(el.textContent).toContain('3');
+    expect(el.innerHTML).not.toContain('{{');
+    expect(el.querySelector('iframe')).toBeNull();
+  });
+
+  it('renders an uploaded contract block as an authed-fetched iframe + download link', async () => {
+    const blob = new Blob(['%PDF-1.4'], { type: 'application/pdf' });
+    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: true, status: 200, blob: vi.fn().mockResolvedValue(blob) } as unknown as Response);
+    vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:mock-contract'), revokeObjectURL: vi.fn() });
+
+    const d = makeDetail();
+    d.blocks = [
+      ...d.blocks,
+      {
+        id: 'b-4', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
+        content: {
+          templateName: 'Vendor MSA (uploaded)',
+          versionNumber: 1,
+          sourceType: 'uploaded',
+          renderedHtml: null,
+          fileUrl: '/quotes/q-1/contract-file/b-4',
+        },
+        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
+      },
+    ];
+    render(<QuoteDocument detail={d} customerName="Acme Industries" />);
+
+    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull());
+    expect(document.querySelector('iframe')?.getAttribute('src')).toBe('blob:mock-contract');
+    expect(fetchWithAuth).toHaveBeenCalledWith('/quotes/q-1/contract-file/b-4');
+    expect(screen.getByTestId('quote-contract-download')).toHaveAttribute('href', 'blob:mock-contract');
+
+    vi.unstubAllGlobals();
+  });
+
+  it('shows an unavailable fallback for an uploaded contract block with no fileUrl (no iframe fetch attempted)', () => {
+    const d = makeDetail();
+    d.blocks = [
+      ...d.blocks,
+      {
+        id: 'b-5', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
+        content: { templateName: 'MSA', versionNumber: 1, sourceType: 'uploaded', renderedHtml: null, fileUrl: null },
+        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
+      },
+    ];
+    render(<QuoteDocument detail={d} customerName="Acme Industries" />);
+    expect(screen.getByTestId('contract-block')).toHaveTextContent('Contract file unavailable');
+    expect(document.querySelector('iframe')).toBeNull();
+    expect(fetchWithAuth).not.toHaveBeenCalled();
   });
 
   it('never renders internal cost/markup/net on the customer document', () => {

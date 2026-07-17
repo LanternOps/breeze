@@ -9,6 +9,7 @@ import {
   type QuoteDetail as QuoteDetailData,
   type QuoteBlock,
   type QuoteLine,
+  type ContractBlockContent,
   STATUS_ROLES,
   statusLabel,
   formatDate,
@@ -83,6 +84,42 @@ function DocImage({ quoteId, imageId, caption }: { quoteId: string; imageId: str
         </div>
       )}
     </figure>
+  );
+}
+
+/** Uploaded contract PDF requires the Bearer header, so a bare `<iframe src>`
+ *  would 401 — reuse useAuthedImage's fetch-as-blob mechanics (it works for any
+ *  binary response, not just images) so the preview + download link get an
+ *  authed, revoked-on-unmount blob URL, same pattern as DocImage above. */
+function DocContractFile({ fileUrl, templateName }: { fileUrl: string; templateName: string }) {
+  const { t } = useTranslation('billing');
+  const { url, failed } = useAuthedImage(fileUrl);
+  if (failed) {
+    return (
+      <div className="rounded-lg border border-dashed bg-muted/40 px-4 py-8 text-center text-xs text-muted-foreground">
+        {t('quotes.document.contract.unavailable')}
+      </div>
+    );
+  }
+  if (!url) {
+    return <div className="h-64 animate-pulse rounded-lg bg-muted/60" aria-hidden />;
+  }
+  return (
+    <div className="space-y-2">
+      <iframe
+        src={url}
+        title={t('quotes.document.contract.previewTitle', { name: templateName })}
+        className="h-[32rem] w-full rounded-lg border"
+      />
+      <a
+        href={url}
+        download
+        data-testid="quote-contract-download"
+        className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+      >
+        {t('quotes.document.contract.download')}
+      </a>
+    </div>
   );
 }
 
@@ -207,6 +244,43 @@ function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block
     const caption = (block.content?.caption as string | undefined) ?? '';
     if (!imageId) return null;
     return <DocImage quoteId={block.quoteId} imageId={imageId} caption={caption} />;
+  }
+  if (block.blockType === 'contract') {
+    // Server-rendered content (renderContractBlocksForClient) — never the raw
+    // templateId/templateVersionId/variableValues authoring shape.
+    const content = (block.content ?? {}) as Partial<ContractBlockContent>;
+    const templateName = content.templateName?.trim() || '';
+    const versionNumber = content.versionNumber ?? 0;
+    const label = content.label?.trim();
+    return (
+      <div className="space-y-3 rounded-lg border bg-card p-4 sm:p-5" data-testid="contract-block">
+        {label && <h3 className="text-base font-semibold text-foreground">{label}</h3>}
+        {content.sourceType === 'authored' ? (
+          content.renderedHtml ? (
+            // Server-substituted HTML from an authored contract template — same
+            // sanitizer output + HTML-escaped substitution path as rich_text
+            // blocks above, safe to render as-is.
+            <div
+              className="quote-rich-text prose prose-sm max-w-prose text-pretty leading-relaxed text-foreground/90 dark:prose-invert"
+              dangerouslySetInnerHTML={{ __html: content.renderedHtml }}
+            />
+          ) : (
+            <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
+              {t('quotes.document.contract.unavailable')}
+            </div>
+          )
+        ) : content.fileUrl ? (
+          <DocContractFile fileUrl={content.fileUrl} templateName={templateName} />
+        ) : (
+          <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
+            {t('quotes.document.contract.unavailable')}
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground">
+          {t('quotes.document.contract.versionFooter', { name: templateName, version: versionNumber })}
+        </p>
+      </div>
+    );
   }
   // line_items
   const label = (block.content?.label as string | undefined)?.trim() || t('quotes.document.pricing');

@@ -27,6 +27,14 @@ vi.mock('../../services/quoteTypes', () => ({
   }
 }));
 
+// Contract-block serialization has its own unit tests (contractTemplateRender.test.ts);
+// here we only assert the route's WIRING — it calls renderContractBlocksForClient
+// with the right args and threads the result into the response. Default identity
+// pass-through so every other GET /:id test (no contract blocks) is unaffected.
+vi.mock('../../services/contractTemplateRender', () => ({
+  renderContractBlocksForClient: vi.fn(async (blocks: unknown[]) => blocks),
+}));
+
 // Mock the PDF renderer — the route is what we exercise here, not pdfkit. The
 // renderer has its own unit tests (quotePdf.test.ts); the route only needs to
 // wire getQuote + branding/image loads through to it and stream the bytes.
@@ -69,6 +77,8 @@ vi.mock('../../middleware/auth', () => ({
 import { quoteRoutes } from './index';
 import * as svc from '../../services/quoteService';
 import { QuoteServiceError } from '../../services/quoteTypes';
+import { renderContractBlocksForClient } from '../../services/contractTemplateRender';
+import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 
 function app() {
   // quoteRoutes already applies authMiddleware internally
@@ -223,6 +233,41 @@ describe('quote crud + lines routes', () => {
 
     expect(res.status).toBe(403);
     expect(svc.getQuote).not.toHaveBeenCalled();
+  });
+
+  it('GET /:id threads blocks through renderContractBlocksForClient with a /quotes/:id/contract-file/:blockId fileUrl builder', async () => {
+    const rawContractBlock = { id: BLOCK_ID, blockType: 'contract', content: { templateId: 'tmpl-1', templateVersionId: 'ver-1', variableValues: {} } };
+    (svc.getQuote as any).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: ORG_ID },
+      blocks: [rawContractBlock],
+      lines: [],
+    });
+    const renderedContent = { templateName: 'MSA', versionNumber: 2, sourceType: 'authored', renderedHtml: '<p>Acme Co</p>', fileUrl: null };
+    (renderContractBlocksForClient as any).mockResolvedValueOnce([{ ...rawContractBlock, content: renderedContent }]);
+
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.blocks[0].content).toEqual(renderedContent);
+
+    expect(renderContractBlocksForClient).toHaveBeenCalledWith(
+      [rawContractBlock],
+      expect.objectContaining({ id: QUOTE_ID }),
+      expect.any(Function),
+    );
+    const fileUrlFor = (renderContractBlocksForClient as any).mock.calls[0][2] as (blockId: string) => string;
+    expect(fileUrlFor(BLOCK_ID)).toBe(`/quotes/${QUOTE_ID}/contract-file/${BLOCK_ID}`);
+  });
+
+  it('GET /:id maps a ContractTemplateServiceError (e.g. an orphaned contract block) to its status/code', async () => {
+    (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID }, blocks: [], lines: [] });
+    (renderContractBlocksForClient as any).mockRejectedValueOnce(
+      new ContractTemplateServiceError('Contract block references a missing or mismatched template version', 404, 'VERSION_NOT_FOUND'),
+    );
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.code).toBe('VERSION_NOT_FOUND');
   });
 
   it('POST /:id/lines adds a manual line', async () => {

@@ -644,6 +644,12 @@
     },
     "document": {
       "additionalItems": "Zusätzliche Artikel",
+      "contract": {
+        "download": "Vertrag herunterladen",
+        "previewTitle": "Vertragsdokument {{name}}",
+        "unavailable": "Vertragsdatei nicht verfügbar",
+        "versionFooter": "{{name}} — Version {{version}}"
+      },
       "draft": "Entwurf",
       "empty": "Dieser Vorschlag hat noch keinen Inhalt.",
       "imageUnavailable": "Bild nicht verfügbar",

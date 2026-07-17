@@ -40,12 +40,15 @@ vi.mock('./quotes', () => ({
   quoteActorFrom: () => ({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: null }),
   handleServiceError: (_c: unknown, err: unknown) => { throw err; },
 }));
+vi.mock('../../services/contractTemplateRender', () => ({ loadContractBlockRenderData: vi.fn() }));
 
 import { quoteLifecycleRoutes } from './lifecycle';
 import { getQuote } from '../../services/quoteService';
 import { fetchRemoteImage, writeQuoteImage, RemoteImageError } from '../../services/quoteImageStorage';
+import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
 
 const QUOTE_ID = '11111111-1111-4111-8111-111111111111';
+const BLOCK_ID = '22222222-2222-4222-8222-222222222222';
 
 function appWith(scope: 'partner' | 'system' | 'organization', perms: string[]) {
   permState.perms = perms;
@@ -142,5 +145,58 @@ describe('POST /:id/images — from URL (JSON body)', () => {
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://cdn/a.png'));
     expect(res.status).toBe(500);
     expect(writeQuoteImage).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /:id/contract-file/:blockId', () => {
+  const PERMS = ['quotes:read', 'quotes:write'];
+  const uploadedRenderData = {
+    blockId: BLOCK_ID, templateId: 'tmpl-1', templateVersionId: 'ver-1', sourceType: 'uploaded' as const,
+    bodyHtml: null, fileData: Buffer.from('%PDF-1.4'), versionSha256: 'sha', declaredVariables: [],
+    templateName: 'MSA', versionNumber: 1,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('streams application/pdf for an uploaded contract block on the caller\'s own quote', async () => {
+    vi.mocked(getQuote).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: 'org-1' },
+      blocks: [{ id: BLOCK_ID, blockType: 'contract', content: { templateId: 'tmpl-1', templateVersionId: 'ver-1' } }],
+      lines: [],
+    } as never);
+    vi.mocked(loadContractBlockRenderData).mockResolvedValue([uploadedRenderData]);
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/contract-file/${BLOCK_ID}`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/pdf');
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect(bytes.toString()).toBe('%PDF-1.4');
+  });
+
+  it('404s a blockId that does not belong to this quote (cross-quote blockId)', async () => {
+    vi.mocked(getQuote).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: 'org-1' },
+      blocks: [], // the requested blockId isn't among THIS quote's blocks
+      lines: [],
+    } as never);
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/contract-file/${BLOCK_ID}`, { method: 'GET' });
+    expect(res.status).toBe(404);
+    expect(loadContractBlockRenderData).not.toHaveBeenCalled();
+  });
+
+  it('404s when the referenced block is an authored (not uploaded) contract, with no file bytes to stream', async () => {
+    vi.mocked(getQuote).mockResolvedValue({
+      quote: { id: QUOTE_ID, orgId: 'org-1' },
+      blocks: [{ id: BLOCK_ID, blockType: 'contract', content: { templateId: 'tmpl-1', templateVersionId: 'ver-1' } }],
+      lines: [],
+    } as never);
+    vi.mocked(loadContractBlockRenderData).mockResolvedValue([{ ...uploadedRenderData, sourceType: 'authored', fileData: null, bodyHtml: '<p>hi</p>' }]);
+
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/contract-file/${BLOCK_ID}`, { method: 'GET' });
+    expect(res.status).toBe(404);
   });
 });

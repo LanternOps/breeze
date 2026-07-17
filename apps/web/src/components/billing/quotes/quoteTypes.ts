@@ -15,7 +15,21 @@ export type QuoteStatus =
 export type QuoteLineRecurrence = 'one_time' | 'monthly' | 'annual';
 export type QuoteItemType = 'hardware' | 'software' | 'service';
 export type QuoteLineSourceType = 'catalog' | 'bundle' | 'manual';
-export type QuoteBlockType = 'heading' | 'rich_text' | 'image' | 'line_items';
+export type QuoteBlockType = 'heading' | 'rich_text' | 'image' | 'line_items' | 'contract';
+
+/** Client-facing shape of a `contract` block's `content` — server-rendered and
+ *  variable-substituted (contractTemplateRender.ts's renderContractBlocksForClient),
+ *  identical across portal/public/admin. Never carries the raw
+ *  templateId/templateVersionId/variableValues authoring shape or an
+ *  unresolved `{{token}}`. */
+export interface ContractBlockContent {
+  label?: string;
+  templateName: string;
+  versionNumber: number;
+  sourceType: 'authored' | 'uploaded';
+  renderedHtml: string | null;
+  fileUrl: string | null;
+}
 
 /** A row from `GET /quotes` / the `quote` field of `GET /quotes/:id`. */
 export interface Quote {

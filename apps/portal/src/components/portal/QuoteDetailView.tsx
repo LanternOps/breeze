@@ -178,6 +178,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
           lines={lines}
           currency={currency}
           imageUrl={(imageId) => buildPortalApiUrl(`/portal/quotes/${quote.id}/images/${imageId}`)}
+          buildUrl={buildPortalApiUrl}
           taxRate={taxRate}
           showTax={showTax}
         />

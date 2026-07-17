@@ -14,6 +14,8 @@ import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from 
 import { readQuoteImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
 import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
+import { loadContractBlockRenderData, renderContractBlocksForClient } from '../../services/contractTemplateRender';
+import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
@@ -22,6 +24,7 @@ import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 export const quoteRoutes = new Hono();
 const idParam = z.object({ id: z.string().guid() });
 const imageParam = z.object({ id: z.string().guid(), imageId: z.string().guid() });
+const blockFileParam = z.object({ id: z.string().guid(), blockId: z.string().guid() });
 
 // GET /quotes — list (drafts filtered; org defense-in-depth atop RLS).
 quoteRoutes.get('/quotes', async (c) => {
@@ -39,14 +42,23 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
   const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
   if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found' }, 404);
-  const blocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder));
+  const rawBlocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder));
   const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
   try { await markQuoteViewed(id, auth.user.orgId); } catch (err) { console.error('[portal] quote markViewed failed', { id, err }); }
   // Derive the amount accept actually invoices (one-time only) so the customer
   // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
   // plus the deposit due + per-category subtotals for the summary panel.
   const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
-  return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines } });
+  try {
+    // Resolves every `contract` block's pinned template version (system context,
+    // ahead of the response we're about to build below) and replaces its raw
+    // authoring content with the render contract the portal understands.
+    const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`);
+    return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines } });
+  } catch (err) {
+    if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  }
 });
 
 // GET /quotes/:id/pdf
@@ -111,6 +123,21 @@ quoteRoutes.get('/quotes/:id/images/:imageId', zValidator('param', imageParam), 
   const img = await readQuoteImage(imageId, id);
   if (!img) return c.json({ error: 'Image not found' }, 404);
   return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
+});
+
+// GET /quotes/:id/contract-file/:blockId — uploaded contract PDF bytes, mirroring
+// the /quotes/:id/images/:imageId asset route. eq(quoteBlocks.quoteId, id) closes
+// the same-org cross-quote case (a contract block belonging to a different quote
+// in this org 404s here, same as a cross-quote image id).
+quoteRoutes.get('/quotes/:id/contract-file/:blockId', zValidator('param', blockFileParam), async (c) => {
+  const auth = c.get('portalAuth'); const { id, blockId } = c.req.valid('param');
+  const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'))).limit(1);
+  if (!quote) return c.json({ error: 'Quote not found' }, 404);
+  const [block] = await db.select().from(quoteBlocks).where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, id), eq(quoteBlocks.blockType, 'contract'))).limit(1);
+  if (!block) return c.json({ error: 'Contract file not found' }, 404);
+  const [renderData] = await loadContractBlockRenderData([block]);
+  if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) return c.json({ error: 'Contract file not found' }, 404);
+  return new Response(new Uint8Array(renderData.fileData), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(renderData.fileData.length), 'Cache-Control': 'private, max-age=300' } });
 });
 
 // POST /quotes/:id/accept — signer types their full name (electronic signature)

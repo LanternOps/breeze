@@ -228,3 +228,89 @@ export function findUnresolvedVariables(
   }
   return unresolved;
 }
+
+// ---------------------------------------------------------------------------
+// Client-facing serialization (Task 13: portal/public/admin read paths)
+// ---------------------------------------------------------------------------
+
+/** Exact shape a `contract` quote block's `content` takes once serialized for
+ *  ANY client (portal, public link, admin editor) — never the raw
+ *  templateId/templateVersionId/variableValues authoring shape. */
+export interface ContractClientBlockContent {
+  label?: string;
+  templateName: string;
+  versionNumber: number;
+  sourceType: 'authored' | 'uploaded';
+  renderedHtml: string | null;
+  fileUrl: string | null;
+}
+
+/** Replace every `contract` block's raw authoring content
+ *  ({templateId, templateVersionId, variableValues, label}) with the
+ *  client-facing render contract. Non-contract blocks pass through unchanged
+ *  (compose with sanitizeQuoteBlocksForRead, which only touches rich_text).
+ *
+ *  Calls loadContractBlockRenderData FIRST — before building any of the
+ *  client-facing content below — so the (self-escaping) system-context read
+ *  of the dual-axis template/version rows always happens ahead of this
+ *  function's own per-block work, exactly like the loader's own doc comment
+ *  requires of its callers.
+ *
+ *  `fileUrlFor` builds the caller's own asset route (portal/public/admin all
+ *  mirror the existing quote-image asset route under different mounts). */
+export async function renderContractBlocksForClient<T extends { id: string; blockType: string; content: unknown }>(
+  blocks: T[],
+  quote: QuoteRow,
+  fileUrlFor: (blockId: string) => string
+): Promise<T[]> {
+  const renderData = await loadContractBlockRenderData(blocks);
+  if (renderData.length === 0) return blocks;
+  const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
+  const autoValues = resolveAutoVariables(quote);
+
+  return blocks.map((block) => {
+    const data = byBlockId.get(block.id);
+    if (!data) return block;
+
+    const raw =
+      block.content && typeof block.content === 'object' && !Array.isArray(block.content)
+        ? (block.content as Record<string, unknown>)
+        : {};
+    const manualValues =
+      raw.variableValues && typeof raw.variableValues === 'object' && !Array.isArray(raw.variableValues)
+        ? (raw.variableValues as Record<string, string>)
+        : {};
+    const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label : undefined;
+
+    let renderedHtml: string | null = null;
+    if (data.sourceType === 'authored') {
+      const values = { ...autoValues, ...manualValues };
+      const first = substituteVariables(data.bodyHtml ?? '', values);
+      renderedHtml = first.html;
+      if (first.missing.length > 0) {
+        // The send gate (findUnresolvedVariables, Task 12) is supposed to block
+        // send while any declared variable is unresolved — this should be
+        // unreachable post-send. Substitute defensively anyway (never let a raw
+        // {{token}} reach a rendered client payload) and log so a gate gap is
+        // observable rather than silently shipping placeholder text.
+        console.error('[contractTemplateRender] unresolved variable(s) at render time', {
+          blockId: block.id,
+          quoteId: quote.id,
+          missing: first.missing,
+        });
+        const blanks = Object.fromEntries(first.missing.map((name) => [name, '']));
+        renderedHtml = substituteVariables(renderedHtml, blanks).html;
+      }
+    }
+
+    const content: ContractClientBlockContent = {
+      ...(label ? { label } : {}),
+      templateName: data.templateName,
+      versionNumber: data.versionNumber,
+      sourceType: data.sourceType,
+      renderedHtml,
+      fileUrl: data.sourceType === 'uploaded' ? fileUrlFor(block.id) : null,
+    };
+    return { ...block, content };
+  });
+}

@@ -17,6 +17,7 @@ import {
   resolveAutoVariables,
   substituteVariables,
   findUnresolvedVariables,
+  renderContractBlocksForClient,
   type ContractBlockRenderData,
   type QuoteRow,
 } from './contractTemplateRender';
@@ -300,5 +301,143 @@ describe('loadContractBlockRenderData', () => {
       .mockReturnValueOnce(selectReturning([]) as never);
 
     await expect(loadContractBlockRenderData([contractBlock])).rejects.toThrow(/missing or mismatched/);
+  });
+});
+
+describe('renderContractBlocksForClient', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  const authoredVersionRow = {
+    id: 'ver-1',
+    templateId: 'tmpl-1',
+    orgId: null,
+    partnerId: 'partner-1',
+    versionNumber: 3,
+    status: 'published',
+    sourceType: 'authored' as const,
+    bodyHtml: '<p>{{client.name}} agrees to {{governing_state}}</p>',
+    fileData: null,
+    mime: null,
+    byteSize: null,
+    sha256: 'abc123',
+    declaredVariables: [
+      { name: 'client.name', kind: 'auto' },
+      { name: 'governing_state', kind: 'manual' },
+    ],
+    publishedAt: new Date('2026-07-01T00:00:00Z'),
+    createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'),
+  };
+  const uploadedVersionRow = {
+    ...authoredVersionRow,
+    id: 'ver-2',
+    sourceType: 'uploaded' as const,
+    bodyHtml: null,
+    fileData: Buffer.from('%PDF-1.4 fake'),
+    mime: 'application/pdf',
+  };
+  const templateRow = {
+    id: 'tmpl-1',
+    orgId: null,
+    partnerId: 'partner-1',
+    name: 'MSA',
+    description: null,
+    status: 'active',
+    createdBy: 'user-1',
+    createdAt: new Date('2026-07-01T00:00:00Z'),
+    updatedAt: new Date('2026-07-01T00:00:00Z'),
+  };
+
+  function contractBlockFixture(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'block-1',
+      blockType: 'contract',
+      content: { templateId: 'tmpl-1', templateVersionId: 'ver-1', variableValues: { governing_state: 'Texas' }, ...overrides },
+    };
+  }
+
+  it('resolves an authored block to renderedHtml containing the substituted client name, with no template ids leaking', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([authoredVersionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    const [block] = await renderContractBlocksForClient(
+      [contractBlockFixture()],
+      fixtureQuote({ billToName: 'Acme Co' }),
+      (blockId) => `/portal/quotes/quote-1/contract-file/${blockId}`
+    );
+
+    const content = block!.content as Record<string, unknown>;
+    expect(content.renderedHtml).toContain('Acme Co');
+    expect(content.renderedHtml).toContain('Texas');
+    expect(content.sourceType).toBe('authored');
+    expect(content.fileUrl).toBeNull();
+    expect(content.templateName).toBe('MSA');
+    expect(content.versionNumber).toBe(3);
+    expect(content).not.toHaveProperty('templateId');
+    expect(content).not.toHaveProperty('templateVersionId');
+    expect(content).not.toHaveProperty('variableValues');
+    expect(JSON.stringify(content)).not.toContain('{{');
+  });
+
+  it('defensively blanks an unresolved variable at render time instead of leaking a raw {{token}}', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([authoredVersionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    const [block] = await renderContractBlocksForClient(
+      [contractBlockFixture({ variableValues: {} })], // governing_state left unresolved
+      fixtureQuote({ billToName: 'Acme Co' }),
+      () => '/unused'
+    );
+
+    const content = block!.content as Record<string, unknown>;
+    expect(content.renderedHtml).toContain('Acme Co');
+    expect(content.renderedHtml).not.toContain('{{');
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('unresolved variable'),
+      expect.objectContaining({ missing: ['governing_state'] })
+    );
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('resolves an uploaded block to a null renderedHtml and a caller-built fileUrl', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([uploadedVersionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    const [block] = await renderContractBlocksForClient(
+      [contractBlockFixture({ templateVersionId: 'ver-2' })],
+      fixtureQuote(),
+      (blockId) => `/portal/quotes/quote-1/contract-file/${blockId}`
+    );
+
+    const content = block!.content as Record<string, unknown>;
+    expect(content.sourceType).toBe('uploaded');
+    expect(content.renderedHtml).toBeNull();
+    expect(content.fileUrl).toBe('/portal/quotes/quote-1/contract-file/block-1');
+  });
+
+  it('preserves an optional label when present and omits it when absent', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([authoredVersionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+
+    const [block] = await renderContractBlocksForClient(
+      [contractBlockFixture({ label: 'Master Services Agreement' })],
+      fixtureQuote(),
+      () => '/unused'
+    );
+    expect((block!.content as Record<string, unknown>).label).toBe('Master Services Agreement');
+  });
+
+  it('leaves non-contract blocks unchanged and short-circuits without touching the db', async () => {
+    const blocks = [{ id: 'block-2', blockType: 'heading', content: { text: 'Intro', level: 2 } }];
+    const result = await renderContractBlocksForClient(blocks, fixtureQuote(), () => '/unused');
+    expect(result).toEqual(blocks);
+    expect(db.select).not.toHaveBeenCalled();
   });
 });
