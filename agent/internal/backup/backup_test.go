@@ -530,26 +530,13 @@ func TestRunBackup_WithRetention(t *testing.T) {
 		Retention: 2,
 	})
 
-	// Run backup twice, modifying the file between runs to ensure the
-	// incremental cutoff doesn't skip it.
+	// Run backup twice. There is no mtime-cutoff filtering anymore (every
+	// snapshot is a complete restore point), so the file is included in both
+	// runs regardless of whether it changed between them.
 	for i := 0; i < 2; i++ {
-		// Sleep BEFORE the second write so the file's mtime is strictly after
-		// the prior snapshot.Timestamp. The 10ms post-write sleep below is not
-		// enough on its own: snapshot.Timestamp is set inside
-		// CreateSnapshotContext (snapshot.go) before the mock provider upload,
-		// so on a fast runner iter 2's WriteFile can land within the same
-		// filesystem-mtime tick as iter 1's snapshot timestamp, causing the
-		// incremental cutoff to skip the file (observed on GitHub Actions
-		// Linux runners, e.g. https://github.com/LanternOps/breeze/pull/890).
-		if i > 0 {
-			time.Sleep(100 * time.Millisecond)
-		}
 		if err := os.WriteFile(filePath, []byte(fmt.Sprintf("retention test run %d", i)), 0644); err != nil {
 			t.Fatalf("failed to write file for run %d: %v", i+1, err)
 		}
-		// Belt-and-suspenders: also wait after the write so the cutoff (set
-		// during this RunBackup) is comfortably after the file mtime.
-		time.Sleep(10 * time.Millisecond)
 
 		job, err := mgr.RunBackup()
 		if err != nil {
@@ -561,34 +548,13 @@ func TestRunBackup_WithRetention(t *testing.T) {
 	}
 }
 
-func TestRunBackup_UpdatesLastSnapshotTime(t *testing.T) {
-	tmpDir := t.TempDir()
-	createTempFile(t, tmpDir, "data.txt", "snapshot time test")
-
-	provider := newMockProvider()
-	mgr := NewBackupManager(BackupConfig{
-		Provider: provider,
-		Paths:    []string{tmpDir},
-	})
-
-	if !mgr.lastSnapshotTime.IsZero() {
-		t.Fatal("lastSnapshotTime should be zero initially")
-	}
-
-	job, err := mgr.RunBackup()
-	if err != nil {
-		t.Fatalf("RunBackup failed: %v", err)
-	}
-
-	if mgr.lastSnapshotTime.IsZero() {
-		t.Error("lastSnapshotTime should be updated after backup")
-	}
-	if job.Snapshot != nil && !mgr.lastSnapshotTime.Equal(job.Snapshot.Timestamp) {
-		t.Errorf("lastSnapshotTime = %v, want %v", mgr.lastSnapshotTime, job.Snapshot.Timestamp)
-	}
-}
-
-func TestRunBackup_IncrementalCutoff(t *testing.T) {
+// A long-lived manager must produce a COMPLETE restore point on every run,
+// not just the files changed since its previous run. Before this mechanism
+// was removed, a second snapshot from the same manager against an unmodified
+// source dir would come back empty/skipped (mtime-cutoff filtered every file
+// out) while still looking like a valid restore point. Assert the second
+// snapshot has the same non-zero file count as the first.
+func TestRunBackup_SecondSnapshotIncludesUnmodifiedFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	createTempFile(t, tmpDir, "data.txt", "incremental test")
 
@@ -598,19 +564,30 @@ func TestRunBackup_IncrementalCutoff(t *testing.T) {
 		Paths:    []string{tmpDir},
 	})
 
-	// First backup should include all files
-	job1, err := mgr.RunBackup()
+	job1, err := mgr.RunBackupContext(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("first RunBackup failed: %v", err)
+		t.Fatalf("first RunBackupContext failed: %v", err)
+	}
+	if job1.Status != jobStatusCompleted {
+		t.Fatalf("first backup status = %q, want %q", job1.Status, jobStatusCompleted)
 	}
 	if job1.FilesBackedUp != 1 {
 		t.Fatalf("first backup: files backed up = %d, want 1", job1.FilesBackedUp)
 	}
 
-	// Second backup should skip the file (no changes since last snapshot)
-	job2, err := mgr.RunBackup()
-	if job2.Status != jobStatusSkipped {
-		t.Errorf("second backup status = %q, want %q (no new files)", job2.Status, jobStatusSkipped)
+	// Second run against the same, unmodified source dir must be a complete
+	// restore point too — same file count, not skipped/empty.
+	job2, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("second RunBackupContext failed: %v", err)
 	}
-	_ = err
+	if job2.Status != jobStatusCompleted {
+		t.Fatalf("second backup status = %q, want %q", job2.Status, jobStatusCompleted)
+	}
+	if job2.FilesBackedUp != job1.FilesBackedUp {
+		t.Errorf("second backup: files backed up = %d, want %d (same as first run)", job2.FilesBackedUp, job1.FilesBackedUp)
+	}
+	if job2.FilesBackedUp == 0 {
+		t.Error("second backup: files backed up = 0, want non-zero")
+	}
 }

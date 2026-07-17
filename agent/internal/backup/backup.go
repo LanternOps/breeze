@@ -85,12 +85,11 @@ type BackupJob struct {
 type BackupManager struct {
 	config BackupConfig
 
-	mu               sync.Mutex
-	jobRunning       bool
-	jobCancel        context.CancelFunc
-	jobDoneCh        chan struct{}
-	lastSnapshotTime time.Time
-	progressFn       ProgressFn
+	mu         sync.Mutex
+	jobRunning bool
+	jobCancel  context.CancelFunc
+	jobDoneCh  chan struct{}
+	progressFn ProgressFn
 }
 
 // SetProgressFn registers a callback invoked with files/bytes-done-vs-total
@@ -323,8 +322,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	if err := runCtx.Err(); err != nil {
 		return stopBackupRun()
 	}
-	cutoff := m.lastSnapshotTime
-	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, cutoff, newExcludeMatcher(excludes))
+	files, scanErr := m.collectBackupFilesFromPaths(runCtx, backupPaths, newExcludeMatcher(excludes))
 	if scanErr != nil {
 		if errors.Is(scanErr, errBackupStopped) {
 			return stopBackupRun()
@@ -394,9 +392,6 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		}
 	}
 
-	if snapshot != nil && snapshot.Timestamp.After(m.lastSnapshotTime) {
-		m.lastSnapshotTime = snapshot.Timestamp
-	}
 	if snapErr != nil {
 		if errors.Is(snapErr, errBackupStopped) {
 			return stopBackupRun()
@@ -420,11 +415,11 @@ type backupFile struct {
 	mode         os.FileMode
 }
 
-func (m *BackupManager) collectBackupFiles(cutoff time.Time) ([]backupFile, error) {
-	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, cutoff, newExcludeMatcher(m.config.Excludes))
+func (m *BackupManager) collectBackupFiles() ([]backupFile, error) {
+	return m.collectBackupFilesFromPaths(context.Background(), m.config.Paths, newExcludeMatcher(m.config.Excludes))
 }
 
-func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, cutoff time.Time, excl *excludeMatcher) ([]backupFile, error) {
+func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths []string, excl *excludeMatcher) ([]backupFile, error) {
 	var files []backupFile
 	var errs []error
 	seen := make(map[string]struct{})
@@ -446,7 +441,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 
 		rootLabel := fmt.Sprintf("path_%d", idx)
 		if !info.IsDir() {
-			if !info.Mode().IsRegular() || !shouldIncludeFile(info.ModTime(), cutoff) {
+			if !info.Mode().IsRegular() {
 				continue
 			}
 			relPath := filepath.Base(cleanRoot)
@@ -496,7 +491,7 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 				errs = append(errs, fmt.Errorf("failed to read info for %s: %w", path, err))
 				return nil
 			}
-			if !info.Mode().IsRegular() || !shouldIncludeFile(info.ModTime(), cutoff) {
+			if !info.Mode().IsRegular() {
 				return nil
 			}
 			relPath, err := filepath.Rel(cleanRoot, path)
@@ -538,13 +533,6 @@ func (m *BackupManager) collectBackupFilesFromPaths(ctx context.Context, paths [
 		return nil, errors.Join(errs...)
 	}
 	return files, errors.Join(errs...)
-}
-
-func shouldIncludeFile(modTime, cutoff time.Time) bool {
-	if cutoff.IsZero() {
-		return true
-	}
-	return modTime.After(cutoff)
 }
 
 // extractVolumes returns unique volume roots from a list of paths.

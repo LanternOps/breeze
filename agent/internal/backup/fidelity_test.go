@@ -290,7 +290,7 @@ func TestCollectBackupFiles_CapturesMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr := NewBackupManager(BackupConfig{Paths: []string{srcFile}})
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err != nil {
 		t.Fatalf("collectBackupFiles: %v", err)
 	}

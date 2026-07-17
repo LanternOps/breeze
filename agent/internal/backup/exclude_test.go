@@ -4,7 +4,6 @@ import (
 	"os"
 	pathpkg "path/filepath"
 	"testing"
-	"time"
 )
 
 func TestExcludeMatcher(t *testing.T) {
@@ -167,7 +166,7 @@ func TestCollectBackupFiles_Excludes(t *testing.T) {
 				Excludes: tt.excludes,
 			})
 
-			files, err := mgr.collectBackupFiles(time.Time{})
+			files, err := mgr.collectBackupFiles()
 			if err != nil {
 				t.Fatalf("collectBackupFiles failed: %v", err)
 			}
@@ -205,7 +204,7 @@ func TestCollectBackupFiles_BaseNameGlobExcludesDirectorySubtree(t *testing.T) {
 		Excludes: []string{"*.tmp"},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}
@@ -227,7 +226,7 @@ func TestCollectBackupFilesFromPaths_PerRunExcludesOverrideConfig(t *testing.T) 
 
 	// Per-run override: exclude *.tmp instead (as backup_run payload would).
 	files, err := mgr.collectBackupFilesFromPaths(
-		t.Context(), []string{root}, time.Time{}, newExcludeMatcher([]string{"*.tmp"}),
+		t.Context(), []string{root}, newExcludeMatcher([]string{"*.tmp"}),
 	)
 	if err != nil {
 		t.Fatalf("collectBackupFilesFromPaths failed: %v", err)
@@ -247,7 +246,7 @@ func TestCollectBackupFiles_SingleFileRootExcluded(t *testing.T) {
 		Excludes: []string{"*.tmp"},
 	})
 
-	files, err := mgr.collectBackupFiles(time.Time{})
+	files, err := mgr.collectBackupFiles()
 	if err != nil {
 		t.Fatalf("collectBackupFiles failed: %v", err)
 	}
