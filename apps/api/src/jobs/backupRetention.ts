@@ -15,7 +15,15 @@ import {
   backupConfigs,
 } from '../db/schema';
 import { eq, and, lt, desc } from 'drizzle-orm';
-import { deleteBackupSnapshotArtifacts } from '../services/backupSnapshotStorage';
+import {
+  backupSnapshotManifestKey,
+  backupSnapshotRootPrefix,
+  deleteBackupObjectKeys,
+  fetchBackupObjectText,
+  listBackupObjectsUnderPrefix,
+  type BackupObjectListing,
+} from '../services/backupSnapshotStorage';
+import { asRecord } from '../services/recoveryBootstrap';
 
 // ── GFS tag types ────────────────────────────────────────────────────────────
 
@@ -150,20 +158,23 @@ export type RetentionCleanupResult = {
   prunedByMaxVersions: number;
 };
 
-async function deleteSnapshotRow(params: {
-  id: string;
-  snapshotId: string;
-  provider: string | null | undefined;
-  providerConfig: unknown;
-  metadata: unknown;
-}): Promise<void> {
-  await deleteBackupSnapshotArtifacts({
-    provider: params.provider,
-    providerConfig: params.providerConfig,
-    snapshotId: params.snapshotId,
-    metadata: params.metadata,
-  });
-
+/**
+ * Deletes a `backup_snapshots` ROW ONLY. Deliberately does NOT touch object
+ * storage: under the incremental/synthetic-full manifest model, an
+ * incremental snapshot's unchanged files are *references* whose backupPath
+ * points into an OLDER snapshot's prefix (see design doc, "reference
+ * mechanism"). Eagerly nuking this snapshot's whole storage prefix the
+ * instant its row expires would delete objects a still-retained, newer
+ * sibling snapshot's manifest still points at — a live-data-loss bug.
+ *
+ * Object deletion is now the mark-and-sweep GC's exclusive job
+ * (sweepUnreferencedBackupObjects, below): it only deletes an object once no
+ * RETAINED manifest anywhere for the destination references it, and only
+ * after a 48h grace window. Deleting this row here is what makes the
+ * snapshot's objects eligible for GC to consider on a later run — GC runs as
+ * a separate phase, so there's no order-of-operations gap to close here.
+ */
+async function deleteSnapshotRow(params: { id: string }): Promise<void> {
   await db
     .delete(backupSnapshots)
     .where(eq(backupSnapshots.id, params.id));
@@ -229,13 +240,7 @@ export async function cleanupExpiredSnapshots(
     }
 
     // Safe to delete
-    await deleteSnapshotRow({
-      id: snap.id,
-      snapshotId: snap.snapshotId,
-      provider: snap.provider,
-      providerConfig: snap.providerConfig,
-      metadata: snap.metadata,
-    });
+    await deleteSnapshotRow({ id: snap.id });
 
     result.deleted++;
   }
@@ -298,13 +303,7 @@ export async function cleanupExpiredSnapshots(
         continue;
       }
 
-      await deleteSnapshotRow({
-        id: snap.id,
-        snapshotId: snap.snapshotId,
-        provider: snap.provider,
-        providerConfig: snap.providerConfig,
-        metadata: snap.metadata,
-      });
+      await deleteSnapshotRow({ id: snap.id });
       result.deleted++;
       result.prunedByMaxVersions++;
     }
@@ -365,4 +364,253 @@ export function computeExpiresAt(
   const expires = new Date(completedAt);
   expires.setUTCDate(expires.getUTCDate() + maxDays);
   return expires;
+}
+
+// ── Mark-and-sweep GC for unreferenced backup objects ────────────────────────
+//
+// Incremental snapshots reference objects living under OLDER snapshots'
+// prefixes (see design doc's "reference mechanism" and deleteSnapshotRow's
+// comment above), so object-storage cleanup can no longer be "delete this
+// snapshot's whole prefix when its row expires" — that would delete objects
+// a still-retained, newer sibling snapshot's manifest points at. This phase
+// runs AFTER row-level retention (cleanupExpiredSnapshots) has already
+// deleted expired backup_snapshots rows, and is the ONLY code path that
+// deletes backup objects. It is intentionally conservative everywhere:
+//
+//   Mark:  live set = every backupPath + manifest key from EVERY retained
+//          (i.e. still-existing) backup_snapshots row's manifest, for one
+//          destination (backupConfigs row). ANY manifest fetch/parse failure
+//          anywhere in that set aborts the mark for the WHOLE destination —
+//          an incomplete live set must never justify a delete.
+//   Sweep: delete only objects that are (a) not in the live set AND
+//          (b) older than BACKUP_GC_GRACE_MS, using the provider listing's
+//          last-modified. A manifest-less prefix (no completed run) is swept
+//          the same way once every object under it clears the grace window
+//          (cleans orphaned/partial runs); one still inside the grace window
+//          is left alone (in-flight/resumable).
+
+export const BACKUP_GC_GRACE_MS = 48 * 60 * 60 * 1000;
+
+// Providers this GC path knows how to list-with-last-modified and delete for.
+// Mirrors deleteBackupSnapshotArtifacts's s3/local support — other providers
+// (azure_blob, google_cloud, backblaze) aren't wired to object storage here
+// yet, so their destinations are skipped (fail-closed: no listing means no
+// age data means no safe sweep decision).
+const BACKUP_GC_SUPPORTED_PROVIDERS = new Set(['s3', 'local']);
+
+export type BackupGcResult = { deleted: number; skippedDestinations: number };
+
+type BackupGcManifest = { files?: Array<{ backupPath?: unknown }> };
+
+/**
+ * Resolves the per-run deletion cap from env on every call (not once at
+ * module load) so it stays test-overridable without module-reset gymnastics.
+ * Same normalization convention as STALE_REAPER_MAX_PER_RUN in
+ * staleCommandReaper.ts: 0 means unlimited; negative/NaN falls back to the
+ * default rather than silently disabling the sweep.
+ */
+function resolveBackupGcMaxDeletesPerRun(): number {
+  const raw = Number(process.env.BACKUP_GC_MAX_DELETES_PER_RUN ?? '2000');
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  if (raw === 0) return Number.MAX_SAFE_INTEGER;
+  return 2000;
+}
+
+function parseBackupGcManifest(raw: string): BackupGcManifest {
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('manifest is not a JSON object');
+  }
+  const files = (parsed as { files?: unknown }).files;
+  if (files !== undefined && !Array.isArray(files)) {
+    throw new Error('manifest.files is not an array');
+  }
+  return parsed as BackupGcManifest;
+}
+
+/**
+ * Mark phase for one destination. Returns null (never throws) on any
+ * fetch/parse failure so the caller can fail-closed and skip the sweep.
+ */
+async function markLiveBackupObjects(
+  destination: { provider: string; providerConfig: unknown },
+  retainedSnapshotIds: string[],
+): Promise<Set<string> | null> {
+  const providerConfigRecord = asRecord(destination.providerConfig);
+  const live = new Set<string>();
+
+  for (const snapshotId of retainedSnapshotIds) {
+    const manifestKey = backupSnapshotManifestKey(providerConfigRecord, snapshotId);
+    live.add(manifestKey);
+
+    let raw: string;
+    try {
+      raw = await fetchBackupObjectText({
+        provider: destination.provider,
+        providerConfig: destination.providerConfig,
+        key: manifestKey,
+      });
+    } catch (error) {
+      console.error(
+        `[BackupGC] Manifest fetch failed for snapshot ${snapshotId} (key ${manifestKey}) — aborting sweep for this destination:`,
+        error,
+      );
+      return null;
+    }
+
+    let manifest: BackupGcManifest;
+    try {
+      manifest = parseBackupGcManifest(raw);
+    } catch (error) {
+      console.error(
+        `[BackupGC] Manifest parse failed for snapshot ${snapshotId} (key ${manifestKey}) — aborting sweep for this destination:`,
+        error,
+      );
+      return null;
+    }
+
+    for (const file of manifest.files ?? []) {
+      if (typeof file.backupPath === 'string' && file.backupPath.length > 0) {
+        live.add(file.backupPath);
+      }
+    }
+  }
+
+  return live;
+}
+
+/**
+ * Sweep phase for one destination. Lists the destination's snapshot root and
+ * deletes objects that are unreferenced AND older than the grace window,
+ * honoring the shared cross-destination delete budget. Throws on listing
+ * failure so the caller's per-destination try/catch counts it as skipped
+ * (fail-closed: can't enforce the grace window without a listing).
+ */
+async function sweepBackupDestination(
+  destination: { id: string; provider: string; providerConfig: unknown },
+  liveSet: Set<string>,
+  nowMs: number,
+  deletesRemaining: number,
+): Promise<number> {
+  const providerConfigRecord = asRecord(destination.providerConfig);
+  const rootPrefix = backupSnapshotRootPrefix(providerConfigRecord);
+
+  const listing = await listBackupObjectsUnderPrefix({
+    provider: destination.provider,
+    providerConfig: destination.providerConfig,
+    prefix: rootPrefix,
+  });
+
+  const graceThreshold = nowMs - BACKUP_GC_GRACE_MS;
+  const deletableItems: BackupObjectListing[] = [];
+
+  for (const item of listing) {
+    if (liveSet.has(item.key)) continue;
+    // No last-modified data => cannot prove the grace window elapsed; skip
+    // (fail-closed per-object — never delete without age proof).
+    if (!item.lastModified) continue;
+    if (item.lastModified.getTime() > graceThreshold) continue;
+    deletableItems.push(item);
+  }
+
+  if (deletableItems.length === 0 || deletesRemaining <= 0) {
+    return 0;
+  }
+
+  // Oldest-first so hitting the cap mid-destination always clears the
+  // longest-standing garbage first; the remainder is simply picked up again
+  // (still unreferenced, still past grace) on the next run.
+  deletableItems.sort((a, b) => (a.lastModified as Date).getTime() - (b.lastModified as Date).getTime());
+  const toDelete = deletableItems.slice(0, deletesRemaining).map((item) => item.key);
+
+  const { deletedKeys, failedKeys } = await deleteBackupObjectKeys({
+    provider: destination.provider,
+    providerConfig: destination.providerConfig,
+    keys: toDelete,
+  });
+
+  if (failedKeys.length > 0) {
+    console.warn(
+      `[BackupGC] Destination ${destination.id}: ${failedKeys.length} object delete(s) rejected (e.g. object-lock) — left in place: ${failedKeys.map((f) => f.key).join(', ')}`,
+    );
+  }
+
+  return deletedKeys.length;
+}
+
+/**
+ * Mark-and-sweep GC over every backup destination (backupConfigs row).
+ * Per-destination failure isolation: one bad/unreachable destination never
+ * blocks GC for the others. Bounded total deletes per run
+ * (BACKUP_GC_MAX_DELETES_PER_RUN, default 2000, 0 = unlimited) — hitting the
+ * cap mid-run just stops cleanly; the sweep is resumable by construction
+ * (unreferenced-and-past-grace objects stay unreferenced-and-past-grace next
+ * run; nothing about the cap state needs cleanup).
+ */
+export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> {
+  const nowMs = Date.now();
+  let deleted = 0;
+  let skippedDestinations = 0;
+  let deletesRemaining = resolveBackupGcMaxDeletesPerRun();
+
+  const destinations = await db
+    .select({
+      id: backupConfigs.id,
+      provider: backupConfigs.provider,
+      providerConfig: backupConfigs.providerConfig,
+    })
+    .from(backupConfigs);
+
+  for (const destination of destinations) {
+    if (deletesRemaining <= 0) {
+      console.log('[BackupGC] Deletion cap reached for this run — stopping cleanly; remaining destinations resume next run');
+      break;
+    }
+
+    if (!BACKUP_GC_SUPPORTED_PROVIDERS.has(destination.provider)) {
+      skippedDestinations++;
+      console.warn(
+        `[BackupGC] Destination ${destination.id}: provider '${destination.provider}' has no GC listing support — skipping (fail-closed)`,
+      );
+      continue;
+    }
+
+    try {
+      const retainedRows = await db
+        .select({ snapshotId: backupSnapshots.snapshotId })
+        .from(backupSnapshots)
+        .where(eq(backupSnapshots.configId, destination.id));
+      const retainedSnapshotIds = retainedRows.map((row) => row.snapshotId);
+
+      const liveSet = await markLiveBackupObjects(
+        { provider: destination.provider, providerConfig: destination.providerConfig },
+        retainedSnapshotIds,
+      );
+
+      if (liveSet === null) {
+        skippedDestinations++;
+        console.warn(`[BackupGC] Destination ${destination.id}: mark phase failed — no sweep this run (fail-closed)`);
+        continue;
+      }
+
+      const destDeleted = await sweepBackupDestination(destination, liveSet, nowMs, deletesRemaining);
+      deleted += destDeleted;
+      deletesRemaining -= destDeleted;
+
+      if (destDeleted > 0) {
+        console.log(`[BackupGC] Destination ${destination.id}: deleted ${destDeleted} unreferenced object(s)`);
+      } else {
+        console.debug(`[BackupGC] Destination ${destination.id}: 0 objects deleted`);
+      }
+    } catch (error) {
+      skippedDestinations++;
+      console.error(`[BackupGC] Destination ${destination.id}: sweep failed — isolated, other destinations proceed:`, error);
+    }
+  }
+
+  console.log(
+    `[BackupGC] Run complete: deleted ${deleted} object(s), ${skippedDestinations} destination(s) skipped`,
+  );
+
+  return { deleted, skippedDestinations };
 }
