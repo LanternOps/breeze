@@ -37,16 +37,19 @@ type Conn struct {
 	ownerUID int
 }
 
-// Open dials the display's unix socket, injects the MIT-MAGIC-COOKIE-1, and
-// negotiates MIT-SHM. All state lives on the returned Conn — nothing global.
-func Open(target DisplayTarget) (*Conn, error) {
+// openShared performs the dial + cookie auth + connection setup that both Open
+// and OpenBare need, stopping short of any MIT-SHM provisioning. Failures are
+// classified so callers can distinguish a socket-level failure (ErrConnectFailed)
+// from a rejected handshake/authentication (ErrAuthFailed); the original message
+// text is preserved as the %v detail.
+func openShared(target DisplayTarget) (*Conn, error) {
 	num, err := displayNumber(target.Display)
 	if err != nil {
 		return nil, err
 	}
 	sock, err := net.Dial("unix", "/tmp/.X11-unix/X"+num)
 	if err != nil {
-		return nil, fmt.Errorf("dial X socket: %w", err)
+		return nil, fmt.Errorf("%w: dial X socket: %v", ErrConnectFailed, err)
 	}
 
 	cookieHex := ""
@@ -62,20 +65,38 @@ func Open(target DisplayTarget) (*Conn, error) {
 	x, err := xgb.NewConnNetWithCookieHex(sock, cookieHex)
 	if err != nil {
 		sock.Close()
-		return nil, fmt.Errorf("x11 auth/connect: %w", err)
+		return nil, fmt.Errorf("%w: x11 auth/connect: %v", ErrAuthFailed, err)
 	}
 
 	setup := xproto.Setup(x)
 	screen := setup.DefaultScreen(x)
-	c := &Conn{
+	return &Conn{
 		x:        x,
 		root:     screen.Root,
 		width:    int(screen.WidthInPixels),
 		height:   int(screen.HeightInPixels),
 		ownerUID: target.OwnerUID,
+	}, nil
+}
+
+// Open dials the display's unix socket, injects the MIT-MAGIC-COOKIE-1, and
+// negotiates MIT-SHM. All state lives on the returned Conn — nothing global.
+func Open(target DisplayTarget) (*Conn, error) {
+	c, err := openShared(target)
+	if err != nil {
+		return nil, err
 	}
 	c.initShm()
 	return c, nil
+}
+
+// OpenBare is Open without MIT-SHM provisioning. Connections that never capture
+// a frame (the cursor tracker, the input injector, and the capability probe)
+// use it to avoid allocating a SysV shared-memory segment per session. useShm
+// stays false, so a Conn from OpenBare that ever did capture would transparently
+// fall back to the core-protocol path.
+func OpenBare(target DisplayTarget) (*Conn, error) {
+	return openShared(target)
 }
 
 func displayNumber(display string) (string, error) {

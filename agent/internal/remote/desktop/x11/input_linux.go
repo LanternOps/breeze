@@ -28,7 +28,9 @@ func NewInjector() (*Injector, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn, err := Open(target)
+	// The injector performs synthetic input via XTEST and never captures, so it
+	// uses the bare (no-SHM) open path.
+	conn, err := OpenBare(target)
 	if err != nil {
 		return nil, err
 	}

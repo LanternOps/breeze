@@ -15,9 +15,10 @@ type CursorTracker struct {
 	x     *xgb.Conn
 }
 
-// NewCursorTracker opens a second connection to the same target for cursor polls.
+// NewCursorTracker opens a second connection to the same target for cursor
+// polls. It never captures, so it uses the bare (no-SHM) open path.
 func NewCursorTracker(target DisplayTarget) (*CursorTracker, error) {
-	c, err := Open(target)
+	c, err := OpenBare(target)
 	if err != nil {
 		return nil, err
 	}

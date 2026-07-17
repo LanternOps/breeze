@@ -9,6 +9,8 @@ func TestKeysymForName(t *testing.T) {
 		"right": 0xFF53, "down": 0xFF54, "pageup": 0xFF55, "home": 0xFF50,
 		"f1": 0xFFBE, "f12": 0xFFC9, "-": 0x2D, "a": 0x61, "A": 0x41,
 		"shift": 0xFFE1, "ctrl": 0xFFE3, "alt": 0xFFE9,
+		"del": 0xFFFF, "delete": 0xFFFF, "add": 0xFFAB, "kp_add": 0xFFAB,
+		"subtract": 0xFFAD, "decimal": 0xFFAE,
 	}
 	for name, want := range cases {
 		got, ok := KeysymForName(name)

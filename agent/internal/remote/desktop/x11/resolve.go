@@ -11,6 +11,12 @@ var (
 	ErrNoDisplay = errors.New("no attachable X11 display session")
 	// ErrWaylandUnsupported is returned when only a Wayland session is present.
 	ErrWaylandUnsupported = errors.New("wayland session present but X11 capture unsupported")
+	// ErrConnectFailed is returned when a resolved display cannot be reached at
+	// the socket level (the X unix socket refuses or fails the dial).
+	ErrConnectFailed = errors.New("x11 connect failed")
+	// ErrAuthFailed is returned when the socket is reached but the X server
+	// rejects the connection handshake/authentication (e.g. a stale cookie).
+	ErrAuthFailed = errors.New("x11 authentication failed")
 )
 
 // DisplayTarget describes a resolved X (or Wayland) session the agent may mirror.
