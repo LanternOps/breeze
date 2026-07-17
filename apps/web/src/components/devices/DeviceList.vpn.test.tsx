@@ -8,7 +8,13 @@ import type { VpnPresence } from '@breeze/shared';
 // Optional VPN column + client-side facet (#2139). Rendered purely from the
 // cached inventory carried on each Device row — no live command fan-out.
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
+// Fleet view so the fleet-only Organization column stays available to these
+// suites (see DeviceList isColumnAvailable).
+vi.mock('@/stores/orgStore', () => ({
+  useOrgStore: (selector: (s: { currentOrgId: string | null; allOrgs: boolean }) => unknown) =>
+    selector({ currentOrgId: null, allOrgs: true }),
+}));
 vi.mock('../remote/ConnectDesktopButton', () => ({ default: () => null }));
 vi.mock('@/lib/formatTime', () => ({ formatLastSeen: () => 'just now' }));
 

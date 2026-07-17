@@ -222,6 +222,8 @@ describe('alert routes', () => {
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
               leftJoin: vi.fn().mockReturnValue({
+                // organizations join (org column in fleet view) chains onto the same object
+                leftJoin: vi.fn().mockImplementation(function (this: unknown) { return this; }),
                 where: vi.fn().mockReturnValue({
                   orderBy: vi.fn().mockReturnValue({
                     limit: vi.fn().mockReturnValue({
@@ -310,6 +312,8 @@ describe('alert routes', () => {
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
               leftJoin: vi.fn().mockReturnValue({
+                // organizations join (org column in fleet view) chains onto the same object
+                leftJoin: vi.fn().mockImplementation(function (this: unknown) { return this; }),
                 where: vi.fn().mockReturnValue({
                   orderBy: vi.fn().mockReturnValue({
                     limit: vi.fn().mockReturnValue({
@@ -392,6 +396,8 @@ describe('alert routes', () => {
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
               leftJoin: vi.fn().mockReturnValue({
+                // organizations join (org column in fleet view) chains onto the same object
+                leftJoin: vi.fn().mockImplementation(function (this: unknown) { return this; }),
                 where: vi.fn().mockImplementation((cond: any) => {
                   listWhere = cond;
                   return {
@@ -438,6 +444,8 @@ describe('alert routes', () => {
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
               leftJoin: vi.fn().mockReturnValue({
+                // organizations join (org column in fleet view) chains onto the same object
+                leftJoin: vi.fn().mockImplementation(function (this: unknown) { return this; }),
                 where: vi.fn().mockImplementation((cond: any) => {
                   listWhere = cond;
                   listQueried = true;
@@ -480,6 +488,8 @@ describe('alert routes', () => {
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
               leftJoin: vi.fn().mockReturnValue({
+                // organizations join (org column in fleet view) chains onto the same object
+                leftJoin: vi.fn().mockImplementation(function (this: unknown) { return this; }),
                 where: vi.fn().mockImplementation((cond: any) => {
                   listWhere = cond;
                   return { orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue([]) }) }) };
@@ -509,6 +519,8 @@ describe('alert routes', () => {
           from: vi.fn().mockReturnValue({
             leftJoin: vi.fn().mockReturnValue({
               leftJoin: vi.fn().mockReturnValue({
+                // organizations join (org column in fleet view) chains onto the same object
+                leftJoin: vi.fn().mockImplementation(function (this: unknown) { return this; }),
                 where: vi.fn().mockImplementation((cond: any) => {
                   listWhere = cond;
                   return { orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue([]) }) }) };
