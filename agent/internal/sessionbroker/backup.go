@@ -165,8 +165,14 @@ func (b *Broker) StopBackupHelper() {
 	bh.session = nil
 }
 
-// ForwardBackupCommand sends a command to the backup helper and waits for the result.
-func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []byte, timeout time.Duration) (*ipc.Envelope, error) {
+// ForwardBackupCommand sends a command to the backup helper and waits for the
+// result. async, when true, tells the helper this is a backup_run request
+// that should be acked immediately ({"started":true}) with the real result
+// following later as an unsolicited backup_result envelope — callers must
+// only set it when the connected server has advertised the backup_run_async
+// capability (see websocket.Client.HasServerCapability), since an old server
+// would otherwise parse the ack as a malformed terminal result.
+func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []byte, timeout time.Duration, async bool) (*ipc.Envelope, error) {
 	b.mu.RLock()
 	var session *Session
 	if b.backup != nil {
@@ -183,6 +189,7 @@ func (b *Broker) ForwardBackupCommand(commandID, commandType string, payload []b
 		CommandType: commandType,
 		Payload:     payload,
 		TimeoutMs:   timeout.Milliseconds(),
+		Async:       async,
 	}
 
 	return session.SendCommand(commandID, backupipc.TypeBackupCommand, req, timeout)

@@ -83,13 +83,18 @@ type Client struct {
 	connMu               sync.RWMutex
 	capabilitiesMu       sync.RWMutex
 	terminalOutputBase64 bool
-	cmdHandler           CommandHandler
-	done                 chan struct{}
-	sendChan             chan []byte
-	binaryFrameChan      chan []byte
-	stopOnce             sync.Once
-	isRunning            bool
-	runningMu            sync.RWMutex
+	// serverCapabilities holds the full capability set advertised by the
+	// server's most recent "connected" handshake message, keyed by name.
+	// Reset to nil on every (re)connect until the next handshake lands, so a
+	// dropped connection never leaves a stale capability latched on.
+	serverCapabilities map[string]bool
+	cmdHandler         CommandHandler
+	done               chan struct{}
+	sendChan           chan []byte
+	binaryFrameChan    chan []byte
+	stopOnce           sync.Once
+	isRunning          bool
+	runningMu          sync.RWMutex
 }
 
 // New creates a new WebSocket client
@@ -376,17 +381,20 @@ func (c *Client) handleConnectedMessage(raw []byte) {
 	}
 
 	enabled := false
+	caps := make(map[string]bool, len(msg.Capabilities))
 	for _, capability := range msg.Capabilities {
+		caps[capability] = true
 		if capability == capabilityTerminalOutputBase64 {
 			enabled = true
-			break
 		}
 	}
 	c.setTerminalOutputBase64(enabled)
+	c.setServerCapabilities(caps)
 }
 
 func (c *Client) resetConnectionCapabilities() {
 	c.setTerminalOutputBase64(false)
+	c.setServerCapabilities(nil)
 }
 
 func (c *Client) setTerminalOutputBase64(enabled bool) {
@@ -399,6 +407,23 @@ func (c *Client) terminalOutputBase64Enabled() bool {
 	c.capabilitiesMu.RLock()
 	defer c.capabilitiesMu.RUnlock()
 	return c.terminalOutputBase64
+}
+
+func (c *Client) setServerCapabilities(caps map[string]bool) {
+	c.capabilitiesMu.Lock()
+	c.serverCapabilities = caps
+	c.capabilitiesMu.Unlock()
+}
+
+// HasServerCapability reports whether the server advertised the named
+// capability in its most recent "connected" handshake message. Returns false
+// before the first handshake and after any (re)connect until the next one
+// lands — callers must not assume a capability persists across a dropped
+// connection.
+func (c *Client) HasServerCapability(name string) bool {
+	c.capabilitiesMu.RLock()
+	defer c.capabilitiesMu.RUnlock()
+	return c.serverCapabilities[name]
 }
 
 func (c *Client) writePump(done <-chan struct{}, exited chan<- struct{}) {

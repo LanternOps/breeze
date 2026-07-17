@@ -31,6 +31,13 @@ type BackupCommandRequest struct {
 	CommandType string          `json:"commandType"`
 	Payload     json.RawMessage `json:"payload"`
 	TimeoutMs   int64           `json:"timeoutMs"`
+	// Async, when set on a backup_run request, tells the helper to reply to
+	// the request envelope immediately with {"started":true} and send the
+	// real result later as an unsolicited TypeBackupResult envelope. Only
+	// set when the connected server has advertised the backup_run_async
+	// capability (see websocket.Client.HasServerCapability) — an old server
+	// would otherwise parse the ack as a malformed terminal result.
+	Async bool `json:"async,omitempty"`
 }
 
 // BackupCommandResult is sent from the backup helper to the agent.

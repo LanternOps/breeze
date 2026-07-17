@@ -243,6 +243,69 @@ func TestConnectResetsTerminalOutputBase64Capability(t *testing.T) {
 	}
 }
 
+func TestHasServerCapability_ReflectsHandshakeCapabilityList(t *testing.T) {
+	srv := newTestServer(t, func(conn *websocket.Conn) {
+		conn.WriteJSON(map[string]any{
+			"type":         "connected",
+			"capabilities": []string{"terminal_output_base64", "backup_run_async"},
+		})
+		time.Sleep(100 * time.Millisecond)
+		conn.Close()
+	})
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect error: %v", err)
+	}
+
+	c.readPump()
+
+	if !c.HasServerCapability("backup_run_async") {
+		t.Fatal("expected backup_run_async capability to be recognized")
+	}
+	if !c.HasServerCapability("terminal_output_base64") {
+		t.Fatal("expected terminal_output_base64 capability to still be recognized")
+	}
+	if c.HasServerCapability("some_unadvertised_capability") {
+		t.Fatal("expected unadvertised capability to be false")
+	}
+}
+
+func TestHasServerCapability_FalseBeforeHandshake(t *testing.T) {
+	c := newTestClient("http://127.0.0.1:1", noopHandler)
+	if c.HasServerCapability("backup_run_async") {
+		t.Fatal("expected no capabilities before any connected handshake")
+	}
+}
+
+func TestConnectResetsServerCapabilities(t *testing.T) {
+	srv := newTestServer(t, func(conn *websocket.Conn) {
+		conn.WriteJSON(map[string]any{
+			"type":         "connected",
+			"capabilities": []string{"backup_run_async"},
+		})
+		time.Sleep(100 * time.Millisecond)
+		conn.Close()
+	})
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect error: %v", err)
+	}
+	c.readPump()
+
+	if !c.HasServerCapability("backup_run_async") {
+		t.Fatal("expected capability enabled after connected message")
+	}
+
+	c.closeCurrentConn(false)
+	if c.HasServerCapability("backup_run_async") {
+		t.Fatal("expected capability reset after disconnect")
+	}
+}
+
 func TestReadPump_RespondsToServerPing(t *testing.T) {
 	pongReceived := make(chan struct{})
 
