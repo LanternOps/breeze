@@ -35,7 +35,9 @@ export type TemplateWithLatest = TemplateRow & { latestVersion: VersionSummary |
 export class ContractTemplateServiceError extends Error {
   constructor(
     message: string,
-    public status: number,
+    // Literal union (not number) so Hono's c.json(status) overloads accept it
+    // directly — same idiom as QuoteServiceError in quoteTypes.ts.
+    public status: 400 | 403 | 404 | 409 | 413 | 422 | 500,
     public code: string
   ) {
     super(message);
