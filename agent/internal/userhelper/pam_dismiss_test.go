@@ -74,7 +74,9 @@ func callPamDismissHandler(t *testing.T, client *Client, peer *ipc.Conn, payload
 		close(done)
 	}()
 
-	peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
 	env, err := peer.Recv()
 	if err != nil {
 		t.Fatalf("receive PAM dismiss response: %v", err)
@@ -304,7 +306,9 @@ func TestCommandLoopPamDismissConsentPanicReturnsError(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("send PAM dismiss request: %v", err)
 	}
-	peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
 	env, err := peer.Recv()
 	if err != nil {
 		t.Fatalf("receive panic response: %v", err)

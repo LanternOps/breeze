@@ -34,8 +34,8 @@ func TestDismissPamConsentReturnsCorrelatedHelperResult(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			session, clientIPC := createPamDismissTestSession()
-			defer session.Close()
-			defer clientIPC.Close()
+			defer func() { _ = session.Close() }()
+			defer func() { _ = clientIPC.Close() }()
 
 			got, err := exchangePamDismiss(
 				t,
@@ -124,8 +124,8 @@ func TestDismissPamConsentReturnsEnvelopeAndDecodeErrors(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			session, clientIPC := createPamDismissTestSession()
-			defer session.Close()
-			defer clientIPC.Close()
+			defer func() { _ = session.Close() }()
+			defer func() { _ = clientIPC.Close() }()
 
 			got, err := exchangePamDismiss(
 				t,
@@ -149,8 +149,8 @@ func TestDismissPamConsentReturnsEnvelopeAndDecodeErrors(t *testing.T) {
 
 func TestDismissPamConsentRejectsWrongResponseType(t *testing.T) {
 	session, clientIPC := createPamDismissTestSession()
-	defer session.Close()
-	defer clientIPC.Close()
+	defer func() { _ = session.Close() }()
+	defer func() { _ = clientIPC.Close() }()
 
 	got, err := exchangePamDismiss(
 		t,
@@ -181,8 +181,8 @@ func TestDismissPamConsentRejectsWrongResponseType(t *testing.T) {
 
 func TestDismissPamConsentTimesOut(t *testing.T) {
 	session, clientIPC := createPamDismissTestSession()
-	defer session.Close()
-	defer clientIPC.Close()
+	defer func() { _ = session.Close() }()
+	defer func() { _ = clientIPC.Close() }()
 
 	got, err := exchangePamDismiss(
 		t,
@@ -229,8 +229,8 @@ func TestDismissPamConsentTransportFailureIsUncertain(t *testing.T) {
 
 func TestDismissPamConsentTimeoutSignalsLateHelperQuiescence(t *testing.T) {
 	session, clientIPC := createPamDismissTestSession()
-	defer session.Close()
-	defer clientIPC.Close()
+	defer func() { _ = session.Close() }()
+	defer func() { _ = clientIPC.Close() }()
 
 	releaseResponse := make(chan struct{})
 	helperDone := make(chan error, 1)

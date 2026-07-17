@@ -98,8 +98,8 @@ func TestRequestPamApprovalRequiresSystemPamSession(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			serverConn, clientConn := net.Pipe()
-			defer serverConn.Close()
-			defer clientConn.Close()
+			defer func() { _ = serverConn.Close() }()
+			defer func() { _ = clientConn.Close() }()
 			if err := serverConn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
 				t.Fatalf("set write deadline: %v", err)
 			}
