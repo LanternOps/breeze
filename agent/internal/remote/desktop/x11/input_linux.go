@@ -35,12 +35,12 @@ func NewInjector() (*Injector, error) {
 		return nil, err
 	}
 	if err := xtest.Init(conn.x); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("xtest init: %w", err)
 	}
 	km, err := LoadKeyMap(conn.x)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	in := &Injector{conn: conn, keymap: km, root: conn.root}
@@ -110,7 +110,7 @@ func (in *Injector) KeyBySym(keysym uint32) error {
 		if err := in.key(shiftKc, true); err != nil {
 			return err
 		}
-		defer in.key(shiftKc, false)
+		defer func() { _ = in.key(shiftKc, false) }()
 	}
 	if err := in.key(kc, true); err != nil {
 		return err
@@ -155,7 +155,7 @@ func (in *Injector) Close() {
 		return
 	}
 	if in.conn != nil {
-		in.conn.Close()
+		_ = in.conn.Close()
 		in.conn = nil
 	}
 }

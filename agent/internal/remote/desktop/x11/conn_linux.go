@@ -64,7 +64,7 @@ func openShared(target DisplayTarget) (*Conn, error) {
 
 	x, err := xgb.NewConnNetWithCookieHex(sock, cookieHex)
 	if err != nil {
-		sock.Close()
+		_ = sock.Close()
 		return nil, fmt.Errorf("%w: x11 auth/connect: %v", ErrAuthFailed, err)
 	}
 

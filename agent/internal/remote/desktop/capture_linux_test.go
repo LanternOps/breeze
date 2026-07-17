@@ -29,7 +29,7 @@ func TestLinuxCapturerCaptureIfDisplay(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot create capturer: %v", err)
 	}
-	defer cap.Close()
+	defer func() { _ = cap.Close() }()
 	img, err := cap.Capture()
 	if err != nil {
 		t.Fatalf("capture: %v", err)

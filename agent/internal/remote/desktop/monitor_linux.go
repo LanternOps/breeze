@@ -23,7 +23,7 @@ func ListMonitors() ([]MonitorInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open x11 connection: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	w, h := conn.Bounds()
 	geoms, err := x11.Monitors(conn.XConn(), conn.Root(), w, h)

@@ -26,7 +26,7 @@ func TestOpenAndCapture(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot open X display %s: %v", target.Display, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	w, h := c.Bounds()
 	if w <= 0 || h <= 0 {
 		t.Fatalf("bad bounds %dx%d", w, h)

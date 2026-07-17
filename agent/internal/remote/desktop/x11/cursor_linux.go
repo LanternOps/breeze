@@ -23,12 +23,12 @@ func NewCursorTracker(target DisplayTarget) (*CursorTracker, error) {
 		return nil, err
 	}
 	if err := xfixes.Init(c.x); err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	// XFixes requires a version negotiation before any cursor request.
 	if _, err := xfixes.QueryVersion(c.x, 4, 0).Reply(); err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	return &CursorTracker{owner: c, x: c.x}, nil
@@ -50,4 +50,4 @@ func (t *CursorTracker) Poll() (x, y int, name string, ok bool) {
 }
 
 // Close releases the dedicated cursor connection.
-func (t *CursorTracker) Close() { t.owner.Close() }
+func (t *CursorTracker) Close() { _ = t.owner.Close() }

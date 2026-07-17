@@ -20,6 +20,6 @@ func ProbeCapture() error {
 	if err != nil {
 		return err
 	}
-	conn.Close()
+	_ = conn.Close()
 	return nil
 }
